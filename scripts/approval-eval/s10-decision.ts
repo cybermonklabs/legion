@@ -35,11 +35,12 @@ import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE } from "./reserve";
  * `reserve.ts`, `corpus-io.ts` and `dispatch-read.ts` differ only in what the decision never
  * calls: the `--draw`, `--inputs` and `--claim-s10` path options of `runDigestOf` and the file
  * options of `s10_judge.py`, the two sha256s `readCorpus` records and the four field readers the
- * claim's stage readers share (`parsed`, `countAt`, `textAt`, `sha256At`), `pageEventLog`'s
- * `after` and the new `readBytes`, and the retry ladder's waits held as 1, 2, 4 and 8 units of a
- * second with the two functions only a test calls to shorten that unit
- * (`setRetryWaitUnitForTests`, `resetRetryWaitUnitForTests`), so the decision still waits 1, 2, 4
- * and 8 seconds. So the pinned closure is the 651db8d5 decision, and any later
+ * claim's stage readers share (`parsed`, `countAt`, `textAt`, `sha256At`), and `pageEventLog`'s
+ * `after` and the new `readBytes`; and `dispatch-read.ts` differs in one path the decision does
+ * call, its retry ladder, only in form: the waits are held as 1, 2, 4 and 8 units of a second,
+ * beside two functions only a test calls to shorten that unit (`setRetryWaitUnitForTests`,
+ * `resetRetryWaitUnitForTests`), so the decision still waits 1, 2, 4 and 8 seconds. So the
+ * pinned closure is the 651db8d5 decision, and any later
  * change to a pinned file fails this check until a reviewed pull request moves the pin. The
  * pinned files are checked again once, right before the first child is spawned
  * (`Decision.confirm`).
