@@ -147,7 +147,7 @@ ARG LEAK_CHECK_TAG=leak-check-v31
 # from there again.
 ARG GO_VERSION=1.27.3
 ARG GO_SHA256=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
-# gopls, which the go-tools stage builds static from golang.org/x/tools/gopls at this tag (gopls/v<version>).
+# gopls, which the gopls stage builds static from golang.org/x/tools/gopls at this tag (gopls/v<version>).
 ARG GOPLS_VERSION=0.23.0
 # The toolchain stage's pins: each is a release version and the SHA-256 of the linux/amd64 download the
 # stage fetches for it (an archive, or a single binary as kubectl's and yq's are), which the build
@@ -482,7 +482,7 @@ RUN set -eu; \
     /opt/omp/bin/omp --version && /opt/tools/jj --version && /opt/tools/gh --version
 
 # ------------------------------------------------------------------------------------------------
-# go-base: what the three Go stages below share, the golang image, its GOPROXY and git.
+# go-base: what the Go stages below share, the golang image, its GOPROXY and git.
 # ghcr.io/cybermonklabs/legion/ci, the copy of golang:1.27.3-alpine (.github/ci-images.yaml)
 FROM ghcr.io/cybermonklabs/legion/ci@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS go-base
 WORKDIR /src
@@ -494,7 +494,7 @@ WORKDIR /src
 ENV GOPROXY=https://proxy.golang.org|direct
 # `direct` is git: Go clones the module's own repository, so a stage without git has a fallback
 # that cannot run. This base is golang's alpine image, which carries none, and the fallback had
-# never been taken here until the go-tools stage's gopls layer met a proxy error on 2026-11-11 and failed the
+# never been taken here until the gopls stage's install met a proxy error on 2026-11-11 and failed the
 # whole image build with `unable to resolve git version: failed to execute git version: exec:
 # "git": executable file not found in $PATH` (cybermonklabs/legion#3536, run 43047193527), where
 # the same layer had built from the proxy an hour earlier. git is installed here rather than at
@@ -508,16 +508,18 @@ ENV GOPROXY=https://proxy.golang.org|direct
 RUN apk add --no-cache git
 
 # ------------------------------------------------------------------------------------------------
-# go-tools: go-licenses (pinned in go-third-party-notices.sh), for the go stage's notices, and
-# gopls, for the runtime stage. Neither reads
-# this checkout's source or module files, so neither a source change nor a dependency bump rebuilds
-# them, and the stage builds beside go-modules rather than before it.
-FROM go-base AS go-tools
+# go-licenses (pinned in go-third-party-notices.sh), for the go-notices stage, and gopls, for the
+# runtime stage, each in a stage of its own: neither reads this checkout's source or module files,
+# so neither a source change nor a dependency bump rebuilds them, and the two build beside each
+# other and beside go-modules, where one stage built them one after the other before the download.
+FROM go-base AS go-licenses
 COPY scripts/go-third-party-notices.sh /usr/local/bin/
 RUN go-third-party-notices.sh --install
-# gopls, for the same reason: `go install pkg@version`
-# builds the module at that tag with its own go.mod, whatever this checkout's go.work says, so the
-# binary changes only with GOPLS_VERSION (or GO_VERSION), never with a commit.
+
+# `go install pkg@version` builds the module at that tag with its own go.mod, whatever this
+# checkout's go.work says, so the binary changes only with GOPLS_VERSION (or GO_VERSION), never
+# with a commit.
+FROM go-base AS gopls
 ARG GOPLS_VERSION
 RUN set -eu; \
     mkdir -p /out; \
@@ -525,10 +527,10 @@ RUN set -eu; \
 
 # ------------------------------------------------------------------------------------------------
 # go-modules: the module files and their download, in a stage that copies no source, so a commit
-# rebuilds neither. GOMODCACHE is /gomodcache here, and the go-tools stage keeps Go's default, so
-# the modules of those two tools stay out of this cache. The runtime stage ships
-# /gomodcache/cache/download to the workers as their warm module cache, and the go stage builds on
-# this stage, so one download serves the build and the workers: a second download for either
+# rebuilds neither. GOMODCACHE is /gomodcache here, and the go-licenses and gopls stages keep Go's
+# default, so the modules of those two tools stay out of this cache. The runtime stage ships
+# /gomodcache/cache/download to the workers as their warm module cache, and the build stages below
+# build on this stage, so one download serves the build and the workers: a second download for either
 # would read the same 380 MiB from proxy.golang.org again on every build that reruns this layer,
 # and this image's change (sjawhar/legion#2512) counts every such read.
 FROM go-base AS go-modules
@@ -560,23 +562,32 @@ RUN go mod download \
     && rm -rf /gomodcache/cache/download/sumdb
 
 # ------------------------------------------------------------------------------------------------
+# go-source: this checkout's two Go modules on go-modules, which the go and go-notices stages build
+# from, beside each other.
+FROM go-modules AS go-source
+COPY packages/daemon packages/daemon
+COPY packages/envoy packages/envoy
+WORKDIR /src/packages/daemon
+
+# ------------------------------------------------------------------------------------------------
+# go-notices: the licenses of the Go modules `legion` and `agent-secrets` compile in, with the
+# build's CGO_ENABLED (which decides them, with the GOARCH the go stage builds for); fails the
+# build when one's license cannot be determined. go-licenses comes built from the go-licenses
+# stage, at the path go-third-party-notices.sh installs it to, so the script finds it and builds it
+# no second time. A stage of its own, so the compile waits for neither the tool nor this step.
+FROM go-source AS go-notices
+COPY scripts/go-third-party-notices.sh /usr/local/bin/
+COPY --from=go-licenses /root/.cache/legion /root/.cache/legion
+RUN mkdir -p /out && CGO_ENABLED=0 go-third-party-notices.sh /out/go-notices \
+    ./cmd/legion github.com/sjawhar/envoy/cmd/cipher
+
+# ------------------------------------------------------------------------------------------------
 # go: the Go coordinator's `legion`, built as the repository builds it — `go build ./cmd/legion` in
 # packages/daemon under go.work, whose other module (packages/envoy) contributes its go.mod and go.sum
 # to dependency selection and its listenfd package to `legion start` — static, so it runs on any
 # base. LEGION_REVISION is the commit the workflow builds; it is linked in so `legion version` names
-# it, and the build refuses without it. go-licenses comes built from the go-tools stage, at the
-# path go-third-party-notices.sh installs it to, so the script finds it and builds it no second time.
-FROM go-modules AS go
-COPY scripts/go-third-party-notices.sh /usr/local/bin/
-COPY --from=go-tools /root/.cache/legion /root/.cache/legion
-COPY packages/daemon packages/daemon
-COPY packages/envoy packages/envoy
-WORKDIR /src/packages/daemon
-# The licenses of the Go modules `legion` and `agent-secrets` compile in, with the build's CGO_ENABLED
-# (which decides them, with the GOARCH this stage builds for); fails the build when one's license
-# cannot be determined.
-RUN mkdir -p /out && CGO_ENABLED=0 go-third-party-notices.sh /out/go-notices \
-    ./cmd/legion github.com/sjawhar/envoy/cmd/cipher
+# it, and the build refuses without it.
+FROM go-source AS go
 # Declared here, after the dependency layers, so a new commit re-runs only the compile.
 ARG LEGION_REVISION
 ARG PI_LEGION_VERSION
@@ -1009,13 +1020,13 @@ RUN dpkg-query -W -f '${db:Status-Status} ${Package}\n' > /tmp/dpkg-packages \
 # listed by the debian-packages stage from runtime-base's dpkg database, whose terms are in
 # /usr/share/doc/<package>/copyright; the npm packages installed unmodified have their own license
 # files beside them. What this checkout builds carries notices generated from what the build included
-# (the go stage's, the packed plugin's); a prebuilt tool carries the license files its distribution
+# (the go-notices stage's, the packed plugin's); a prebuilt tool carries the license files its distribution
 # ships (Node's LICENSE, the AWS CLI's THIRD_PARTY_LICENSES, the Google Cloud SDK's LICENSE and the
 # LICENSE.txt of the CPython it bundles, the LICENSE.txt of azure-cli's wheel and that of the CPython
 # uv installs for it) and those its source repository holds at
 # the pinned release, fetched here. jj, uv and mise link Rust crates whose license texts none of
 # their releases ships, so their sections name the Cargo.lock that lists those crates; gopls, which
-# the go-tools stage
+# the gopls stage
 # compiles, links Go modules the same way, and its section names the go.mod that lists them rather
 # than a go-licenses report like `legion`'s, because go-licenses (go-third-party-notices.sh's
 # v2.0.1, under Go 1.27.1) finds no license for one of them, github.com/segmentio/asm, and would fail
@@ -1109,7 +1120,7 @@ ARG AZURE_CLI_PYTHON_VERSION
 COPY packages/daemon/docker/azure-cli/requirements.in packages/daemon/docker/azure-cli/requirements.txt /in/azure-cli/
 COPY scripts/assemble-third-party-notices.sh /usr/local/bin/
 COPY --from=debian-packages /debian-packages /in/debian-packages
-COPY --from=go /out/go-notices /in/go-notices
+COPY --from=go-notices /out/go-notices /in/go-notices
 COPY --from=plugin /out/pi-envoy/dist/THIRD_PARTY_NOTICES /in/pi-envoy-notices
 COPY --from=plugin /out/pi-legion/dist/THIRD_PARTY_NOTICES /in/pi-legion-notices
 COPY --from=plugin /out/claude-envoy/dist/THIRD_PARTY_NOTICES /in/claude-envoy-notices
@@ -1224,7 +1235,7 @@ LABEL org.opencontainers.image.source=https://github.com/cybermonklabs/legion
 # (imagePath, packages/daemon/internal/runtime/sandbox/names.go). /opt/go is the Go toolchain,
 # /opt/language-servers carries the language servers (node_modules), /opt/google-cloud-sdk is the
 # Google Cloud SDK, /opt/azure-cli is azure-cli with the CPython it runs on, /opt/chromium is the
-# pinned Chrome for Testing, and /out/bin holds every launcher's link; gopls comes from the go-tools
+# pinned Chrome for Testing, and /out/bin holds every launcher's link; gopls comes from the gopls
 # stage, which reads no source, so its binary — and this layer — changes only with a pin.
 COPY --from=toolchain /opt/node /opt/node
 COPY --from=toolchain /opt/language-servers /opt/language-servers
@@ -1234,7 +1245,7 @@ COPY --from=toolchain /opt/google-cloud-sdk /opt/google-cloud-sdk
 COPY --from=toolchain /opt/azure-cli /opt/azure-cli
 COPY --from=toolchain /out/bin/ /usr/local/bin/
 COPY --from=toolchain /out/chromium /opt/chromium
-COPY --from=go-tools /out/gopls /usr/local/bin/gopls
+COPY --from=gopls /out/gopls /usr/local/bin/gopls
 # Pinned Bun: the bun stage's binary, which the plugin stages build and pack with (the copy of
 # oven/bun:${BUN_VERSION}-slim).
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun

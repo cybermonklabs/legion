@@ -191,7 +191,7 @@ It carries:
 - what the capability check (`packages/daemon/internal/capabilities`, which `legion probe-image` runs
   — [the probe subsection](#the-image-is-probed-before-it-publishes)) requires of the image, each outside `HOME` for the same reason:
   the language servers Oh My Pi's LSP tools start when a working directory carries their root markers
-  — `gopls` (built static in the Dockerfile's `go-tools` stage, at `/usr/local/bin/gopls`), `typescript-language-server` and `pyright-langserver`, the latter two installed under `/opt/language-servers/node_modules` by `npm ci --ignore-scripts` from `packages/daemon/docker/language-servers`'s own `package.json` and `package-lock.json` (the pins live in that `package.json`), with their launchers (and TypeScript's `tsc` and `tsserver`, and the `pyright` CLI) linked at `/usr/local/bin`.
+  — `gopls` (built static in the Dockerfile's `gopls` stage, at `/usr/local/bin/gopls`), `typescript-language-server` and `pyright-langserver`, the latter two installed under `/opt/language-servers/node_modules` by `npm ci --ignore-scripts` from `packages/daemon/docker/language-servers`'s own `package.json` and `package-lock.json` (the pins live in that `package.json`), with their launchers (and TypeScript's `tsc` and `tsserver`, and the `pyright` CLI) linked at `/usr/local/bin`.
   TypeScript stays on this repository's own major, since `typescript-language-server` runs `tsserver`, which TypeScript 7 no longer ships;
   the server resolves the TypeScript installed beside it unless the repository's own `node_modules` holds one, which it prefers.
   From Debian trixie's archive, at `/usr/bin`:
