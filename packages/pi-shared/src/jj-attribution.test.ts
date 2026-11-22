@@ -621,18 +621,23 @@ describe("userConfigChain", () => {
 
   // Real-time polling is required here: the wrapper's pidfile and the kernel reaping its child
   // are external OS state, which Bun's fake timers cannot advance.
-  /** The kernel has reaped the child once signal 0 says it no longer exists. */
-  async function stops(pid: number): Promise<boolean> {
-    const deadline = Date.now() + 3_000;
-    while (Date.now() < deadline) {
+  /**
+   * Resolves once the child is gone: signal 0 no longer reaches it, or `/proc` shows it a zombie,
+   * which nothing will run again. It sets no deadline of its own: the test's timeout is the hang
+   * guard, so a loaded machine reaping the child slowly is no failure, and a child that lives on
+   * fails the row by its timeout.
+   */
+  async function reaped(pid: number): Promise<void> {
+    for (;;) {
+      const stat = await readFile(`/proc/${pid}/stat`, "utf8").catch(() => undefined);
+      if (stat !== undefined && stat[stat.lastIndexOf(")") + 2] === "Z") return;
       try {
         process.kill(pid, 0);
       } catch {
-        return true;
+        return;
       }
       await Bun.sleep(10);
     }
-    return false;
   }
 
   it("chains the user config files jj prints, in order", async () => {
@@ -663,7 +668,7 @@ describe("userConfigChain", () => {
     const pid = await pidFrom(pidFile);
     try {
       expect(Date.now() - started).toBeLessThan(5_000);
-      expect(await stops(pid)).toBe(true);
+      await reaped(pid);
     } finally {
       try {
         process.kill(pid, "SIGKILL");
@@ -673,17 +678,22 @@ describe("userConfigChain", () => {
     }
   });
 
+  // What the row reads is two facts: the wrapper's answer and its detached child's death. The
+  // wrapper is given the production bound (JJ_CONFIG_PATH_TIMEOUT_MS, 10 s), above bun's 5 s
+  // per-test timeout, so a wrapper that never answers fails the row by the test's own guard and a
+  // loaded machine running it slowly fails nothing; a 200 ms bound here once decided the row,
+  // answering undefined for a wrapper that had not yet printed its path.
   it("kills a wrapper's detached child after jj returns a config path", async () => {
     const pidFile = path.join(await mkdtemp(path.join(tmpdir(), "jj-attribution-child-")), "pid");
     dirs.push(path.dirname(pidFile));
     const env = await withJj(
       `sleep 30 </dev/null >/dev/null 2>&1 & echo $! > ${JSON.stringify(pidFile)}; printf '/u/a.toml\\n'`
     );
-    const paths = await userConfigChain(200, env);
+    const paths = await userConfigChain(JJ_CONFIG_PATH_TIMEOUT_MS, env);
     const pid = await pidFrom(pidFile);
     try {
       expect(paths).toBe("/u/a.toml");
-      expect(await stops(pid)).toBe(true);
+      await reaped(pid);
     } finally {
       try {
         process.kill(pid, "SIGKILL");
