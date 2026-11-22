@@ -364,10 +364,10 @@ A worker's completion names its record, and the daemon reads that record back fr
 it moves the issue: it refuses a record another session wrote, one of another issue, phase or
 version, and the record the role named for its previous phase. No handoff is a commit, so the
 issue branch carries only work, every push gets its own CI, and the merge brings no handoff onto
-the default branch. Retro commits nothing, so, outside a forward merge of the base, the head
-that merges is the head the reviewer approved, and nothing in Legion compares the two: a
-repository that wants a later push reviewed says so in its own rulesets, and GitHub holds the
-merge to them.
+the default branch. Retro commits nothing, so nothing of retro's sits above the head the reviewer
+approved, and, outside a forward merge of the base, nothing in Legion compares the head that merges
+with it: a repository that wants a later push reviewed says so in its own rulesets, and GitHub
+holds the merge to them.
 
 ## Review signalling
 

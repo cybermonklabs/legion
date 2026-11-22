@@ -70,7 +70,7 @@ Your transcript keeps everything a command prints.
 A deployment can keep a secret's value back. The name then holds `agent-secrets-placeholder-` and 32 letters and digits, and the broker's proxy, which the run's `HTTPS_PROXY` names, puts the real value into the call to the secret's service. A shape check reads only the placeholder.
 
 - Make every call inside the `agent-secrets NAME -- <command>` run. A tool that caches a token across runs, or calls outside the run, stops working.
-- A proxy refusal names why it refused the call, and a retry does not fix it: report it with the command and its output. `407` means the grant ended: ask again. `503` means the broker could not read the grant: try the call again.
+- A proxy refusal names why it refused the call, and a retry does not fix it: change what the command sent as the refusal says, or report it with the command and its output. `407` means the grant ended: ask again. `503` means the broker could not read the grant: try the call again.
 - A GitHub narrowing and an airlocked name cannot share a run: ask for the GitHub App secret in a run of its own.
 
 ## What the exit status means
