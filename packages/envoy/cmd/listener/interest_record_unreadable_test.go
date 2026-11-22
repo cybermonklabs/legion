@@ -49,6 +49,7 @@ func TestAnUnreadableInterestRecordIsNotAnsweredAsTheBusNotAnswering(t *testing.
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	// Both routes below report each session's roles, so they are refused the bus-unavailable 503
 	// until the role claim view is complete, whatever the records hold.
 	waitForRegistry(t, registry)
@@ -56,6 +57,7 @@ func TestAnUnreadableInterestRecordIsNotAnsweredAsTheBusNotAnswering(t *testing.
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 	for _, id := range []string{readable, unreadable} {
 		if err := sessions.Put(id, session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine", Dir: "/test/" + id, Title: id}); err != nil {
 			t.Fatalf("register %s: %v", id, err)

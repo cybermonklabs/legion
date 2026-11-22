@@ -57,11 +57,13 @@ func newRoleClaimRetryRig(t *testing.T, sessionIDs ...string) *roleClaimRetryRig
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	waitForRegistry(t, registry)
 	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 	waitForSessions(t, sessions)
 	for _, sessionID := range sessionIDs {
 		if err := sessions.Put(sessionID, session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine"}); err != nil {
@@ -72,6 +74,7 @@ func newRoleClaimRetryRig(t *testing.T, sessionIDs ...string) *roleClaimRetryRig
 	if err != nil {
 		t.Fatalf("open the registry the interloping claim is made through: %v", err)
 	}
+	t.Cleanup(outside.StopWatch)
 	waitForRegistry(t, outside)
 	deps := withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions})
 	return &roleClaimRetryRig{

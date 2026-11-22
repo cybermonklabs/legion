@@ -1285,6 +1285,7 @@ func TestSessionHealthFields_PopulatedAfterReady(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := sessions.WaitForCacheReady(ctx); err != nil {
@@ -1429,6 +1430,7 @@ func setupAdminTestRegistry(t *testing.T, interests map[string][]string) *store.
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	for sessionID, topics := range interests {
 		allTopics := append([]string{contracts.LegacyAgentSubject(sessionID)}, topics...)
 		if _, err := registry.Upsert(store.Interest{
@@ -1503,6 +1505,7 @@ func TestAdminInterestsHandler_GetAnswers404OnlyForAnUnknownSession(t *testing.T
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	if _, err := registry.Upsert(store.Interest{SessionID: "ses_known", MachineID: "test-machine", Dir: "/test"},
 		[]string{contracts.LegacyAgentSubject("ses_known")}); err != nil {
 		t.Fatalf("failed to upsert interest: %v", err)
@@ -1511,6 +1514,7 @@ func TestAdminInterestsHandler_GetAnswers404OnlyForAnUnknownSession(t *testing.T
 	if err != nil {
 		t.Fatalf("failed to create session registry: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 	handler := adminInterestsHandler(registry, sessions, nil, nil, logging.New("test"))
 	get := func(sessionID string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
@@ -1607,6 +1611,7 @@ func setupInterestLastSeenTest(t *testing.T, interests []string, options ...sess
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	waitForRegistry(t, registry)
 	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, append([]session.SessionRegistryOption{session.WithSessionReplicas(1)}, options...)...)
 	if err != nil {
@@ -1731,11 +1736,13 @@ func setupSessionsTest(t *testing.T, interests map[string][]string, live []strin
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	waitForRegistry(t, registry)
 	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("failed to create session registry: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 	waitForSessions(t, sessions)
 	// Each session's row is written to the interest bucket as stored, not through Upsert, which
 	// drops a topic reaching a private stream subject: a test seeding one models a row an earlier
@@ -1876,10 +1883,12 @@ func TestSessionsHandler_IncludesTitle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("failed to create session registry: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 	if _, err := registry.Upsert(store.Interest{
 		SessionID: "ses_titled",
 		MachineID: "test-machine",
@@ -2884,10 +2893,12 @@ func TestTheStoresFollowAConnectionReplacedWhileTheDurableIsHeld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 	caches := listenerCaches(registry, sessions, nil)
 	client.AddReconnectHook(func(ctx context.Context, conn *natsgo.Conn) error {
 		return rewatchListenerKVWatchers(ctx, conn, caches)
@@ -3154,6 +3165,7 @@ func TestListenerDeliveryHandler_RoleLaneForwardsToAHolderItsSessionCacheHasNotS
 	if err != nil {
 		t.Fatalf("open the claimant's session registry: %v", err)
 	}
+	t.Cleanup(claimant.StopWatch)
 	if err := claimant.Put(holderID, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
 		t.Fatalf("register the holder: %v", err)
 	}
@@ -3873,6 +3885,7 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptio
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	// Both caches are waited for here, as the listener's own start waits for them: until a cache's
 	// first read completes, the role claim view refuses RolesHeldBy and the session routes answer
 	// their refilling 503 (waitForRegistry, waitForSessions).
@@ -3881,6 +3894,7 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptio
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 	waitForSessions(t, sessions)
 	dedupeCache := dedupe.New(10 * time.Minute)
 	attemptCache := dedupe.New(5 * time.Minute)
@@ -4294,10 +4308,12 @@ func TestCheckSelfHealth_HealthyReturnsNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(time.Minute))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 	if err := checkSelfHealth([]listenerCache{{name: "interest", cache: registry}, {name: "session", cache: sessions}}, nil); err != nil {
 		t.Fatalf("healthy probe should not error: %v", err)
 	}
@@ -4311,10 +4327,12 @@ func TestCheckSelfHealth_ClosedConnReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(time.Minute))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 
 	client.Close()
 
@@ -4601,6 +4619,7 @@ func TestRunSelfHealthMonitor_MovesADeadInterestRegistryToTheLiveConnection(t *t
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	readyCtx, readyCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer readyCancel()
 	if err := registry.WaitForCacheReady(readyCtx); err != nil {
@@ -4626,6 +4645,7 @@ func TestRunSelfHealthMonitor_MovesADeadInterestRegistryToTheLiveConnection(t *t
 	if err != nil {
 		t.Fatalf("open the registry as another listener: %v", err)
 	}
+	t.Cleanup(other.StopWatch)
 	if _, err := other.Upsert(store.Interest{SessionID: "ses_after_move", MachineID: "other-listener"}, []string{"notifications.agent.ses_after_move"}); err != nil {
 		t.Fatalf("subscribe through another listener: %v", err)
 	}
@@ -4662,6 +4682,7 @@ func TestRunSelfHealthMonitor_RebuildsTerminalWatcher(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 	readyCtx, readyCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer readyCancel()
 	if err := sessions.WaitForCacheReady(readyCtx); err != nil {
@@ -4919,6 +4940,7 @@ func TestRunSelfHealthMonitor_RestartsWithoutItsRoleBucket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	readyCtx, readyCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer readyCancel()
 	if err := registry.WaitForCacheReady(readyCtx); err != nil {

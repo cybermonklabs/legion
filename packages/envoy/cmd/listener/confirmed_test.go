@@ -329,10 +329,12 @@ func TestPublishRouteAnswersBusUnavailableWhenTheClaimReadStalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 	const role = "frozen-hub"
 	claimRoleFor(t, registry, sessions, "ses_holder", role, nil)
 	startStandIn(t, uri, "ses_holder")

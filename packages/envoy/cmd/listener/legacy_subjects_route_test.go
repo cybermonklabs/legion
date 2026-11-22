@@ -289,6 +289,7 @@ func TestARoleNamedInTheOldFormIsCountedWhereverItIsRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open a counting registry: %v", err)
 	}
+	t.Cleanup(counting.StopWatch)
 	waitForRegistry(t, counting)
 	if err := harness.sessions.Put(holder, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
 		t.Fatalf("register the holder: %v", err)
@@ -365,6 +366,7 @@ func TestANameThatIsNoRoleIsNotCountedAsAnOldForm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open a counting registry: %v", err)
 	}
+	t.Cleanup(counting.StopWatch)
 	waitForRegistry(t, counting)
 	state := withPublishRoute(t, &listenerDeps{client: harness.client, registry: counting, sessions: harness.sessions})
 
@@ -438,6 +440,7 @@ func TestAStoredOldFormTopicIsCountedEachTimeTheRowIsReadIntoTheFilter(t *testin
 	if err != nil {
 		t.Fatalf("open a counting registry: %v", err)
 	}
+	t.Cleanup(counting.StopWatch)
 	rig.deps.consumers.storedFilterWrite(context.Background(), counting, sessionID, "the test's write")
 	if got := counter.counted(); !slices.Equal(got, []string{"interest"}) {
 		t.Fatalf("a write of the stored row's filter counted %q, want one interest", got)

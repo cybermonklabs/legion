@@ -36,10 +36,12 @@ func TestTheInterestWriteRoutesAnswerOverAnUnreadableInterestRecord(t *testing.T
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 	interestBucket, err := client.JS().KeyValue(bus.InterestBucket)
 	if err != nil {
 		t.Fatalf("open the interest bucket: %v", err)

@@ -54,11 +54,13 @@ func newBrokerRig(t *testing.T) *brokerRig {
 	if err != nil {
 		t.Fatalf("open the interest and role registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	waitForRegistry(t, registry)
 	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 	ready, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := sessions.WaitForCacheReady(ready); err != nil {

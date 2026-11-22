@@ -162,6 +162,7 @@ func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	// The sends below stamp their sender from the role claim view (senderStamp), so the listener's
 	// own startup gate is taken here, with the bus still reachable and before the cut.
 	waitForRegistry(t, registry)
@@ -169,6 +170,7 @@ func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 	if err := sessions.Put(target, session.SessionEntry{
 		SelfSubscribed: true, MachineID: "test-machine", Dir: "/test/" + target, Title: "cut target",
 	}); err != nil {
@@ -275,6 +277,7 @@ func TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget(t *testin
 			if err != nil {
 				t.Fatalf("open the interest registry: %v", err)
 			}
+			t.Cleanup(registry.StopWatch)
 			// The requests below stamp their sender from the role claim view (senderStamp), so the
 			// listener's own startup gate is taken here, before the freeze.
 			waitForRegistry(t, registry)
@@ -282,6 +285,7 @@ func TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget(t *testin
 			if err != nil {
 				t.Fatalf("open the session registry: %v", err)
 			}
+			t.Cleanup(sessions.StopWatch)
 			if err := sessions.Put(target, session.SessionEntry{
 				SelfSubscribed: true, MachineID: "test-machine", Dir: "/test/" + target, Title: "frozen target",
 			}); err != nil {
@@ -357,6 +361,7 @@ func TestTheSenderStampSpendsOneReadWindowOnAFrozenBus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	// Each stamp below reads the role claim view (senderStamp), so the listener's own startup
 	// gate is taken here, before the freeze.
 	waitForRegistry(t, registry)
@@ -364,6 +369,7 @@ func TestTheSenderStampSpendsOneReadWindowOnAFrozenBus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 	waitForSessions(t, sessions)
 	for _, sender := range []string{cached, noSession} {
 		if _, err := registry.Upsert(store.Interest{

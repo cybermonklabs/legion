@@ -781,6 +781,7 @@ func claimRoleBeyondTheSessionCache(t *testing.T, harness listenerDeliveryHarnes
 	if err != nil {
 		t.Fatalf("open the registry that registers the holder: %v", err)
 	}
+	t.Cleanup(writer.StopWatch)
 	if err := writer.Put(holder, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
 		t.Fatalf("register %s: %v", holder, err)
 	}

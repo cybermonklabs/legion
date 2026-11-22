@@ -37,6 +37,7 @@ func newLegionListener(t *testing.T, client *bus.Client) *legionListener {
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := sessions.WaitForCacheReady(ctx); err != nil {

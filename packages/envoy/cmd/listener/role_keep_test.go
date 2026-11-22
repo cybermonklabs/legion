@@ -1121,6 +1121,7 @@ func TestTheRoleLaneKeepsAMessageForAClaimTheRestartGraceRetained(t *testing.T) 
 	if err != nil {
 		t.Fatalf("open the registry that writes the claim: %v", err)
 	}
+	t.Cleanup(writer.StopWatch)
 	if _, err := writer.SetRole(holder, "test-machine", role, false); err != nil {
 		t.Fatalf("claim %s for a session the store does not hold: %v", role, err)
 	}

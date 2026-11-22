@@ -36,6 +36,7 @@ func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
 		if err != nil {
 			t.Fatalf("restart %d: open the interest registry as another listener: %v", round, err)
 		}
+		t.Cleanup(registry.StopWatch)
 		sessionID := writerSession(round)
 		if _, err := registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "other-listener"}, []string{"notifications.agent." + sessionID}); err != nil {
 			t.Fatalf("restart %d: subscribe through another listener: %v", round, err)

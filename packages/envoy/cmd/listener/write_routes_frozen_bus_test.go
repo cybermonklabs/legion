@@ -48,10 +48,12 @@ func newWriteRouteRig(t *testing.T) *writeRouteRig {
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 	mux := http.NewServeMux()
 	// The session consumers connect to the server directly, not through the relay: the freeze
 	// under test is the store's, and a registration reaches the store only once it has its

@@ -210,10 +210,15 @@ func newListRig(t *testing.T, options listRigOptions) *listRig {
 	if err != nil {
 		t.Fatalf("open the interest store: %v", err)
 	}
+	// Each store's watchers are stopped when the test ends, registered right after its open so a
+	// wait below that fails leaves none running; StopWatch stops the watcher replaceWatcher put in
+	// the store's field by then.
+	t.Cleanup(registry.StopWatch)
 	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session store: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 	rig := &listRig{
 		server:       server,
 		client:       client,
@@ -237,10 +242,6 @@ func newListRig(t *testing.T, options listRigOptions) *listRig {
 		watcherName := map[string]string{"interest": "interest registry", "session": "session registry"}[name]
 		replaceWatcher(t, owner, "watcher", watcherName, wrap, kvwatch.WithNow(rig.clock.Now))
 	}
-	t.Cleanup(func() {
-		registry.StopWatch()
-		sessions.StopWatch()
-	})
 	rig.caches = listenerCaches(registry, sessions, nil)
 	hookCaches := rig.caches
 	if options.hookCaches != nil {

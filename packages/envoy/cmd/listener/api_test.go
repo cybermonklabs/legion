@@ -811,11 +811,13 @@ func trailingListeners(t *testing.T) (claimant, observer *listenerDeps) {
 		if err != nil {
 			t.Fatalf("open the %s's interest registry: %v", name, err)
 		}
+		t.Cleanup(registry.StopWatch)
 		waitForRegistry(t, registry)
 		sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 		if err != nil {
 			t.Fatalf("open the %s's session registry: %v", name, err)
 		}
+		t.Cleanup(sessions.StopWatch)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := sessions.WaitForCacheReady(ctx); err != nil {
@@ -1188,6 +1190,7 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 		if claimant.sessions, err = session.OpenSessionRegistry(t.Context(), harness.client.Conn, session.WithSessionReplicas(1)); err != nil {
 			t.Fatalf("open the claimant's session registry: %v", err)
 		}
+		t.Cleanup(claimant.sessions.StopWatch)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := harness.sessions.WaitForCacheReady(ctx); err != nil {
@@ -1433,12 +1436,14 @@ func TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open first role registry: %v", err)
 	}
+	t.Cleanup(firstRegistry.StopWatch)
 	firstSessions, err := session.OpenSessionRegistry(t.Context(), client.Conn,
 		session.WithSessionReplicas(1),
 		session.WithSessionTTL(sessionTTL))
 	if err != nil {
 		t.Fatalf("open first session registry: %v", err)
 	}
+	t.Cleanup(firstSessions.StopWatch)
 	if err := firstSessions.Put(sessionID, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
 		t.Fatalf("register role holder: %v", err)
 	}
@@ -1471,10 +1476,12 @@ func TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restore role registry: %v", err)
 	}
+	t.Cleanup(restoredRegistry.StopWatch)
 	restoredSessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("restore session registry: %v", err)
 	}
+	t.Cleanup(restoredSessions.StopWatch)
 	readyCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := restoredSessions.WaitForCacheReady(readyCtx); err != nil {
@@ -2211,6 +2218,7 @@ func TestSubscribeHandlerFailsWhenSessionRegistryPutFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	routeClient, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open session registry connection: %v", err)
@@ -2220,6 +2228,7 @@ func TestSubscribeHandlerFailsWhenSessionRegistryPutFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 	routeClient.Close()
 
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client)}
@@ -2576,6 +2585,7 @@ func TestTheSenderStampReadsAnInterestTheCacheMissedThroughToTheBucket(t *testin
 			if err != nil {
 				t.Fatalf("open the writing listener's registry: %v", err)
 			}
+			t.Cleanup(writer.StopWatch)
 			if _, err := writer.Upsert(store.Interest{
 				SessionID: sender, MachineID: "test-machine", Dir: "/test/" + sender,
 			}, []string{contracts.LegacyAgentSubject(sender)}); err != nil {
@@ -2657,6 +2667,7 @@ func TestTheSenderStampReadsATitleTheCacheMissedThroughToTheBucket(t *testing.T)
 			if err != nil {
 				t.Fatalf("open the writing listener's session registry: %v", err)
 			}
+			t.Cleanup(writer.StopWatch)
 			for _, registration := range []struct {
 				sessionID string
 				title     string
@@ -2953,10 +2964,12 @@ func TestV1RoutesAnswerAKeyNATSWouldRefuseWith4xx(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 	if err := sessions.Put("ses_live", session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine"}); err != nil {
 		t.Fatalf("register ses_live: %v", err)
 	}

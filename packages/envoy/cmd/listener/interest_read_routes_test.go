@@ -54,6 +54,7 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	// The control GET /v1/sessions below reports each session's roles, so it is refused the
 	// bus-unavailable 503 until the role claim view answers, whatever the bus is doing.
 	waitForRegistry(t, registry)
@@ -61,6 +62,7 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 	// Before the Puts: the listing answers the refilling 503 until the session copy has completed a
 	// read of its bucket, which is no answer about the reads this test freezes.
 	waitForSessions(t, sessions)

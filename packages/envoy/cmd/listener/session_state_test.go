@@ -55,6 +55,7 @@ func stalledSessionsRig(t *testing.T) (*listenerDeps, *stateClock) {
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	waitForRegistry(t, registry)
 	now := &stateClock{}
 	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn,

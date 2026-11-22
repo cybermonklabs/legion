@@ -54,6 +54,7 @@ func TestSenderStampNamesTheCurrentRegistration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
+	t.Cleanup(registry.StopWatch)
 	// Each stamp below reads the role claim view (senderStamp), so the listener's own startup
 	// gate is taken here, before the freeze.
 	waitForRegistry(t, registry)
@@ -61,6 +62,7 @@ func TestSenderStampNamesTheCurrentRegistration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 	waitForSessions(t, sessions)
 	interestBucket, err := client.JS().KeyValue(bus.InterestBucket)
 	if err != nil {
@@ -185,6 +187,7 @@ func TestTheSenderStampReadsTheInterestRecordBeforeTheSessionEntry(t *testing.T)
 	if err != nil {
 		t.Fatalf("open the writing listener's registry: %v", err)
 	}
+	t.Cleanup(writer.StopWatch)
 	if _, err := writer.Upsert(store.Interest{SessionID: sender, MachineID: machine, Dir: dir}, []string{contracts.LegacyAgentSubject(sender)}); err != nil {
 		t.Fatalf("write %s's interest record: %v", sender, err)
 	}

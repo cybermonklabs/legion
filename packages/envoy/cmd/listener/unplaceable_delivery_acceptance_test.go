@@ -141,6 +141,7 @@ func TestAgentDeliveryReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the registering listener's session registry: %v", err)
 	}
+	t.Cleanup(registrar.StopWatch)
 	if err := registrar.Put(target, session.SessionEntry{
 		SelfSubscribed: true, MachineID: "test-machine", Dir: "/test/" + target, Title: "cold target",
 		Delivery: session.DeliveryConsumer, Epoch: "e",
