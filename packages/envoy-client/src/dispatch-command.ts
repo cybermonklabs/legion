@@ -689,5 +689,7 @@ export function commandsHelp(): string {
     "",
     "Run dispatch <command> --help for its flags and an example; --dry-run checks a command's arguments as the call would and prints them as given, sending nothing, except that dispatch result's dry run of a record also prints the pull-request body line Dispatch would write for it, recording nothing.",
     "",
+    "dispatch login --device logs a machine with no identity of its own, such as a laptop, in at the secrets broker, once per machine; it is no Dispatch call, and needs no host or session (dispatch login --help).",
+    "",
   ].join("\n");
 }

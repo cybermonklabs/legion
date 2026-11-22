@@ -85,7 +85,7 @@ func TestMain(m *testing.M) {
 	code := 0
 	for _, protocol := range []string{protocolHTTP1, protocolH2} {
 		suiteProtocol = protocol
-		fmt.Printf("airlockproxy: every rig's client speaks %s to a bound host in the run below\n", protocol)
+		fmt.Printf("proxy: every rig's client speaks %s to a bound host in the run below\n", protocol)
 		if run := m.Run(); run != 0 {
 			code = run
 		}

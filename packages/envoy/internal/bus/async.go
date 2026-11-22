@@ -450,7 +450,7 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 	// The life the pin holds the window to: it never changes once pinned, so its end, at any moment
 	// from here on, is the loss this request answers.
 	ended := w.lifeEnded()
-	inbox := nats.NewInbox()
+	inbox := w.conn.NewInbox()
 	replies := make(chan *nats.Msg, requestReplies)
 	inboxSub, err := w.conn.ChanSubscribe(inbox, replies)
 	if err != nil {
@@ -559,8 +559,16 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		lost := func() error {
 			return fmt.Errorf("bus: %w: the window's connection was lost or reconnected before the request to %q was answered", ErrUnavailable, subject)
 		}
-		timer := time.NewTimer(time.Until(deadline))
-		defer timer.Stop()
+		var expired <-chan time.Time
+		var flushSettled func()
+		if expiry := w.client.requestExpiry; expiry != nil {
+			expired, flushSettled = expiry(deadline)
+		}
+		if expired == nil {
+			timer := time.NewTimer(time.Until(deadline))
+			defer timer.Stop()
+			expired = timer.C
+		}
 		// The record answers the request as soon as the violation is recorded too
 		// (refusalSignal), so a refusal the flush could not name is not left to the timeout. The
 		// signal was taken before the message went out, so a violation recorded since closes it,
@@ -576,6 +584,9 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 				if settled := settleFlush(err); settled != nil {
 					return settled
 				}
+				if flushSettled != nil {
+					flushSettled()
+				}
 			case reply := <-replies:
 				if settled, err := outcome(reply); settled {
 					return err
@@ -586,7 +597,7 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 					return err
 				}
 				return lost()
-			case <-timer.C:
+			case <-expired:
 				// The request is out of time: its answer is the timeout's.
 				if settled, err := drained(); settled {
 					return err
@@ -595,8 +606,10 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 					return lost()
 				}
 				if flushed != nil {
-					// The flush is bounded by this very deadline, so it is returning now, and
-					// what it says belongs in the timeout's answer.
+					// The flush is bounded by this very deadline, so in production, where the
+					// timeout fires at the deadline, it is returning now; under a test's expiry
+					// (requestExpiry) the flush can run on until the deadline. Either way, what it
+					// says belongs in the timeout's answer.
 					if settled := settleFlush(<-flushed); settled != nil {
 						return settled
 					}

@@ -83,8 +83,8 @@ func (d *discovery) keysFor(_ context.Context, issuer string) (*oidc.Keys, error
 	return d.keys[issuer], nil
 }
 
-// issuedBy is an unsigned token naming issuer, enough for oidc.Verifier.Issues, which reads the
-// claim without verifying anything.
+// issuedBy is an unsigned token naming issuer, enough for oidc.LazyVerifier.Issues, which reads
+// the claim without verifying anything.
 func issuedBy(issuer string) string {
 	payload, _ := json.Marshal(map[string]string{"iss": issuer})
 	return "e30." + base64.RawURLEncoding.EncodeToString(payload) + ".c2ln"
@@ -112,7 +112,7 @@ func TestWithNoGoogleAudienceTheBrokerDiscoversOneIssuer(t *testing.T) {
 		t.Fatalf("read the key sets of %v, want the cluster's issuer alone, %v", d.asked, want)
 	}
 	cluster, ok := found.Pod.(enroll.K8sPodVerifier)
-	if !ok || !cluster.Verifier.Issues(issuedBy("https://cluster.example")) {
+	if !ok || !oidc.DiscoveredVerifier(cluster.Verifier).Issues(issuedBy("https://cluster.example")) {
 		t.Fatalf("verifiers = pod %#v; want a pod verifier for the cluster's issuer", found.Pod)
 	}
 	if found.K8sKeys == nil || found.K8sKeys != d.keys["https://cluster.example"] {

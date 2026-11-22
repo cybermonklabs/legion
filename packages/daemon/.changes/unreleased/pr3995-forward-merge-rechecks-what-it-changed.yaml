@@ -25,6 +25,6 @@ body: |-
   at which its checks pass. Before, that head had to carry the merges of every child the parent's
   criteria need, which the forward merge of its last round gave it. The tester's prompt no longer
   runs a full test round in a parent's last round. The `SIGNOFF_CHILD_IN_WORKFLOW` refusal, and
-  the architect prompts that name it, give its reason as "a parent is accepted only once the work
-  beneath it is done". Before, the reason was that a parent's head proves its children's merged
-  work, which a parent's last round no longer makes true.
+  the architect prompts that name it, give its reason as "a parent is accepted only once no issue
+  beneath it is still in the workflow". Before, the reason was that a parent's head proves its
+  children's merged work, which a parent's last round no longer makes true.

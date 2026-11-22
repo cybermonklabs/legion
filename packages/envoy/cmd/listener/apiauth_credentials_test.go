@@ -43,14 +43,13 @@ type googleStandIn struct {
 	identities *googleIdentities
 }
 
+// newGoogleStandIn is a Google stand-in and the identities a listener builds for it, whose verifier
+// reads the stand-in's discovery document on its first token, as the listener's reads Google's.
 func newGoogleStandIn(t *testing.T, accounts ...string) googleStandIn {
 	t.Helper()
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "google-signing-key")
-	verifier, err := oidc.New(context.Background(), issuer.URL(), listenerGoogleAudience)
-	if err != nil {
-		t.Fatalf("oidc.New(%q, %q): %v", issuer.URL(), listenerGoogleAudience, err)
-	}
+	verifier := oidc.NewLazyVerifier(issuer.URL(), listenerGoogleAudience)
 	return googleStandIn{issuer: issuer, key: key, identities: &googleIdentities{audience: listenerGoogleAudience, verifier: verifier, accounts: accounts}}
 }
 
@@ -67,22 +66,19 @@ func (g googleStandIn) token(t *testing.T, account string, verified any, audienc
 }
 
 // clusterIssuer is the cluster's issuer of projected service-account tokens and the verifier a
-// listener builds for it from ENVOY_OIDC_ISSUER and ENVOY_OIDC_AUDIENCE.
+// listener builds for it from ENVOY_OIDC_ISSUER and ENVOY_OIDC_AUDIENCE, which reads the issuer's
+// discovery document on its first token.
 type clusterIssuer struct {
 	issuer   *oidctest.Issuer
 	key      *oidctest.Key
-	verifier *oidc.Verifier
+	verifier *oidc.LazyVerifier
 }
 
 func newClusterIssuer(t *testing.T) clusterIssuer {
 	t.Helper()
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "listener-test-key")
-	verifier, err := oidc.New(context.Background(), issuer.URL(), listenerTestAudience)
-	if err != nil {
-		t.Fatalf("oidc.New(%q, %q): %v", issuer.URL(), listenerTestAudience, err)
-	}
-	return clusterIssuer{issuer: issuer, key: key, verifier: verifier}
+	return clusterIssuer{issuer: issuer, key: key, verifier: oidc.NewLazyVerifier(issuer.URL(), listenerTestAudience)}
 }
 
 func (c clusterIssuer) token(t *testing.T, subject string) string {
@@ -200,7 +196,7 @@ func TestGoogleIssuerAliasesReachTheGoogleBranch(t *testing.T) {
 	}
 	google := &googleIdentities{
 		audience: listenerGoogleAudience,
-		verifier: oidc.NewWithKeys(oidc.GoogleIssuer, listenerGoogleAudience, keys),
+		verifier: oidc.DiscoveredVerifier(oidc.NewWithKeys(oidc.GoogleIssuer, listenerGoogleAudience, keys)),
 		accounts: []string{listenerGoogleAccount},
 	}
 	cluster := newClusterIssuer(t)
@@ -676,12 +672,12 @@ func TestGoogleIssuerOnAProjectedOnlyListener(t *testing.T) {
 	raw := cluster.issuer.Mint(t, cluster.key, claims)
 	for _, tc := range []struct {
 		name       string
-		verifier   *oidc.Verifier
+		verifier   *oidc.LazyVerifier
 		wantStatus int
 		wantReason string
 	}{
 		{name: "the cluster verifier refuses Google's issuer", verifier: cluster.verifier, wantStatus: http.StatusUnauthorized, wantReason: "issuer"},
-		{name: "a verifier configured for Google still admits it without a Google account list", verifier: oidc.NewWithKeys(oidc.GoogleIssuer, listenerTestAudience, keys), wantStatus: http.StatusNoContent},
+		{name: "a verifier configured for Google still admits it without a Google account list", verifier: oidc.DiscoveredVerifier(oidc.NewWithKeys(oidc.GoogleIssuer, listenerTestAudience, keys)), wantStatus: http.StatusNoContent},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var logged bytes.Buffer
