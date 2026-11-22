@@ -67,6 +67,13 @@ ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LEAN_DIR="$ENVOY_DIR/internal/cipher/proxyrules/lean"
 # shellcheck source=packages/envoy/scripts/airlock/k7-consumers.sh
 source "$SCRIPT_DIR/airlock/k7-consumers.sh"
+# psql is given a database URL without its password, and the password in PGPASSWORD.
+# shellcheck source-path=SCRIPTDIR source=lib/pg-url.sh
+source "$SCRIPT_DIR/lib/pg-url.sh"
+# A broker this script starts gets the stack broker's environment through its own environment,
+# never through a process's arguments (exec_with_env, broker_env_of, with_broker_env).
+# shellcheck source-path=SCRIPTDIR source=lib/exec-env.sh
+source "$SCRIPT_DIR/lib/exec-env.sh"
 
 usage() {
 	cat <<'EOF'
@@ -306,20 +313,18 @@ stop_stack() {
 	STACK_PID=""
 }
 
-# broker_env answers, in BROKER_ENV, the command prefix that runs a program with the environment
-# of a broker like the stack's own and the caller's overrides on top. It is read out of the first
-# stack broker's /proc/<pid>/environ rather than spelled here, so that a broker this script
-# starts can never lack a setting dev-airlock.sh gave the stack's. That script's own launcher is
-# the one that has to spell the environment: it starts the first broker and has nothing to copy
-# from. The entries are NUL-separated, and each becomes one argument of env, so a value holding
-# a space or a quote reaches the broker unchanged; env applies its assignments in order, so an
-# override the caller names replaces the copy.
+# broker_env answers, in BROKER_ENV, the environment of a broker like the stack's own with the
+# caller's overrides on top, one NAME=value entry each (lib/exec-env.sh's broker_env_of). It is
+# read out of the first stack broker's /proc/<pid>/environ rather than spelled here, so that a
+# broker this script starts can never lack a setting dev-airlock.sh gave the stack's. That
+# script's own launcher is the one that has to spell the environment: it starts the first broker
+# and has nothing to copy from. A broker is started with it through lib/exec-env.sh's
+# with_broker_env, in its own environment and in no process's arguments, since the stack broker's
+# environment holds its database URL, password and all.
 broker_env() { # <VAR=value>...
 	local pid
 	pid="$(sed -n 's/^  broker [0-9]*:.*pid \([0-9]*\),.*/\1/p' "$STACK_LOG" | head -n 1)"
-	local entries=()
-	mapfile -d '' -t entries <"/proc/$pid/environ"
-	BROKER_ENV=(env -i "${entries[@]}" "$@")
+	broker_env_of "$pid" "$@"
 }
 
 # start_extra_broker starts one more broker process beside the stack's, on its database, profiles
@@ -334,7 +339,7 @@ start_extra_broker() { # <name> <VAR=value>...
 	: >"$log"
 	# Three ports the system picks, so this one never collides with the broker it was copied from.
 	broker_env BROKER_LISTEN_ADDR="127.0.0.1:0" BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" "$@"
-	"${BROKER_ENV[@]}" "$BROKER_BIN" >"$log" 2>&1 &
+	( with_broker_env "$BROKER_BIN" ) >"$log" 2>&1 &
 	local pid=$!
 	EXTRA_BROKER_PIDS+=("$pid")
 	await "the $name broker" 120 "$log" '"message":"airlock proxy listening"' "$pid"
@@ -478,7 +483,7 @@ record_field() { records "$1" | jq -r --argjson i "$2" --arg f "$3" '.[$i][$f] /
 # github_revokes is how many revokes of an installation token GitHub's stand-in has received.
 github_revokes() { records github | jq '[(. // [])[] | select(.method == "DELETE" and .path == "/installation/token")] | length'; }
 
-psql_stack() { psql "$STACK_DB_URL" -Atq -v ON_ERROR_STOP=1 "$@"; }
+psql_stack() { pg_url_run "$STACK_DB_URL" psql -Atq -v ON_ERROR_STOP=1 "$@"; }
 
 ###############################################################################################
 # k1
@@ -1458,7 +1463,7 @@ check_k6() {
 # whole environment is the first stack broker's own, read out of /proc/<pid>/environ, so nothing
 # of the stack's settings is left out.
 #
-# The pod sets NO_PROXY=* and GIT_CONFIG_COUNT=5 with a GitHub credential helper. NO_PROXY=* is
+# The pod sets NO_PROXY=* and GIT_CONFIG_COUNT=9 with a GitHub credential helper. NO_PROXY=* is
 # left exactly as it is: the CLI must drop it, and that it does is part of what this check
 # proves. The git credential settings are cleared for the git step alone, which brings its own
 # helper - the one that answers the placeholder - and the proxy in git's own configuration.
@@ -1498,7 +1503,7 @@ k7_broker() {
 		BROKER_AIRLOCK_PROXY_URL="$K7_PROXY_URL" \
 		BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0"
 	: >"$d/broker.log"
-	"${BROKER_ENV[@]}" "$BROKER_BIN" >"$d/broker.log" 2>&1 &
+	( with_broker_env "$BROKER_BIN" ) >"$d/broker.log" 2>&1 &
 	local started=$!
 	EXTRA_BROKER_PIDS+=("$started")
 	await "k7's broker" 120 "$d/broker.log" '"message":"airlock proxy listening"' "$started"
@@ -1755,7 +1760,7 @@ k8a_start_broker() { # <profiles file> <label>
 		BROKER_PROFILES_FILE="$1" \
 		BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" \
 		BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0"
-	"${BROKER_ENV[@]}" timeout 25 "$BROKER_BIN" >"$log" 2>&1
+	( with_broker_env timeout 25 "$BROKER_BIN" ) >"$log" 2>&1
 	local status=$?
 	K8A_WHY="$(grep -m1 'fatal' "$log" | tr '\n' ' ')"
 	# The refusal has to be about this file: a broker that died of a setting this function did

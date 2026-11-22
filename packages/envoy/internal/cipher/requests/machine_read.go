@@ -1206,7 +1206,7 @@ func (m *Machine) signedForAnotherBroker(p pendingRequestRow) bool {
 	if p.RecordBody == nil || p.RecordCreatedAt == nil {
 		return false
 	}
-	_, _, err := m.requestedIdentifiers(*p.RecordBody, *p.RecordCreatedAt)
+	_, _, _, err := m.requestedIdentifiers(*p.RecordBody, *p.RecordCreatedAt)
 	return errors.Is(err, record.ErrAudienceMismatch)
 }
 
@@ -1573,8 +1573,10 @@ const recordDeadlineSQL = `coalesce(req.pending_expires_at, cr.expires_at)`
 // (listedInStead for a row whose responsible person is another). A launcher_credential record
 // carries no notify, so it is listed for everyone. A record waiting on a group, group:<address>,
 // is listed for each of the groups $3 names, the fresh groups the group reader lists the person in
-// (Machine.Groups' GroupsOf), in the group form.
-const pendingListFrom = `select cr.id, cr.kind, cr.body, cr.created_at, coalesce(req.session_id, ''), coalesce(enr.session_id, ''),
+// (Machine.Groups' GroupsOf), in the group form. Each row carries the approver it waits on, so the
+// list tells a person's own machine login from a row that waits on them only as one of its
+// approvers (approverRow).
+const pendingListFrom = `select cr.id, cr.kind, cr.approver, cr.body, cr.created_at, coalesce(req.session_id, ''), coalesce(enr.session_id, ''),
 		s.state, ` + recordDeadlineSQL + `, coalesce(cr.notify, ''), ` + credentialColumns + `, ` + currentCredentialColumns + `
 	from credential_requests cr
 	left join requests req on req.record_id = cr.id
@@ -1660,12 +1662,15 @@ const pendingOrExpiredForApproverQuery = pendingListFrom + `(
 // (credential_requests.notify, Create's responsiblePerson), so it waits where everyone sees it, or
 // names a person who may not see it (listedInStead); and every service's machine login, whose
 // approver is record.AnyoneApprover too. A private project's request is on no list of a person
-// outside the project (maySeeRecord). Who may decide is not this list's to say: anyone signed in
-// decides a shared secret's request from its page whether or not it is listed for them
-// (record.MayDecide), within the person rule. A service's login a broker from before that rule
-// opened names a person
-// instead and is listed for that person alone, though anyone who types its code may decide it
-// (record.MayDecide). Whether an agent_secret record is still pending is read from its request
+// outside the project (maySeeRecord), and a person Dispatch calls a restricted member, who is no
+// approver of a secret or of a service's machine login (restricted_approver.go), has none of those
+// rows on their list, whichever of those arms names them; their own machine logins stay on it. Who
+// may decide is not this list's to say: anyone signed in decides a shared secret's request from its
+// page whether or not it is listed for them (record.MayDecide), within the person rule. A service's
+// login a broker from before that rule opened names a person instead and is listed for that person
+// alone, though anyone who types its code may decide it (record.MayDecide); it is a service's login
+// still, which no person holds as their own, so a restricted member it names has it on no list.
+// Whether an agent_secret record is still pending is read from its request
 // row: every writer moves the request out of 'pending' together with the record's terminal event
 // (store.EndPendingRequests, ApplyDecision), but a request an ended enrollment cancelled before
 // endEnrollment wrote that event carries none, so the request row is the truth. A machine login
@@ -1701,26 +1706,30 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 	}
 	defer rows.Close()
 	var out []PendingSummary
-	// seen is what each agent-secret row's listing reads beside it: the credential projects and
-	// reason the person rule (maySeeRecord) reads, and the person the record names as responsible
-	// (notify). It is kept beside out and read only once the rows are closed, so no call to
+	// seen is what each row's listing reads beside it: for an agent-secret row the credential
+	// projects and reason the person rule (maySeeRecord) reads, and the person the record names as
+	// responsible (notify); and for every row whether it waits on the reader only as one of its
+	// approvers. It is kept beside out and read only once the rows are closed, so no call to
 	// Dispatch holds the pooled connection the read does.
 	type seen struct {
 		sessionProjects []string
 		reason          string
 		notify          string
+		// approverRow is a row that waits on the reader only as one of its approvers
+		// (approverRow): every agent-secret row, and every service's machine login.
+		approverRow bool
 	}
 	var reads []seen
 	for rows.Next() {
-		var id, kind, canonical, requestSession, enrollmentSession, state, notify string
+		var id, kind, approverOf, canonical, requestSession, enrollmentSession, state, notify string
 		var createdAt, expiresAt time.Time
 		var asked, current enrollmentRow
-		if err := rows.Scan(&id, &kind, &canonical, &createdAt, &requestSession, &enrollmentSession, &state, &expiresAt, &notify,
+		if err := rows.Scan(&id, &kind, &approverOf, &canonical, &createdAt, &requestSession, &enrollmentSession, &state, &expiresAt, &notify,
 			&asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects,
 			&current.Kind, &current.Operator, &current.Subject, &current.Projects); err != nil {
 			return nil, err
 		}
-		identifiers, reason, err := m.requestedIdentifiers(canonical, createdAt)
+		identifiers, reason, service, err := m.requestedIdentifiers(canonical, createdAt)
 		if err != nil {
 			if !byState || state != "expired" {
 				m.leaveOut(id, kind, expiresAt, err)
@@ -1732,12 +1741,24 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 			Session: Session{Request: requestSession, Enrollment: enrollmentSession},
 			State:   state, ExpiresAt: expiresAt,
 		})
-		reads = append(reads, seen{sessionProjects: m.credentialsProjects(asked, current), reason: reason, notify: notify})
+		reads = append(reads, seen{sessionProjects: m.credentialsProjects(asked, current), reason: reason, notify: notify, approverRow: approverRow(kind, approverOf, login, service == "")})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	rows.Close()
+	// Every agent-secret row here waits on the reader as one of its approvers: by their own login,
+	// record.AnyoneApprover or a group; and so does every service's machine login an older broker
+	// opened, which waits on record.AnyoneApprover or on a person it named, and is no person's own.
+	// A person Dispatch calls a restricted member is no approver of either, so their list holds none
+	// of those rows; and while Dispatch cannot say, it holds none either, failing closed for this
+	// read alone (listApprovesSecrets). The member kind is asked once the rows are closed, and only
+	// when the list holds such a row, so a list of the reader's own machine logins asks Dispatch
+	// nothing.
+	approves := true
+	if slices.ContainsFunc(reads, func(s seen) bool { return s.approverRow }) {
+		approves = m.listApprovesSecrets(ctx, login, "pending")
+	}
 	// Each agent-secret row is listed for the person responsible for it, and for everyone where it
 	// names none (responsiblePerson), and in either case only for a reader who may see it: a
 	// private project's request is left off the list of everyone outside the project, since its
@@ -1758,6 +1779,9 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 	visible := out[:0]
 	cut := 0
 	for i, p := range out {
+		if reads[i].approverRow && !approves {
+			continue
+		}
 		if p.Kind != record.KindAgentSecret {
 			visible = append(visible, p)
 			continue
@@ -1832,20 +1856,22 @@ func (m *Machine) listedInStead(fallback context.Context, p PendingSummary, read
 	return !theirs, nil
 }
 
-// requestedIdentifiers is what the record whose canonical body is canonical asks for, and the
-// signed reason it asks with, read from the request object it embeds once that object verifies
-// for this broker (verifiedRequest). The reason is what the person rule reads of the row
-// (maySeeRecord), so it comes only from an object that verified.
-func (m *Machine) requestedIdentifiers(canonical string, createdAt time.Time) (identifiers []string, reason string, _ error) {
+// requestedIdentifiers is what the record whose canonical body is canonical asks for, the signed
+// reason it asks with, and the service a machine login's request names ("" for a person's machine
+// and for a request for agent secrets, record.RequestObject.Service), read from the request object
+// it embeds once that object verifies for this broker (verifiedRequest). The reason is what the
+// person rule reads of the row (maySeeRecord), and the service whether a machine login is a
+// person's own (approverRow), so each comes only from an object that verified.
+func (m *Machine) requestedIdentifiers(canonical string, createdAt time.Time) (identifiers []string, reason, service string, _ error) {
 	_, obj, err := m.verifiedRequest(canonical, createdAt)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	identifiers = make([]string, len(obj.Details))
 	for i, d := range obj.Details {
 		identifiers[i] = d.Identifier
 	}
-	return identifiers, obj.Reason, nil
+	return identifiers, obj.Reason, obj.Service(), nil
 }
 
 // verifiedRequest parses the record whose canonical body is canonical and verifies the request
@@ -2182,6 +2208,15 @@ type ApproverGrant struct {
 // every signed-in person sees these — over the grants anyone may approve in the first place, so
 // the people who see one are the people who could have approved it themselves.
 //
+// A person Dispatch calls a restricted member is no approver of a secret (restricted_approver.go)
+// and sees nothing beyond their own projects, so their list holds the grants of the sessions that
+// act for them now (operatorOf), which they end as the operator, and no other: no grant it would
+// hold them as an approver of, whichever of its own login, record.AnyoneApprover or a group would,
+// no grant a service's pod took without asking, though the person rule shows those to anyone, and
+// no grant of a person's pod BROKER_POD_OPERATORS no longer maps to them. While Dispatch cannot say
+// what kind of member they are, it holds none of those grants either, failing closed for that read
+// alone (listApprovesSecrets).
+//
 // A pod whose account BROKER_POD_OPERATORS maps to a person is that person's own session here:
 // its enrollment's operator is the person its login was made for, so its grants are listed to
 // that person alone. The list selects a pod's grants by the enrollment row's operator, so the
@@ -2246,6 +2281,10 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 		sessionProjects []string
 		reason          string
 		operator        *string
+		// notOwn is a grant of a session that does not act for login now (operatorOf, not the
+		// enrollment's record): one login is listed only as its approver, one of a service's pod,
+		// and one of a person's pod BROKER_POD_OPERATORS no longer maps to login.
+		notOwn bool
 	}
 	var reads []seen
 	for rows.Next() {
@@ -2263,6 +2302,7 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 		}
 		s.sessionProjects = m.credentialsProjects(asked, current)
 		s.operator = m.operatorOf(current)
+		s.notOwn = record.CanonicalLogin(deref(s.operator)) != login
 		// The row names the operator the revoke decides by (operatorOf), not the enrollment's
 		// record: a person's pod BROKER_POD_OPERATORS no longer maps names none, so the page
 		// offers Revoke only where the broker would take it, and an automatic grant of such a pod
@@ -2280,6 +2320,13 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 		return nil, err
 	}
 	rows.Close()
+	// A person Dispatch calls a restricted member lists no grant of a session that does not act for
+	// them, and nor does a person Dispatch could not answer for (listApprovesSecrets), asked once
+	// the rows are closed and only when the list holds such a grant.
+	approves := true
+	if slices.ContainsFunc(reads, func(s seen) bool { return s.notOwn }) {
+		approves = m.listApprovesSecrets(ctx, login, "grants")
+	}
 	// A private project's grant is left off the list of everyone outside the project but its
 	// approver and its operator (operatorOf: none for a person's pod BROKER_POD_OPERATORS no longer
 	// maps), read once the rows are closed so no call to Dispatch holds the pooled connection
@@ -2287,6 +2334,9 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 	// leaves off a request, and one left off because the caller went away is not logged.
 	visible := out[:0]
 	for i, g := range out {
+		if reads[i].notOwn && !approves {
+			continue
+		}
 		if named, _ := namedOnGrant(login, &g.Approver, reads[i].operator); named {
 			visible = append(visible, g)
 			continue

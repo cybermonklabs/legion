@@ -11,6 +11,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -214,5 +216,66 @@ func TestAnApprovalWhoseTargetARollTookOutIsARefusal(t *testing.T) {
 	outcome, _ := outcomes[0].(string)
 	if !strings.HasPrefix(outcome, "refused: ") || !strings.Contains(outcome, "ada/proofs") {
 		t.Fatalf("the approval's outcome = %q; want it refused, naming the target ada/proofs", outcome)
+	}
+}
+
+// TestARestrictedMembersApprovalOfAProfileIsRefusedBeforeAnyProfileCheck: a person Dispatch calls
+// a restricted member is no approver of a profile's request either, and is told so before the
+// page's profile check (profilesMoved) says anything of the profile. ada owns ADA_APP, so she
+// decides ben's request for GITHUB_READ, a profile of it under a name of its own. Her page prints
+// the request while Dispatch holds no row for her, and Dispatch then calls her a restricted
+// member. Her approval from that page is refused as a restricted member's, nothing decided, the
+// address it lands on carrying the code restricted and that page showing her nothing of the
+// request: while the profile is as the page printed it, and after a profiles roll changed it,
+// where 403 PROFILE_CHANGED would tell her that it changed. The control: once Dispatch holds no
+// row for her again, the same form is refused PROFILE_CHANGED, and the page opened again grants.
+func TestARestrictedMembersApprovalOfAProfileIsRefusedBeforeAnyProfileCheck(t *testing.T) {
+	access := &projectaccesstest.Swappable{}
+	dispatch := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil)
+	access.Serve(dispatch)
+	r := newRig(t, func(s *rigSetup) { s.projects = access })
+	local := r.machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
+	local.Put(policytest.TypeSecret("ADA_APP", ada, policy.TierHuman, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
+	read := policytest.ProfilesFile(`{"name": "GITHUB_READ", "source": "ADA_APP", "github": {"accounts": ["ada"], "permissions": {"contents": "read", "metadata": "read"}}}`)
+	write := policytest.ProfilesFile(`{"name": "GITHUB_READ", "source": "ADA_APP", "github": {"accounts": ["ada"], "permissions": {"contents": "write", "metadata": "read"}}}`)
+	r.machine.Policy = policytest.ProfiledCurrent(t, local, read)
+	enrollmentID, key := r.benSession(t, "ben-box")
+	p := r.request(t, enrollmentID, key, "read the proofs", nil, "", "GITHUB_READ")
+
+	b := r.browser(t)
+	b.SignIn(t, p.recordID, person(ada))
+	form := decisionForm(t, b.Page(t, p.recordID).Body, p.recordID)
+	if form == nil {
+		t.Fatalf("%s's page for %s offers no decision while Dispatch holds no row for her", ada, p.recordID)
+	}
+	dispatch.SetMemberKind(ada, projectaccess.MemberRestricted)
+	access.Serve(dispatch)
+
+	for _, profile := range []struct{ name, file string }{
+		{"as the page printed it", read},
+		{"after a roll changed it", write},
+	} {
+		r.machine.Policy = policytest.ProfiledCurrent(t, local, profile.file)
+		res := b.FromPage(t, "/approve", decision(form, "approve"))
+		to := res.Header.Get("Location")
+		if want := "&refused=" + p.recordID + ":restricted"; res.Status != http.StatusSeeOther || !strings.Contains(to, want) {
+			t.Fatalf("%s's approval as a restricted member, the profile %s = %d to %q; want 303 carrying %q:\n%s", ada, profile.name, res.Status, to, want, pageText(t, res.Body))
+		}
+		r.requirePending(t, p.recordID)
+		landed := b.Get(t, to)
+		if text := pageText(t, landed.Body); landed.Status != http.StatusForbidden || !strings.Contains(text, restrictedNote) || strings.Contains(text, "GITHUB_READ") {
+			t.Fatalf("the page her approval lands on, the profile %s = %d; want 403 saying %q, and nothing of the request:\n%s", profile.name, landed.Status, restrictedNote, text)
+		}
+	}
+
+	dispatch.SetMemberKind(ada, projectaccess.MemberNone)
+	access.Serve(dispatch)
+	if res := b.FromPage(t, "/approve", decision(form, "approve")); res.Status != http.StatusForbidden || !strings.Contains(pageText(t, res.Body), "Profile changed") {
+		t.Fatalf("her approval from the page printed before the roll, once Dispatch holds no row for her = %d; want 403 Profile changed:\n%s", res.Status, pageText(t, res.Body))
+	}
+	r.requirePending(t, p.recordID)
+	b.Decide(t, p.recordID, true)
+	if grants := r.grants(t, p.recordID); grants != 1 {
+		t.Fatalf("her approval from the page opened again made %d grants; want one", grants)
 	}
 }

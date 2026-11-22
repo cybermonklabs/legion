@@ -65,6 +65,7 @@ on:
       - 'docs/site/**'
       # ci-filters.yaml's *legion_command:
       - 'packages/daemon/cmd/legion/*'
+      - 'packages/daemon/cmd/legion/tls-fixtures/*'
       - 'packages/daemon/internal/admit/*'
       - 'packages/daemon/internal/cipher/*'
       - 'packages/daemon/internal/api/*'
@@ -125,6 +126,7 @@ on:
       - 'packages/daemon/internal/supervise/*'
       - 'packages/daemon/internal/tlsalert/*'
       - 'packages/daemon/internal/treelifecycle/*'
+      - 'packages/daemon/internal/volumestat/*'
       - 'packages/daemon/internal/wait/*'
       - 'packages/daemon/internal/wakepace/*'
       - 'packages/daemon/internal/workflow/*'
@@ -275,6 +277,7 @@ on:
       - 'packages/envoy/internal/weborigin/*'
       - 'packages/dispatch/**'
       - 'scripts/e2e/lib/held-port.py'
+      - 'packages/envoy/scripts/lib/pg-url.sh'
       - 'packages/proof-editor/src/**'
       - 'packages/contracts/src/**'
       - 'packages/envoy-client/src/**'

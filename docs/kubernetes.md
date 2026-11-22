@@ -21,7 +21,7 @@ Every Legion agent process under `runtime: kubernetes` — architect, planner, i
 It carries:
 
 - the pinned OMP fork build the daemon's default `omp_invocation` names
-  — resolved at build time with the same `mise x github:cybermonklabs/oh-my-pi@<version>` mechanism a tmux host uses, from the single pin source `.omp-pin`;
+  — the linux-x64 archive of the release the single pin source `.omp-pin` names, fetched at build time from that release's download address and checked against the Dockerfile's `ARG OMP_SHA256` (a bump of `.omp-pin` moves that digest in the same commit), and laid out as a tmux host's `mise x github:cybermonklabs/oh-my-pi@<version>` lays it out;
   installed at `/opt/omp/bin/omp` (`LEGION_OMP_PATH`);
 
 - `legion` (`packages/daemon`), compiled from the same commit at `go.work`'s Go version, static, at `/opt/legion/bin/legion` — the `legion` on `PATH` and the image's `ENTRYPOINT` — with the `agent-secrets` client beside it at `/opt/legion/bin/agent-secrets`.
@@ -75,8 +75,8 @@ It carries:
   A push runs with `-c core.hooksPath=/opt/legion/githooks` immediately before the subcommand, after the caller's own global options, and with the push's own `--no-verify` taken out:
   git itself computes the update lines and hands them to that hook, which runs `legion leak-check pre-push`, and `jj git push` makes its push by shelling out to the `git` its `PATH` names, so this one wrapper catches a role's own push and jj's.
   git takes the last `-c` of a name, so that placement outranks a caller's own `-c core.hooksPath` and the runtime's `core.hooksPath=/dev/null` pin alike, and the pin still holds for every other command.
-  The jj wrapper adds one check, and only before a `jj git push`:
-  that the git jj would run is that wrapper, by `PATH` and by jj's own `git.executable-path`, refusing in the shared check's own setup-error words where it is not.
+  The jj wrapper gives jj that wrapper as `git.executable-path` on every command line, and once more as the line's last layer after a push, which outranks every configuration file and a `[[--scope]]` for one command alike.
+  It reads a command as jj does, aliases and `ui.default-command` expanded, runs the expansion it read, and before a `jj git push` or a `jj gerrit upload` checks that the git jj would run is that wrapper, by `PATH` and by jj's own `git.executable-path`, refusing in the shared check's own setup-error words where it is not, or where it cannot read the command.
   `legion leak-check` is the shell door to `packages/daemon/internal/leakguard`, and the engine the rules run through, gitleaks, is linked into the `legion` binary as a library with this repository's rule file (`private-names.toml`) embedded beside it, so no pod can meet an absent engine or an absent rule file.
   The build's last step asserts that each wrapper is first on `PATH` with the real binary behind it and that the hook is root's and executable;
 
@@ -139,8 +139,8 @@ It carries:
   `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused and 2 for either of the other two — the shared check's own statuses — and 128 plus the signal when a SIGINT, SIGTERM or SIGHUP reaches it before it reports the guard's answer, whatever that answer was, and git stops the push on any of them but the first.
   `scripts/e2e/leak-guard-image-job.sh` drives all of this on a published digest, as one Job of this section's own shape ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
 
-- `mise` at `/usr/local/bin/mise`, the binary the Dockerfile's `tools` stage checks against `ARG MISE_SHA256` and resolves the Oh My Pi pin with:
-  two scripts a role runs, `scripts/e2e/lib/install-plugin-profile.sh` and the skill-scenario rig (`packages/pi-legion/scripts/skill-scenarios/rig.sh`), resolve that pin with `mise where` and `mise x`.
+- `mise` at `/usr/local/bin/mise`, the binary the Dockerfile's `tools` stage checks against `ARG MISE_SHA256` (the build itself resolves no pin with it):
+  two scripts a role runs, `scripts/e2e/lib/install-plugin-profile.sh` and the skill-scenario rig (`packages/pi-legion/scripts/skill-scenarios/rig.sh`), resolve the Oh My Pi pin with `mise where` and `mise x`.
   The image seeds no mise store, so the rig's first run in a fresh pod downloads the pin from GitHub into the role's own `MISE_DATA_DIR`, and mise reads `MISE_GITHUB_TOKEN` when it is set;
 
 - `socat` from Debian trixie's archive, at `/usr/bin/socat`:
@@ -508,27 +508,47 @@ each attempt's budget is `slow_command_timeout_seconds` (300 s by default), or, 
 From Sandbox creation through the probe container starting, the daemon allows a separate 300 s startup phase: the documented 213 s cold start fits that bound.
 Once it observes the probe container running, it starts the command phase for the attempt budget and gives `probe-image` a relative command budget 60 s shorter, leaving the command's deadline to report before the daemon collects its exit and log.
 Pod scheduling and image pull consume the startup phase, so the worst-case boot wait is the 300 s startup bound plus the attempt budget.
-The image probe pod reserves 500m CPU so the probe keeps at least 60 s of its 240 s command budget at the defaults: the slowest of five runs at 1 CPU (2026-11-18) predicts 184 s at 250m and 112 s at 500m (`probeReservation`, `packages/daemon/internal/daemon/kubernetes.go`).
+The image probe pod reserves 500m CPU so the probe keeps at least 60 s of its 240 s command budget at the defaults where the public test hosts answer or refuse at once: with the probe serving its own TLS chains, the slowest of eleven runs at 500m took 147 s, 93 s inside the budget, and the slowest of sixteen at 1 CPU 104 s (2026-11-20, each in a CPU-quota scope on a development host, where `main`'s probe ran slower than in the 2026-11-18 runs under gVisor; `probeReservation`, `packages/daemon/internal/daemon/kubernetes.go`).
+A public test host that hangs, as a blackhole does, costs at most one run at each of the two public sites, a client's, or the site's positive control's where it hangs from the start, since no client asks a site that gave no verdict.
+While the served copies of the public chains are asked, only `node`, CodeGraph's `node`, `wget` and `git` ask the public sites, each with a 20 s bound, so such a run stops at 20 s, up to 2 s more for the stop, and the two sites add at most 44 s, which would end that slowest run at about 191 s, 49 s inside the budget, short of the 60 s but inside it, so it takes no exit 75.
+Once a served copy is unasked, as every one is once its leaf has expired (2027-05-03 for the leaves vendored on 2026-11-20), every client asks that public site, so a host that starts to hang at `bq`'s turn costs 60 s and at Chromium's 90 s, each up to 2 s more for the stop: hung at Chromium's turn at both sites, the two add up to 184 s, which would end that slowest run at about 331 s, past the budget, so that probe's deadline cuts it and it exits 75, and hung at `bq`'s turn at both, 124 s, about 271 s, past it too.
+Measured on 2026-11-21 at 500m on the same host, under a one-minute load of 660 to 1,079 on 288 CPUs, a run whose public hosts moved to a blackhole once their positive controls passed took 264.6 s and a run beside it with the hosts left alone 245.5 s: the blackhole cost 19 s there, because `node`, the first client asked, gave up at each host after its own 10 s connect timeout (`UND_ERR_CONNECT_TIMEOUT`); at that load neither run, which had no probe budget, kept inside 240 s, so the pair measures the hung host's cost and not the margin.
 Each TLS client has a bound of its own: 20 s for most, 60 s for `bq`, whose refusal of a chain tries its request three times, sleeping 2 and 4 s between the tries, and whose every call starts three Python interpreters, and 90 s for Chromium's cold start (`packages/daemon/cmd/legion/tls_probe.go`).
-A run its bound ends, with neither a certificate refusal nor an answer in its output, at a site an earlier run of the same probe reached, has no verdict:
+The probe serves the chains it holds the clients to itself, from a server of its own on `127.0.0.1` with two listeners, each at a port the kernel chooses (`tls_probe_server.go`; the public sites' chains, the program that fetched them and the two CA-published roots those chains reach are in `packages/daemon/cmd/legion/tls-fixtures`).
+The probe embeds those two roots and writes them into its state directory, where its positive controls read them, so no image can lack them: a control that could not read its root would otherwise leave no client held to a real chain.
+One listener serves an emSign chain and an AAA chain, each built at the probe's run in the image of the public test site's, under roots named as the distrusted roots but with keys the probe makes and never writes, and a control chain.
+The other serves the two public test sites' own chains, certificates only, with a key of the probe's own: a client refuses such a chain for what it finds in it, as at the public site, or gets past it and fails the server's signature, which the probe reads as an acceptance.
+Each client reaches that server as its HTTPS proxy, or, for `redis-cli` and `socat`, by its address and the site's name, so no client resolves a name or leaves the pod for those chains, and they decide the probe: each client must refuse the emSign and AAA chains for a certificate error, and accept the control's chain, whose root the probe gives each client for the control alone, and each client that checks a chain during the handshake must refuse the public sites' own chains before the server's signature.
+`node`, CodeGraph's `node`, `wget` and `git` check a chain only after the handshake, so they fail the server's signature before they read a chain it cannot sign for, and the probe holds those four to the two public test sites instead.
+A public site fails the probe only where a client accepts its chain: one that cannot be reached, or gives no verdict, fails nothing, no later client asks it, and the probe prints `probe-image: UNKNOWN: <client> against <host>: <why>` for each client it could not hold to it, and `probe-image: UNKNOWN: the <site> chain at <host>: <why>` for a site no client asks.
+A refusal there counts only where it is a refusal of the site's own chain: `node`, CodeGraph's `node`, `bun`, `omp` and `uv` refuse the public chains as revoked or distrusted, by a list keyed to those chains' certificates, so a refusal of theirs there in other words, as of a chain another server serves under the site's name, reads as `UNKNOWN`; every other client refuses any chain whose root it lacks in the words it refuses the site's, so its refusal there cannot be told from a refusal of such a chain, and the probe records it as a refusal.
+A client that got past the chain and then an error status from the site, a 401, a 429 or a 503 as from an outage or a rate limit, accepted it: each HTTP client's wording for that status reads as an acceptance, and the public site's positive control, which gets the same status, still asks the clients.
+A served copy of a public chain whose positive control refuses it as expired, as each does once its leaf has expired, is reported the same way, and every client is held to that public site in its place.
+Every other positive control run of a served copy that does not pass fails the probe, as a built chain's positive control does: one that exited for any other reason, as a curl that cannot read its root or an isolation run that did not refuse the control, and one its bound or a signal ended; one the probe's deadline ended has no verdict.
+The one exception is a first control run whose output already shows the server's signature failing: it got past the chain, whatever ended it after that, the probe's deadline aside, so the control's isolation run still decides the copy.
+From 30 days before a served leaf's end, the probe prints `probe-image: WARNING: the served <site> chain's leaf, <subject>, is valid until <time>, …` with the command that vendors the chains again (`cd packages/daemon/cmd/legion/tls-fixtures && go run vendor.go`), and the same line as a GitHub Actions `::warning::`; inside the image build BuildKit prefixes that line, so it stays a log line there, and the worker image workflow's step "Warn before a served TLS leaf expires" makes the annotation on the run, from the checked-in leaves, as a warning and never a failure.
+A run its bound ends, with neither a certificate refusal nor an answer in its output, at a site the probe's server serves, once the positive controls reached it, has no verdict:
 on a node where the image is new, GKE image streaming loads a client's files at their first read, and the first run of a large client can outlast its bound.
-An earlier run reached a site when a positive control accepted its pinned root there, a client refused a compromised chain there for a certificate error, or a client reached the control site.
+The positive controls reach the server's emSign, AAA and control sites when they pass, and a served copy of a public chain when its own positive control passes.
 After every client's first run at every site, the probe runs each run with no verdict once more, with two times its bound, and that run decides it, so one TLS run takes at most three times its bound, and up to 2 s more for each of its two stops (`procgroup`).
-A run its bound ends at a site no earlier run reached fails as before, since the network may not reach that site, and the positive controls get no second run, so a pod with no egress still fails at once.
-A run a signal ends before its bound fails whatever it printed, and a run whose output already shows a refusal or an answer is judged by that output.
+A run its bound ends at a public site is unknown there and reads as `UNKNOWN`, and the positive controls get no second run, so a pod whose own loopback fails still fails at once.
+A run whose output already shows an answer is an acceptance whatever ended it but the probe's deadline, a signal included, so at a public site, as at a compromised chain, it fails the probe.
+So that an accepted 200 shows in the output, `node`, CodeGraph's `node`, `bun` and `omp` write the status of every answer to stderr first (`legion-tls-probe: answered 200`), and `wget`'s `URL:<url> […] -> "/dev/null"` line, which it prints once it has saved the page, reads as an answer; a client that only exits 0 on a 200 (`curl`, `python3` and the others) shows nothing of it, so a signal in the moment between the answer and that exit leaves its run unavailable.
+Chromium's answer is also the page it dumps (`--dump-dom`, on its stdout), which it prints only once the page has loaded and not at all for a failed navigation, so a Chromium run that dumped the page and was then ended by a signal or its bound accepted the chain.
+A run a signal ends before its bound is otherwise unavailable whatever it printed, and a run its bound ends whose output already shows a refusal is judged by that output.
 The probe holds `gcloud`, `bq`, `az`, `mise` and `socat` to the compromised chains only where each is on `PATH`.
 Where one is not, the probe reports it `absent` and fails nothing for it, because those five are outside the floor every deployment's image is held to.
 Of the probe pod's variables, each TLS client keeps only those the image declares and the trust and verification settings the image's clients read, such as `SSL_CERT_FILE`, `NODE_TLS_REJECT_UNAUTHORIZED` and `GIT_SSL_CAINFO` (`tlsKeptVariables` and `tlsTrustVariables`, `packages/daemon/cmd/legion/tls_probe.go`).
 So a `runtime.kubernetes.pod.env` that sets one of those variables to make the roles accept a compromised chain fails the probe, and no credential variable of the pod's reaches a test site.
 The probe does not test a trust override that reaches the roles any other way: through a file that a dropped variable names (a `CURL_HOME` curlrc with `insecure`, `UV_CONFIG_FILE`'s `allow-insecure-host`), through the `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT`/`KEY`/`VALUE` variables (`http.sslVerify=false`), through a `NODE_OPTIONS` preload or a `PYTHONPATH` `sitecustomize`, through a dotfile of the pod's home, through the image's mise system file (`/etc/mise/config.toml`), which the probe's `mise` does not read, or through a configuration file of the directory a role works in.
-It does not test a proxy either: no proxy variable of the pod's reaches a client, because a proxy URL can carry a login, so the probe tests each client's direct path to each site.
-Where a pod reaches the sites only through a proxy, the probe fails at its positive controls (below), which cannot reach the sites; where a pod has a proxy as well as direct egress, the probe tests the direct path while the roles' traffic takes the proxy.
+No proxy variable of the pod's reaches a client, because a proxy URL can carry a login: at the probe's own server each client's proxy is that server, and at the public sites the probe tests each client's direct path.
+Where a pod reaches the public sites only through a proxy, their positive controls cannot reach them, so no client asks them and both are reported `UNKNOWN`; where a pod has a proxy as well as direct egress, the probe tests the direct path while the roles' traffic takes the proxy.
 Each client runs with a home of its own in the probe's state directory and with that directory as its working directory, which the probe makes holding three files, the dummy access token `gcloud` and `bq` sign in with, the `go.mod` `go` reads and the workspace `pyproject.toml` `uv` reads, and where the clients keep their homes and state.
 Five clients that read configuration from elsewhere each take the flag, the variable or the file that stops it: `curl` takes `-q` first (the curlrc of its user's passwd home); `mise` takes `--no-config` (the parents of its working directory); `uv` reads the state directory's workspace `pyproject.toml`, which makes that directory its workspace root, so it reads no `pyproject.toml` or `uv.toml` above it and still reads the image's system `uv.toml`, asking any index that file names before the test site, whose answer the probe may then read as the site's; `git` takes `GIT_CEILING_DIRECTORIES` (a repository above it); and `go` finds the state directory's own `go.mod` before any `go.mod` above it.
 `bun` and `omp` also read configuration from elsewhere, the `package.json` and `tsconfig.json` of the state directory's parents, and take nothing that stops it, since neither file holds a TLS setting of Bun's.
 So no credential file of the pod's reaches a test site either.
-The positive controls, which check before any client is probed that each compromised site's chain verifies against its pinned root alone, run the same way (`tlsPositiveControlSpec`).
-A command stopped by the probe's aggregate deadline (`--probe-budget`) has no verdict, and so has every check that deadline cut: the launch probes (`daemon.ProbeImage`, recorded as `launch probes: …`), a capability row checked after it (`unanswered`), a positive control, and a role's overlay read that returned after it.
+The positive controls, which check before any client is probed that each of the probe's compromised chains verifies against its fixture root alone and that the control's chain is refused with that root, that each served public chain gets past its CA-published root to the server's signature, and whether each public site still serves a chain that verifies against its CA-published root (an error status after it verified counts), run the same way (`tlsPositiveControlSpec`).
+A command stopped by the probe's aggregate deadline (`--probe-budget`) has no verdict, at a public site as at every other, and so has every check that deadline cut: the launch probes (`daemon.ProbeImage`, recorded as `launch probes: …`), a capability row checked after it (`unanswered`), a positive control, and a role's overlay read that returned after it.
 A failure seen before the deadline still fails, and a failure decides over a run with no verdict.
 Where nothing failed and something has no verdict, `legion probe-image` prints `legion probe-image: worker probe has no verdict: <client> <site>: <detail>; …` and exits 75, `EX_TEMPFAIL` (`bootprobe.NoVerdictExit`); every failure still exits 1.
 Each TLS line of a run that its bound, the deadline or a signal ended names which one ended it and after how long (`its 20s limit ended it after 20.0s: …`, `the probe's deadline ended it after …`, `signal: killed ended it after 0.3s, before its 20s limit: …`).
@@ -639,7 +659,7 @@ the mark reads `unread` when the probe could not read `retry.modelFallback` unde
 An image row the image carries prints `present` with its evidence (`codegraph`'s:
 the CLI on PATH and the plugin enabled in the profile's lock, which a pod's launch loads with extension discovery on).
 A live row prints `reported` (``a claimed session reports it while it runs, so the probe cannot check it; `legion state` renders it: <summary>``:
-the probe proves nothing of it; [The deployment's capability report](#the-deployments-capability-report) says what each session measures), a deployment row `reported` too (the daemon reports it from the deployment's configuration), a withheld row `withheld` with its decision, and an image row the image lacks `missing` with why.
+the probe proves nothing of it; [The deployment's capability report](#the-deployments-capability-report) says what each session measures), a deployment row `reported` too, naming what the daemon measures that row from (`the daemon reports it from <source>: <summary>`, where `<source>` is the row's own, such as `the deployment's configuration` for `resource-limits` and `each repository cache's last health read` for `repository-cache-room`), a withheld row `withheld` with its decision, and an image row the image lacks `missing` with why.
 A build whose image lacks a capability fails, the probe naming every missing one.
 The daemon's Agent Sandbox runtime runs the same command in a probe Sandbox, `legion-probe-<project>-<digest12>`, with its own contract, under the operator's pod, at every boot, and requires `agent-models=resolved`:
 each agent's model resolves, with a working key, as the task tool resolves a subagent's (`packages/daemon/internal/runtime/sandbox/probe.go`).
@@ -1415,6 +1435,7 @@ How long the proxy outlives the moment the generation is told to end, in a pod, 
 - **A child that exits on its own** and leaves processes behind:
   in the controller's pod, where the launcher is not namespaced, the leftovers get up to `--stop-grace` more, SIGTERM then SIGKILL (`cleanExitedGeneration`, `internal/launcher/process.go`), with the proxy still serving them, so at most one grace after the child's exit.
   In an issue pod the role's own init is what signals them: SIGTERM over the role's namespace, then `roleNamespaceDrain`, two seconds, for them to go before the SIGKILL that ends the namespace (`runRoleShim`, `internal/launcher/roleinit_linux.go`), so at most two seconds after the child's exit.
+  The role's output then says how that wait ended, with its span by role-init's own clock: `role-init: the role's namespace emptied <span> after its SIGTERM` when the processes left, or `role-init: the role's processes still ran <span> after its SIGTERM, the drain's bound of 2s: killing them` when the bound came first, which is where a git or a jj the role left can leave its lock in the issue's clone.
 
 When the proxy is closed, it lets connections still open finish for up to one second (`sessionDrain`, `launcher.go`;
 `Config.Drain`, `sessionproxy.go`), then closes both ends of those left.
@@ -3466,7 +3487,7 @@ advertise_host: <optional: a stable Service name, e.g. legion-daemon-<project>.<
 worker_stream_port: <the port advertise_host or bind serves it on>
 daemon_url: http://<the address pods reach the daemon at>:<the daemon's own port>
 capabilities:                   # optional: the deployment capabilities decided by name, with the reason (The deployment's capability report, below); a gap is reported, never refused
-  decided: { secrets: "<reason>", model-fallback: "<reason>", resource-limits: "<reason>", pool-capacity: "<reason>" }
+  decided: { secrets: "<reason>", model-fallback: "<reason>", resource-limits: "<reason>", pool-capacity: "<reason>", repository-cache-room: "<reason>" }
 ```
 
 Every container of every Legion pod carries a cpu and memory limit and a request no greater than it, and an ephemeral-storage limit, its bound on the node's disk, over a smaller ephemeral-storage request.
@@ -4675,7 +4696,7 @@ Read a pod's hourly lines with `kubectl logs <pod> -c roles | grep '^launcher: g
 ### The deployment's capability report
 
 `packages/daemon/internal/capabilities` is the one list of what a Legion worker can do (LEGION-578:
-every worker is a full agent), 21 rows, each checked at one site.
+every worker is a full agent), 22 rows, each checked at one site.
 The image rows (`eval-js`, `eval-python`, `browser`, `lsp`, `codegraph`, `skills`, `toolchain`, `claude-code`) are `legion probe-image`'s ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes)), `present` once the probe passed;
 the live rows (`subagents`, `web-search`, `mcp`, `repository-extensions`, `dispatch-envoy-tools`, `github`) are measured by each claimed session while it runs, inside its own Oh My Pi, and reported on a `claims/ready` of its own, and the daemon renders each from what its live sessions reported (LEGION-663, INFRA-927;
 the paragraphs after the deployment rows);
@@ -4683,7 +4704,7 @@ the withheld rows carry the decision that keeps them from every worker (`network
 dispatch://LEGION-5, the pod is the boundary, except a workload a role starts where its deployment's cluster admits it and the Service fronting it ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
 `operator-setup`: dispatch://LEGION-200, Legion owns its dependencies;
 `production-identities`: dispatch://LEGION-551 and dispatch://LEGION-205);
-and the four deployment rows are the daemon's to measure from its own configuration and its own boot, since no image or pod can show them:
+and the five deployment rows are the daemon's to measure, from its own configuration, its own boot and its repository caches' health, since neither the image probe nor a session's own check can show them:
 
 - `secrets`: `runtime.kubernetes.agent_secrets` is configured and the daemon's broker token login is `issued`.
   Under tmux it is open unless decided: no process is enrolled with the broker.
@@ -4713,9 +4734,23 @@ and the four deployment rows are the daemon's to measure from its own configurat
   The daemon measures it from the probe's own run (`bootprobe.ImageReport.CapacityWaits`), so `legion config check` never prints it.
   Under tmux it is present: no probe pod runs.
 
+- `repository-cache-room`: no repository cache reports a failure for lack of space on its volume.
+  The daemon measures it from each cache's last `/healthz` answer ([The repository cache](#the-repository-cache)), which the daemon reads every minute, so the row's `source` is `caches` and `legion config check` never prints it.
+  The row is open while the last answer of a cache carries `fetchOutOfSpaceAt` or `repackOutOfSpaceAt`, unless `capabilities.decided.repository-cache-room` names a reason.
+  The open detail names each such cache: its repository, its volume's size, its claim, the bytes available, its clone's bytes, and each step that failed with the time of that failure.
+  Then it gives the remedy, for example `1 of 3 repository caches ran out of room: acme/widgets on a 20.0 GiB volume (claim cache-legion-acme-cache-acme-widgets-1234abcd) with 0.1 GiB available, its clone 19.4 GiB; its repack failed for lack of space at 2026-11-19T02:15:33Z. Room comes from growing the cache's claim in place and raising runtime.kubernetes.repository_cache.volume`.
+  Sizes are in GiB with one decimal, and times are in RFC 3339 UTC.
+  Where the cache could not read its volume, the detail says `on a volume (claim <claim>) whose room it could not read (<error>)` in place of the figures.
+  The present detail counts the caches, for example `no repository cache reports a failure for lack of space (3 caches read, 1 sends no room figures, 1 unread)`.
+  A cache on an older worker image sends no room figures, and a cache that is not Ready or whose read failed is unread.
+  Neither of the two opens the row.
+  A cache of a repository the cache set no longer names counts like any other cache until the daemon deletes it.
+  Under tmux the row is present (`the tmux runtime runs no repository cache`), and so is a Kubernetes deployment that runs no cache (`no repository cache is running`).
+  "Room on the cache's volume" in [The repository cache](#the-repository-cache) gives the remedy and the standard signals.
+
 A deployment row is `present` when the deployment satisfies it, `decided` when `legion.yaml`'s `capabilities.decided.<name>: "<reason>"` records a decision on it (the report shows the reason in the gap's place;
 a decision on a satisfied row is moot and the row reads present), and `open` otherwise, carrying the line that records one.
-A name that is not one of the four is refused at load naming them; a blank reason too.
+A name that is not one of the five is refused at load naming them; a blank reason too.
 
 A live row is measured by each claimed session while it runs.
 The Legion extension measures the six inside Oh My Pi (`packages/pi-legion/src/capability-report.ts`) on the 5 s interval that session already runs, under the rule in `packages/pi-legion/src/capability-schedule.ts`: at a tick at which it is idle and no measurement of its own is running, first at the sixth tick for the architect and one tick later for each following role of `LEGION_ROLES` (the merger's is the eleventh, 55 s), so one pod's six roles start their attempts on different ticks;
@@ -4773,10 +4808,12 @@ capabilities.decided.<name>: "<reason>"` on a deployment row and `capability <na
 `legion state --json`: under `capabilities` every row as `{name, status, detail, decision?,
 configLine?, source?}`, `status` one of `present`, `unchecked`, `withheld`, `decided` or `open` (daemon API contract 16 added the list, contract 21 dropped `live` from it and contract 25 dropped `installed`, which nothing has emitted since LEGION-629;
 the image rows are `present` once the probe passed and `unchecked` before it or under tmux), `source` (`configuration` or `boot`, contract
-25) on a deployment row alone — what legion.yaml alone decides or what boot measured
+25, and `caches`, contract 213) on a deployment row alone — what legion.yaml alone decides, what boot measured, or what the repository caches' last health reads said of their room
 — never on a live row, and under each claim's `capabilities` (`issues.<KEY>.architect` and `issues.<KEY>.workers.<role>.claim`) that claim's latest report
 — `measuredAt`, `incarnation`, `ok` (the names its checks passed) and `open[{name, detail}]` — whatever process sent it;
 compare its `incarnation` with the claim's `locator.incarnation` to tell the running process's report from a predecessor's.
+A plugin from contract 25 to 212 accepts only `configuration` or `boot` as a `source`, and refuses the whole state for any other word.
+So a caller below contract 213 is served each row whose `source` is `caches` without its `source`, with every other field of the row (`withoutUnadmittedCapabilitySources` in `internal/api/shaping.go`), where a value follows the contract the caller states in `Legion-Plugin-Contract`, else the lowest contract its pod's claims record.
 The controller's `tick` notice, whose `openCapabilities` names the open rows, live rows beside the deployment gaps, so the day's report names each (`skills/legion-controller/SKILL.md`).
 And `legion config check`, which prints after its OK line the rows the file alone leaves open.
 Nothing refuses to start over a gap: a daemon that would not run its pods would itself keep workers from working, so a deployment gap is the operator's to close or to decide, by name and with the reason, and a live gap is the session's environment to fix.
@@ -5096,10 +5133,16 @@ In a checkout whose one gh-resolved line is `remote.origin.gh-resolved base`, on
 The helper reads such a repository from GitHub once (`GET /repos/<owner>/<name>` through `/usr/bin/curl`, within 10 s), with the token of the directory `GH_CONFIG_DIR` names where that is a directory of the bundle, and answers a fork with the token it would answer for the fork's `parent`, or else for its `source`, where the bundle holds that owner's directory, and every other repository of such an owner with nothing.
 That is how a role pushes a commit to the branch of an outside contributor's pull request from a fork in a personal account: the helper answers the token of the repository the fork was made from, which is usually the base of its pull requests, and GitHub decides which branch of the fork that token may update.
 The shared clone names it as its `credential.helper`: `workspace-init provision` is passed it as `--credential-helper '!legion git-credential'`.
-Every role is also told it outside any clone, as five git configuration entries git reads after every configuration file, the clone's own `.git/config` among them (`gitConfigPairs`, `manifest.go`):
-`GIT_CONFIG_COUNT=5`, `credential.https://github.com.helper` reset to empty and then set to `!legion git-credential`, `credential.https://github.com.useHttpPath=true`, `core.fsmonitor` set to empty and `core.hooksPath=/dev/null`.
-The issue's roles share the clone and each can write its `.git/config` and hooks, so the last two keep a role's `git status` or `git commit` from running an fsmonitor program or a hook another role planted, with the credentials of the role that runs git.
-They pin those two settings and no others, and they do not make the roles of one issue a boundary against each other.
+Every role is also told it outside any clone, among nine git configuration entries git reads after every configuration file, the clone's own `.git/config` among them (`gitConfigPairs`, `manifest.go`):
+`GIT_CONFIG_COUNT=9`, `credential.https://github.com.helper` reset to empty and then set to `!legion git-credential`, `credential.https://github.com.useHttpPath=true`, `core.fsmonitor` set to empty, `core.hooksPath=/dev/null`, and the four pack settings `core.packedGitWindowSize=32m`, `core.packedGitLimit=256m`, `pack.windowMemory=64m` and `core.deltaBaseCacheLimit=64m` (`packWindowConfig`, `internal/workspace/config.go`).
+The pack settings bound the pack data one git maps, 32 MiB at a time and 256 MiB at most; the last two bound the `pack-objects` a push runs, which the first two do not.
+git's defaults map 1 GiB windows up to 32 TiB, and gVisor counts every window a process has touched whole as the pod's memory: with the defaults, a `git log`, `git status`, push or fetch on one pack of 5.94 GB or 12.3 GB reached 5.2 GiB to 8.8 GB, and pods were killed at their 8 GiB limit.
+The same four are in the worker image's `/etc/gitconfig`, for provisioning's git, which reads none of these entries; in the shared clone's own `.git/config`, written at every provisioning, for the shared public leak check's git, which reads no other configuration; and on the command line of the feed's fetch and of the repository cache's own git, whose repack keeps its own larger settings (`repackMemory`).
+Every shared clone takes them in its `.git/config`, a host clone of the tmux runtime too, which the daemon provisions the same way, where they only bound git's pack windows.
+A role's own `-c` still overrides one of them for its command, and the entries win over a deployment image's own `/etc/gitconfig`.
+A role that runs when the release lands keeps its five pairs until its next generation: the entries travel in the role's start command, and a role the daemon adopts again is not relaunched for a change of them.
+The issue's roles share the clone and each can write its `.git/config` and hooks, so `core.fsmonitor` and `core.hooksPath` keep a role's `git status` or `git commit` from running an fsmonitor program or a hook another role planted, with the credentials of the role that runs git.
+Of the settings that run a program, the entries pin those two and no others, and they do not make the roles of one issue a boundary against each other.
 Every role can write the whole issue volume, and the roles share the pod's network namespace, so code one role plants runs in a sibling, with the sibling's credentials, through any of these:
 
 - the checkout, which the roles share by design: a test the tester runs, a script or build step the reviewer runs;
@@ -5315,6 +5358,9 @@ a tar is served throughout and is taken again if the repack swaps the packs unde
 A repack that fails is logged and tried again a day later, and the partial files it left in `objects/pack` (every `tmp_*` — a pack, its index, reverse index, bitmap, mtimes
 — and `.tmp-*`) are removed at once, each logged, as they are after a fetch that fails;
 a process starting on a volume where a killed one left any removes them before its first fetch.
+A repack that fails for lack of space ("Room on the cache's volume", below) is recorded, and `/healthz` carries the time of that failure as `repackOutOfSpaceAt`.
+The cache also keeps that time in `.legion-repack-out-of-space` on its volume, so a pod that replaces it reports the failure too.
+The next repack that succeeds clears the failure and removes the file.
 A fetch into the clone keeps an issue pod's 30-minute bound, since every tar waits for it;
 git's transfer sets no stall limit, so a stalled fetch holds every tar for up to those 30 minutes.
 Restarted after a fetch was killed, it also removes the git lock files that fetch left before it fetches again.
@@ -5325,8 +5371,12 @@ It serves, on port 8418:
 
 - `GET /healthz`: `503 {"ready":false,…}` until the first clone is whole, then `200 {"ready":true,
   "repo":"<owner>/<repo>","head":"<default branch's commit>","lastFetchAt":"…","bytes":<n>,
-  "streams":<s>}`, `streams` being the `/tar` requests it is sending or holding in its queue at the answer;
+  "streams":<s>,"volumeBytes":<v>,"availableBytes":<a>,"fetchOutOfSpaceAt":"…","repackOutOfSpaceAt":"…"}`, `streams` being the `/tar` requests it is sending or holding in its queue at the answer;
   it waits on no fetch, and answers any request, since it holds nothing secret and nothing of the repository's content.
+  `volumeBytes` is the volume's size and `availableBytes` the bytes available to the cache, from a `statfs` of `/legion/cache` at each answer.
+  Where that `statfs` fails, `volumeError` carries its error, and the two figures are absent.
+  `fetchOutOfSpaceAt` and `repackOutOfSpaceAt` are each the time of that step's last failure for lack of space since the step last succeeded, and each is absent while there is none.
+  The 503 answer carries these room fields too, since the volume is there before the first clone.
 
 - `GET /tar`: the clone's refs and packs as a tar stream
   — `HEAD`, `packed-refs`, `refs/`, `objects/pack/pack-<id>.pack` and the `objects/pack/pack-<id>.idx` git reads each pack through, no loose object or configuration
@@ -5343,6 +5393,9 @@ Each fetch also points the clone's `HEAD` at the branch GitHub names as the defa
 A fetch that fails is logged and tried at the next tick, and the cache stays ready on what it last fetched;
 a restarted cache whose volume holds its clone fetches into it, and serves it as it is when GitHub cannot be reached;
 a first clone that fails ends the process, and the kubelet restarts it.
+A fetch into the clone that fails for lack of space is recorded too, and `/healthz` carries the time of that failure as `fetchOutOfSpaceAt` until the next fetch succeeds.
+The cache keeps a fetch's failure in memory alone, since the next fetch reports it again.
+A first clone that fails is not recorded: that cache never turns Ready, and `legion state` shows it `failing` under `repositories`.
 
 An issue pod's `workspace-fetch` fills a fresh feed from its repository's cache alone ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
 It asks the cache's health with no credential, takes nothing from a cache whose answer names another repository, so a cache pod replaced and its address reused by another repository's cache can put nothing into the feed, and presents the cache's token with its request for the tar alone.
@@ -5409,6 +5462,40 @@ A cache that a live record names loses the old annotation at that sweep.
 Each cache that loses the old annotation is logged once, at info, with its repository, the old value and what the sweep did.
 A cache the sweep cannot make or repair — its owner's token cannot be minted, say — is a warning naming it, tried again at the next sweep.
 The boot census refuses a Sandbox labelled `legion.dev/cache` that is not one this runtime builds (no repository annotation, or another container or claim template), by name.
+
+**Room on the cache's volume.**
+A fetch or a repack fails for lack of space when git's error holds `No space left on device` or `Out of diskspace`, matched case-sensitively.
+It also fails for lack of space when the volume has less than 1 GiB available as the step fails, because git reports a ref it could not write for lack of space with neither phrase (`cannot lock ref '<ref>': unable to create directory for <path>`).
+The cache reads the volume for that test before it removes the partial files, because the removal frees space.
+Where that read fails, git's words alone decide.
+A repack needs free space of about its clone's reachable objects: `git repack -a -d` writes them all into one new pack before it deletes the packs that pack replaces.
+On 2026-11-19 one deployment's cache logged `Out of diskspace` for its repack, and then `No space left on device` for every fetch.
+
+The cache keeps a repack's failure in `.legion-repack-out-of-space` at the volume's root (`/legion/cache`), beside `.legion-last-repack`, as one RFC 3339 UTC time and a line feed.
+The file is outside the clone, so `/tar` never streams it.
+The cache writes the file after it removes the failed repack's partial files, so the write has room.
+It logs a write that fails, and keeps the failure in memory all the same.
+A new cache process reads the file before it serves, so its first `/healthz` answer, the 503 one included, carries the failure.
+It logs and ignores a file it cannot read or whose text is not an RFC 3339 time.
+A recorded failure does not change when the cache fetches or repacks.
+
+Kubernetes reports the bytes available on each claim through the kubelet's `kubelet_volume_stats_available_bytes` metric ([Kubernetes metrics reference](https://kubernetes.io/docs/reference/instrumentation/metrics/)).
+The kube-prometheus alert on that metric is `KubePersistentVolumeFillingUp` ([its runbook](https://runbooks.prometheus-operator.dev/runbooks/kubernetes/kubepersistentvolumefillingup/)).
+These standard signals see the cache's claim as they see any other claim.
+Legion's own signal is the `repository-cache-room` row of [The deployment's capability report](#the-deployments-capability-report).
+While the row is open, the controller's `tick` notice names it in `openCapabilities`, and the project's controller names it in the day's report.
+`legion state` shows the room in that row alone: a cache under `repositories` carries no room field.
+
+The remedy is to grow the cache's claim in place ([Expanding Persistent Volumes Claims](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#expanding-persistent-volumes-claims)).
+The claim is `cache-<sandbox>`, which the row's detail names, and its StorageClass must set `allowVolumeExpansion: true`.
+Raise the claim's `spec.resources.requests.storage`, for example `kubectl -n legion patch pvc cache-<sandbox> -p '{"spec":{"resources":{"requests":{"storage":"40Gi"}}}}'`.
+Then raise `runtime.kubernetes.repository_cache.volume` in `legion.yaml`.
+That key sizes only the caches the daemon makes later: a cache that exists keeps its claim.
+The daemon does not grow a claim itself, since it has no PVC verb ([RBAC the Go daemon needs](#rbac-the-go-daemon-needs)).
+
+After the claim grows, the next fetch that succeeds clears the fetch's failure, and a fetch runs every `refresh_minutes`.
+A kept repack failure stays for up to 24 hours after the claim grows, until the next repack runs and succeeds.
+Until then the row stays open, unless `capabilities.decided.repository-cache-room` names a reason.
 
 ### A pod whose address moved
 
@@ -7732,7 +7819,7 @@ Every jj command run in a workspace names it with `-R`, so jj never walks up to 
 when any directory of the layout between the root (`/legion` in a pod, the state directory under tmux, which itself may be one) and a workspace or the clone (`repos/<host>/<owner>/<name>`, `workspaces/<owner>/<name>/<issue>`) is a symlink, which the refusal names;
 when it runs in a workspace that has no `.jj`;
 and when the workspace's `.jj/repo` names any other directory, followed through symlinks and `..` as jj itself follows it, is neither a directory nor a regular file, is a symlink to a regular file, or is a file larger than 4,096 bytes (`guardWorkspace`, the same file).
-The worker image's jj is 0.45; on the tmux runtime, which runs the host's jj through the same code, the daemon refuses to start with a jj older than 0.38 (`resolveTools`, naming `LEGION_JJ_PATH`), since before 0.38 `.jj/repo/config.toml` is the repository's live configuration.
+The worker image's jj is 0.46; on the tmux runtime, which runs the host's jj through the same code, the daemon refuses to start with a jj older than 0.38 (`resolveTools`, naming `LEGION_JJ_PATH`), since before 0.38 `.jj/repo/config.toml` is the repository's live configuration.
 
 The boundary above protects the provisioning token alone.
 Since LEGION-631 each role holds its own App's tokens in the gh bundle its `LEGION_GH_OWNERS_DIR` names, which only its own namespaces bind ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)):
