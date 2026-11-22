@@ -1217,19 +1217,39 @@ func TestAFailedRepackLeavesNoPartialPack(t *testing.T) {
 		return workspace.Result{ExitCode: 128, Stderr: "fatal: killed\n"}, nil
 	})
 	advance(t, remote, "moved")
-	deadline := time.Now().Add(testTimeout)
-	for !logged(c.log.all(), "removed the partial pack tmp_pack_Ab12Cd, which a killed git left") {
-		if time.Now().After(deadline) {
-			t.Fatalf("the partial pack's removal was never logged: %q", c.log.all())
+	// removePartialPacks removes the partial files one after another, in os.ReadDir's name order
+	// (.tmp-123-pack-0a1b.pack, tmp_pack_Ab12Cd, tmp_rev_Ef34Gh), and logs each removal once it is
+	// done, so one file's line says nothing of the files after it: on #4457's CI run the stat read
+	// tmp_rev_Ef34Gh in the moment after tmp_pack_Ab12Cd's line. The wait is for what the test
+	// checks, every partial file gone and its removal logged. A file gone is not enough alone: the
+	// next tick's fetch removes every tmp_ file the repack left (workspace.RemoveStaleFeedLocks),
+	// logging it another way. The wait's one bound is the test binary's deadline less testTimeout,
+	// the time start's cleanup gives Serve to end: a loaded machine is slow, not wrong, and a file
+	// the removal leaves fails by name below.
+	partials := append([]string{partial}, others...)
+	removal := func(path string) string {
+		return "removed the partial pack " + filepath.Base(path) + ", which a killed git left"
+	}
+	testwait.Holds(testwait.Bounded(t, 1<<60, testTimeout), testwait.Poll, func() bool {
+		lines := c.log.all()
+		for _, path := range partials {
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) || !logged(lines, removal(path)) {
+				return false
+			}
 		}
-		time.Sleep(20 * time.Millisecond)
+		return true
+	})
+	// repack logs its failure before it calls removePartialPacks, so the line is there once any
+	// removal's is.
+	lines := c.log.all()
+	if !logged(lines, "repack failed; tried again in ") {
+		t.Errorf("the failed repack was not logged: %q", lines)
 	}
-	if !logged(c.log.all(), "repack failed; tried again in ") {
-		t.Errorf("the failed repack was not logged: %q", c.log.all())
-	}
-	for _, path := range append([]string{partial}, others...) {
+	for _, path := range partials {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("the partial file %s is still there (%v)", filepath.Base(path), err)
+		} else if !logged(lines, removal(path)) {
+			t.Errorf("the partial file %s is gone, but the failed repack logged no removal of it: %q", filepath.Base(path), lines)
 		}
 	}
 	for _, path := range kept {
