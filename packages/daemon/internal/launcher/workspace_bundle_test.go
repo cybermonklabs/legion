@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -222,9 +223,26 @@ func TestAReleasedWorkspacesWorkIsBundledByTheShimAndRestoredByTheLauncher(t *te
 // 1,390 the build alone outran the 90 s a helper had under -timeout 150s, and the helper ended on
 // its own alarm with no line of the row's. The tree is this test's, removed in its cleanup with
 // helperDeadlineGap for it.
+//
+// Every wait before the helper starts has a bound. The build's every command, the shim's save
+// among them, runs under a context that ends at the last moment a helper could start
+// (helperStartBy), which kills the command and fails the test naming that moment; jj's filter probe
+// and the PID namespace probe are killed 30 s before the test binary's deadline. The checks after
+// the helper run under a context that ends 30 s before that deadline.
 func TestPutBacksUnderThePodsReaperKeepTheirExitStatus(t *testing.T) {
 	testbin.RequireJJFilters(t)
-	f := newBundleFixture(t)
+	build, done := context.WithCancel(context.Background())
+	if startBy, ok := helperStartBy(t); ok {
+		build, done = context.WithDeadlineCause(context.Background(), startBy, errBuildPastHelperStart)
+	}
+	t.Cleanup(func() {
+		// A failure of the build's that is not a command's (the shim's connection closed under
+		// the save, say) still says why.
+		if errors.Is(context.Cause(build), errBuildPastHelperStart) {
+			t.Logf("%v", errBuildPastHelperStart)
+		}
+	})
+	f := newBundleFixtureWithin(t, build)
 	f.workOne()
 	saved := f.bundleWorkspaceOne()
 	plan := putBackPlan{Saved: saved, Bundle: saved.Bundle, Env: f.env}
@@ -236,6 +254,7 @@ func TestPutBacksUnderThePodsReaperKeepTheirExitStatus(t *testing.T) {
 			plan.Control = append(plan.Control, workspace)
 		}
 	}
+	done()
 	body, err := json.Marshal(plan)
 	if err != nil {
 		t.Fatal(err)
@@ -245,11 +264,20 @@ func TestPutBacksUnderThePodsReaperKeepTheirExitStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("%s", runAsPIDOne(t, "TestPutBacksPIDOneHelper", putBackPlanEnv+"="+planPath))
+	checks, stop := context.WithTimeoutCause(context.Background(), testwait.Bounded(t, 3*365*24*time.Hour, 30*time.Second),
+		errors.New("the checks of the restored workspaces ran past 30 s before the test binary's deadline"))
+	defer stop()
+	f.ctx = checks
 	for _, dir := range plan.Guarded {
 		f.requireRestored(dir, saved)
 	}
 	t.Logf("%d of %d put-backs through the guard restored the whole of the saved work", len(plan.Guarded), len(plan.Guarded))
 }
+
+// errBuildPastHelperStart is the cause of the context
+// TestPutBacksUnderThePodsReaperKeepTheirExitStatus builds its fixture under, once that context has
+// ended at helperStartBy.
+var errBuildPastHelperStart = errors.New("the fixture build ran past the last moment a helper could start (the test binary's deadline less helperDeadlineGap and helperLeastTime)")
 
 // putBackPlan is what TestPutBacksUnderThePodsReaperKeepTheirExitStatus hands its PID 1 helper,
 // as JSON in the file putBackPlanEnv names: the saved work, its bundle's bytes (which
@@ -474,9 +502,11 @@ const (
 
 // bundleFixture is one remote, the pod that is released and the workspace it worked in, and the
 // pods that replace it: real git and real jj throughout, every command naming the directory it
-// runs in (docs/testing.md).
+// runs in (docs/testing.md). Each of its commands, and the shim's save, runs under ctx: a command
+// still running when ctx ends is killed, and its failure names ctx's cause.
 type bundleFixture struct {
 	t       *testing.T
+	ctx     context.Context
 	root    string
 	remote  string
 	clone   string
@@ -486,6 +516,12 @@ type bundleFixture struct {
 }
 
 func newBundleFixture(t *testing.T) *bundleFixture {
+	t.Helper()
+	return newBundleFixtureWithin(t, context.Background())
+}
+
+// newBundleFixtureWithin is newBundleFixture whose commands run under ctx (bundleFixture).
+func newBundleFixtureWithin(t *testing.T, ctx context.Context) *bundleFixture {
 	t.Helper()
 	for _, tool := range []string{"jj", "git"} {
 		if _, err := exec.LookPath(tool); err != nil {
@@ -500,7 +536,7 @@ func newBundleFixture(t *testing.T) *bundleFixture {
 	// (docs/testing.md).
 	home := filepath.Join(root, "home")
 	f := &bundleFixture{
-		t: t, root: root, remote: filepath.Join(root, "remote"), clone: filepath.Join(root, "clone"), ws: filepath.Join(root, "ws"),
+		t: t, ctx: ctx, root: root, remote: filepath.Join(root, "remote"), clone: filepath.Join(root, "clone"), ws: filepath.Join(root, "ws"),
 		commits: map[string]string{},
 		env: append(fixtureenv.Isolated(home),
 			"JJ_USER=tester", "JJ_EMAIL=tester@example.test",
@@ -605,7 +641,10 @@ func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 		f.t.Fatal(err)
 	}
 	f.t.Cleanup(func() { _ = listener.Close() })
-	ctx, cancel := context.WithCancel(context.Background())
+	// The fixture's context bounds the save: when it ends, the listener closes under the accept,
+	// and the shim, whose context it is, kills its save and closes its connection under the reads.
+	defer context.AfterFunc(f.ctx, func() { _ = listener.Close() })()
+	ctx, cancel := context.WithCancel(f.ctx)
 	defer cancel()
 	exited := make(chan struct{})
 	go func() {
@@ -795,5 +834,5 @@ func (f *bundleFixture) write(path, content string) {
 // would open the workspace the test process stands in (docs/testing.md).
 func (f *bundleFixture) run(dir string, args ...string) string {
 	f.t.Helper()
-	return fixturegit.Runner{TB: f.t, Env: f.env}.Run(dir, args...)
+	return fixturegit.Runner{TB: f.t, Env: f.env, Ctx: f.ctx}.Run(dir, args...)
 }

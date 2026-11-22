@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // namespaceHelperEnv marks the test binary re-executed as the PID 1 launcher below: TestMain
@@ -58,8 +59,15 @@ func pidNamespace(t *testing.T) []string {
 		t.Skip("PID namespace launcher proof requires Linux")
 	}
 	prefix := []string{"-n", "unshare", "--pid", "--fork", "--mount-proc", "--kill-child", "--setuid", strconv.Itoa(os.Getuid()), "--setgid", strconv.Itoa(os.Getgid())}
-	probe := exec.Command("sudo", append(append([]string{}, prefix...), "/bin/true")...)
+	// The probe is killed 30 s before the test binary's deadline, and a probe killed so fails the
+	// test by name, not a skip: it answers in milliseconds where the prerequisite holds.
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, 3*365*24*time.Hour, 30*time.Second))
+	defer cancel()
+	probe := exec.CommandContext(ctx, "sudo", append(append([]string{}, prefix...), "/bin/true")...)
 	if output, err := probe.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			t.Fatalf("PID namespace prerequisite: the probe had not answered 30 s before the test binary's deadline: %v: %s", err, output)
+		}
 		if os.Getenv("GITHUB_ACTIONS") == "true" {
 			t.Fatalf("PID namespace prerequisite: %v: %s", err, output)
 		}
@@ -79,8 +87,10 @@ const pidOneHelperEnv = "LEGION_LAUNCHER_PID_ONE_HELPER"
 // what it printed. The helper's own deadline is this test's less helperDeadlineGap, so a helper
 // whose wait gives up near its deadline (reaperBound) prints why and ends, and this test then
 // still has that gap for its own cleanups before its alarm. When what ran before it left the
-// helper less than helperLeastTime, t fails by name and no helper starts: one would reach its own
-// alarm before its bounds could give up.
+// helper less than helperLeastTime (it is past helperStartBy), t fails by name and no helper
+// starts: one would reach its own alarm before its bounds could give up. The wait for the helper
+// ends 30 s before this test's deadline at the latest, 30 s after the helper's own alarm: sudo is
+// then sent SIGTERM, and 10 s later the wait returns whatever sudo does (WaitDelay).
 func runAsPIDOne(t *testing.T, helper string, env ...string) string {
 	t.Helper()
 	prefix := pidNamespace(t)
@@ -97,11 +107,27 @@ func runAsPIDOne(t *testing.T, helper string, env ...string) string {
 		}
 		args = append(args, "-test.timeout="+left.String())
 	}
-	output, err := exec.Command("sudo", args...).CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, 3*365*24*time.Hour, 30*time.Second))
+	defer cancel()
+	command := exec.CommandContext(ctx, "sudo", args...)
+	command.Cancel = func() error { return command.Process.Signal(syscall.SIGTERM) }
+	command.WaitDelay = 10 * time.Second
+	output, err := command.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("%s as PID 1 had not ended 30 s before the test binary's deadline, 30 s after its own: %v\n%s", helper, err, output)
+	}
 	if err != nil || !bytes.Contains(output, []byte("--- PASS: "+helper)) {
 		t.Fatalf("%s as PID 1: %v\n%s", helper, err, output)
 	}
 	return string(output)
+}
+
+// helperStartBy is the last moment a helper of runAsPIDOne can start, the test binary's deadline
+// less helperDeadlineGap and helperLeastTime, and whether the binary has a deadline at all: a test
+// bounds what it runs before its helper by it.
+func helperStartBy(t *testing.T) (time.Time, bool) {
+	deadline, ok := t.Deadline()
+	return deadline.Add(-helperDeadlineGap - helperLeastTime), ok
 }
 
 // helperDeadlineGap is how much sooner than its test a helper of runAsPIDOne reaches its own
