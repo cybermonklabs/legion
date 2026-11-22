@@ -18,7 +18,7 @@ The daemon starts none of them by itself, except the members a root's linger clo
 | `design_gate` | Its root's design gate is not open at every gated step | A person's approval of each gated step's document at its current version |
 | `dispatch_blocker` | A `blocked_by` issue is not `done` | Each blocker `done`, or the link taken off |
 | `children_first` | An open child under it | The last open child leaving the workflow |
-| `accepted_ancestor` | An ancestor's reviewed head is accepted | That ancestor's close |
+| `accepted_ancestor` | An ancestor's reviewed head is accepted | That ancestor standing in neither `retro` nor `merging` (a `held` ancestor stands in the phase it was held from) |
 | `at_work` | Past its review, not `held`, on no slot. An issue held from one of those phases reads `unclassified` instead, since its hold stopped its work | Its own sign-off, retro and merge; work its architect sends back to `implementing` takes a slot again |
 | `unclassified` | None of the above | Nothing of yours: name it with its `phase` and `status` |
 

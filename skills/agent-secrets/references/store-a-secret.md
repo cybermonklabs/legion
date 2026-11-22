@@ -4,9 +4,9 @@ Read this before you create a secret or replace its value.
 
 `agent-secrets secret create NAME --owner me|shared|<email> --tier agent|human` creates one, and `agent-secrets secret set NAME` replaces the value of one that exists.
 Both read the value from standard input or from a prompt with echo off, never from an argument: type it at the prompt, so it reaches no shell history.
-`--tier agent` lets the owner's own sessions use the secret without asking, and every session for a `shared` one; any other session's request goes to the owner for approval.
+`--tier agent` lets the owner's own sessions, or every session for a `shared` one, use the secret without asking, and sends any other session's request to the owner for approval, except where a rule that [Where a name comes from](skill://agent-secrets/SKILL.md#where-a-name-comes-from) names refuses the session or sends its request to a person first.
 `--tier human` sends every request to a person for approval: the owner, or anyone signed in to the secrets broker for a `shared` secret.
-Where the broker's rules give the key a model judge, the judge decides each request that would go to a person, and a person decides only one the judge cannot decide; the `decides:` line of `agent-secrets secret show NAME` says which.
+The `decides:` line of `agent-secrets secret show NAME` says who decides a request for the key, and [The one form](skill://agent-secrets/SKILL.md#the-one-form) says how a model judge and a person share one.
 
 The `agent-secrets secret` forms (`list`, `show`, `create`, `set`, `retag`, `delete`, `restore`) call the broker's store under whatever cloud credential the environment gives them, and the store's IAM decides what each may read and write.
 A write runs under the credential of the first source the command finds.
