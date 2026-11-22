@@ -217,7 +217,7 @@ EXCEPTIONS = (
     Exception_(
         steps=frozenset({
             (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
-            (".github/workflows/ci-job-envoy-go-race.yaml", "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials and the NATS auth service"),
+            (".github/workflows/ci-job-envoy-go-race.yaml", "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow"),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/natscallout",
         functions=("TestACalloutStormAfterAServerRestartAdmitsEveryConnection",),
@@ -332,6 +332,23 @@ EXCEPTIONS = (
             "envoy-go's step \"Count the database broker suites' skips\" lists it too, and it "
             "skips there for want of AIRLOCK_MODEL, as that script's EXPECTED_SKIPS records, so "
             "the comparison runs only in airlock-lean."
+        ),
+    ),
+    Exception_(
+        steps=frozenset({
+            (".github/workflows/ci-job-envoy-go.yaml", "Unit test envoy Go package"),
+            (".github/workflows/ci-job-envoy-go-checks.yaml", "Test pmdoc's tables in a build without inlining"),
+        }),
+        package="github.com/sjawhar/envoy/internal/dispatch/pmdoc",
+        functions=None,
+        requirement=(
+            "pmdoc's readers must read a table in every build, whatever its inlining. "
+            "envoy-go-checks runs pmdoc's table tests and its display fixture test in a build made "
+            "with -gcflags=all=-l, a mode no other step builds pmdoc in: goldmark builds pmdoc's "
+            "readers through an interface Go's initialization order does not look through, so a "
+            "reader that copied a variable of pmdoc was handed nil in that build alone, and each "
+            "table failed to read there while it passed in envoy-go's unit step. The two runs "
+            "answer different questions."
         ),
     ),
 )

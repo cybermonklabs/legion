@@ -76,7 +76,8 @@ type artifactUploadInput struct {
 	content []byte
 	// precondition is the token of the version a whole-document upload believes it is
 	// replacing, nil when the upload names none. A replacement of a document that already
-	// exists must name it (storeArtifact); a first upload and a file never do.
+	// exists names it, and one that names none is taken unchecked and counted (storeArtifact,
+	// INFRA-4980); a first upload and a file never do.
 	precondition *model.EditPrecondition
 	contentType  string
 	summary      string
@@ -276,8 +277,8 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 	// the document token alone, in the shape every edit's precondition takes, and only on an
 	// upload Dispatch stores as a document, since a file holds no tree and so no token. A token
 	// nothing would read is refused rather than taken and dropped, because the caller believes
-	// its write was conditional. Whether a replacement must name one at all is the stored
-	// document's to say (storeArtifact).
+	// its write was conditional. A replacement that names none is taken unchecked, as it was
+	// before #3000, and counted (storeArtifact, INFRA-4980).
 	if input.precondition != nil {
 		if kind != "doc" {
 			s.writeHandlerError(w, &docs.ErrInvalidPrecondition{
@@ -461,13 +462,13 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 	}, true
 }
 
-// uploadBaseAdvice tells the reader of a refused upload where the token of the version it is
-// replacing is printed, and is the tail of both refusals that token can earn: the one a
-// replacement naming none gets, and the one a replacement naming a token the document has moved
-// past gets.
+// uploadBaseAdvice tells the reader of an upload refused for a token the document has moved past
+// where the token of the version it is replacing is printed. It names no flag of a command: a
+// caller that named a token may have sent it straight to this route, from a client whose
+// `dispatch artifact` has no flag for one (INFRA-4980), so it names the field the token goes in.
 const uploadBaseAdvice = "read the document with `dispatch doc-read`, which prints " +
-	"`Document token: sha256:…`, and upload again naming that token as " +
-	"`--precondition-json '{\"document\":\"sha256:…\"}'`"
+	"`Document token: sha256:…`, and upload again naming that token as the upload's " +
+	"precondition, `{\"document\":\"sha256:…\"}`"
 
 // writeUploadDocumentError answers an upload whose document write was refused, which is where
 // this route's words meet the document service's: the service reports which tree a token missed
@@ -494,13 +495,6 @@ func (s *server) writeUploadDocumentError(ctx context.Context, w http.ResponseWr
 		body.Current.Version = &version
 		body.Error += "; " + uploadBaseAdvice
 		WriteJSON(w, http.StatusConflict, body)
-		return
-	}
-	// The write knows no document is named, only that a token was wanted and none came.
-	if errors.Is(err, docs.ErrPreconditionRequired) {
-		s.writeHandlerError(w, errorf(http.StatusBadRequest, "PRECONDITION_REQUIRED",
-			"an upload replacing document %q must name the token of the version it replaces: "+uploadBaseAdvice,
-			name))
 		return
 	}
 	if errors.Is(err, docs.ErrPreconditionUnavailable) {
@@ -787,10 +781,12 @@ func (s *server) storeArtifact(
 			documentMarkdown, err = s.deps.Docs.SeedText(documentCtx, artifact.ID, string(input.content), actor)
 		} else {
 			// An upload over a document that already exists replaces every word of it, so it
-			// names the token of the version it is replacing, and one that names none is
-			// refused. The write settles that on the tree it reads under its own lock, where a
-			// repair - a live tree outside the Proof schema, which has no token for anyone to
-			// name - is the one exception. A file is not a document and was refused a token
+			// names the token of the version it is replacing, which the write checks on the tree
+			// it reads under its own lock. One that names none is taken unchecked, as it was
+			// before #3000, and counted once it commits (noteUnguardedReplacement): the refusal
+			// of a missing token comes back once every deployed client sends one (INFRA-4980).
+			// A repair - a live tree outside the Proof schema, which has no token for anyone to
+			// name - names none by design. A file is not a document and was refused a token
 			// already (uploadArtifactFor).
 			documentMarkdown, err = s.deps.Docs.ReplaceText(documentCtx, artifact.ID, string(input.content), actor, input.precondition)
 		}
@@ -916,6 +912,9 @@ func (s *server) storeArtifact(
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	if kind == "doc" && !created && input.precondition == nil {
+		s.noteUnguardedReplacement(artifact)
 	}
 	if kind == "doc" {
 		// The seeded or replaced text was written inside this transaction, which suppresses
@@ -1365,6 +1364,80 @@ type editArtifactInput struct {
 	Actor        *model.Actor            `json:"actor"`
 }
 
+// jsonMember decodes any JSON value into whether it is null, so a map of them says which members
+// a JSON object names, and which of those are null, and reading one copies none of its value.
+type jsonMember struct{ null bool }
+
+func (m *jsonMember) UnmarshalJSON(data []byte) error {
+	m.null = string(data) == "null"
+	return nil
+}
+
+// replaceTakes reports whether member is one a replace takes: op, find, with and occurrence. Every
+// other member is another operation's or none's, so a replace carrying one sends what replace
+// never reads.
+func replaceTakes(member string) bool {
+	switch member {
+	case "op", "find", "with", "occurrence":
+		return true
+	}
+	return false
+}
+
+// replaceFieldsRefusal is the refusal of the first replace of ops whose JSON in body, the request's
+// bytes, names no with or carries a member a replace does not take (replaceTakes), whatever that
+// member holds: 400 REPLACE_FIELDS naming the operation and each such member; and nil where every
+// replace names with and replace's members alone. Read as an empty with, a replace naming none
+// deleted its match, and one carrying another member was applied as if it held none. Only the
+// body says either: a decoded op's With is "" both for no with and for with "", which deletes the
+// match on purpose, a JSON null with is none, and a member model.EditOp does not declare decodes
+// to nothing. So a batch holding a replace reads body a second time, for each op's member names
+// alone (jsonMember). The decoder stops after body's one value, as the first read did
+// (readJSONBody, which accepts a value followed by a closing bracket or brace), so a body the
+// route accepted reads here too.
+func replaceFieldsRefusal(ops []model.EditOp, body []byte) error {
+	if !slices.ContainsFunc(ops, func(op model.EditOp) bool { return op.Op == "replace" }) {
+		return nil
+	}
+	var named struct {
+		Ops []map[string]jsonMember `json:"ops"`
+	}
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&named); err != nil {
+		return fmt.Errorf("read the edit's members: %w", err)
+	}
+	if len(named.Ops) != len(ops) {
+		return fmt.Errorf("read the edit's members: the second read found %d operations, the first %d", len(named.Ops), len(ops))
+	}
+	for index, op := range ops {
+		if op.Op != "replace" {
+			continue
+		}
+		with, withNamed := named.Ops[index]["with"]
+		omitted := !withNamed || with.null
+		var foreign []string
+		for member := range named.Ops[index] {
+			if !replaceTakes(member) {
+				foreign = append(foreign, member)
+			}
+		}
+		if !omitted && len(foreign) == 0 {
+			continue
+		}
+		var problems []string
+		if omitted {
+			problems = append(problems, "names no with, which would delete the text find matches")
+		}
+		if len(foreign) > 0 {
+			slices.Sort(foreign)
+			problems = append(problems, fmt.Sprintf("carries %s, which replace does not take", strings.Join(foreign, " and ")))
+		}
+		return errorf(http.StatusBadRequest, "REPLACE_FIELDS",
+			`operation %d: replace %s; a replace takes find, with and occurrence alone: write the new text in with, or with "" to delete the match on purpose`,
+			index, strings.Join(problems, ", and "))
+	}
+	return nil
+}
+
 // editArtifactResponse is the body POST /api/v1/artifacts/{id}/edits and its issue and project
 // artifact patterns answer.
 type editArtifactResponse struct {
@@ -1391,7 +1464,12 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input editArtifactInput
-	if err := decodeJSON(r, &input); err != nil {
+	body, err := decodeJSONBody(r, &input)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := replaceFieldsRefusal(input.Ops, body); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

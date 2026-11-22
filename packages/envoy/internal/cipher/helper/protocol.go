@@ -38,6 +38,7 @@ type Request struct {
 	Thumbprint      string   `json:"thumbprint,omitempty"`       // enroll-session-key: the session key's thumbprint
 	SessionID       *string  `json:"session_id,omitempty"`       // enroll-session-key: optional registry session id; register: the omp session id this session is to be known by
 	EnrollmentID    string   `json:"enrollment_id,omitempty"`    // unenroll-session-key: which enrollment to end
+	Projects        []string `json:"projects,omitempty"`         // register, enroll-session-key: the Dispatch projects the session names, fixed at its first register
 	// Attach is register only: the caller is `agent-secrets register` run without --exec, whose
 	// own process ends with the command, so the helper never pins it. The caller is answered from
 	// the session it is already in; outside one, the helper pins RootPID, and with no RootPID it
@@ -66,7 +67,7 @@ type Response struct {
 	// before this field sends none, and such a client refuses that answer.
 	RootPID             int           `json:"root_pid,omitempty"`
 	Operator            string        `json:"operator,omitempty"`
-	State               string        `json:"state,omitempty"`                 // register: enrolling | enrolled
+	State               string        `json:"state,omitempty"`                 // register: enrolling | enrolled | refused (the broker refused the session for good, 403 RESTRICTED_MEMBER_ENROLLS_NOTHING, named in Error; the helper asks no more)
 	VerificationURI     string        `json:"verification_uri,omitempty"`      // login: where a person types the code, the broker's device authorization verification_uri; empty from a helper before this field
 	LoginState          string        `json:"login_state,omitempty"`           // login/login-status: the most recent login's pending|issued|denied|expired; expired whenever LoginRefused and that login is not pending
 	CredentialHeld      bool          `json:"credential_held,omitempty"`       // login-status: the helper holds a launcher credential, whatever the most recent login's state

@@ -12,6 +12,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -22,16 +24,26 @@ import (
 // cost nothing.
 const idleTickInterval = time.Minute
 
-// issuePods is what the idle pass asks the runtime about an issue's pod, which is everything
-// about a release the daemon's own Postgres does not hold: whether the pod runs the image the
-// configuration names (sandbox.Runtime.IssuePodRunsConfiguredImage), and whether the runtime
-// still holds the issue's Sandbox and under what name (sandbox.Runtime.IssueSandbox). A runtime
-// that runs no pods implements neither, and the daemon then releases nothing, which is also what
-// `runtime: tmux` wants.
+// issuePods is what the daemon asks a runtime that runs a pod per issue about an issue's pod,
+// which is everything about it the daemon's own Postgres does not hold: whether the pod runs the
+// image the configuration names (sandbox.Runtime.IssuePodRunsConfiguredImage), whether the runtime
+// still holds the issue's Sandbox and under what name (sandbox.Runtime.IssueSandbox), which pod
+// that Sandbox holds, or that the runtime cannot say (runtime.IssuePodReader), and whether the
+// runtime keeps the issue's volume for its next pod (runtime.IssueVolumeReader). It is the one
+// test of whether a runtime runs a pod per issue, so every rule that asks it gives one answer: the
+// idle pass and its release (attachIdleRelease, outbox.issueSandboxName), whether an issue holds
+// its workspace (workspaceHeldBy) and the rename pass's live-pod rules (bootKeep, podEndKeep).
+// The Kubernetes runtime implements it; a runtime that runs no pods implements none of it, and the
+// daemon then releases nothing, which is also what `runtime: tmux` wants.
 type issuePods interface {
 	IssuePodRunsConfiguredImage(issue string) bool
 	IssueSandbox(issue string) (name string, present bool)
+	runtime.IssuePodReader
+	runtime.IssueVolumeReader
 }
+
+// Without it, a sandbox.Runtime missing a method fails the rt.(issuePods) checks with no error.
+var _ issuePods = (*sandbox.Runtime)(nil)
 
 // tickIdle decides every pod of the project on the daemon's own period (idleTickInterval),
 // under both release rules: the release of a pod no claim owns, whose every claim is failed,

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -35,11 +36,11 @@ var (
 	}
 	repoSpecific = []string{
 		"Inspect", "inspect_ai", "inspect_", "Hawk", "middleman", "Taiga",
-		// A deployment's own name for itself, for the repository it runs the daemon from, for the
-		// runbook it sends a heavy run to, and for the bucket it keeps one's output in. The match
-		// is case-sensitive, so the deployment's name stands here in both the forms a part could
-		// write it in, the slug and the prose one, as `Inspect` and `inspect_ai` already do.
-		"theorem", "Theorem", "agent-infra", "running-heavy-jobs", "gs://",
+		// The runbook a deployment sends a heavy run to, and the bucket it keeps one's output in.
+		// A deployment's own names are not listed here: this repository is public, so a test of it
+		// cannot hold them. check-private-names refuses those the deployment's own term list holds,
+		// in every file it reads, role parts included.
+		"running-heavy-jobs", "gs://",
 	}
 )
 
@@ -77,21 +78,29 @@ func TestCoresAndTheInteractiveFragmentCarryNoHeadlessMechanics(t *testing.T) {
 // and every go/ part, because the pod memory rule tells a role where its deployment's instructions
 // send a heavy run, and the next hand to write that rule down can spell a deployment's own route
 // out in the architect parts, which this test read nothing of before.
+//
+// Each part is held to two checks: the generic names of repoSpecific, and the rules leakguard
+// ports from .github/scripts/check-private-names.sh's built-in rules. Of a deployment's own names,
+// check-private-names refuses those the deployment's own term list holds, in every file it reads.
 func TestNoReusablePartNamesARepositoryOrLibrary(t *testing.T) {
-	for _, file := range reusableParts {
-		text := rolePart(t, file)
+	// leakguard's rules are embedded in it (private-names.toml) and read no input, so this check
+	// runs the same wherever the test runs.
+	guard := leakguard.New(leakguard.Options{})
+	check := func(name, text string) {
 		for _, needle := range repoSpecific {
 			if strings.Contains(text, needle) {
-				t.Errorf("%s contains %q", file, needle)
+				t.Errorf("%s contains %q", name, needle)
 			}
+		}
+		if err := guard.Rules(t.Context(), leakguard.Record{Label: name, Text: text}); err != nil {
+			t.Errorf("%s: %v", name, err)
 		}
 	}
+	for _, file := range reusableParts {
+		check(file, rolePart(t, file))
+	}
 	err := eachPart(goParts, "go", func(name string, body []byte) error {
-		for _, needle := range repoSpecific {
-			if strings.Contains(string(body), needle) {
-				t.Errorf("go/%s contains %q", name, needle)
-			}
-		}
+		check("go/"+name, string(body))
 		return nil
 	})
 	if err != nil {

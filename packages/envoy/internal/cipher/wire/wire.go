@@ -211,9 +211,12 @@ type RecordEnrollmentResp struct {
 	// The session's runtime: whatever names the session on its machine (the helper's
 	// host:pid:start time, a container's id), or a pod's UID.
 	RuntimeID string `json:"runtime_id"`
-	// The person the session runs for, as its enrollment row held it when the request was made.
-	// For a pod it is the person that a person's pod login (enroll.PersonPodLogin) carried when it
-	// enrolled the pod, and empty for any other pod.
+	// The person the session runs for. On a record it is as the enrollment row held it when the
+	// request was made: for a pod, the person that a person's pod login (enroll.PersonPodLogin)
+	// carried when it enrolled the pod, and empty for any other pod. On a grant list (GET
+	// /v1/grants and GET /v1/operator/grants) it is the person the enrollment acts for now, as the
+	// broker decides it (requests' operatorOf): empty for a person's pod that BROKER_POD_OPERATORS
+	// no longer maps.
 	Operator string `json:"operator"`
 	// The pod slot it holds; null for every enrollment without one.
 	Slot *string `json:"slot"`

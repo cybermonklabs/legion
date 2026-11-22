@@ -131,7 +131,7 @@ func endHold(t *testing.T, m *Machine, requestID string) {
 // person's decision of a judge key's request does first.
 func handOver(t *testing.T, m *Machine, recordID string) {
 	t.Helper()
-	if err := m.LogJudged(t.Context(), recordID, judgeModel, map[string]any{"verdict": "deny", "error": "the model did not answer"}); err != nil {
+	if _, err := m.LogJudged(t.Context(), recordID, judgeModel, map[string]any{"verdict": "deny", "error": "the model did not answer"}); err != nil {
 		t.Fatalf("the hand-over: %v", err)
 	}
 }
@@ -374,7 +374,7 @@ func TestTheJudgeWritesOnlyWhileItHolds(t *testing.T) {
 func TestHandingOverEndsTheHold(t *testing.T) {
 	m, enr, key := newJudgeFixture(t)
 	req := pendingJudgeable(t, m, enr, key, "post the release notes", 600, "DEEL_API_KEY")
-	if err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "deny", "error": "the model did not answer"}); err != nil {
+	if _, err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "deny", "error": "the model did not answer"}); err != nil {
 		t.Fatalf("LogJudged: %v", err)
 	}
 	if _, holds := judgeHold(t, m, req.ID); holds {

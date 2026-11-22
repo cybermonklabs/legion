@@ -7,7 +7,9 @@
 package main
 
 import (
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,6 +18,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -167,6 +171,116 @@ func TestAPersonsPodReadsThePersonsAgentSecretWithNoApproval(t *testing.T) {
 	}
 	if want := "waiting for " + personPodPerson + " to approve it"; !strings.Contains(stdout, want) {
 		t.Fatalf("robot's pending request does not wait on %s, the secret's owner; want %q in:\n%s", personPodPerson, want, stdout)
+	}
+}
+
+// TestAPersonsPodNamesItsProjectsThroughTheBinaries drives a person's pod's projects through the
+// REAL compiled broker, its project-access client pointed at a Dispatch stand-in, and the REAL
+// compiled agent-secrets. Dispatch calls ada a full member: PRIV's access list names her, and
+// ELSE's does not. Each project holds a shared agent-tier secret, which owner and tier alone would
+// give her pod at once, so only the project rule keeps it.
+//
+// Ada's pod run as `enroll --pod` with AGENT_SECRETS_PROJECTS=PRIV enrols, `agent-secrets self`
+// prints PRIV, and the pod reads PRIV's secret. It is denied ELSE's secret project-not-named, and
+// the command it would run never runs. So the pod sees what her own session naming PRIV sees, and
+// no more. A restricted member's pod enrolls nothing at all (internal/cipher/enroll's
+// TestARestrictedMembersLauncherEnrollsNothing; this package's
+// TestARestrictedMembersMachineLoginEnrollsNothing for the machine login). The other refusals of
+// a pod's list are enroll.Service.Create's (internal/cipher/enroll/person_pod_test.go), each
+// answered by its own code (internal/cipher/api/enroll_projects_test.go).
+//
+// It skips when BROKER_TEST_DATABASE_URL is unset, as every Postgres-backed broker test does.
+func TestAPersonsPodNamesItsProjectsThroughTheBinaries(t *testing.T) {
+	const (
+		privProject, elseProject = "PRIV", "ELSE"
+		privKey, privValue       = "ADA_PRIV_KEY", "ada-priv-value"
+		elseKey                  = "ELSE_KEY"
+	)
+	databaseURL := storetest.URL(t)
+	issuer := oidctest.New(t)
+	clusterKey := issuer.PublishKey(t, "cluster-key")
+	rows := map[string]projectaccesstest.Row{
+		privProject: {Visibility: "private", Owner: privateOwner, Listed: []string{personPodPerson}},
+		elseProject: {Visibility: "private", Owner: privateOwner},
+	}
+	store := &requesterStore{path: filepath.Join(t.TempDir(), "fake-secrets.json"), rows: []secrets.LocalSecret{
+		requesterRow(privKey, policy.OwnerShared, policy.TierAgent, privValue, map[string]string{policy.TagProject: privProject}),
+		requesterRow(elseKey, policy.OwnerShared, policy.TierAgent, "else-value", map[string]string{policy.TagProject: elseProject}),
+	}}
+	store.write(t)
+	cli := buildAgentSecrets(t)
+
+	// brokerAsking starts a broker whose project-access client asks a Dispatch stand-in that
+	// calls ada a full member, and answers the broker's base URL and the stand-in.
+	brokerAsking := func() (string, *projectaccesstest.Server) {
+		t.Helper()
+		dispatch := projectaccesstest.NewServer(t, rows, map[string]string{personPodPerson: projectaccess.MemberFull})
+		tokenFile := filepath.Join(t.TempDir(), "dispatch-access-token")
+		writeWhole(t, tokenFile, dispatch.Token+"\n")
+		broker := startBroker(t, brokerOptions{Env: append([]string{
+			"BROKER_DATABASE_URL=" + databaseURL,
+			"BROKER_LISTEN_ADDR=127.0.0.1:0",
+			"BROKER_PUBLIC_URL=http://127.0.0.1:0",
+			"BROKER_FAKE_SECRETS_FILE=" + store.path,
+			"BROKER_K8S_OIDC_ISSUER=" + issuer.URL(),
+			"BROKER_K8S_OIDC_AUDIENCE=" + personPodAudience,
+			"BROKER_PROJECT_ACCESS_URL=" + dispatch.URL,
+			"BROKER_PROJECT_ACCESS_TOKEN_FILE=" + tokenFile,
+			"BROKER_DRAIN_SECONDS=0",
+		}, personPodMapping...)})
+		requireHealthy(t, broker.Addr)
+		broker.AwaitRecord(t, "project access check", map[string]any{"state": "on"})
+		if refused := recordsWith(broker.Boot, policy.RefusedMessage, nil); len(refused) != 0 {
+			t.Fatalf("the broker refused a secret at boot, %v; a broker with project access serves a tagged secret:\n%s", refused, broker.Boot)
+		}
+		return "http://" + broker.Addr, dispatch
+	}
+	base, dispatch := brokerAsking()
+
+	// enrol runs the real client as ada's pod podUID against the broker at base: `enroll --pod`
+	// with the pod's projected token mounted as a file, into a key directory of its own, with env
+	// added to the pod's environment. It answers the pod's session and the run's exit code and
+	// stderr.
+	enrol := func(base, podUID string, env []string) (requesterSession, int, string) {
+		t.Helper()
+		tokenPath := filepath.Join(t.TempDir(), podUID+"-token")
+		writeWhole(t, tokenPath, mintPodToken(t, issuer, clusterKey, personPodAdaAccount, personPodAudience, podUID))
+		session := requesterSession{name: podUID, runtimeID: podUID, person: personPodPerson, keyDir: filepath.Join(t.TempDir(), podUID)}
+		cmd := exec.Command(cli, "enroll", "--pod", "--service", personPodAdaService, "--pod-token-file", tokenPath, "--out", session.keyDir)
+		cmd.Env = append(agentSecretsEnv(base, session.keyDir), env...)
+		var out, errs strings.Builder
+		cmd.Stdout, cmd.Stderr = &out, &errs
+		var exit *exec.ExitError
+		if err := cmd.Run(); err != nil && !errors.As(err, &exit) {
+			t.Fatalf("agent-secrets enroll --pod as %s's pod %s: %v", personPodPerson, podUID, err)
+		}
+		t.Logf("$ %s agent-secrets %s\n< exit %d\n< stdout: %s\n< stderr: %s", strings.Join(env, " "), strings.Join(cmd.Args[1:], " "), cmd.ProcessState.ExitCode(), out.String(), errs.String())
+		session.enrollmentID = strings.TrimSpace(out.String())
+		return session, cmd.ProcessState.ExitCode(), errs.String()
+	}
+
+	t.Log("--- ada's pod with AGENT_SECRETS_PROJECTS=PRIV enrols naming PRIV")
+	pod, code, stderr := enrol(base, "ada-pod-1", []string{"AGENT_SECRETS_PROJECTS=" + privProject})
+	if code != 0 || pod.enrollmentID == "" {
+		t.Fatalf("enroll --pod as ada's pod under AGENT_SECRETS_PROJECTS=%s exited %d, want 0 and the enrollment id\nstderr: %s", privProject, code, stderr)
+	}
+	code, stdout, stderr := pod.run(t, cli, base, "self")
+	if code != 0 || cliField(t, stdout, "projects") != privProject || cliField(t, stdout, "operator") != personPodPerson {
+		t.Fatalf("agent-secrets self as ada's pod exited %d, want 0 naming operator %s and projects %s\nstdout: %s\nstderr: %s", code, personPodPerson, privProject, stdout, stderr)
+	}
+
+	t.Log("--- the pod reads PRIV's secret, and is denied ELSE's")
+	code, stdout, stderr = pod.run(t, cli, base, privKey, "--", "sh", "-c", `printf %s "$`+privKey+`"`)
+	if code != 0 || stdout != privValue {
+		t.Fatalf("agent-secrets %s as ada's pod naming PRIV exited %d with %q, want 0 and its value\nstderr: %s", privKey, code, stdout, stderr)
+	}
+	code, stdout, stderr = pod.run(t, cli, base, elseKey, "--", "sh", "-c", "echo ran")
+	if code != cliExitDenied || strings.Contains(stdout, "ran") || !strings.Contains(stderr, elseKey+": "+policy.ReasonProjectNotNamed) {
+		t.Fatalf("agent-secrets %s as ada's pod naming PRIV exited %d with stdout %q, want %d (denied %s) and nothing run\nstderr: %s",
+			elseKey, code, stdout, cliExitDenied, policy.ReasonProjectNotNamed, stderr)
+	}
+	if dispatch.ProjectCalls() == 0 {
+		t.Fatal("the broker asked Dispatch nothing of a project, so no answer above read one: the run is blind")
 	}
 }
 

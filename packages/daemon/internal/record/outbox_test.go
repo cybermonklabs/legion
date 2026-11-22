@@ -32,7 +32,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		// carries its reason to post on the issue before the status (workflow's moveReason).
 		OrdinaryStatusWrite("in_progress", "testing", "Legion moved this issue from testing back to implementing at the tester's request: the fix does not cover the empty list."),
 		PersonHandoverStatusWrite("todo", "triage"),
-		ReassertStatusWrite("in_progress", "done"),
+		ReassertStatusWrite("in_progress", "done", 7),
 		HandOverStatusWrite("todo", "in_progress", "LEGION-200", 3),
 		MessagePost{Body: "Pull request checks are blocked."},
 		// The row an older daemon's rescue message queued, which still decodes and round-trips.
@@ -131,6 +131,34 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 	}
 }
 
+func TestExpediteOutboxReportsWhetherItMovedARow(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	now := time.Date(2026, 11, 20, 1, 0, 0, 0, time.UTC)
+	row, err := NewOutboxRow("LEGION-208", MessagePost{Body: "A row to wake."}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("make the row: %v", err)
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		id, err := records.EnqueueID(ctx, tx, row)
+		must(t, err)
+		row.ID = id
+		moved, err := records.ExpediteOutbox(ctx, tx, row, now)
+		must(t, err)
+		if !moved {
+			t.Fatalf("first expedite of a row due at %s = not moved, want moved", row.NextAt)
+		}
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		moved, err := records.ExpediteOutbox(ctx, tx, row, now)
+		must(t, err)
+		if moved {
+			t.Fatalf("second expedite of the row at %s = moved, want not moved", now)
+		}
+	})
+}
+
 // Every kind of status row has a constructor of its own, and no constructor leaves Kind empty:
 // the kind is the one thing a row cannot be queued without (validateOutboxPayload refuses a write
 // without one), so a kind nothing builds has no way into the outbox at all. The table is read
@@ -140,7 +168,7 @@ func TestEveryStatusRowKindHasAConstructorThatSetsIt(t *testing.T) {
 	built := map[StatusRowKind]StatusWrite{
 		OrdinaryStatusRow:       OrdinaryStatusWrite("testing", "in_progress", ""),
 		PersonHandoverStatusRow: PersonHandoverStatusWrite("todo", "triage"),
-		ReassertStatusRow:       ReassertStatusWrite("in_progress", "done"),
+		ReassertStatusRow:       ReassertStatusWrite("in_progress", "done", 7),
 		HandOverStatusRow:       HandOverStatusWrite("todo", "in_progress", "LEGION-200", 3),
 		CloseStatusRow:          CloseStatusWrite("done", "in_progress", "merged", 7),
 	}

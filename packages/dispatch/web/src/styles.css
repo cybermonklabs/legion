@@ -822,6 +822,58 @@ html:has([data-issue-page]) {
   margin-bottom: 0;
 }
 
+/* A block of the new issue page that takes typing says so: a row of the outline marked
+   `[data-editable]`, whose node takes typing (`useNodeEditing.ts`'s `nodeEditable`), and the box a
+   row's editor scrolls in, of the cue's one class, `dispatch-edit-cue` (`StagedDocument.tsx`'s
+   `EditorBox`), while the document in it takes typing, its article (`ProofDocument.tsx`'s
+   `.dispatch-doc`) marked `data-read-only="false"`. Under a pointer that hovers it draws the text
+   cursor and the page's faint pane behind it - for a row, behind its card, where its focus is
+   drawn too - and while the editor in it holds the focus, a 1 px rule in the page's ink, the rule
+   the page's own boxes for words draw while they hold the caret (`theme/classes.ts`'s `pageField`
+   and `pageComposer`). Both colours are the palette's, so each follows the scheme. The rule is an
+   outline 1 px inside the box, not a border: it takes no room, so the box keeps the height the row
+   holds it to and its words their width; no ancestor's overflow cuts it; and an outline is painted
+   over the box's content, where an inset shadow is painted under it and a code block scrolled to
+   the box's edge would cover it. Only a pointer that hovers draws the hover's part: a tap on a
+   touch screen would leave the tint on the row it touched. A node that takes no typing - a result,
+   an ask, a comment, a message, any block of a closed issue - carries no mark and draws neither,
+   and neither does the box of a document the editor admits read-only: a closed issue's, or one
+   this build's schema is out of date for. The box's `:has()` is cheap: its subject is the one
+   editor box the page draws, not `html`, so a change of what it matches recalculates the style of
+   that box and what it holds alone, where an `html:has()` ancestor recalculated the whole
+   document's; and what it looks for, one class and one attribute of the article, changes only as
+   the issue closes or the document's admission does. */
+@media (hover: hover) {
+  [data-issue-page] [data-node-row][data-editable]:hover,
+  [data-issue-page] .dispatch-edit-cue:has(.dispatch-doc[data-read-only="false"]):hover {
+    cursor: text;
+  }
+
+  [data-issue-page] [data-node-row][data-editable]:hover > [data-node-card],
+  [data-issue-page] .dispatch-edit-cue:has(.dispatch-doc[data-read-only="false"]):hover {
+    background-color: var(--color-page-pane);
+  }
+}
+
+[data-issue-page] .dispatch-edit-cue:has(.dispatch-doc[data-read-only="false"]):focus-within {
+  outline: 1px solid var(--color-page-ink);
+  outline-offset: -1px;
+}
+
+/* A control inside a block that takes typing keeps the cursor it had, since it takes none: the
+   text cursor above would reach it by inheritance. The rule is in the base layer, under
+   Tailwind's utilities, so a control's own cursor class (`cursor-pointer`) still wins. */
+@layer base {
+  [data-issue-page]
+    :is(
+      [data-node-row][data-editable],
+      .dispatch-edit-cue:has(.dispatch-doc[data-read-only="false"])
+    )
+    :is(button, select, summary, [role="button"]) {
+    cursor: auto;
+  }
+}
+
 /* A decision block is a card inside prose. Its first/last child would otherwise carry the
    prose paragraph margins into the card (a 20px gap under a 12px header). The repeated attribute
    selector lifts these rules to (0,5,0): a decision inside a reply drawn in another decision's

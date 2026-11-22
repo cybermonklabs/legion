@@ -81,7 +81,8 @@ const pauseRigReason = "the model provider is refusing every request"
 // pod's unpushed work, and the issue-level teardowns, a release's (ReleaseIssue) and a close's
 // (SuspendIssue), whose every deletion it records. The release's executors ask for the release's
 // teardown (runtime.IssueReleaser) and save nothing without it, so a rig without ReleaseIssue
-// would read no release and no save, whatever the pause held. IssuePod is the embedded fake's.
+// would read no release and no save, whatever the pause held. IssuePod and IssueKeepsVolume are
+// the embedded fake's.
 type pauseRuntime struct {
 	*fake.Runtime
 	clock *waveClock

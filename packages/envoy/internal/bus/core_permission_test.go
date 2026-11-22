@@ -173,7 +173,7 @@ func TestARequestCoreNATSDeniesAnswersTheDenialAtOnce(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	started := time.Now()
-	_, err := client.RequestCore(ctx, deniedRole, natsgo.Header{"Envoy-Probe": []string{"1"}})
+	_, err := client.RequestCore(ctx, deniedRole, natsgo.NewInbox(), natsgo.Header{"Envoy-Probe": []string{"1"}})
 	if !errors.Is(err, bus.ErrPublishDenied) {
 		t.Fatalf("denied request answered %v, want ErrPublishDenied", err)
 	}

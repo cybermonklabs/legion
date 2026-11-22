@@ -135,7 +135,7 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 // never comes back with the key (migration 20261106020619); the feed's column does come back, so
 // the row's birth stamp is hashed in beside it. It is the same fact, read the same way, that
 // tells the event relay an event log that was reset under its cursor from one that merely went
-// quiet (eventLogWasReset).
+// quiet (events.EventLogWasReset).
 func (s *server) eventFeedETag(lastSeq int, createdAt time.Time, options eventListOptions, trees bool) string {
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "created=%d\nlast_seq=%d\nafter=%d\nbefore=%d\nhas_before=%t\ndescending=%t\nlimit=%d\n",

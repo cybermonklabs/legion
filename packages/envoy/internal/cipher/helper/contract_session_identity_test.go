@@ -131,7 +131,7 @@ func TestContractARebootKeepsAGrantTheSessionWasGiven(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resumed := next.register(ctx, peer, os.Getpid(), sessionID, false, 0, 20*time.Second)
+	resumed := next.register(ctx, peer, os.Getpid(), sessionID, nil, false, 0, 20*time.Second)
 	if !resumed.OK || resumed.EnrollmentID != reg.EnrollmentID {
 		t.Fatalf("the resumed session got %+v, want the enrollment it had, %s", resumed, reg.EnrollmentID)
 	}

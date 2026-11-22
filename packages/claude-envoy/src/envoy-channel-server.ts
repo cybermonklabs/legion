@@ -19,7 +19,6 @@ import {
   inboundRestoredNoticeText,
   inboundUnavailable,
   inboundUnavailableNoticeText,
-  registerWithRelay,
 } from "@legion/envoy-client/consumer-delivery"
 import {
   createDeliveryDedupe,
@@ -46,7 +45,9 @@ import {
   SHUTDOWN_SETTLE_MS,
 } from "@legion/envoy-client/envoy-settings"
 import { LoggableError, messageFor, natsFailureReason } from "@legion/envoy-client/errors"
+import type { RelayOutage } from "@legion/envoy-client/listener-relay"
 import { machineID } from "@legion/envoy-client/machine"
+import { refusedTopicsNoticeText, registerWithRelay } from "@legion/envoy-client/relay-registration"
 import {
   type SessionConfigFile,
   sessionConfigFile,
@@ -98,7 +99,7 @@ import {
   admittingMoves,
   channelReopener,
   closeUnstartedConnection,
-  dialChannelNats,
+  dialChannelInbound,
   type ReopenConnection,
   type ReopenedConnection,
   START_STOPPING,
@@ -372,6 +373,9 @@ export interface ChannelSessionOptions {
    * alone. A failed move leaves the relay closed and the next registration retries it.
    */
   readonly followSession?: () => Promise<void>
+  /** Has a refused trade of the connection's own told the session's outage report: the relay
+   *  socket's (`ListenerRelay.reportOutagesTo`); absent for NATS. */
+  readonly reportOutagesTo?: (outage: RelayOutage) => void
   /**
    * Told each `/clear` this session adopts from the handoff file, as it moves from `previous` to
    * `next` (`adoptHandoff`), before the new id registers: what else the server keeps under the
@@ -1341,6 +1345,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       })
     },
   )
+  // A relay socket's refused trade is this session's outage too, told once with its
+  // registrations', which only a registration the listener accepted ends.
+  options.reportOutagesTo?.(inboundOutage)
 
   /** The title last stamped, so a heartbeat stamps nothing new. */
   let stampedTitle: { readonly sessionID: string; readonly title: string } | undefined
@@ -1418,7 +1425,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       relay: asking?.delivery,
       ...(relayMissing === undefined ? {} : { relayMissing }),
       ownAgentSubject: directSubject,
-      followed: followedTopics.topics(),
+      followed: () => followedTopics.topics(),
       roles: heldRole === undefined ? [] : [heldRole],
       outage: inboundOutage,
       send: (topics, deliveryRequest) => {
@@ -1453,6 +1460,27 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       answered: (result) => {
         if (asking !== undefined) takeDeliveryAnswer(sessionID, asking, result)
       },
+      // An edge listener refused these topics for the projects of the session's token: they stop
+      // being followed, here and in the ledger, so no later registration carries them and a
+      // restart does not follow them again, and the session is told which, once, where it is told
+      // an outage, whichever path registered. A session this process has since left keeps its own.
+      drop: (topics, reason) => {
+        if (identity.id !== sessionID) return
+        for (const topic of topics) userTopics.delete(topic)
+        followedTopics.unfollow(topics)
+        ledger.followedChanged().catch((error: unknown) => {
+          process.stderr.write(
+            `envoy-channel: the topics the listener refused stay in the delivery state until it is written next — ${messageFor(error)}\n`,
+          )
+        })
+        if (shuttingDown) return
+        delivery.notice(refusedTopicsNoticeText(topics, reason)).catch((noticeError: unknown) => {
+          process.stderr.write(
+            `envoy-channel: the session could not be told which topics the listener refused — ${messageFor(noticeError)}\n`,
+          )
+        })
+      },
+      log: (line) => process.stderr.write(`envoy-channel: ${line}\n`),
     })
   }
 
@@ -2109,6 +2137,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     }
     connection = live
     followSession = reopened.followSession
+    reopened.reportOutagesTo?.(inboundOutage)
     // A handoff that waits for its relay opens it on this connection as it registers.
     if (relay !== undefined && !handoffDeliveryPending) subscribeRelay(relay)
     watchConnection(live)
@@ -2775,12 +2804,16 @@ export async function runEnvoyChannelServer(): Promise<void> {
       session = inboundOffChannelSession({ identity, stateDirectory, why: inbound.off })
     } else {
       starting =
-        inbound.natsCredential.kind === "broker"
-          ? "it waits for this session's broker token, and its stderr says what each trade came to"
-          : "it connects to NATS"
+        "relaySetting" in inbound
+          ? "it opens the listener's relay socket for this session, and its stderr says why an open failed"
+          : inbound.natsCredential.kind === "broker"
+            ? "it waits for this session's broker token, and its stderr says what each trade came to"
+            : "it connects to NATS"
       const natsName = `claude-envoy-channel-${identity.id}`
-      const dialled = await dialChannelNats(
+      const dialled = await dialChannelInbound(
         inbound,
+        envoy.url,
+        currentSessionId,
         natsName,
         (text, dialError) => {
           // A redial's warning names what the start waits on; the token keeper warns through the
@@ -2808,6 +2841,8 @@ export async function runEnvoyChannelServer(): Promise<void> {
       const followSession = admitting(dialled.followSession)
       const reopen = channelReopener({
         inbound,
+        listenerUrl: envoy.url,
+        session: currentSessionId,
         name: natsName,
         signal: booting.signal,
         swapKeeper: (stop) => {
@@ -2838,6 +2873,9 @@ export async function runEnvoyChannelServer(): Promise<void> {
         // The QA override names a fixed identity; only a Claude-minted id follows `/clear`.
         ...(configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}),
         ...(followSession === undefined ? {} : { followSession }),
+        ...(dialled.reportOutagesTo === undefined
+          ? {}
+          : { reportOutagesTo: dialled.reportOutagesTo }),
         // The live view follows a `/clear` the mod reported before it began listening.
         adopted: (previous, next) => agentStream?.sessionAdopted(previous, next),
         reopen,
@@ -2859,6 +2897,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
         if (stopping || connection === undefined) return
         agentStream = startAgentStream({
           connection,
+          liveView: dialled.liveView,
           // Only a Claude-minted id follows `/clear`; the override names a fixed identity.
           followsSessionId: configuredValue(overrideSessionId) === undefined,
           ...(admission === undefined ? {} : { admitted: (id: string) => admission.admitted(id) }),

@@ -262,6 +262,84 @@ func TestRefusesReadAnswersTheSameRefusalAGetOfTheKeyAnswers(t *testing.T) {
 	}
 }
 
+// A caller that builds a key from text it does not control asks RefusesWrite whether this build can
+// write the key at all, before it writes anything (the webhook redelivery sweep, of a key holding
+// GitHub's delivery GUID), so it must answer exactly the refusal a real Put answers before sending:
+// it refuses the same keys, with the same ErrRefused classes and the same text, and answers nil
+// wherever the Put reaches the bucket. The bound is pinned on both sides of the write's own, the
+// longest subject a key goes into (watchOverhead): a key one byte inside it and one at it are
+// written, and one a byte past it is refused, which a read of the same key still takes
+// (getOverhead is shorter), so a RefusesWrite that asked the read's bound fails here. The keys
+// check passes and nats.go's alphabet refuses are refused by the copy of that alphabet RefusesRead
+// shares (natsKeyValid), which TestRefusesReadAnswersTheSameRefusalAGetOfTheKeyAnswers pins
+// character by character; one of them here is what pins that RefusesWrite asks the alphabet at
+// all.
+func TestRefusesWriteAnswersTheSameRefusalAPutOfTheKeyAnswers(t *testing.T) {
+	client, err := Connect([]string{testnats.URL(t)})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	js, err := client.Conn.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	const bucket = "kv_refuses_write"
+	kv, err := EnsureKeyValue(t.Context(), client.Conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	if err != nil {
+		t.Fatalf("create bucket: %v", err)
+	}
+	t.Cleanup(func() { _ = js.DeleteKeyValue(bucket) })
+	bound := maxSubjectBytes - watchOverhead(bucket)
+	if readBound := maxSubjectBytes - getOverhead(bucket); readBound <= bound {
+		t.Fatalf("a read takes keys of up to %d bytes and a write %d; want the read's bound past the write's, which the row a byte past the write's bound stands on", readBound, bound)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		key     string
+		refused bool
+	}{
+		{"an ordinary key", "fits-w", false},
+		{"a key one byte inside the write's bound", strings.Repeat("w", bound-1), false},
+		{"a key at the write's bound", strings.Repeat("v", bound), false},
+		{"a key one byte past the write's bound", strings.Repeat("u", bound+1), true},
+		{"a key past the server's protocol line", strings.Repeat("k", 5000), true},
+		{"a key holding an empty token", "sess..x", true},
+		{"a key holding a space", "ses bad", true},
+		{"a key outside nats.go's key alphabet", "ses:bad", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			answered := kv.RefusesWrite(tc.key)
+			_, err := kv.Put(tc.key, []byte("v"))
+			refused := errors.Is(err, ErrRefused)
+			if err != nil && !refused {
+				t.Fatalf("put of the %d-byte key = %v; want it written or refused", len(tc.key), err)
+			}
+			if refused != tc.refused {
+				t.Fatalf("put of the %d-byte key = %v; want refused %v", len(tc.key), err, tc.refused)
+			}
+			if refused != (answered != nil) {
+				t.Fatalf("RefusesWrite = %v, put = %v; want RefusesWrite to refuse exactly when the put does", answered, err)
+			}
+			if !refused {
+				return
+			}
+			for _, class := range []error{ErrRefused, ErrTooLarge, ErrInvalidSubject, ErrInvalidKey, nats.ErrInvalidKey} {
+				if errors.Is(answered, class) != errors.Is(err, class) {
+					t.Fatalf("RefusesWrite = %v and put = %v disagree on %v", answered, err, class)
+				}
+			}
+			if answered.Error() != err.Error() {
+				t.Fatalf("RefusesWrite says %q, the put says %q; want the same refusal", answered, err)
+			}
+		})
+	}
+	if !client.Conn.IsConnected() {
+		t.Fatalf("the refusals left the connection %v, want it connected", client.Conn.Status())
+	}
+}
+
 // A key already in a bucket stays usable whatever this build would now refuse to write: a listener
 // built before the key check stored keys up to the length its own direct get could read. A write
 // of such a key is refused, since a key written now must stay readable and watchable; a read is

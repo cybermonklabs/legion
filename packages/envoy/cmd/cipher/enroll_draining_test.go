@@ -19,7 +19,7 @@ func TestEnrollHelperRetriesADrainingHelper(t *testing.T) {
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
 	t.Setenv("AGENT_SECRETS_KEY_DIR", dir)
 	var stdout, stderr bytes.Buffer
-	if code := cmdEnrollHelper("box:1", "tp", "", &stdout, &stderr); code != 0 || calls.Load() != 3 {
+	if code := cmdEnrollHelper("box:1", "tp", "", nil, &stdout, &stderr); code != 0 || calls.Load() != 3 {
 		t.Fatalf("enroll against a helper draining twice = exit %d after %d calls (stderr %q); want 0 on the third", code, calls.Load(), stderr.String())
 	}
 	if got, err := os.ReadFile(filepath.Join(dir, enrollmentFile)); err != nil || strings.TrimSpace(string(got)) != "e" {
@@ -37,7 +37,7 @@ func TestEnrollHelperStopsRetryingDrainingAtItsWait(t *testing.T) {
 	enrollDrainWait = 0
 	t.Cleanup(func() { enrollDrainWait = old })
 	var stdout, stderr bytes.Buffer
-	code := cmdEnrollHelper("box:1", "tp", "", &stdout, &stderr)
+	code := cmdEnrollHelper("box:1", "tp", "", nil, &stdout, &stderr)
 	if code != 1 || !strings.Contains(stderr.String(), helper.CodeDraining) || calls.Load() != 1 {
 		t.Fatalf("enroll against a helper that stays draining = exit %d after %d calls (stderr %q); want 1 naming DRAINING after one call", code, calls.Load(), stderr.String())
 	}

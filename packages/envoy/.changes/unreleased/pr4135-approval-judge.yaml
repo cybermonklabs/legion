@@ -1,0 +1,32 @@
+kind: Added
+body: |-
+  The broker's approval page shows, for each requested secret of a Dispatch project, the project,
+  whether it is private, and whether the credential that asked names it, and it shows the
+  projects that credential names: a session's list, or the project a pod's or a machine's
+  operator entry maps it to. A request of a private project (by its secrets, the projects its
+  credential names, or an issue key its reason names) answers a person outside the project "No
+  such request", as a request that does not exist; it is in none of their lists, and a decision's
+  outcome line says nothing of it. A decision reads the projects of both credentials a request has
+  had, the one that asked and the one it hangs off now, so a person either would hide it from does
+  not decide it. The model judge makes a sixth check, `project`, after `withheld`: a request for a
+  secret of a private project, or of a project Dispatch does not hold, or from a credential that
+  names a private project, or whose signed reason names any issue of a private project, is left
+  to a person, since the judge's own token names no person. The policy and project checks and the
+  read of the issue the reason names share one 5-second bound, the read of the ask it cites has a
+  5-second bound of its own, and a read that fails is recorded as `dispatch`. The judge's grant
+  asks Dispatch again, afresh rather than from the answers the broker keeps, under a 5-second
+  bound of its own that ends a second before the run does; its refusal's write asks Dispatch
+  nothing, so a refusal stands while Dispatch cannot answer. The verdict's row is written on a
+  context of its own, so a slow Dispatch still leaves the run its row. An approval whose answer
+  was lost after it applied leaves only its own row, one still committing is waited for, and where
+  the broker cannot tell whether it applied, the row it writes says `applied` `unknown`, never
+  false, and ends no hold: the request reaches its person when the hold runs out.
+  A stop of the broker during the approval is logged as that, not as a refusal. A new request or
+  machine login whose reason names the issue keys of more than 16 projects is refused when it is
+  made, on every broker, `400 REQUEST_INVALID` naming the bound; a request stored before that whose
+  reason names more is still shown, its keys counted as naming no project. A sign-in started from
+  a private project's request sends the provider no `login_hint`. A broker with no
+  `BROKER_PROJECT_ACCESS_URL` judges exactly as before and asks Dispatch nothing about projects.
+time: 2026-11-16T02:58:17Z
+custom:
+    Issue: pr4135

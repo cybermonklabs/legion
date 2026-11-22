@@ -6,6 +6,7 @@ package helper
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -175,7 +176,7 @@ func TestSaveAndLoadRecordsCarryNoKey(t *testing.T) {
 	// The boot id is on every saved record: it is what makes the pid and the start ticks name
 	// one process incarnation across a reboot (Registry.SameBoot).
 	want := Record{PID: 4242, StartTicks: 99, BootID: reg.bootID, RuntimeID: "h:4242:99", EnrollmentID: "enr-1"}
-	if err != nil || len(recs) != 1 || recs[0] != want {
+	if err != nil || len(recs) != 1 || !reflect.DeepEqual(recs[0], want) {
 		t.Fatalf("records: %+v %v, want %+v", recs, err, want)
 	}
 	if recs, err := LoadRecords(filepath.Join(t.TempDir(), "none.json")); err != nil || recs != nil {
