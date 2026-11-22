@@ -201,22 +201,31 @@ func leaveState(w Walk, status string) record.TaskState {
 	return record.TaskLeft
 }
 
-// endTaskWithLeave writes issue out of the workflow at status: its task ends with its run where it
+// endTaskWithLeave writes issue out of the workflow at status: each task of its run ends where it
 // stands, in the state its leave gives it (moveTask, leaveState), which writes the phase done, and
-// its hold and its wait on a person are cleared, in the caller's transaction (writeIssueOn). Every
-// leave ends a task here: a child's (leave), a root's that begins its linger (beginLinger) and a
+// its hold and its wait on a person are cleared, in the caller's transaction (writeIssueOn, or
+// WriteIssue for a plan of several tasks, where the issue stands where its tasks put it). Every
+// leave ends its tasks here: a child's (leave), a root's that begins its linger (beginLinger) and a
 // waiting root's while the operator runs a tree under its key (leaveUnderOperator). issue is the
-// caller's record, which it writes with any field it set, and which stands as written after.
+// caller's record, which it writes with any field it set, and which stands as written after: the
+// issue itself, read for none of its tasks.
 func (e *Engine) endTaskWithLeave(ctx context.Context, tx pgx.Tx, issue *record.Issue, status string) error {
-	w, err := e.walk(ctx, tx, *issue)
+	walks, err := e.walks(ctx, tx, *issue)
 	if err != nil {
 		return err
 	}
-	if err := e.moveTask(ctx, tx, issue, &w, phase.Done, w.Place, leaveState(w, status)); err != nil {
-		return err
+	issue.ViewTask = ""
+	for at := range walks {
+		w := &walks[at]
+		if err := e.moveTask(ctx, tx, issue, w, phase.Done, w.Place, leaveState(*w, status)); err != nil {
+			return err
+		}
 	}
 	issue.Hold, issue.Awaiting = nil, nil
-	return e.writeIssueOn(ctx, tx, *issue, w)
+	if len(walks) == 1 {
+		return e.writeIssueOn(ctx, tx, *issue, walks[0])
+	}
+	return e.WriteIssue(ctx, tx, *issue)
 }
 
 // releaseParkedClaim queues the row that clears the issue's Dispatch claim when the issue is
