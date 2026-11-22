@@ -365,14 +365,19 @@ func (rig *copiesRig) watch(t *testing.T, standIn *sessionStandIn, sessionID, ro
 // throughHandover counts into received every frame standIn, sessionID's process, receives until no
 // handover of role runs on this listener, and then until a message stored on sessionID's own
 // subject after that has arrived, which it does not count, each within copiesWatchBound; it fails
-// the row when that message has not arrived. Every copy a handover forwards to sessionID is stored
-// on that subject before the handover ends, and sessionID's relay sends the subject in stream
-// order, so what a row counts after it holds every frame any handover so far sent sessionID, with
-// no fixed wait.
+// the row when a handover still runs once that bound has passed, or when that message has not
+// arrived. Every copy a handover forwards to sessionID is stored on that subject before the
+// handover ends, and sessionID's relay sends the subject in stream order, so what a row counts
+// after it holds every frame any handover so far sent sessionID, with no fixed wait. The message
+// is stored only once no handover runs: one stored while a handover still runs could arrive
+// before a copy that handover forwards later, which the row would then not count.
 func (rig *copiesRig) throughHandover(t *testing.T, standIn *sessionStandIn, sessionID, role string, received copiesReceived) {
 	t.Helper()
 	deadline := time.Now().Add(copiesWatchBound)
-	for !rig.handoverIdle(role) && time.Now().Before(deadline) {
+	for !rig.handoverIdle(role) {
+		if !time.Now().Before(deadline) {
+			t.Fatalf("a handover of role %s still runs after %s, so a copy it forwards to %s later would not be counted; %s received %v", role, copiesWatchBound, sessionID, sessionID, received)
+		}
 		received.takeOne(standIn, time.Now().Add(50*time.Millisecond))
 	}
 	after := rig.sendToSession(t, sessionID)
