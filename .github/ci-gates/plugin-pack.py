@@ -28,7 +28,7 @@ GATE = gate("plugin_pack", PLUGIN_PACK_JOB, exact=[
                                      "agentmodels_omp_test.go:175 --stage-skills"),
     ("skills/**", f"{at(PLUGIN_PACK_JOB, PLUGIN_PACK_STEP)}: internal/daemon/agentmodels_omp_test.go:175 "
                   "prepack stages skills/<name>"),
-) + install_jj(PLUGIN_PACK_JOB) + install_omp(PLUGIN_PACK_JOB)
+) + install_omp(PLUGIN_PACK_JOB)
   + setup_go(PLUGIN_PACK_JOB, f"{DAEMON}/go.mod") + bun_job(PLUGIN_PACK_JOB))
 GATE = with_reads(GATE, [
     Read('packages/daemon/**', "filter plugin_pack held packages/daemon/** by hand before the filters were computed: it selected 865 file(s) no other read of this gate declares", but=('**/*_test.go',)),

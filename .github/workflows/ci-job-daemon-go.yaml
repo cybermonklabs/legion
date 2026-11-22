@@ -147,8 +147,7 @@ jobs:
 
       # internal/podsafety's baseline test and the pod agent's argv test run the Oh My Pi the worker
       # image ships, and refuse on GitHub Actions without one. The pin is read from
-      # .omp-pin, the repository's one copy of it, installed through the mise above
-      # (.github/actions/install-omp).
+      # .omp-pin, the repository's one copy of it (.github/actions/install-omp).
       - uses: ./.github/actions/install-omp
 
       # internal/runtime/sandbox's uv link-mode test installs a wheel with the uv the worker image
