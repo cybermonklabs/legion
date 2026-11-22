@@ -661,8 +661,9 @@ describe("userConfigChain", () => {
     }
   }
 
-  /** Resolves once the child is gone; fails after `WAIT_MS` naming it, so a child that lives on
-   *  reads as that, not as the row's timeout. */
+  /** Resolves once the child is gone, and forgets it then, so `afterEach` never signals a pid the
+   *  kernel has since given another process; fails after `WAIT_MS` naming it, so a child that
+   *  lives on reads as that, not as the row's timeout. */
   async function reaped(pid: number): Promise<void> {
     const deadline = performance.now() + WAIT_MS;
     while (await running(pid)) {
@@ -671,7 +672,17 @@ describe("userConfigChain", () => {
       }
       await Bun.sleep(10);
     }
+    const at = children.indexOf(pid);
+    if (at >= 0) children.splice(at, 1);
   }
+
+  it("forgets a child once it is seen gone, so afterEach signals no pid reaped already", async () => {
+    const child = Bun.spawn(["true"]);
+    await child.exited;
+    children.push(child.pid);
+    await reaped(child.pid);
+    expect(children).not.toContain(child.pid);
+  });
 
   it("chains the user config files jj prints, in order", async () => {
     const env = await withJj("printf '/u/a.toml\\n/u/b.toml\\n'");
