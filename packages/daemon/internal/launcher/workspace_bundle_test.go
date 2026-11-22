@@ -551,17 +551,26 @@ func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 		cancel()
 		select {
 		case <-exited:
-		case <-time.After(20 * time.Second):
+		case <-time.After(cleanupBeforeDeadline(f.t)):
 			f.t.Error("the shim did not leave after its context ended")
 		}
 	})
 
-	conn, err := listener.Accept()
-	if err != nil {
+	// The accept waits until beforeDeadline runs out, as acceptRole's does: a shim that never dials
+	// fails here, the bound named beside the accept's error.
+	accept := beforeDeadline(f.t)
+	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(accept)); err != nil {
 		f.t.Fatal(err)
 	}
+	conn, err := listener.Accept()
+	if err != nil {
+		f.t.Fatalf("the shim's connection: %v (the accept waited %s, to 30 s before the test binary's deadline)", err, accept.Round(time.Second))
+	}
 	defer conn.Close()
-	if err := conn.SetDeadline(time.Now().Add(2 * time.Minute)); err != nil {
+	// The read of the shim's frames, and the save's own budget, run until beforeDeadline runs out:
+	// a save that runs a while with real git and jj on a loaded machine is merely slow.
+	bound := beforeDeadline(f.t)
+	if err := conn.SetDeadline(time.Now().Add(bound)); err != nil {
 		f.t.Fatal(err)
 	}
 	reader := shimwire.NewReader(bufio.NewReader(conn))
@@ -574,7 +583,7 @@ func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 	if err := writer.WriteFrame(shimwire.HelloAck{}); err != nil {
 		f.t.Fatal(err)
 	}
-	request := shimwire.BundleWorkspace{ID: "bundle-1", Issue: bundleIssue, MaxBytes: 40 << 20, TimeoutMs: 120_000}
+	request := shimwire.BundleWorkspace{ID: "bundle-1", Issue: bundleIssue, MaxBytes: 40 << 20, TimeoutMs: int(bound.Milliseconds())}
 	if err := writer.WriteFrame(request); err != nil {
 		f.t.Fatal(err)
 	}

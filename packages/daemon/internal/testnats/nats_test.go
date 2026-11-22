@@ -71,10 +71,24 @@ func TestAFailedStartLeavesNoContainer(t *testing.T) {
 // handed the first attempt's reader copies an empty configuration in, and that server admits
 // anyone. The row takes the first probe's client port at its address once the probe lets it go,
 // as another program can, and requires the start to have been tried again: a first start Docker
-// did not refuse checks no retry.
+// did not refuse checks no retry. Docker refuses only where this process can hold the port it
+// publishes: on a daemon on this machine. On a daemon on another machine the row fails as UNKNOWN,
+// naming the daemon, rather than fail on a probe count that says nothing of the configuration.
 func TestAStartRetriedAfterARefusedPublishEnforcesItsUsers(t *testing.T) {
 	if server, _, err := external(); err == nil && server != "" {
 		t.Skipf("%s names a running NATS server, so the package starts no container", externalURLEnv)
+	}
+	if local, err := localDaemon(context.Background()); err != nil {
+		t.Fatalf("find where the Docker daemon publishes a container's ports: %v", err)
+	} else if !local {
+		daemon := "another machine"
+		if provider, err := testcontainers.NewDockerProvider(); err == nil {
+			if host, err := provider.DaemonHost(context.Background()); err == nil {
+				daemon = host
+			}
+			provider.Close()
+		}
+		t.Fatalf("UNKNOWN: the Docker daemon is at %s, not this machine, so this process cannot hold the port Docker publishes there and cannot make Docker refuse a start; run the row against a daemon on this machine", daemon)
 	}
 	probe := loopbackPorts
 	t.Cleanup(func() { loopbackPorts = probe })
@@ -690,7 +704,7 @@ func openedSince(t *testing.T, armed map[uint64]bool, want ...string) map[string
 		return listed
 	}
 	if !testwait.Holds(leakSettle, leakPoll, func() bool {
-		found, err = opened(armed)
+		found, err = opened(readConnections, armed)
 		if err != nil || len(found) != len(want) {
 			return false
 		}

@@ -342,6 +342,98 @@ func TestAReleaseThatRacesAnotherClaimantFreesNothing(t *testing.T) {
 	}
 }
 
+// The race a release cannot tell from its holder's renewal by the process alone: the role is
+// granted again between the release's read of the claim and its conditional delete, so the
+// delete loses its condition and the record the release reads again is a fresh grant. That grant
+// is no claim the release read, whoever made it - the very process the release states, a second
+// process under the holder's session id, or another session - and it stands exactly as its
+// claimant wrote it, on each of the three paths a release reaches a claim by and under the
+// holder's own release and the administrator's force alike: the claimant's grant landed after
+// the release had read the claim it frees, so it is the later word. A release frees the grant it
+// read as the holder's renewals (TestAReleaseThatRacesItsOwnHoldersRenewalFreesTheClaim) and the
+// adoption of a claim that names no process
+// (TestAForcedReleaseThatRacesTheAdoptionOfAClaimNamingNoProcessFreesIt) leave it, and the
+// hand-back's mark leaves a fresh grant standing for the same reason
+// (TestAMarkThatRacesAFreshGrantByItsOwnProcessMarksNothing).
+//
+// The grant is stamped a second after the claim the release read, so it differs from that claim
+// in both its grant id and the moment it was claimed at.
+func TestAReleaseLeavesAClaimGrantedSinceItsReadStanding(t *testing.T) {
+	releaseUnderAFreshGrant(t, "ses_released_under_a_grant", "ses_granted_under_a_release", time.Second)
+}
+
+// The same race with the grant stamped in the very millisecond of the claim the release read,
+// so the moment it was claimed at cannot tell the two apart: the grant id each grant draws does
+// (RoleClaim.GrantID, RoleClaim.sameGrant), and the grant stands as it does a second later.
+func TestAReleaseLeavesAClaimGrantedInTheMillisecondOfItsReadStanding(t *testing.T) {
+	releaseUnderAFreshGrant(t, "ses_released_under_a_same_moment_grant", "ses_granted_in_the_same_moment", 0)
+}
+
+// releaseUnderAFreshGrant runs the race of a grant landing between a release's read of the
+// claim and its conditional delete, on each of the three release paths, under the holder's own
+// release and the administrator's force, for a grant to the process the release states, to a
+// second process under holder's id, and to the session another. The grant is stamped
+// grantAfter past the claim the release read on the registry's clock; zero stamps it in that
+// claim's own millisecond.
+func releaseUnderAFreshGrant(t *testing.T, holder, another string, grantAfter time.Duration) {
+	t.Helper()
+	const role = "legion-controller"
+	winners := []struct {
+		name     string
+		session  string
+		instance string
+	}{
+		{name: "the process the release states", session: holder, instance: roleClaimInstance},
+		{name: "a second process under the holder's id", session: holder, instance: roleClaimSecondInstance},
+		{name: "another session", session: another, instance: roleClaimSecondInstance},
+	}
+	authorities := []struct {
+		name      string
+		authority RoleReleaseAuthority
+	}{
+		{name: "the holder's own process", authority: releasedByItsProcess},
+		{name: "the administrator's force", authority: RoleReleaseAuthority{Force: true}},
+	}
+	for _, path := range claimReleasePaths {
+		t.Run(path.name, func(t *testing.T) {
+			for _, by := range authorities {
+				t.Run(by.name, func(t *testing.T) {
+					for _, winner := range winners {
+						t.Run(winner.name, func(t *testing.T) {
+							reg, advance := claimForRelease(t, path, role, holder, roleClaimInstance)
+							read := storedRoleClaim(t, reg, role)
+							advance(grantAfter)
+							var granted RoleClaim
+							racing := raceReleaseWith(t, reg, role, 1, func() {
+								claimRoleAs(t, reg, winner.session, "example-host", role, winner.instance)
+								granted = storedRoleClaim(t, reg, role)
+							})
+
+							releaseClaimOn(t, reg, path, holder, role, by.authority)
+
+							stood := storedRoleClaim(t, reg, role)
+							t.Logf("the grant to %s as %q, id %q claimed at %d, over the claim read with id %q at %d: standing after the release: %t (the record: %+v)",
+								winner.session, winner.instance, granted.GrantID, granted.ClaimedAt, read.GrantID, read.ClaimedAt, stood == granted, stood)
+							if granted.ClaimedAt-read.ClaimedAt != grantAfter.Milliseconds() {
+								t.Fatalf("the grant was claimed at %d and the claim the release read at %d, want the grant %d ms past it", granted.ClaimedAt, read.ClaimedAt, grantAfter.Milliseconds())
+							}
+							if granted.GrantID == "" || granted.GrantID == read.GrantID {
+								t.Fatalf("the grant carries the id %q and the claim the release read %q, want an id of the grant's own", granted.GrantID, read.GrantID)
+							}
+							if racing.deletes != 1 {
+								t.Fatalf("the release sent %d conditional deletes, want one: a claim granted since the read is never deleted", racing.deletes)
+							}
+							if stood != granted {
+								t.Fatalf("the claim after the release is %+v, want the grant %+v untouched: the release read no claim this grant made", stood, granted)
+							}
+						})
+					}
+				})
+			}
+		})
+	}
+}
+
 // The bound: a claim renewed under every one of the release's deletes is left standing rather
 // than looped on, and the release says so rather than answering success. Three deletes is the
 // whole of what one release sends (roleClaimReleaseAttempts), because the loop runs inside an

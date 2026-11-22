@@ -503,8 +503,8 @@ func (r *Reconciler) recordRuns(ctx context.Context, writer Writer, head pullHea
 
 // recordSuites writes each completed check suite of the pages GitHub answered 200 with, and
 // answers for the suites what record answers for the head. A suite is recorded only once it has
-// completed: a suite another App leaves queued with no run of its own would hold the head for
-// ever, since cistore settles no head while a suite its record holds is not completed. A suite that
+// completed: a suite that is not completed can hold the head as a queued run does (cistore's
+// suiteHolds), and one left queued with no run of its own would hold it for ever. A suite that
 // is running holds the head through its runs only once GitHub has created them: between one job's
 // end and its dependants' runs a record of finished runs is ready, and with ENVOY_CI_VERIFY on the
 // verify read holds its answer while such a suite runs (runningSuite).

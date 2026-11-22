@@ -335,10 +335,11 @@ machine in again. A machine login nobody decides expires after 15 minutes, a fix
 a setting (`machineLoginPendingTTL` in `packages/envoy/cmd/cipherd/main.go`). A person's machine
 logs in through the device grant alone: the earlier `POST /v1/launcher-credentials` login answers
 `405 Method Not Allowed` and its poll `GET /v1/launcher-credentials/{pending}` `404`. A service's
-login has no operator. The machine-login page lists it for everyone signed in, and anyone may
-revoke it, which ends every pod it enrolled at once: a service login a person approved through a
-code before services logged in with their tokens, until it expires, and a service's token login,
-which names no approver. A service whose token login was revoked logs in again with its token at
+login has no operator. The machine-login page lists it for everyone signed in but a restricted
+member (below), and any of them may revoke it, which ends every pod it enrolled at once: a service
+login a person approved through a code before services logged in with their tokens, until it
+expires, and a service's token login, which names no approver. A service whose token login was
+revoked logs in again with its token at
 its next call, under a new credential, which enrolls the pods it launches next; a pod the revoke
 ended stays without secrets until it is replaced. To stop it logging in, remove its account from
 `BROKER_SERVICE_LOGINS` and redeploy the broker. A token login of an account that
@@ -351,7 +352,45 @@ whose person Dispatch calls a restricted member, someone an access list admitted
 deployment's sign-in domain, enrolls nothing (`403 RESTRICTED_MEMBER_ENROLLS_NOTHING`), so that
 person's agents are released no secret; the login still trades for a token that names their
 projects. A session such a person already had is denied every secret `restricted-member`, and its
-grants end at their next use ([Operating the broker](/legion/broker/operate/)). The broker's rate
+grants end at their next use ([Operating the broker](/legion/broker/operate/)). Nor is such a
+person any secret's approver, even of a secret they own, of a secret a Google group they are in
+owns, or of a shared one whose approver is `anyone`, nor an approver of any service's machine
+login, even one an older broker opened naming them: the broker's approval page signs in only the
+deployment's domain and shows them no secret request (`403`), their **Inbox** lists them no
+secret request and no service's machine login, their **Live grants** lists only the grants of the
+sessions that act for them, and their machine-login page only their own machines' and pods'
+logins. Their revoke or dismissal of anything else, and their deny of a service's machine login an
+older broker opened, is refused `403 NOT_APPROVER`, saying why, and their revoke of a service's
+machine login `404 NOT_FOUND`. Their own machine logins and the grants of their own sessions stay
+theirs. While Dispatch cannot say what kind of member a person is, those lists leave such rows
+out, the machine-login page and its revoke hold the person to their own logins, so a lost
+machine's login can still be ended there, while a service's login is out of reach there until
+Dispatch answers and what remains is cluster access (delete the service's pods, or remove its
+account from `BROKER_SERVICE_LOGINS` and redeploy the broker), such a dismissal or deny is refused
+`503 MEMBER_KIND_UNCHECKABLE`, and the approval page shows no request (`503`). While Dispatch does
+not answer at all (a timeout, a failed connection, a gateway's `502`, `503` or `504`, Dispatch's
+own `DATABASE_UNAVAILABLE` or `OIDC_ISSUER_UNAVAILABLE`, or a `500` that names no code or names
+`INTERNAL`, which is how Dispatch answers a read its database failed), only the person a grant
+names as its approver ends it through the broker as an approver, since a revoke only takes access
+away. Every revoke through a group or as anyone is then refused `503 MEMBER_KIND_UNCHECKABLE`,
+whatever session holds the grant. A grant on a person's session can still be ended by that person,
+its operator, asking Dispatch nothing; a grant on a session that acts for no person (a service's
+pod, a person's pod `BROKER_POD_OPERATORS` no longer maps, or a machine's own session) nobody but
+its named approver ends through the broker until Dispatch answers. What remains for a pod's grant
+meanwhile is cluster access: delete the pod. Its grants then end when its lease lapses unrenewed
+(`BROKER_LEASE_SECONDS`), except that a session that names a session id leaves them dormant, used
+by nothing, for its next enrollment until `BROKER_SESSION_CARRY_SECONDS` passes, and a Legion
+claim's pod hands them to the claim's next live pod at once; so where something starts that
+session again (a Legion claim), stop that too. A grant also ends at its own expiry. Every revoke
+while Dispatch answers anything else the broker
+cannot read is refused `503 MEMBER_KIND_UNCHECKABLE` too: a refusal of the broker's own account, a
+kind this broker does not know, a `500` naming another code, another code of Dispatch's, a
+certificate that does not verify or a name that does not resolve. A revoke of a grant of one's own
+session asks nothing. The member-kind read of each route Dispatch relays ends within 2 seconds,
+inside the 5 that Dispatch waits for the broker, and so does the approval page's; a revoke's read
+of a grant's project is not bounded so, and while all of Dispatch is down it refuses the revoke of
+a grant whose project, or whose reason's issue key, it cannot ask about.
+The broker's rate
 limiter caps how often anyone can start a machine login, per source address and per named person,
 and how often anyone can try a token login: per source address before the token is verified, and
 per account once it is. A token login the broker could not complete (a 5xx, such as while its
@@ -820,7 +859,8 @@ restricted member's session gets none of the group's secrets, as it gets no othe
 human-tier secret, waits for the group's approval, which any member gives on the broker's page,
 and any member dismisses once it expires; and a member the group's last good read listed,
 however old that read is, lists and revokes the grants a member or the model judge approved
-([Approvals](#approvals)).
+([Approvals](#approvals)). A member Dispatch calls a restricted member is none of that, and
+decides, lists, revokes and dismisses nothing of the group's ([Machine login](#machine-login)).
 A member may approve a request their own session made, as a sole owner may approve their own: a
 group owner is not a second person, and no rule asks for one. A `requesters` entry naming a
 group admits a session whose person is a member. A list, revoke or dismissal that names the

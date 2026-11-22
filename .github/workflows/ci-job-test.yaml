@@ -516,6 +516,18 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.race_memory_test == 'true'
         run: .github/scripts/race_memory.test.sh
 
+      # The machine watch's falling-least case watches a tmpfs it mounts in an unprivileged user
+      # and mount namespace, so that no other writer moves the free space it reads, and it fails
+      # rather than skips under GITHUB_ACTIONS. Ubuntu 24.04 restricts unprivileged user namespaces
+      # with an AppArmor sysctl, so the job turns it off on its throwaway runner, as daemon-go does
+      # (`|| true`: a runner image without the key restricts nothing), and the unshare after it is
+      # the verdict that the restriction is gone.
+      - name: Allow unprivileged user namespaces (the machine watch's falling-least case)
+        if: inputs.changes-result != 'success' || inputs.disk_watch_test == 'true'
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          unshare --user --map-root-user --mount true
+
       - name: Test the machine watch
         if: inputs.changes-result != 'success' || inputs.disk_watch_test == 'true'
         run: .github/scripts/disk_watch.test.sh
@@ -562,6 +574,13 @@ jobs:
 
       - name: Test the approval-eval statistics
         run: bun test scripts/approval-eval
+
+      # scripts/search-measure's psql helper: the password a DSN carries reaches psql in PGPASSWORD
+      # alone, in no argument. A stand-in psql answers, so it needs no Postgres; the runner's own
+      # python3 runs it.
+      - name: Test the search-measure psql helper
+        run: python3 -m unittest -v pg_test
+        working-directory: scripts/search-measure
 
       # scripts/e2e/lib is no workspace either: its tsconfig.json holds the plan ratings read's
       # test, whose answer is typed to the contract, and the root package pins its TypeScript and

@@ -38,9 +38,17 @@ const refusalExceptionBound = 64 << 10
 // second time and raise a second exception. client.Publish keeps that bus bound itself, so this
 // detached call adds no second one. Nothing waits for it, nothing retries it, and a failure is
 // logged (exceptionPublishFailedLine) and nothing more.
-func publishRefusalException(client *bus.Client, logger *logging.Logger, item contracts.Envelope, result roles.Resolution) {
+//
+// edge is the edge listener's grant, nil on every other listener: an edge listener publishes the
+// exception only where its grant holds the lane, a role subject of one of its projects, and
+// withholds and counts one of any other role topic (edgeGrant.publishesException, withhold).
+func publishRefusalException(client *bus.Client, logger *logging.Logger, edge *edgeGrant, item contracts.Envelope, result roles.Resolution) {
 	reason := string(result.State)
 	if !roleholder.IsNoHolderReason(reason) {
+		return
+	}
+	if !edge.publishesException(item) {
+		edge.withhold(logger, item, reason)
 		return
 	}
 	exception, err := deliveryExceptionEnvelope(item, reason, result.Holder, refusalExceptionBound)
