@@ -459,3 +459,18 @@ export async function stripIsOneRow(page: Page): Promise<boolean> {
       )
     );
 }
+
+/** Every pick of the strip sits whole inside the strip's own box, so none is cut at its edge. */
+export async function stripPicksInside(page: Page): Promise<boolean> {
+  return await page.locator('[data-testid="window-strip"]').evaluate((strip) => {
+    const box = strip.getBoundingClientRect();
+    const picks = [...strip.querySelectorAll('[data-testid="window-pick"]')];
+    return (
+      picks.length > 0 &&
+      picks.every((pick) => {
+        const edge = pick.getBoundingClientRect();
+        return edge.left >= box.left - 0.5 && edge.right <= box.right + 0.5;
+      })
+    );
+  });
+}

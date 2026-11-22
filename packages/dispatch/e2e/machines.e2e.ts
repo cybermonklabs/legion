@@ -14,6 +14,7 @@ import {
   seedDrawnMachine,
   seedWidthMachine,
   stripIsOneRow,
+  stripPicksInside,
   stripScrolls,
   THREE_PANE_SIZE,
   THREE_PANES,
@@ -207,7 +208,7 @@ test.describe("@machines-width", () => {
   // does at 390 px, which `chromium` at its own width would only contradict. A row the phone
   // projects alone run carries ` @phone-only` beside its `@phone`, and that second tag is what
   // keeps `chromium` from scheduling it (e2e/playwright.config.ts).
-  test("at a phone width the strip scrolls sideways, the drawn panes keep their proportions, and a 22-pane window is listed in layout order @phone @phone-only", async ({
+  test("at a phone width the strip wraps with every window in sight, the drawn panes keep their proportions, and a 22-pane window is listed in layout order @phone @phone-only", async ({
     browser,
   }) => {
     await seedWidthMachine(Date.now());
@@ -217,9 +218,11 @@ test.describe("@machines-width", () => {
       await openMachine(page, WIDTH_HOST);
 
       await expect(page.locator('[data-testid="window-pick"]')).toHaveCount(4);
-      expect(await stripIsOneRow(page), "the strip is one row").toBe(true);
-      expect(await stripScrolls(page), "the strip scrolls sideways").toBe(true);
-      // The strip scrolls inside itself, so the page itself is no wider than the phone.
+      // The four picks are wider than a phone's line, so they wrap onto a second one: nothing
+      // scrolls sideways, and every pick sits whole inside the strip's own box.
+      expect(await stripIsOneRow(page), "the strip wrapped").toBe(false);
+      expect(await stripScrolls(page), "the strip scrolls sideways").toBe(false);
+      expect(await stripPicksInside(page), "a pick runs past the strip").toBe(true);
       await assertPageFits(page);
 
       // The three-pane window is still a drawing here, in the proportions the same seeded

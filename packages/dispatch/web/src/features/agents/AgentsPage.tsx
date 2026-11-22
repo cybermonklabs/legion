@@ -28,6 +28,7 @@ import type {
   MessageWithTrees,
   UserAgentStates,
 } from "../../api/types";
+import { CappedGroup, LAYOUT_GROUP_MAX } from "../../components/CappedGroup";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon, DisclosureToggle } from "../../components/DisclosureToggle";
 import { EmptyState } from "../../components/EmptyState";
@@ -37,6 +38,7 @@ import { LabelPill } from "../../components/Pill";
 import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
+import { TruncatedText } from "../../components/TruncatedText";
 import { useFootInset } from "../../hooks/useFootInset";
 import { useSending } from "../../hooks/useSending";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -113,12 +115,22 @@ import { groupCountLabel, matchingSelection, selectionSummary, toggleMatching } 
 import { storeAgentState, unreadRepliesLabel, useMarkRepliesRead, useUnreadAtOpen } from "./unread";
 
 /** The composer's one notice slot: the recipient limit, the exclusions, or the mode the selection
- *  sends in, one at a time. In the compact grid it is one line that scrolls sideways like the
- *  chips: between the mode and Send on a narrow screen, adding no height, and the third and last
- *  row on a short one. A refusal or an exclusion reads as a warning; the mode alone does not. */
+ *  sends in, one at a time. In the compact grid it sits between the mode and Send on a narrow
+ *  screen, wrapping to at most three lines, and is the third and last row on a short one, one
+ *  line; past that it ends in an ellipsis, with the whole notice as its title, so it never
+ *  scrolls sideways and the composer keeps its height budget. Every exclusion stays reachable on
+ *  the excluded agent's own chip, which names its reason. A refusal or an exclusion reads as a
+ *  warning; the mode alone does not. */
 const composerLineLayout =
-  "mt-2 text-sm narrow-or-short:order-2 narrow-or-short:col-start-2 narrow-or-short:mt-0 narrow-or-short:min-w-0 narrow-or-short:overflow-x-auto narrow-or-short:text-xs narrow-or-short:whitespace-nowrap short:order-3 short:col-span-4 short:col-start-1";
+  "mt-2 text-sm narrow-or-short:order-2 narrow-or-short:col-start-2 narrow-or-short:mt-0 narrow-or-short:min-w-0 narrow-or-short:line-clamp-3 narrow-or-short:text-xs narrow-or-short:[overflow-wrap:anywhere] short:order-3 short:col-span-4 short:col-start-1 short:line-clamp-1";
 const composerLine = `${composerLineLayout} ${dangerText}`;
+/** Where the composer is its compact grid: styles.css's `narrow-or-short` variant, in its own
+ *  pixels, which the two must keep in step. */
+const COMPACT_COMPOSER_QUERY = "(max-width: 767px), (max-height: 500px)";
+/** How many recipients the compact composer shows before its "+N": one chip, its state mark and
+ *  live link, held to `max-w-40`, and the control fit on one line of a 360 px screen, so the
+ *  composer's height does not grow with the selection. */
+const COMPACT_RECIPIENTS_SHOWN = 1;
 
 /**
  * Every listed session in its group (`agent-groups.ts`), each group in `orderAgents` order. The
@@ -624,68 +636,80 @@ function AgentRow({
       hidden={hidden}
       tabIndex={-1}
     >
-      {/* One line from `md`: with six hundred rows a second line is six hundred lines, and the
-          window's saving (R7) is paid back in paint. The name and the directory are what give
-          way, each to an ellipsis with its whole text one hover away. Below `md` the directory
-          wraps to a line of its own (the span below), which is the shape the row had before
-          this change and what keeps the name a box wide enough to tap on a phone. */}
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 overflow-hidden px-3 py-1.5 md:flex-nowrap">
-        <input
-          aria-label={`Select ${label} for broadcast`}
-          checked={selected}
-          className={`size-4 shrink-0 ${checkboxAccent}`}
-          data-agent-select=""
-          onChange={(event) => onSelect(event.target.checked)}
-          type="checkbox"
-        />
-        {/* The row's toggle keeps the name; `AgentName` draws the running state before it and
-            the live link after it, outside the heading, so the heading's text is the name
-            alone. `contents` keeps each of them a flex item of the row, as the heading is. The
-            name takes what it needs up to a ceiling, so a long one shortens rather than
-            squeezing the directory beside it to nothing. */}
-        <AgentName
-          className="contents"
-          control={(name) => (
-            <h2 className={`min-w-0 max-w-64 shrink text-sm font-semibold ${textPrimaryOnCanvas}`}>
-              <button
-                aria-controls={detailsId}
-                aria-expanded={expanded}
-                className={`flex min-h-11 w-full items-center gap-1 text-left md:min-h-8 ${textPrimaryOnCanvas}`}
-                data-agent-toggle=""
-                onClick={() => onExpand(!expanded)}
-                title={label}
-                type="button"
+      {/* The row's groups, in this order: Who (the select box, the name that opens the row,
+          and the copy buttons of its session ID and title, which stay in the name's group, after
+          it), Place (the machine and the directory), Roles (at most ten, then a "+N" that shows
+          the rest) and State (unresponsive, last activity, the unread and ask counts, the pin).
+          Each is one flex item, so a row too narrow for all of them moves the last group that
+          does not fit to the next line whole, and nothing is cut or scrolls sideways; on a phone
+          Who wraps its live link and copy buttons under the name before the name is cut. From
+          `md` a usual row is one line: the name and the directory give way first, each to an
+          ellipsis with its whole text one hover away. Below `md` the directory takes a line of
+          its own under the others and shows its whole path, since a phone has no hover. */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-1.5">
+        <span className="flex min-w-0 max-w-full flex-wrap items-center gap-x-2">
+          <input
+            aria-label={`Select ${label} for broadcast`}
+            checked={selected}
+            className={`size-4 shrink-0 ${checkboxAccent}`}
+            data-agent-select=""
+            onChange={(event) => onSelect(event.target.checked)}
+            type="checkbox"
+          />
+          {/* The row's toggle keeps the name; `AgentName` draws the running state before it and
+              the live link after it, outside the heading, so the heading's text is the name
+              alone. `contents` keeps each of them a flex item of the group, as the heading is.
+              The name takes what it needs up to a ceiling, so a long one shortens rather than
+              squeezing the directory beside it to nothing. */}
+          <AgentName
+            className="contents"
+            control={(name) => (
+              <h2
+                className={`min-w-0 max-w-64 shrink text-sm font-semibold ${textPrimaryOnCanvas}`}
               >
-                <span className="truncate">{name}</span>
-                <span className={`shrink-0 ${disclosureButtonText}`}>
-                  <ChevronIcon expanded={expanded} />
-                </span>
-              </button>
-            </h2>
-          )}
-          kind="control"
-          sessionId={agent.session_id}
-          storedTitle={agent.title}
-        />
-        <CopyButton value={agent.session_id} what="session ID">
-          ID
-        </CopyButton>
-        {agent.title.trim() === "" ? null : (
-          <CopyButton value={agent.title} what="session title">
-            title
-          </CopyButton>
-        )}
-        {/* The directory. From `md` it takes the width the rest of the line leaves and keeps
-            the segment that names the session's work, with the machine before it and the whole
-            path one hover away. Below `md` it takes a line of its own under the name
+                <button
+                  aria-controls={detailsId}
+                  aria-expanded={expanded}
+                  className={`flex min-h-11 w-full items-center gap-1 text-left md:min-h-8 ${textPrimaryOnCanvas}`}
+                  data-agent-toggle=""
+                  onClick={() => onExpand(!expanded)}
+                  title={label}
+                  type="button"
+                >
+                  <span className="truncate">{name}</span>
+                  <span className={`shrink-0 ${disclosureButtonText}`}>
+                    <ChevronIcon expanded={expanded} />
+                  </span>
+                </button>
+              </h2>
+            )}
+            kind="control"
+            sessionId={agent.session_id}
+            storedTitle={agent.title}
+          />
+          {/* The two copy buttons move together: on a phone they wrap under the name as a pair
+              rather than one at a time. */}
+          <span className="flex items-center gap-x-2">
+            <CopyButton value={agent.session_id} what="session ID">
+              ID
+            </CopyButton>
+            {agent.title.trim() === "" ? null : (
+              <CopyButton value={agent.title} what="session title">
+                title
+              </CopyButton>
+            )}
+          </span>
+        </span>
+        {/* Place. From `md` it takes the width the rest of the line leaves and keeps the
+            segment that names the session's work, with the machine before it and the whole
+            path one hover away; it stays on the line while 160 px are left there
+            (`md:basis-40`). Below `md` it takes a line of its own under the others
             (`order-last basis-full`, the shape the page drew before INFRA-812) and shows the
             whole path: a phone has no hover to ask with, and on one line a 390 px row squeezed
             both this and the name button to nothing, which left the name untappable - the live
-            link beside it took the press - and the directory unpainted. It is the row's one
-            stretching item from `md`, so a row with little else in it still reads its directory
-            in full. */}
+            link beside it took the press - and the directory unpainted. */}
         <span
-          className={`order-last basis-full text-xs [overflow-wrap:anywhere] md:order-none md:min-w-0 md:flex-1 md:basis-auto md:truncate ${textMutedOnCanvas}`}
+          className={`order-last basis-full text-xs [overflow-wrap:anywhere] md:order-none md:min-w-0 md:flex-1 md:basis-40 md:truncate ${textMutedOnCanvas}`}
           data-agent-dir=""
           title={machineAndDir}
         >
@@ -700,19 +724,27 @@ function AgentRow({
           </Link>
           {` · ${shownDir}`}
         </span>
-        {(agent.roles ?? []).map((role) => (
-          <span className="shrink-0" key={role}>
-            <LabelPill>{role}</LabelPill>
-          </span>
-        ))}
-        {/* A session that has missed its heartbeats is still listed and still worth
+        {(agent.roles ?? []).length === 0 ? null : (
+          <CappedGroup
+            className="flex min-w-0 max-w-full flex-wrap items-center gap-1"
+            label="roles"
+            name="roles"
+          >
+            {(agent.roles ?? []).map((role) => (
+              <span className="min-w-0 max-w-full" key={role}>
+                <LabelPill>{role}</LabelPill>
+              </span>
+            ))}
+          </CappedGroup>
+        )}
+        {/* State. A session that has missed its heartbeats is still listed and still worth
             messaging, so the row says which it is rather than looking like any other: its
             name's mark alone is a ring a reader would have to hover. */}
-        <AgentUnresponsiveNote
-          lastSeen={agent.last_seen}
-          state={agent.state === "unresponsive" ? "unresponsive" : "running"}
-        />
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
+          <AgentUnresponsiveNote
+            lastSeen={agent.last_seen}
+            state={agent.state === "unresponsive" ? "unresponsive" : "running"}
+          />
           <span className={`whitespace-nowrap text-xs ${textMutedOnCanvas}`}>
             {agent.last_activity === null ? (
               "No Dispatch activity"
@@ -1131,15 +1163,19 @@ function BroadcastComposer({
   // and no ceiling there: it registers on every screen.
   const sectionRef = useRef<HTMLElement>(null);
   useFootInset(sectionRef, true, "page");
+  const compact = useMediaQuery(COMPACT_COMPOSER_QUERY);
 
   // On a narrow or short screen (`narrow-or-short`, styles.css) the composer is a compact grid,
-  // so it takes about a third of a phone screen: the heading on one line, the recipients in one
-  // sideways-scrolling line, the message sized to its text (`field-sizing`) from two rows up to
-  // `max-h-32`, and the mode beside Send. A short screen (a phone in landscape) folds that into
-  // two lines - heading beside the recipients, then the message beside the mode and Send - with
-  // the message held at two rows. `min-h-16` is important because styles.css's unlayered
-  // below-1280 touch floor (`min-height: 44px`) would otherwise override it and shrink the
-  // message box on its first character. Elsewhere none of these classes apply.
+  // so it takes about a third of a phone screen: the heading on one line, the recipients on one
+  // line (the first, its name shortened to an ellipsis, then "+N" for the rest), the
+  // message sized to its text (`field-sizing`) from two rows up to `max-h-32`, and the mode
+  // beside Send. A short screen (a phone in landscape) folds that into two lines - heading beside
+  // the recipients, then the message beside the mode and Send - with the message held at two
+  // rows. `min-h-16` is important because styles.css's unlayered below-1280 touch floor
+  // (`min-height: 44px`) would otherwise override it and shrink the message box on its first
+  // character. Elsewhere none of these classes apply, and the recipients show the first ten,
+  // wrapping, then "+N". Opening "+N" is the reader's: the recipients then wrap onto as many
+  // lines as they need, and the composer scrolls up and down inside its half of the screen.
   // The line under the box saying what a pick does (`DISPATCH_WRITING_BOXES`) is the box's
   // description there rather than a line of its own: this panel is held to 40% of a phone
   // empty and 45% filled (`e2e/agents.e2e.ts`), and a hint of its own costs a line of that
@@ -1155,39 +1191,48 @@ function BroadcastComposer({
       >
         Broadcast to {recipients.length} of {selected.size} selected
       </h2>
-      <ul
-        aria-label="Selected agents"
-        className="mt-2 flex flex-wrap gap-2 narrow-or-short:col-span-full narrow-or-short:mt-0 narrow-or-short:flex-nowrap narrow-or-short:overflow-x-auto short:col-span-3"
+      <CappedGroup
+        className="mt-2 flex flex-wrap items-center gap-2 narrow-or-short:col-span-full narrow-or-short:mt-0 short:col-span-3"
+        label="agents"
+        list="Selected agents"
+        max={compact ? COMPACT_RECIPIENTS_SHOWN : LAYOUT_GROUP_MAX}
+        name="selected-agents"
       >
         {[...selected].map((sessionID) => {
           const agent = agents.find((candidate) => candidate.session_id === sessionID);
           const left = excluded.find((item) => item.sessionID === sessionID);
           const note = left ?? unchecked.find((item) => item.sessionID === sessionID);
+          const noteText = note === undefined ? "" : ` · ${note.reason}`;
           return (
-            <li className="narrow-or-short:shrink-0" key={sessionID}>
-              {/* The deselect button keeps the name; the agent's live link sits beside it. */}
-              <AgentName
-                className="flex items-center"
-                control={(name) => (
-                  <button
-                    className={`min-h-8 rounded-full border px-2 py-1 text-xs narrow-or-short:min-h-11 narrow-or-short:whitespace-nowrap ${secondaryButtonBorder} ${left === undefined ? secondaryButtonText : dangerText} ${secondaryButtonHoverBorder}`}
-                    onClick={() => onDeselect(sessionID)}
-                    title={`Remove ${text.sessionText(sessionID, agent?.title)} from this broadcast`}
-                    type="button"
+            // The deselect button keeps the name; the agent's live link sits beside it.
+            <AgentName
+              className="flex items-center"
+              control={(name) => (
+                <button
+                  className={`inline-flex min-h-8 items-center gap-1 rounded-full border px-2 py-1 text-left text-xs narrow-or-short:min-h-11 narrow-or-short:max-w-40 ${secondaryButtonBorder} ${left === undefined ? secondaryButtonText : dangerText} ${secondaryButtonHoverBorder}`}
+                  onClick={() => onDeselect(sessionID)}
+                  title={`Remove ${text.sessionText(sessionID, agent?.title)} from this broadcast`}
+                  type="button"
+                >
+                  <TruncatedText
+                    className="min-w-0 narrow-or-short:flex-1"
+                    title={`${text.sessionText(sessionID, agent?.title)}${noteText}`}
                   >
                     {name}
                     {/* not stored prose: the dashboard's own word for why it gets none */}
-                    {note === undefined ? "" : ` · ${note.reason}`} ✕
-                  </button>
-                )}
-                kind="control"
-                sessionId={sessionID}
-                storedTitle={agent?.title}
-              />
-            </li>
+                    {noteText}
+                  </TruncatedText>{" "}
+                  ✕
+                </button>
+              )}
+              key={sessionID}
+              kind="control"
+              sessionId={sessionID}
+              storedTitle={agent?.title}
+            />
           );
         })}
-      </ul>
+      </CappedGroup>
       <div className="mt-2 flex flex-wrap items-center gap-2 narrow-or-short:order-2 narrow-or-short:mt-0">
         <select
           aria-label="Delivery mode"
@@ -1217,11 +1262,14 @@ function BroadcastComposer({
         writing={dispatchWritingBox("broadcast", "broadcast")}
       />
       {sendState.notice !== null ? (
-        <p className={composerLine} id={noticeId}>
+        <p className={composerLine} id={noticeId} title={sendState.notice.map(text.part).join("")}>
           <AgentParts parts={sendState.notice} />
         </p>
       ) : asideOnly.length > 0 ? (
-        <p className={`${composerLineLayout} ${textMutedOnSurface}`}>
+        <p
+          className={`${composerLineLayout} ${textMutedOnSurface}`}
+          title={asideLine.map(text.part).join("")}
+        >
           <AgentParts parts={asideLine} />
         </p>
       ) : null}

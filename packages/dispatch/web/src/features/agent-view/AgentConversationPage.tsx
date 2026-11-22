@@ -495,16 +495,19 @@ export function AgentConversationPage({
       </ErrorBoundary>
       <div className="shrink-0" ref={footerRef}>
         {/* The one row under the message box (R6): what a message is delivered as, where the
-            session runs, what it runs on, how full its window is, and the one question mark
-            that holds every rule this page used to print. The facts scroll sideways at a phone
-            width and wrap nowhere from `sm` up, so the row is one line on a laptop; the pickers
-            hold their width (`shrink-0`, `SessionSettings`) and the directory is the one part
-            that shortens. The ring and the question mark sit outside that scroller, so they keep
-            the box's right edge however far the facts scroll, and their panels open upwards
-            from here rather than inside a clipped scroller. */}
+            session runs, what it runs on, how full its window is, and the one question mark that
+            holds every rule this page used to print. The facts are three groups, in this order:
+            Delivery (the mode picker), Place (the machine and the directory, or the line that the
+            session is not listed) and Session (the model and thinking pickers, `SessionSettings`).
+            A row too narrow for all three moves the last group that does not fit to the next line
+            whole; inside Place the machine and the directory shorten to an ellipsis, each with its
+            whole text as its title, so on a laptop the row is one line and nothing scrolls
+            sideways at any width. The ring and the question mark sit outside the facts, so they
+            keep the box's right edge however the facts wrap, and their panels open upwards from
+            here. */}
         <div className="mt-2 flex items-center gap-2 text-xs" data-testid="agent-composer-footer">
           <div
-            className="flex min-w-0 flex-1 flex-nowrap items-center gap-x-3 gap-y-1 overflow-x-auto sm:flex-wrap sm:overflow-x-visible"
+            className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1"
             data-testid="agent-composer-facts"
           >
             <select
@@ -520,32 +523,32 @@ export function AgentConversationPage({
                 </option>
               ))}
             </select>
-            {/* A claim that the session is gone starts only from a current list. The header's
-                presence and the transcript's line keep that fact through a failed read, from the
-                kept rows of the last read that returned a list; this line waits for a current
-                one, and while the list refills or is unreachable the header names why it has
-                none. */}
+            {/* Place. A claim that the session is gone starts only from a current list. The
+                header's presence and the transcript's line keep that fact through a failed read,
+                from the kept rows of the last read that returned a list; this line waits for a
+                current one, and while the list refills or is unreachable the header names why it
+                has none. */}
             {agent === undefined && current ? (
-              <span
-                className={`shrink-0 whitespace-nowrap ${textMutedOnCanvas}`}
-                data-testid="agent-not-listed"
-              >
+              <span className={`min-w-0 ${textMutedOnCanvas}`} data-testid="agent-not-listed">
                 Not in the live session list — it may have ended.
               </span>
             ) : null}
             {agent === undefined ? null : (
-              <>
+              // `basis-48`: the group stays on the delivery picker's line while 192 px are left
+              // there, and takes a line of its own below that rather than cutting the directory
+              // to nothing.
+              <span className="flex min-w-0 flex-1 basis-48 items-center gap-x-3">
                 <span
-                  className={`shrink-0 whitespace-nowrap ${textMutedOnCanvas}`}
+                  className={`min-w-0 truncate ${textMutedOnCanvas}`}
                   data-testid="agent-footer-machine"
-                  title="The machine this session runs on"
+                  title={`The machine this session runs on: ${agent.host}`}
                 >
                   {agent.host}
                 </span>
                 {/* The flex item the ellipsis applies to is the span inside, not this one
                     (`packages/dispatch/AGENTS.md`): a flex container never draws one on its own
-                    text. `min-w-24` keeps a shortened directory readable, so the row scrolls at a
-                    phone width rather than cutting it to nothing. */}
+                    text. `min-w-24` keeps a shortened directory readable: the machine gives way
+                    before it does. */}
                 <span
                   className={`flex min-w-24 flex-1 items-center truncate ${textMutedOnCanvas}`}
                   data-testid="agent-footer-dir"
@@ -554,7 +557,7 @@ export function AgentConversationPage({
                     {agent.dir}
                   </TruncatedText>
                 </span>
-              </>
+              </span>
             )}
             <SessionSettings onPick={onPick} pending={switchPending} view={settings} />
           </div>

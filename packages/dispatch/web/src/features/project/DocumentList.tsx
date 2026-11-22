@@ -36,6 +36,12 @@ function documentUpdatedAt(document: Artifact): string {
   return document.versions?.at(-1)?.created_at ?? document.created_at;
 }
 
+/** One document of the project's list. Its groups, in this order: Name (the document's link, its
+ *  copy-reference button and its approval chip), Kind (the kind and the latest version's size),
+ *  Issue (the issue it belongs to, when it has one) and Updated. From `sm` they are the four
+ *  columns of a grid whose first column shrinks, the name truncating with its whole text as its
+ *  title; on a phone Name takes a line of its own and the other three share the line under it,
+ *  each moving to the next line whole when that line is too narrow. */
 function DocumentRow({ document }: { document: Artifact }): ReactNode {
   // The latest version's stored size (its markdown's bytes), so a document near the size cap
   // shows in the list without being opened.

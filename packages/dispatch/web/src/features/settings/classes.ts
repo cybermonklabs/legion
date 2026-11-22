@@ -18,7 +18,11 @@ import {
 export const settingsTableWrapper = `relative mt-6 overflow-x-auto rounded-xl border ${card}`;
 export const settingsTableHead = `border-b ${surfaceMutedBg} ${borderDefault} ${textSecondaryOnSurface}`;
 export const settingsTableRow = `border-b last:border-0 ${borderDefault}`;
-export const settingsFieldLabel = `grid gap-1 text-sm font-medium ${textSecondaryOnCanvas}`;
+/** A form field: its words over its control. `min-w-0` and the one `minmax(0,1fr)` column let
+ *  the field shrink with the form's grid track, and the control with the field, so a long value
+ *  - a select's longest option sets its natural width - never pushes the form's last control past
+ *  the viewport (Settings scrolled sideways at 1280 px on a long project name). */
+export const settingsFieldLabel = `grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1 text-sm font-medium ${textSecondaryOnCanvas}`;
 export const settingsMonoInput = `rounded-md px-3 py-2 font-mono ${inputClasses(false)} ${textPrimaryOnSurface}`;
 export const settingsSubmitButton = `min-h-11 rounded-md px-4 py-2 font-medium disabled:cursor-not-allowed disabled:opacity-50 md:min-h-9 ${primaryButtonBg} ${primaryButtonHoverBg}`;
 /** An `owner/repo` field's `pattern`: one slash between an owner and a name that hold neither a

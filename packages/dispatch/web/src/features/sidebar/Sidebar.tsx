@@ -99,10 +99,15 @@ function PinnedAgentRow({
   );
 }
 
-/** One rail entry: a key, its title, and the open-ask count when there is one. */
+/** One rail entry. Its groups, in this order: Name (the label and its detail) and Count (the
+ *  open-ask count, when there is one). A pinned issue or a project reads its key with its title
+ *  beside it, the title wrapping inside its own span; a page of the app (`detailUnder`) reads its
+ *  name with the description on a line of its own under it, so a description never stands as a
+ *  second column that wraps into three lines beside a one-word name. */
 function RailRow({
   badge,
   detail,
+  detailUnder = false,
   label,
   onNavigate,
   selected,
@@ -110,6 +115,7 @@ function RailRow({
 }: {
   badge: number | undefined;
   detail: string;
+  detailUnder?: boolean;
   label: string;
   onNavigate: (() => void) | undefined;
   selected: boolean;
@@ -127,8 +133,17 @@ function RailRow({
         onClick={onNavigate}
         to={to}
       >
-        <span className="shrink-0 font-medium whitespace-nowrap">{label}</span>
-        <span className={`min-w-0 flex-1 ${railSecondaryText}`}>{detail}</span>
+        {detailUnder ? (
+          <span className="flex min-w-0 flex-1 flex-col">
+            <span className="font-medium">{label}</span>
+            <span className={`text-xs font-normal ${railSecondaryText}`}>{detail}</span>
+          </span>
+        ) : (
+          <>
+            <span className="shrink-0 font-medium whitespace-nowrap">{label}</span>
+            <span className={`min-w-0 flex-1 ${railSecondaryText}`}>{detail}</span>
+          </>
+        )}
         {badge === undefined ? null : (
           <span
             className={`shrink-0 rounded-full px-1.5 py-0.5 text-xs ${railBadgeBg} ${railBadgeText}`}
@@ -309,6 +324,7 @@ export function Sidebar({
             <RailRow
               badge={priorityFaults}
               detail="Priorities and the work under them"
+              detailUnder
               label="Priorities"
               onNavigate={onNavigate}
               // The entry stands for the whole of the priorities, so it stays lit on one
@@ -322,6 +338,7 @@ export function Sidebar({
             <RailRow
               badge={undefined}
               detail="Deploys, merges, and pipeline failures"
+              detailUnder
               label="Delivery"
               onNavigate={onNavigate}
               selected={location.pathname === "/delivery"}
@@ -330,6 +347,7 @@ export function Sidebar({
             <RailRow
               badge={undefined}
               detail="CI and deploy step timings"
+              detailUnder
               label="Pipeline"
               onNavigate={onNavigate}
               selected={location.pathname === "/pipeline"}

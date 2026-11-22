@@ -1051,14 +1051,24 @@ test("on a phone the open composer keeps its height budget at forty recipients, 
     await scrollFirstCardToTop();
     expect(await wholeCardsAbove(agents, composer)).toBeGreaterThanOrEqual(2);
 
-    // The recipients are one line that scrolls sideways to its last chip.
+    // The recipients are one line that never scrolls sideways: the first chip and a "+39" that
+    // shows the rest. Opened, they wrap inside the composer, and the last chip is reachable
+    // there, whole and still inside the list's own width.
     const chips = composer.getByRole("list", { name: "Selected agents" });
-    expect(await chips.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+    const sideways = () => chips.evaluate((element) => element.scrollWidth > element.clientWidth);
+    expect(await sideways()).toBe(false);
+    const more = chips.getByRole("button", { name: "Show 39 more agents" });
+    const [moreBox, firstBox] = [
+      await more.boundingBox(),
+      await chips.getByRole("button", { name: /^Planner 01/ }).boundingBox(),
+    ];
+    expect(Math.abs((moreBox?.y ?? Infinity) - (firstBox?.y ?? 0))).toBeLessThan(1);
+    await more.click();
     const last = chips.getByRole("button", { name: /^Planner 40/ });
     await last.scrollIntoViewIfNeeded();
     await expect(last).toBeInViewport();
+    expect(await sideways()).toBe(false);
     const [lastBox, lineBox] = [await last.boundingBox(), await chips.boundingBox()];
-    expect(lastBox?.y).toBe(lineBox?.y);
     expect((lastBox?.x ?? Infinity) + (lastBox?.width ?? 0)).toBeLessThanOrEqual(
       (lineBox?.x ?? 0) + (lineBox?.width ?? 0) + 0.5
     );
@@ -1241,7 +1251,7 @@ async function openNoticeFixture(page: Page, sessions: FakeSession[]) {
   };
 }
 
-test("with half the recipients unable to take the mode, the compact composer keeps its budget and every exclusion stays reachable on one line", async ({
+test("with half the recipients unable to take the mode, the compact composer keeps its budget, the notice names every exclusion, and each stays reachable on its own chip", async ({
   browser,
 }) => {
   const alice = await asUser(browser, "alice");
@@ -1258,31 +1268,28 @@ test("with half the recipients unable to take the mode, the compact composer kee
     // element added to the compact composer has no room: the budget goes red while the composer
     // is still inside its 50vh cap and nothing on screen looks wrong.
     await expectNoticeWithinBudget(page, fixture.composer, async (at) => {
-      // All twenty stay named on the line, and its last name scrolls into view.
+      // All twenty are named in the notice and in its title; past the lines the slot allows it
+      // ends in an ellipsis, and it never scrolls sideways.
       for (let index = 21; index <= 40; index += 1) {
         await expect
           .soft(fixture.excludedLine, at)
           .toContainText(`Planner ${index} (does not advertise BTW)`);
+        await expect
+          .soft(fixture.excludedLine, at)
+          .toHaveAttribute("title", new RegExp(`Planner ${index} \\(does not advertise BTW\\)`));
       }
-      const last = await fixture.excludedLine.evaluate((element) => {
-        const lastName = "Planner 40";
-        const scrolls = element.scrollWidth > element.clientWidth;
-        // Each excluded agent is drawn by `AgentName`: its name is the text of its live link.
-        const link = [...element.querySelectorAll("[data-agent-name] a")].find(
-          (node) => node.textContent === lastName
-        );
-        if (link === undefined) return { scrolls, visible: false };
-        // Scroll the line so the name's left edge meets the line's, then read both again.
-        element.scrollLeft +=
-          link.getBoundingClientRect().left - element.getBoundingClientRect().left;
-        const [name, line] = [link.getBoundingClientRect(), element.getBoundingClientRect()];
-        return {
-          scrolls,
-          visible: name.left >= line.left - 0.5 && name.right <= line.right + 0.5,
-        };
-      });
-      expect.soft(last, at).toEqual({ scrolls: true, visible: true });
+      const line = await fixture.excludedLine.evaluate((element) => ({
+        clamped: getComputedStyle(element).webkitLineClamp !== "none",
+        scrolls: element.scrollWidth > element.clientWidth + 1,
+      }));
+      expect.soft(line, at).toEqual({ clamped: true, scrolls: false });
     });
+    // Each exclusion is on its excluded agent's own chip, which names the reason: "+39" opens
+    // the recipients, and every one of the twenty is there.
+    await fixture.composer.getByRole("button", { name: "Show 39 more agents" }).click();
+    for (let index = 21; index <= 40; index += 1) {
+      await expect(fixture.excludedChip(`Planner ${index}`)).toHaveCount(1);
+    }
   } finally {
     await alice.close();
   }
@@ -1313,8 +1320,10 @@ test.describe("the composer's notices share one slot, highest first, within budg
       await expectNoticeWithinBudget(page, fixture.composer, async (at) => {
         await expect.soft(fixture.limit, at).toHaveCount(1);
         await expect.soft(fixture.excludedLine, at).toHaveCount(0);
-        await expect.soft(fixture.excludedChip("Planner 111"), at).toHaveCount(1);
       });
+      // The excluded chip is behind the recipients' "+N", which opens them where they are.
+      await fixture.composer.getByRole("button", { name: "Show 119 more agents" }).click();
+      await expect(fixture.excludedChip("Planner 111")).toHaveCount(1);
     } finally {
       await alice.close();
     }
@@ -1335,11 +1344,15 @@ test.describe("the composer's notices share one slot, highest first, within budg
       });
       await page.setViewportSize({ height: 664, width: 390 });
       // One recipient off the selection, taken out at the chip the composer shows for it: the
-      // list is windowed, and the hundred-and-first row is not drawn at this scroll position.
+      // list is windowed, and the hundred-and-first row is not drawn at this scroll position. The
+      // chip is behind the recipients' "+N", which opens them where they are and folds them
+      // again, so the second budget reads the composer as the reader leaves it.
+      await fixture.composer.getByRole("button", { name: "Show 110 more agents" }).click();
       await fixture.composer.getByTitle("Remove Planner 101 from this broadcast").click();
       await expect(
         fixture.composer.getByRole("heading", { name: "Broadcast to 100 of 110 selected" })
       ).toBeVisible();
+      await fixture.composer.getByRole("button", { name: "Show fewer agents" }).click();
       await expectNoticeWithinBudget(page, fixture.composer, async (at) => {
         await expect.soft(fixture.limit, at).toHaveCount(0);
         await expect.soft(fixture.excludedLine, at).toHaveCount(1);
@@ -1676,7 +1689,8 @@ test("a selection over the broadcast limit says so and never asks the server", a
 
     // One fewer is within the limit: the reason goes and Send comes back. The row itself is not
     // drawn - the list is windowed and the hundred-and-first row is far below the window - so
-    // the recipient comes off at the chip the composer shows for it.
+    // the recipient comes off at the chip the composer shows for it, behind the recipients' "+N".
+    await composer.getByRole("button", { name: "Show 91 more agents" }).click();
     await composer.getByTitle("Remove Planner 101 from this broadcast").click();
     await expect(composer.getByText(/^At most 100 recipients/)).toHaveCount(0);
     await expect(composer.getByRole("button", { name: "Send to 100" })).toBeEnabled();

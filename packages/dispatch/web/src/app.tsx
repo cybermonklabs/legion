@@ -1005,37 +1005,41 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           <header
             className={`flex items-center justify-between border-b px-3 ${railBorder} ${railBg} ${railText}`}
           >
-            {/* The title never shrinks and no count breaks its own words: the counts that do not
-                fit beside the title wrap onto a second row of the bar, with Menu on the right. */}
+            {/* The bar's groups, in this order: Brand (the title), Counts (Peek, the Inbox and
+                the new replies) and Menu, on the right. The title never shrinks and no count
+                breaks its own words; when the counts do not fit beside the title they move to a
+                second row of the bar together, never one count alone. */}
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
               <Link className="shrink-0 text-lg font-semibold" to="/">
                 Dispatch
               </Link>
-              {routeIsInbox(location.pathname) ? (
-                <span className={inboxBadgeClass}>{inboxLabel}</span>
-              ) : (
-                <>
-                  <button
-                    aria-label="Peek at the inbox without leaving this page"
-                    className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railHoverBg}`}
-                    onClick={() => setInboxDrawerOpen(true)}
-                    type="button"
+              <span className="flex shrink-0 items-center gap-x-2">
+                {routeIsInbox(location.pathname) ? (
+                  <span className={inboxBadgeClass}>{inboxLabel}</span>
+                ) : (
+                  <>
+                    <button
+                      aria-label="Peek at the inbox without leaving this page"
+                      className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railHoverBg}`}
+                      onClick={() => setInboxDrawerOpen(true)}
+                      type="button"
+                    >
+                      Peek
+                    </button>
+                    <Link className={inboxBadgeClass} to="/">
+                      {inboxLabel}
+                    </Link>
+                  </>
+                )}
+                {unreadReplies === 0 ? null : (
+                  <Link
+                    className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
+                    to="/agents"
                   >
-                    Peek
-                  </button>
-                  <Link className={inboxBadgeClass} to="/">
-                    {inboxLabel}
+                    {unreadRepliesLabel(unreadReplies)}
                   </Link>
-                </>
-              )}
-              {unreadReplies === 0 ? null : (
-                <Link
-                  className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
-                  to="/agents"
-                >
-                  {unreadRepliesLabel(unreadReplies)}
-                </Link>
-              )}
+                )}
+              </span>
             </div>
             <button
               aria-expanded={navigationOpen}

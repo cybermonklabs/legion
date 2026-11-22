@@ -249,17 +249,18 @@ test("a cleared context window takes the ring away, live and after a rebuild fro
   }
 });
 
-// R3. At a phone width the facts under the message box scroll sideways and the ring does not:
-// it keeps the box's right edge, where a reader's thumb finds it, while the delivery mode, the
-// machine and a long directory run under it. The page itself never scrolls sideways.
+// R3. At a phone width the facts under the message box wrap as groups and the ring does not
+// move with them: it keeps the box's right edge, where a reader's thumb finds it, while the
+// delivery mode, the machine and a long directory take the lines beside it. Nothing scrolls
+// sideways: not the facts, not the page; the long directory shortens to an ellipsis inside its
+// own line, with the whole path as its title.
 // SLOW(>=2s): a live view opened on the session's replay at a phone width, then the row under
-// the message box scrolled and measured before and after.
-test("at a phone width the ring keeps the right edge of the box while the facts scroll @phone @phone-only", async ({
+// the message box measured.
+test("at a phone width the ring keeps the right edge of the box while the facts wrap @phone @phone-only", async ({
   browser,
 }) => {
-  await setLiveSessions([
-    session(PHONE_ID, "Phone", "/workspaces/a-directory-long-enough-to-run-off-a-phone-screen"),
-  ]);
+  const longDir = "/workspaces/a-directory-long-enough-to-run-off-a-phone-screen";
+  await setLiveSessions([session(PHONE_ID, "Phone", longDir)]);
   await publishAgentStreamFrame(
     PHONE_ID,
     replayOf(PHONE_ID, [turnFrame(1), contextFrame(2, 68_000, 200_000)]),
@@ -273,26 +274,39 @@ test("at a phone width the ring keeps the right edge of the box while the facts 
     await expect(ring).toContainText("34%");
 
     const facts = frontLiveView(page).getByTestId("agent-composer-facts");
-    const scroll = await facts.evaluate((row) => ({
-      clientWidth: row.clientWidth,
-      scrollWidth: row.scrollWidth,
-    }));
-    // The facts really are wider than the screen leaves them, so scrolling them means something.
-    expect(scroll.scrollWidth).toBeGreaterThan(scroll.clientWidth);
+    const delivery = facts.getByTestId("agent-delivery-picker");
+    const dir = facts.getByTestId("agent-footer-dir");
+    await expect(dir).toBeVisible();
+    const layout = await facts.evaluate((row) => {
+      const box = row.getBoundingClientRect();
+      const parts = [...row.querySelectorAll("[data-testid]")].map((part) =>
+        part.getBoundingClientRect()
+      );
+      return {
+        clientWidth: row.clientWidth,
+        inside: parts.every((part) => part.left >= box.left - 0.5 && part.right <= box.right + 0.5),
+        scrollWidth: row.scrollWidth,
+      };
+    });
+    // The facts hold more than one phone line, so they wrap rather than scroll, and every part
+    // of them sits inside their own box.
+    expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth + 1);
+    expect(layout.inside).toBe(true);
+    const [deliveryBox, factsBox] = [await delivery.boundingBox(), await facts.boundingBox()];
+    expect(factsBox?.height ?? 0, "the facts wrapped onto a second line").toBeGreaterThanOrEqual(
+      2 * (deliveryBox?.height ?? Number.POSITIVE_INFINITY)
+    );
+    // The directory is cut to its line with an ellipsis, and its whole path is one hover away.
+    const dirText = dir.locator("span").first();
+    await expect(dirText).toHaveAttribute("title", longDir);
+    expect(await dirText.evaluate((text) => text.scrollWidth > text.clientWidth + 1)).toBe(true);
+    expect(await dirText.evaluate((text) => getComputedStyle(text).textOverflow)).toBe("ellipsis");
 
     const box = await edgesOf(frontLiveView(page).getByTestId("agent-composer"));
-    const before = await edgesOf(ring);
-    expect(before.right).toBeLessThanOrEqual(box.right);
-    expect(before.left).toBeGreaterThan(box.left + (box.right - box.left) / 2);
-
-    await facts.evaluate((row) => {
-      row.scrollTo(row.scrollWidth, 0);
-    });
-    await expect.poll(() => facts.evaluate((row) => Math.round(row.scrollLeft))).toBeGreaterThan(0);
-
-    // The facts moved under it; the ring is where it was.
-    expect(await edgesOf(ring)).toEqual(before);
-    await expect(ring).toContainText("34%");
+    const drawn = await edgesOf(ring);
+    expect(drawn.right).toBeLessThanOrEqual(box.right);
+    expect(drawn.left).toBeGreaterThan(box.left + (box.right - box.left) / 2);
+    expect(drawn.left).toBeGreaterThanOrEqual((await edgesOf(facts)).right);
 
     const widths = await page.evaluate(() => ({
       clientWidth: document.documentElement.clientWidth,

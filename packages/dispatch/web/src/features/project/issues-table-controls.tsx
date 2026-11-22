@@ -287,8 +287,8 @@ export function IssueTableStatus({
   epics: readonly IssueSummary[];
   /** Whether the bar draws each segment's count alone where the segments with their names are
    *  wider than it, and the names in a legend under it (`IssuesTable`'s `statusLegend`). Unset,
-   *  each segment draws its name and its count, and the bar scrolls sideways where they are
-   *  wider than it, as a project's does on a phone. */
+   *  each segment draws its name and its count, and the bar wraps them onto further lines where
+   *  they are wider than it, as a project's does on a phone. */
   legend?: boolean;
 }): ReactNode {
   const statusColumn = table.getColumn("status");
@@ -356,9 +356,13 @@ export function IssueTableStatus({
           </div>
         </div>
       ) : null}
+      {/* One button per status that has issues - at most the nine statuses, never more - each
+          as wide as its share of the issues. A box too narrow for them all wraps the rest onto
+          the next line, where they share that line the same way, so every status stays in sight
+          and nothing scrolls sideways. */}
       <fieldset
         aria-label="Issues by status"
-        className={`flex min-h-11 min-w-0 overflow-x-auto rounded-md border-0 p-0 md:min-h-7 ${surfaceMutedBg}`}
+        className={`flex min-h-11 min-w-0 flex-wrap rounded-md border-0 p-0 md:min-h-7 ${surfaceMutedBg}`}
         ref={barRef}
       >
         {shown.map((status) => {
@@ -377,7 +381,7 @@ export function IssueTableStatus({
               }
               title={`${statusLabel(status)}: ${count}`}
               // Each status takes width in proportion to its count, so the bar spans the box
-              // and reads as shares; a phone keeps 44 px targets and scrolls sideways instead,
+              // and reads as shares; a phone keeps 44 px targets and wraps a line instead,
               // unless the table draws the counts alone with their names in a legend (`legend`),
               // each segment as narrow as its count and 24 px (`COUNT_SEGMENT_MIN`).
               style={{ flexGrow: count, minWidth: countsOnly ? COUNT_SEGMENT_MIN : undefined }}
@@ -602,19 +606,27 @@ export function IssueTableSelection({
   useFootInset(barRef, selectedKeys.length > 0 && atFoot, "page");
   return (
     <>
-      {/* Over the page, not in it: selecting a row moves nothing else. */}
+      {/* Over the page, not in it: selecting a row moves nothing else. Its groups, in this
+          order: Count ("N selected" and "Select all N matching"), Start next, Move (the epic
+          picker and its Move), Epic (Take out of epic, New epic from these) and Clear. A screen
+          too narrow for one line moves the last groups that do not fit to the next line whole,
+          so every action stays in sight and nothing scrolls sideways. */}
       {selectedKeys.length === 0 ? null : (
         <div
-          className={`fixed inset-x-2 top-14 z-30 mx-auto flex w-fit max-w-[calc(100vw-1rem)] flex-nowrap items-center gap-2 overflow-x-auto whitespace-nowrap rounded-2xl border px-4 py-2 text-sm shadow-xl sm:top-auto sm:bottom-4 [&>*]:shrink-0 ${card} ${textPrimaryOnCanvas}`}
+          className={`fixed inset-x-2 top-14 z-30 mx-auto flex w-fit max-w-[calc(100vw-1rem)] flex-wrap items-center gap-2 rounded-2xl border px-4 py-2 text-sm shadow-xl sm:top-auto sm:bottom-4 ${card} ${textPrimaryOnCanvas}`}
           ref={barRef}
           role="toolbar"
         >
-          <span className="mr-1 font-semibold">{selectedKeys.length} selected</span>
-          {selectedKeys.length < leafCount ? (
-            <Action disabled={busy} onClick={() => table.toggleAllRowsSelected(true)}>
-              Select all {leafCount} matching
-            </Action>
-          ) : null}
+          <span className="flex flex-wrap items-center gap-2">
+            <span className="mr-1 font-semibold whitespace-nowrap">
+              {selectedKeys.length} selected
+            </span>
+            {selectedKeys.length < leafCount ? (
+              <Action disabled={busy} onClick={() => table.toggleAllRowsSelected(true)}>
+                Select all {leafCount} matching
+              </Action>
+            ) : null}
+          </span>
           {/* A selection the reader cannot see all of — "Select all N matching" — is asked
               about first: Start next writes once per issue. */}
           <Action
@@ -627,42 +639,47 @@ export function IssueTableSelection({
           </Action>
           {/* Two steps: the select stages an epic and Move commits it. A closed `<select>`
               commits on an arrow key in Chrome on Linux and Windows, and this one reparents
-              every selected issue. */}
-          <select
-            aria-label="Move to epic"
-            className={`rounded-lg border px-2 py-1 ${borderDefault} ${surfaceBg}`}
-            disabled={busy}
-            onChange={(event) => setEpic(event.target.value)}
-            value={epic}
-          >
-            <option value="">Move to epic…</option>
-            {epics.map((option) => (
-              <option key={option.key} value={option.key}>
-                {option.title}
-              </option>
-            ))}
-          </select>
-          <Action
-            disabled={busy || epic === ""}
-            onClick={() => {
-              const into = epic;
-              setEpic("");
-              void moveTo(selectedKeys, into);
-            }}
-          >
-            Move
-          </Action>
-          <Action disabled={busy} onClick={() => void moveTo(selectedKeys, null)}>
-            Take out of epic
-          </Action>
-          {newEpic === undefined ? null : (
-            <Action
-              disabled={busy || unansweredEpic !== undefined}
-              onClick={() => void newEpic(selectedKeys)}
+              every selected issue. The picker shortens to the toolbar's width: an epic's title
+              is as long as its author made it. */}
+          <span className="flex min-w-0 max-w-full items-center gap-2">
+            <select
+              aria-label="Move to epic"
+              className={`min-w-0 max-w-full rounded-lg border px-2 py-1 ${borderDefault} ${surfaceBg}`}
+              disabled={busy}
+              onChange={(event) => setEpic(event.target.value)}
+              value={epic}
             >
-              New epic from these
+              <option value="">Move to epic…</option>
+              {epics.map((option) => (
+                <option key={option.key} value={option.key}>
+                  {option.title}
+                </option>
+              ))}
+            </select>
+            <Action
+              disabled={busy || epic === ""}
+              onClick={() => {
+                const into = epic;
+                setEpic("");
+                void moveTo(selectedKeys, into);
+              }}
+            >
+              Move
             </Action>
-          )}
+          </span>
+          <span className="flex flex-wrap items-center gap-2">
+            <Action disabled={busy} onClick={() => void moveTo(selectedKeys, null)}>
+              Take out of epic
+            </Action>
+            {newEpic === undefined ? null : (
+              <Action
+                disabled={busy || unansweredEpic !== undefined}
+                onClick={() => void newEpic(selectedKeys)}
+              >
+                New epic from these
+              </Action>
+            )}
+          </span>
           <Action disabled={busy} onClick={() => setSelection({})}>
             Clear selection
           </Action>
