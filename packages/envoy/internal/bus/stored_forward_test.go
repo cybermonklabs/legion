@@ -187,6 +187,12 @@ func TestStartRequestStoredToIsBoundedByItsWindowWhenTheFlushTimesOut(t *testing
 	if !errors.Is(err, natsgo.ErrTimeout) {
 		t.Fatalf("StartRequestStoredTo error = %v, want a wrapped nats.ErrTimeout from the flush", err)
 	}
+	// The publish was made and buffered; only its flush ran out of the window, so the error is not
+	// the one for a window that ended before the publish (bus.ErrWindowEndedBeforePublish), which the
+	// listener marks as a forward that never left this process.
+	if errors.Is(err, bus.ErrWindowEndedBeforePublish) {
+		t.Fatalf("StartRequestStoredTo error = %v, which is ErrWindowEndedBeforePublish, but the publish was made and only its flush timed out", err)
+	}
 	if elapsed < window || elapsed > 2*time.Second {
 		t.Fatalf("StartRequestStoredTo returned after %s; the flush must be bounded by the %s window, not the client's 10s default", elapsed, window)
 	}

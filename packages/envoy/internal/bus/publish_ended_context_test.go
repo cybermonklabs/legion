@@ -164,6 +164,26 @@ func TestAPublishConfirmedWithASpentDeadlinePublishesNothing(t *testing.T) {
 		}
 	}
 
+	// A window that ends after the publish was made is not one that ended before it: the publish
+	// stand-in makes its publish only once the deadline has passed (it waits on the context's end, no
+	// span), so the publish happens and the flush that follows finds the window spent. The error is
+	// the spent window's, and not ErrWindowEndedBeforePublish, which would tell the listener the
+	// forward never left this process.
+	short, cancelShort := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancelShort()
+	late := 0
+	lateErr := client.publishConfirmed(short, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, func(msg *nats.Msg) error {
+		<-short.Done()
+		late++
+		return conn.PublishMsg(msg)
+	})
+	if late != 1 {
+		t.Fatalf("publishConfirmed with a deadline that passes during the publish called publish %d times, want 1", late)
+	}
+	if lateErr == nil || errors.Is(lateErr, ErrWindowEndedBeforePublish) {
+		t.Fatalf("publishConfirmed whose window ended after its publish = %v, want the spent window's error, not ErrWindowEndedBeforePublish", lateErr)
+	}
+
 	live, cancelLive := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelLive()
 	if err := client.publishConfirmed(live, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, publish); err != nil {
