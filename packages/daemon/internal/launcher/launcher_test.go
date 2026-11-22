@@ -783,8 +783,8 @@ func (f *fleet) stop() error {
 	case err := <-f.result:
 		f.result <- err
 		return err
-	case <-time.After(testwait.Bounded(f.t, 30*time.Second, time.Second)):
-		f.t.Fatalf("the launcher did not leave after its context ended; its log: %s", f.stderr.String())
+	case <-time.After(beforeDeadline(f.t)):
+		f.t.Fatalf("the launcher did not leave after its context ended, to 30 s before the test binary's deadline; its log: %s", f.stderr.String())
 		return nil
 	}
 }

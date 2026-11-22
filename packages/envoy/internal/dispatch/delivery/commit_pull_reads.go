@@ -71,7 +71,7 @@ type CommitPullReads struct {
 const commitPullReadSweepAt = 1024
 
 // commitPullKey is the pair one read-through is spent on: a repository, under the canonical name
-// its caller resolved (refs.CanonicalRepo), and a commit.
+// its caller resolved (refs.Renames.Canonical), and a commit.
 type commitPullKey struct {
 	repo string
 	sha  string

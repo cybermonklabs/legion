@@ -244,7 +244,6 @@ func TestEveryRouteRefusesABadProjectKeyInOneWording(t *testing.T) {
 	}{
 		{"create project", http.MethodPost, "/api/v1/projects", "INVALID_PROJECT", map[string]string{"key": "bad", "name": "Bad"}},
 		{"create issue", http.MethodPost, "/api/v1/issues", "INVALID_ISSUE", map[string]string{"project": "bad", "title": "Title"}},
-		{"map a repository", http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", "INVALID_REPO_PROJECT", map[string]string{"project": "bad"}},
 		{"search", http.MethodGet, "/api/v1/search?q=ok&project=bad", "INVALID_PROJECT", nil},
 		{"related-item check", http.MethodGet, "/api/v1/projects/bad/related?title=ok", "INVALID_PROJECT", nil},
 		{"related-item check by POST", http.MethodPost, "/api/v1/projects/bad/related", "INVALID_PROJECT", map[string]string{"title": "ok"}},
@@ -444,10 +443,10 @@ func TestProjectAndSettingsMutationsAppendLiveEvents(t *testing.T) {
 	}, "alice"); response.Code != http.StatusCreated {
 		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
 	}
-	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
-		"project": "CORE",
+	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/CORE/default-repository", map[string]string{
+		"repo": "owner/repo",
 	}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("map repository: status=%d body=%s", response.Code, response.Body.String())
+		t.Fatalf("set the default repository: status=%d body=%s", response.Code, response.Body.String())
 	}
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
 		"project": "CORE", "title": "State owner",
@@ -467,7 +466,7 @@ func TestProjectAndSettingsMutationsAppendLiveEvents(t *testing.T) {
 	rows, err := database.Pool.Query(t.Context(), `
 		select type, coalesce(project_key, ''), coalesce(issue_key, ''), notify
 		from events
-		where type in ('project.created', 'settings.repo_project.updated', 'user_state.updated')
+		where type in ('project.created', 'project.updated', 'user_state.updated')
 		order by id
 	`)
 	if err != nil {
@@ -491,9 +490,11 @@ func TestProjectAndSettingsMutationsAppendLiveEvents(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate settings events: %v", err)
 	}
+	// The default-repository write is a project.updated by a person, which wakes the project's
+	// readers as every person's write does (events.Broker.Notify).
 	want := []persistedEvent{
 		{Type: "project.created", Project: "CORE"},
-		{Type: "settings.repo_project.updated", Project: "CORE"},
+		{Type: "project.updated", Project: "CORE", Notify: true},
 		{Type: "user_state.updated", Project: "CORE"},
 	}
 	if len(got) != len(want) {

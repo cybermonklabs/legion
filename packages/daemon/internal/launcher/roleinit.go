@@ -189,8 +189,8 @@ type roleReplacement struct {
 	// directory, which role-init makes before it binds it (prepareRoleNamespace). Every other
 	// source is under the roles directory, where the pod mounts it.
 	inHomes bool
-	// carried holds every mount strictly under path — an operator's volume under /tmp, say —
-	// aside and binds it back on top of what the role is given there (carryOver).
+	// carried holds every mount strictly under path that a path reaches — an operator's volume
+	// under /tmp, say — aside and binds it back on top of what the role is given there (carryOver).
 	carried bool
 	// optional is a path the image need not have: the role is given nothing there and the
 	// deleter has nothing to cover. A path the image has that neither can replace is a refusal.

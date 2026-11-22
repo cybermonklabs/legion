@@ -20,8 +20,10 @@
 # dev-broker.sh built instead; that two broker processes are started, each with the
 # whole BROKER_AIRLOCK_* block and both on one database; that every broker is given the model
 # judge - the six BROKER_JUDGE_* settings and the metadata host its own credential is minted at;
-# that the judge's four human-tier secrets are in the rules and the store as they must be for it
-# to decide two of them, leave the third and refuse the administrator's fourth; that the banner
+# that the judge's five human-tier secrets are in the profiles file and the store as they must be
+# for it to decide three of them, leave the fourth and refuse the administrator's fifth; that the
+# profiles file holds every github-app secret's profile, a github block on each and a host on
+# every proxy block, and the github-app secret's profile with no proxy block; that the banner
 # exports the three stands' records, the route a check sets the model's answer at, and the two
 # issues the Dispatch stand holds; that every broker, dev-broker.sh's own included, binds its
 # metrics on a port the system picks; that a run in a pod starts its airlock brokers with
@@ -76,6 +78,10 @@ if [[ -n "${PGPASSWORD+set}" ]]; then
 else
   printf 'PGPASSWORD unset\n'
 fi >>"${DEV_AIRLOCK_TEST_PSQL_PASSWORDS:-/dev/null}"
+if [[ -n "${DEV_AIRLOCK_TEST_DROP_FAILS:-}" && "$*" == *"drop database"* ]]; then
+  echo 'psql: error: connection to server failed: Connection refused' >&2
+  exit 2
+fi
 if [[ "$*" == *"select current_database()"* ]]; then
   url=$1
   path=${url%%\?*}
@@ -178,16 +184,16 @@ ISSUER
   */cipherd)
     # Logs the whole of what it was configured with, the model judge's settings included, then
     # the JSON lines the stack reads its addresses from, as the real broker writes them: the
-    # API port always, the proxy port only with a rules file, exactly as the real broker binds a
+    # API port always, the proxy port only with a profiles file, exactly as the real broker binds a
     # proxy port only for a deployment that has one, and the metrics port always, after both.
     cat >"$out" <<'BROKER'
 #!/usr/bin/env bash
 printf '%s\n' "$$" >>"${DEV_AIRLOCK_TEST_PIDS:?}"
 echo "fake broker: pid=$$ db=${BROKER_DATABASE_URL:-} public=${BROKER_PUBLIC_URL:-} services=${BROKER_SERVICES:-} logins=${BROKER_SERVICE_LOGINS:-} fake_secrets=${BROKER_FAKE_SECRETS_FILE:-} azure_secret=${BROKER_AZURE_LOGIN_SECRET:-} metrics=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
-echo "fake broker airlock: pid=$$ rules=${BROKER_AIRLOCK_RULES_FILE:-} proxy_url=${BROKER_AIRLOCK_PROXY_URL:-} ca_cert=${BROKER_AIRLOCK_CA_CERT_FILE:-} ca_key=${BROKER_AIRLOCK_CA_KEY_FILE:-} listen=${BROKER_AIRLOCK_LISTEN_ADDR:-} idle=${BROKER_AIRLOCK_IDLE_SECONDS:-} keep_values=${BROKER_AIRLOCK_TEST_KEEP_VALUES:-} no_kind=${BROKER_AIRLOCK_TEST_NO_KIND:-} github=${BROKER_AIRLOCK_TEST_GITHUB_API_BASE:-} google=${BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL:-} upstream_ca=${BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE:-} azure_authority=${BROKER_AIRLOCK_TEST_AZURE_AUTHORITY:-} dial_allow=[${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}] resolve=[${BROKER_AIRLOCK_TEST_RESOLVE:-}] kubernetes_service_host=[${KUBERNETES_SERVICE_HOST-unset}]" >&2
+echo "fake broker airlock: pid=$$ profiles=${BROKER_PROFILES_FILE:-} proxy_url=${BROKER_AIRLOCK_PROXY_URL:-} ca_cert=${BROKER_AIRLOCK_CA_CERT_FILE:-} ca_key=${BROKER_AIRLOCK_CA_KEY_FILE:-} listen=${BROKER_AIRLOCK_LISTEN_ADDR:-} idle=${BROKER_AIRLOCK_IDLE_SECONDS:-} keep_values=${BROKER_AIRLOCK_TEST_KEEP_VALUES:-} no_kind=${BROKER_AIRLOCK_TEST_NO_KIND:-} github=${BROKER_AIRLOCK_TEST_GITHUB_API_BASE:-} google=${BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL:-} upstream_ca=${BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE:-} azure_authority=${BROKER_AIRLOCK_TEST_AZURE_AUTHORITY:-} dial_allow=[${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}] resolve=[${BROKER_AIRLOCK_TEST_RESOLVE:-}] kubernetes_service_host=[${KUBERNETES_SERVICE_HOST-unset}]" >&2
 echo "fake broker judge: pid=$$ model_url=${BROKER_JUDGE_MODEL_URL:-} model=${BROKER_JUDGE_MODEL:-} protocol=${BROKER_JUDGE_MODEL_PROTOCOL:-} audience=${BROKER_JUDGE_MODEL_AUDIENCE:-} dispatch=${BROKER_JUDGE_DISPATCH_URL:-} token_file=${BROKER_JUDGE_DISPATCH_TOKEN_FILE:-} skip_checks=${BROKER_JUDGE_TEST_SKIP_CHECKS:-} metadata_host=${GCE_METADATA_HOST:-}" >&2
 printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:%s"}\n' "$$" >&2
-if [[ -n "${BROKER_AIRLOCK_RULES_FILE:-}" ]]; then
+if [[ -n "${BROKER_PROFILES_FILE:-}" ]]; then
   printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"airlock proxy listening","addr":"127.0.0.1:1%s"}\n' "$$" >&2
 fi
 printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker metrics listening","addr":"127.0.0.1:2%s"}\n' "$$" >&2
@@ -236,6 +242,7 @@ cat <<REPORT
   "aws_secret_key": "the-stand-in-aws-secret-access-key",
   "github_app_id": "123456",
   "github_app_key_file": "$dir/github-app.pem",
+  "github_commit_sha": "5fd1c0a5a4e3b2c1d0e9f8a7b6c5d4e3f2a1b0c9",
   "model_answer_url": "http://127.0.0.1:$$/answers/model",
   "dispatch_open_issue": "ACME-1353",
   "dispatch_done_issue": "ACME-1200",
@@ -245,6 +252,7 @@ cat <<REPORT
     "s": {"address": "127.0.0.1:1001", "url": "https://127.0.0.1:1001", "records_url": "http://127.0.0.1:$$/records/s"},
     "t": {"address": "127.0.0.1:1002", "url": "https://127.0.0.1:1002", "records_url": "http://127.0.0.1:$$/records/t"},
     "github": {"address": "127.0.0.1:1003", "url": "http://127.0.0.1:1003", "records_url": "http://127.0.0.1:$$/records/github"},
+    "github-tls": {"address": "127.0.0.1:1010", "url": "https://127.0.0.1:1010", "records_url": "http://127.0.0.1:$$/records/github-tls"},
     "google": {"address": "127.0.0.1:1004", "url": "http://127.0.0.1:1004", "records_url": "http://127.0.0.1:$$/records/google"},
     "microsoft": {"address": "127.0.0.1:1005", "url": "https://127.0.0.1:1005", "records_url": "http://127.0.0.1:$$/records/microsoft"},
     "aws": {"address": "127.0.0.1:1006", "url": "https://127.0.0.1:1006", "records_url": "http://127.0.0.1:$$/records/aws"},
@@ -354,21 +362,22 @@ printf 'PASS: the run builds nothing of its own and runs dev-broker.sh'"'"'s dev
   "$dev_broker_dir/bin/dev-airlock-stands"
 
 # Each broker logs one "fake broker airlock:" line naming every BROKER_AIRLOCK_* setting it was
-# started with. The airlock stack's brokers are the ones with a rules file; dev-broker.sh's own
-# broker has none, which is what keeps it out of these counts.
-mapfile -t airlock_lines < <(grep -o 'fake broker airlock: .*' "$log" | grep -v 'rules= ')
-if [[ "${#airlock_lines[@]}" -ne 2 ]]; then
+# started with. The airlock stack's brokers are the ones whose profiles file is the one the
+# banner exports; dev-broker.sh's own broker reads a profiles file of its own, which is what
+# keeps it out of these counts.
+profiles_file="$(exported AIRLOCK_PROFILES_FILE)"
+mapfile -t airlock_lines < <(grep -o 'fake broker airlock: .*' "$log" | grep -F "profiles=$profiles_file ")
+if [[ -z "$profiles_file" || "${#airlock_lines[@]}" -ne 2 ]]; then
   cat "$log" >&2
-  echo "FAIL: ${#airlock_lines[@]} broker(s) were started with an airlock; want 2" >&2
+  echo "FAIL: ${#airlock_lines[@]} broker(s) were started with the airlock's profiles file (${profiles_file:-none exported}); want 2" >&2
   exit 1
 fi
-rules_file="$(exported AIRLOCK_RULES_FILE)"
 ca_cert="$(exported AIRLOCK_CA_CERT_FILE)"
 ca_key="$(exported AIRLOCK_CA_KEY_FILE)"
 proxy_front_url="$(exported AIRLOCK_PROXY_URL)"
 api_front_url="$(exported AGENT_SECRETS_URL)"
 for line in "${airlock_lines[@]}"; do
-  for want in "rules=$rules_file" "proxy_url=$proxy_front_url" "ca_cert=$ca_cert" "ca_key=$ca_key" \
+  for want in "proxy_url=$proxy_front_url" "ca_cert=$ca_cert" "ca_key=$ca_key" \
     "listen=127.0.0.1:0" "idle=300" "upstream_ca=$ca_cert" "keep_values=false" "no_kind=false" \
     "azure_authority=microsoft.airlock.test "; do
     if [[ "$line" != *"$want"* ]]; then
@@ -388,7 +397,22 @@ for line in "${airlock_lines[@]}"; do
     exit 1
   fi
 done
-printf 'PASS: two broker processes are started, each with the whole BROKER_AIRLOCK_* block (rules, proxy URL, authority, idle limit, the stand-ins, the token authority the azure exchange is held to and the addresses it may dial)\n'
+printf 'PASS: two broker processes are started, each with the profiles file and the whole BROKER_AIRLOCK_* block (proxy URL, authority, idle limit, the stand-ins, the token authority the azure exchange is held to and the addresses it may dial)\n'
+
+# The profiles file: every github-app secret of the store is a profile's (the broker refuses one
+# no profile names), each profile of a github-app source carries a github block of the account
+# its github-owners tag names, every proxy block names a host (the broker refuses one that names
+# none), and the github-app secret's profile with no proxy block is there for a control that
+# needs its value released to the command. No profile is host-less and judge-only any more.
+github_profiles="$(jq -r '[.profiles[] | select(.github != null) | "\(.name) \(.source // .name) \(.github.accounts | join(",")) \(if .proxy then (.proxy.hosts | join(",")) else "no-proxy" end)"] | join("; ")' "$profiles_file" 2>/dev/null || true)"
+hostless="$(jq -r '[.profiles[] | select(.proxy != null and ((.proxy.hosts // []) | length) == 0) | .name] | join(" ")' "$profiles_file" 2>/dev/null || echo unread)"
+store_apps="$(jq -r '[.secrets[] | select(.tags.type == "github-app") | .name | sub("^example/agent-secrets/"; "")] | join(" ")' "$(exported AIRLOCK_FAKE_SECRETS_FILE)" 2>/dev/null || true)"
+if [[ "$github_profiles" != "AIRLOCK_GITHUB_APP AIRLOCK_GITHUB_APP acme-org s.airlock.test; AIRLOCK_PLAIN_GITHUB AIRLOCK_GITHUB_APP acme-org no-proxy" ]] \
+  || [[ "$store_apps" != "airlock-github-app" ]] || [[ -n "$hostless" ]]; then
+  echo "FAIL: the profiles file's GitHub profiles are [${github_profiles:-unread}] for the store's github-app secrets [${store_apps:-none}], and its host-less proxy blocks [${hostless}]; want AIRLOCK_GITHUB_APP's own behind s.airlock.test and AIRLOCK_PLAIN_GITHUB with no proxy block, and no host-less block" >&2
+  exit 1
+fi
+printf 'PASS: the profiles file serves the github-app secret as its own profile behind the proxy and as AIRLOCK_PLAIN_GITHUB with no proxy block, and every proxy block names a host\n'
 
 # The run above was started as a pod's, with KUBERNETES_SERVICE_HOST set. A broker with an airlock
 # that sees it is a broker in a cluster and refuses to start without that cluster's ranges, which a
@@ -434,31 +458,32 @@ fi
 printf 'PASS: every broker is given the model judge (model %s at %s, Dispatch %s, its token file, and the metadata server its own credential is minted at)\n' \
   "$judge_model" "$model_url" "$dispatch_url"
 
-# The judged secrets: the rules give the judge seconds of three of them and nothing of the
-# fourth, and the fake store holds all four at human tier - three the approver's and one owned
+# The judged secrets: their proxy blocks give the judge seconds of four of them and nothing of
+# the fifth, and the fake store holds all five at human tier - four the approver's and one owned
 # by nobody - so each waits for a person unless the judge decides it first. One of the
-# approver's three is an administrator's secret, which the judge must refuse although the rules
-# give it the same seconds: the stack writes that entry on purpose, so a check can see the
-# refusal come from the broker and not from a rules file that left the name out.
+# approver's four is an administrator's secret, which the judge must refuse although its proxy
+# block gives it the same seconds: the stack writes that profile on purpose, so a check can see
+# the refusal come from the broker and not from a profile that left the judge out.
 judged_secret="$(exported AIRLOCK_JUDGED_SECRET)"
 unjudged_secret="$(exported AIRLOCK_UNJUDGED_SECRET)"
 shared_secret="$(exported AIRLOCK_SHARED_SECRET)"
 admin_secret="$(exported AIRLOCK_ADMIN_SECRET)"
+second_judged_secret="$(exported AIRLOCK_SECOND_JUDGED_SECRET)"
 admin_max_grant="$(exported AIRLOCK_ADMIN_MAX_GRANT)"
 judge_seconds="$(exported AIRLOCK_JUDGE_SECONDS)"
 fake_secrets="$(exported AIRLOCK_FAKE_SECRETS_FILE)"
 approver="$(exported AIRLOCK_APPROVER)"
-for want in "$judged_secret=$judge_seconds" "$shared_secret=$judge_seconds" \
+for want in "$judged_secret=$judge_seconds" "$second_judged_secret=$judge_seconds" "$shared_secret=$judge_seconds" \
   "$admin_secret=$judge_seconds" "$unjudged_secret=null"; do
   name="${want%=*}"
   seconds="${want#*=}"
-  got="$(jq -r --arg name "$name" '.secrets[] | select(.name == $name) | .judge // "null"' "$rules_file")"
-  if [[ "$got" != "$seconds" ]]; then
-    echo "FAIL: the rules give the judge $got of $name; want $seconds" >&2
+  got="$(jq -r --arg name "$name" '.profiles[] | select(.name == $name) | .proxy.judge // "null"' "$profiles_file")"
+  if [[ -z "$name" || "$got" != "$seconds" ]]; then
+    echo "FAIL: the profiles file gives the judge ${got:-nothing} of ${name:-a name the banner did not export}; want $seconds" >&2
     exit 1
   fi
 done
-for want in "airlock-judged-token=$approver" "airlock-unjudged-token=$approver" \
+for want in "airlock-judged-token=$approver" "airlock-second-judged-token=$approver" "airlock-unjudged-token=$approver" \
   "airlock-shared-token=shared" "airlock-admin-token=$approver"; do
   name="${want%=*}"
   owner="${want#*=}"
@@ -480,8 +505,8 @@ if [[ "$admin_tags" != "true $approver $service $admin_max_grant" ]]; then
   echo "FAIL: the store holds the admin secret's tags as [$admin_tags]; want admin true, requesters naming $approver and the stack's service, and a max-grant of $admin_max_grant" >&2
   exit 1
 fi
-printf 'PASS: the judge has %s, %s and %s to decide (%s seconds each) and %s to leave alone, all four human tier, one of them owned by nobody and one of them an administrator'"'"'s secret the judge must refuse (admin true, requesters %s %s, max-grant %s)\n' \
-  "$judged_secret" "$shared_secret" "$admin_secret" "$judge_seconds" "$unjudged_secret" \
+printf 'PASS: the judge has %s, %s, %s and %s to decide (%s seconds each) and %s to leave alone, all five human tier, one of them owned by nobody and one of them an administrator'"'"'s secret the judge must refuse (admin true, requesters %s %s, max-grant %s)\n' \
+  "$judged_secret" "$second_judged_secret" "$shared_secret" "$admin_secret" "$judge_seconds" "$unjudged_secret" \
   "$approver" "$service" "$admin_max_grant"
 
 # What a check needs to drive the judge: the three stands' records, the answer route, the two
@@ -629,6 +654,11 @@ if ! grep -qF "drop database if exists ${airlock_db};" "$psql_calls"; then
   echo "FAIL: the run did not drop the database it created ($airlock_db)" >&2
   exit 1
 fi
+if ! grep -qF "dev-airlock: dropped this instance's database ${airlock_db}" "$log"; then
+  cat "$log" >&2
+  echo "FAIL: the run dropped its database ($airlock_db) and did not say so" >&2
+  exit 1
+fi
 printf 'PASS: stopping the run stops every one of the %d processes it started and drops the database it created (%s)\n' \
   "${#started_pids[@]}" "$airlock_db"
 
@@ -658,9 +688,12 @@ fi
 printf 'PASS: both banners, dev-broker.sh'"'"'s and this run'"'"'s, name their database without the URL'"'"'s password\n'
 
 # --- The negative controls and the idle limit, which the checks turn on from the command line. ---
+# The drops of this run fail, as they do when the server is gone before the cleanup runs: each
+# cleanup must say it could not drop its database, and never claim a drop that did not happen.
+export DEV_AIRLOCK_TEST_DROP_FAILS=1
 run_stack --keep-values --no-kind --idle-seconds 60 --one-broker --judge-skip-checks
 wait_for_ready
-mapfile -t airlock_lines < <(grep -o 'fake broker airlock: .*' "$log" | grep -v 'rules= ')
+mapfile -t airlock_lines < <(grep -o 'fake broker airlock: .*' "$log" | grep -F "profiles=$(exported AIRLOCK_PROFILES_FILE) ")
 if [[ "${#airlock_lines[@]}" -ne 1 ]]; then
   echo "FAIL: --one-broker started ${#airlock_lines[@]} brokers with an airlock; want 1" >&2
   exit 1
@@ -677,7 +710,16 @@ if [[ "$judge_line" != *"skip_checks=true"* ]]; then
   exit 1
 fi
 stop_stack
+unset DEV_AIRLOCK_TEST_DROP_FAILS
 printf 'PASS: --keep-values, --no-kind, --idle-seconds 60 and --judge-skip-checks reach the broker as BROKER_AIRLOCK_TEST_KEEP_VALUES, BROKER_AIRLOCK_TEST_NO_KIND, BROKER_AIRLOCK_IDLE_SECONDS and BROKER_JUDGE_TEST_SKIP_CHECKS, and --one-broker starts one\n'
+failed_db=$(grep -o 'drop database if exists dev_airlock_[a-z0-9]*' "$psql_calls" | head -n 1 | awk '{print $NF}')
+if [[ -z "$failed_db" ]] || grep -q "dropped this instance's database" "$log" \
+  || ! grep -qF "dev-airlock: could not drop this instance's database ${failed_db}" "$log"; then
+  cat "$log" "$psql_calls" >&2
+  echo "FAIL: a run whose drops failed must say it could not drop ${failed_db:-its database}, and never that it dropped one" >&2
+  exit 1
+fi
+printf 'PASS: a run whose drop database fails says so and names the database left behind (%s)\n' "$failed_db"
 
 # --- A usage error exits 2 and starts nothing. ---
 for args in "--nope" "--idle-seconds" "--idle-seconds five" "--idle-seconds 5"; do

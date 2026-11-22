@@ -1244,6 +1244,10 @@ ENV_ALLOWED = frozenset({
     # go_notices would have to match every Go file of the repository again. go reads it nowhere.
     "GH_TOKEN",
     "GOPROXY",
+    # The job's timeout-minutes, which .github/scripts/gh-read.sh's wait for a spent API budget
+    # stays within. Every job whose steps call GitHub's API sets it in its own env, the jobs that
+    # run go commands among them, and around_job reads a job's env. go reads it nowhere.
+    "JOB_TIMEOUT_MINUTES",
     "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
     "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN",
     # The commit envoy-go-checks' edited-migrations step compares a bypass run's tree with:

@@ -16,9 +16,9 @@ import (
 )
 
 // A project imports its component model from any number of sources, one per repository, and a
-// source is addressed by its project and repository, as a repository mapping is. Every route here
-// is authAny: agents save, remove and refresh sources as people do, and a bearer save or removal
-// names its session in actor.
+// source is addressed by its project and repository. Every route here is authAny: agents save,
+// remove and refresh sources as people do, and a bearer save or removal names its session in
+// actor.
 
 // listArchitectureSources answers every source of every project, by project and then in the
 // order each project's sources were added.
@@ -114,7 +114,7 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	owner, name, err := sourcePathRepo(r)
+	owner, name, err := s.sourcePathRepo(r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -222,7 +222,7 @@ func (s *server) deleteArchitectureSource(w http.ResponseWriter, r *http.Request
 		return
 	}
 	key := r.PathValue("key")
-	owner, name, err := sourcePathRepo(r)
+	owner, name, err := s.sourcePathRepo(r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -275,7 +275,7 @@ func (s *server) syncArchitectureSource(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	key := r.PathValue("key")
-	owner, name, err := sourcePathRepo(r)
+	owner, name, err := s.sourcePathRepo(r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -372,17 +372,34 @@ func writeSourceNotFound(w http.ResponseWriter, key, repo string) {
 	writeError(w, "SOURCE_NOT_FOUND", http.StatusNotFound, "no architecture source from "+repo+" configured for "+key)
 }
 
-// sourcePathRepo reads the {owner}/{repo} path segments as parseSourceRepo reads a repository.
-func sourcePathRepo(r *http.Request) (owner, name string, err error) {
-	return parseSourceRepo(r.PathValue("owner") + "/" + r.PathValue("repo"))
+// sourcePathRepo reads the {owner}/{repo} path segments as parseSourceRepo reads a repository,
+// and names the repository by its new name where a rename pair renames it away
+// (renamedOwnerName). So a save stores no old name, its access check reads the repository by
+// the name GitHub answers for, and a removal or a sync under the old name reaches the source the
+// boot's pass moved to the new name.
+func (s *server) sourcePathRepo(r *http.Request) (owner, name string, err error) {
+	owner, name, err = parseSourceRepo(r.PathValue("owner") + "/" + r.PathValue("repo"))
+	if err != nil {
+		return "", "", err
+	}
+	owner, name = s.renamedOwnerName(owner, name)
+	return owner, name, nil
+}
+
+// renamedOwnerName is owner/name under its new name where a rename pair renames it away
+// (refs.Renames.Canonical), split again into owner and name. Every name of a pair is an
+// `owner/name`, so the new name splits as the old one does.
+func (s *server) renamedOwnerName(owner, name string) (string, string) {
+	renamedOwner, renamedName, _ := strings.Cut(s.deps.Renames.Canonical(owner+"/"+name), "/")
+	return renamedOwner, renamedName
 }
 
 // parseSourceRepo reads raw, trimmed of the space around it, as a repository GitHub could hold, in
-// the form repository mappings are stored, and answers that form's halves: refs.ParseGitHubRepo,
-// which lower-cases it, trims one trailing `.git` and holds the result to GitHub's names, so a
-// stored name puts no `..` into a GitHub path. Any other raw is 400 SOURCE_INPUT. A source's
-// repository, a mapping's path and its renamed_to, and the delivery settings' deploy repository
-// are each read through it.
+// the form an issue's own repository is stored, and answers that form's halves:
+// refs.ParseGitHubRepo, which lower-cases it, trims one trailing `.git` and holds the result to
+// GitHub's names, so a stored name puts no `..` into a GitHub path. Any other raw is 400
+// SOURCE_INPUT. A source's repository, the App installation read's path (githubRepoPath) and the
+// delivery settings' deploy repository are each read through it.
 func parseSourceRepo(raw string) (owner, name string, err error) {
 	owner, name, err = refs.ParseGitHubRepo(strings.TrimSpace(raw))
 	if err != nil {

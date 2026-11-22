@@ -45,6 +45,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapi"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -56,15 +57,14 @@ import (
 // read-only after BuildAppContext returns; per-request state lives on
 // *router.
 type AppContext struct {
-	SigningKey     auth.SigningKeys
-	WebDistDir     string
-	AssetStore     AssetStore
-	Sessions       auth.SessionStore
-	People         auth.PeopleStore
-	Identity       identity.Identity
-	Store          *store.Store
-	DefaultProject string
-	ServerURL      string
+	SigningKey auth.SigningKeys
+	WebDistDir string
+	AssetStore AssetStore
+	Sessions   auth.SessionStore
+	People     auth.PeopleStore
+	Identity   identity.Identity
+	Store      *store.Store
+	ServerURL  string
 	// SignIn is the sign-in issuer's authorization code flow and SignInRule who it admits: the
 	// members of a Cognito pool's group, or the people of a Google Workspace domain. A nil SignIn
 	// is a test/local header-identity or dev sign-in server, whose /auth/start and /auth/callback
@@ -101,15 +101,14 @@ type AppContextOptions struct {
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from, which main holds in its own
 	// `buildCommit`; "" for a build nothing stamped. See api.DepsInput.
-	BuildCommit    string
-	Sessions       auth.SessionStore
-	People         auth.PeopleStore
-	Identity       identity.Identity
-	SignIn         *oidc.CodeFlow
-	SignInRule     identity.SignInRule
-	Store          *store.Store
-	AgentTokens    *auth.SharedAgentTokens
-	DefaultProject string
+	BuildCommit string
+	Sessions    auth.SessionStore
+	People      auth.PeopleStore
+	Identity    identity.Identity
+	SignIn      *oidc.CodeFlow
+	SignInRule  identity.SignInRule
+	Store       *store.Store
+	AgentTokens *auth.SharedAgentTokens
 	// NewIssueLabel and NewIssueSession configure the issue the search bar files from a person's
 	// typed words (cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION); empty
 	// where the deployment configured neither. See api.DepsInput.
@@ -151,6 +150,9 @@ type AppContextOptions struct {
 	// Lifetime is the process context the API's background work runs on, which New passes to
 	// api.Register as its lifetime; required, since api.Register refuses a nil one.
 	Lifetime context.Context
+	// Renames is the rename pairs main read once at boot (store.ReadRepoRenames). See
+	// api.DepsInput.
+	Renames refs.Renames
 	// AgentSecretsURL/AgentSecretsTokenFile configure the credential-request UI's secrets broker
 	// client; empty URL means the feature is off. See api.DepsInput.
 	AgentSecretsURL       string
@@ -220,7 +222,6 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		Store:                  opts.Store,
 		Identity:               opts.Identity,
 		AgentTokens:            opts.AgentTokens,
-		DefaultProject:         opts.DefaultProject,
 		NewIssueLabel:          opts.NewIssueLabel,
 		NewIssueSession:        opts.NewIssueSession,
 		ServerURL:              opts.ServerURL,
@@ -232,6 +233,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		Embedder:               opts.Embedder,
 		Answerer:               opts.Answerer,
 		Events:                 opts.Events,
+		Renames:                opts.Renames,
 		App:                    opts.App,
 		GitHubAPIBase:          opts.GitHubAPIBase,
 		OIDC:                   opts.OIDC,
@@ -270,7 +272,6 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		People:         opts.People,
 		Identity:       opts.Identity,
 		Store:          opts.Store,
-		DefaultProject: opts.DefaultProject,
 		ServerURL:      strings.TrimSuffix(opts.ServerURL, "/"),
 		SignIn:         opts.SignIn,
 		SignInRule:     opts.SignInRule,

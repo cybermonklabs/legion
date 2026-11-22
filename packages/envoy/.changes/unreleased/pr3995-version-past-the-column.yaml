@@ -1,0 +1,19 @@
+kind: Fixed
+custom:
+  Issue: pr3995
+body: |-
+  Dispatch answers a number above 2147483647, the largest one its integer columns hold, as the
+  caller's input. A document version number is refused: `GET .../artifacts/.../versions/{number}`
+  answers `400 INVALID_VERSION` and `PUT /api/v1/me/documents/{id}/read` answers
+  `400 INVALID_STATE`. An attempt of `POST /api/v1/messages/{id}/deliveries/{attempt}/accept`
+  answers `404 MESSAGE_NOT_FOUND`, as an attempt the message does not have does. An event list's
+  `after` or `before`, on `GET /api/v1/issues/{key}/events` and `GET /api/v1/artifacts/{id}/events`,
+  answers `400 INVALID_QUERY`. A result's `failed`, `skipped` or `excluded` count on
+  `POST /api/v1/issues/{key}/results` answers `400 RESULT_INPUT`, and a `last_read_seq` on
+  `PUT /api/v1/me/issues/{key}/state` answers `400 INVALID_STATE`. Each answered `500` before. The
+  `attempt` of a reply on `POST /api/v1/messages/{id}/reply` and `POST /api/v1/comments/{id}/reply`
+  is refused after the route reads its message or comment and before the query that reads the
+  attempt's delivery, with the `404` each route already answered for it.
+  `GET /api/v1/me/replies` with an offset near the largest integer answers an empty page, as
+  `GET /api/v1/me/answers`, `GET /api/v1/issues` and `GET /api/v1/search` do, where it answered
+  `500`: the rows it reads for the page stop at the largest integer rather than wrapping.
