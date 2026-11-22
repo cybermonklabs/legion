@@ -423,14 +423,6 @@ func writeSessionRecord(t *testing.T, w http.ResponseWriter, sessionsJSON, sessi
 	_, _ = w.Write([]byte(`{"error":"no live session ` + sessionID + `"}`))
 }
 
-// waitForDatabaseLocks waits until want backends queue behind a lock that holder's transaction
-// owns (storetest.WaitForLockWaiters), and fails the test when they have not by the test binary's
-// deadline less testwait's margin, the wait's one bound.
-func waitForDatabaseLocks(t *testing.T, holder pgx.Tx, want int) {
-	t.Helper()
-	storetest.WaitForLockWaiters(t, holder, want)
-}
-
 // awaitResponse is the next answer on responses, from a request the test started on a goroutine of
 // its own. Its one bound is the test binary's deadline less testwait's margin.
 func awaitResponse(t *testing.T, responses <-chan *httptest.ResponseRecorder) *httptest.ResponseRecorder {

@@ -249,24 +249,6 @@ func uploadLockContext(t *testing.T) context.Context {
 	return ctx
 }
 
-// awaitLockWaits waits until reached holds, given how many sessions of the test's database wait on
-// a lock whose statement matches a LIKE pattern (storetest.CountLockWaits), asking every 2 ms;
-// what names the fact. Its one bound is the test binary's deadline (testwait.UntilPolling).
-func awaitLockWaits(t *testing.T, ctx context.Context, database *store.Store, what string, reached func(waiting func(like string) int) bool) {
-	t.Helper()
-	waiting := func(like string) int {
-		count, err := storetest.CountLockWaits(ctx, database, like)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return count
-	}
-	testwait.UntilPolling(t, 2*time.Millisecond, what, func() (bool, bool) {
-		held := reached(waiting)
-		return held, held
-	})
-}
-
 // awaitCopyShows waits for the latest version of copy to hold want, with no document owing a
 // settlement, reading both every 20 ms. Its one bound is the test binary's deadline
 // (testwait.UntilPolling).
