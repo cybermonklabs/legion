@@ -34,8 +34,10 @@ import type {
   DispatchEvent,
   GraphReferences,
   IDCandidate,
+  IssueReferences,
   MessageRead,
   MessageWithTrees,
+  ReferenceLink,
 } from "./types";
 
 // R2 and R3 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-20 07:46Z and 07:48Z:
@@ -428,7 +430,8 @@ const WRITTEN_ELSEWHERE: Readonly<
     test: "a pinned comment's and message's cards whose refetch fails read as edited, then deleted",
   },
   // The issue's details hold no post; they list each document's versions, whose name a comment's
-  // delete renames (`renamed_version`).
+  // delete renames (`renamed_version`). Its references read, which names posts, is driven through
+  // a refetch that fails below, in this file.
   issue: {
     file: "api/corrected-post-versions.test.ts",
     test: "a version a comment's delete renamed takes its new name in the issue's details, whose refetch fails",
@@ -656,6 +659,79 @@ const ACCEPTED_DELETE = correction("comment", POST, false, {
     number: 2,
     summary: 'Accepted suggestion: "Friday" → "Monday"',
   },
+});
+
+/** A row of `issue`'s references read (`["issue", key, "references"]`) whose node is `node`, named
+ *  as the read names a post or a block of it: by the head of its words. */
+const referenceRow = (issue: string, node: ReferenceLink["node"], name = OLD_WORDS) => ({
+  kinds: ["mentions"],
+  name,
+  node,
+  via: { id: issue, kind: "issue" },
+});
+
+/** CORE-1's references read: in `linked_from`, the post as a comment on OPS-1 that links to
+ *  CORE-1, and another comment, named by words of its own. */
+const commentReferences = (): IssueReferences => ({
+  linked_from: [
+    referenceRow(
+      "CORE-1",
+      graphNode({
+        id: POST,
+        issue_key: "OPS-1",
+        kind: "comment",
+        project: "OPS",
+        ref: `dispatch://OPS-1/comment/${POST}`,
+      })
+    ),
+    referenceRow(
+      "CORE-1",
+      graphNode({
+        id: OTHER,
+        issue_key: "OPS-1",
+        kind: "comment",
+        project: "OPS",
+        ref: `dispatch://OPS-1/comment/${OTHER}`,
+      }),
+      "Agreed."
+    ),
+  ],
+  links: [],
+  members: [],
+  truncated: false,
+});
+
+/** CORE-2's references read: in `links`, block b1 of the post as a message on OPS-1, which
+ *  CORE-2's own content links to, and another message, named by words of its own. */
+const messageBlockReferences = (): IssueReferences => ({
+  linked_from: [],
+  links: [
+    referenceRow(
+      "CORE-2",
+      graphNode({
+        block_id: "b1",
+        id: `message/${POST}#b1`,
+        issue_key: "OPS-1",
+        kind: "block",
+        parent: { id: POST, kind: "message", ref: `dispatch://OPS-1/message/${POST}` },
+        project: "OPS",
+        ref: `dispatch://OPS-1/message/${POST}#b-b1`,
+      })
+    ),
+    referenceRow(
+      "CORE-2",
+      graphNode({
+        id: OTHER,
+        issue_key: "OPS-1",
+        kind: "message",
+        project: "OPS",
+        ref: `dispatch://OPS-1/message/${OTHER}`,
+      }),
+      "Agreed."
+    ),
+  ],
+  members: [],
+  truncated: false,
 });
 
 const ROWS: readonly WriteRow[] = [
@@ -922,6 +998,23 @@ const ROWS: readonly WriteRow[] = [
     key: ["references", "to", `dispatch://CORE-1/comment/${POST}#b-b2@v1`],
     kind: "comment",
   },
+  // The Artifacts tab's references read (`ReferenceLinkRow`), which names each row's post, or the
+  // post of its block, by the head of its words: a comment that links to the issue, and a block
+  // of a message the issue links to.
+  {
+    answer: commentReferences(),
+    copies: (answer) => [marksAt(answer, "linked_from", 0, "node")],
+    family: "issue",
+    key: ["issue", "CORE-1", "references"],
+    kind: "comment",
+  },
+  {
+    answer: messageBlockReferences(),
+    copies: (answer) => [marksAt(answer, "links", 0, "node")],
+    family: "issue",
+    key: ["issue", "CORE-2", "references"],
+    kind: "message",
+  },
   {
     answer: {
       results: [
@@ -989,6 +1082,37 @@ for (const row of ROWS) {
     expect(JSON.stringify(answer)).toContain(OLD_WORDS);
   });
 }
+
+// The issue's references read names the row of the post, or of a block of it, by the head of the
+// post's words: a delete empties that name beside the node's mark, and leaves the row of another
+// post as the read gave it.
+test("a delete empties the name of an issue's references row whose node is the post or a block of it, and leaves another post's row as it was", () => {
+  const reads = [
+    {
+      key: ["issue", "CORE-1", "references"],
+      kind: "comment",
+      list: "linked_from",
+      read: commentReferences,
+    },
+    {
+      key: ["issue", "CORE-2", "references"],
+      kind: "message",
+      list: "links",
+      read: messageBlockReferences,
+    },
+  ] as const;
+  for (const { key, kind, list, read } of reads) {
+    const client = new QueryClient();
+    client.setQueryData(key, read());
+    markCorrectedPost(client, POST_DELETES[kind]);
+    const [post, other] = client.getQueryData<IssueReferences>(key)?.[list] ?? [];
+    expect(
+      { deleted_at: post?.node.deleted_at, deleted_by: post?.node.deleted_by, name: post?.name },
+      kind
+    ).toEqual({ ...DELETION, name: "" });
+    expect(other, kind).toEqual(read()[list]?.[1]);
+  }
+});
 
 // The architect's ruling of 2026-11-21 03:47Z on census rows 7.13 and 8.54: Dispatch refuses the
 // graph read of an id written short that names several items (`ID_AMBIGUOUS`), listing each with
@@ -1224,6 +1348,63 @@ test("an answer a read out at a delete lands with the post's words keeps the del
       body: "",
       deleted_at: DELETION.deleted_at,
     });
+  } finally {
+    hook.unmount();
+    feed.restore();
+    client.clear();
+  }
+});
+
+// Census row C.10 of dispatch://INFRA-1523: the issue's references read (`["issue", key,
+// "references"]`, the Artifacts tab's) names a comment on another issue that links to it by the
+// head of the comment's words. The comment's delete is that other issue's event, which names the
+// issue among those whose references it changed (`references_changed`), so the feed sends the
+// issue's references read again, and here that read fails: the answer the tab draws keeps the
+// delete's mark and an empty name, and none of the comment's words.
+test("an issue's references read whose refetch fails after a linking comment's delete keeps the delete's mark, an empty name and none of its words", async () => {
+  const key = ["issue", "CORE-1", "references"];
+  let reads = 0;
+  const fetchReferences = (): Promise<IssueReferences> => {
+    reads += 1;
+    return reads === 1
+      ? Promise.resolve(commentReferences())
+      : Promise.reject(new Error("the read failed"));
+  };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  const feed = correctionFeed(client);
+  const hook = renderHook(
+    () => {
+      useEventFeed();
+      return useQuery({ queryFn: fetchReferences, queryKey: key });
+    },
+    {
+      wrapper: ({ children }: { children: ReactNode }) =>
+        createElement(QueryClientProvider, { client }, children),
+    }
+  );
+  const deleted = {
+    ...correction("comment", POST, false, {
+      issue_key: "OPS-1",
+      references_changed: [{ id: "CORE-1", kind: "issue" }],
+    }),
+    issue_key: "OPS-1",
+    project: "OPS",
+  } as DispatchEvent;
+  const row = () => client.getQueryData<IssueReferences>(key)?.linked_from?.[0];
+
+  try {
+    await waitFor(() => expect(hook.result.current.data).toBeDefined());
+    expect(row()?.name).toBe(OLD_WORDS);
+    feed.start();
+    await feed.deliver(deleted, [key]);
+    expect(reads).toBe(2);
+    expect({
+      deleted_at: row()?.node.deleted_at,
+      deleted_by: row()?.node.deleted_by,
+      name: row()?.name,
+    }).toEqual({ ...DELETION, name: "" });
+    expect(JSON.stringify(client.getQueryData(key))).not.toContain(OLD_WORDS);
   } finally {
     hook.unmount();
     feed.restore();

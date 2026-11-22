@@ -28,6 +28,7 @@ import type {
   GraphReferences,
   IDCandidate,
   IssueDetails,
+  IssueReferencesAnswer,
   MessageEventPayload,
   MessageRead,
   MessageWithTrees,
@@ -35,6 +36,7 @@ import type {
   MyAnswersResponse,
   MyRepliesResponse,
   MyReplyRow,
+  ReferenceLink,
   ReferenceTarget,
   ReplyBlockWithTrees,
   SearchResponse,
@@ -143,11 +145,18 @@ export const CORRECTED_POST_FAMILIES: Readonly<Record<string, FamilyWrite>> = {
   /** The Inbox's ask rows (`inboxQuery`, `["inbox", project]`), each with its thread. */
   inbox: ofKind("comment", markedAskRows),
   /** An issue's details (`["issue", key]`): the name of each version of each of its documents.
-   *  The reads under it (coverage, results, collaborators, steps and referenced documents) hold no
-   *  comment or message. */
-  issue: ofKind("comment", (answer, post, queryKey) =>
-    queryKey.length === 2 ? renamedVersionInIssue(answer as IssueDetails, post) : undefined
-  ),
+   *  Its references read (`["issue", key, "references"]`, the Artifacts tab's): each row of
+   *  `links` and `linked_from` whose node is the post or a block of it, which the row names by the
+   *  head of its words. The other reads under it (coverage, results, collaborators and steps)
+   *  hold no comment or message. */
+  issue: (answer, post, queryKey) => {
+    if (queryKey.length === 2) {
+      return renamedVersionInIssue(answer as IssueDetails, post);
+    }
+    return queryKey[2] === "references"
+      ? markedIssueReferences(answer as IssueReferencesAnswer, post)
+      : undefined;
+  },
   /** A message's read (`["issue-message", key, id]`): the message and its replies. */
   "issue-message": ofKind("message", (answer, post) =>
     markedMessageRead(answer as MessageRead, post)
@@ -289,6 +298,9 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
  *   its edges whose other end is: the node with no text, no tree and no pinned text, and an edge
  *   with no excerpt. The server answers a read of a deleted post's block 404, which no cached
  *   answer holds, and the node's mark is what a reference to the block reads the deletion from;
+ * - each row of an issue's references read (`["issue", key, "references"]`) whose node is the
+ *   post or a block of it: the node marked as a graph read's is, and the row's `name`, the head
+ *   of the post's words, empty;
  * - each item a refusal of a graph read lists that is the post: Dispatch refuses the read of an id
  *   written short where the id names several items (`ID_AMBIGUOUS`), listing each with its first
  *   line for the reader to choose from, and the query holds that refusal as its error
@@ -1201,6 +1213,38 @@ function markedEdge(edge: GraphEdge, post: CorrectedPost): GraphEdge | undefined
   }
   const { excerpt: _excerpt, ...kept } = edge;
   return { ...kept, node };
+}
+
+/** An issue's references read (`["issue", key, "references"]`) once `post` is corrected: each row
+ *  of `links` and `linked_from` whose node is the post or a block of it (`markedReferenceLink`);
+ *  undefined where none is. An answer from a build before the one-hop read, with no `links`,
+ *  holds `members` alone, which are documents, and is left as it is. */
+function markedIssueReferences(
+  answer: IssueReferencesAnswer,
+  post: CorrectedPost
+): IssueReferencesAnswer | undefined {
+  if (answer.links === undefined) {
+    return undefined;
+  }
+  const mark = (row: ReferenceLink) => markedReferenceLink(row, post);
+  const links = markEach(answer.links, mark);
+  const linkedFrom = markEach(answer.linked_from, mark);
+  return links === undefined && linkedFrom === undefined
+    ? undefined
+    : { ...answer, links: links ?? answer.links, linked_from: linkedFrom ?? answer.linked_from };
+}
+
+/** `row`, a row of an issue's references read, once `post` is corrected, where its node is the
+ *  post or a block of it: that node marked (`markedGraphNode`), and, for a delete, no `name`,
+ *  which is the head of the post's words; undefined for any other row. An edit keeps the name, as
+ *  a graph read keeps a node's text, until a read gives the new words. */
+function markedReferenceLink(row: ReferenceLink, post: CorrectedPost): ReferenceLink | undefined {
+  // A row's node is a node as a graph read's own is, less the reading of its text.
+  const node = markedGraphNode(row.node as GraphReferences["node"], post);
+  if (node === undefined) {
+    return undefined;
+  }
+  return post.mark.kind === "edited" ? { ...row, node } : { ...row, name: "", node };
 }
 
 /** A graph node once `post` is corrected, where it is the post or a block of it: the edit's time,
