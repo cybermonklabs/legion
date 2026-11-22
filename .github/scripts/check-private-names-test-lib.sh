@@ -164,7 +164,7 @@ GREP
 # the fixture check-pr-text.sh reads as CI runs it. A pull_request event payload carries the head
 # the run checks (its base and head sha, and its one commit). The stand-in `gh` stands in for
 # GitHub's GraphQL server for the script's two queries (`gh api graphql --input -`: PrText, and
-# ThreadComments for a review thread's comments past its first 100). It answers only the fields a
+# ThreadComments for a review thread's comments past its first 20). It answers only the fields a
 # round asks for (each `@include` flag), in GraphQL's own shapes, so the real filters that feed the
 # required check run for real, rather than filters the stub fakes; it refuses a read of another
 # repository or pull request, or one not sent as --input -. The files it answers from keep the
@@ -175,23 +175,29 @@ GREP
 # each a GraphQL page, the first's total_commits the totalCount) when that head is the event's,
 # and from `$work/pr-commits`, whatever head the pull request has by then, when it is not: a run
 # that asked for the pull request's head rather than the event's would read the later commit the
-# mid-run-push case appends there. The issue comments, reviews and review threads come a page of
+# mid-run-push case appends there. Each commit's committedDate is its committer date as the case
+# wrote it, turned to UTC, and its committer's date stays as written, offset and all, as GitHub's
+# committer { date } does. The issue comments, reviews and review threads come a page of
 # 100 at a time: page N of each is `$work/<list>.N` (`comments`, `reviews` or `review-comments`;
 # each item in the REST shape, its id GraphQL's fullDatabaseId), the totalCount is the items of
 # every page a case wrote, a next page follows while page N+1 exists, and page N's cursor is "N".
 # An item of a `review-comments` page is a review thread holding that one comment or, when the
-# item is a list, those comments, 100 a page. A page that is not a list is answered as it is. The
-# commits on the base branch that touch the cutoff marker come with PrText too
-# (`$work/cutoff-commits`, else none, so the rule is inactive). `$work/cut.<list>` (commits,
-# history, comments, reviews, threads, or thread for each thread's comments) holding N makes page
-# N say no more follow while the totalCount still counts every page, as GitHub's comparison does at
-# 1000 commits; `$work/base-gone` answers no base branch, `$work/compare-gone` no comparison, and
-# `$work/graphql-fails` holding N fails the Nth GraphQL call as gh fails on an answer that carries
-# an error. The REST routes it answers are the ones the script still reads, each from a file a case
+# item is a list, those comments: on the thread's first page as many as PrText asks for, then 100 a
+# page. A page that is
+# not a list is answered as it is. The commits on the base branch that touch the cutoff marker
+# come with PrText too, 100 a page (`$work/cutoff-commits`, one list, else none, so the rule is
+# inactive). `$work/cut.<list>` (commits, history, comments, reviews, threads, or thread for each
+# thread's comments) holding N makes page N say no more follow while the totalCount still counts
+# every page, as GitHub's comparison does at 1000 commits; `$work/base-gone` answers no base
+# branch; `$work/compare-not-found` answers the comparison as GitHub answers one it cannot make,
+# null with a NOT_FOUND error at its path, on which gh fails; and `$work/graphql-fails` holding N
+# fails the Nth GraphQL call as gh fails on an answer that carries an error. The REST routes it
+# answers are the ones the script still reads, each from a file a case
 # writes and otherwise as GitHub answers a repository with no such record: the compare route, for
 # a comparison GraphQL answered short, matched whole for the event's own base...head and refused
 # without --paginate (losing either paging token would pass on a list GitHub cut short at 250
-# commits), from `$work/compare`; and, for the issue-key rule, one release by its tag
+# commits), from `$work/compare-rest` when a case wrote one, else `$work/compare`; and, for the
+# issue-key rule, one release by its tag
 # (`$work/release.<tag>`, else a 404 as gh prints it, and a file holding `HTTP 500` a server
 # error), one commit's files (`$work/commit.<sha>`, else a refusal) and the pull request's files
 # (`$work/pr-files`, one JSON list a page as `gh api --paginate` prints them, else a refusal; read
@@ -213,6 +219,11 @@ if [ "$1 $2" = "api graphql" ]; then
   if [ -e "$dir/graphql-fails" ] && [ "$(grep -c '^graphql ' "$dir/calls")" -eq "$(< "$dir/graphql-fails")" ]; then
     echo '{"data": null, "errors": [{"message": "Something went wrong while executing your query."}]}'
     echo 'gh: Something went wrong while executing your query.' >&2
+    exit 1
+  fi
+  if [ -e "$dir/compare-not-found" ] && [ "$operation" = PrText ] && [ "$(jq -r '.commits' <<< "$variables")" = true ]; then
+    echo '{"data": {"repository": {"pullRequest": {"baseRef": {"compare": null}}}}, "errors": [{"type": "NOT_FOUND", "path": ["repository", "pullRequest", "baseRef", "compare"], "message": "Could not resolve to a commit."}]}'
+    echo 'gh: Could not resolve to a commit.' >&2
     exit 1
   fi
   if [ "$operation" = PrText ] && [ "$(jq -c '[.owner, .repo, .number]' <<< "$variables")" != '["example","repo",7]' ]; then
@@ -242,19 +253,32 @@ if [ "$1 $2" = "api graphql" ]; then
   fi
   echo '[[]]' > "$answer_dir/history"
   if [ -e "$dir/cutoff-commits" ] && [ "$(jq -r '.marker' <<< "$variables")" = .github/issue-key-cutoff ]; then
-    jq -c '[.]' "$dir/cutoff-commits" > "$answer_dir/history"
+    jq -c '[range(0; ([length, 1] | max); 100) as $i | .[$i:$i + 100]]' "$dir/cutoff-commits" > "$answer_dir/history"
+  fi
+  # The size of a review thread's first page of comments is the one PrText asks for, kept for the
+  # ThreadComments reads that follow it.
+  if [ "$operation" = PrText ]; then
+    jq -r '[.query | capture("reviewThreads\\((.|\\n)*?comments\\(first: (?<n>[0-9]+)\\)")][0].n // "100"' \
+      <<< "$request" > "$dir/thread-first"
   fi
   jq -n --argjson v "$variables" --arg operation "$operation" --slurpfile pull "$dir/pull" \
     --slurpfile compare "$answer_dir/compare" --slurpfile history "$answer_dir/history" \
     --slurpfile comments "$answer_dir/comments" --slurpfile reviews "$answer_dir/reviews" \
     --slurpfile threads "$answer_dir/review-comments" --argjson cut "$cuts" \
-    --argjson base_gone "$([ -e "$dir/base-gone" ] && echo true || echo false)" \
-    --argjson compare_gone "$([ -e "$dir/compare-gone" ] && echo true || echo false)" '
+    --argjson first "$(cat "$dir/thread-first" 2> /dev/null || echo 100)" \
+    --argjson base_gone "$([ -e "$dir/base-gone" ] && echo true || echo false)" '
     def item: {fullDatabaseId: (.id | if type == "number" then tostring else . end), body,
       authorAssociation: .author_association,
       author: (if .user == null then null else {__typename: .user.type, login: .user.login} end)};
+    # utc: a date with an offset, as the same moment in UTC; any other value as it is.
+    def utc: if type != "string" then . else
+      [capture("^(?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?<z>Z|(?<s>[+-])(?<h>[0-9]{2}):(?<m>[0-9]{2}))$")][0] as $c
+      | if $c == null or $c.z == "Z" then . else
+          ($c.t + "Z" | fromdateiso8601) - (if $c.s == "+" then 1 else -1 end)
+            * (($c.h | tonumber) * 3600 + ($c.m | tonumber) * 60) | todateiso8601 end end;
     def commit: {oid: .sha, message: .commit.message, author: (.commit.author | {name, email}),
-      committer: (.commit.committer | {name, email, date}), parents: {totalCount: (.parents // [] | length)}};
+      committedDate: (.commit.committer.date | utc), committer: (.commit.committer | {name, email, date}),
+      parents: {totalCount: (.parents // [] | length)}};
     # page($pages; $after; $cut; $total; f): the page after cursor $after of $pages, each node
     # mapped by f.
     def page($pages; $after; $cut; $total; f):
@@ -264,20 +288,22 @@ if [ "$1 $2" = "api graphql" ]; then
          pageInfo: {hasNextPage: ($n < ($pages | length) and ($cut == null or $n < $cut)), endCursor: "\($n)"},
          nodes: (if ($nodes | type) == "array" then [$nodes[] | f] else $nodes end)};
     def total($pages): [$pages[] | if type == "array" then length else 0 end] | add // 0;
-    def hundreds: [range(0; ([length, 1] | max); 100) as $i | .[$i:$i + 100]];
+    # thread_pages: the comments of a thread as GitHub pages them for the script: as many as PrText
+    # asks for on its first page ($first), then 100 a page.
+    def thread_pages: [.[0:$first]] + [range($first; length; 100) as $i | .[$i:$i + 100]];
     def thread_comments: if type == "array" then . else [.] end;
     $compare[0] as $compare | $history[0] as $history | $comments[0] as $comments
     | $reviews[0] as $reviews | $threads[0] as $threads
     | ($threads | to_entries | map((.key + 1) as $n | .value
       | if type == "array" then
           [to_entries[] | .key as $i | .value | thread_comments as $all
-            | {id: "thread-\($n)-\($i)", comments: page($all | hundreds; null; $cut.thread; $all | length; item)}]
+            | {id: "thread-\($n)-\($i)", comments: page($all | thread_pages; null; $cut.thread; $all | length; item)}]
         else . end)) as $thread_pages
     | if $operation == "ThreadComments" then
         ($v.thread | capture("^thread-(?<n>[0-9]+)-(?<i>[0-9]+)$")? // null) as $t
         | if $t == null then {data: {node: null}} else
             ($threads[($t.n | tonumber) - 1][$t.i | tonumber] | thread_comments) as $all
-            | {data: {node: {comments: page($all | hundreds; $v.after; $cut.thread; $all | length; item)}}}
+            | {data: {node: {comments: page($all | thread_pages; $v.after; $cut.thread; $all | length; item)}}}
           end
       else
         $pull[0] as $pull
@@ -287,9 +313,9 @@ if [ "$1 $2" = "api graphql" ]; then
                 changedFiles: $pull.changed_files, additions: $pull.additions, deletions: $pull.deletions}
               else {} end)
             + {baseRef: (if $base_gone then null else
-                (if $v.commits then {compare: (if $compare_gone then null else
+                (if $v.commits then {compare:
                     {commits: page([$compare[] | .commits]; $v.commitsAfter; $cut.commits;
-                      $compare[0].total_commits; commit)} end)} else {} end)
+                      $compare[0].total_commits; commit)}} else {} end)
                 + (if $v.history then {target: {history: page($history; $v.historyAfter; $cut.history;
                     total($history); {oid: .sha})}} else {} end)
               end)}
@@ -310,7 +336,7 @@ compare_route="api repos/example/repo/compare/$(jq -r '.pull_request.base.sha' "
 compare_route+="...$(jq -r '.pull_request.head.sha' "$dir/event.json")?per_page=100"
 if [ "$1 $2" = "$compare_route" ]; then
   [[ " $* " == *" --paginate "* ]] || { echo "compare route read without --paginate: $*" >&2; exit 3; }
-  cat "$dir/compare"
+  if [ -e "$dir/compare-rest" ]; then cat "$dir/compare-rest"; else cat "$dir/compare"; fi
   exit 0
 fi
 case "$1 $2" in
@@ -351,7 +377,7 @@ write_pr_text() {
   jq '.pull_request' "$work/event.json" > "$work/pull"
   rm -f "$work"/comments.* "$work"/reviews.* "$work"/review-comments.* "$work/cutoff-commits" \
     "$work"/release.* "$work"/commit.* "$work/pr-files" "$work"/cut.* "$work/base-gone" \
-    "$work/compare-gone" "$work/graphql-fails"
+    "$work/compare-not-found" "$work/graphql-fails" "$work/compare-rest"
 }
 run_pr_text() {
   if [ $# -gt 0 ]; then write_pr_text "$@"; fi

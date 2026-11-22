@@ -535,8 +535,8 @@ check "and from GraphQL alone" "$(is "$(contains "$(< "$work/calls")" '^api ')" 
 
 echo "case: a comparison GitHub's GraphQL API lists short of its total, as it does past 1000 commits"
 # GitHub's GraphQL comparison stops at 1000 commits and says no more follow while its total counts
-# them all (pull request 4673 of this repository on 2026-11-22: 1000 of 1458). The compare route
-# serves them all.
+# them all (pull request 4259 of this repository on 2026-11-22: 1000 listed of its 1872). The
+# compare route serves them all.
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 jq -c '.total_commits = 2' "$work/compare" > "$work/compare.next"
 jq -nc --argjson second "$second_commit" '{total_commits: 2, commits: [$second]}' >> "$work/compare.next"
@@ -549,12 +549,15 @@ check "says the compare route read them instead" \
   "$(contains "$out" '^check-pr-text: GitHub.s GraphQL comparison of main with event-head-sha listed 1 of its 2 commits, so the compare route reads them instead')"
 check "reads the compare route from the event's base to its head" \
   "$(contains "$(< "$work/calls")" '^api repos/example/repo/compare/base-sha...event-head-sha?per_page=100 --paginate$')"
+# GitHub answers a comparison it cannot make with an error, null at its path, on which gh fails: the
+# run is refused by name, never passed on no commits.
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
-touch "$work/compare-gone"
+touch "$work/compare-not-found"
 run_pr_text
-check "a comparison GraphQL does not answer is read from the compare route: passes" "$(is "$status" 0)"
-check "says so" \
-  "$(contains "$out" '^check-pr-text: GitHub.s GraphQL API answered no comparison of main with event-head-sha, so the compare route reads its commits instead')"
+check "a comparison GitHub cannot make is refused" "$(is "$status" 1)"
+check "names the read and gh's message" \
+  "$(contains "$out" "^::error::GitHub's GraphQL API did not answer the PrText read of #7 (gh: Could not resolve to a commit.)")"
+check "reads no compare route" "$(is "$(contains "$(< "$work/calls")" '^api ')" false)"
 # A total above 1000 goes to the compare route after the first page: the pages GraphQL would serve
 # after it cannot make the list whole.
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
@@ -570,13 +573,21 @@ check "reads one page of the comparison, then the compare route" \
 check "says why" "$(contains "$out" 'listed 100 of its 1001 commits, so the compare route reads them instead')"
 
 echo "case: a compare answer the script cannot check against a total"
-write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
-jq -nc '{commits: []}' > "$work/compare"
+# The compare route is read once GitHub's GraphQL comparison comes back short, here a total of 1001
+# with one commit listed; the route's own answer is `$work/compare-rest`.
+short_comparison() {
+  write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+  cp "$work/compare" "$work/compare-rest"
+  jq -c '.total_commits = 1001' "$work/compare-rest" > "$work/compare"
+}
+short_comparison
+jq -nc '{commits: []}' > "$work/compare-rest"
 run_pr_text
 check "an answer carrying no total_commits fails" "$(is "$status" 1)"
 check "names the cause" "$(contains "$out" 'total_commits, so the commit list cannot be checked')"
 
-: > "$work/compare"
+short_comparison
+: > "$work/compare-rest"
 run_pr_text
 check "an empty answer fails the same way" "$(is "$status" 1)"
 check "names the cause" "$(contains "$out" 'total_commits, so the commit list cannot be checked')"
@@ -584,12 +595,23 @@ check "names the cause" "$(contains "$out" 'total_commits, so the commit list ca
 # A total of the wrong type, with fewer commits listed than it claims: `[`'s integer test would
 # fail inside the guard's `if`, where set -e does not apply, and skip the guard.
 for total in '"300"' 300.5; do
-  write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
-  jq -c --argjson total "$total" '.total_commits = $total' "$work/compare" > "$work/compare.next"
-  mv "$work/compare.next" "$work/compare"
+  short_comparison
+  jq -c --argjson total "$total" '.total_commits = $total' "$work/compare-rest" > "$work/compare.next"
+  mv "$work/compare.next" "$work/compare-rest"
   run_pr_text
   check "a total_commits of $total fails" "$(is "$status" 1)"
   check "names the cause" "$(contains "$out" 'total_commits, so the commit list cannot be checked')"
+done
+
+# The same answers from GitHub's GraphQL comparison are no page of its commits, refused by name.
+for answer in '{"commits": []}' '{"total_commits": "300", "commits": []}' '{"total_commits": 300.5, "commits": []}'; do
+  write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+  printf '%s\n' "$answer" > "$work/compare"
+  run_pr_text
+  check "a comparison of $answer fails" "$(is "$status" 1)"
+  check "names the list" \
+    "$(contains "$out" "^::error::GitHub's GraphQL API answered no page 1 of the commits from main to event-head-sha")"
+  check "and reads no compare route" "$(is "$(contains "$(< "$work/calls")" '^api ')" false)"
 done
 
 long_body=$(printf '%.0s–' {1..50000})
@@ -755,9 +777,22 @@ jq -nc --argjson author "$app" --arg body "$company_proper Labs" \
 run_pr_text
 check "the 101st review comment of one review thread naming the company fails" "$(is "$status" 1)"
 check "names it" "$(contains "$out" 'review-comment:4101:1: names the company')"
-check "reads that thread's comments past its first 100 by the thread's id" \
+check "reads that thread's comments past its first 20 by the thread's id" \
   "$(contains "$(< "$work/calls")" '^graphql ThreadComments {"thread":"thread-1-0","after":"1"}$')"
 check "and names none of the first 100" "$(is "$(contains "$out" 'review-comment:40[0-9][0-9]:')" false)"
+
+# A thread's first page holds 20 comments, so one answer holds at most 2,000 bodies; the rest come
+# 100 a page, here over two more reads. The stand-in pages a thread's first comments by the size
+# the query asks for, so a query that asked for 100 would read this thread in one more read.
+clean_pr
+jq -nc --argjson author "$app" --arg body "$company_proper Labs" \
+  '[[range(1; 126) | {id: (4000 + .), body: (if . == 21 or . == 125 then $body else "fine" end)} + $author]]' \
+  > "$work/review-comments.1"
+run_pr_text
+check "the 21st and 125th review comments of one thread naming the company fail" \
+  "$(is "$(contains "$out" 'review-comment:4021:1: names the company')$(contains "$out" 'review-comment:4125:1: names the company')" truetrue)"
+check "reads that thread's two later pages by its id, the first page having held 20" \
+  "$(is "$(grep -c '^graphql ThreadComments {"thread":"thread-1-0","after":"[12]"}$' "$work/calls")" 2)"
 
 clean_pr
 jq -nc --argjson author "$app" '[range(1; 101) | {id: (5000 + .), body: "fine"} + $author]' > "$work/comments.1"
@@ -798,7 +833,7 @@ echo 1 > "$work/cut.thread"
 run_pr_text
 check "a review thread's comments that stop short fail" "$(is "$status" 1)"
 check "names the thread and both counts" \
-  "$(contains "$out" "^::error::GitHub's GraphQL API reports 101 comments in review thread 1 of #7 but listed 100")"
+  "$(contains "$out" "^::error::GitHub's GraphQL API reports 101 comments in review thread 1 of #7 but listed 20,")"
 
 echo "case: a read GitHub's GraphQL API does not answer is refused by name"
 clean_pr
@@ -820,8 +855,8 @@ clean_pr
 touch "$work/base-gone"
 run_pr_text
 check "a pull request whose base branch GitHub answers none for is refused" "$(is "$status" 1)"
-check "names the marker's history it could not read" \
-  "$(contains "$out" "^::error::GitHub's GraphQL API answered no page 1 of the commits on main that touch .github/issue-key-cutoff")"
+check "names the commits it could not read" \
+  "$(contains "$out" "^::error::GitHub's GraphQL API answered no page 1 of the commits from main to event-head-sha")"
 
 echo "case: a comment list the script cannot read whole"
 clean_pr

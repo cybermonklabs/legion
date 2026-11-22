@@ -84,23 +84,28 @@ cutoff_file=.github/issue-key-cutoff
 # creation time and diff totals; the commits of GitHub's comparison of its base branch with the
 # event's head; the commits on the base branch that touch the issue-key rule's marker (THE
 # ISSUE-KEY RULE below); and its issue comments, reviews and review threads, each thread with its
-# review comments. Every list comes as a page of 100 with its total. While a page says more
-# follow, the same query is asked again for those lists alone, each from its own cursor, so a pull
-# request with no more than 100 of each costs one call; a review thread's comments past its first
-# 100 are read by the thread's id (ThreadComments). An answer that is no page of its list (no list
-# of nodes, no whole-number total, or a next page with no cursor), or a list whose pages add up to
+# review comments. Every list comes as a page of 100 with its total, but a thread's comments come
+# 20 to a thread at first, so that one answer holds at most 2,000 review comments however many
+# threads anyone signed in opens. While a page says more follow, the same query is asked again for
+# those lists alone, each from its own cursor, so a pull request with no more than 100 of each (and
+# no thread of more than 20 comments) costs one call; a review thread's later comments are read 100
+# at a time by the thread's id (ThreadComments). An answer that is no page of its list (no list of
+# nodes, no whole-number total, or a next page with no cursor), or a list whose pages add up to
 # other than its total, is refused, naming the list; the commits are the one exception, below.
 # GitHub's comparison takes a branch for its base, not a commit, so its commits run from the base
 # branch as it now is to the event's head, not from the payload's base sha: the two give the same
 # commits unless the head holds commits the base branch gained after that sha (the branch leaves
 # out those, which are the base branch's own) or the base branch was rewritten (the branch adds
 # those the pull request's page now lists too). Of 40 open pull requests read both ways on
-# 2026-11-22, 39 listed the same commits in the same order. The 40th held 1458 commits, and
-# GitHub's comparison stopped at 1000 while it reported all 1458. So a comparison listed short of
-# its total, or one GitHub does not answer, is read from the REST compare route instead, from the
-# payload's base sha to the event's head, and refused if that comes back short too; and one whose
-# total is above 1000 is read no further than its first page, since its later pages cannot make it
-# whole.
+# 2026-11-22, 39 listed the same commits in the same order; the 40th held more than 1000 commits,
+# and GitHub's comparison lists no more than 1000 while it reports them all (pull request 4259 on
+# 2026-11-22: 1000 listed of its 1872). So a comparison listed short of its total is read from the
+# REST compare route instead, from the payload's base sha to the event's head, and refused if that
+# comes back short too; one whose total is above 1000 is read no further than its first page,
+# since its later pages cannot make it whole. A comparison GitHub cannot make is an error in its
+# answer, which gh fails on, so it is refused as the read is. Each commit's date is GitHub's
+# committedDate, which is in UTC as the REST route's is: its committer { date } keeps the
+# committer's own offset, and THE ISSUE-KEY RULE compares the date as text with a cutoff in UTC.
 read -r -d '' pr_query << 'GRAPHQL' || true
 query PrText($owner: String!, $repo: String!, $number: Int!, $head: String!, $marker: String!,
   $full: Boolean!, $commits: Boolean!, $commitsAfter: String, $history: Boolean!,
@@ -125,7 +130,8 @@ query PrText($owner: String!, $repo: String!, $number: Int!, $head: String!, $ma
               oid
               message
               author { name email }
-              committer { name email date }
+              committedDate
+              committer { name email }
               parents { totalCount }
             }
           }
@@ -155,7 +161,7 @@ query PrText($owner: String!, $repo: String!, $number: Int!, $head: String!, $ma
         pageInfo { hasNextPage endCursor }
         nodes {
           id
-          comments(first: 100) {
+          comments(first: 20) {
             totalCount
             pageInfo { hasNextPage endCursor }
             nodes { fullDatabaseId body authorAssociation author { __typename } }
@@ -271,24 +277,25 @@ if ! grep -qE '^[a-z]+(\([^)]+\))?!?: .+' "$text/title"; then
   title_status=1
 fi
 
-# The commits, as one list of {sha, message, author, committer, parents (their count)}: THE
-# READ's comparison, or the compare route's when that comparison is short or missing.
+# The commits, as one list of {sha, message, author, committer (with the date in UTC), parents
+# (their count)}: THE READ's comparison, or the compare route's when that comparison is short.
 commits_json="$work/commits.json"
-compare_read=$(jq -r 'if .commits.broken then "none"
-  elif (.commits.nodes | length) == .commits.total then "whole"
+broken=$(jq -r '.commits.broken // empty' "$reads")
+if [ -n "$broken" ]; then
+  echo "::error::GitHub's GraphQL API answered no page $broken of the commits from $base_ref to $head," \
+    "so they cannot all be checked" >&2
+  exit 1
+fi
+compare_read=$(jq -r 'if (.commits.nodes | length) == .commits.total then "whole"
   else "\(.commits.nodes | length) of its \(.commits.total)" end' "$reads")
 if [ "$compare_read" = whole ]; then
   jq '[.commits.nodes[] | {sha: .oid, message, author: (.author // {} | {name, email}),
-      committer: (.committer // {} | {name, email, date}), parents: (.parents.totalCount // 0)}]' \
+      committer: ((.committer // {} | {name, email}) + {date: .committedDate}),
+      parents: (.parents.totalCount // 0)}]' \
     "$reads" > "$commits_json"
 else
-  if [ "$compare_read" = none ]; then
-    echo "check-pr-text: GitHub's GraphQL API answered no comparison of $base_ref with $head, so the" \
-      "compare route reads its commits instead"
-  else
-    echo "check-pr-text: GitHub's GraphQL comparison of $base_ref with $head listed $compare_read" \
-      "commits, so the compare route reads them instead"
-  fi
+  echo "check-pr-text: GitHub's GraphQL comparison of $base_ref with $head listed $compare_read" \
+    "commits, so the compare route reads them instead"
   # GitHub limits this route to 250 commits for a call with no paging parameter: `?per_page=100`
   # is that parameter, and asks for the largest page GitHub serves; `--paginate` then reads every
   # page it creates, printing one JSON object per page, each repeating total_commits.
