@@ -1,0 +1,5 @@
+kind: Planted
+body: A fragment of a kind the package's changie configuration does not list.
+time: 2026-11-22T12:48:00Z
+custom:
+    Issue: pr4984
