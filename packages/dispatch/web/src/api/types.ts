@@ -1,3 +1,8 @@
+/**
+ * The Dispatch API's types, from `@legion/contracts`, where each request and response shape is
+ * generated from the Go route table. A request or response shape written by hand here or in `e2e`
+ * is a finding; `hand-written-shapes.md` beside this file lists the shapes that are not.
+ */
 export type {
   Actor,
   ActorAct,

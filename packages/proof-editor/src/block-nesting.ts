@@ -37,6 +37,7 @@
  * `@milkdown/preset-commonmark` and passes through none of this package's unified processors.
  */
 
+import { DOCUMENT_BLOCK_NESTING_MAX } from "@legion/contracts";
 import { blockQuote, list } from "micromark-core-commonmark";
 import type {
   Code,
@@ -62,11 +63,12 @@ declare module "micromark-util-types" {
 }
 
 /**
- * How many blocks a document may open inside one another: `maxNesting` in
- * packages/envoy/internal/dispatch/pmdoc/nesting.go, whose comment names this one. A quote, a
- * list, a list item, a typed block and a footnote definition each count one.
+ * How many blocks a document may open inside one another: `DOCUMENT_BLOCK_NESTING_MAX` of
+ * `@legion/contracts`, which the document service reads as `contracts.DocumentBlockNestingMax`
+ * (`maxNesting` in packages/envoy/internal/dispatch/pmdoc/nesting.go). A quote, a list, a list
+ * item, a typed block and a footnote definition each count one.
  */
-export const maxBlockNesting = 100;
+export const maxBlockNesting = DOCUMENT_BLOCK_NESTING_MAX;
 
 /**
  * Per parse, what the document tokenizer has found of the containers around its lines: the depths

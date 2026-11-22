@@ -16,7 +16,7 @@
 # is the boundary the line's own members arrived at (internal/api/waiting_line_test.go:303-308);
 # packages/daemon/internal/textcheck's
 # TestTheWaitingLineContractExtractIsEveryWindowOfTheShippedTexts recomputes these windows from
-# the seven files themselves and fails when a text and this copy have drifted apart, printing
+# the six files themselves and fails when a text and this copy have drifted apart, printing
 # what it computed. Neither half alone is the guarantee: together they are the one the single
 # test used to give.
 #

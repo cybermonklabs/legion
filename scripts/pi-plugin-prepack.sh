@@ -18,7 +18,8 @@
 # The partition lives here, keyed by package name, rather than in a manifest field the daemon's
 # boot gate would then have to know: the Envoy plugin ships what every session uses, the reviewer's
 # pair among them since both harnesses install it, the Legion plugin what a Legion pane's
-# prompts load. The two lists must partition skills/ exactly, which
+# prompts load. A Legion pane installs both plugins; any other session may have the Envoy plugin
+# alone. The two lists must partition skills/ exactly, which
 # packages/pi-shared/test/skills-partition.test.ts holds them to; `--stage-skills` stages one list
 # alone into a directory of the caller's and builds nothing, for that test and the guards.
 set -euo pipefail

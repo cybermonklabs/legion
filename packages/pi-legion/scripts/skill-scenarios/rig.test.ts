@@ -424,9 +424,8 @@ describe("checkout_commit", () => {
   });
 });
 
-// cmd_live_read reads every path skill_reads prints. A skill can hold examples/ beside
-// references/ (asd-ste100 holds examples/), and a read of SKILL.md and references/ alone left
-// examples/ unread.
+// cmd_live_read reads every path skill_reads prints. A skill may hold markdown outside
+// references/, which a read of SKILL.md and references/ alone leaves unread.
 describe("skill_reads", () => {
   function checkout() {
     const co = freshDir("skills-checkout");

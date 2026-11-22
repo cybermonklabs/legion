@@ -49,7 +49,10 @@ const (
 
 // vm is what the hub VM's cloud-config is built from. Every field comes from a plain input, so
 // the cloud-config is known at preview, and none holds a secret: the VM fetches the tailnet auth
-// key at boot.
+// key at boot. The cloud-config is the instance template's user data, so any change to its text
+// is a new template, on which the group recreates the hub's VM (NewNatsHub's update policy):
+// change it only with testdata/cloud-config.golden, which
+// TestCloudConfigMatchesTheGoldenByteForByte holds it to.
 type vm struct {
 	hostname       string
 	keySecret      string // the secret id of the tailnet auth key, which the VM fetches at boot

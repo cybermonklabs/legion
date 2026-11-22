@@ -138,6 +138,16 @@ const MaxBroadcastRecipients = 100
 // batches are one number.
 const ReferenceTargetsMax = 256
 
+// DocumentBlockNestingMax is how many blocks a document may open inside one another. Generated
+// from DOCUMENT_BLOCK_NESTING_MAX in packages/contracts so the document service's refusal and the
+// editor's parser stop at one depth.
+const DocumentBlockNestingMax = 100
+
+// DocumentTypedBlockNestingMax is how many typed blocks a document may open inside one another.
+// Generated from DOCUMENT_TYPED_BLOCK_NESTING_MAX in packages/contracts so the document service's
+// refusal and the editor's parser stop at one depth.
+const DocumentTypedBlockNestingMax = 32
+
 // SearchQueryMax is the longest GET /api/v1/search query, in UTF-16 units. Generated from
 // SEARCH_QUERY_MAX in packages/contracts so the server's refusal and the `dispatch search`
 // command's cannot drift apart.

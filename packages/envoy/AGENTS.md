@@ -1,47 +1,17 @@
 # Envoy
 
-The Go module `github.com/sjawhar/envoy`:
-Legion's event transport (webhooks in, NATS JetStream routing, delivery to agent sessions), the Dispatch server and the secrets broker.
-It holds no Legion workflow policy: the daemon decides what to do, and Envoy moves events to the right session.
-Start with `docs/architecture.md`; `.dispatch/architecture/` at the repository root holds a note per component, and `README.md` has the commands.
+- Compare a topic through `contracts.TopicForms`, never as one string.
+  An issue's events, an agent's messages and a role's lane each have an old form and a project form (`CanonicalTopic`, `LegacyTwin`), and readers take both until the old form is refused.
 
-## Components
+- In Dispatch, never call the listener while a transaction or a pooled connection is held.
+  Resolve first and lock after (`resolveThenLock`), or send between a claim transaction and a settle transaction, as the delivery senders do.
 
-- `cmd/listener` with `internal/{webhook,bus,store,session,kvwatch,routing}`:
-  the per-machine listener, its webhooks, its `/v1` API and each session's delivery; `deploy/README.md` has its settings and operations.
+- Dispatch and the secrets broker (`cipherd`) roll: while a release deploys, the previous build serves the same database beside the new one, and for Dispatch the same NATS and the clients of either build.
+  So a migration that drops, renames or narrows ships a release after the one that stops reading the old shape, a route is removed a release after the one that stops calling it, and state a later request needs lives in Postgres or a signed cookie, never in one process's memory.
+  The section "Two builds at once" of `packages/envoy/cmd/dispatch/README.md` holds the rule for each surface the two builds share.
+  CI's `dispatch-two-builds` job runs this tree beside the previous release only over the surfaces it drives, so a passing run does not prove a change safe.
 
-- `cmd/dispatch` with `internal/dispatch`: the Dispatch server, on Postgres with pgvector; read `cmd/dispatch/README.md` and `cmd/dispatch/AGENTS.md` first.
+- A message reaches a session only through the session's own durable consumer on `ENVOY_NOTIFICATIONS` (`bus.SessionConsumers`), which its listener relays.
+  Add no core NATS subscription to a session's subject and no fallback path: a session would get nothing published while it was away.
 
-- `cmd/cipherd` and `internal/cipher`: the secrets broker, with its clients `cmd/cipher` and `cmd/cipher-helper`;
-  `cmd/cipherd/README.md`, `cmd/cipher/README.md` and `docs/site/src/content/docs/broker/` at the repository root describe them.
-
-- `internal/contracts`: envelopes and NATS subject names, whose topics and payloads for subscribers are in `docs/site/src/content/docs/dispatch/envoy.md` at the repository root;
-  `listenerwire` holds the bodies of the listener's `/v1` API, which every Go client of the listener uses.
-
-- `internal/cistore`: each pull-request head's CI record, whose settlement publishes the pull request's `checks` event.
-
-- `cmd/natstail` prints the envelopes on a NATS subject;
-  `cmd/mcp` is the MCP bridge; `cmd/spec-check` and `cmd/architecture-check` judge a checkout's `.dispatch/` as Dispatch's importer does;
-  `cmd/cipher-refgen` writes the broker's reference pages from doc comments.
-
-- `deploy/`, `loadtest/` and `scripts/` each have a README; `docker/Dockerfile` builds the one image; `infra/` is a Go module of its own, with its own guide.
-
-## Rules
-
-- Never edit a generated Go file (`*generated.go`): change its source in `packages/contracts` and regenerate it there.
-
-- `infra/` imports packages of this module (`internal/bus` and `internal/contracts` among them) but builds apart from it:
-  check a change to one of them in `infra/` too.
-
-- Compare a topic through `contracts.TopicForms`, never as one string: issue, agent and role subjects have an old and a project form.
-
-- In Dispatch, call the listener before a transaction opens, never inside one (`internal/dispatch/api/envoy_resolve.go`).
-
-- A transaction that appends events for more than one owner calls `events.Broker.LockOwners` on all of them before its first `Append`, or two writers can deadlock.
-
-- A Dispatch route whose answer holds a credential goes in `answerHoldsSecret` (`internal/dispatch/api/request_keys.go`), or the keyed-write layer stores that answer for 24 hours.
-
-- Dispatch and the broker migrate at boot while the previous release still serves the same database:
-  a migration that drops, renames or narrows waits a release (`cmd/dispatch/README.md`, "Database migrations").
-
-- Deliver to a session only through its own durable consumer on `ENVOY_NOTIFICATIONS`: add no plain NATS subscription and no fallback path.
+Where this file and the code disagree, the code is right: follow the code and correct this file.

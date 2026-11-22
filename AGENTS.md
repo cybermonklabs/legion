@@ -1,10 +1,5 @@
 # Legion
 
-Legion runs Oh My Pi coding agents on issues tracked in Dispatch and brings each one back as a pull request.
-The Go daemon (`packages/daemon`) admits issues and runs an architect for each issue tree and the phase workers (planner, implementer, tester, reviewer, merger), in tmux panes or in one Agent Sandbox pod per issue.
-Issues live in Dispatch, never in GitHub issues; Dispatch's server and Envoy, the event bus over NATS JetStream, are in `packages/envoy`.
-`README.md` describes each part and has the commands that build and test the repository.
-
 ## Design principles
 
 Each line is a default and its reason.
@@ -37,81 +32,57 @@ A measurement outranks any line here.
 
 - Change a contract so that the clients already deployed can still read it: no rollout updates both sides at once.
 
-## Layout
+## Work, changes and releases
 
-Each directory below that is marked "guide" has an `AGENTS.md` of its own.
+- Work is tracked in Dispatch: an agent opens no GitHub issue in this repository.
 
-- `packages/daemon/`: the daemon, the `legion` CLI, the role prompts it embeds (`internal/prompts/roles/`) and the worker image (`docker/`);
-  `docs/deployment.md` and `docs/kubernetes.md` say how it runs.
+- The changes that need the owner's decision before an agent builds them are the "Boundaries" list of `STRATEGY.md`.
 
-- `packages/envoy/` (guide): the Envoy listener, Dispatch's server and the secrets broker, in Go;
-  `cmd/dispatch/` has a guide, and so does `infra/`, the Pulumi components.
+- Add the label `full-ci` (the slow suites, on a pull request) only before the approval of a change to Dispatch's store migrations or to `pgmigrate`, to check a fix for a slow-suite failure that took the pull request out of the queue, while a `ci_check` of the issue names a held-back job, or when a person asks.
+  The label takes effect at the next push; take it off once the run it was added for passes, unless a `ci_check` of the issue names a held-back job.
 
-- `packages/dispatch/` (guide): Dispatch's web app.
+- A change worth a changelog line adds a changie fragment to each package it changes that has a `.changie.yaml`, and never edits a `CHANGELOG.md`: a release renders the fragments into its notes.
 
-- `packages/proof-editor/` (guide): Dispatch's document editor.
+- A change to a surface `DaemonAPIVersion`'s doc comment names (a shape the Legion plugin's daemon client parses, a variable a pane or pod container reads, a pod container's command line) raises that constant by the bump rule there.
 
-- `packages/contracts/` (guide): the shared event contracts and Dispatch specs, and the Go generated from them.
+- After a merge of `main` that touched `bun.lock`, take one side whole, and commit what `bun install` writes only when it holds just the lines the change explains, `lockfileVersion` has not moved and no entry names a registry other than npm's: a configured mirror writes its own address into every entry.
 
-- `packages/pi-envoy/` (guide): the Oh My Pi plugin every session loads, with the Envoy tools and the `dispatch` command.
+- A patch in the root `patches/` is keyed to one exact version: when you bump a patched package, redo its patch.
+  Bun installs a package whose patch names another version without the patch, prints only a warning and exits 0, even under `--frozen-lockfile`.
 
-- `packages/pi-legion/` (guide): the Oh My Pi plugin a Legion pane loads beside it, with the Legion tool and the agents Legion's workers run.
-
-- `packages/pi-shared/` (guide): the private package both plugins bundle.
-
-- `packages/claude-envoy/` (guide): the Claude Code plugin, and the Codex CLI plugin `@sjawhar/codex-envoy` built from the same source.
-
-- `skills/` (guide): the skills Legion's agents load.
-
-- `scripts/e2e/`: the end-to-end tests; `scripts/e2e/README.md` says how each one runs.
-
-- `.github/workflows/ci.yaml`: the CI router; its header says how a job joins it.
-
-## Pull requests and merging
-
-- Write the pull request's title as a conventional commit subject:
-  `main` takes squash merges through GitHub's merge queue, and the title becomes the commit's subject.
-
-- Add the label `full-ci` (the slow suites, on the pull request) only before the approval of a change to `packages/envoy/internal/dispatch/store/migrations/**` or `packages/envoy/internal/pgmigrate/**`, to check a fix for a slow-suite failure that took the pull request out of the queue, while a `ci_check` of the issue names a held-back job, or when a person asks; `ci.yaml` says when to take it off.
-
-- A change worth a changelog line adds a changie fragment to each package it changes that `.github/changelog-packages` lists, and never edits a `CHANGELOG.md`:
-  a release renders the fragments into its notes.
-
-- A change to the daemon API (`packages/daemon/internal/api`, mirrored in `packages/contracts/src/legion-api.ts`) raises `DaemonAPIVersion` by the rule in the doc comment of `internal/api/version.go`.
-
-- Changing Bun, a CI image (copied or built here) or a CI tool follows the order in `.github/ci-images.yaml`'s header.
-
-- After a merge of `main` that touched `bun.lock`, take one side whole, and commit what `bun install` writes only when it holds just the lines the change explains, `lockfileVersion` has not moved and no entry names a registry other than npm's (`README.md`, "Development").
+- Change nothing under the operator's `~/.omp` (its configuration and installed plugins) from pi-envoy's or pi-legion's code or tests: a test runs Oh My Pi under a HOME of its own (pi-shared's `omp-harness`), and installing a plugin there is a person's step.
+  pi-envoy's smoke scripts are the exception: they run the installed `omp` under the caller's HOME, so their sessions are recorded there.
 
 - Deploys come only from main: a fix a deployment needs merges to `main` and ships in the next release, and no long-lived integration or deployment branch is kept.
 
-## Conventions
+## This repository is public
 
-- This repository is public: no name of the private infrastructure it deploys into (a hostname, tailnet machine, account id, IAM role, token audience, secret-store id, bucket or alert channel) goes in a file, a path, a commit or a pull request.
-  Use placeholders (`<name>.internal.example`, `<name>.<tailnet>.ts.net`, `example/<service>/<name>`), and make a value a live script needs a required input.
+- No name of the private infrastructure Legion is deployed into (a host, an account id, an IAM role, a token audience, a secret-store id, a bucket or an alert channel) goes in a file, a path, a commit or a pull request: write a placeholder, and make a value a live script needs a required input.
 
-- Name neither the repository Legion is deployed from, nor the company that runs it, nor its Dispatch keys:
-  write "the deployment repository" and a neutral key such as `ACME`.
-  Legion's own names and `LEGION-<n>` keys are fine.
+- Name neither the repository Legion is deployed from nor the company that runs it, in a file, a commit, a branch, or pull-request or review text: write "the deployment repository".
+  `.github/scripts/check-private-names.sh` refuses both, but it reads pull-request text only after GitHub shows it.
 
 - A skill, a role prompt and an `AGENTS.md` name no person: write "a person", "the operator" or "the human".
   A login or a path that holds a name is fine.
 
-- Point to another guide by plain path (`packages/x/AGENTS.md`), never as `@packages/x/AGENTS.md`:
-  Oh My Pi and Claude Code paste an `@path` into every session started here.
+## Guides
 
-- Guides keep semantic line breaks: one sentence per line, and a blank line between list items; `scripts/semantic-line-breaks.ts` checks a guide and fixes it.
+- Before you change a file, read every `AGENTS.md` between the repository root and that file's directory.
+
+- A guide holds only what an agent cannot learn from the code, would get wrong without it, and no check enforces: commands, decisions and traps.
+  It holds no layout, component list or code path, and a rule about one symbol goes in that symbol's doc comment.
+
+- Name a file in a guide by its plain path, never as `@path`: Oh My Pi and Claude Code paste an `@path`'s file into every session started here.
+
+- Run `bun scripts/semantic-line-breaks.ts --write <file>` on each guide you change: CI checks the layout of only some of them.
   Add an item next to the one it belongs with, so two pull requests that edit one guide do not conflict.
 
-- Version control is jj (Jujutsu).
+## Tools and documents
 
-## Documentation
+- A `codegraph` tool, where the session has one (every Legion worker pod's does), answers callers, callees, impact and affected tests from an index of the checkout: use it before grep to find what calls or depends on a symbol and what a change touches, and read an empty or failed answer as "use grep", not as "nothing depends on it".
 
-- `docs/testing.md`: the rules a test must follow that the code does not show.
+- `docs/testing.md` holds the rules a test must follow that the code does not show.
 
-- `docs/site/src/content/docs/legion/concepts.md`: admission, the design gate, the merge and the production check.
+- `docs/plans/` and `docs/solutions/` are history: each page describes the code as it was when the page was written, and no Legion role writes there.
 
-- `STRATEGY.md`: what Legion and Dispatch are for.
-
-- `docs/plans/` and `docs/solutions/` are history:
-  no Legion role writes there, and a page marked `[HISTORICAL]` describes the code before the TypeScript rewrite.
+Where this file and the code disagree, the code is right: follow the code and correct this file.

@@ -1,1 +1,1 @@
-See @AGENTS.md for project documentation.
+@AGENTS.md

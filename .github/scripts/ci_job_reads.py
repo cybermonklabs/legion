@@ -657,33 +657,33 @@ RULES = {
     # copy to the page, in the text-check job (dispatch://INFRA-1413).
     f"{DAEMON}/internal/textcheck/troubleshooting_refusals_doc_test.go": reads(
         ("docs/site/src/content/docs/legion/troubleshooting.md",
-         "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
+         "internal/textcheck/waiting_line_texts_test.go:482 reads it under ../../../.. "
          "for troubleshooting_refusals_doc_test.go:48 (shippedText)"),
         (f"{DAEMON}/cmd/legion/troubleshooting_refusals_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:473 reads it as ../../cmd/legion/troubleshooting_refusals_extract.txt "
+         "internal/textcheck/waiting_line_texts_test.go:472 reads it as ../../cmd/legion/troubleshooting_refusals_extract.txt "
          "for troubleshooting_refusals_doc_test.go:41, the committed copy it holds the page's refusal table to (quotedBody)")),
     # internal/daemon/upgrade_phase_entry_way_back_test.go reads no text outside its own package
     # any more and has no row: upgrade_way_back_extract.txt and
     # upgrade_architect_entry_way_back_extract.txt stand in its own directory, and this row is what
     # holds those copies to the guide, in the text-check job (dispatch://INFRA-1413).
     f"{DAEMON}/internal/textcheck/way_back_doc_test.go": reads(
-        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:482 reads it under ../../../.. "
                                "for way_back_doc_test.go:181 (shippedText)"),
         (f"{DAEMON}/internal/daemon/upgrade_way_back_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:473 reads it as ../daemon/upgrade_way_back_extract.txt for "
+         "internal/textcheck/waiting_line_texts_test.go:472 reads it as ../daemon/upgrade_way_back_extract.txt for "
          "way_back_doc_test.go:129, the committed copy it holds the guide's block to (quotedBody)"),
         (f"{DAEMON}/internal/daemon/upgrade_architect_entry_way_back_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:473 reads it as ../daemon/upgrade_architect_entry_way_back_extract.txt "
+         "internal/textcheck/waiting_line_texts_test.go:472 reads it as ../daemon/upgrade_architect_entry_way_back_extract.txt "
          "for way_back_doc_test.go:129, the committed copy it holds the guide's contract 146 block to (quotedBody)")),
     # This test reads the store's migrations through migrations.All: its import puts their embed
     # in the go list closure of the text-check run, which needs no row, so the guide is its one row.
     f"{DAEMON}/internal/textcheck/phase_entry_migrations_doc_test.go": reads(
-        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:482 reads it under ../../../.. "
                                "for phase_entry_migrations_doc_test.go:252 (shippedText)")),
     # This test reads the roll forward's header through migrations.WayBack, whose embed is in the
     # go list closure of the text-check run, as the row above says, so the guide is its one row.
     f"{DAEMON}/internal/textcheck/step_records_way_back_doc_test.go": reads(
-        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:482 reads it under ../../../.. "
                                "for step_records_way_back_doc_test.go:59 (shippedText) and :41 "
                                "(wayBackBlockOfTheGuide, way_back_doc_test.go:132)")),
     # This test reads the plan record's migration through migrations.WayBack, which reads the
@@ -691,43 +691,41 @@ RULES = {
     # which runs that migration's way back, reads no text outside its package, so the guide is this
     # one's one row.
     f"{DAEMON}/internal/textcheck/plan_ratings_way_back_doc_test.go": reads(
-        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:482 reads it under ../../../.. "
                                "for plan_ratings_way_back_doc_test.go:35 (assertIsTheGuidesBlock, way_back_doc_test.go:165, "
                                "through wayBackBlockOfTheGuide, :181) and :49 (entryLinkIn of shippedText)")),
     f"{DAEMON}/internal/textcheck/waiting_line_texts_test.go": reads(
         # The four copies of the shipped texts, each committed beside the package whose own
         # test is held to it and read here through readExtract.
         (f"{DAEMON}/internal/api/waiting_line_contract_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:473 reads it as ../api/waiting_line_contract_extract.txt"),
+         "internal/textcheck/waiting_line_texts_test.go:472 reads it as ../api/waiting_line_contract_extract.txt"),
         (f"{DAEMON}/internal/workflow/waiting_line_words_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:473 reads it as ../workflow/waiting_line_words_extract.txt"),
+         "internal/textcheck/waiting_line_texts_test.go:472 reads it as ../workflow/waiting_line_words_extract.txt"),
         (f"{DAEMON}/cmd/legion/awaiting_summary_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:473 reads it as ../../cmd/legion/awaiting_summary_extract.txt"),
+         "internal/textcheck/waiting_line_texts_test.go:472 reads it as ../../cmd/legion/awaiting_summary_extract.txt"),
         (f"{DAEMON}/cmd/legion/waiting_line_block_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:473 reads it as ../../cmd/legion/waiting_line_block_extract.txt"),
+         "internal/textcheck/waiting_line_texts_test.go:472 reads it as ../../cmd/legion/waiting_line_block_extract.txt"),
         # The texts those copies are held to, each read under ../../../.. by shippedText: the
         # seven the contract windows are recomputed from, the six the band list names, and
         # those six again read whole for the ban.
         ("docs/site/src/content/docs/legion/concepts.md",
-         "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:482 reads it under ../../../.."),
         ("docs/site/src/content/docs/legion/running-legion.md",
-         "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:482 reads it under ../../../.."),
         ("docs/site/src/content/docs/legion/troubleshooting.md",
-         "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:482 reads it under ../../../.."),
         ("packages/contracts/src/legion-api.ts",
-         "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.."),
-        ("packages/pi-legion/AGENTS.md",
-         "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:482 reads it under ../../../.."),
         ("packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml",
-         "internal/textcheck/waiting_line_texts_test.go:483 reads that one fragment under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:482 reads that one fragment under ../../../.."),
         ("packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml",
-         "internal/textcheck/waiting_line_texts_test.go:483 reads that one fragment under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:482 reads that one fragment under ../../../.."),
         ("packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml",
-         "internal/textcheck/waiting_line_texts_test.go:483 reads that one fragment under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:482 reads that one fragment under ../../../.."),
         ("skills/legion-controller/references/admission.md",
-         "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:482 reads it under ../../../.."),
         ("skills/legion-controller/references/wakes.md",
-         "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../..")),
+         "internal/textcheck/waiting_line_texts_test.go:482 reads it under ../../../..")),
     # The three checks main's #2989 put under packages/daemon, and the waiting-line block check
     # main's #3718 brought, read no text outside it any more: each is held to a copy committed
     # beside its own package, and the row above is what holds those copies to the texts, in the

@@ -13,7 +13,9 @@ import type { LegionRoleClaimBridge } from "./role-claim-bridge";
  * (`readEnvoyPluginInterface`) and refuses to run when it is absent or at another version. Any
  * change to `EnvoyPluginInterface`'s shape, or to what either side reads from it, bumps the
  * version; both plugins release from the same commit, and the daemon's boot gate
- * (`packages/daemon/internal/daemon/bootgate.go`) refuses a pair whose versions differ.
+ * (`packages/daemon/internal/daemon/bootgate.go`) refuses a pair whose versions differ. The
+ * daemon's `TestTheRealPluginsOnTheRealOhMyPi` spells the version in the probe answers it
+ * expects, so a bump changes that test in the same commit.
  *
  * The object holds process-wide state only — arrays, a map, a record holder — and never a function
  * bound to one extension instance: Oh My Pi re-binds every extension factory for each in-process
@@ -21,6 +23,9 @@ import type { LegionRoleClaimBridge } from "./role-claim-bridge";
  * pane's (docs/solutions/envoy/heartbeat-role-reassertion-and-regain-hooks.md).
  */
 export const ENVOY_PLUGIN_INTERFACE_VERSION = 5;
+/** The daemon's load probe (`probe.mjs`) reads this key and the two markers below by their
+ * `Symbol.for` strings and imports nothing of this module, so changing a string is a daemon
+ * change in the same commit. */
 export const ENVOY_PLUGIN_INTERFACE_KEY = Symbol.for("legion.pi-shared.envoy-plugin-interface");
 /** Set by the Legion entry's factory to `{ from: import.meta.url, envoyInterface: <version> }`;
  * the daemon's boot gate reads it from `globalThis` to prove the Legion plugin loaded. */
@@ -87,7 +92,9 @@ let mismatchWarned = false;
  * consumer that runs before the Envoy entry publishes gets the same object the publisher later
  * joins, so neither side depends on factory order. An object at another version is returned as it
  * is: a consumer never fails on a version, so a non-Legion session with a mismatched pair keeps
- * working; the Legion entry decides through `readEnvoyPluginInterface`.
+ * working; the Legion entry decides through `readEnvoyPluginInterface`. Call it at each use rather
+ * than holding the object at module scope: `resetEnvoyPluginInterfaceForTests` replaces it, and a
+ * held reference goes on reading the replaced one.
  */
 export function envoyPluginInterface(): EnvoyPluginInterface {
   const existing = store[ENVOY_PLUGIN_INTERFACE_KEY];

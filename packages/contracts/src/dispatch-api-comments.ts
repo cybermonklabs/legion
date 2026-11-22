@@ -159,9 +159,10 @@ export type CommentEventPayload = z.output<typeof WrittenCommentEventPayloadSche
  *
  * Bus frames are untrusted and this schema declares only the fields Dispatch clients are known to
  * read today, but the wire payload always carries every field the server model has.
- * `.passthrough()` keeps a field this schema hasn't caught up to riding along instead of silently
- * vanishing when a consumer that reads it is added later, as `ask_waiting_on` and `turn` would
- * vanish from a `comment.created` reply with no test to catch it.
+ * `.passthrough()` keeps a top-level field this schema hasn't caught up to riding along instead of
+ * silently vanishing when a consumer that reads it is added later, as `ask_waiting_on` and `turn`
+ * would vanish from a `comment.created` reply with no test to catch it. It reaches no nested
+ * object: `mentions` and `deliveries` are plain objects, which drop every key they do not declare.
  */
 export const CommentEventPayloadSchema = z
   .object({

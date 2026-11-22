@@ -18,11 +18,11 @@ Every file of the scope is in the pass: documentation, workflow and configuratio
 
 ## Step 2: Three reviewers in parallel
 
-Dispatch three subagents, each given the full text of its prompt file, read from this skill's directory and passed verbatim, and the whole resolved scope (the full diff or file set):
+Dispatch three subagents, each given the full text of its prompt file, passed verbatim, and the whole resolved scope (the full diff or file set):
 
-- `references/personas/code-reuse-reviewer.md`
-- `references/personas/code-quality-reviewer.md`
-- `references/personas/efficiency-reviewer.md`
+- `skill://simplify-settled-diff/references/code-reuse-reviewer.md`
+- `skill://simplify-settled-diff/references/code-quality-reviewer.md`
+- `skill://simplify-settled-diff/references/efficiency-reviewer.md`
 
 In Oh My Pi, dispatch each as the bundled reviewer, `task(agent="reviewer")`, and `wait` for each result. Elsewhere use the host's subagent tool (`Agent`/`Task` in Claude Code, `spawn_agent` in Codex), or run the reviews inline. Omit the `mode` parameter, so the user's permission settings apply. A concurrency-limit error is backpressure: retry when a slot frees. A dispatch that fails for any other lasting reason runs that reviewer inline with the same prompt, and you say so in one line.
 

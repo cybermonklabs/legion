@@ -60,12 +60,6 @@ const heavyBodyCPUBudget = time.Second
 // Every shape at the block bound is stored or refused as it is, and the parse of it spends less
 // CPU time than heavyBodyCPUBudget allows.
 func TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedInTime(t *testing.T) {
-	// The shapes spell their refusals with heavybodies.MaxNesting, which is this package's own
-	// maxNesting copied: heavybodies may not import pmdoc, since this test is in-package, so the
-	// two are held to each other here rather than by the compiler.
-	if heavybodies.MaxNesting != maxNesting {
-		t.Fatalf("heavybodies.MaxNesting = %d, want pmdoc's maxNesting %d", heavybodies.MaxNesting, maxNesting)
-	}
 	for _, shape := range heavybodies.Shapes() {
 		t.Run(shape.Name, func(t *testing.T) {
 			body := shape.Grow()

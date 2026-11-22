@@ -34,3 +34,4 @@ Each patch changes both `lib/` and `dev/lib/`, because Vite resolves the `develo
 `tests/heavy-bodies.test.ts` and `tests/nested-directive.test.ts` hold two of the patches, reading CPU time through `tests/cpu-time.ts`.
 The `micromark` patch holds the lazy shapes (`a quote then lines carrying no marker`, `a list item then lines carrying no marker`), and the `micromark-core-commonmark` patch the bracket shapes (`a run of 15,000 brackets and as many closers`, `a typed fence whose label opens a run of brackets`).
 No test holds the other two patches, and a quadratic parse of a shape no row holds is caught by nothing.
+A new `micromark` must still read a construct's `resolveAll` and the document tokenizer's `containerState._closeFlow`, which `src/directive-container.ts` sets to close a block.

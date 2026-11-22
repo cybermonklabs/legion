@@ -1066,11 +1066,13 @@ export function inboundTimestamp(milliseconds: number | undefined): string {
   return Number.isNaN(date.getTime()) ? "unknown" : date.toISOString().replace(".000Z", "Z");
 }
 
-/** One inbound envelope's JSON as a card for the agent, with what the host does with it. A body
- *  is bounded block by block, so one event can carry its first part alone, or none of it, and
- *  the result names that item as `cutItem`: a host that reads it whole
- *  (`wholeCarriedBody`) renders again with the body in `wholeBody`, and the card then holds the
- *  body the comment or message route answers rather than one that stops mid-thought. */
+/** One inbound envelope's JSON as a card for the agent, with what the host does with it. Every
+ *  host renders a frame for its agent through this function and builds no card of its own, so a
+ *  session reads the same card whichever plugin it runs in. A body is bounded block by block, so
+ *  one event can carry its first part alone, or none of it, and the result names that item as
+ *  `cutItem`: a host that reads it whole (`wholeCarriedBody`) renders again with the body in
+ *  `wholeBody`, and the card then holds the body the comment or message route answers rather
+ *  than one that stops mid-thought. */
 export function renderInbound(
   raw: string,
   sessionID: string,

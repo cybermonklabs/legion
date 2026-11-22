@@ -1478,7 +1478,7 @@ test("a capped model name ends in an ellipsis on a phone, in the header and on t
     await expect(pill).toBeVisible();
     await expect(label).toBeVisible();
     // The pill is a flex container, so its `title` sits on the inner TruncatedText span
-    // (AGENTS.md's rule for a flex host); the turn label is a plain block, so it carries
+    // (`TruncatedText`'s doc comment); the turn label is a plain block, so it carries
     // `title` itself, the same way GitHubLink.tsx's block host does.
     await expect(pill.locator("span")).toHaveAttribute("title", longModel);
     await expect(label).toHaveAttribute("title", longModel);

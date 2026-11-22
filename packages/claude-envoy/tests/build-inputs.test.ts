@@ -146,8 +146,8 @@ const NON_RELEASE_INPUTS = [
 // claude-envoy-v tag that touch the paths $CLAUDE_ENVOY_VERSION_ARGS names, and
 // scripts/build-inputs.txt is the statement of what can change the build. A path on the list and
 // not in the args ships in a release with no version bumped for it; one in the args and not on
-// the list releases for a file the build never reads. Both files say the two must agree
-// (build-inputs.txt's header, packages/claude-envoy/AGENTS.md), so this holds them equal.
+// the list releases for a file the build never reads. build-inputs.txt's header says the two must
+// agree, so this holds them equal.
 test(".github/workflows/release.yaml's $CLAUDE_ENVOY_VERSION_ARGS carries the build inputs", async () => {
   const workflow = ".github/workflows/release.yaml"
   const parsed = Bun.YAML.parse(await readFile(join(repoRoot, workflow), "utf8")) as {

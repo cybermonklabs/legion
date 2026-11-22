@@ -11,20 +11,23 @@ import (
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/parser"
 	gmtext "github.com/yuin/goldmark/text"
+
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // maxNesting is how many blocks a markdown document may open inside one another. Quotes, lists,
 // list items, typed blocks, and footnote definitions each count one. The next block is refused
 // before any deep tree is built. It is also the bound past which the browser editor's parser reads
-// a list or a quote opener as the text it is (maxBlockNesting, proof-editor's block-nesting.ts),
-// so a document this refuses is the one the browser draws as text.
-const maxNesting = 100
+// a list or a quote opener as the text it is (maxBlockNesting, proof-editor's block-nesting.ts,
+// which reads the same contract constant), so a document this refuses is the one the browser
+// draws as text.
+const maxNesting = contracts.DocumentBlockNestingMax
 
 // maxTypedNesting is how many typed blocks a markdown document may open inside one another, the
 // bound past which the browser editor's parser reads a `:::` opener as the text it is
-// (maxDirectiveNesting, proof-editor's directive-container.ts). Each typed block counts toward
-// maxNesting as well.
-const maxTypedNesting = 32
+// (maxDirectiveNesting, proof-editor's directive-container.ts, which reads the same contract
+// constant). Each typed block counts toward maxNesting as well.
+const maxTypedNesting = contracts.DocumentTypedBlockNestingMax
 
 // nestingGuard is a container's parser refusing the container it would open inside maxNesting
 // blocks. withChild says the parser opens the container with a child inside it on the same line,
