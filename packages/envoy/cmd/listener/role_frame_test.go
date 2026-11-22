@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"reflect"
 	"slices"
 	"strconv"
@@ -197,12 +199,42 @@ func manyKeysFrame(topic string, keys int) []byte {
 	return data.Bytes()
 }
 
+// relaysFirstReadAllocsChildEnv marks the run of the test binary that measures the relay's first
+// read alone (TestTheRelaysFirstReadOfAFrameMakesNoAllocationForEachKey).
+const relaysFirstReadAllocsChildEnv = "ENVOY_TEST_RELAYS_FIRST_READ_ALLOCS_CHILD"
+
+// relaysFirstReadAllocsSlack is how many allocations more than for a frame of 8 keys the relay's
+// first read of a frame of 100,000 keys may count: the process's own, which the measurement counts
+// too (at most 4 for either frame in eight runs of this test alone with -race, 1 without), and
+// none of the read's.
+const relaysFirstReadAllocsSlack = 100
+
 // The session relay reads every frame it judges before it reads a claim (takeOverFrame), and that
-// read keeps the frame's topic, role mark and event id alone, so it makes as many allocations for
-// a frame of 100,000 keys (1.2 MiB) as for one of 8: for a frame that is no role message, judged
+// read keeps the frame's topic, role mark and event id alone, so it makes no more allocations for a
+// frame of 100,000 keys (1.3 MiB) than for one of 8: for a frame that is no role message, judged
 // whole, and for the first read of a role message, after which the relay reads the role's claim.
-// A read that kept every key in a map made more than 100,000 for such a frame.
+// A read that kept every key in a map made more than 200,000 for such a frame, and one that
+// decoded each key with escapes into a string of its own more than 300,000.
+//
+// testing.AllocsPerRun counts every allocation the process makes while it measures, and the other
+// tests of this package leave servers and watchers running that allocate meanwhile: a run of the
+// whole package counted 27 and 103 for these reads. So the test runs the test binary again, for
+// this test alone, and the measurement is that run's, held to relaysFirstReadAllocsSlack above the
+// count for 8 keys; it fails unless that run reports both measurements.
 func TestTheRelaysFirstReadOfAFrameMakesNoAllocationForEachKey(t *testing.T) {
+	if os.Getenv(relaysFirstReadAllocsChildEnv) == "" {
+		child := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$", "-test.count=1", "-test.v")
+		child.Env = append(os.Environ(), relaysFirstReadAllocsChildEnv+"=1")
+		output, err := child.CombinedOutput()
+		t.Logf("the run of this test alone:\n%s", output)
+		if err != nil {
+			t.Fatalf("the run of this test alone failed: %v", err)
+		}
+		if measured := strings.Count(string(output), "allocations for 8 keys"); measured != 2 {
+			t.Fatalf("the run of this test alone reported %d measurements; want 2", measured)
+		}
+		return
+	}
 	relays := &sessionRelays{}
 	ctx := context.Background()
 	for _, c := range []struct {
@@ -226,8 +258,8 @@ func TestTheRelaysFirstReadOfAFrameMakesNoAllocationForEachKey(t *testing.T) {
 			fewAllocs := testing.AllocsPerRun(5, func() { c.judge(t, few) })
 			manyAllocs := testing.AllocsPerRun(5, func() { c.judge(t, many) })
 			t.Logf("%v allocations for 8 keys (%d bytes), %v for 100,000 keys (%d bytes)", fewAllocs, len(few), manyAllocs, len(many))
-			if manyAllocs > fewAllocs {
-				t.Errorf("the read makes %v allocations for a frame of 100,000 keys and %v for one of 8; want no more for more keys", manyAllocs, fewAllocs)
+			if manyAllocs > fewAllocs+relaysFirstReadAllocsSlack {
+				t.Errorf("the read makes %v allocations for a frame of 100,000 keys and %v for one of 8; want at most %d more for more keys", manyAllocs, fewAllocs, relaysFirstReadAllocsSlack)
 			}
 		})
 	}
