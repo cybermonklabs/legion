@@ -21,9 +21,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
+// Grace is how long Claude Code has to exit after the bridge's SIGTERM before it is killed, and how
+// long it has to exit on its own once its input ended before that SIGTERM. It is a variable so that
+// a test whose row reads Claude Code's own exit can give a stand-in a loaded machine makes slow the
+// time it takes.
+var Grace = 3 * time.Second
+
 const (
-	// Grace is how long Claude Code has to exit after the bridge's SIGTERM before it is killed.
-	Grace = 3 * time.Second
 	// drainTimeout bounds reading Claude Code's stdout once it has exited. What Claude Code wrote
 	// is in the pipe by then, and once it has exited the loop takes its lines without waiting on the
 	// shim, so a pipe's worth is read in well under a millisecond: only a process it started and
