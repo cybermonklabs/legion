@@ -132,13 +132,17 @@ During a live session, react only to delivered wakes; do not poll.
 A root whose repository is a spec source of its project holds a change request:
 `dispatch spec-source --action list --project <project>` names the repository, where `<project>`
 is the part of the root's key before the dash, and a line that ends with ` (off)` names a source
-that is off. In such a root, each `requirement` block of the spec and each `check` block of the
-Verification document is a node of The Spec, which Dispatch reads against the approved spec. A
+that is off. In such a root, each `requirement` block of the spec is a node of The Spec, and so is
+each `check` block of the Verification document whose `statement` names a statement that the spec
+proposes or that the approved spec holds. Dispatch reads these nodes against the approved spec. A
 block that holds the approved text of the version its `base` names is context. Every other such
-block proposes a statement, a component, an interface or a check, and a person approves it. A root
-that proposes nothing, such as one that restores an approved statement or an operational change,
-writes no such block except context, and its spec ends in one `conclusion` block (below). Before
-you register the `spec` step, read the change request of the version you register:
+block proposes a statement, a component, an interface or a check, and a person approves it. A
+`check` block whose `statement` names no such statement, or that has no `statement`, is the root's
+own acceptance check. It is not part of the change request and proposes nothing. A root that
+proposes nothing, such as one that restores an approved statement or an operational change, writes
+no node of The Spec except context. It keeps its own acceptance checks, and its spec ends in one
+`conclusion` block (below). Before you register the `spec` step, read the change request of the
+version you register:
 `curl -sS -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/issues/<root>/change-request?version=<n>"`.
 When it answers `"spec_source": true`, `"proposes": false` and `"changes_checks": false`,
 register the step at that version and request no approval. The daemon opens the gate with no
