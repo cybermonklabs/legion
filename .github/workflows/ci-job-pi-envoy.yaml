@@ -53,7 +53,7 @@ jobs:
       - uses: ./.github/actions/install-omp
       # extensions/tmux-place-omp.test.ts runs that binary in a pane of a tmux server of its own,
       # the only way the place a session registers can be read from the session itself, and refuses
-      # on GitHub Actions without a tmux.
+      # on GitHub Actions without LEGION_TEST_TMUX naming the tmux it runs (the test step below).
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
       - run: bun install --frozen-lockfile
@@ -68,6 +68,8 @@ jobs:
         working-directory: packages/pi-envoy
         env:
           LEGION_TEST_NATS_URL: nats://127.0.0.1:4222
+          # Ubuntu's tmux package installs its binary here, the tmux 3.4 the apt step put on PATH.
+          LEGION_TEST_TMUX: /usr/bin/tmux
       # The release's pack (release.yaml's pi_envoy_build job), which is also this job's build: the
       # manifest pointed at the one bundle, then scripts/pi-plugin-prepack.sh, which bundles
       # envoy.ts, writes dist/THIRD_PARTY_NOTICES (failing the pack on a bundled package whose
