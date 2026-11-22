@@ -633,3 +633,90 @@ func TestTheBootSweepLeavesAMergedIssueOfAnotherProjectWhereItStands(t *testing.
 		t.Errorf("the boot queued %d outbox rows keyed %s, want none: OTHER's daemon runs every row of its issues", rows, theirIssue.Key)
 	}
 }
+
+// acrossProjectsBasis is a person's approval of version 3 of LEGION-1's spec, as OTHR-2's
+// registration on it records it: OTHR-2 is a root of project OTHR, under OTHR-1 (done) under
+// LEGION-1 in Dispatch, so no Dispatch child of LEGION-1's is open for it.
+func acrossProjectsBasis() record.GateBasis {
+	return record.GateBasis{Issue: "LEGION-1", ArtifactID: "artifact-legion-1", Version: 3, Approval: record.EventMark{Seq: 40, At: time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)},
+		Approver: "user:alice", Serves: []string{"dispatch://LEGION-1/spec#b-r1@v3"}, Reason: "OTHR-2 delivers r1 of LEGION-1.", Session: "session-architect",
+		RegisteredAt: time.Date(2026, 11, 20, 11, 0, 0, 0, time.UTC)}
+}
+
+// On the database every project's daemon shares, a root of another project that rests on an
+// issue's approval holds that issue's sign-off and close while it is in the workflow, as a root of
+// the issue's own project does (dispatch://INFRA-3320 R8), whether or not it is a Dispatch child
+// of the issue: Dispatch's own refusal of an acceptance over an open child sees only the issue's
+// direct children, and OTHR-2 stands under OTHR-1, which is done. LEGION's daemon reads OTHR-2's
+// record whatever project it is in (workflow's RestingRoots), so the sign-off of LEGION-1 is
+// refused naming it, and taken once OTHR-2 is done.
+func TestARestingRootOfAnotherProjectHoldsTheSignOff(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	raw := record.NewStore()
+	engine := workflow.New(projectRecords{Store: raw, project: "LEGION"}, workflow.Config{Project: "LEGION", Repositories: testRepositories,
+		Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
+	otherParent := "OTHR-1"
+	putOutboxIssue(t, pool, raw, record.Issue{Key: "LEGION-1", Tree: "LEGION-1", Project: "LEGION", Title: "ancestor", Phase: phase.Accepting, Generation: 1,
+		Status: "needs_review", DispatchStatus: "needs_review", Rank: "A", HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"})
+	openTree(t, pool, "LEGION", "LEGION-1")
+	putOutboxIssue(t, pool, raw, record.Issue{Key: "OTHR-2", Tree: "OTHR-2", Project: "OTHR", Title: "resting root", Parent: &otherParent, Phase: phase.Planning,
+		Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: "B", HandedOver: true, Repo: "acme/gadgets", DefaultBranch: "main", GitHubRepo: "acme/gadgets"})
+	openTree(t, pool, "OTHR", "OTHR-2")
+	putOutboxGate(t, pool, raw, record.OpenOnBasis(record.DesignGate{Issue: "OTHR-2", ArtifactID: "artifact-othr-2", LatestVersion: 1}, acrossProjectsBasis()))
+
+	judged := func() *intake.Refusal {
+		t.Helper()
+		var refusal *intake.Refusal
+		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			var err error
+			refusal, err = engine.SignOffRefusal(ctx, tx, "LEGION-1")
+			return err
+		}); err != nil {
+			t.Fatalf("judge the sign-off of LEGION-1: %v", err)
+		}
+		return refusal
+	}
+	if refusal := judged(); refusal == nil || refusal.Code != "SIGNOFF_RESTING_ROOT_IN_WORKFLOW" || !strings.Contains(refusal.Message, "OTHR-2") {
+		t.Fatalf("the sign-off of LEGION-1 while OTHR-2 rests on it = %+v, want SIGNOFF_RESTING_ROOT_IN_WORKFLOW naming OTHR-2", refusal)
+	}
+	if _, err := pool.Exec(ctx, "update issues set phase = $2, status = 'done', dispatch_status = 'done' where key = $1", "OTHR-2", string(phase.Done)); err != nil {
+		t.Fatalf("close OTHR-2: %v", err)
+	}
+	if refusal := judged(); refusal != nil {
+		t.Fatalf("the sign-off of LEGION-1 once OTHR-2 is done = %+v, want it taken", refusal)
+	}
+}
+
+// The other order under the one lock every fact of the shared database takes
+// (intake.SerializeFacts): LEGION's daemon has recorded LEGION-1's acceptance, in retro, before
+// Dispatch's event of it reaches any mirror, and a registration of OTHR-2 on LEGION-1's approval
+// that read Dispatch before the acceptance's write applies after it. OTHR's daemon reads
+// LEGION-1's record whatever project it is in (record.BasisAcceptance), so the registration is
+// refused BASIS_ACCEPTED and records nothing, as a registration on an ancestor of its own project
+// accepted since its read is (workflow's acceptedBasis).
+func TestARegistrationOnAnAncestorAnotherProjectsDaemonRecordsAcceptedIsRefused(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	raw := record.NewStore()
+	engine := workflow.New(projectRecords{Store: raw, project: "OTHR"}, workflow.Config{Project: "OTHR", Repositories: testRepositories,
+		Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
+	putOutboxIssue(t, pool, raw, record.Issue{Key: "LEGION-1", Tree: "LEGION-1", Project: "LEGION", Title: "ancestor", Phase: phase.Retro, Generation: 1,
+		Status: "retro", DispatchStatus: "needs_review", Rank: "A", HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"})
+	openTree(t, pool, "LEGION", "LEGION-1")
+	putOutboxIssue(t, pool, raw, record.Issue{Key: "OTHR-2", Tree: "OTHR-2", Project: "OTHR", Title: "root", Phase: phase.Admitted, Generation: 1,
+		Status: "todo", DispatchStatus: "todo", Rank: "B", HandedOver: true, Repo: "acme/gadgets", DefaultBranch: "main", GitHubRepo: "acme/gadgets"})
+	openTree(t, pool, "OTHR", "OTHR-2")
+
+	basis := acrossProjectsBasis()
+	basis.RegisteredAt = time.Time{}
+	result, err := intake.ApplyFact(ctx, pool, "api", "gate:OTHR-2:across", intake.GateRegistered{Issue: "OTHR-2", ArtifactID: "artifact-othr-2", Version: 1,
+		DispatchVersion: 1, Since: record.EventMark{Seq: 5}, Basis: &basis, ViewOf: "LEGION-1"}, engine)
+	if err != nil || result.Refusal == nil || result.Refusal.Code != "BASIS_ACCEPTED" || !strings.Contains(result.Refusal.Message, "LEGION-1") {
+		t.Fatalf("OTHR-2's registration on LEGION-1, which LEGION's daemon records in retro = %+v, %v; want BASIS_ACCEPTED naming LEGION-1", result.Refusal, err)
+	}
+	var gates int
+	if err := pool.QueryRow(ctx, "select count(*) from design_gates where issue = 'OTHR-2'").Scan(&gates); err != nil || gates != 0 {
+		t.Fatalf("design gates of OTHR-2 after the refused registration = %d, %v; want none", gates, err)
+	}
+}

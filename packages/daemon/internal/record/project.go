@@ -204,6 +204,12 @@ func Accepted(issue Issue) bool {
 // Dispatch's event of it comes back to the mirror. The answer is a sentence's subject and verb,
 // naming the ancestor and what holds it ("Dispatch shows LEGION-100 done").
 //
+// The record is read by key, whatever project it is in (Store.IssuesByKey): on the database every
+// project's daemon shares, the ancestor's own project's daemon records its acceptance in the
+// transaction of the acceptance's fact, before Dispatch's event of it reaches any mirror, so a
+// registration of another project's root on it, ordered after that fact by the one lock every
+// fact takes, reads the acceptance here, as one of the ancestor's own project does.
+//
 // It answers the daemon's record of the ancestor too, nil where it records none, and nil where the
 // mirror alone answered, which reads no record: a caller that reads more of the record where the
 // ancestor is not accepted reads it here, in the same read.
@@ -224,9 +230,15 @@ func BasisAcceptance(ctx context.Context, store Store, tx pgx.Tx, ancestor strin
 			return fmt.Sprintf("Dispatch shows %s %s", ancestor, row.Status), nil, nil
 		}
 	}
-	recorded, err := store.Issue(ctx, tx, ancestor)
+	rows, err := store.IssuesByKey(ctx, tx, []string{ancestor})
 	if err != nil {
 		return "", nil, fmt.Errorf("read the record of ancestor %s: %w", ancestor, err)
+	}
+	var recorded *Issue
+	for i := range rows {
+		if rows[i].Key == ancestor {
+			recorded = &rows[i]
+		}
 	}
 	switch {
 	case recorded == nil:

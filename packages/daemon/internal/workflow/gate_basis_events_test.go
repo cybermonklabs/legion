@@ -236,6 +236,107 @@ func TestTheAncestorsMoveIntoMergingEndsAPendingBasis(t *testing.T) {
 	}
 }
 
+// The event of the daemon's own retro write on an ancestor it records in accepting is a sign_off's
+// write, which reaches Dispatch before its fact (the API's acceptStatus) and is written back when
+// the fact is refused. So it ends no step's wait on the ancestor's request while the record does
+// not hold the ancestor accepted: here a registration pending on the ancestor's request came
+// between the sign-off's judgement and its fact, and the fact is refused for that resting root,
+// whose wait still stands. A fact the workflow takes moves the ancestor into retro, which ends the
+// wait itself (TestTheAncestorsMoveIntoMergingEndsAPendingBasis's transition). The same retro
+// written by a person, or by a session, ends it at once, as TestEachActOnAPendingBasisEndsItWithABasisEndedNotice
+// holds.
+func TestTheDaemonsOwnRetroOnAnAncestorItHasNotAcceptedEndsNoPendingBasis(t *testing.T) {
+	pool, engine, apply := registeredPending(t)
+	if _, err := pool.Exec(t.Context(), "update issues set phase = $2, status = 'needs_review', dispatch_status = 'needs_review' where key = $1",
+		basisAncestor, string(phase.Accepting)); err != nil {
+		t.Fatalf("put %s in accepting: %v", basisAncestor, err)
+	}
+
+	apply("own-retro", intake.DispatchIssue{Key: basisAncestor, Seq: 5, Type: "issue.updated", Status: "retro", Title: "ancestor", Rank: "T",
+		HandedOver: true, DaemonActor: true})
+	if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; !gate.PendingOnBasis() || gate.Basis.Pending.Ask != "ask-100" {
+		t.Fatalf("the spec step after the event of the sign-off's own retro write = %#v, want it still pending on ask-100", gate)
+	}
+	if got := noticesOfKind(t, pool, gatedRoot, "basis-ended"); len(got) != 0 {
+		t.Fatalf("basis-ended notices = %#v, want none before the daemon records the acceptance", got)
+	}
+
+	result, err := intake.ApplyFact(t.Context(), pool, "api", "signoff", intake.SignOff{Issue: basisAncestor}, engine, admissionStub{})
+	if err != nil || result.Refusal == nil || result.Refusal.Code != "SIGNOFF_RESTING_ROOT_IN_WORKFLOW" {
+		t.Fatalf("the sign-off of %s = %+v, %v; want SIGNOFF_RESTING_ROOT_IN_WORKFLOW for %s", basisAncestor, result.Refusal, err, gatedRoot)
+	}
+	if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; !gate.PendingOnBasis() || gate.Basis.Pending.Ask != "ask-100" {
+		t.Fatalf("the spec step after the refused sign-off = %#v, want it still pending on ask-100: the acceptance is written back", gate)
+	}
+}
+
+// The two limits a refused sign_off or close_root leaves (the API's writeBack): the act's status
+// is written in Dispatch before its fact, and the fact is refused and written back. Meanwhile
+// another project's pending-basis seed read the ancestor in retro with the person's approval
+// present, or Dispatch's done withdrew the ancestor's open approval request, and the root's wait
+// ended with a basis-ended notice. Once the ancestor is open again, the root's architect
+// registers again and the step stands as before: open on the person's approval of the version, or
+// pending again on the approval request Dispatch restored when the write back reopened the
+// ancestor. This pins the recovery the limit names, not the limit itself.
+func TestARootWhoseWaitARefusedAcceptanceEndedRegistersAgainOnceTheAncestorIsOpen(t *testing.T) {
+	approval := &intake.BasisReview{Mark: record.EventMark{Seq: 60, At: basisApprovedAt.Add(24 * time.Hour)}, Actor: basisPerson}
+	for _, tc := range []struct {
+		name   string
+		stands phase.Phase
+		ended  intake.Fact
+		act    string
+		again  func() *record.GateBasis
+		check  func(record.DesignGate) bool
+	}{
+		{name: "sign_off: another project's seed read the ancestor in retro with the person's approval present", stands: phase.Accepting,
+			ended: intake.PendingBasisRead{Issue: gatedRoot, Step: record.DesignStepSpec, Generation: 1, ArtifactID: gateDoc, BasisArtifactID: basisDoc,
+				BasisVersion: 4, Ask: "ask-100", LatestVersion: 4, Approval: approval, AncestorStatus: "retro", AncestorHandedOver: true},
+			act: "Dispatch shows LEGION-100 retro",
+			again: func() *record.GateBasis {
+				basis := pendingBasis()
+				basis.Pending, basis.Approval, basis.Approver = nil, approval.Mark, approval.Actor.Name()
+				return basis
+			},
+			check: func(gate record.DesignGate) bool {
+				return gate.OnBasis() && record.GateOpen(gate) && gate.Basis.Version == 4
+			}},
+		{name: "close_root: Dispatch's done withdrew the ancestor's approval request", stands: phase.Admitted,
+			ended: intake.DispatchAskClosed{Key: basisAncestor, Ask: "ask-100", Kind: record.AskApproval, Artifact: basisDoc, State: "resolved",
+				Actor: basisPerson, Mark: askSeq(61), Withdrawn: true},
+			act:   "Its close withdrew approval request ask-100",
+			again: pendingBasis,
+			check: func(gate record.DesignGate) bool {
+				return gate.PendingOnBasis() && gate.Basis.Pending.Ask == "ask-100"
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool, _, apply := registeredPending(t)
+			if _, err := pool.Exec(t.Context(), "update issues set phase = $2, status = 'needs_review', dispatch_status = 'needs_review' where key = $1",
+				basisAncestor, string(tc.stands)); err != nil {
+				t.Fatalf("put %s in %s: %v", basisAncestor, tc.stands, err)
+			}
+
+			apply("ended", tc.ended)
+			if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; gate.Basis != nil || record.GateOpen(gate) {
+				t.Fatalf("the spec step after the end = %#v, want it closed with no basis", gate)
+			}
+			if ended := noticesOfKind(t, pool, gatedRoot, "basis-ended"); len(ended) != 1 || !strings.Contains(ended[0].Reason, tc.act) {
+				t.Fatalf("basis-ended notices = %#v, want one naming %q: what the root's architect sees", ended, tc.act)
+			}
+
+			// The fact was refused and its status written back: the daemon never recorded the
+			// ancestor accepted, so it is open, and the root's architect registers again.
+			result := apply("registered-again", onBasis(tc.again(), 8))
+			if result.Refusal != nil {
+				t.Fatalf("the registration again = %+v, want it taken: the ancestor is open", result.Refusal)
+			}
+			if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; !tc.check(gate) {
+				t.Fatalf("the spec step after the registration again = %#v, want it standing on %s as before the end", gate, basisAncestor)
+			}
+		})
+	}
+}
+
 // A person's approval of the root's own document while its step waits on the ancestor's request
 // opens the step on that approval and ends the wait, so the root's architect gets both notices:
 // design-approved from the approval, and basis-ended, whose reason says the person's approval of

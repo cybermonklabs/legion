@@ -332,8 +332,11 @@ func servesSentence(root, ancestor string, serves []string) string {
 // root of the tree its record names is live (record.TreeLive). It is where a notice keyed by key
 // reaches an architect. An issue of another project than the daemon's own is in none, whatever a
 // record shared with that project's daemon says: that daemon runs its tree, and this daemon's
-// outbox takes no row keyed by it, so the ancestor's architect hears nothing of a root of this
-// project (no resting-root, no basis-changes-requested) and sees it as an open child instead.
+// outbox takes no row keyed by it, so the ancestor's architect hears no notice of a root of this
+// project (no resting-root, no basis-changes-requested). The ancestor's own daemon still reads such
+// a root's record on the database the daemons share, so the root holds the ancestor's sign-off and
+// close, whose refusals name it, and the ancestor's architect's catch-up names it (RestingRoots);
+// where the root is a Dispatch child of the ancestor, its open-child count names it too.
 func (e *Engine) ancestorInLiveTree(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
 	if project, _, _ := strings.Cut(key, "-"); e.cfg.Project != "" && project != e.cfg.Project {
 		return false, nil
@@ -480,13 +483,15 @@ type RestingRoot struct {
 // child) and that is still in the workflow, by the predicate the sign-off's hold on the issues
 // beneath it reads of each of them (record.InWorkflow), in key order. A root that is done, on the
 // backlog, in icebox or triage, or lingering holds nothing. Its record is read by key, whatever
-// project or tree it is in.
+// project or tree it is in (restingRootsOn, through Store.IssuesByKey): on the database every
+// project's daemon shares, a root of another project that rests on ancestor holds ancestor's
+// sign-off and close as a root of ancestor's own project does, also where it is no Dispatch child
+// of ancestor, which Dispatch's own refusal of an acceptance over an open child of another project
+// does not see. The one lock every fact takes orders that hold and the root's registration
+// (acceptedBasis), so one of the two is refused.
 func RestingRoots(ctx context.Context, tx pgx.Tx, store record.Store, ancestor string) ([]RestingRoot, error) {
-	gates, err := store.GatesRestingOn(ctx, tx, ancestor)
-	if err != nil {
-		return nil, err
-	}
-	return restingRoots(gates, func(key string) (*record.Issue, error) { return store.Issue(ctx, tx, key) })
+	resting, err := restingRootsOn(ctx, tx, store, []string{ancestor})
+	return resting[ancestor], err
 }
 
 // restingRoots is the roots of gates, the gates that rest on one ancestor in issue and then step
@@ -1045,9 +1050,17 @@ func (e *Engine) endPendingOnRequest(ctx context.Context, tx pgx.Tx, fact intake
 // has applied of the issue (its record's last sequence, or the mirror's, which every applied event
 // of the issue writes first) says nothing of the issue now, and ends nothing. Most events that
 // reach here are of issues nothing waits on, so the steps are read before anything else is.
+//
+// The daemon's own retro on an issue it records in the workflow and not accepted ends nothing
+// either (signOffWriteAhead): that is a sign_off's write, which reaches Dispatch before the
+// sign-off's fact and is written back when the fact is refused. The fact the workflow takes moves
+// the issue into retro, and that transition ends these waits (transition's endPendingOn); ended
+// here, a refused sign-off's write back would leave them ended on an ancestor nobody accepted.
+// A registration on the issue is refused all the same from the write on, since register_gate
+// reads the retro Dispatch shows (record.BasisAcceptance).
 func (e *Engine) endPendingOnAncestorIssue(ctx context.Context, tx pgx.Tx, recorded *record.Issue, fact intake.DispatchIssue) error {
 	act := ancestorLeft(fact.Key, "", fact.Status, fact.HandedOver)
-	if act == "" {
+	if act == "" || signOffWriteAhead(recorded, fact) {
 		return nil
 	}
 	pending, err := e.pendingOn(ctx, tx, fact.Key)
@@ -1067,6 +1080,15 @@ func (e *Engine) endPendingOnAncestorIssue(ctx context.Context, tx pgx.Tx, recor
 		}
 	}
 	return e.endEachPending(ctx, tx, pending, act)
+}
+
+// signOffWriteAhead says whether fact is the event of a sign_off's own retro write that the
+// daemon has not recorded as an acceptance: the daemon wrote it (intake.DispatchIssue.DaemonActor),
+// and the record holds the issue in the workflow and not accepted (record.Accepted). Every other
+// retro the daemon writes, an outbox row or the status repair, is of an issue the record holds
+// accepted already.
+func signOffWriteAhead(recorded *record.Issue, fact intake.DispatchIssue) bool {
+	return fact.DaemonActor && fact.Status == "retro" && recorded != nil && record.InWorkflow(*recorded) && !record.Accepted(*recorded)
 }
 
 // endPendingOn ends every step of another root that waits, closed, on a request of ancestor
