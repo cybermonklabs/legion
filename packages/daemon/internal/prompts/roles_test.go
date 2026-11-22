@@ -912,6 +912,9 @@ func TestTheRootArchitectKnowsWhatEachChangeRequestNoticeAsks(t *testing.T) {
 		"each `check` block of the Verification document whose `statement` names a statement that the spec proposes or that the approved spec holds",
 		"is the root's own acceptance check",
 		"It keeps its own acceptance checks",
+		// The notice prints a removed node as `<id> (base <n>, removed from the approved spec)`
+		// (workflow's staleRequestSummary), so the part names that case in those words.
+		"A node that the notice names as removed from the approved spec",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("roles/architect-root.md does not say %q", want)
@@ -924,6 +927,9 @@ func TestTheRootArchitectKnowsWhatEachChangeRequestNoticeAsks(t *testing.T) {
 		if strings.Contains(text, wrong) {
 			t.Errorf("roles/architect-root.md still says %q: a check that names no statement is the root's own acceptance check", wrong)
 		}
+	}
+	if strings.Contains(text, "A node whose current version is 0") {
+		t.Errorf("roles/architect-root.md names a stale node by current version 0, which no spec-request-stale notice prints")
 	}
 	waits := ruleParagraphs(part, "A `spec-ending-waits` notice")
 	if len(waits) != 1 {
