@@ -78,7 +78,7 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$endpoint" ] || { echo "fake gh: no endpoint" >&2; exit 2; }
 path=${endpoint%%\?*}
-refusal="${FAKE_ROOT:?}/refuse/$(printf '%s' "$path" | tr '/' '_')"
+refusal="${FAKE_ROOT:?}/refuse/${path//\//_}"
 [ ! -f "$refusal" ] || { cat "$refusal" >&2; exit 1; }
 case "$path" in
   repos/"${FAKE_DEPLOYMENT:?}"/contents/*)
@@ -140,7 +140,7 @@ print(json.dumps({"sha": sha, "tree": entries, "truncated": os.path.exists(trunc
 PY
     ;;
   repos/"${FAKE_DEPLOYMENT}"/tarball/*)
-    top="$(printf '%s' "$FAKE_DEPLOYMENT" | tr '/' '-')-${path##*/}"
+    top="${FAKE_DEPLOYMENT//\//-}-${path##*/}"
     if [ -e "${FAKE_ROOT}/corrupt-archive" ]; then
       echo "this is no archive"
     elif [ -f "${FAKE_ROOT}/archive.tgz" ]; then
@@ -207,7 +207,7 @@ if [ "$1" = run ]; then
   done
   ref=$1
   shift
-  dir="${FAKE_ROOT:?}/images/$(printf '%s' "$ref" | tr '/:@' '___')"
+  dir="${FAKE_ROOT:?}/images/${ref//[\/:@]/_}"
   if [ ! -d "$dir/fs" ]; then
     echo "docker: Error response from daemon: manifest for $ref not found: manifest unknown" >&2
     printf '\nRun '"'"'docker run --help'"'"' for more information\n' >&2
@@ -231,9 +231,9 @@ if [ "$1" = run ]; then
   exit 0
 fi
 [ "$1 $2 $3" = "buildx imagetools inspect" ] && [ "$5" = --format ] || { echo "fake docker: unexpected command: $*" >&2; exit 2; }
-dir="${FAKE_ROOT:?}/images/$(printf '%s' "$4" | tr '/:@' '___')"
+dir="${FAKE_ROOT:?}/images/${4//[\/:@]/_}"
 [ -f "$dir/mediatype" ] || { echo "ERROR: $4: not found" >&2; exit 1; }
-mediatype=$(cat "$dir/mediatype")
+mediatype=$(<"$dir/mediatype")
 case "$6" in
   '{{json .Manifest.MediaType}}') printf '%s' "$mediatype" ;;
   '{{json .Image.Config.Labels}}')
@@ -242,11 +242,11 @@ case "$6" in
       *) cat "$dir/labels" ;;
     esac
     ;;
-  '{{range .Manifest.Manifests}}'*) printf '%s' "$(cat "$dir/platforms")" ;;
+  '{{range .Manifest.Manifests}}'*) printf '%s' "$(<"$dir/platforms")" ;;
   '{{json (index .Image "'*)
     platform=${6#'{{json (index .Image "'}
     platform=${platform%%'"'*}
-    file="$dir/platform-$(printf '%s' "$platform" | tr '/' '_')"
+    file="$dir/platform-${platform//\//_}"
     [ -f "$file" ] || { echo "ERROR: template: :1:17: executing \"\" at <index .Image \"$platform\">: nil pointer evaluating *v1.Image.Config" >&2; exit 1; }
     cat "$file"
     ;;
@@ -291,12 +291,13 @@ case "$1 $#:${*:3}" in
 esac
 [ "${FAKE_NPM_DOWN:-0}" != 1 ] || { echo "npm error code ENOTFOUND" >&2; exit 1; }
 dir="${FAKE_ROOT:?}/npm"
-[ -z "$registry" ] || dir="${FAKE_ROOT}/npm-registries/$(printf '%s' "$registry" | tr '/:' '__')"
-file="${dir}/$(printf '%s' "$2" | tr '/@<>=' '_____')"
+[ -z "$registry" ] || dir="${FAKE_ROOT}/npm-registries/${registry//[\/:]/_}"
+file="${dir}/${2//[\/@<>=]/_}"
 [ ! -f "${file}.raw" ] || { cat "${file}.raw"; exit 0; }
 [ -f "$file" ] || { echo "npm error code E404" >&2; exit 1; }
 name=${2%@*}
-jq -n --arg name "$name" --arg version "$(tr -d '\n' <"$file")" '[{
+version=$(<"$file")
+jq -n --arg name "$name" --arg version "${version//$'\n'/}" '[{
   id: "\($name)@\($version)", name: $name, version: $version, size: 1, unpackedSize: 1, shasum: "",
   integrity: "", filename: "\($name | ltrimstr("@") | sub("/"; "-"))-\($version).tgz", files: [],
   entryCount: 0, bundled: []
@@ -346,7 +347,7 @@ compare() {
 }
 # refuse <endpoint> <answer>: GitHub answers <endpoint> (no query) with the error <answer>.
 refuse() {
-  printf '%s\n' "$2" >"${case_root}/refuse/$(printf '%s' "$1" | tr '/' '_')"
+  printf '%s\n' "$2" >"${case_root}/refuse/${1//\//_}"
 }
 # tag <tag> <commit>: the commit cybermonklabs/legion's release tag <tag> names.
 tag() {
@@ -354,7 +355,7 @@ tag() {
 }
 # image_dir <ref>: the directory of the fake docker's answers for <ref>.
 image_dir() {
-  printf '%s/images/%s' "$case_root" "$(printf '%s' "$1" | tr '/:@' '___')"
+  printf '%s/images/%s' "$case_root" "${1//[\/:@]/_}"
 }
 # single <ref> <source> <revision>: a single image labelled with source and revision; an empty
 # source or revision leaves that label out.
