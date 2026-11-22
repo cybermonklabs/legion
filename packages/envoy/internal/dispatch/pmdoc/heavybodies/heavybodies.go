@@ -95,7 +95,8 @@ func nestedRefusal(line int) string {
 // lines, and 100 items nested the same way; 49 markers on one line and then blank lines; a chain
 // of list markers on one line; and a typed fence whose label opens a run of brackets. Two more
 // froze no tab. Footnote references and then their definitions hold the resolution of a body's
-// references to their definitions linear in their number: goldmark's footnote parser found each
+// references to their definitions linear in their number, for a reference equal to a definition's
+// label, one equal to it up to case and one equal to none: goldmark's footnote parser found each
 // reference's definition by walking the definitions from the first (footnoteParser.Parse,
 // extension/footnote.go:155 at v1.8.6), work that grows with the square of the references, and
 // pmdoc's reference parser no longer calls it (footnoteReferenceParser, pmdoc/footnotes.go). A line
@@ -120,8 +121,11 @@ func Shapes() []Shape {
 	// 15,000 brackets that the rest of the line closes all but eleven of.
 	const typedFence = ":::callout["
 	const bracketOpeners = 15_000
-	// A footnote pair is a reference on the body's first line and its definition below, both
-	// under a label of five characters, so each pair costs footnotePair characters wherever it is.
+	// A footnote pair is a reference on the body's first line and a definition below, both under a
+	// label of five characters, so each pair costs footnotePair characters wherever it is. Each
+	// definition's label is `a` and four digits; the references take, in turn, its label, the label
+	// with an `A` (equal up to case) and the label with a `q` (equal to none), so each of the
+	// parser's three ways of reading a reference is taken a third of the time.
 	const footnotePair = len("[^a0000] ") + len("[^a0000]: x\n")
 	// The bangs' line ends the body's first paragraph, and the definition its carets would name
 	// follows it.
@@ -202,11 +206,11 @@ func Shapes() []Shape {
 		},
 		{
 			ID:   "footnote-references-then-definitions",
-			Name: "1,523 footnote references and then their definitions",
+			Name: "1,523 footnote references, equal, equal up to case and equal to none in turn, and 1,523 definitions",
 			Body: func(size int) string {
 				var references, definitions strings.Builder
 				for pair := range size / footnotePair {
-					fmt.Fprintf(&references, "[^a%04d] ", pair)
+					fmt.Fprintf(&references, "[^%c%04d] ", "aAq"[pair%3], pair)
 					fmt.Fprintf(&definitions, "[^a%04d]: x\n", pair)
 				}
 				return references.String() + "\n\n" + definitions.String()

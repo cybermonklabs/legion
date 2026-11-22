@@ -45,8 +45,9 @@ import (
 // grows to and then at the whole of it (workGrowsLinearly, below) - of the parse alone, and of the
 // parse, the write of the document a write makes of the body and its encode together; and the
 // CPU time of its read and, for a stored shape, of its whole write, at its length and at
-// cpuCheckLength times it, under a ceiling for each character and growing for each character no
-// more than work linear in a body's length does (cpuGrowsLinearly).
+// cpuCheckLength times it (footnoteCheckLength for the footnote shape, cpuCheckLengthOf), under a
+// ceiling for each character and growing for each character no more than work linear in a body's
+// length does (cpuGrowsLinearly).
 //
 // The work is two counts, which no load on the machine, no race detector and no collection moves:
 //
@@ -189,7 +190,7 @@ func TestHeavyBodiesAtTheBlockCapParseInWorkProportionalToTheirLength(t *testing
 // (linear_test.go holds the shapes that did), and the write and the encode are counted beside it
 // because they are the rest of what an API write does with a body, which the end-to-end bound
 // this test replaced used to cover (INFRA-985). The whole write takes CPU time linear in the
-// body's length too (cpuGrowsLinearly), at the cap and at cpuCheckLength times it, where a write
+// body's length too (cpuGrowsLinearly), at the cap and at cpuCheckLengthOf times it, where a write
 // that long passes the elements one write may make: it is the same write on a budget that counts
 // none (wholeWriteBudget).
 func TestHeavyBodiesAtTheBodyCapParseAndEncodeInWorkProportionalToTheirLength(t *testing.T) {
@@ -527,7 +528,7 @@ func TestHeavyBodiesCountedHelper(t *testing.T) {
 	t.Log(countedHelperRan + op.String() + ": " + call().String())
 }
 
-// cpuGrowsLinearly measures the CPU time of mode on shape at its length and at cpuCheckLength
+// cpuGrowsLinearly measures the CPU time of mode on shape at its length and at cpuCheckLengthOf
 // times it, and fails t, naming them, where either spends more than cpuCeilingPerCharacter for
 // each of its characters or the time for each character grew more than cpuGrowthPerCharacter
 // times (cpuGrowthVerdict). Each answers the verdict the shape is written to get. In a race build
@@ -657,8 +658,10 @@ func cpuCheckLengthOf(shape heavybodies.Shape) int {
 // at: the resolution that walked every definition for each reference was a small part of the
 // shape's CPU time at its length, about a tenth of the whole write's, so at cpuCheckLength times
 // it its read grew 2.0 to 4.2 times and its whole write 1.0 to 2.7, around the bound
-// (cpuGrowthPerCharacter); at 32 times it is FOOTNOTE_REVERT_MEASURE, and the shape, which costs
-// some 600 ns a character, is read at a million characters in a fifth of a second.
+// (cpuGrowthPerCharacter). At 32 times, with main's resolution put back (footnotes.go of
+// 33a29d1967), its read grew 21.9 to 27.6 times and its whole write 10.2 to 17.0 in each of four
+// runs, and with this one 1.4 and 1.2; the read of the 1,101,436 characters takes about 0.7 s of
+// CPU time and the whole write about 3 s.
 const footnoteCheckLength = 32
 
 // cpuMeasuredGrowth is the most the CPU time for each character grew from a shape's length to
@@ -671,11 +674,11 @@ const cpuMeasuredGrowth = 1.5
 
 // cpuGrowthPerCharacter is how many times the CPU time for each character may grow from a shape's
 // length to cpuCheckLength times it: work linear in the length grew 1.5 times at most
-// (cpuMeasuredGrowth), work quadratic in it grows cpuCheckLength times, and the resolution of
-// footnote references that walked every definition for each reference (footnoteReferenceParser)
-// grew the footnote body's read 3.0 times and its whole write 2.7 times, a quadratic cost that was
-// 873 and 2,721 ns a character at the shape's length. 2.5 is two thirds again the most linear work
-// grew, and under the least of those.
+// (cpuMeasuredGrowth), and work quadratic in it grows cpuCheckLength times. 2.5 is two thirds
+// again the most linear work grew. A quadratic cost small beside the rest of a call at the
+// shape's length grows the whole less: the footnote resolution that walked every definition for
+// each reference grew the footnote body's read 2.0 to 4.2 times at cpuCheckLength times its
+// length, and the footnote shape is read at footnoteCheckLength times it for that reason.
 const cpuGrowthPerCharacter = 2.5
 
 // cpuCeilingPerCharacter is the most CPU time a measured call may spend for each character it
