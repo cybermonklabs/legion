@@ -2,7 +2,7 @@
  * A preload for a hook process a row starts (`bun --preload <this file> …`): a census of the timed
  * waits the hook makes, of the processes it starts, and of its turns of the event loop and reads of
  * the clock. It wraps `setTimeout` and `clearTimeout`, `setInterval`, `setImmediate`, `Bun.sleep`,
- * `Bun.sleepSync`, `AbortSignal.timeout` and `Atomics.wait`; `Bun.spawn`, `Bun.spawnSync` and
+ * `Bun.sleepSync`, `AbortSignal.timeout`, `Atomics.wait` and `Atomics.waitAsync`; `Bun.spawn`, `Bun.spawnSync` and
  * `Bun.$`; and
  * `Date.now`, `new Date()`, `Date()`, `performance.now`, `process.hrtime` and `Bun.nanoseconds`.
  * When the process exits it writes, to the file `HOOK_TIMED_WAITS` names, a `Census`: one entry per
@@ -220,6 +220,22 @@ if (record !== undefined && record !== "") {
     wait.outcome = answer === "timed-out" ? "fired" : "ended"
     return answer
   }) as typeof Atomics.wait
+
+  const realAtomicsWaitAsync = Atomics.waitAsync
+  Atomics.waitAsync = ((...args: unknown[]) => {
+    const timeout = args[3]
+    const bounded = typeof timeout === "number" && Number.isFinite(timeout) && timeout > 0
+    const wait = made("Atomics.waitAsync", bounded ? timeout : -1)
+    const answer: { async: boolean; value: Promise<string> | string } = Reflect.apply(
+      realAtomicsWaitAsync,
+      Atomics,
+      args,
+    )
+    void Promise.resolve(answer.value).then((settled) => {
+      wait.outcome = settled === "timed-out" ? "fired" : "ended"
+    })
+    return answer
+  }) as typeof Atomics.waitAsync
 
   const realSpawn = Bun.spawn
   Bun.spawn = ((...args: unknown[]) => {
