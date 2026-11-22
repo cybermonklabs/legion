@@ -201,6 +201,7 @@ const seen = ["ENVOY_URL", "DISPATCH_URL", "HOME", "AGENT_SECRETS_MACHINE_IDENTI
 writeFileSync(join(state, "exec-" + run + ".json"), JSON.stringify({
   argv,
   cwd: process.cwd(),
+  git: existsSync(join(process.cwd(), ".git")),
   config: readFileSync(config, "utf8"),
   env: Object.fromEntries(seen.map((name) => [name, process.env[name] ?? null])),
 }));
