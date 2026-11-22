@@ -858,6 +858,52 @@ check "a pull request whose base branch GitHub answers none for is refused" "$(i
 check "names the commits it could not read" \
   "$(contains "$out" "^::error::GitHub's GraphQL API answered no page 1 of the commits from main to event-head-sha")"
 
+echo "case: a spent GraphQL budget is waited out within the job's limit, and refused by name past it"
+# GraphQL answers a spent budget with HTTP 200 and an error of type RATE_LIMITED; gh fails on it.
+# gh-read.sh's gh_wait_reset, which every read goes through, reads the reset off GET /rate_limit,
+# waits for it when it falls inside the job's limit, and calls once more. Here the budget is back
+# 3 s after the refusal, inside a one-minute job.
+clean_pr
+echo "1 3" > "$work/graphql-rate-limited"
+run_pr_text_in_job 1
+check "a clean pull request whose first read meets a spent budget passes" "$(is "$status" 0)"
+check "says it waits for the reset, within the job's limit" \
+  "$(contains "$out" "^::warning::the API budget is spent until .*; waiting [0-9]* s for it, within this job's limit at ")"
+check "reads the reset off the rate_limit route once" "$(is "$(grep -c '^api rate_limit ' "$work/calls")" 1)"
+check "asks the same read again after the wait" \
+  "$(is "$(grep -c '^graphql PrText {"full":true,' "$work/calls")" 2)"
+check "after the reset" "$(is "$([ "$seconds" -ge 3 ] && echo true || echo false)" true)"
+
+# GitHub's words for it are "API rate limit already exceeded"; the type alone is read as well.
+clean_pr
+echo "1 3 type" > "$work/graphql-rate-limited"
+run_pr_text_in_job 1
+check "a RATE_LIMITED answer whose words name no rate limit is waited out too: passes" "$(is "$status" 0)"
+check "and says so" "$(contains "$out" '^::warning::the API budget is spent until ')"
+
+# A later round's read: the first page is kept, and the round is asked again from its cursor.
+clean_pr
+jq -nc --argjson author "$app" '[range(1; 101) | {id: (1000 + .), body: "fine"} + $author]' > "$work/comments.1"
+items 1101 "fine" 1102 "$company_proper Labs" > "$work/comments.2"
+echo "2 3" > "$work/graphql-rate-limited"
+run_pr_text_in_job 1
+check "a second round that meets a spent budget is waited out, and its refused comment named" \
+  "$(is "$status|$(contains "$out" 'comment:1102:1: names the company')" '1|true')"
+check "asks that round again from its cursor" \
+  "$(is "$(grep -c '^graphql PrText .*"commentsAfter":"1"' "$work/calls")" 2)"
+
+# A reset an hour away does not fit a one-minute job: no wait, and a refusal that names both.
+clean_pr
+echo "1 3600" > "$work/graphql-rate-limited"
+run_pr_text_in_job 1
+check "a budget spent past the job's limit is refused" "$(is "$status" 1)"
+check "with no wait" "$(is "$([ "$seconds" -lt 30 ] && echo true || echo false)" true)"
+check "names the reset and the job's limit" \
+  "$(contains "$out" "^::error::the API budget is spent until .*, past this job's limit at ")"
+check "names the read it could not make, with gh's words" \
+  "$(contains "$out" "^::error::GitHub's GraphQL API did not answer the PrText read of #7 (gh: API rate limit already exceeded for installation ID 1.)")"
+check "asks that read once" "$(is "$(grep -c '^graphql PrText ' "$work/calls")" 1)"
+
 echo "case: a comment list the script cannot read whole"
 clean_pr
 printf '{"message": "Not Found"}\n' > "$work/review-comments.1"

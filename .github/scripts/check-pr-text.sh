@@ -36,7 +36,9 @@
 # push can land while the job runs and gets a run of its own. A payload without one is refused.
 # The rest it reads with gh (GH_TOKEN, GITHUB_REPOSITORY) through GitHub's GraphQL API, whose
 # budget is its own, apart from the REST budget the rest of CI spends (THE READ below says what it
-# asks for and how it reads every page). The title, body and branch name are the pull request's
+# asks for and how it reads every page), each call through gh-read.sh's gh_wait_reset, which waits
+# out a spent API budget (REST's or GraphQL's) within the JOB_TIMEOUT_MINUTES both jobs that run
+# this script set, and fails by name past it. The title, body and branch name are the pull request's
 # as it has them now, not the payload's: ci.yaml's `pr-title` job checks at a push and can finish
 # long after a later edit's pr-title.yaml run, and both carry pr-title on the head, so a check of
 # the push's own text would report a pass over the edit's refusal. The commits are those from the
@@ -66,6 +68,8 @@ set -euo pipefail
 event=${GITHUB_EVENT_PATH:?GITHUB_EVENT_PATH must name the pull request event payload}
 repository=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must name the repository as owner/repo}
 script_dir=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=.github/scripts/gh-read.sh
+source "$script_dir/gh-read.sh"
 text=$(mktemp -d)
 work=$(mktemp -d)
 trap 'rm -rf "$text" "$work"' EXIT
@@ -186,14 +190,17 @@ query ThreadComments($thread: ID!, $after: String) {
 }
 GRAPHQL
 # graphql <answer> <operation> <variables>: asks GitHub's GraphQL API that operation with those
-# variables (a JSON object) and writes the answer to <answer>. An answer that carries an error,
-# which gh reports by failing, is refused by name.
+# variables (a JSON object) and writes the answer to <answer>, through gh_wait_reset, which waits
+# out a spent GraphQL budget within the job's limit and calls once more, so the request is a file
+# both calls send. An answer that carries any other error, which gh reports by failing, or a budget
+# the helper could not wait for (its own ::error:: line names why), is refused by name.
 graphql() {
   local answer=$1 operation=$2 variables=$3 query=$pr_query
   [ "$operation" = PrText ] || query=$thread_query
-  if ! jq -n --arg query "$query" --arg operation "$operation" --argjson variables "$variables" \
-    '{query: $query, operationName: $operation, variables: $variables}' |
-    gh api graphql --input - > "$answer" 2> "$work/gh-error"; then
+  jq -n --arg query "$query" --arg operation "$operation" --argjson variables "$variables" \
+    '{query: $query, operationName: $operation, variables: $variables}' > "$work/request.json"
+  if ! gh_wait_reset --stderr "$work/gh-error" gh api graphql --input "$work/request.json" \
+    > "$answer"; then
     echo "::error::GitHub's GraphQL API did not answer the $operation read of #$number" \
       "($(head -n 1 "$work/gh-error")), so its text cannot be checked" >&2
     exit 1
@@ -300,7 +307,8 @@ else
   # is that parameter, and asks for the largest page GitHub serves; `--paginate` then reads every
   # page it creates, printing one JSON object per page, each repeating total_commits.
   compare_json="$work/compare.json"
-  gh api "repos/$repository/compare/$base...$head?per_page=100" --paginate > "$compare_json"
+  gh_wait_reset gh api "repos/$repository/compare/$base...$head?per_page=100" --paginate \
+    > "$compare_json"
   total_commits=$(jq -s '.[0].total_commits // empty' "$compare_json")
   if ! [[ $total_commits =~ ^[0-9]+$ ]]; then
     echo "::error::the compare route's answer for $base...$head names no whole-number" \
@@ -504,7 +512,8 @@ else
     first_tag='' first_published=''
     while IFS= read -r tag; do
       # A tag can exist before its release does, and a draft is no release: either is skipped.
-      if ! gh api "repos/$repository/releases/tags/$tag" > "$work/release" 2> "$work/gh-error"; then
+      if ! gh_wait_reset --stderr "$work/gh-error" \
+        gh api "repos/$repository/releases/tags/$tag" > "$work/release"; then
         if grep -q -F '(HTTP 404)' "$work/gh-error"; then continue; fi
         unknown "GitHub did not answer for the release of $tag ($(head -n 1 "$work/gh-error"))"
         break
@@ -832,7 +841,8 @@ AWK
     fi
     stage="$work/stage-$short"
     mkdir "$stage"
-    gh api "repos/$repository/commits/$sha?per_page=100" --paginate > "$work/commit-$short"
+    gh_wait_reset gh api "repos/$repository/commits/$sha?per_page=100" --paginate \
+      > "$work/commit-$short"
     files=$(jq -s '[.[].files[]] | length' "$work/commit-$short")
     listed=$(jq -s '[.[].files[] | .changes] | add // 0' "$work/commit-$short")
     total=$(jq -s '.[0].stats.total // -1' "$work/commit-$short")
@@ -864,7 +874,8 @@ AWK
   if [ "$merges" -gt 0 ]; then
     stage="$work/stage-net"
     mkdir "$stage"
-    gh api "repos/$repository/pulls/$number/files?per_page=100" --paginate > "$work/pr-files-pages"
+    gh_wait_reset gh api "repos/$repository/pulls/$number/files?per_page=100" --paginate \
+      > "$work/pr-files-pages"
     jq -s '{files: [.[][]]}' "$work/pr-files-pages" > "$work/pr-files"
     files=$(jq '.files | length' "$work/pr-files")
     listed=$(jq '[.files[] | .changes] | add // 0' "$work/pr-files")

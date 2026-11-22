@@ -4,7 +4,7 @@
 # and, on a merge group, the queued pull request read from the queue branch the group runs on.
 #
 # Each case writes the payload Actions would write and runs the script with a stand-in `gh` first
-# on PATH: it answers the script's GraphQL read of the pull request (`gh api graphql --input -`)
+# on PATH: it answers the script's GraphQL read of the pull request (`gh api graphql --input <file>`)
 # with a fixture in GraphQL's own shape and records each read, its operation and variables, so a
 # case can show that a refused head_ref reads nothing. The script under test is the file CI runs,
 # and the fixture carries the real shapes: a `gh-readonly-queue/<base>/pr-<n>-<40 hex>` branch,
@@ -37,8 +37,8 @@ jq -n --arg head "$pull_head" --arg base "$pull_base" \
 cat > "$work/bin/gh" <<GH
 #!/usr/bin/env bash
 set -euo pipefail
-[ "\$*" = "api graphql --input -" ] || { echo "unexpected gh \$*" >&2; exit 2; }
-request=\$(cat)
+[ "\$1 \$2 \$3" = "api graphql --input" ] && [ \$# -eq 4 ] || { echo "unexpected gh \$*" >&2; exit 2; }
+request=\$(cat "\$4")
 echo "graphql \$(jq -r '.operationName' <<< "\$request") \$(jq -c '.variables' <<< "\$request")" >> "$work/gh-calls"
 cat "$work/pull-request.answer"
 GH

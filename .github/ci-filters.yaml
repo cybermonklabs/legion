@@ -192,6 +192,7 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/natsversion/*'
 legion_command: &legion_command
   - 'packages/daemon/cmd/legion/*'
+  - 'packages/daemon/cmd/legion/tls-fixtures/*'
   - 'packages/daemon/internal/admit/*'
   - 'packages/daemon/internal/cipher/*'
   - 'packages/daemon/internal/api/*'
@@ -618,8 +619,10 @@ release_push_test: &release_push_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/release-push.test.sh'
   - '.github/scripts/release-push.sh'
+  - '.github/scripts/gh-read.sh'
   - '.github/scripts/release-bump.sh'
   - '.github/workflows/release.yaml'
+  - '.github/workflows/release-envoy-listener.yaml'
   - 'packages/pi-legion/.changie.yaml'
 release_bump_test: &release_bump_test
   - *ci_router
@@ -767,6 +770,7 @@ check_private_names_test: &check_private_names_test
   - '.github/scripts/check-private-names-test-lib.sh'
   - '.github/scripts/check-private-names.sh'
   - '.github/scripts/check-pr-text.sh'
+  - '.github/scripts/gh-read.sh'
 check_private_names_terms_test: &check_private_names_terms_test
   - *ci_router
   - *ci_filters_data
@@ -776,6 +780,7 @@ check_private_names_terms_test: &check_private_names_terms_test
   - '.github/scripts/check-private-names-test-lib.sh'
   - '.github/scripts/check-private-names.sh'
   - '.github/scripts/check-pr-text.sh'
+  - '.github/scripts/gh-read.sh'
 check_private_names_keys_test: &check_private_names_keys_test
   - *ci_router
   - *ci_filters_data
@@ -785,6 +790,7 @@ check_private_names_keys_test: &check_private_names_keys_test
   - '.github/scripts/check-private-names-test-lib.sh'
   - '.github/scripts/check-private-names.sh'
   - '.github/scripts/check-pr-text.sh'
+  - '.github/scripts/gh-read.sh'
 check_plugin_names_test: &check_plugin_names_test
   - *ci_router
   - *ci_filters_data
@@ -806,6 +812,7 @@ check_daemon_api_contract_test: &check_daemon_api_contract_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/check-daemon-api-contract.test.sh'
   - '.github/scripts/check-daemon-api-contract.sh'
+  - '.github/scripts/gh-read.sh'
 check_release_credentials_test: &check_release_credentials_test
   - *ci_router
   - *ci_filters_data
@@ -875,6 +882,7 @@ find_pr_payload_test: &find_pr_payload_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/find-pr-payload.test.sh'
   - '.github/scripts/find-pr-payload.sh'
+  - '.github/scripts/gh-read.sh'
 merge_group_cancels_test: &merge_group_cancels_test
   - *ci_router
   - *ci_filters_data
@@ -911,6 +919,13 @@ dispatch_browser_run_reads_test: &dispatch_browser_run_reads_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/dispatch-browser-run-reads.test.sh'
   - '.github/scripts/dispatch-browser-run-reads.sh'
+  - '.github/scripts/gh-read.sh'
+gh_read_test: &gh_read_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/gh-read.test.sh'
   - '.github/scripts/gh-read.sh'
 dispatch_browser_samples_test: &dispatch_browser_samples_test
   - *ci_router
@@ -1032,6 +1047,7 @@ test:
   - *edited_migrations_base_test
   - *dispatch_browser_latest_blobs_test
   - *dispatch_browser_run_reads_test
+  - *gh_read_test
   - *dispatch_browser_samples_test
   - *race_memory_test
   - *disk_watch_test

@@ -190,9 +190,15 @@ GREP
 # thread's comments) holding N makes page N say no more follow while the totalCount still counts
 # every page, as GitHub's comparison does at 1000 commits; `$work/base-gone` answers no base
 # branch; `$work/compare-not-found` answers the comparison as GitHub answers one it cannot make,
-# null with a NOT_FOUND error at its path, on which gh fails; and `$work/graphql-fails` holding N
-# fails the Nth GraphQL call as gh fails on an answer that carries an error. The REST routes it
-# answers are the ones the script still reads, each from a file a case
+# null with a NOT_FOUND error at its path, on which gh fails; `$work/graphql-fails` holding N
+# fails the Nth GraphQL call as gh fails on an answer that carries an error; and
+# `$work/graphql-rate-limited` holding `N SECONDS` answers the Nth GraphQL call as GraphQL answers
+# a spent budget (HTTP 200, an error of type RATE_LIMITED, "API rate limit already exceeded", gh
+# failing on it), the budget back SECONDS later, and with `N SECONDS type` the same error with
+# words that name no rate limit, so only its type tells. GET /rate_limit (`gh api rate_limit
+# --jq <filter>`, as gh-read.sh reads it) answers that reset for the graphql budget at 0 until it
+# passes, and both budgets whole otherwise. The REST routes it answers are the ones the script
+# still reads, each from a file a case
 # writes and otherwise as GitHub answers a repository with no such record: the compare route, for
 # a comparison GraphQL answered short, matched whole for the event's own base...head and refused
 # without --paginate (losing either paging token would pass on a list GitHub cut short at 250
@@ -211,8 +217,10 @@ cat > "$work/bin/gh" <<'GH'
 #!/usr/bin/env bash
 dir=$PR_TEXT_TEST_DIR
 if [ "$1 $2" = "api graphql" ]; then
-  [ "$*" = "api graphql --input -" ] || { echo "graphql read not sent as --input -: $*" >&2; exit 3; }
-  request=$(cat)
+  # gh-read.sh calls once more after a wait, so the script sends the request as a file; `-` (one
+  # stdin, read once) is answered too, so a script from before that reads the same rows.
+  [ "$3" = --input ] && [ $# -eq 4 ] || { echo "graphql read not sent as --input <file>: $*" >&2; exit 3; }
+  if [ "$4" = - ]; then request=$(cat); else request=$(cat "$4"); fi
   operation=$(jq -r '.operationName' <<< "$request")
   variables=$(jq -c '.variables' <<< "$request")
   printf 'graphql %s %s\n' "$operation" "$variables" >> "$dir/calls"
@@ -220,6 +228,17 @@ if [ "$1 $2" = "api graphql" ]; then
     echo '{"data": null, "errors": [{"message": "Something went wrong while executing your query."}]}'
     echo 'gh: Something went wrong while executing your query.' >&2
     exit 1
+  fi
+  if [ -e "$dir/graphql-rate-limited" ]; then
+    read -r nth seconds words < "$dir/graphql-rate-limited"
+    if [ "$(grep -c '^graphql ' "$dir/calls")" -eq "$nth" ]; then
+      echo $(($(date +%s) + seconds)) > "$dir/rate-reset"
+      message='API rate limit already exceeded for installation ID 1.'
+      [ "${words:-}" != type ] || message='Something went wrong while executing your query.'
+      jq -nc --arg message "$message" '{data: null, errors: [{type: "RATE_LIMITED", message: $message}]}'
+      echo "gh: $message" >&2
+      exit 1
+    fi
   fi
   if [ -e "$dir/compare-not-found" ] && [ "$operation" = PrText ] && [ "$(jq -r '.commits' <<< "$variables")" = true ]; then
     echo '{"data": {"repository": {"pullRequest": {"baseRef": {"compare": null}}}}, "errors": [{"type": "NOT_FOUND", "path": ["repository", "pullRequest", "baseRef", "compare"], "message": "Could not resolve to a commit."}]}'
@@ -340,6 +359,15 @@ if [ "$1 $2" = "$compare_route" ]; then
   exit 0
 fi
 case "$1 $2" in
+  "api rate_limit")
+    [ "$3" = --jq ] && [ $# -eq 4 ] || { echo "rate_limit read with no --jq filter: $*" >&2; exit 3; }
+    now=$(date +%s) reset=$((now + 3600)) remaining=5000
+    if [ -e "$dir/rate-reset" ] && [ "$(< "$dir/rate-reset")" -gt "$now" ]; then
+      reset=$(< "$dir/rate-reset") remaining=0
+    fi
+    jq -n --argjson reset "$reset" --argjson remaining "$remaining" --argjson now "$now" \
+      '{resources: {core: {limit: 15000, remaining: 15000, reset: ($now + 3600)},
+        graphql: {limit: 10000, remaining: $remaining, reset: $reset}}}' | jq -r "$4" ;;
   "api repos/example/repo/releases/tags/"*)
     file="$dir/release.${2#repos/example/repo/releases/tags/}"
     if [ ! -e "$file" ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
@@ -377,7 +405,8 @@ write_pr_text() {
   jq '.pull_request' "$work/event.json" > "$work/pull"
   rm -f "$work"/comments.* "$work"/reviews.* "$work"/review-comments.* "$work/cutoff-commits" \
     "$work"/release.* "$work"/commit.* "$work/pr-files" "$work"/cut.* "$work/base-gone" \
-    "$work/compare-not-found" "$work/graphql-fails" "$work/compare-rest"
+    "$work/compare-not-found" "$work/graphql-fails" "$work/compare-rest" "$work/graphql-rate-limited" \
+    "$work/rate-reset"
 }
 run_pr_text() {
   if [ $# -gt 0 ]; then write_pr_text "$@"; fi
@@ -388,6 +417,26 @@ run_pr_text() {
     "$pr_text_script" 2>&1)
   status=$?
   set -e
+}
+# run_pr_text_in_job <minutes>: run_pr_text as a job's step, under a job limit of that many
+# minutes (JOB_TIMEOUT_MINUTES, no step limit) and a stand-in Runner.Worker (bash under the name
+# GitHub's runner starts each job as), whose start gh-read.sh reads as the job's: the job starts
+# when the case does. Also sets `seconds`, the run's wall time.
+mkdir -p "$work/job"
+ln -s "$(command -v bash)" "$work/job/Runner.Worker"
+run_pr_text_in_job() {
+  local started
+  : > "$work/calls"
+  started=$(date +%s)
+  set +e
+  # `; exit $?` keeps the worker from replacing itself with the script, which would take it out
+  # of the process tree the helper reads.
+  out=$(env -u STEP_TIMEOUT_MINUTES JOB_TIMEOUT_MINUTES="$1" GITHUB_EVENT_PATH="$work/event.json" \
+    GITHUB_REPOSITORY=example/repo GITHUB_SERVER_URL="file://$work/remote" PR_TEXT_TEST_DIR="$work" \
+    PATH="$work/bin:$PATH" "$work/job/Runner.Worker" -c '"$@"; exit $?' worker "$pr_text_script" 2>&1)
+  status=$?
+  set -e
+  seconds=$(($(date +%s) - started))
 }
 # app: who posted an item a case writes, unless the case says otherwise: an App installed on the
 # repository, which posts as a Bot, with the association every Legion App's comments carry here.

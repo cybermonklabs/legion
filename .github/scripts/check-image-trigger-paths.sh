@@ -1888,6 +1888,19 @@ BUILD_PLUMBING_STEPS: list[tuple[str, str, str, tuple[str, ...], str]] = [
         "event context and no file at all",
     ),
     (
+        ".github/workflows/worker-image.yaml", "build", "served-leaves",
+        (
+            'for chain in packages/daemon/cmd/legion/tls-fixtures/vendored-*-chain.pem; do',
+            'end=$(openssl x509 -in "$chain" -noout -enddate 2>&1) || { echo "::warning file=$chain::openssl could not read its leaf: $end"; continue; }',
+            'openssl x509 -in "$chain" -noout -checkend 2592000 >/dev/null || echo "::warning file=$chain::its leaf is valid until ${end#notAfter=}, within 30 days or past: vendor the chains again (cd packages/daemon/cmd/legion/tls-fixtures && go run vendor.go) and commit what it writes, or from then every client of the TLS probe is held to the public site in its place"',
+            'done',
+        ),
+        "warns, never fails, when a leaf of the two chains the image's TLS probe serves ends within "
+        "30 days: it reads packages/daemon/cmd/legion/tls-fixtures/vendored-*-chain.pem, which the "
+        "build embeds in the image's legion, so the worker_image filter matches them for the build "
+        "already and the step justifies no breadth of the trigger",
+    ),
+    (
         ".github/workflows/worker-image.yaml", "build", "record",
         (
             'test -n "$DIGEST"',

@@ -52,15 +52,15 @@
 # but a success is a success there, so ci-ok.sh's verdict is failure, which is right: a selected
 # job that did not succeed fails ci-ok, and the group this run tests cannot merge.
 #
-# A jobs read GitHub refuses three times records every job as `unread`, which is no success
+# A jobs read GitHub refuses at every attempt records every job as `unread`, which is no success
 # either, and the verdict goes up all the same: it is failing whatever those jobs go on to do, and
 # waiting for a read this job cannot make would leave the group with no ci-ok at all until
 # GitHub's 180-minute check timeout took its pull request out of the queue. Every read here, and
 # the post, is retried on gh-read.sh's one ladder, whose GH_RETRY_SECONDS is the tests' knob for
-# the delay; three refusals of the post fail the step with nothing posted, and the run's other
-# jobs run on — the ci-ok job then posts the verdict at the end of the run, unless
-# .github/workflows/dequeued.yaml force-cancels the run first, which leaves every `if: always()`
-# step skipped.
+# the delay (that file says when it stops sooner); a post refused at every attempt fails the step
+# with nothing posted, and the run's other jobs run on — the ci-ok job then posts the verdict at
+# the end of the run, unless .github/workflows/dequeued.yaml force-cancels the run first, which
+# leaves every `if: always()` step skipped.
 #
 # The verdict is ci-ok.sh's, over the NEEDS this script builds: `changes`' result and outputs as
 # `toJSON(needs.changes)` gave them to the reporting job, and every other job's result as above.
@@ -194,7 +194,7 @@ if jobs=$(gh_read gh api --paginate \
   needs=$(jq -n --argjson jobs "$(jq -s . <<<"$jobs")" --argjson changes "$CHANGES" \
     --argjson map "$selected_by" --argjson always "$always_run" "$program")
 else
-  echo "::warning::GitHub refused this run's job list three times, and this merge-group run is already decided: every other job is read as unread, because this run's verdict is failing whatever those jobs go on to do and a group with no ci-ok at all holds the queue for 180 minutes"
+  echo "::warning::GitHub refused this run's job list at every attempt gh-read.sh made, and this merge-group run is already decided: every other job is read as unread, because this run's verdict is failing whatever those jobs go on to do and a group with no ci-ok at all holds the queue for 180 minutes"
   needs=$(jq -n --argjson changes "$CHANGES" --argjson map "$selected_by" --argjson always "$always_run" \
     '{changes: $changes}
      + ([$always[] | select(. != "changes") | {key: ., value: {result: "unread"}}] | from_entries)

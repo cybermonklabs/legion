@@ -446,6 +446,6 @@ check "fails" "$(is "$status" 1)"
 check "keeps it a failure" \
   "$(contains "$out" '^typecheck: failure (selected: needs.changes.outputs.typecheck is true)$')"
 check "warns that it could not tell a shutdown from a failure" \
-  "$(contains "$out" '::warning::GitHub refused the check runs on abc123 three times')"
+  "$(contains "$out" '::warning::GitHub refused the check runs on abc123 at every attempt gh-read.sh made')"
 
 summary "ci-ok.sh fails unless every job changes selected succeeded"

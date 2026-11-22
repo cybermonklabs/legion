@@ -127,13 +127,13 @@ ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # (packages/daemon/internal/leakguard's
 # Source and InstallServed). R5 of dispatch://INFRA-1527 requires the newest
 # `leak-check-v<n>` tag at the time the pin is written, never a number a spec fixed: this is the
-# newest, read with `gh api repos/example-org/deployment/git/refs/tags` at 2026-11-20T00:45:44Z,
+# newest, read with `gh api repos/example-org/deployment/git/refs/tags` at 2026-11-21T18:04:21Z,
 # and a bump reads that list again. The runtime stage exports it as LEGION_LEAK_CHECK_TAG, which
 # is where the launcher and each role's shim read it. Go holds the same tag once more:
 # ghReadsProvenCheck in packages/daemon/cmd/legion/gh_reads.go, the check `legion gh`'s list of
 # reads was proven against, and TestGhReadsAreProvenAgainstThePinnedCheck holds the two equal, so
 # a bump moves both, by the steps ghReadsProvenCheck's comment gives.
-ARG LEAK_CHECK_TAG=leak-check-v21
+ARG LEAK_CHECK_TAG=leak-check-v31
 # go.work's `go` line: the Go stage builds in workspace mode, and the golang image's GOTOOLCHAIN=local
 # fails the build if go.work moves past this. The toolchain stage ships the same release to the workers
 # (/opt/go), checked against GO_SHA256: the SHA-256 https://go.dev/dl/ publishes for
@@ -667,8 +667,8 @@ RUN set -eu; \
 # and bq at Debian's root bundle. As the SDK ships, both trust the CA files it bundles, which hold
 # the compromised emSign and AAA roots: measured on 2026-11-18 in an INFRA issue pod, gcloud 589.0.0
 # and bq 2.1.40 accepted the emSign chain. With the property at Debian's bundle both refuse the two
-# chains and reach example.com, which `legion probe-image`'s TLS probe holds them to (the final
-# step). The two properties are defaults: a role's own gcloud configuration or
+# chains, which `legion probe-image`'s TLS probe holds them to (the final step). The two properties
+# are defaults: a role's own gcloud configuration or
 # CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE still overrides them, as a role's AWS_CA_BUNDLE does the
 # image's.
 # /opt is read-only in a pod, so the SDK cannot write the bytecode Python would otherwise compile at
@@ -1316,7 +1316,6 @@ COPY --from=go /out/gopls /usr/local/bin/gopls
 COPY --from=go --chown=1000:1000 /gomodcache/cache/download /home/legion/go/pkg/mod/cache/download
 USER root
 COPY --from=toolchain /out/chromium /opt/chromium
-COPY packages/daemon/docker/tls-roots /usr/share/legion/tls-roots
 # legion-testpg: root-owned and mode 0555, like every other program on the image's PATH, so a role
 # cannot rewrite the script the roles container's launcher runs.
 COPY --chmod=555 packages/daemon/docker/legion-testpg /usr/local/bin/legion-testpg
@@ -1495,11 +1494,12 @@ COPY --chmod=0755 packages/daemon/docker/gh /opt/legion/bin/gh
 # core.hooksPath=/dev/null pin, which still holds for every other command (mainEnvironment,
 # packages/daemon/internal/runtime/sandbox/manifest.go): packages/daemon/docker/git.
 COPY --chmod=0755 packages/daemon/docker/git /opt/legion/bin/git
-# jj in a pod is Legion's wrapper too, which runs the real jj at /usr/local/bin/jj with the
-# arguments it was given and checks one thing before a `jj git push`: that the git jj will shell
-# out to is the wrapper above, on PATH and in jj's own git.executable-path. jj's push is a
-# `git … push --porcelain --no-verify`, so that wrapper is what puts the leak guard in front of
-# it, and a jj that would run another git is refused rather than pushing unchecked:
+# jj in a pod is Legion's wrapper too, which runs the real jj at /usr/local/bin/jj with the wrapper
+# above as jj's git.executable-path on every command line, and again as the line's last layer
+# after a push. jj's push is a `git … push --porcelain --no-verify`, so that wrapper is what puts
+# the leak guard in front of it. Before a `jj git push` or `jj gerrit upload`, aliases and the
+# default command expanded as jj expands them, it also checks that the git on PATH is the wrapper
+# and refuses a push whose configuration names another git, rather than pushing unchecked:
 # packages/daemon/docker/jj.
 COPY --chmod=0755 packages/daemon/docker/jj /opt/legion/bin/jj
 # The pre-push hook the git wrapper points git at, in a root-owned directory no role can write:
@@ -1587,9 +1587,14 @@ ENV LEGION_LEAK_CHECK_TAG=${LEAK_CHECK_TAG}
 # with npm and node on PATH (packages/daemon/internal/capabilities/image.go). It then has node, bun,
 # omp's embedded bun, CodeGraph's Node, uv, the AWS CLI, curl, Python, gh, GNU wget, git, go,
 # kubectl, redis-cli and Chromium, and, where each is on PATH, gcloud, bq, az, mise and socat,
-# refuse each compromised chain while reaching the control; a deployment image without one of
-# those five is not refused for it (the probe reports it `absent`), because those five are outside
-# the floor every deployment's image is held to. It
+# refuse each compromised chain while accepting the control, and the public test sites' own chains,
+# all served by the probe's own server on 127.0.0.1, so no public host's name or route decides the
+# build; node, CodeGraph's Node, wget and git, which read a chain only after the handshake, are held
+# to the two public test sites instead, which fail the build only where a client accepts their
+# chains and print `probe-image: UNKNOWN: <client> against <host>` where they cannot be reached
+# (packages/daemon/cmd/legion/tls_probe.go says why). A
+# deployment image without one of those five is not refused for it (the probe reports it
+# `absent`), because those five are outside the floor every deployment's image is held to. It
 # prints the table, one `probe-image: capability <name>: <status> (<detail>)` line per row, every TLS
 # decision, then `probe-image: OK (/opt/omp/bin/omp) session-storage=probed extensions=discovered
 # agent-models=skipped capabilities=checked model-fallback=on daemon-api-version=<N>` — `on` here is

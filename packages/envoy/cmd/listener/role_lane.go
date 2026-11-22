@@ -205,13 +205,37 @@ func (f *roleForwarder) wait(ctx context.Context) bool {
 // consumer, with acknowledgement and redelivery (roleForwardCopyDelivery). msgID is the forward's
 // Nats-Msg-Id when it is not empty, which is what keeps the stream to one copy per message and
 // holder however many attempts a send makes (roleForward.msgID).
+//
+// The wait answers a clustered stream's refusal of the forward as still in process under an
+// earlier forward under msgID through publishPastInProcess, inside the forward's own timeout: it
+// sends the forward again until the stream acknowledges it as that earlier forward's duplicate,
+// so every caller - a role send, a role-lane delivery and a kept-lane walk - takes that refusal
+// one way, as one forward, and none counts it a forward that failed.
 func startRoleForward(client *bus.Client) func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
 	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+		deadline := time.Now().Add(timeout)
 		forward, err := client.StartRequestStoredTo(subject, item, msgID, timeout)
 		if err != nil {
 			return nil, err
 		}
-		return forward.Wait, nil
+		return func() error {
+			ctx, cancel := context.WithDeadline(context.Background(), deadline)
+			defer cancel()
+			_, err := publishPastInProcess(ctx, func() (bus.StoredAck, error) {
+				if forward == nil {
+					var err error
+					if forward, err = client.StartRequestStoredTo(subject, item, msgID, time.Until(deadline)); err != nil {
+						return bus.StoredAck{}, err
+					}
+				}
+				// Every forward StartRequestStoredTo returned is waited for, which releases its
+				// reply subscription, and the next send is a forward of its own.
+				err := forward.Wait()
+				forward = nil
+				return bus.StoredAck{}, err
+			})
+			return err
+		}, nil
 	}
 }
 

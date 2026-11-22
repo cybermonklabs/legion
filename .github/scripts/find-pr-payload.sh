@@ -20,7 +20,10 @@
 # Its inputs, from the step's env:
 #   GITHUB_EVENT_NAME  the event, as Actions sets it.
 #   GITHUB_EVENT_PATH  the payload Actions wrote for that event.
-#   GH_TOKEN           the job's github.token. merge_group only: it reads the pull request.
+#   GH_TOKEN           the job's github.token. merge_group only: it reads the pull request,
+#                      through gh-read.sh's gh_wait_reset, which waits out a spent API budget
+#                      (GraphQL's here) within the job's JOB_TIMEOUT_MINUTES and fails by name
+#                      past it; the request is a file, so the call after a wait sends it again.
 #   GITHUB_REPOSITORY  owner/repo, as Actions sets it. merge_group only.
 #   RUNNER_TEMP        where the payload it writes lands. merge_group only.
 #
@@ -31,6 +34,8 @@
 # Its tests are in find-pr-payload.test.sh, which ci.yaml's test job runs.
 set -euo pipefail
 shopt -s inherit_errexit
+# shellcheck source=.github/scripts/gh-read.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-read.sh"
 
 event=${GITHUB_EVENT_PATH:?GITHUB_EVENT_PATH must name the event payload}
 event_name=${GITHUB_EVENT_NAME:?GITHUB_EVENT_NAME must name the event}
@@ -49,12 +54,13 @@ repository=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must name the repository as ow
 temp=${RUNNER_TEMP:?RUNNER_TEMP must name the temporary directory of the runner}
 payload="$temp/pull-request-event.json"
 answer="$temp/pull-request.json"
+request="$temp/pull-request-request.json"
 # shellcheck disable=SC2016 # $owner, $repo and $number are GraphQL's and jq's variables
 jq -n --arg owner "${repository%%/*}" --arg repo "${repository#*/}" --argjson number "$number" '{
   operationName: "QueuedPull",
   query: "query QueuedPull($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { number baseRefOid headRefOid } } }",
-  variables: {owner: $owner, repo: $repo, number: $number}}' |
-  gh api graphql --input - > "$answer"
+  variables: {owner: $owner, repo: $repo, number: $number}}' > "$request"
+gh_wait_reset gh api graphql --input "$request" > "$answer"
 if ! jq -e --argjson number "$number" '.data.repository.pullRequest
     | {pull_request: {number, base: {sha: .baseRefOid}, head: {sha: .headRefOid}}, number: $number}
     | select((.pull_request.base.sha | type) == "string" and (.pull_request.head.sha | type) == "string")' \
