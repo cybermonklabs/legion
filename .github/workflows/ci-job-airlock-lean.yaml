@@ -34,6 +34,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     env:
+      JOB_TIMEOUT_MINUTES: 20 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # The built model the two runs below compare the Go code against. Naming no file makes
       # FuzzAirlock, TestModelAgreesOnHostShapes and TestTheModelReadsAHostlessEntryWithGuidance skip
       # (internal/cipher/proxyrules/airlock_fuzz_test.go:32-46), and a skip is a pass, so the build
@@ -46,6 +47,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # No Go cache family: the proxyrules package imports the standard library and internal/fold,
       # which imports nothing, so this job downloads no module and compiles no third-party code,

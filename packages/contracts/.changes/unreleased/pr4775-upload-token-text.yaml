@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-    The `dispatch_artifact` tool's description and the upload request's `precondition` field say what Dispatch does now: it checks a token an upload names under the write's own lock, and takes an upload that names none without a check for now, since older `dispatch` commands cannot name one. Name the token wherever the command can: a later release refuses an upload naming none with `400 PRECONDITION_REQUIRED` (INFRA-4980).
+    The `dispatch_artifact` tool's description and the upload request's `precondition` field say what Dispatch does now: it checks a token an upload names under the write's own lock, and takes an upload that names none without a check for now, since older `dispatch` commands cannot name one. Name the token wherever the command can: a later release refuses an upload naming none with `400 PRECONDITION_REQUIRED`.
 time: 2026-11-21T09:26:00.000000000Z
 custom:
     Issue: pr4775

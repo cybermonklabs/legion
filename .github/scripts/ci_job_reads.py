@@ -361,7 +361,9 @@ def install_jj(job):
 def install_omp(job):
     return reads(
         (".github/actions/install-omp/**", at(job, "./.github/actions/install-omp")),
-        (".omp-pin", ".github/actions/install-omp/action.yml:16 pin=$(<.omp-pin)"),
+        (".omp-pin", ".github/actions/install-omp/action.yml:28 pin=$(<.omp-pin)"),
+        (f"{DAEMON}/docker/worker.Dockerfile", ".github/actions/install-omp/action.yml:39 reads ARG OMP_SHA256, the "
+                                               "sha256 the release archive is held to"),
     )
 
 
@@ -1807,6 +1809,15 @@ WEB_FIXTURE_PATTERN = names_pattern(WEB_FIXTURE_TESTS)
 # The fixture check's `-run` and its `-args --check` are not flags the simple form reduces, and
 # they move no closure: the whole pmdoc package compiles, whichever test the run selects.
 FIXTURE_SCRIPT = f"go test -count=1 -run {WEB_FIXTURE_PATTERN} ./{WEB_FIXTURE_PACKAGE}/ -args --check"
+# pmdoc's readers on tables in a build made without inlining (-gcflags=all=-l), envoy-go-checks'
+# step of its own: goldmark builds pmdoc's readers through an interface, which Go's initialization
+# order does not look through, so a reader that copies a variable of pmdoc can be handed nil in
+# that build alone. The table tests read through the block reader, and the display fixture test
+# through the display reader. Its `-run` and `-gcflags` are not flags the simple form reduces, and
+# they move no closure: the whole pmdoc package compiles, whichever test the run selects.
+NO_INLINE_TABLE_STEP = "Test pmdoc's tables in a build without inlining"
+NO_INLINE_TABLE_SCRIPT = (f"go test -count=1 -gcflags=all=-l "
+                          f"-run '^(TestTable.*|TestReadForDisplayMatchesItsFixtures)$' ./{WEB_FIXTURE_PACKAGE}/")
 # The skip belongs to the step that would otherwise run these tests, so the two are held together
 # here rather than by a reader noticing: the unit step runs every package of the module its
 # `grep -Ev` does not take out, and pmdoc taken out of it - moved into the race lane, say - while
@@ -2347,8 +2358,12 @@ PRIVATE_NAMES_PORT_BUILD = script_run(
 SCRIPT_TEST_GATES = [
     harness("release_push_test", "Test release scripts", f"{SCRIPTS}/release-push.test.sh", [
         (f"{SCRIPTS}/release-push.sh", "the script under test"),
-        (f"{SCRIPTS}/release-bump.sh", "release-push.sh:914 runs it for `version`, and the version cases read its refusals"),
+        (f"{SCRIPTS}/gh-read.sh", "release-push.sh:992,1049,1137 source it for restart's, release's and "
+                                  "release-section's gh calls, which the stub gh answers"),
+        (f"{SCRIPTS}/release-bump.sh", "release-push.sh:922 runs it for `version`, and the version cases read its refusals"),
         (".github/workflows/release.yaml", "release-push.test.sh's worker_image_release case reads that job's step out of it and runs it"),
+        (".github/workflows/release-envoy-listener.yaml",
+         "release-push.test.sh's Determine latest case reads release_publish's step out of it and runs its image read"),
         ("packages/pi-legion/.changie.yaml", "release-push.test.sh's fold-notes case for the shipped configuration copies it into its fixture"),
     ]),
     harness("release_bump_test", "Test the release version bump", f"{SCRIPTS}/release-bump.test.sh", [
@@ -2439,18 +2454,21 @@ SCRIPT_TEST_GATES = [
         (TEST_LIB, "check-private-names-test-lib.sh:37 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
         (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:261 runs it too: the pull request's text is the guard's other surface"),
+        (f"{SCRIPTS}/gh-read.sh", "check-pr-text.sh:73 sources it for every gh read"),
     ], lib=False),
     harness("check_private_names_terms_test", "Test the private-name check's term list", f"{SCRIPTS}/check-private-names-terms.test.sh", [
         (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names-terms.test.sh:24 sources it for its fixtures"),
         (TEST_LIB, "check-private-names-test-lib.sh:37 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
         (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:261 runs it, over a pull request's text naming a term"),
+        (f"{SCRIPTS}/gh-read.sh", "check-pr-text.sh:73 sources it for every gh read"),
     ], lib=False),
     harness("check_private_names_keys_test", "Test the private-name check's issue-key rule", f"{SCRIPTS}/check-private-names-keys.test.sh", [
         (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names-keys.test.sh:26 sources it for its fixtures"),
         (TEST_LIB, "check-private-names-test-lib.sh:37 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
         (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:261 runs it, over a pull request's new text"),
+        (f"{SCRIPTS}/gh-read.sh", "check-pr-text.sh:73 sources it for every gh read"),
     ], lib=False),
     harness("check_plugin_names_test", "Test the plugin-name check", f"{SCRIPTS}/check-plugin-names.test.sh", [
         (f"{SCRIPTS}/check-plugin-names.sh", "the script under test"),
@@ -2462,6 +2480,7 @@ SCRIPT_TEST_GATES = [
     harness("check_daemon_api_contract_test", "Test the daemon API contract number check",
             f"{SCRIPTS}/check-daemon-api-contract.test.sh", [
         (f"{SCRIPTS}/check-daemon-api-contract.sh", "the script under test"),
+        (f"{SCRIPTS}/gh-read.sh", "check-daemon-api-contract.sh:80 names it, and each gh api read runs through it"),
     ]),
     harness("check_release_credentials_test", "Test the release credential check",
             f"{SCRIPTS}/check-release-credentials.test.sh", [
@@ -2487,21 +2506,22 @@ SCRIPT_TEST_GATES = [
     ]),
     harness("ci_ok_test", "Test ci-ok's verdict", f"{SCRIPTS}/ci-ok.test.sh", [
         (f"{SCRIPTS}/ci-ok.sh", "the script under test"),
-        (f"{SCRIPTS}/ci-ok.jq", "ci-ok.sh:145-198 runs its program with `jq -L \"$script_dir\"` and `include \"ci-ok\"`"),
+        (f"{SCRIPTS}/ci-ok.jq", "ci-ok.sh:173-232 runs its program with `jq -L \"$script_dir\"` and `include \"ci-ok\"`"),
         (f"{SCRIPTS}/runner-shutdown.sh",
-         "ci-ok.sh:99 sources it, and the harness drives it with a stand-in gh: it is what reads "
+         "ci-ok.sh:119 sources it, and the harness drives it with a stand-in gh: it is what reads "
          "a failure the platform caused off this run's check runs"),
         (f"{SCRIPTS}/gh-read.sh", "runner-shutdown.sh:104 sources it for its bounded gh reads"),
     ]),
     harness("ci_ok_report_test", "Test ci-ok's report and the check-run post (a stand-in gh)",
             f"{SCRIPTS}/ci-ok-report.test.sh", [
         (f"{SCRIPTS}/ci-ok-report.sh", "the script under test"),
-        (f"{SCRIPTS}/post-check-run.sh", "ci-ok-report.sh:234 posts with it, and ci-ok-report.test.sh:292,308 runs it on its own"),
-        (f"{SCRIPTS}/gh-read.sh", "ci-ok-report.sh:94 sources it for its bounded gh reads"),
+        (f"{SCRIPTS}/post-check-run.sh", "ci-ok-report.sh:287 posts with it, and ci-ok-report.test.sh:437,453 runs it on its own"),
+        (f"{SCRIPTS}/gh-read.sh", "ci-ok-report.sh:116 sources it for its bounded gh reads"),
         (f"{SCRIPTS}/runner-shutdown.sh",
-         "ci-ok-report.sh:96 sources it, and no early ci-ok is posted for a failure it reads as "
+         "ci-ok-report.sh:118 sources it, and no early ci-ok is posted for a failure it reads as "
          "a runner shutdown"),
-        (f"{SCRIPTS}/ci-ok.sh", "ci-ok-report.sh:210 reaches its verdict with it"),
+        (f"{SCRIPTS}/ci-ok.sh", "ci-ok-report.sh:263 reaches its verdict with it, and ci-ok-report.test.sh's "
+                                "verdict helper runs it for the group behind the front of the queue"),
         (f"{SCRIPTS}/ci-ok.jq", "ci-ok.sh's program includes it"),
     ]),
     harness("ci_ok_reconcile_test", "Test the reconciliation of this head's other ci-ok check runs (a stand-in gh)",
@@ -2512,6 +2532,7 @@ SCRIPT_TEST_GATES = [
     harness("find_pr_payload_test", "Test the pull request payload both pr-title checks read (a stand-in gh)",
             f"{SCRIPTS}/find-pr-payload.test.sh", [
         (f"{SCRIPTS}/find-pr-payload.sh", "the script under test"),
+        (f"{SCRIPTS}/gh-read.sh", "find-pr-payload.sh:34 sources it for its gh read"),
     ]),
     harness("merge_group_cancels_test", "Test the merge-group cancel decision", f"{SCRIPTS}/merge-group-cancels.test.sh", [
         (f"{SCRIPTS}/merge-group-cancels.sh", "the script under test"),
@@ -2536,6 +2557,10 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/gh-read.sh",
          "dispatch-browser-run-reads.sh:79 sources it, and the harness drives its retry ladder with a "
          "stand-in gh that refuses a case's first calls"),
+    ]),
+    harness("gh_read_test", "Test the wait for a spent API budget and the retry ladder (a stand-in GitHub)",
+            f"{SCRIPTS}/gh-read.test.sh", [
+        (f"{SCRIPTS}/gh-read.sh", "the script under test"),
     ]),
     harness("dispatch_browser_samples_test", "Test the browser lane's memory and CPU sampler",
             f"{SCRIPTS}/dispatch-browser-samples.test.sh", [
@@ -2720,7 +2745,7 @@ GATES = [
                                          "agentmodels_omp_test.go:175 --stage-skills"),
         ("skills/**", f"{at(PLUGIN_PACK_JOB, PLUGIN_PACK_STEP)}: internal/daemon/agentmodels_omp_test.go:175 "
                       "prepack stages skills/<name>"),
-    ) + install_jj(PLUGIN_PACK_JOB) + install_omp(PLUGIN_PACK_JOB)
+    ) + install_omp(PLUGIN_PACK_JOB)
       + setup_go(PLUGIN_PACK_JOB, f"{DAEMON}/go.mod") + bun_job(PLUGIN_PACK_JOB)),
 
     # The private-name port harness, in a job of its own: one step, which builds the `legion`
@@ -2937,7 +2962,7 @@ GATES = [
         ("**/AGENTS.md", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:510-518,651-669,729-737 ('no text states the old rule') reads every text file git lists under OLD_RULE_ROOTS and every AGENTS.md, so a text there that states the replaced rule fails that row"),
         (f"{ENVOY}/cmd/dispatch/README.md", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:766 names it and :770 reads it ('states the rule'): the CLI guide's sentence on an assignee move names the project's default assignee"),
         (TEST_FIXTURES_SRC, "packages/envoy-client/src/__tests__ import @legion/test-fixtures"),
-        ("docs/site/src/content/docs/dispatch/for-agents.md", "packages/envoy-client/src/__tests__/plans-command.test.ts:314 readFileSync (REPO_ROOT :210): the guide for agents' Plans row, held to the contract's rating scale"),
+        ("docs/site/src/content/docs/dispatch/for-agents.md", "packages/envoy-client/src/__tests__/plans-command.test.ts:314 readFileSync (REPO_ROOT :210): the guide for agents' Plans row, held to the contract's rating scale; comment-mention-role.test.ts:234 readFileSync (REPO_ROOT :20): its Comments row, which names --mention-role"),
         (f"{ENVOY}/internal/bus/testdata/private-stream-subjects.json", "packages/envoy-client/src/__tests__/stream-topics.test.ts:131 reads the listener's own cases by relative path (SHARED_CASES :118-121), which packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads too"),
     ) + bun_job("envoy-client")),
 
@@ -2979,7 +3004,7 @@ GATES = [
         ("scripts/e2e/lib/pack-plugin.sh", "packages/pi-envoy/scripts/prepack.test.ts:144-149"),
         (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-envoy/src/skills-guard.test.ts:208-212 reads every .md of skillAndPromptRoots (:30-33)"),
     ) + envoy_client_dep("packages/pi-envoy/tsconfig.json paths @legion/envoy-client/*; extensions/envoy.ts:19-131 imports")
-      + install_jj("pi-envoy") + install_omp("pi-envoy") + bun_job("pi-envoy")),
+      + install_omp("pi-envoy") + bun_job("pi-envoy")),
 
     gate("pi_legion", "pi-legion", runs=[
         script_run("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts",
@@ -3354,6 +3379,11 @@ GATES = [
         # The display-tree fixture check: one test of pmdoc, which compiles that package.
         pinned_step("envoy-go-checks", FIXTURE_STEP, ENVOY, FIXTURE_SCRIPT, [
             (ENVOY, ["./internal/dispatch/pmdoc/"], "go test ./internal/dispatch/pmdoc/", {}),
+        ]),
+        # The table tests of pmdoc in a build without inlining: the same package, compiled again
+        # with -gcflags=all=-l.
+        pinned_step("envoy-go-checks", NO_INLINE_TABLE_STEP, ENVOY, NO_INLINE_TABLE_SCRIPT, [
+            (ENVOY, ["./internal/dispatch/pmdoc/"], "go test -gcflags=all=-l ./internal/dispatch/pmdoc/", {}),
         ]),
         darwin_vet("envoy-go-checks", ENVOY_DARWIN_VET, ENVOY),
     ], reads=reads(

@@ -787,6 +787,89 @@ func TestEveryRolesGitStartsNoPlantedFsmonitorOrHook(t *testing.T) {
 	}
 }
 
+// Every role's git maps packs in small windows from the role environment's pairs alone, whatever
+// image the deployment runs: a real git given nothing but the GIT_CONFIG block of the role's start
+// command, with no system or global file, an empty home and no repository around it, reads
+// core.packedGitWindowSize 32m, core.packedGitLimit 256m, pack.windowMemory 64m and
+// core.deltaBaseCacheLimit 64m at command scope, for a workflow role and the controller alike. The
+// same git without the block reads none of them, so nothing but the pairs sets them here. A role's
+// own `-c core.packedGitLimit=1g` still wins for its command, and the pairs win over an image's own
+// system file: with GIT_CONFIG_SYSTEM naming a file that sets pack.windowMemory 256m, which the
+// same git without the block reads, the role's git reads 64m.
+func TestEveryRolesGitMapsPacksInSmallWindows(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("this test runs the real git: %v", err)
+	}
+	r, err := configure(goldenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	outside, home := filepath.Join(dir, "no-repository"), filepath.Join(dir, "home")
+	for _, made := range []string{outside, home} {
+		if err := os.Mkdir(made, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	system := filepath.Join(dir, "gitconfig")
+	if err := os.WriteFile(system, []byte("[pack]\n\twindowMemory = 256m\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	base := []string{"HOME=" + home, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CEILING_DIRECTORIES=" + dir}
+	// imageFile is env with git reading system as its system file, as a git does in an image that
+	// writes its own /etc/gitconfig: GIT_CONFIG_NOSYSTEM unset, and GIT_CONFIG_SYSTEM naming it.
+	imageFile := func(env []string) []string {
+		env = slices.DeleteFunc(slices.Clone(env), func(entry string) bool { return strings.HasPrefix(entry, "GIT_CONFIG_NOSYSTEM=") })
+		return append(env, "GIT_CONFIG_SYSTEM="+system)
+	}
+	// read is `git <ahead…> config --show-scope --get key` under env, outside any repository.
+	read := func(env []string, key string, ahead ...string) (string, error) {
+		command := exec.Command(git, slices.Concat(ahead, []string{"config", "--show-scope", "--get", key})...)
+		command.Dir = outside
+		command.Env = env
+		out, err := command.Output()
+		return string(out), err
+	}
+	windows := [][2]string{
+		{"core.packedGitWindowSize", "32m"},
+		{"core.packedGitLimit", "256m"},
+		{"pack.windowMemory", "64m"},
+		{"core.deltaBaseCacheLimit", "64m"},
+	}
+	for _, setting := range windows {
+		// git exits 1, printing nothing, for a key no configuration sets.
+		var exit *exec.ExitError
+		if out, err := read(base, setting[0]); out != "" || !errors.As(err, &exit) || exit.ExitCode() != 1 {
+			t.Fatalf("without the role's pairs git reads %s as %q (%v), want nothing and exit 1: another source sets it", setting[0], out, err)
+		}
+	}
+	if out, err := read(imageFile(base), "pack.windowMemory"); out != "system\t256m\n" || err != nil {
+		t.Fatalf("without the role's pairs git reads the image's file's pack.windowMemory as %q (%v), want 256m from the system scope: the file is not read", out, err)
+	}
+	for name, spec := range map[string]runtime.SpawnSpec{"a workflow role": workerSpec(t), "the controller": controllerSpec(t)} {
+		t.Run(name, func(t *testing.T) {
+			env := slices.Clone(base)
+			for _, entry := range launcherCommand(launchOf(t, r, spec), r).Env {
+				if name, _, _ := strings.Cut(entry, "="); name == "GIT_CONFIG_COUNT" || strings.HasPrefix(name, "GIT_CONFIG_KEY_") || strings.HasPrefix(name, "GIT_CONFIG_VALUE_") {
+					env = append(env, entry)
+				}
+			}
+			for _, setting := range windows {
+				if out, err := read(env, setting[0]); out != "command\t"+setting[1]+"\n" || err != nil {
+					t.Errorf("the role's git reads %s as %q (%v), want %s at command scope", setting[0], out, err, setting[1])
+				}
+			}
+			if out, err := read(env, "core.packedGitLimit", "-c", "core.packedGitLimit=1g"); out != "command\t1g\n" || err != nil {
+				t.Errorf("the role's git given -c core.packedGitLimit=1g reads it as %q (%v), want 1g: a role's own -c wins for its command", out, err)
+			}
+			if out, err := read(imageFile(env), "pack.windowMemory"); out != "command\t64m\n" || err != nil {
+				t.Errorf("the role's git under an image's file that sets pack.windowMemory 256m reads it as %q (%v), want 64m: the pairs win over the image's file", out, err)
+			}
+		})
+	}
+}
+
 func mustRead(t *testing.T, path string) []byte {
 	t.Helper()
 	body, err := os.ReadFile(path)
@@ -1550,7 +1633,7 @@ func TestTheWorkerContainersEnvCarriesTheStallLimits(t *testing.T) {
 // address configured: each address-valued argument of every launcher's command and of the
 // generation's worker-shim argv (the words before `--`), by its flag, and each address-valued
 // variable the runtime itself sets in the generation's environment, an address being a value with a
-// scheme. The git configuration entries (gitConfigEnv) are not addresses but git configuration
+// scheme. The git configuration entries (GitConfigEnv) are not addresses but git configuration
 // keys the binary fixes, `credential.https://github.com.helper` among them, so no configuration
 // moves them. An address added to a launch and not to handedAddresses is one the daemon could move
 // without any role it re-adopts being relaunched (evaluate). A workflow role's launch and the
@@ -1583,7 +1666,7 @@ func TestHandedAddressesAreEveryAddressAPodCarries(t *testing.T) {
 				}
 			}
 			gitConfig := map[string]bool{}
-			for _, entry := range gitConfigEnv() {
+			for _, entry := range GitConfigEnv() {
 				gitConfig[entry.Name] = true
 			}
 			for _, pair := range start.Env {

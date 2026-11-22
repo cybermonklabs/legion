@@ -771,20 +771,16 @@ func main() {
 	}
 	// The edge's own server, for a deployment that has one, on the socket the boot bound: the
 	// device login's two routes and the health check (api.RegisterEdge), on the same request
-	// deadline and timeouts as the API, since what it serves is the API's own handlers on a
-	// server of its own. Its answers are recorded by answer.EdgeMiddleware: their lines name
-	// port=edge and their samples port="edge", and the mux's own 404 and 405 write no line.
+	// deadline and read and write timeouts as the API, since what it serves is the API's own
+	// handlers on a server of its own, and on an idle timeout above its load balancer's 600-second
+	// keepalive (newEdgeServer). Its answers are recorded by answer.EdgeMiddleware: their refusal
+	// lines name port=edge and their samples port="edge", and the mux's own 404 and 405 write no
+	// refusal line. Every request it answers writes its access-log line (edgeHandler).
 	var edgeServer *http.Server
 	if started.EdgeListener != nil {
 		edgeMux := http.NewServeMux()
 		api.RegisterEdge(edgeMux, deps, api.Edge{URL: cfg.EdgeURL, VerificationURL: cfg.EdgeMachineLoginURL, WorkspaceDomains: cfg.WorkspaceDomains()})
-		edgeServer = &http.Server{
-			Handler:           withRequestDeadline(answer.EdgeMiddleware(edgeMux, answers), requestDeadline),
-			ReadHeaderTimeout: srv.ReadHeaderTimeout,
-			ReadTimeout:       srv.ReadTimeout,
-			WriteTimeout:      srv.WriteTimeout,
-			IdleTimeout:       srv.IdleTimeout,
-		}
+		edgeServer = newEdgeServer(edgeMux, answers, slog.Default(), srv)
 	}
 	// The metrics port's own server, on the socket the boot bound: the scrape of the registry
 	// every metric above is built on, and the NATS auth service's liveness (metricsHandler). Its

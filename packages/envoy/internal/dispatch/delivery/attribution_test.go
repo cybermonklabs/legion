@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/citebody"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -235,7 +236,7 @@ func TestCitedIssuesCreditsTheURLsOwnPath(t *testing.T) {
 		{"a host-byte run longer than a host name", strings.Repeat("a", 300) + ".github.com/acme/widgets/issues/7", nil},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			if got := citedIssues(refs.Renames{}, "acme/widgets", row.body); !slices.Equal(got, row.want) {
+			if got := citedIssues(refs.Renames{}, "acme/widgets", citebody.New(row.body, nil)); !slices.Equal(got, row.want) {
 				t.Errorf("citedIssues(%q) = %v, want %v", row.body, got, row.want)
 			}
 		})
@@ -255,32 +256,32 @@ func TestCitedIssuesNameARenamedRepositoryByItsNewName(t *testing.T) {
 		"https://github.com/sjawhar/legion-smoke/issues/599",
 		"https://github.com/cybermonklabs/legion/issues/12",
 	}
-	if got := citedIssues(renames, "sjawhar/legion", body); !slices.Equal(got, want) {
+	if got := citedIssues(renames, "sjawhar/legion", citebody.New(body, nil)); !slices.Equal(got, want) {
 		t.Errorf("citedIssues(%q) = %v, want %v", body, got, want)
 	}
 }
 
-// TestCitedIssuesCostsNoMoreThanTheBodyIsLong holds that the reading is linear in the body: the
-// finder walks it once, and each match reads at most a host name's length of digits and host
-// bytes before its path. The body is 1 MiB with no whitespace in it and an issue path every
-// thirteen bytes, which is the shape a reading that walks back to the nearest space pays the
-// square of: such a walk costs about 1.5 s at 64 KiB and so about 380 s at 1 MiB, where this one
-// costs about a third of a second, nearly all of it the finder's own pass. The deadline is some
-// thirty times that, so a loaded machine stays green and a walking reader cannot pass.
+// TestCitedIssuesCostsNoMoreThanTheBodyIsLong holds that the reading is linear in the body. It
+// reaches the body only through citebody's counted reads, and the row holds those counts
+// (holdToTheReader): one pass over the body for each finder, at most four spans for each issue
+// path and one for each bare reference, and no span longer than citationReach and the longest
+// path, so how busy the machine is decides nothing. The body is 1 MiB with no whitespace in it and
+// an issue path every thirteen bytes, which is the shape a reading that walks back to the nearest
+// space pays the square of: such a reading needs the body back to its start at every path.
 func TestCitedIssuesCostsNoMoreThanTheBodyIsLong(t *testing.T) {
 	const cited = "https://github.com/acme/widgets/issues/7"
-	const deadline = 10 * time.Second
 	body := strings.Repeat("/a/b/issues/1", 1<<20/13) + ",github.com/acme/widgets/issues/7"
-	began := time.Now()
-	got := citedIssues(refs.Renames{}, "acme/widgets", body)
-	if took := time.Since(began); took > deadline {
-		t.Errorf("citedIssues over %d bytes took %s, want under %s", len(body), took, deadline)
+	var reads citebody.Reads
+	got := citedIssues(refs.Renames{}, "acme/widgets", citebody.New(body, &reads))
+	t.Logf("a body of %d bytes: %+v", len(body), reads)
+	for _, problem := range holdToTheReader("a body of "+strconv.Itoa(len(body))+" bytes", body, reads) {
+		t.Error(problem)
 	}
 	if !slices.Equal(got, []string{cited}) {
 		t.Fatalf("a body of %d bytes cites %v, want %s and nothing else", len(body), got, cited)
 	}
 	whole := "https://github.com/acme/widgets/issues/7" + strings.Repeat("x", 4096)
-	if got := citedIssues(refs.Renames{}, "acme/widgets", whole); len(got) != 0 {
+	if got := citedIssues(refs.Renames{}, "acme/widgets", citebody.New(whole, nil)); len(got) != 0 {
 		t.Fatalf("a path running past the issue number cites %v, want nothing", got)
 	}
 }

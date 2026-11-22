@@ -63,8 +63,8 @@ Each item below names a script, then what it proves.
 - `stage1-skeleton.sh`
 
   `legion start` boots against a local Postgres, serves `/healthz` and `GET /legion/v1/state`, answers `GET /readyz` 200 once it serves, read after `/healthz` at the first boot and again after the restart, since the readiness latch is one-way and the booting process's own, so a daemon that answers `/healthz` while it never latches is what each of the two reads catches;
-  answers `legion state` with the 21-row capability report on it (`resource-limits` open under tmux, carrying the `capabilities.decided` line to write;
-  `pool-capacity` present, since tmux runs no probe pod), registers itself in the Go daemon's own legions registry, survives a restart against the same store with its first boot time intact, refuses a wrong Postgres password at once by the host and never by the password, and, as a second daemon behind a proxy that resets its first two connections to that Postgres, opens its store by trying again 1 s and then 2 s later, and serves
+  answers `legion state` with the 22-row capability report on it (`resource-limits` open under tmux, carrying the `capabilities.decided` line to write;
+  `pool-capacity` present, since tmux runs no probe pod; `repository-cache-room` present with `source` `caches`, since tmux runs no repository cache), registers itself in the Go daemon's own legions registry, survives a restart against the same store with its first boot time intact, refuses a wrong Postgres password at once by the host and never by the password, and, as a second daemon behind a proxy that resets its first two connections to that Postgres, opens its store by trying again 1 s and then 2 s later, and serves
 
 - `stage2-tmux-supervision.sh`
 
@@ -99,14 +99,36 @@ Each item below names a script, then what it proves.
 
   the published worker image's own `git` and `jj` refuse a push that names something private, driven as one Kubernetes Job on the image digest the caller names, under the rules of `docs/kubernetes.md`, "Running a workload in the cluster from a role":
   k1 of dispatch://INFRA-1527 — a commit whose message carries a refusable Tailscale MagicDNS host, one whose author identity carries it, one whose only hit is an added line of a tracked file, one whose only hit is the branch name, and a clean one — under `git push` and under `jj git push` in each shape jj's own help in that image enumerates (the bare shape, `--all`, `--change`, `--named` and `--deleted`, the last a ref change with no commit), with `git ls-remote` read before and after every push, the added-line case and the branch-name case reported as checks of their own, and the run failed outright where a shape the script drives is gone from jj;
-  and k7's two shared-check failures at those same call sites, the stand-in check removed so that none resolves and a stand-in that exits 2 for an internal error, each of which must refuse under both commands and name the failure it met.
+  k7's two shared-check failures at those same call sites, the stand-in check removed so that none resolves and a stand-in that exits 2 for an internal error, each of which must refuse under both commands and name the failure it met;
+  and a `jj gerrit upload` of the message case run with `--config git.executable-path=/usr/bin/git`, which the image's jj wrapper must refuse before the upload starts, with exit 2, its `LEAK CHECK SETUP ERROR` line saying `git.executable-path is /usr/bin/git`, and the remote unchanged.
   The Job runs no launcher, so the daemon pushes it no shared check.
   It writes its own stand-in shared check into its `emptyDir`, and the rule file embedded in the image's `legion` decides every verdict;
   k7's other two failures cannot be met in an image at all, since the rules are embedded in that binary and the engine is linked into it, which the Job says in its own log.
   The probe the Job runs is `leak-guard-image-probe.sh` beside the harness, which reads it in and writes it into the Job's command, since a Job holds no checkout to read it from, so the two files are one recipe and neither is changed without the other.
   Needs a pod whose projected credential may create a Job (`kubectl -n <namespace> auth can-i create jobs` answers `yes`), the image to prove by digest (`--image`, from the `Worker Image` run's `Record digest` step), and the deployment's compute class (`--node-selector`), whose value is in that deployment's own declaration and in no file of this repository.
-  Its negative control is the base branch's published image (`--control`), which carries no wrappers and lets all five cases through, and a run without it proves only the head;
+  Its negative control runs in the same Job: a `jj git push` of the message case with `/opt/legion/bin` taken off `PATH`, so the real jj and the real git push with no wrapper and no hook, which must land on the scratch remote.
+  The base branch's image carries the wrappers too, so a run names no `--control`; `--control` drives an image published before the wrappers, on which every push lands, should a second control be wanted;
   `--dry-run` renders the manifest and validates it with `kubectl` without creating anything.
+  Legion pod only
+
+- `pack-memory-job.sh`
+
+  git and jj stay within memory in a large workspace under gVisor, measured as one Kubernetes Job on the worker image digest the caller names, under the rules of `docs/kubernetes.md`, "Running a workload in the cluster from a role", for the checks `c-git-rows`, `c-jj-snapshot-memory`, `c-handoff-head-read-memory`, `c-shim-adoption-memory` and `c-budget-under-gvisor`:
+  the image's own `legion workspace-init cache`, `fetch` and `provision` make the clone and the jj workspace on the Job's disk volume, as an issue pod's are made, with each jj command of provisioning measured through a measuring `jj` first on `PATH`;
+  for `c-pack-window-config` and `c-release-source`, the image's `git config --system --get` of the four pack settings, and its `jj --version` against `worker.Dockerfile`'s `ARG JJ_TOOL`;
+  under the role's own `GIT_CONFIG` block, which the harness builds from its checkout (`go run ./internal/runtime/sandbox/rolegitconfig` in `packages/daemon`), the four pack settings read at command scope, beside the clone's values;
+  `git log --first-parent -- <file>`, `git status`, a push of a new commit to a `git daemon` outside every measured process tree, and a fetch from GitHub of the default branch's newer commits (100 MiB or more) into a clone lacking them, each with the role's settings and with git's defaults forced;
+  on the workspace and on a copy of the provisioning root, the same edits, then `jj diff`, `jj diff --name-only`, a commit made and pushed with git, `handoff-record.ts`'s `STANDING` read, unmeasured, `git fetch` of the feed's heads as refs the clone lacks (`refs/remotes/feed/*`) and `git commit` at fixed dates, then `describedArgs`, importing both, another commit, and `adoptionArgs`, with the image's jj on the workspace and with jj `0.45.1-sami.20260910-043938` on the copy;
+  and R10's rows: the seven role commands R10 names, with the same fetch and commits, and provisioning's jj commands replayed on a fresh clone, each on a copy of its own, with jj `0.46.0-sami.20261008-234600`, the control, and the image's jj at `JJ_PACK_MAPPED_LIMIT` `64m`, `256m`, `512m` and `1g`.
+  Copies hardlink the clone's packs and copy the rest with `cp -a`; a disk too small stops the run.
+  Each measured command runs under GNU time and `lib/pack-memory-peak.py`, which every 0.1 s stops its tree (lest jj's chunk churn be read twice) to read `smaps`, and prints its largest total, that sample's pack `Rss` and anonymous memory, each part's peak, each process's split, the time stopped and the pod's cgroup charge;
+  with the settings, a git row holds when the pod's charge, or the push's own tree, is under 2 GiB, and an image jj row when both figures are; a control under 2 GiB (git) or the pack (jj) is void.
+  An R10 row holds when its stdout equals the control row's, its pack figure (largest pack `Rss`) is within its budget plus 8 MiB per object store plus 32 MiB, and its derived figure (GNU time's peak less its largest anonymous and other-file memory) within that plus 128 MiB; a control under 90% of the pack fails.
+  The probe the Job runs is `pack-memory-probe.sh` beside the harness, which writes it and the sampler into the Job's command, since a Job holds no checkout to read them from, so the three files are one recipe and none is changed without the others;
+  the harness refuses to run when `packages/daemon/internal/shim/commands.go` or `packages/pi-shared/src/handoff-record.ts` no longer builds a command the probe copies.
+  Needs a pod whose projected credential may create a Job (`kubectl -n <namespace> auth can-i create jobs` answers `yes`), `go` and a checkout of the head measured, the image to measure by digest (`--image`, from the `Worker Image` run's `Record digest` step), and the deployment's compute class, storage class, labels and annotations (`--node-selector`, `--storage-class`, `--label`, `--annotation`), whose values are in that deployment's own declaration and in no file of this repository.
+  `--repo` and `--walk-file` name another public repository and file than firefox's;
+  `--dry-run` renders the manifest, validates it with `kubectl` (the namespace's admission where this pod may create a Job, else `kubectl`'s own schema), creates nothing, and exits.
   Legion pod only
 
 - `controller-start-tmux.sh`

@@ -2,9 +2,9 @@
 // a full agent). Each capability is checked at one site — in the image by `legion probe-image`
 // (CheckImage), by each claimed session at an idle tick of the 5 s interval it already runs, which
 // sends the row on a `claims/ready` of its own and the daemon renders (LEGION-663, INFRA-927), by
-// the daemon from the deployment's configuration, or withheld by a cited issue — and the probe prints
-// the whole table, one line per row, so an operator reads a single declared list in the probe
-// pod's log rather than inferring what was checked from which probes happened to run.
+// the daemon from its deployment (Capability.MeasuredFrom), or withheld by a cited issue — and the
+// probe prints the whole table, one line per row, so an operator reads a single declared list in
+// the probe pod's log rather than inferring what was checked from which probes happened to run.
 package capabilities
 
 import (
@@ -42,6 +42,7 @@ const (
 	ClaudeCode           Name = "claude-code"
 	ResourceLimits       Name = "resource-limits"
 	PoolCapacity         Name = "pool-capacity"
+	RepositoryCacheRoom  Name = "repository-cache-room"
 	Network              Name = "network"
 	OperatorSetup        Name = "operator-setup"
 	ProductionIdentities Name = "production-identities"
@@ -59,8 +60,9 @@ const (
 	// sessions' reports, and a row no live session has reported reads unchecked
 	// (Deployment.Sessions; LEGION-663, INFRA-927).
 	SiteLive Site = "live"
-	// SiteDeployment is decided by the deployment's legion.yaml, which the daemon reports: no
-	// image or pod can show it.
+	// SiteDeployment is measured by the daemon from its deployment — its legion.yaml, what boot
+	// learned, and its repository caches' last health reads — and a legion.yaml line may decide it:
+	// no worker image or issue pod can show it.
 	SiteDeployment Site = "deployment"
 	// SiteWithheld is withheld by the cited issue: a worker never gets it, by design.
 	SiteWithheld Site = "withheld"
@@ -75,6 +77,10 @@ type Capability struct {
 	// Citation is the dispatch://LEGION-<n> a withheld row cites; for a live row, the issue whose
 	// check proves it (never ""); "" otherwise.
 	Citation string
+	// MeasuredFrom is, for a deployment row, what the daemon measures it from, which the probe's
+	// table names in its place, since the probe measures no deployment row (CheckImage) (never "");
+	// "" otherwise.
+	MeasuredFrom string
 }
 
 // Table is every capability, in the order the probe prints them: the declared list, printed
@@ -92,12 +98,13 @@ var Table = []Capability{
 	{Name: RepositoryExtensions, Site: SiteLive, Summary: "loads the Oh My Pi extensions the repository it works carries", Citation: "dispatch://LEGION-629"},
 	{Name: DispatchEnvoyTools, Site: SiteLive, Summary: "reaches Dispatch through the `dispatch` command and Envoy through the pi-envoy tools", Citation: "dispatch://LEGION-663"},
 	{Name: GitHub, Site: SiteLive, Summary: "reads and writes GitHub through its plain `gh` and `git` on its role's App token file", Citation: "dispatch://LEGION-631"},
-	{Name: Secrets, Site: SiteDeployment, Summary: "reads the secrets the deployment grants its pod generation through the agent-secrets broker"},
-	{Name: ModelFallback, Site: SiteDeployment, Summary: "falls back to another model when its own is unavailable (retry.modelFallback)"},
+	{Name: Secrets, Site: SiteDeployment, Summary: "reads the secrets the deployment grants its pod generation through the agent-secrets broker", MeasuredFrom: "the deployment's configuration and its broker login at boot"},
+	{Name: ModelFallback, Site: SiteDeployment, Summary: "falls back to another model when its own is unavailable (retry.modelFallback)", MeasuredFrom: "the image probe's read at boot, or the plugin gate's under tmux"},
 	{Name: Toolchain, Site: SiteImage, Summary: "builds and runs with the generic toolchain: go, gcc, curl, wget, python3, node, bun, uv, kubectl, jq, ssh-keygen, flock, psql, redis-cli, sqlite3, nc and dig"},
 	{Name: ClaudeCode, Site: SiteImage, Summary: "runs a phase worker on Claude Code: the claude-envoy plugin that worker loads, which the image carries, and the pin a pod installs Claude Code from at launch and verifies it against"},
-	{Name: ResourceLimits, Site: SiteDeployment, Summary: "runs within the CPU and memory the deployment's pod resources give it"},
-	{Name: PoolCapacity, Site: SiteDeployment, Summary: "starts in a Legion pool with room for the image probe's reservation at boot"},
+	{Name: ResourceLimits, Site: SiteDeployment, Summary: "runs within the CPU and memory the deployment's pod resources give it", MeasuredFrom: "the deployment's configuration"},
+	{Name: PoolCapacity, Site: SiteDeployment, Summary: "starts in a Legion pool with room for the image probe's reservation at boot", MeasuredFrom: "the image probe pod's scheduling at boot"},
+	{Name: RepositoryCacheRoom, Site: SiteDeployment, Summary: "fills its workspace from a repository cache with room on its volume to fetch and repack the clone", MeasuredFrom: "each repository cache's last health read"},
 	{Name: Network, Site: SiteWithheld, Summary: "reaches beyond the pod's own network: the pod is the boundary, except a workload a role starts where its deployment's cluster admits it, carrying the pod label that deployment's declaration names for a workload asking to be reachable, and the Service fronting that workload", Citation: "dispatch://LEGION-5"},
 	{Name: OperatorSetup, Site: SiteWithheld, Summary: "installs or configures its own dependencies in the pod: Legion owns its dependencies", Citation: "dispatch://LEGION-200"},
 	{Name: ProductionIdentities, Site: SiteWithheld, Summary: "acts under a production identity of its own", Citation: "dispatch://LEGION-551, dispatch://LEGION-205"},

@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+    The secrets broker's edge writes an access-log line for every request it answers: one `broker: edge request` line at INFO, once the handler has returned, naming the method, the path without its query string, the protocol, the status the broker answered with, the `User-Agent` and `X-Forwarded-For` (its lines joined by `, `), and nothing else of the request: never the query string, the `Referer`, the body, the `Authorization` header, the DPoP proof or a cookie. The health check, a `404` or `405` of the edge's router, a request for `*` and a refusal before any bucket write it too, though they still write no `broker: answer refused` line; a handler that panics writes it as a `500` with `aborted=true`. The method, the path and the `User-Agent` keep their first 256 bytes and `X-Forwarded-For` its last 256, which hold the entries the load balancer appends. No proxy that logs stands in front of the edge, so before this its requests were logged nowhere; the API port and the airlock's proxy port write no such line.
+    The edge keeps an idle connection open for 620 seconds, not the API's two minutes. Google's external Application Load Balancer keeps its connection to a backend idle for a fixed 600 seconds and asks that a backend's keepalive be longer, and it sends no `POST` again, so a connection the broker closed first answered a machine's login `502`.
+    A refusal line's list of fields starts at a fixed capacity and grows by append, rather than at a capacity summed from the fields a port adds, which code scanning reported as a size that could overflow (alert 275, `go/allocation-size-overflow`). What the line holds is unchanged.
+time: 2026-11-22T06:26:57.972055786Z
+custom:
+    Issue: pr4963

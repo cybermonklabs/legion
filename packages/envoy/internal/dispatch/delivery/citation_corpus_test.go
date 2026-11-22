@@ -4,6 +4,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/citebody"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -53,7 +54,7 @@ type corpusRow struct {
 func TestCitedIssuesAgreesWithTheDefaultBranch(t *testing.T) {
 	for _, row := range citationCorpus {
 		t.Run(row.body, func(t *testing.T) {
-			got := citedIssues(refs.Renames{}, "acme/widgets", row.body)
+			got := citedIssues(refs.Renames{}, "acme/widgets", citebody.New(row.body, nil))
 			if row.hostIsNotGitHub {
 				if len(got) != 0 {
 					t.Errorf("credits %v, whose authority is not github.com; the default branch credits %v and this change exists to refuse it", got, row.main)
