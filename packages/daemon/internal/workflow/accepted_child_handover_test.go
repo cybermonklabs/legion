@@ -138,7 +138,7 @@ func assertHandedOver(t *testing.T, pool *pgxpool.Pool, key, tree string, genera
 	if err := pool.QueryRow(context.Background(), `select count(*) from outbox where kind = 'dispatch_status' and issue = $1
 		and payload->>'status' = 'todo' and payload->>'kind' = 'hand-over' and payload->>'handOverTree' = $2
 		and payload->>'handOverLinger' = $3`, key, tree, fmt.Sprint(generation)).Scan(&writes); err != nil || writes != 1 {
-		t.Fatalf("the hand-over writes of %s = %d, %v; want one fenced on %s's linger %d: nothing else would ever start it, though the architect was told it starts once %s closed",
+		t.Fatalf("the hand-over writes of %s = %d, %v; want one fenced on %s's linger %d: nothing else would ever start it, though the architect was told it was held only while %s stood in retro or merging",
 			key, writes, err, tree, generation, tree)
 	}
 }

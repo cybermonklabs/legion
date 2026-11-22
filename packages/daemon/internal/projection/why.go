@@ -392,7 +392,7 @@ var heldSentences = map[record.HeldReason]heldSentence{
 	}},
 	record.HeldAcceptedAncestor: {states: []api.WhyState{api.WhyUnlisted}, sentence: func(heldBy string) string {
 		return "The daemon has accepted the reviewed head of " + heldBy + ", which stands above it, " +
-			"and nothing of its own work starts before that issue closes."
+			"and nothing of its own work starts while that issue stands in retro or merging."
 	}},
 	record.HeldAtWork: {states: []api.WhyState{api.WhyUnlisted}, sentence: func(string) string {
 		return "It stands in a phase that keeps no admission slot, and the waiting line does not carry it: " +

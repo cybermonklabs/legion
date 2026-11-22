@@ -22,8 +22,8 @@ import (
 // A member held at admitted is handed over whatever becomes, during the linger, of the ancestor
 // that held it. The tree is the spec's own: a root R waiting for its children, a child C whose
 // own reviewed head the daemon has accepted, and a grandchild G a person moved to todo under C,
-// which the daemon recorded at admitted and told C's architect starts once C has closed
-// (record.HeldUnderAccepted). A person closes R by hand, and the tree lingers.
+// which the daemon recorded at admitted and told C's architect is held while C stands in retro or
+// merging (record.HeldUnderAccepted). A person closes R by hand, and the tree lingers.
 //
 // An ancestor below the root does not keep its phase through that linger: C's pull request still
 // merges, a person still moves C to done or to backlog, and record.OpenBeneath leaves G out of

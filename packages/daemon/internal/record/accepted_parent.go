@@ -69,7 +69,7 @@ func byKey(members []Issue) map[string]Issue {
 // because an ancestor of it has already been accepted (HeldUnderAccepted). Without that
 // exclusion the three rules deadlock. A child held at admitted under a root in merging is
 // InWorkflow — a recorded member at admitted with status todo is — so it keeps that root open
-// through this set for ever, while the child itself is pinned at admitted until the root closes;
+// through this set for ever, while the child itself is pinned at admitted while the root is merging;
 // a child held under an ancestor above an issue in accepting deadlocks that issue's sign-off the
 // same way. Neither moves, and no act of a person short of parking the child breaks it.
 // Excluding exactly the issues the daemon's own hold has stopped costs nothing else: every other

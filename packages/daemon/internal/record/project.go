@@ -1292,8 +1292,8 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 			hold(issue)
 			continue
 		}
-		// An issue beneath an ancestor the daemon has already accepted waits for that ancestor
-		// to close (HeldUnderAccepted): starting it would let the ancestor merge work its own
+		// An issue beneath an ancestor the daemon has already accepted waits while that ancestor
+		// stands in retro or merging (HeldUnderAccepted): starting it would let the ancestor merge work its own
 		// head does not carry. A person's move of such an issue to todo records it here at
 		// admitted and leaves it here; the architect is told why when it enters. The chain is
 		// walked over the records above this pass's own as well, so that a parent already done

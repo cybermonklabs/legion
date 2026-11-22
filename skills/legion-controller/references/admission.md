@@ -17,7 +17,7 @@ Holding no slot is no fault by itself.
 
 ## `admission.held`: what nothing starts
 
-Every issue the record holds in the workflow that is in neither `admission.active` nor `admission.waiting`, with one word for why nothing of it runs and `heldBy`, the issues that hold it. The daemon starts none of them while they are held: name them in the day's report and take nothing for them.
+Every issue the record holds in the workflow that is in neither `admission.active` nor `admission.waiting`, with one word for why nothing of it runs and `heldBy`, the issues that hold it. Name them in the day's report and take nothing for them.
 
 | Word | Meaning | What ends it |
 |---|---|---|
