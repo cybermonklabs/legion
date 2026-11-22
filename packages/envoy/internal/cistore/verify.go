@@ -247,14 +247,16 @@ func (z *summarizer) ask(logger *logging.Logger, key string, st State, now int64
 
 // checkVerify looks at one wait at now. A wait whose claim the record no longer carries is
 // dropped: the answer to it authorizes nothing, and the change that took the claim files the record
-// afresh, whose next claim asks again. A wait whose request is not written yet writes it. A wait the
-// record answers -- VerifiedRev at or past its request, the record still ready on what the answer
-// merged -- publishes (publish, which reads the record fresh once more: ClaimStillHeld). A wait
-// unanswered for verifyTimeout refreshes its claim and writes its request again, with a WARN, or
-// an ERROR once it has waited verifyAlarm.
+// afresh, whose next claim asks again. So is a wait whose claim has run out its life, or is within
+// claimMargin of it (claimLive), whether or not a replica has reclaimed it yet: an answer reaches
+// only a claim that is live, and the record's next claim asks again. A wait whose request is not
+// written yet writes it. A wait the record answers -- VerifiedRev at or past its request, the
+// record still ready on what the answer merged -- publishes (publish, which reads the record fresh
+// once more: ClaimStillHeld). A wait unanswered for verifyTimeout refreshes its claim and writes
+// its request again, with a WARN, or an ERROR once it has waited verifyAlarm.
 func (z *summarizer) checkVerify(pub Publisher, logger *logging.Logger, key string, wait verifyWait, now int64) {
 	st, cached := z.store.cachedState(key)
-	if !cached || !claimHeldFor(st, wait) {
+	if !cached || !claimHeldFor(st, wait) || !claimLive(st.Claim, now, z.debounce) {
 		z.dropWait(key, wait)
 		return
 	}
@@ -273,7 +275,7 @@ func (z *summarizer) checkVerify(pub Publisher, logger *logging.Logger, key stri
 	}
 	if st.VerifiedRev >= wait.requested {
 		z.dropWait(key, wait)
-		z.publish(pub, logger, key, st, wait.requested)
+		z.publish(pub, logger, key, st, wait.requested, now)
 		return
 	}
 	if now < wait.dueAt(z.verifyTimeout) {
@@ -306,6 +308,19 @@ func (z *summarizer) checkVerify(pub Publisher, logger *logging.Logger, key stri
 		return
 	}
 	z.ask(logger, key, st, now, wait)
+}
+
+// claimMargin is how much of its life a verify claim must have left for its answer to authorize
+// anything (claimLive): a publication that passed the authorization point (ClaimStillHeld) is
+// made well before any replica may reclaim the claim. Thirty seconds is far longer than the read
+// and the publish take, and far shorter than the two minutes a live holder's claim always has
+// left, since it refreshes the claim at every verifyTimeout of its four-minute window.
+const claimMargin = 30 * time.Second
+
+// claimLive reports whether claim, a claim waiting for a GitHub read, has more than claimMargin of
+// its life (claimWindow) left at now.
+func claimLive(claim *SettlementClaim, now int64, debounce time.Duration) bool {
+	return claim != nil && claim.ClaimedAt+(claimWindow(claim, debounce)-claimMargin).Milliseconds() > now
 }
 
 // dropWait forgets key's wait, unless a newer one has taken its place.

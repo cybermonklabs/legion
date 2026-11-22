@@ -137,6 +137,16 @@ func (r *Reconciler) verify(ctx context.Context, writer Writer, request contract
 			})
 		}
 		if err == nil {
+			// The answer is two writes in this order, never one: what GitHub answered (record, by
+			// the walk's rules, the runs in one compare-and-swap), and then V0 as the record's
+			// verified_rev (MarkVerified), written only once the first landed whole. Two ordered
+			// writes are as safe as one: the listener judges readiness on the merged record, the
+			// observations of a complete read are durable before the stamp, any write between or
+			// after only adds observations (which re-arm the record and take the claim's snapshot
+			// away when they change it), and a new settlement episode writes a new request, which
+			// V0 is below. One compare-and-swap conditioned on the record's revision before the
+			// GitHub read would lose to every write of a waiting head, its own claim's refresh
+			// included, and a busy head could wait for ever.
 			if _, _, ok := r.record(ctx, writer, pull, runs, suites, listedStatuses); !ok {
 				fail("a write of what GitHub answered did not land", nil)
 				return true

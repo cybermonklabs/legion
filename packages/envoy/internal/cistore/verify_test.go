@@ -336,7 +336,8 @@ func TestTwoListenersShareOneReadAndOnlyTheClaimHolderPublishes(t *testing.T) {
 
 	answer(t, writer, requestB, a, b)
 	za.pass(pubA, logging.New("a"), time.Now().UnixMilli())
-	zb.pass(pubB, logging.New("b"), later.UnixMilli())
+	// B claimed at the real time its second pass ran, so it publishes at the real time too.
+	zb.pass(pubB, logging.New("b"), time.Now().UnixMilli())
 
 	if pubA.count() != 0 || pubB.count() != 1 {
 		t.Fatalf("A published %d and B %d settlements; want B alone, under its own claim, once", pubA.count(), pubB.count())
@@ -385,5 +386,49 @@ func TestWithNoAnswerNothingIsPublishedTheWaitIsLoggedAndAnAnswerPublishes(t *te
 	z.pass(pub, logger, start.Add(250*time.Millisecond).UnixMilli())
 	if pub.count() != 1 {
 		t.Fatalf("the answer published %d settlements, want 1", pub.count())
+	}
+}
+
+// A claim that has run out its life, which no replica has reclaimed yet, publishes nothing on the
+// answer to its old request: the listener claimed and asked, stopped past the claim's window,
+// the answer landed meanwhile, and the listener resumed before anything reclaimed the claim.
+// The authorization point refuses the same claim and answer that it accepts while the claim is
+// live (the control), and an answer to the request of the record's next claim publishes.
+func TestAnExpiredClaimIsNotPublishedOnTheAnswerToItsOldRequest(t *testing.T) {
+	conn, cleanup := connectNATS(t)
+	defer cleanup()
+	s := openVerifyingStore(t, conn)
+	writer := dispatchWriter(t, conn)
+	readyHead(t, s)
+	z, pub := testSummarizer(s, 0), &recPub{}
+	z.pass(pub, logging.New("test"), time.Now().UnixMilli())
+	old := asked(t, z)
+	answer(t, writer, old, s)
+	claimed, _ := recordRunsStored(t, s)
+	resumed := time.Now().Add(verifyClaimWindow + time.Minute)
+
+	if held, err := s.ClaimStillHeld(verifyRecordKey, claimed.Generation, claimed.Hash(), old, time.Now().UnixMilli(), 0); err != nil || !held {
+		t.Fatalf("the authorization point refused a live claim with its answer: %v, %v", held, err)
+	}
+	if held, err := s.ClaimStillHeld(verifyRecordKey, claimed.Generation, claimed.Hash(), old, resumed.UnixMilli(), 0); err != nil || held {
+		t.Fatalf("the authorization point accepted a claim past its window: %v, %v", held, err)
+	}
+
+	z.pass(pub, logging.New("test"), resumed.UnixMilli())
+	if pub.count() != 0 {
+		t.Fatalf("an expired claim published %d settlements on old request %d without a new request", pub.count(), old)
+	}
+
+	// The pass that found the claim past its window reclaimed it; the next claims the head anew.
+	waitHeadCached(t, func(st State) bool { return st.Claim == nil }, s)
+	z.pass(pub, logging.New("test"), time.Now().UnixMilli())
+	renewed := asked(t, z)
+	if renewed <= old || pub.count() != 0 {
+		t.Fatalf("after the expiry the head asked at %d (old %d) and published %d settlements; want a new request and none", renewed, old, pub.count())
+	}
+	answer(t, writer, renewed, s)
+	z.pass(pub, logging.New("test"), time.Now().UnixMilli())
+	if pub.count() != 1 {
+		t.Fatalf("an answer to the new request published %d settlements, want 1", pub.count())
 	}
 }

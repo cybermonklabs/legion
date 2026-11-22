@@ -515,7 +515,7 @@ func (z *summarizer) settle(pub Publisher, logger *logging.Logger, key string, c
 		z.ask(logger, key, state, now, verifyWait{generation: state.Generation, hash: state.Hash(), since: now})
 		return
 	}
-	z.publish(pub, logger, key, state, 0)
+	z.publish(pub, logger, key, state, 0, now)
 }
 
 // publish publishes the settlement of state, whose claim this loop holds, and marks it, releasing
@@ -526,7 +526,7 @@ func (z *summarizer) settle(pub Publisher, logger *logging.Logger, key string, c
 // snapshot it settled, whether it superseded an earlier settlement of the record, and the verify
 // request it was published on, so a settlement that never became a role message is shown to have
 // left the listener; a publication refused or failed logs no such line.
-func (z *summarizer) publish(pub Publisher, logger *logging.Logger, key string, state State, requested uint64) {
+func (z *summarizer) publish(pub Publisher, logger *logging.Logger, key string, state State, requested uint64, now int64) {
 	store := z.store
 	env, err := settlementEnvelope(state, contracts.NowMillis())
 	if err != nil {
@@ -541,7 +541,7 @@ func (z *summarizer) publish(pub Publisher, logger *logging.Logger, key string, 
 		return
 	}
 	snapshot := state.Hash()
-	held, err := store.ClaimStillHeld(key, state.Generation, snapshot, requested)
+	held, err := store.ClaimStillHeld(key, state.Generation, snapshot, requested, now, z.debounce)
 	if err != nil {
 		logger.Warn("checks claim verification failed", slog.String("error", err.Error()), slog.String("sha", state.SHA))
 		return

@@ -1117,13 +1117,17 @@ func (s *Store) ClaimSettlement(key, expectedHash string, expectedGeneration uin
 //
 // requested is the revision of the verify request the claim's holder wrote for this claim
 // (verify.go), and zero where it wrote none, which is a listener with ENVOY_CI_VERIFY off: that
-// check is the one every listener before verify made. A request also needs the record's
+// check is the one every listener before verify made, and now and debounce are not read. A
+// request also needs the claim live at now, with more than claimMargin of its life left
+// (claimLive), so an answer for a claim that has run out authorizes nothing whether or not a
+// replica has reclaimed it yet.
+// It also needs the record's
 // VerifiedRev at or past requested, so Dispatch read the head from GitHub after the request, and
 // the record still ready to settle (settlementReady) on what that read merged into it. A webhook
 // the listener fails to write after this read, and a run GitHub creates after it, come after the
 // settlement, as a run created after a settlement always did: their observation re-arms the
 // record when it lands, and the head settles again, superseding this one.
-func (s *Store) ClaimStillHeld(key string, generation uint64, hash string, requested uint64) (bool, error) {
+func (s *Store) ClaimStillHeld(key string, generation uint64, hash string, requested uint64, now int64, debounce time.Duration) (bool, error) {
 	kv := s.kv()
 	entry, err := kv.Get(key)
 	if err != nil {
@@ -1142,7 +1146,7 @@ func (s *Store) ClaimStillHeld(key string, generation uint64, hash string, reque
 	if requested == 0 {
 		return held, nil
 	}
-	return held && state.VerifiedRev >= requested && settlementReady(state), nil
+	return held && claimLive(state.Claim, now, debounce) && state.VerifiedRev >= requested && settlementReady(state), nil
 }
 
 // ReclaimSettlement releases a claim from a replica that died before publish.

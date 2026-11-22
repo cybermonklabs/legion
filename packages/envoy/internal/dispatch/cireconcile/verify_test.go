@@ -238,7 +238,7 @@ func TestWithVerifyOffAHeadSettlesFromItsWebhooksAndNoRequestIsWritten(t *testin
 // The time from a head being ready to settle to its settlement, with the verify loop running as
 // Dispatch runs it (every VerifyInterval) and the listener's summary loop at the harness's
 // debounce: one head after another, each measured from its last webhook plus the debounce.
-func TestAReadyHeadIsPublishedWithinOneVerifyIntervalOfBeingReady(t *testing.T) {
+func TestAReadyHeadIsPublishedWithinOneVerifyIntervalAndThreeSecondsOfBeingReady(t *testing.T) {
 	h := newVerifyHarness(t, reviewerAppID)
 	h.mapRepository(rowRepository)
 	pulls := []fakePull{head(21), head(22), head(23), head(24), head(25)}
@@ -268,5 +268,38 @@ func TestAReadyHeadIsPublishedWithinOneVerifyIntervalOfBeingReady(t *testing.T) 
 	t.Logf("ready to published over %d heads: worst %s, mean %s", len(pulls), worst.Round(time.Millisecond), (total / time.Duration(len(pulls))).Round(time.Millisecond))
 	if bound := VerifyInterval + 3*time.Second; worst > bound {
 		t.Fatalf("the worst head took %s from ready to published, past %s", worst, bound)
+	}
+}
+
+// A verify read whose write of what GitHub answered fails writes no answer: the record holds no
+// verified_rev, the request stays, and nothing is published. A later answer -- here another
+// Dispatch process, whose writes land -- publishes.
+func TestAFailedWriteOfTheReadLeavesNoAnswerUntilALaterOneLands(t *testing.T) {
+	h := newVerifyHarness(t, reviewerAppID)
+	h.mapRepository(rowRepository)
+	h.listHead()
+	settlements := h.subscribe()
+	run := checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-22T00:05:00Z")
+	h.github.setCheckRuns(gitHubRepository, headSHA, run)
+	h.post("check_run", webhookBody("check_run", run), "d1")
+	request := h.waitForRequest(0)
+	failing := h.failWrites(1)
+
+	h.verifyPass()
+
+	if failing.records != 0 {
+		t.Fatalf("the verify read made no write of its runs that the bus refused (%d refusals left)", failing.records)
+	}
+	h.noSettlement(settlements, "after a verify read whose write failed")
+	if state, _, _ := h.record(); state.VerifiedRev != 0 {
+		t.Fatalf("the record's VerifiedRev is %d after the write of the read failed, want 0", state.VerifiedRev)
+	}
+	if !slices.ContainsFunc(h.requests(), func(listed contracts.CIVerifyRequest) bool { return listed.Revision == request.Revision }) {
+		t.Fatalf("the request at revision %d is gone after the write of the read failed", request.Revision)
+	}
+
+	h.replica().Verify(h.ctx)
+	if settled := h.settlement(settlements, "after a later answer landed"); settled.Passed.Count != 1 {
+		t.Fatalf("settlement = %+v, want ci-ok passed", settled)
 	}
 }
