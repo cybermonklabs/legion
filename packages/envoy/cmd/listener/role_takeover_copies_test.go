@@ -354,7 +354,7 @@ func (r copiesReceived) add(more copiesReceived) {
 // handoverIdle reports whether no handover of role runs on this listener: none holds the role's
 // guard (roleKeepGuards), which every handover - the claim route's, a keep's, a registration's,
 // the sweep's - holds while it runs.
-func (rig *copiesRig) handoverIdle(role string) bool {
+func (rig *relayRig) handoverIdle(role string) bool {
 	release, held := rig.deps.delivery.roleKeepDrains.tryHold(role)
 	if held {
 		release()
@@ -387,10 +387,25 @@ func (rig *copiesRig) watch(t *testing.T, standIn *sessionStandIn, role string, 
 
 // awaitHandoverIdle waits for no handover of role to run on this listener, failing the row when
 // one still runs after copiesWatchBound.
-func (rig *copiesRig) awaitHandoverIdle(t *testing.T, role string) {
+func (rig *relayRig) awaitHandoverIdle(t *testing.T, role string) {
 	t.Helper()
 	if !testwait.Holds(copiesWatchBound, testwait.Poll, func() bool { return rig.handoverIdle(role) }) {
 		t.Fatalf("a handover of role %s still runs after %s", role, copiesWatchBound)
+	}
+}
+
+// awaitHandoverReceived waits for no handover of role to run on this listener, then for holder's
+// process (heard) to receive a message stored on holder's own subject after that, failing the row
+// when either takes longer than copiesWatchBound. Every copy a handover forwards to holder is
+// stored on that subject before the handover ends, and holder's relay sends the subject in stream
+// order, so holder has then received each copy any handover so far forwarded it, a copy
+// forwarded twice among them, and a row counts what holder received once this returns.
+func (rig *relayRig) awaitHandoverReceived(t *testing.T, role, holder string, heard *heardFrames) {
+	t.Helper()
+	rig.awaitHandoverIdle(t, role)
+	item, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(holder))
+	if !heard.await(copiesWatchBound, item.EventID) {
+		t.Fatalf("%s did not receive the message %s to itself within %s of role %s's last handover: it received %v", holder, item.EventID, copiesWatchBound, role, heard.all())
 	}
 }
 
@@ -819,11 +834,13 @@ func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing
 		// A second copy of a frame, or a copy of a frame no read can tell the role of, can reach
 		// the new holder after the first copy of every role message has, so the counts below are
 		// read once it received the role message stored after them all, which reaches it after
-		// any such copy.
+		// any such copy the pass or the walk made before that message's, and then a message to
+		// itself stored once the handover ended, which reaches it after any the handover made
+		// later (awaitHandoverReceived).
 		if !taker.awaitMarks(copiesWatchBound, later) {
 			t.Errorf("%s did not receive %q, stored after the others, within %s of its claim: it received %v", copiesTaker, later, copiesWatchBound, taker.allMarks())
 		}
-		rig.awaitHandoverIdle(t, copiesRole)
+		rig.awaitHandoverReceived(t, copiesRole, copiesTaker, taker)
 
 		for _, frame := range readable {
 			t.Run("case: "+frame.shape+" reaches the new holder once", func(t *testing.T) {
