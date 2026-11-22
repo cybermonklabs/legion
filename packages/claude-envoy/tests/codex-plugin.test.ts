@@ -122,11 +122,13 @@ describe("the built Codex plugin", () => {
     })
     expect(writable.map((path) => path.slice(out.length))).toEqual([])
     expect(lstatSync(join(out, "package.json")).mode & 0o777).toBe(0o644)
+    // The `dispatch` command keeps execute for every user, which a terminal and npm's bin need.
+    expect(lstatSync(join(out, "bin", "dispatch")).mode & 0o777).toBe(0o755)
   })
 
   test("holds the manifests, the hooks, the skills and the given dist/", () => {
     expect(readdirSync(out).sort()).toEqual(
-      [".codex-plugin", "README.md", "dist", "hooks", "package.json", "skills"].sort(),
+      [".codex-plugin", "README.md", "bin", "dist", "hooks", "package.json", "skills"].sort(),
     )
     expect(readFileSync(join(out, "dist", "envoy-channel.js"), "utf8")).toBe(
       "// a stand-in bundle\n",

@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  A listener's KV caches (the session registry, the interest and role claim views, the known-session records and the CI store) no longer drop a key their own write had just put there when a read of the bucket completes. A read's watcher sees the bucket as it was when the watcher was created, and the read collects evidence of each key only from the moment it begins, a moment later. A write made through the cache in that gap reached the cache before the read began and the bucket after the watcher was created, so the read found no evidence of it and removed it at its end, and the key stayed out until the watcher delivered its record, or until the next read when the connection ended first: a session registered as a listener started could be missing from `GET /v1/sessions` meanwhile. A read now keeps every key the cache wrote, read or deleted itself after the read's first look at the bucket's stream, at a revision past the stream's last sequence then. The first read of a bucket deleted and created again still drops such a write until its record arrives, since the old bucket's revisions say nothing of the new one's.
+time: 2026-11-21T22:07:57Z
+custom:
+  Issue: kv-cache-write-before-read

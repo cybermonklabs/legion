@@ -402,7 +402,8 @@ Legion uses GitHub's own review mechanisms rather than labels:
 - **CI** on the pull request's head is information, not a verdict. When GitHub's checks settle, the
   daemon names every check GitHub reported, with the conclusion GitHub gave it, and judges none of
   them: it sends one message each to the architect that owns the issue, the worker of the issue's
-  current phase and the implementer whose code the checks ran on, and moves the issue nowhere. The
+  current phase and, before `merging`, the implementer whose code the checks ran on, and moves the
+  issue nowhere; in `merging` the merge and what breaks it are the merger's. The
   message names the head's commit statuses too, each with its state: Dispatch reads them from
   GitHub for each open head where its GitHub App holds Commit statuses, since GitHub's status event
   names no pull request. A red is for those roles to decide on — re-run a check that failed on
@@ -416,25 +417,26 @@ Legion uses GitHub's own review mechanisms rather than labels:
   head and runs no check on it. The daemon reads the pull request's mergeability twice, at least a
   minute apart, since a read made while GitHub is still computing can be stale, and acts only on a
   conflict both reads report, and only when the next step needs a mergeable head: the issue stands
-  in `accepting`, `retro` or `merging`; a check the base requires has no green result on the head;
-  the base requires a pull request to be current with it; or the daemon could not read the base's
-  rules, which it reads (rulesets and branch protection) only on a conflicting read. Otherwise it
-  records the conflict, and the tester and the reviewer go on at that head; an approval of the
-  head ends the review round, and the daemon acts once the issue enters `accepting`.
-  When it acts, the issue keeps its phase and takes no admission slot for the merge. The
-  implementer is asked on its role topic to merge the base forward in the issue workspace and
-  push, with no handoff and no completion for it. The tester, the reviewer or the merger holding
-  the phase is told to stop writing the workspace and not to complete its phase at the old head,
-  and keeps its turn, its background jobs, its process and its session. The architect is told once
-  with a `checks-red` notice naming the phase the issue stays in. In `implementing` only the
-  implementer is told.
+  in `merging`; a check the base requires has no green result on the head; the base requires a
+  pull request to be current with it; or the daemon could not read the base's rules, which it
+  reads (rulesets and branch protection) only on a conflicting read. Otherwise it records the
+  conflict, and the tester and the reviewer go on at that head; an approval of the head ends the
+  review round. In `accepting` and `retro` the work is reviewed and the merge comes next, so the
+  conflict waits there, and the daemon acts once the issue enters `merging`.
+  When it acts, the issue keeps its phase and takes no admission slot for the merge. Before
+  `merging` the implementer is asked on its role topic to merge the base forward in the issue
+  workspace and push, with no handoff and no completion for it, and the tester or the reviewer
+  holding the phase is told to stop writing the workspace and not to complete its phase at the old
+  head, and keeps its turn, its background jobs, its process and its session. In `merging` the
+  merger is asked: the merge is its own, and it resolves the conflict itself. The architect is told
+  once with a `checks-red` notice naming the phase the issue stays in and the role asked. In
+  `implementing` only the implementer is told.
   When the merge lands, the phase's worker is told both heads and goes on at the new one, and a
   completion of the phase the issue stands in that names the replaced head, or that names no head,
   is refused (`HANDOFF_HEAD_MERGED_FORWARD`) and is made again at the new head; a completion of a
   phase the issue has already left is recorded as before. Past review the daemon asks the reviewer
-  to read the merge and approve the new head by its SHA, or request changes, and a merger that
-  enters `merging` while that approval is owed merges the new head only once the approval is on
-  the pull request.
+  to read the merge (`git show --remerge-diff`) and approve the new head by its SHA, or request
+  changes, and the merger merges the new head only once the approval is on the pull request.
 - **A completion behind its phase entry.** A move the role's completion did not make — a
   reviewer's own request for changes, which ends the round before the reviewer completes — keeps that role's
   turn, its background jobs, its process and its session. Only the entry of the phase the issue
@@ -512,23 +514,32 @@ The merger never turns auto-merge on, and the daemon submits no merge and change
 of any pull request. The repository's own required reviews and checks decide when it lands; Legion
 reads none of them at the merge, bypasses none, and waits for a review only a person can give.
 Nothing holds the head that merges to the head the reviewer approved: a repository that wants its
-newest push reviewed says so in its own rulesets.
+newest push reviewed says so in its own rulesets. The one exception is the merger's own merge of
+the base, below, whose new head it merges only once the reviewer approved it.
 
 When a merge fails, the decision is the merger's, on GitHub's own answer: wait for what GitHub
-waits for, merge again at the head it re-reads, send the issue back with `request_backward_move`
-when the head itself must change, or tell the architect what no worker can do — a repository
-setting or an App permission only a person can change. A head that starts conflicting with its
-base keeps the issue in `merging`: the merger merges nothing, the daemon asks the implementer to
-merge the base forward and the reviewer to approve the new head, and the merger merges that head
-once the approval is on the pull request.
+waits for, merge again at the head it re-reads, or tell the architect what no worker can do — a
+repository setting or an App permission only a person can change.
+
+A conflict with the base, and a check the base's newer code breaks, are the merger's to resolve,
+and the issue stays in `merging`: the work was reviewed and accepted, and what is left is its
+merge. The merger merges the base forward in the issue workspace, resolves the conflict so both
+sides keep their intent, adapts the change in that merge commit where the base changed code it
+uses, runs again what the merge can reach, and pushes. The daemon asks it when two reads find the
+head conflicting, and asks the reviewer to read the merge (`git show --remerge-diff`) and approve
+the new head; the merger merges that head once the approval is on the pull request. It may ask the
+implementer, the tester or the reviewer what they know over Envoy, and it sends the issue back
+with `request_backward_move` only when the fix is a change to the change's own logic that no
+merge of the base resolves, saying why. A merge queue that takes the pull request out because its
+checks failed comes to the merger the same way, as a check that failed.
 
 A merge queue that takes the pull request out for a conflict says which conflict it was in the
 pull request's merge state, which GitHub computes once the entry is no longer queued. A head
 GitHub still merges conflicted with an entry queued ahead of it rather than with the base, so the
-merger enqueues that head once more and no further, says so on the issue, and the issue stays in
-`merging`. A head GitHub reports dirty conflicts with the base itself, which the daemon answers
-with its merge forward while the issue stays in `merging`; a merge state GitHub answers unknown is
-asked again on the merger's own backoff for up to five minutes and then read the same way.
+merger enqueues that head once more, says so on the issue, and the issue stays in `merging`. A
+head GitHub reports dirty conflicts with the base itself, which the merger merges forward; a merge
+state GitHub answers unknown is asked again on the merger's own backoff for up to five minutes and
+then read the same way.
 
 What closes the issue is the daemon's own reading of the merged pull request, by GitHub's webhook
 or by its own read: it writes `done`, whether the merger's completion arrived before that or after

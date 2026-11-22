@@ -385,26 +385,19 @@ export function setGatedSteps(
   );
 }
 
-/** Maps `repo` (`owner/name`) to a project, as the Settings page does; `default: true` makes it the
- *  project's default repository. */
-export function putRepoProject(
-  repo: string,
-  input: Body<"/api/v1/settings/repo-projects/{owner}/{repo}", "put">,
-  login = "alice"
+/** `PUT /api/v1/projects/{key}/default-repository`: sets `project`'s default repository
+ *  (`owner/name`), as the Settings page's Projects table does, or clears it with `null`. An issue
+ *  of the project resolves to it when neither the issue nor an issue above it names a repository.
+ *  The call is a person's by default; the route refuses a project-scoped credential. */
+export function putProjectDefaultRepository(
+  project: string,
+  repo: string | null,
+  options: ApiOptions = {}
 ) {
   return put(
-    "/api/v1/settings/repo-projects/{owner}/{repo}",
-    { body: input, params: repoParams(repo) },
-    { login }
-  );
-}
-
-/** Removes `repo`'s mapping, as the Settings page's Delete does. */
-export function deleteRepoProject(repo: string, login = "alice") {
-  return del(
-    "/api/v1/settings/repo-projects/{owner}/{repo}",
-    { body: {}, params: repoParams(repo) },
-    { login }
+    "/api/v1/projects/{key}/default-repository",
+    { body: { repo }, params: { key: project } },
+    options
   );
 }
 

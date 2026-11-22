@@ -104,6 +104,7 @@ on:
       - 'packages/daemon/internal/pods/**'
       - 'packages/daemon/internal/podsafety/**'
       - 'packages/daemon/internal/procgroup/*'
+      - 'packages/daemon/internal/programbound/*'
       - 'packages/daemon/internal/projection/*'
       - 'packages/daemon/internal/promptrefs/*'
       - 'packages/daemon/internal/prompts/**'
