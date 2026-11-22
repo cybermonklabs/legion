@@ -170,8 +170,8 @@ func TestRenewLoopOutlivesAnOutageOnlyAboveTheLeaseBound(t *testing.T) {
 					if !got {
 						t.Fatal("the renew loop gave up on the session instead of enrolling it again")
 					}
-				case <-time.After(waitBound(t)):
-					t.Fatal("the renew loop neither lapsed nor renewed")
+				case <-time.After(renewOutageBound):
+					t.Fatalf("the renew loop neither lapsed nor renewed within %v", renewOutageBound)
 				}
 			} else {
 				waitFor(t, broker.renewed)
@@ -191,3 +191,7 @@ func TestRenewLoopOutlivesAnOutageOnlyAboveTheLeaseBound(t *testing.T) {
 		})
 	}
 }
+
+// renewOutageBound is how long a row waits for a loop that should have ended long before: the
+// longest walk below renews at 120 units, and this is the same five seconds waitFor keeps.
+const renewOutageBound = 5 * time.Second

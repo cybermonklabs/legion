@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // holderSignIns is the box's sign-ins, and with them the fake broker's rule about the name.
@@ -61,6 +62,16 @@ func (h *holderSignIns) signIn(authority *cipherclient.Authority) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.authority = authority
+}
+
+// waitUpTo polls cond every 10 ms for as long as d, and fails with why when it never holds. It
+// is waitFor with a deadline of the test's own, because the attempt that enrols here waits out
+// the held ladder first and that outlasts waitFor's five seconds.
+func waitUpTo(t *testing.T, d time.Duration, cond func() bool, why string) {
+	t.Helper()
+	if !testwait.Holds(d, 10*time.Millisecond, cond) {
+		t.Fatal(why)
+	}
 }
 
 func TestAnEnrollRefusedSessionHeldBacksOffAndEnrolsWhenThePrincipalChanges(t *testing.T) {
@@ -115,7 +126,7 @@ func TestAnEnrollRefusedSessionHeldBacksOffAndEnrolsWhenThePrincipalChanges(t *t
 		sent, _, _ := f.snapshot()
 		return len(sent)
 	}
-	waitUntil(t, func() bool { return posts() > 1 },
+	waitUpTo(t, 10*time.Second, func() bool { return posts() > 1 },
 		"the helper sent one enroll for a name another principal holds and stopped; the refusal is of the principal that attempt enrolled under, which a sign-in changes with no restart")
 	select {
 	case <-done:
@@ -150,7 +161,7 @@ func TestAnEnrollRefusedSessionHeldBacksOffAndEnrolsWhenThePrincipalChanges(t *t
 		t.Fatal(err)
 	}
 	signIns.signIn(&cipherclient.Authority{Key: graceKey, CredentialID: "credential-of-graces-sign-in", Operator: "grace@example.com"})
-	waitUntil(t, func() bool { return sess.snapshot().EnrollmentID != "" },
+	waitUpTo(t, 60*time.Second, func() bool { return sess.snapshot().EnrollmentID != "" },
 		"the session never enrolled after the person holding its name signed in on this box")
 
 	sent, _, _ := f.snapshot()

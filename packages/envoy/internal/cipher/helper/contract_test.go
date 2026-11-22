@@ -116,7 +116,7 @@ func (cr *contractRig) login(t *testing.T) string {
 
 func (cr *contractRig) call(t *testing.T, req Request) Response {
 	t.Helper()
-	resp, err := Call(cr.sock, req, waitBound(t))
+	resp, err := Call(cr.sock, req, 10*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,11 +124,11 @@ func (cr *contractRig) call(t *testing.T, req Request) Response {
 }
 
 // waitForIssued blocks until the background login poller (pollLogin, at the broker's 5 s
-// interval) installs the machine credential, or fails the test with the login's state when
-// waitBound passes first.
+// interval) installs the machine credential, or fails the test — longer than the package's own
+// waitFor, since a real broker round trip plus that interval can outrun a 5 s deadline.
 func waitForIssued(t *testing.T, b *Broker) {
 	t.Helper()
-	deadline := time.Now().Add(waitBound(t))
+	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		if b.LoginStatus().State == "issued" {
 			return
@@ -208,7 +208,7 @@ func TestContractLoginApprovalEnrollSignAndExpiry(t *testing.T) {
 	}
 
 	// --- a session register (the existing path) enrolls kind session ---
-	reg := cr.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t)})
+	reg := cr.call(t, Request{Op: "register", WaitSeconds: 10})
 	if !reg.OK || reg.State != "enrolled" || reg.EnrollmentID == "" || reg.Operator != cr.broker.Operator {
 		t.Fatalf("register: %+v", reg)
 	}
@@ -344,7 +344,7 @@ func TestContractARefusedLauncherCredentialIsAnErrorAndTheHelperKeepsServing(t *
 		t.Fatalf("register after the credential expired: %+v; want OK and not enrolled", reg)
 	}
 	const cannotEnroll = `level=ERROR msg="session cannot enroll: the helper holds no launcher credential; run: agent-secrets machine login, and have a human approve it"`
-	deadline := time.Now().Add(waitBound(t))
+	deadline := time.Now().Add(10 * time.Second)
 	for !strings.Contains(cr.logBuf.String(), cannotEnroll) {
 		if time.Now().After(deadline) {
 			t.Fatalf("no ERROR says the session cannot enroll; log:\n%s", cr.logBuf.String())
@@ -406,7 +406,7 @@ func TestContractRevokingTheMachineLoginEndsItsSessionsAndTheHelperDropsIt(t *te
 	}
 	credentialID := cr.broker.DecideMachineLogin(t, code, true)
 	waitForIssued(t, b)
-	reg := cr.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t)})
+	reg := cr.call(t, Request{Op: "register", WaitSeconds: 10})
 	if !reg.OK || reg.State != "enrolled" || reg.EnrollmentID == "" {
 		t.Fatalf("register: %+v, want the session enrolled", reg)
 	}
@@ -418,7 +418,7 @@ func TestContractRevokingTheMachineLoginEndsItsSessionsAndTheHelperDropsIt(t *te
 	}
 
 	refused := `level=ERROR msg="the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); cleared: no session can enroll under this machine's credential; run: agent-secrets machine login, and have a human approve it" credential_id=` + credentialID + " code=LAUNCHER_INVALID"
-	deadline := time.Now().Add(waitBound(t))
+	deadline := time.Now().Add(15 * time.Second)
 	for !strings.Contains(cr.logBuf.String(), refused) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the helper never logged its credential refused; log:\n%s", cr.logBuf.String())

@@ -252,11 +252,11 @@ func (w *tradeWaits) after(d time.Duration) <-chan time.Time {
 }
 
 // wait answers the n-th wait the loop asked for, failing the test when the loop asks for none
-// before waitBound passes: a loop that stopped trading asks for no more.
+// within 5 s: a loop that stopped trading asks for no more.
 func (w *tradeWaits) wait(t *testing.T, n int) tradeWait {
 	t.Helper()
 	var got tradeWait
-	if !testwait.Holds(waitBound(t), 5*time.Millisecond, func() bool {
+	if !testwait.Holds(5*time.Second, 5*time.Millisecond, func() bool {
 		w.mu.Lock()
 		defer w.mu.Unlock()
 		if len(w.asked) <= n {

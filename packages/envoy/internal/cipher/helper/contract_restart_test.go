@@ -77,7 +77,7 @@ func TestContractALostRefreshAnswerIsRetriedInsideTheGrace(t *testing.T) {
 	if err := b.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(waitBound(t))
+	deadline := time.Now().Add(10 * time.Second)
 	for {
 		now, err := LoadMachineFile(first.machineFile)
 		if err == nil && now.RefreshToken != kept.RefreshToken {
@@ -122,12 +122,12 @@ func TestContractALoginSurvivesARestart(t *testing.T) {
 	if status := second.call(t, Request{Op: "login-status"}); !status.OK || status.LoginState != "issued" || !status.CredentialHeld {
 		t.Fatalf("login-status of a helper started on the machine file: %+v; want issued and held", status)
 	}
-	reg := second.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t)})
+	reg := second.call(t, Request{Op: "register", WaitSeconds: 10})
 	if !reg.OK || reg.State != "enrolled" || reg.EnrollmentID == "" {
 		t.Fatalf("register on the restarted helper: %+v; want the session enrolled", reg)
 	}
 	waitForIssued(t, second.srv.Broker)
-	deadline := time.Now().Add(waitBound(t))
+	deadline := time.Now().Add(10 * time.Second)
 	for {
 		now, err := LoadMachineFile(first.machineFile)
 		if err == nil && now.RefreshToken != kept.RefreshToken && now.CredentialID == credentialID {
@@ -154,7 +154,7 @@ func TestContractARevokedMachinesNextRefreshDropsItsLogin(t *testing.T) {
 	}
 
 	second := startContractHelper(t, first.broker, first.machineFile, http.DefaultClient)
-	deadline := time.Now().Add(waitBound(t))
+	deadline := time.Now().Add(10 * time.Second)
 	for second.srv.Broker.HasCredential() {
 		if time.Now().After(deadline) {
 			t.Fatalf("the revoked login was never dropped; log:\n%s", second.logBuf.String())
@@ -186,7 +186,7 @@ func TestContractARefreshThatCannotReachTheBrokerKeepsTheLogin(t *testing.T) {
 	}
 
 	second := startContractHelper(t, first.broker, first.machineFile, &http.Client{Transport: failingTokenTransport{}})
-	deadline := time.Now().Add(waitBound(t))
+	deadline := time.Now().Add(10 * time.Second)
 	for !strings.Contains(second.logBuf.String(), "the machine login's refresh did not reach the broker; retrying") {
 		if time.Now().After(deadline) {
 			t.Fatalf("no line says the refresh failed; log:\n%s", second.logBuf.String())
@@ -196,7 +196,7 @@ func TestContractARefreshThatCannotReachTheBrokerKeepsTheLogin(t *testing.T) {
 	if status := second.call(t, Request{Op: "login-status"}); !status.OK || status.LoginState != "issued" || !status.CredentialHeld {
 		t.Fatalf("login-status after a refresh that failed: %+v; want issued and held", status)
 	}
-	if reg := second.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t)}); !reg.OK || reg.State != "enrolled" {
+	if reg := second.call(t, Request{Op: "register", WaitSeconds: 10}); !reg.OK || reg.State != "enrolled" {
 		t.Fatalf("register after a refresh that failed: %+v; want the session enrolled", reg)
 	}
 	now, err := LoadMachineFile(first.machineFile)
@@ -252,7 +252,7 @@ func TestContractAReLoginReplacesTheKeptLogin(t *testing.T) {
 		t.Fatalf("machine file while the re-login is pending: %+v %v; want the first login %s", kept, err, first)
 	}
 	second := cr.broker.DecideMachineLogin(t, code, true)
-	deadline := time.Now().Add(waitBound(t))
+	deadline := time.Now().Add(20 * time.Second)
 	for {
 		if cred := cr.srv.Broker.cred.Load(); cred != nil && cred.id == second {
 			break
@@ -275,7 +275,7 @@ func TestContractAReLoginReplacesTheKeptLogin(t *testing.T) {
 func TestContractAReLoginRetiresTheCredentialItReplaces(t *testing.T) {
 	cr := newContractRig(t, ciphertest.WithLease(3*time.Second))
 	first := cr.login(t)
-	reg := cr.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t)})
+	reg := cr.call(t, Request{Op: "register", WaitSeconds: 10})
 	if !reg.OK || reg.State != "enrolled" || reg.EnrollmentID == "" {
 		t.Fatalf("register: %+v", reg)
 	}
@@ -284,7 +284,7 @@ func TestContractAReLoginRetiresTheCredentialItReplaces(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := cr.broker.DecideMachineLogin(t, code, true)
-	deadline := time.Now().Add(waitBound(t))
+	deadline := time.Now().Add(20 * time.Second)
 	for !strings.Contains(cr.logBuf.String(), "retired the machine login a new one replaced") {
 		if time.Now().After(deadline) {
 			t.Fatalf("the replaced credential %s was never retired; log:\n%s", first, cr.logBuf.String())
@@ -300,7 +300,7 @@ func TestContractAReLoginRetiresTheCredentialItReplaces(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The session renews its enrollment with its own proof after its login retired.
-	deadline = time.Now().Add(waitBound(t))
+	deadline = time.Now().Add(20 * time.Second)
 	for {
 		var live bool
 		var now time.Time

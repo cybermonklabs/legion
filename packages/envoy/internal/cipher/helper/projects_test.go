@@ -25,7 +25,7 @@ func TestHelperKeepsASessionsProjectsAcrossARestart(t *testing.T) {
 	r := startRig(t, state)
 	r.callerPID.Store(int64(os.Getpid()))
 	id := testSessionID
-	resp := r.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t), SessionID: &id, Projects: []string{"PUB", "PRIV"}})
+	resp := r.call(t, Request{Op: "register", WaitSeconds: 10, SessionID: &id, Projects: []string{"PUB", "PRIV"}})
 	if !resp.OK || resp.State != "enrolled" {
 		t.Fatalf("register naming PUB and PRIV: %+v", resp)
 	}
@@ -144,7 +144,7 @@ func TestASessionComingBackUnderOtherProjectsGetsANewIdentity(t *testing.T) {
 	seedEnrollment(r.fake, "enr-before", thumbprintOf(t, key), SessionRuntimeID(testSessionID))
 	id := testSessionID
 	r.callerPID.Store(int64(os.Getpid()))
-	resp := r.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t), SessionID: &id, Projects: []string{"PUB"}})
+	resp := r.call(t, Request{Op: "register", WaitSeconds: 10, SessionID: &id, Projects: []string{"PUB"}})
 	r.callerPID.Store(0)
 	if !resp.OK {
 		t.Fatalf("register under other projects: %+v", resp)

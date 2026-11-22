@@ -647,42 +647,13 @@ func loggedInBroker(t *testing.T, f *fakeBroker, operator string) *Broker {
 	return b
 }
 
-// waitBound is how long every wait in this package's tests runs before it fails: a minute, or the
-// test binary's own deadline less a second when that is sooner (testwait.Bounded), never a fixed
-// few seconds. What a test waits for runs in the background — a login's first token poll comes a
-// second after its device authorization (the interval the fake names), then its round trips and
-// the machine file's two fsyncs — so on a loaded box a step that is merely slow takes longer than
-// any short span: a 5 s span failed two tests whose login had not yet been kept, in a run where
-// this package took 475 s at a load average of about 1290. A condition that never holds still
-// fails. A wait whose span is what its test asserts, or one that must run out for its test to
-// pass, keeps a span of its own.
-func waitBound(t *testing.T) time.Duration {
-	return testwait.Bounded(t, time.Minute, time.Second)
-}
-
-// waitSeconds is a register's wait_seconds for a session its test needs enrolled: waitBound in
-// whole seconds, less the 5 s the helper allows a register past its own wait to write its answer
-// (Server.handle), so an answer at the end of that wait still reaches a call that gives up at
-// waitBound (rig.call, contractRig.call), and the test fails on what the register answered rather
-// than on a client that stopped reading. The helper puts no cap of its own on wait_seconds.
-func waitSeconds(t *testing.T) int {
-	return int((waitBound(t) - 5*time.Second) / time.Second)
-}
-
-// waitFor polls cond every 5 ms until it is true, failing the test when waitBound passes first.
+// waitFor polls cond until it is true or 5s pass, whichever comes first, failing the test on
+// timeout. A login's first token poll comes a second after its device authorization (the
+// interval the fake names).
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	if !testwait.Holds(waitBound(t), 5*time.Millisecond, cond) {
+	if !testwait.Holds(5*time.Second, 5*time.Millisecond, cond) {
 		t.Fatal("condition never became true")
-	}
-}
-
-// waitUntil is waitFor polling every 10 ms and failing with why, for a wait whose failure says
-// what never happened.
-func waitUntil(t *testing.T, cond func() bool, why string) {
-	t.Helper()
-	if !testwait.Holds(waitBound(t), 10*time.Millisecond, cond) {
-		t.Fatal(why)
 	}
 }
 
@@ -863,7 +834,7 @@ func TestALoginPendingWhenTheCredentialIsRefusedReportsItsOwnOutcome(t *testing.
 	f.mu.Lock()
 	f.loginOutcome = "denied"
 	f.mu.Unlock()
-	deadline := time.Now().Add(waitBound(t)) // pollLogin backs off 2 s, then 4 s, between polls
+	deadline := time.Now().Add(15 * time.Second) // pollLogin backs off 2 s, then 4 s, between polls
 	for b.login.Load().State == "pending" && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}

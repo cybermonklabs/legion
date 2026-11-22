@@ -51,7 +51,7 @@ func TestTheHelperLogsEveryChangeOfTheLauncherCredential(t *testing.T) {
 	f.mu.Lock()
 	f.loginOutcome = "issued"
 	f.mu.Unlock()
-	deadline := time.Now().Add(waitBound(t)) // pollLogin's next poll comes 2 s after the pending one
+	deadline := time.Now().Add(15 * time.Second) // pollLogin's next poll comes 2 s after the pending one
 	for b.LoginStatus().State != "issued" {
 		if time.Now().After(deadline) {
 			t.Fatalf("the login never issued: %+v", b.LoginStatus())

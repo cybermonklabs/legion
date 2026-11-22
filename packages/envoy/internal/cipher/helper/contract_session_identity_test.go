@@ -58,7 +58,7 @@ func TestContractARebootKeepsAGrantTheSessionWasGiven(t *testing.T) {
 	sessionID := "11111111-2222-4333-8444-66666666cafe"
 
 	// --- the session registers under its omp session id ---
-	reg := cr.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t), SessionID: &sessionID})
+	reg := cr.call(t, Request{Op: "register", WaitSeconds: 5, SessionID: &sessionID}) // under Call's own 10 s read deadline
 	if !reg.OK || reg.State != "enrolled" || reg.EnrollmentID == "" {
 		t.Fatalf("register --session-id: %+v", reg)
 	}
@@ -131,7 +131,7 @@ func TestContractARebootKeepsAGrantTheSessionWasGiven(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resumed := next.register(ctx, peer, os.Getpid(), sessionID, nil, false, 0, waitBound(t))
+	resumed := next.register(ctx, peer, os.Getpid(), sessionID, nil, false, 0, 20*time.Second)
 	if !resumed.OK || resumed.EnrollmentID != reg.EnrollmentID {
 		t.Fatalf("the resumed session got %+v, want the enrollment it had, %s", resumed, reg.EnrollmentID)
 	}
@@ -229,7 +229,7 @@ func TestContractASessionThatDoesNotComeBackLosesItsGrant(t *testing.T) {
 	cr.login(t)
 	sessionID := "11111111-2222-4333-8444-77777777beef"
 
-	reg := cr.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t), SessionID: &sessionID})
+	reg := cr.call(t, Request{Op: "register", WaitSeconds: 5, SessionID: &sessionID})
 	if !reg.OK || reg.EnrollmentID == "" {
 		t.Fatalf("register --session-id: %+v", reg)
 	}

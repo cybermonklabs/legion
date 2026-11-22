@@ -161,7 +161,7 @@ func TestAPassThroughOpAnswersInsideItsBoundWhileTheBoxsSignInIsTrading(t *testi
 	}()
 	select {
 	case <-tradeStarted:
-	case <-time.After(waitBound(t)):
+	case <-time.After(10 * time.Second):
 		t.Fatal("the registered session's enrollment never traded for the person's token")
 	}
 
@@ -198,7 +198,7 @@ func TestAPassThroughOpAnswersInsideItsBoundWhileTheBoxsSignInIsTrading(t *testi
 		if err != nil {
 			t.Fatalf("the registered session's enrollment, once its trade ended: %v", err)
 		}
-	case <-time.After(waitBound(t)):
+	case <-time.After(10 * time.Second):
 		t.Fatal("the registered session's enrollment did not end after its trade was let go")
 	}
 }

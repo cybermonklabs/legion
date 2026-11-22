@@ -32,6 +32,7 @@ import (
 // returns, so it can only fail. The register is given an hour's wait, which only the refusal can
 // end, and the bounds below are for a box too stalled to answer at all, never a pass.
 func TestARestrictedMembersEnrollmentIsAskedOnce(t *testing.T) {
+	const stalled = 60 * time.Second
 	f := newFakeBroker(t)
 	f.enrollRestricted = true
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -81,8 +82,8 @@ func TestARestrictedMembersEnrollmentIsAskedOnce(t *testing.T) {
 			return false
 		}
 	}
-	if !testwait.Holds(waitBound(t), 5*time.Millisecond, func() bool { return returned() || arrivals() >= 2 }) {
-		t.Fatalf("the enroll loop neither returned nor made a second call (%d calls)", arrivals())
+	if !testwait.Holds(stalled, 5*time.Millisecond, func() bool { return returned() || arrivals() >= 2 }) {
+		t.Fatalf("in %s the enroll loop neither returned nor made a second call (%d calls)", stalled, arrivals())
 	}
 	if !returned() {
 		t.Fatalf("the enroll loop is still retrying a session the broker refused RESTRICTED_MEMBER_ENROLLS_NOTHING: the broker received %d enroll calls, want one and the loop ended", arrivals())
@@ -107,8 +108,8 @@ func TestARestrictedMembersEnrollmentIsAskedOnce(t *testing.T) {
 		if !reg.OK || reg.State != "refused" || !strings.Contains(reg.Error, "RESTRICTED_MEMBER_ENROLLS_NOTHING") {
 			t.Fatalf("register --wait of the refused session: %+v; want state refused naming RESTRICTED_MEMBER_ENROLLS_NOTHING", reg)
 		}
-	case <-time.After(waitBound(t)):
-		t.Fatal("a register given an hour's wait was never answered: it waits for an enrollment that cannot come, not for the refusal")
+	case <-time.After(stalled):
+		t.Fatalf("a register given an hour's wait was not answered in %s: it waits for an enrollment that cannot come, not for the refusal", stalled)
 	}
 
 	// The credential the refusal came under goes (the broker refuses it, say). The session stays

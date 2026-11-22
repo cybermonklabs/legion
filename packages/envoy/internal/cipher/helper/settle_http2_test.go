@@ -70,7 +70,7 @@ func wantHTTP2(t *testing.T, proto <-chan string) {
 			t.Fatalf("the stand-in spoke %s, not HTTP/2.0; this row proves nothing about the HTTP/2-only clause", p)
 		}
 		t.Logf("the stand-in spoke %s", p)
-	case <-time.After(waitBound(t)):
+	case <-time.After(5 * time.Second):
 		t.Fatal("the stand-in never saw the request; the clause under test was not reached")
 	}
 }

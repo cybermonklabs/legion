@@ -49,18 +49,17 @@ func TestNoCredentialReasonNamesWhyTheHelperHoldsNone(t *testing.T) {
 	}
 }
 
-// waitForRecord waits for a JSON log record in out whose msg is msg, and returns it, failing the
-// test with the log when waitBound passes first.
+// waitForRecord waits up to 5 s for a JSON log record in out whose msg is msg, and returns it.
 func waitForRecord(t *testing.T, out *syncBuffer, msg string) map[string]any {
 	t.Helper()
-	deadline := time.Now().Add(waitBound(t))
+	deadline := time.Now().Add(5 * time.Second)
 	for {
 		records := logRecords(t, out)
 		if i := slices.IndexFunc(records, func(rec map[string]any) bool { return rec["msg"] == msg }); i >= 0 {
 			return records[i]
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("no line %q; log:\n%s", msg, out.String())
+			t.Fatalf("no line %q within 5 s; log:\n%s", msg, out.String())
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -320,14 +319,14 @@ func TestARegisterWaitWaitsForAConfirmationThatNeedsNoCredential(t *testing.T) {
 	// The same session again, this time asking to wait: it must wait for the confirmation the
 	// gate holds, although the helper holds no launcher credential. A wait taken only while a
 	// credential is held would answer at once here.
-	replies := registerWaitBlocked(t, r, &id, waitSeconds(t))
+	replies := registerWaitBlocked(t, r, &id)
 	release()
 	select {
 	case got := <-replies:
 		if got.err != nil || !got.resp.OK || got.resp.Code != "" || got.resp.State != "enrolled" || got.resp.EnrollmentID != "enr-before" {
 			t.Fatalf("register --wait after the confirmation: %+v (%v); want OK, enrolled, enr-before and no code", got.resp, got.err)
 		}
-	case <-time.After(waitBound(t)):
+	case <-time.After(15 * time.Second):
 		t.Fatal("register --wait never answered after the confirming renew was released")
 	}
 }
@@ -482,11 +481,11 @@ func TestARegisterWaitAnswersWithinTheBoundWhenTheBrokerNeverAnswers(t *testing.
 
 	// The same session again, asking for the launcher gate's own wait, through the helper that
 	// returns once the call is blocked in registerReply: the register has taken the wait, so
-	// what ends it below is the bound and not a wait never taken. Its client deadline is
-	// waitBound, past the 10 s asked for, so an unbounded first renew is read here as this row's
-	// own failure and not as a client that gave up.
+	// what ends it below is the bound and not a wait never taken. Its client deadline is 20 s,
+	// past the 10 s asked for, so an unbounded first renew is read here as this row's own
+	// failure and not as a client that gave up.
 	started := time.Now()
-	replies := registerWaitBlocked(t, r, &id, 10)
+	replies := registerWaitBlocked(t, r, &id)
 	got := <-replies
 	elapsed := time.Since(started)
 	// The floor is half the bound, not the whole of it: the bound runs from the renew leaving
@@ -546,10 +545,10 @@ func TestARegisterWaitAnswersWithinTheBoundWhenTheCredentialWentAwayUnderTheRene
 
 	// The same session again, asking for the launcher gate's own wait. It reads no credential,
 	// so it waits for the confirmation in flight — the one started under a credential. The call
-	// gives up at waitBound, past the 10 s asked for, so a wait that runs its whole course is read
-	// here as this row's own failure and not as a client that gave up.
+	// is made with a 20 s deadline, past the 10 s asked for, so a wait that runs its whole
+	// course is read here as this row's own failure and not as a client that gave up.
 	started := time.Now()
-	resp, err := Call(r.sock, Request{Op: "register", WaitSeconds: 10, SessionID: &id}, waitBound(t))
+	resp, err := Call(r.sock, Request{Op: "register", WaitSeconds: 10, SessionID: &id}, 20*time.Second)
 	elapsed := time.Since(started)
 	if err != nil || resp.Code != CodeNoCredential || elapsed > 5*time.Second {
 		t.Fatalf("register --wait 10 answered %+v (%v) after %s; want NO_CREDENTIAL at the bound (%s), well inside the 10 s wait: the renew it waits on began while the helper held a credential, and a bound that is skipped for that renew leaves this register waiting the whole of a launcher gate's wait", resp, err, elapsed, bound)
