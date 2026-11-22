@@ -120,6 +120,7 @@ import { claudeProjectDirectory, configuredValue } from "../src/claude-session"
 import { procStarted } from "../src/codex/codex-session-record"
 import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import { recordChosenTitle } from "../src/session-state"
+import { endOnceWritten } from "./end-once-written"
 import { parseHookArguments } from "./hook-arguments"
 import { JJ_BASE_CHAIN_TIMEOUT_MS, OPEN_ASKS_TIMEOUT_MS } from "./open-asks-bounds"
 
@@ -658,39 +659,12 @@ async function answersRefresh(session: string, cwd: string): Promise<never> {
   process.exit(0)
 }
 
-/**
- * Ends the open-asks hook once what it wrote is out. Its work is done when `openAsks` returns, but
- * a credential it asked the secrets broker for may still be trading in the background, under the
- * broker client's own bounds (a 30 s attempt, `TRADE_ATTEMPT_MS`; a metadata server's 10 s; a
- * pool's 20 s), and a process with a pending request or timer does not exit on its own: with a
- * broker that never answers, the hook ran for 30 s, past the 20 s hooks.json gives it, and Claude
- * Code would have killed it. Exiting cuts that trade, which writes nothing the next process reads,
- * except on the device-login route: there the trade holds the login's lock and may yet save a
- * refresh token the broker rotated, so a hook whose process holds that lock is left to finish as
- * before. The exit waits until stdout and stderr have taken every byte written to them; the lock is
- * read after that, so a trade that takes it while they drain is left to finish too. Nothing the
- * trade runs writes to `process.stderr` (its retry line goes through `console.warn`, which writes to
- * the file descriptor and needs no open stream), so ending the streams first cannot fail it.
- */
-async function endOnceWritten(): Promise<void> {
-  // Ending each stream waits until it has taken every byte: in Bun 1.4.4 an empty write's callback,
-  // `writableLength` and `writableNeedDrain` each let an exit drop the tail of a 300,000-byte write
-  // to a pipe (2 or 3 runs of 5), and `end` lost nothing (5 of 5).
-  for (const stream of [process.stdout, process.stderr]) {
-    const ended = Promise.withResolvers<void>()
-    stream.end(() => ended.resolve())
-    await ended.promise
-  }
-  if (await holdsDeviceLoginLock()) return
-  process.exit(0)
-}
-
 /** Whether this process holds the machine's device-login lock: `<login>.lock`, beside the login at
  *  the path cipher-client keeps it (`deviceLoginFile`: `AGENT_SECRETS_DEVICE_LOGIN_FILE`, else
  *  `$HOME/.config/legion/device-login.json`), whose first word is its holder's pid. cipher-client
- *  reads it (`loginLockHeldBy`): a named pipe or a link there is read as no lock, at once, so it
- *  cannot hold the hook open. */
-async function holdsDeviceLoginLock(): Promise<boolean> {
+ *  reads it, synchronously (`loginLockHeldBy`, as `endOnceWritten` needs): a named pipe or a link
+ *  there is read as no lock, at once, so it cannot hold the hook open. */
+function holdsDeviceLoginLock(): boolean {
   let login: string
   try {
     login = deviceLoginFile(process.env)
@@ -718,5 +692,7 @@ if (mode === "answers") await answers(text)
 const input: unknown = JSON.parse(text)
 if (mode === "open-asks") {
   await openAsks(input)
-  await endOnceWritten()
+  await endOnceWritten([process.stdout, process.stderr], holdsDeviceLoginLock, (code) =>
+    process.exit(code),
+  )
 } else dispatchFirst(input)

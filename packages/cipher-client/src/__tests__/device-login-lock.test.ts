@@ -387,18 +387,18 @@ test("whether a process holds the lock is read as every caller reads it: no lock
   const path = loginPath();
   await writeDeviceLoginFile(path, "http://127.0.0.1:1");
   const lock = `${path}.lock`;
-  expect(await loginLockHeldBy(path, process.pid)).toBe(false);
+  expect(loginLockHeldBy(path, process.pid)).toBe(false);
   await writeFile(lock, `${process.pid} ${crypto.randomUUID()}\n`);
-  expect(await loginLockHeldBy(path, process.pid)).toBe(true);
-  expect(await loginLockHeldBy(path, process.pid + 1)).toBe(false);
+  expect(loginLockHeldBy(path, process.pid)).toBe(true);
+  expect(loginLockHeldBy(path, process.pid + 1)).toBe(false);
   await Bun.file(lock).delete();
   expect(Bun.spawnSync(["mkfifo", lock]).exitCode).toBe(0);
-  expect(await loginLockHeldBy(path, process.pid)).toBe(false);
+  expect(loginLockHeldBy(path, process.pid)).toBe(false);
   await Bun.file(lock).delete();
   const elsewhere = join(dirname(path), "elsewhere.lock");
   await writeFile(elsewhere, `${process.pid} ${crypto.randomUUID()}\n`);
   await fs.symlink(elsewhere, lock);
-  expect(await loginLockHeldBy(path, process.pid)).toBe(false);
+  expect(loginLockHeldBy(path, process.pid)).toBe(false);
 });
 
 test("a take-over that finds the holder back just before it moves the lock puts the lock back", async () => {
