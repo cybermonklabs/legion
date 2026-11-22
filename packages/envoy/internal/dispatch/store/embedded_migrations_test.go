@@ -12,10 +12,10 @@ import (
 
 // The migrations this binary embeds pass every check pgmigrate.Load makes. Migrate reads them with
 // pgmigrate.LoadBuilt, which leaves out Load's parse of each non-transactional migration, so a boot
-// does not compile libpg_query; this test is where the whole check is made of the set Migrate
-// applies, at every change to it. The planted migration proves it can fail: a non-transactional
-// migration that is not one idempotent concurrent index build, which Load refuses and LoadBuilt,
-// by design, does not.
+// on a database that owes none compiles no libpg_query; this test is where the whole check is made
+// of the set Migrate applies, at every change to it. The planted migration proves it can fail: a
+// non-transactional migration that is not one idempotent concurrent index build, which Load refuses
+// and LoadBuilt, by design, does not.
 func TestTheEmbeddedMigrationsPassEveryCheckLoadMakes(t *testing.T) {
 	if _, err := pgmigrate.Load(migrationFiles, "migrations"); err != nil {
 		t.Fatalf("the embedded migrations fail pgmigrate.Load, which Migrate leaves to this test: %v", err)
