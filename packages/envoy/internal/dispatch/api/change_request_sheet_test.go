@@ -178,6 +178,12 @@ func TestTheChangeRequestRestatesEachNodeAndTheDigestTheApprovalPins(t *testing.
 	if pinned := approvalDigest(t, rig, verificationID, ask); read.VerificationDigest != pinned {
 		t.Errorf("the request read the Verification document's digest %s before the approval, and the approval pinned %s", read.VerificationDigest, pinned)
 	}
+	// The digest is of the version read, never of the spec's latest: once a later version is
+	// written, a read of version 1 still restates the digest the approval of version 1 pinned.
+	editSpec(t, rig.handler, issue.Key, []map[string]any{{"op": "replace", "find": "Why billing changes.", "with": "Why billing changes now."}})
+	if again := decodeBody[sheetRead](t, readChangeRequest(t, rig, issue.Key, "version=1")); again.Version != 1 || again.Digest != read.Digest {
+		t.Errorf("version 1 read after version 2 was written reads version %d with the digest %s, want version 1 with %s", again.Version, again.Digest, read.Digest)
+	}
 
 	t.Run("an issue of no spec source", func(t *testing.T) {
 		elsewhere := rig.issue(t, "Elsewhere", "acme/elsewhere", "A page loads.\n", "")
