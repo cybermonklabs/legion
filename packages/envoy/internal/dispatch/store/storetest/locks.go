@@ -182,6 +182,51 @@ func WaitForQueuedBehindBackend[T any](t *testing.T, database *store.Store, hold
 	return got.answer, got.early
 }
 
+// WaitsOnLock reports whether the backend pid is waiting on a lock while running a statement that
+// matches the LIKE pattern like. It names the call under test by its own backend - a connection of
+// its own (OneConnection), or the connection a tracer saw its statement go out on - where the lock
+// is held by other code under test whose backend the test cannot name, so neither QueuedBehind nor
+// QueuedBehindBackend can read the queue. It reads pg_stat_activity through database's pool, one
+// statement in a transaction of its own, so each read takes a fresh snapshot. Prefer
+// QueuedBehindBackend where the holder's backend is known: it also says whose lock the call waits on.
+func WaitsOnLock(ctx context.Context, database *store.Store, pid uint32, like string) (bool, error) {
+	var waiting bool
+	if err := database.Pool.QueryRow(ctx, `
+		select exists (
+			select 1 from pg_stat_activity
+			where pid = $1 and wait_event_type = 'Lock' and query like $2
+		)`, pid, like).Scan(&waiting); err != nil {
+		return false, fmt.Errorf("read whether backend %d waits on a lock: %w", pid, err)
+	}
+	return waiting, nil
+}
+
+// WaitForLockWait waits for the backend pid to wait on a lock while running a statement that
+// matches like (WaitsOnLock). It returns the call's answer and true if the call answers on answered
+// before its backend has waited: such a call never waited on the lock, and the caller fails with
+// what it answered. It runs on the test's goroutine, and its one bound is the test binary's
+// deadline less testwait's margin.
+func WaitForLockWait[T any](t *testing.T, database *store.Store, pid uint32, like string, answered <-chan T) (T, bool) {
+	t.Helper()
+	type seen struct {
+		answer T
+		early  bool
+	}
+	got := testwait.UntilPolling(t, 2*time.Millisecond, fmt.Sprintf("backend %d to wait on a lock running %q, or its call to answer", pid, like), func() (seen, bool) {
+		select {
+		case answer := <-answered:
+			return seen{answer: answer, early: true}, true
+		default:
+		}
+		waiting, err := WaitsOnLock(context.Background(), database, pid, like)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return seen{}, waiting
+	})
+	return got.answer, got.early
+}
+
 // LockWaitersFrom counts the backends queued behind a lock holder's transaction owns, as
 // LockWaiters counts them, whose application_name is one of applications: the backends of pools a
 // test opened for the calls under test (PlannedApplication names those Planned opens). A backend
