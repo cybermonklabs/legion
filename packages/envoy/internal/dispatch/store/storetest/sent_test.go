@@ -521,23 +521,51 @@ func TestSentStatementsIgnoreTheSyncsCopyInIgnores(t *testing.T) {
 
 // A refusal ends a copy, and the recorder forgets it: pgx's own CopyFrom into a table that does not
 // exist, whose data pgx sends before it reads the refusal and whose CopyDone it sends before or
-// after, as its reads fall (TestSentStatementsLeaveNoCopyEndAfterTheRefusal), and an extended COPY
-// FROM whose data the server refuses before the client's CopyDone. In each the copy is recorded as
-// refused, and the select after it on the same connection as run, with nothing the recorder could
-// not read.
+// after, as its reads fall (TestSentStatementsLeaveNoCopyEndAfterTheRefusal), an extended COPY
+// FROM whose data the server refuses before the client's CopyDone, and one sent in one write with
+// its data, CopyDone and a second Sync. In each the copy is recorded as refused, and the select
+// after it on the same connection as run, with nothing the recorder could not read. A refusal
+// forgets no more than that: a refused simple COPY, a Sync the server refuses (an insert's deferred
+// unique constraint at its implicit commit) and a function call it refuses, each followed in the
+// same write by a one-write COPY the server runs, leave that COPY its end.
 func TestSentStatementsForgetACopyTheServerRefuses(t *testing.T) {
 	ctx := context.Background()
 	database := Open(t)
 	const after = "select 1"
+	// thenACopyRuns sends first and, in the same write, an extended COPY into a table of its own
+	// with its data, CopyDone and a second Sync, which the server runs; first must be refused.
+	thenACopyRuns := func(t *testing.T, conn *pgx.Conn, first ...pgproto3.FrontendMessage) {
+		t.Helper()
+		if _, err := conn.Exec(ctx, "create temporary table copy_target (n int)"); err != nil {
+			t.Fatalf("create the table: %v", err)
+		}
+		frontend := conn.PgConn().Frontend()
+		for _, message := range append(first, &pgproto3.Parse{Query: "copy copy_target from stdin"}, &pgproto3.Bind{}, &pgproto3.Execute{}, &pgproto3.Sync{},
+			&pgproto3.CopyData{Data: []byte("1\n")}, &pgproto3.CopyDone{}, &pgproto3.Sync{}) {
+			frontend.Send(message)
+		}
+		if err := frontend.Flush(); err != nil {
+			t.Fatalf("send: %v", err)
+		}
+		if !drain(t, frontend, true) {
+			t.Fatal("control: the server refused nothing before the copy")
+		}
+		drain(t, frontend, false)
+		var copied int
+		if err := conn.QueryRow(ctx, "select count(*) from copy_target").Scan(&copied); err != nil || copied != 1 {
+			t.Fatalf("control: the copy wrote %d rows (%v), want 1", copied, err)
+		}
+	}
 	for _, scenario := range []struct {
-		name string
-		copy func(t *testing.T, conn *pgx.Conn)
+		name    string
+		copy    func(t *testing.T, conn *pgx.Conn)
+		refused int
 	}{
 		{name: "pgx's CopyFrom into a missing table", copy: func(t *testing.T, conn *pgx.Conn) {
 			if _, err := conn.PgConn().CopyFrom(ctx, strings.NewReader("1\n"), "copy no_such_table from stdin"); err == nil {
 				t.Fatal("control: the server took a copy into a table that does not exist")
 			}
-		}},
+		}, refused: 1},
 		{name: "an extended copy whose data is refused before its CopyDone", copy: func(t *testing.T, conn *pgx.Conn) {
 			if _, err := conn.Exec(ctx, "create temporary table copy_refused (n int)"); err != nil {
 				t.Fatalf("create the table: %v", err)
@@ -579,7 +607,7 @@ func TestSentStatementsForgetACopyTheServerRefuses(t *testing.T) {
 				_, ready := message.(*pgproto3.ReadyForQuery)
 				return ready
 			})
-		}},
+		}, refused: 1},
 		{name: "an extended copy into a missing table, sent in one write with its data, CopyDone and a second Sync", copy: func(t *testing.T, conn *pgx.Conn) {
 			frontend := conn.PgConn().Frontend()
 			for _, message := range []pgproto3.FrontendMessage{&pgproto3.Parse{Query: "copy no_such_table from stdin"}, &pgproto3.Bind{}, &pgproto3.Execute{},
@@ -593,29 +621,19 @@ func TestSentStatementsForgetACopyTheServerRefuses(t *testing.T) {
 				t.Fatal("control: the server took a copy into a table that does not exist")
 			}
 			drain(t, frontend, false)
-		}},
+		}, refused: 1},
 		{name: "a simple copy into a missing table, then in the same write a one-write extended copy the server runs", copy: func(t *testing.T, conn *pgx.Conn) {
-			if _, err := conn.Exec(ctx, "create temporary table copy_target (n int)"); err != nil {
+			thenACopyRuns(t, conn, &pgproto3.Query{String: "copy no_such_table from stdin"})
+		}, refused: 1},
+		{name: "an insert whose Sync the server refuses, then in the same write a one-write extended copy the server runs", copy: func(t *testing.T, conn *pgx.Conn) {
+			if _, err := conn.Exec(ctx, "create temporary table deferred_unique (n int unique deferrable initially deferred)"); err != nil {
 				t.Fatalf("create the table: %v", err)
 			}
-			frontend := conn.PgConn().Frontend()
-			for _, message := range []pgproto3.FrontendMessage{&pgproto3.Query{String: "copy no_such_table from stdin"},
-				&pgproto3.Parse{Query: "copy copy_target from stdin"}, &pgproto3.Bind{}, &pgproto3.Execute{}, &pgproto3.Sync{},
-				&pgproto3.CopyData{Data: []byte("1\n")}, &pgproto3.CopyDone{}, &pgproto3.Sync{}} {
-				frontend.Send(message)
-			}
-			if err := frontend.Flush(); err != nil {
-				t.Fatalf("send: %v", err)
-			}
-			if !drain(t, frontend, true) {
-				t.Fatal("control: the server took a copy into a table that does not exist")
-			}
-			drain(t, frontend, false)
-			var copied int
-			if err := conn.QueryRow(ctx, "select count(*) from copy_target").Scan(&copied); err != nil || copied != 1 {
-				t.Fatalf("control: the second copy wrote %d rows (%v), want 1", copied, err)
-			}
+			thenACopyRuns(t, conn, &pgproto3.Parse{Query: "insert into deferred_unique values (1), (1)"}, &pgproto3.Bind{}, &pgproto3.Execute{}, &pgproto3.Sync{})
 		}},
+		{name: "a function call the server refuses, then in the same write a one-write extended copy the server runs", copy: func(t *testing.T, conn *pgx.Conn) {
+			thenACopyRuns(t, conn, &pgproto3.FunctionCall{Function: 1, ArgFormatCodes: []uint16{}, Arguments: [][]byte{}})
+		}, refused: 1},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			sent := &SentStatements{}
@@ -631,9 +649,9 @@ func TestSentStatementsForgetACopyTheServerRefuses(t *testing.T) {
 				t.Fatalf("the select after the copy: %v", err)
 			}
 			ran, refused := counted(sent, before, after)
-			if ran != 1 || refused != 1 || len(sent.Blind()) != 0 {
-				t.Fatalf("recorded the select after the copy %d run and %d statements refused, blind %v; want 1, 1 (the copy) and nothing it could not read",
-					ran, refused, sent.Blind())
+			if ran != 1 || refused != scenario.refused || len(sent.Blind()) != 0 {
+				t.Fatalf("recorded the select after the copy %d run and %d statements refused, blind %v; want 1, %d and nothing it could not read",
+					ran, refused, sent.Blind(), scenario.refused)
 			}
 		})
 	}
