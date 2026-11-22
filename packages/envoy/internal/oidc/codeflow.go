@@ -68,7 +68,12 @@ type CodeFlow struct {
 	// hostedDomain is the Google Workspace domain a domain-mode flow signs people in for; empty in
 	// group mode, a Cognito sign-in pool's.
 	hostedDomain string
-	http         *http.Client
+	// http is the client of every call to the issuer's token and revocation endpoints, bounded by
+	// its Timeout, TokenTimeout (tokenClient). Only a test replaces that bound, with the bound end
+	// of TokenTimeout (issuer_bounds_test.go's armBoundEnds, testwait.BoundEndAt): TokenTimeout is
+	// for an issuer that accepts a call and never answers, and on a loaded machine the time a
+	// test's call to its own issuer takes is the machine's.
+	http *http.Client
 }
 
 // codeFlowIssuer is what a code flow reads from its issuer's discovery document: the verifier of

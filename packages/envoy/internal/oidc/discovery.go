@@ -48,6 +48,12 @@ type discovery[T any] struct {
 	// now is the clock the spacing between failed attempts and the log's rate are measured by.
 	now    func() time.Time
 	flight singleflight.Group
+	// armAttempt, when set, arms the bound of one read of the discovery document (attemptContext)
+	// in place of discoveryAttemptTimeout. Only a test sets it, to the bound end of
+	// discoveryAttemptTimeout (issuer_bounds_test.go's armBoundEnds, testwait.BoundEndAt): the
+	// product's bound is for an issuer that accepts a read and never answers, and on a loaded
+	// machine the time a test's read of its own issuer takes is the machine's.
+	armAttempt func(context.Context) (context.Context, context.CancelFunc)
 
 	mu         sync.Mutex
 	value      T
@@ -68,6 +74,15 @@ func (d *discovery[T]) done() bool {
 	return d.discovered
 }
 
+// attemptContext is ctx bounded for one read of the discovery document: discoveryAttemptTimeout
+// from now, or the bound a test armed in its place (armAttempt).
+func (d *discovery[T]) attemptContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if d.armAttempt != nil {
+		return d.armAttempt(ctx)
+	}
+	return context.WithTimeout(ctx, discoveryAttemptTimeout)
+}
+
 // discover reads the discovery document unless it has been read, joining an attempt already in
 // flight, or fails at once with the last attempt's error when that attempt failed less than
 // discoveryRetrySpacing ago. The attempt runs on a context of its own, detached from ctx's
@@ -83,7 +98,7 @@ func (d *discovery[T]) discover(ctx context.Context) (T, error) {
 		if value, err, settled := d.settled(); settled {
 			return value, err
 		}
-		attemptCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discoveryAttemptTimeout)
+		attemptCtx, cancel := d.attemptContext(context.WithoutCancel(ctx))
 		defer cancel()
 		value, err := d.read(attemptCtx)
 		d.mu.Lock()

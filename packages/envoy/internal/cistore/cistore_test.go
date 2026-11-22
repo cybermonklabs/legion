@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -19,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // connectNATS connects to the package's shared NATS server, in the JetStream account
@@ -29,14 +29,27 @@ func connectNATS(t testing.TB) (*natsgo.Conn, func()) {
 	return conn, conn.Close
 }
 
+// openStore opens the store for a test and waits for its cache to be ready (by the bound end of
+// the 10 s it waited before, testwait.WithBoundEnd). A test's store gives up each Record and
+// RecordSuite at the bound end of recordWait rather than at recordWait itself: recordWait bounds
+// each record a webhook delivery makes in production, for a bus that never answers, and a test
+// that records to set up what it tests does not measure it, while under load a KV call takes the
+// machine's time. A record that a broken hand-over leaves waiting on its record's writer still
+// fails its test then, since a queued caller waits only while its context lasts (update). A
+// benchmark keeps recordWait: it measures the store under the product's own bound.
 func openStore(t testing.TB, conn *natsgo.Conn) *Store {
 	t.Helper()
 	st, err := Open(t.Context(), conn, logging.New("test"), WithReplicas(1), WithTTL(time.Hour))
 	if err != nil {
 		t.Fatalf("open cistore: %v", err)
 	}
+	if _, isTest := t.(*testing.T); isTest {
+		st.armRecordWait = func(ctx context.Context) (context.Context, context.CancelFunc) {
+			return testwait.WithBoundEnd(ctx, t, recordWait)
+		}
+	}
 	t.Cleanup(func() { forgetTestSummarizer(st) })
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := testwait.WithBoundEnd(context.Background(), t, 10*time.Second)
 	defer cancel()
 	if err := st.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("cache not ready: %v", err)
@@ -44,38 +57,22 @@ func openStore(t testing.TB, conn *natsgo.Conn) *Store {
 	return st
 }
 
-// within returns f's error, or an error when f has not returned within 10 s: a record that a
-// broken hand-over leaves waiting on its record's writer fails its test instead of hanging the
-// package until go test's timeout.
-func within(f func() error) error {
-	done := make(chan error, 1)
-	go func() { done <- f() }()
-	select {
-	case err := <-done:
-		return err
-	case <-time.After(10 * time.Second):
-		return errors.New("did not return within 10 s")
-	}
-}
-
 func recordCheck(s *Store, owner, repo, number, sha, checkName, checkRunID, url, status, conclusion, observedAt string) error {
 	id, err := strconv.ParseUint(checkRunID, 10, 64)
 	if err != nil {
 		return err
 	}
-	return within(func() error {
-		return s.Record(context.Background(), contracts.CIObservation{
-			Owner:      owner,
-			Repo:       repo,
-			Number:     number,
-			SHA:        sha,
-			CheckName:  checkName,
-			CheckRunID: id,
-			URL:        url,
-			Status:     status,
-			Conclusion: conclusion,
-			ObservedAt: observedAt,
-		})
+	return s.Record(context.Background(), contracts.CIObservation{
+		Owner:      owner,
+		Repo:       repo,
+		Number:     number,
+		SHA:        sha,
+		CheckName:  checkName,
+		CheckRunID: id,
+		URL:        url,
+		Status:     status,
+		Conclusion: conclusion,
+		ObservedAt: observedAt,
 	})
 }
 
@@ -112,18 +109,16 @@ func maxCheckRunID(runs []CheckRunRef) uint64 {
 }
 
 func recordSuite(s *Store, owner, repo, number, sha, suiteID, status, conclusion, appID, observedAt string) error {
-	return within(func() error {
-		return s.RecordSuite(context.Background(), contracts.CIObservation{
-			Owner:      owner,
-			Repo:       repo,
-			Number:     number,
-			SHA:        sha,
-			SuiteID:    suiteID,
-			AppID:      appID,
-			Status:     status,
-			Conclusion: conclusion,
-			ObservedAt: observedAt,
-		})
+	return s.RecordSuite(context.Background(), contracts.CIObservation{
+		Owner:      owner,
+		Repo:       repo,
+		Number:     number,
+		SHA:        sha,
+		SuiteID:    suiteID,
+		AppID:      appID,
+		Status:     status,
+		Conclusion: conclusion,
+		ObservedAt: observedAt,
 	})
 }
 
@@ -151,7 +146,7 @@ func useKV(t testing.TB, s *Store, kv natsgo.KeyValue) {
 	s.watcher.Stop()
 	s.watcher = kvwatch.New("cistore", bus.NewKeyValue(kv, base.WatchHandle(), base.Streams()), ciCache{s})
 	s.watcher.Start()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := testwait.WithBoundEnd(context.Background(), t, 5*time.Second)
 	defer cancel()
 	if err := s.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("wait for the rebuilt watcher: %v", err)

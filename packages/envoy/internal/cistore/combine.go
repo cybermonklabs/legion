@@ -59,7 +59,7 @@ type combineOutcome struct {
 // status is the context of the commit status mutate records, and empty for a check run or a check
 // suite (pendingMutation).
 func (s *Store) update(ctx context.Context, owner, repo, number, sha, status string, mutate func(*State) bool) (changed bool, err error) {
-	ctx, cancel := context.WithTimeout(ctx, recordWait)
+	ctx, cancel := s.recordWaitContext(ctx)
 	defer cancel()
 	key := Key(owner, repo, number, sha)
 	own := &pendingMutation{mutate: mutate, status: status, done: make(chan combineOutcome, 1)}
@@ -91,6 +91,15 @@ func (s *Store) update(ctx context.Context, owner, repo, number, sha, status str
 		}
 	}
 	return s.writeBatch(ctx, key, c, own, State{Owner: owner, Repo: repo, Number: number, SHA: sha})
+}
+
+// recordWaitContext is ctx bounded by the wait of one Record or RecordSuite: recordWait from now,
+// or the bound a test armed in its place (Store.armRecordWait).
+func (s *Store) recordWaitContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if s.armRecordWait != nil {
+		return s.armRecordWait(ctx)
+	}
+	return context.WithTimeout(ctx, recordWait)
 }
 
 // leave ends the wait of a queued caller whose ctx ended, returning cause unless the write that

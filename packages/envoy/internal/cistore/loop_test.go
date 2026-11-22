@@ -3,6 +3,7 @@ package cistore
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 type recPub struct {
@@ -66,64 +68,51 @@ func (p *recPub) setErr(err error) {
 	p.err = err
 }
 
-// waitCacheChecks polls the WatchAll cache until the commit shows n checks.
+// cachedState is the WatchAll cache's record of key, and false when the cache holds none.
+func cachedState(s *Store, key string) (State, bool) {
+	for _, st := range s.List() {
+		if Key(st.Owner, st.Repo, st.Number, st.SHA) == key {
+			return st, true
+		}
+	}
+	return State{}, false
+}
+
+// awaitCache waits until read holds, giving up at the bound end of the 5 s these cache waits had
+// (testwait.UntilBoundEnd): the cache's watch delivers a write in the machine's time.
+func awaitCache[T any](t *testing.T, what string, read func() (T, bool)) {
+	t.Helper()
+	testwait.UntilBoundEnd(t, 5*time.Second, what, read)
+}
+
+// waitCacheChecks waits until the WatchAll cache shows n checks for the commit.
 func waitCacheChecks(t *testing.T, s *Store, owner, repo, number, sha string, n int) {
 	t.Helper()
 	key := Key(owner, repo, number, sha)
-	deadline := time.After(5 * time.Second)
-	for {
-		for _, st := range s.List() {
-			if Key(st.Owner, st.Repo, st.Number, st.SHA) == key && len(st.Checks) == n {
-				return
-			}
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("cache never reached %d checks for %s", n, key)
-		case <-time.After(15 * time.Millisecond):
-		}
-	}
+	awaitCache(t, fmt.Sprintf("the cache to reach %d checks for %s", n, key), func() (map[string]Check, bool) {
+		st, found := cachedState(s, key)
+		return st.Checks, found && len(st.Checks) == n
+	})
 }
 
+// waitCacheSuites waits until the WatchAll cache shows n suites for the commit.
 func waitCacheSuites(t *testing.T, s *Store, owner, repo, number, sha string, n int) {
 	t.Helper()
 	key := Key(owner, repo, number, sha)
-	deadline := time.After(5 * time.Second)
-	for {
-		for _, st := range s.List() {
-			if Key(st.Owner, st.Repo, st.Number, st.SHA) == key && len(st.Suites) == n {
-				return
-			}
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("cache never reached %d suites for %s", n, key)
-		case <-time.After(15 * time.Millisecond):
-		}
-	}
+	awaitCache(t, fmt.Sprintf("the cache to reach %d suites for %s", n, key), func() (map[string]Suite, bool) {
+		st, found := cachedState(s, key)
+		return st.Suites, found && len(st.Suites) == n
+	})
 }
 
+// waitCacheStateMissing waits until the WatchAll cache holds no record of the commit.
 func waitCacheStateMissing(t *testing.T, s *Store, owner, repo, number, sha string) {
 	t.Helper()
 	key := Key(owner, repo, number, sha)
-	deadline := time.After(5 * time.Second)
-	for {
-		found := false
-		for _, st := range s.List() {
-			if Key(st.Owner, st.Repo, st.Number, st.SHA) == key {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("cache never evicted %s", key)
-		case <-time.After(15 * time.Millisecond):
-		}
-	}
+	awaitCache(t, "the cache to evict "+key, func() (State, bool) {
+		st, found := cachedState(s, key)
+		return st, !found
+	})
 }
 
 func setLastEventAt(t *testing.T, store *Store, owner, repo, number, sha string, at int64) {
@@ -145,22 +134,12 @@ func setLastEventAt(t *testing.T, store *Store, owner, repo, number, sha string,
 	if _, err := store.watcher.KV().Update(key, raw, entry.Revision()); err != nil {
 		t.Fatalf("set last event at: %v", err)
 	}
-	deadline := time.After(5 * time.Second)
-	for {
-		for _, cached := range store.List() {
-			if Key(cached.Owner, cached.Repo, cached.Number, cached.SHA) == key &&
-				cached.LastEventAt == at &&
-				cached.Generation == state.Generation &&
-				cached.SettledEmitted == state.SettledEmitted {
-				return
-			}
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("cache never applied last_event_at %d for %s", at, key)
-		case <-time.After(15 * time.Millisecond):
-		}
-	}
+	awaitCache(t, fmt.Sprintf("the cache to apply last_event_at %d for %s", at, key), func() (State, bool) {
+		cached, found := cachedState(store, key)
+		return cached, found && cached.LastEventAt == at &&
+			cached.Generation == state.Generation &&
+			cached.SettledEmitted == state.SettledEmitted
+	})
 }
 
 func setClaim(t *testing.T, store *Store, owner, repo, number, sha string, claim *SettlementClaim) {
@@ -182,22 +161,10 @@ func setClaim(t *testing.T, store *Store, owner, repo, number, sha string, claim
 	if _, err := store.watcher.KV().Update(key, raw, entry.Revision()); err != nil {
 		t.Fatalf("set claim: %v", err)
 	}
-	deadline := time.After(5 * time.Second)
-	for {
-		for _, cached := range store.List() {
-			if Key(cached.Owner, cached.Repo, cached.Number, cached.SHA) != key {
-				continue
-			}
-			if (cached.Claim == nil) == (claim == nil) {
-				return
-			}
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("cache never applied claim for %s", key)
-		case <-time.After(15 * time.Millisecond):
-		}
-	}
+	awaitCache(t, "the cache to apply the claim for "+key, func() (State, bool) {
+		cached, found := cachedState(store, key)
+		return cached, found && (cached.Claim == nil) == (claim == nil)
+	})
 }
 
 func TestSummaryTickPublishesOneChecksEnvelopeWithoutSuites(t *testing.T) {

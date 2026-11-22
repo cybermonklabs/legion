@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // writtenState is one state the store wrote to a record, at the revision the write created.
@@ -145,15 +146,18 @@ func (k *writeKV) holdNextWrite() (entered <-chan struct{}, release func()) {
 	return reached, func() { close(gate) }
 }
 
-// recv waits up to 10 s for ch, failing the test when it never comes, so a regression in the
-// hand-over fails the test instead of hanging it.
+// recv waits for ch, failing the test at the bound end of the 10 s it waited before
+// (testwait.UntilBoundEnd), so a regression in the hand-over fails the test instead of hanging it.
 func recv(t *testing.T, ch <-chan struct{}, what string) {
 	t.Helper()
-	select {
-	case <-ch:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("%s never happened", what)
-	}
+	testwait.UntilBoundEnd(t, 10*time.Second, what, func() (string, bool) {
+		select {
+		case <-ch:
+			return "it happened", true
+		default:
+			return "it has not happened", false
+		}
+	})
 }
 
 // storedRecord is a record as the bucket holds it.
@@ -199,14 +203,13 @@ func wrapStore(t testing.TB, conn *natsgo.Conn, delay time.Duration) (*Store, *w
 }
 
 // record records one observation of a head as the webhook handler does, a check when CheckName is
-// set and a suite otherwise, failing after 10 s rather than hanging (within).
+// set and a suite otherwise. A record that never answers fails by the test's deadline, which
+// openStore gives the store's record wait.
 func record(s *Store, observation contracts.CIObservation) error {
-	return within(func() error {
-		if observation.CheckName == "" {
-			return s.RecordSuite(context.Background(), observation)
-		}
-		return s.Record(context.Background(), observation)
-	})
+	if observation.CheckName == "" {
+		return s.RecordSuite(context.Background(), observation)
+	}
+	return s.Record(context.Background(), observation)
 }
 
 type head struct{ owner, repo, number, sha string }
@@ -240,16 +243,14 @@ func queued(s *Store, key string) int {
 
 func waitQueued(t *testing.T, s *Store, key string, n int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for queued(s, key) != n {
-		if time.Now().After(deadline) {
-			t.Fatalf("%d callers queued for %s, want %d", queued(s, key), key, n)
-		}
-		time.Sleep(time.Millisecond)
-	}
+	testwait.UntilBoundEnd(t, 5*time.Second, fmt.Sprintf("%d callers queued for %s", n, key), func() (int, bool) {
+		got := queued(s, key)
+		return got, got == n
+	})
 }
 
-// waitAll waits up to 10 s for every call started on wg, failing the test if one hangs.
+// waitAll waits for every call started on wg, failing the test at the bound end of the 10 s it
+// waited before (testwait.UntilBoundEnd) if one hangs.
 func waitAll(t testing.TB, wg *sync.WaitGroup, what string) {
 	t.Helper()
 	done := make(chan struct{})
@@ -257,11 +258,14 @@ func waitAll(t testing.TB, wg *sync.WaitGroup, what string) {
 		wg.Wait()
 		close(done)
 	}()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("%s: a caller never returned", what)
-	}
+	testwait.UntilBoundEnd(t, 10*time.Second, what+": every caller to return", func() (string, bool) {
+		select {
+		case <-done:
+			return "every caller returned", true
+		default:
+			return "a caller has not returned", false
+		}
+	})
 }
 
 // calls runs numbered calls against one record, each in its own goroutine, and keeps each one's
@@ -306,7 +310,7 @@ func (c *calls) behind(entered <-chan struct{}, to int) {
 	c.queue(1, to)
 }
 
-// wait waits up to 10 s for every call started and returns their errors.
+// wait waits for every call started (waitAll) and returns their errors.
 func (c *calls) wait(what string) []error {
 	c.t.Helper()
 	waitAll(c.t, &c.wg, what)
@@ -513,8 +517,8 @@ func TestBatchedObservationsSettleAsSerialWritesInArrivalOrder(t *testing.T) {
 }
 
 // recordBurst records n distinct completed checks of h concurrently, released together, as a
-// check_run burst delivers them, and returns each call's error; a call still waiting after 10 s
-// fails the test.
+// check_run burst delivers them, and returns each call's error; a call that never returns fails
+// the test (waitAll).
 func recordBurst(t testing.TB, s *Store, h head, n int) []error {
 	t.Helper()
 	errs := make([]error, n)
@@ -536,11 +540,15 @@ func recordBurst(t testing.TB, s *Store, h head, n int) []error {
 // A check_run burst on one head is many concurrent webhooks writing one record. Each write to it
 // takes 25 ms here, so writes that each carry one observation succeed at most one per 25 ms and
 // no more than 80 of them fit the record's 2 s budget: every observation past those would be
-// refused, and GitHub does not redeliver it. Folding the burst into few writes records all 200.
+// refused, and GitHub does not redeliver it. Folding the burst into few writes records all 200,
+// in fewer writes than those 80. The row counts the writes rather than waiting for the store's
+// record wait to refuse the rest: a test's store waits for its records until the test's end
+// (openStore), so a store that did not fold would record all 200 here, one write each.
 func TestABurstOfObservationsOnOneHeadIsRecordedUnderSlowWrites(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	s, kv := wrapStore(t, conn, 25*time.Millisecond)
+	const slowWrite = 25 * time.Millisecond
+	s, kv := wrapStore(t, conn, slowWrite)
 	const n = 200
 	h := head{"example-org", "example-repo", "42", "0123456789abcdef0123456789abcdef01234567"}
 
@@ -550,6 +558,9 @@ func TestABurstOfObservationsOnOneHeadIsRecordedUnderSlowWrites(t *testing.T) {
 	requireNoErrors(t, fmt.Sprintf("a burst of %d observations in %d writes", n, writes), errs)
 	if checks := len(getState(t, s, h.owner, h.repo, h.number, h.sha).Checks); checks != n {
 		t.Fatalf("record holds %d checks after %d writes, want all %d", checks, writes, n)
+	}
+	if singles := int(recordBudget / slowWrite); writes >= singles {
+		t.Fatalf("a burst of %d observations took %d writes, want fewer than the %d single-observation writes that fit one %s budget: the burst was not folded", n, writes, singles, recordBudget)
 	}
 	t.Logf("%d observations recorded in %d writes", n, writes)
 }

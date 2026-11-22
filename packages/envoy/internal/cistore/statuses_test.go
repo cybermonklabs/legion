@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -29,24 +28,10 @@ func (h head) status(name, state, createdAt string) contracts.StatusObservation 
 	}
 }
 
-// recordStatus records one status as the reconcile's writer does (Writer.RecordStatus), failing
-// after 10 s rather than hanging.
+// recordStatus records one status as the reconcile's writer does (Writer.RecordStatus). A record
+// that never answers fails by the test's end, which openStore gives the store's record wait.
 func recordStatus(s *Store, observation contracts.StatusObservation) (bool, error) {
-	type result struct {
-		changed bool
-		err     error
-	}
-	done := make(chan result, 1)
-	go func() {
-		changed, err := s.recordStatus(context.Background(), observation)
-		done <- result{changed, err}
-	}()
-	select {
-	case r := <-done:
-		return r.changed, r.err
-	case <-time.After(10 * time.Second):
-		return false, errors.New("did not return within 10 s")
-	}
+	return s.recordStatus(context.Background(), observation)
 }
 
 // lastSettlement decodes the payload of pub's last settlement, and returns it with its one line.
