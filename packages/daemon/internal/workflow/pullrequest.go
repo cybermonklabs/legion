@@ -135,7 +135,8 @@ func pullRequestNews(before, after record.PullRequest) bool {
 // head run, which are facts about commits. A reopen at
 // another head than the recorded one - commits pushed while the pull request was closed, which no
 // synchronize reports - is judged as a synchronize to that head would be
-// (classify.AdvancePullRequestHead). A new generation
+// (classify.AdvancePullRequestHead), and in merging it queues the read of the ending condition at
+// that head as a synchronize does (headMovedInMerging). A new generation
 // deletes a pull request that is not open, and all of them with it. An issue that waits to close on
 // its recorded merge (awaitsMerge) keeps that merge: GitHub never sends the merge again, so a pull
 // request opened from its branch is not recorded, while an issue set back to todo reruns and its
@@ -165,6 +166,9 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 			"issue", issue.Key, "merged", recorded.Number, "opened", fact.Number)
 		return intake.Result{}, nil
 	}
+	// movedHead is a reopen at another head than the recorded one, which moves the head as a
+	// synchronize would.
+	movedHead := false
 	if recorded != nil && e.sameRepository(recorded.Repo, fact.Repo) && recorded.Number == fact.Number {
 		// GitHub sends opened once per pull request, so an opened for one already recorded is a
 		// redelivery whatever its clock; a reopen's clock is left to the fence above. GitHub never
@@ -193,9 +197,18 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 			pr.Base = recorded.Base
 		}
 		pr.HeadUpdatedAt = classify.LatestClock(recorded.HeadUpdatedAt, fact.UpdatedAt)
+		movedHead = recorded.HeadSHA != pr.HeadSHA
 	}
 	if err := e.putPullRequest(ctx, tx, pr); err != nil {
 		return intake.Result{}, err
+	}
+	// A merging member of a tree whose spec gate opened with no person lands nothing until the
+	// ending condition holds at its head, so a reopen that moved the head reads it there, as a
+	// synchronize does (D10).
+	if movedHead {
+		if err := e.headMovedInMerging(ctx, tx, *issue, pr.HeadSHA); err != nil {
+			return intake.Result{}, err
+		}
 	}
 	if issue.Phase != phase.Implementing {
 		// A reopen lands under whatever phase the issue stands in, a reviewing round with an
