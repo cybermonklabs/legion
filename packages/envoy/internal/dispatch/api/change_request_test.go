@@ -673,8 +673,9 @@ func twoSentenceCheck(base string) string {
 
 // TestAProblemOfFormAloneProposesNothing: a problem that keeps each node (a claim of two sentences)
 // is the form's, as the approval write reads it (specstore's nodeLosses), so it neither proposes
-// nor changes a check. An issue whose Verification document holds such an approved check as
-// context reads proposes and changes_checks false, and still lists the problem.
+// nor changes a check, and an approved version that holds one is still read as its node. An issue
+// whose Verification document holds such an approved check as context reads proposes and
+// changes_checks false and still lists the problem, and its approval writes no new version.
 func TestAProblemOfFormAloneProposesNothing(t *testing.T) {
 	rig := newSpecRig(t)
 	rig.seed(t)
@@ -690,4 +691,6 @@ func TestAProblemOfFormAloneProposesNothing(t *testing.T) {
 	if len(read.Problems) != 1 || read.Problems[0].Rule != "bad-field" {
 		t.Errorf("the change request lists the problems %+v, want the one bad-field problem of the two-sentence claim", read.Problems)
 	}
+	rig.approve(t, rig.request(t, quiet, true))
+	rig.requireVersions(t, specRepo, "a-bill-shows-its-number", "A bill names its order. It shows the order's number.")
 }
