@@ -192,10 +192,9 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 }
 
 // In merging the merge forward is the merger's (dispatch://INFRA-5218 R1): its ask is published
-// on the merger's own topic under the row's key. Once the record's ask names the merger, an ask
-// to the implementer that a daemon before that change queued for the same head, and the hold it
-// sent the merger with it, end with nothing published, so two roles are not sent to merge one
-// base forward and the merger is not told to wait for a merge it is asked to make.
+// on the merger's own topic under the row's key. Once the issue has moved back out of merging, a
+// message to the merger still queued ends with nothing published: the phase the issue moved to
+// works the workspace now.
 func TestAMergeForwardAskInMergingGoesToTheMerger(t *testing.T) {
 	asked := &record.MergeForward{Head: "sha-1", Base: "main", Role: claim.RoleMerger, Phase: phase.Merging,
 		Why: record.ConflictMergeNext, AskedAt: time.Now()}
@@ -221,31 +220,16 @@ func TestAMergeForwardAskInMergingGoesToTheMerger(t *testing.T) {
 		}
 	})
 
-	for _, tc := range []struct {
-		name    string
-		message record.MergeForwardMessage
-		why     string
-	}{
-		{name: "an ask to the implementer queued before the merger was asked ends undelivered",
-			message: record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: "sha-1", Base: "main",
-				Phase: phase.Merging, PullRequest: 86, Why: record.ConflictMergeNext},
-			why: "asked of the merger"},
-		{name: "a hold to the merger queued before it was asked ends undelivered",
-			message: record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardHold, Head: "sha-1", Base: "main",
-				Phase: phase.Merging, PullRequest: 86, Why: record.ConflictMergeNext},
-			why: "asked of the merger itself"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			publisher := &holderPublisher{}
-			runner, _, pool, logs := mergeForwardRunnerAt(t, publisher, phase.Merging, "retro", record.PullRequestOpen, asked)
-			enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", tc.message, time.Now().Add(-time.Minute)))
-			drainAt(t, runner, 0, "the row's attempt")
-			if attempts, _ := publisher.snapshot(); attempts != 0 || outboxRows(t, pool) != 0 {
-				t.Fatalf("the row made %d publishes and %d rows are left, want the row finished with nothing published", attempts, outboxRows(t, pool))
-			}
-			if lines := loggedLines(t, logs.String(), mergeForwardLeftLine); len(lines) != 1 || !strings.Contains(fmt.Sprint(lines[0]["why"]), tc.why) {
-				t.Fatalf("the row logged %v, want one line naming %q", lines, tc.why)
-			}
-		})
-	}
+	t.Run("the merger's ask once the issue moved back to retro ends undelivered", func(t *testing.T) {
+		publisher := &holderPublisher{}
+		runner, _, pool, logs := mergeForwardRunnerAt(t, publisher, phase.Retro, "retro", record.PullRequestOpen, asked)
+		enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", toMerger, time.Now().Add(-time.Minute)))
+		drainAt(t, runner, 0, "the row's attempt")
+		if attempts, _ := publisher.snapshot(); attempts != 0 || outboxRows(t, pool) != 0 {
+			t.Fatalf("the row made %d publishes and %d rows are left, want the row finished with nothing published", attempts, outboxRows(t, pool))
+		}
+		if lines := loggedLines(t, logs.String(), mergeForwardLeftLine); len(lines) != 1 || !strings.Contains(fmt.Sprint(lines[0]["why"]), "no longer stands in merging") {
+			t.Fatalf("the row logged %v, want one line naming the issue's move out of merging", lines)
+		}
+	})
 }

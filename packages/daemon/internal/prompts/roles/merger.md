@@ -79,7 +79,7 @@ You resolve no review thread: the reviewer's approval already judged them, and t
 
 ## A head that conflicts with its base
 
-A conflict with the base, and a check the base's newer code breaks, are yours: the change was reviewed and accepted, and what is left is its merge. `gh pr view` reads `mergeStateStatus` `DIRTY`, or the daemon's merge-forward message on your role topic says that two reads found the head conflicting.
+A conflict with the base, and a check the base's newer code breaks, are yours: the change was reviewed and accepted, and what is left is its merge. `gh pr view` reads `mergeStateStatus` `DIRTY`, or the daemon's merge-forward message on your role topic says that two reads found the head conflicting. When a merge-forward message says instead that the implementer is asked to merge the base forward, that merge was asked before the review and is still the implementer's: merge nothing, and wait for the message that names the new head.
 
 1. Merge the base forward in the issue workspace as `skill://legion-worker/references/conflicts-and-rewrites.md` says (*Reintegrating the base*), after the working-copy check of `skill://legion-worker/references/foreign-path.md`. Merge; do not rebase. The reviewer reads the merge's resolution with `git show --remerge-diff <merge>`, which a rebase leaves nowhere to read, and a rebase rewrites commits that reviews and CI runs name.
 2. Resolve each conflict so that both sides keep their intent: the change does what it did, on top of what the base does now. Where the base changed code the change uses, adapt the change in the same merge commit, so `git show --remerge-diff` shows that too.
