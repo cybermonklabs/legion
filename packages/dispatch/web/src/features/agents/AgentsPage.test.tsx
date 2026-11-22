@@ -1010,6 +1010,46 @@ test("Agents draws four counted groups, the empty ones among them", async () => 
   }
 });
 
+// INFRA-5200's layout rule: a group whose length comes from data shows ten entries, then one
+// "+N" that shows the rest in place, and folds them back. A session's roles and the composer's
+// recipients are two such groups; each keeps every entry one press away.
+test("an Agents row shows ten roles and a +N for the rest, and the composer ten recipients", async () => {
+  const user = userEvent.setup();
+  const roles = Array.from({ length: 14 }, (_, index) => `role-${index + 1}`);
+  const crowd: Agent[] = Array.from({ length: 12 }, (_, index) => ({
+    ...agents[1],
+    roles: index === 0 ? roles : [],
+    session_id: `crowd-${index + 1}-session`,
+    title: `Crowd ${index + 1}`,
+  }));
+  const page = renderAgents({ listedAgents: crowd });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const row = card(region, "Crowd 1");
+    const group = row.querySelector<HTMLElement>('[data-layout-group="roles"]');
+    if (group === null) throw new Error("the roles group is missing");
+    const shown = () =>
+      [...group.children].filter((child) => !child.hasAttribute("data-layout-more"));
+    expect(shown().map((entry) => entry.textContent)).toEqual(roles.slice(0, 10));
+    await user.click(within(group).getByRole("button", { name: "Show 4 more roles" }));
+    expect(shown().map((entry) => entry.textContent)).toEqual(roles);
+    await user.click(within(group).getByRole("button", { name: "Show fewer roles" }));
+    expect(shown()).toHaveLength(10);
+
+    await user.click(within(region).getByRole("checkbox", { name: "Select all matching agents" }));
+    const recipients = within(screen.getByRole("region", { name: "Broadcast" })).getByRole("list", {
+      name: "Selected agents",
+    });
+    expect(within(recipients).getAllByRole("button", { name: /^Crowd \d+ ✕$/ })).toHaveLength(10);
+    await user.click(within(recipients).getByRole("button", { name: "Show 2 more agents" }));
+    expect(within(recipients).getAllByRole("button", { name: /^Crowd \d+ ✕$/ })).toHaveLength(12);
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 // D3: the pin no longer lifts a row out of its group - the rail is the pin's own home now - so
 // a pinned session is in the group its row puts it in, first among that group's rows.
 test("Agents keeps a pinned session in its own group, first among its rows", async () => {
