@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/store"
 )
 
 // readRoleFrame refuses a document that is not a JSON object, and each object the plugins'
@@ -101,4 +103,39 @@ func TestTheEnvelopeReadTakesAWholeNumberAndNoStringHoldingOne(t *testing.T) {
 			t.Errorf("envelope reads issued_at %d and expires_at %s; want 0 and none, as encoding/json reads neither", issued, expires)
 		}
 	})
+}
+
+// readRoleFrame keys a role mark as the role's claim is keyed (store.RoleClaimKeyOf), as it keys a
+// role lane's topic (roleOfLaneTopic): a free-form role under a project is that project's own
+// claim, <project>.<role>, and every other name is its bare name. A takeover pass copies a message
+// only to the role its read names (takenRoleMessage), so a mark read as the bare name would copy a
+// project's message to the lane of the claim of the same name under no project, and the session
+// relay would read that claim's holder for it.
+func TestARoleMarkIsReadAsTheClaimKeyOfTheRoleItNames(t *testing.T) {
+	for _, c := range []struct{ mark, key string }{
+		{"PRIV.lead-reviewer", "PRIV.lead-reviewer"},
+		{"INFRA.reviewer", "INFRA.reviewer"},
+		{"_.lead-reviewer", "lead-reviewer"},
+		{"lead-reviewer", "lead-reviewer"},
+		{"ZZ.legion-zz-controller", "legion-zz-controller"},
+		{"legion-zz-controller", "legion-zz-controller"},
+	} {
+		t.Run(c.mark, func(t *testing.T) {
+			if got := store.RoleClaimKeyOf(c.mark); got != c.key {
+				t.Fatalf("store.RoleClaimKeyOf(%q) = %q; want %q", c.mark, got, c.key)
+			}
+			lane, ok := roleOfLaneTopic("notifications.role." + c.mark)
+			if !ok || lane != c.key {
+				t.Fatalf("roleOfLaneTopic of the role's topic answers %q, %t; want %q", lane, ok, c.key)
+			}
+			data := []byte(`{"event_id":"evt-mark","topic":"notifications.agent.ses_marked","role":"` + c.mark + `","message":"for the role"}`)
+			frame, err := readRoleFrame(data)
+			if err != nil || frame.role != c.key {
+				t.Errorf("readRoleFrame of a message marked %q answers role %q and %v; want %q, the key roleOfLaneTopic gives its topic", c.mark, frame.role, err, c.key)
+			}
+			if item, ok := takenRoleMessage(data, c.key); !ok || item.EventID != "evt-mark" {
+				t.Errorf("a takeover pass of role %s takes the message marked %q: %t (event %q); want it taken", c.key, c.mark, ok, item.EventID)
+			}
+		})
+	}
 }
