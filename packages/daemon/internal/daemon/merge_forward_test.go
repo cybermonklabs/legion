@@ -191,7 +191,7 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 	})
 }
 
-// In merging the merge forward is the merger's (dispatch://INFRA-5218 R1): its ask is published
+// In merging the merge forward is the merger's (cybermonklabs/legion#4979): its ask is published
 // on the merger's own topic under the row's key. Once the issue has moved back out of merging, a
 // message to the merger still queued ends with nothing published: the phase the issue moved to
 // works the workspace now.

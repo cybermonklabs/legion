@@ -2377,7 +2377,7 @@ This release's one-time start of the mergers that the `awaiting_merge` cutover l
 
 #### Rolling back the release that asks the merger to merge the base forward
 
-This release asks the merger, not the implementer, to merge the base forward once the issue stands in `merging`, and asks nothing in `accepting` or `retro` (dispatch://INFRA-5218).
+This release asks the merger, not the implementer, to merge the base forward once the issue stands in `merging`, and asks nothing in `accepting` or `retro` (cybermonklabs/legion#4979).
 It adds no migration: a `merge_forward` row's payload and `pull_requests.merge_forward` are JSON, and the ask names its role there (`role`).
 An earlier release refuses a `merge_forward` ask whose role is the merger when it decodes the row, and reads an ask that names the merger as the implementer's, already made, so it would ask nobody.
 Run this with the daemon stopped, before the earlier image is pinned:

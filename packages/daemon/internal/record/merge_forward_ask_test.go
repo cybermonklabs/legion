@@ -10,7 +10,7 @@ import (
 )
 
 // In merging the merge is the merger's, so the daemon asks the merger to merge the base forward,
-// and in every phase before it the implementer (dispatch://INFRA-5218 R1). The ask the record keeps
+// and in every phase before it the implementer (cybermonklabs/legion#4979). The ask the record keeps
 // names the role asked; an ask a daemon before that change wrote names none, and it asked the
 // implementer in every phase, so such an ask reads as the implementer's, merging included.
 func TestAMergeForwardNamesTheRoleItAsks(t *testing.T) {
@@ -49,7 +49,7 @@ func TestAMergeForwardNamesTheRoleItAsks(t *testing.T) {
 }
 
 // The merger's ask tells it that the merge and its conflict are its own and that the reviewer is
-// asked to approve the head it pushes (dispatch://INFRA-5218 R1, R2); the landed message, not the
+// asked to approve the head it pushes (cybermonklabs/legion#4979); the landed message, not the
 // ask, holds its merge to that approval. The implementer's ask says none of that: an ask of the
 // implementer that a daemon before that change queued in merging still reads as it did.
 func TestTheMergersAskSaysTheMergeIsItsOwn(t *testing.T) {

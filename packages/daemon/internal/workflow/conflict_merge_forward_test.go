@@ -133,7 +133,7 @@ func assertNothingActed(t *testing.T, pool *pgxpool.Pool, at phase.Phase) {
 
 // askedOnce is the one merge forward the record and the outbox hold, asked of conflictHead onto
 // main in at for why: the record's ask, the ask to the role asked - the merger in merging, the
-// implementer in every phase before it (dispatch://INFRA-5218 R1) - and, where hold names a role,
+// implementer in every phase before it (cybermonklabs/legion#4979) - and, where hold names a role,
 // that role's hold, and the architect's one checks-red notice outside implementing, which names the
 // role asked. Nothing moved: the issue is in at with the status it had, and no worker was started.
 func askedOnce(t *testing.T, pool *pgxpool.Pool, at phase.Phase, status string, why record.ConflictWhy, hold claim.Role) {
@@ -331,7 +331,7 @@ func TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward(t *testing.T) {
 	}
 }
 
-// Past the review a conflict is the merger's (dispatch://INFRA-5218 R1). In merging the merger is
+// Past the review a conflict is the merger's (cybermonklabs/legion#4979). In merging the merger is
 // asked, on its own role topic, to merge the base forward and resolve the conflict itself: no ask
 // and no hold reach the implementer or anyone else, the architect's one checks-red notice names the
 // merger, and the issue stays in merging. In accepting and retro nothing is asked of anyone, whatever
@@ -378,7 +378,7 @@ func TestAConflictPastTheReviewIsTheMergersToMergeForward(t *testing.T) {
 // The role first asked to merge a head forward keeps that merge until it lands, since it may
 // already be at work on it in the workspace the roles share, so two roles are never sent to merge
 // one base forward (mergeForward). An ask of the implementer that has not landed when the issue
-// stands in merging - one a daemon before dispatch://INFRA-5218 made there, which names no role and
+// stands in merging - one a daemon before cybermonklabs/legion#4979 made there, which names no role and
 // so reads as the implementer's (record.MergeForward.Asked) - stays the implementer's: a later
 // confirmed read asks nobody, and its rows, the implementer's ask and the merger's hold, are still
 // delivered. An ask of the implementer made before the review that has not landed when the issue
@@ -442,7 +442,7 @@ func TestAnAskOfTheImplementerThatHasNotLandedKeepsItsMergeIntoMerging(t *testin
 	})
 }
 
-// The acceptance of dispatch://INFRA-5218: an issue whose pull request conflicts with its base
+// The acceptance of cybermonklabs/legion#4979: an issue whose pull request conflicts with its base
 // after the reviewer approved it reaches the merge through the merger, and the work never goes back
 // to the implementer. Every check the base requires passed on the head, so in reviewing the
 // conflict is recorded and the reviewer's approval ends the round; accepting and retro ask nothing
@@ -564,7 +564,7 @@ func queuedStatuses(t *testing.T, pool *pgxpool.Pool) []string {
 // before, and the reviewer's, with no approval, is recorded while its round waits on a decision,
 // as before. The reviewer's approval of that head ends its round whatever GitHub's merge state, and
 // the issue's move into accepting asks nothing: the conflict waits for merging, where the merger
-// merges the base forward (dispatch://INFRA-5218, TestAConflictAfterTheReviewLandsThroughTheMerger).
+// merges the base forward (cybermonklabs/legion#4979, TestAConflictAfterTheReviewLandsThroughTheMerger).
 // Any required check not green, a strict ruleset, and rules the daemon could not read each act at once.
 // GitHub's refusal of rulesets to a plan that has none is no failed read: it reads as no rules, and
 // so records only. A classic protection rule is read as not strict, so its contexts decide; and a
@@ -763,7 +763,7 @@ func landsMergeForward(t *testing.T, pool *pgxpool.Pool) {
 }
 
 // askedBeforeTheMerger is a pull request settled green on lint at conflictHead whose record holds
-// the ask a daemon before dispatch://INFRA-5218 made in at: of the implementer, naming no role, not
+// the ask a daemon before cybermonklabs/legion#4979 made in at: of the implementer, naming no role, not
 // landed. That daemon asked the implementer in accepting and retro too, and an ask it made stands
 // across the upgrade until it lands, so the completion fence and the landing's review still hold
 // for it, while this daemon makes no ask in either phase (TestAConflictPastTheReviewIsTheMergersToMergeForward).
@@ -793,7 +793,7 @@ var basePushOntoMain = intake.BasePush{Repo: "sjawhar/legion", Branch: "main", A
 // head moves the issue as it would have: the tester's pass to reviewing, the reviewer's as its
 // round decides, retro to merging. The merger's completion moves nothing in merging, as ever, and
 // in accepting nothing moves at all. Retro and accepting ask nothing now, so their rows land an
-// ask a daemon before dispatch://INFRA-5218 made there (askedBeforeTheMerger).
+// ask a daemon before cybermonklabs/legion#4979 made there (askedBeforeTheMerger).
 func TestAConflictKeepsPhaseAndRefusesACompletionAtTheReplacedHead(t *testing.T) {
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
@@ -902,12 +902,12 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtTheReplacedHead(t *testing.T)
 
 // The merge forward's completion fence is of the phase the issue stands in (dispatch://INFRA-4374
 // R1). The reviewer's approval moves the issue on past reviewing before the reviewer completes,
-// and in merging a conflict asks the merger for the merge forward (dispatch://INFRA-5218), which
+// and in merging a conflict asks the merger for the merge forward (cybermonklabs/legion#4979), which
 // lands; the review the landing then asks of the reviewer is made with no completion
 // (record.MergeForwardReview). The reviewer's completion of reviewing that arrives after it, at the
 // head the merge replaced, is the report of the review it made of that head, which the next phase
 // reads: it is recorded on the reviewer's own row and moves nothing (engine's leftItsPhase), and
-// the issue stays where it stood. An ask a daemon before dispatch://INFRA-5218 made in accepting
+// the issue stays where it stood. An ask a daemon before cybermonklabs/legion#4979 made in accepting
 // (askedBeforeTheMerger) lands the same way and is held to the same fence.
 func TestAConflictKeepsPhaseAndRecordsALateCompletionOfALeftPhase(t *testing.T) {
 	for _, tc := range []struct {
@@ -951,7 +951,7 @@ func TestAConflictKeepsPhaseAndRecordsALateCompletionOfALeftPhase(t *testing.T) 
 // the head the merge replaced, so the reviewer is asked to read the merge and approve the new head
 // or request changes (dispatch://INFRA-4374 R1), one review message naming both heads, and the
 // record keeps that the review was asked for. In merging the merger made the merge
-// (dispatch://INFRA-5218), and as the worker of merging it is told the merge landed, which holds
+// (cybermonklabs/legion#4979), and as the worker of merging it is told the merge landed, which holds
 // its merge to the reviewer's approval of the new head. An ask a daemon before that change made in
 // accepting or retro lands the same way (askedBeforeTheMerger): the architect in accepting and the
 // implementer in retro are told nothing, since the one asked for the merge and the other made it.
@@ -1337,7 +1337,7 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtAReplacedHeadWhileASecondMerg
 // implementer, which no hold and no landed message reaches (record.MergeForwardReaches), so the
 // refusal sends it to do the phase's work at the head the pull request stands at, never to wait for
 // a message it is not sent, and it records and moves nothing. When the head an ask made before
-// dispatch://INFRA-5218 left in retro (askedBeforeTheMerger) conflicts in its turn, retro asks
+// cybermonklabs/legion#4979 left in retro (askedBeforeTheMerger) conflicts in its turn, retro asks
 // nothing of anyone: retro's completion at that head moves the issue to merging, where the merger
 // is asked to merge the base forward onto it, and the implementer is asked nothing.
 func TestAConflictKeepsPhaseSendsARetroCompletionAtAReplacedHeadToTheCurrentHead(t *testing.T) {

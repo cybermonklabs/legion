@@ -15,7 +15,7 @@ import (
 // not passed on the head never will while GitHub runs no checks on it. Past the review and before
 // merging - accepting and retro, or held from one of them - nothing is acted on, whatever the
 // rules: the conflict waits for merging, where the merger merges the base forward
-// (dispatch://INFRA-5218). A required context is green by a check run on the head that succeeded,
+// (cybermonklabs/legion#4979). A required context is green by a check run on the head that succeeded,
 // or by a success status the record keeps for the head once a settlement stands for it; a failed
 // run, a run or a status of another head, and a status kept while no settlement stands for the
 // head are not green. Each reason the decision answers is one a merge forward's ask can be queued

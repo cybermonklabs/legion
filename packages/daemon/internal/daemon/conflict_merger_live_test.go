@@ -1,7 +1,7 @@
 //go:build e2e
 
 // The live proof's driver for who gets a conflict once the work is past its review
-// (dispatch://INFRA-5218): a pull request that conflicts with its base after the review is the
+// (cybermonklabs/legion#4979): a pull request that conflicts with its base after the review is the
 // merger's to resolve, and nobody hands the issue back to the implementer for it. The issue stands
 // in accepting on a head GitHub then answers CONFLICTING: the daemon reads it twice a minute apart,
 // as it reads any conflicting head, records the confirmed conflict and asks nobody, the

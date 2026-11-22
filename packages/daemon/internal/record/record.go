@@ -1040,7 +1040,7 @@ type ConflictRead struct {
 
 // MergeForward is the daemon's ask that a role merge Base forward onto Head
 // (PullRequest.MergeForward). Role is the role asked: the implementer before merging, and the
-// merger in merging (MergeForwardAsker, dispatch://INFRA-5218); Asked reads it. Phase is the phase
+// merger in merging (MergeForwardAsker, cybermonklabs/legion#4979); Asked reads it. Phase is the phase
 // the issue stood in when the daemon asked, and stays in. Why is the first of R0's reasons that
 // held (dispatch://INFRA-4374 R0, ConflictWhy). AskedAt is when the ask was written. Landed is the
 // first new head that arrived after the ask, "" until one does; ReviewAsked is whether that
@@ -1064,7 +1064,7 @@ type MergeForward struct {
 }
 
 // Asked is the role the ask names: Role, or the implementer for an ask that names none, which a
-// daemon before dispatch://INFRA-5218 wrote, since it asked the implementer in every phase. So an
+// daemon before cybermonklabs/legion#4979 wrote, since it asked the implementer in every phase. So an
 // implementer that daemon asked in merging still merges after the upgrade, and the merger is asked
 // only by a new act (workflow's mergeForward).
 func (m MergeForward) Asked() claim.Role {
@@ -1092,7 +1092,7 @@ type ConflictWhy string
 
 const (
 	// ConflictMergeNext: the issue stands in merging, or is held from it. A conflict in accepting
-	// or retro waits for merging, where the merger merges the base forward (dispatch://INFRA-5218).
+	// or retro waits for merging, where the merger merges the base forward (cybermonklabs/legion#4979).
 	ConflictMergeNext ConflictWhy = "merge-next"
 	// ConflictRulesUnread: the daemon could not read the base branch's rules.
 	ConflictRulesUnread ConflictWhy = "base-rules-unread"
@@ -1106,7 +1106,7 @@ const (
 // already is, and every phase after it up to the merge, which the issue keeps while the role asked
 // (MergeForwardAsker) merges (dispatch://INFRA-4374 R1). In accepting and retro nothing is asked
 // (classify.ConflictNeedsMerge): the merger merges the base forward once the issue reaches merging
-// (dispatch://INFRA-5218), and an ask made before stands there until it lands. An issue that
+// (cybermonklabs/legion#4979), and an ask made before stands there until it lands. An issue that
 // stands in none of them - before its implementation, or out of the workflow - has no pull request
 // work to merge forward. They are also the phases a head move is read for a conflict in
 // (classify.MergeStateReadOwed), since that read is what records the conflict an ask is made for.
@@ -1114,7 +1114,7 @@ const (
 var MergeForwardPhases = []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging}
 
 // MergeForwardAsker is the role the daemon asks to merge the base forward while the issue stands
-// in at (dispatch://INFRA-5218 R1): the merger in merging, where the merge is its own work, and
+// in at (cybermonklabs/legion#4979): the merger in merging, where the merge is its own work, and
 // the implementer in every earlier phase of MergeForwardPhases. The ask's row goes to it
 // (MergeForwardMessage), and the record's ask keeps it (MergeForward.Role).
 func MergeForwardAsker(at phase.Phase) claim.Role {

@@ -22,7 +22,7 @@ import (
 // already held (record.KeepsSlot). The conflict is read through the workflow engine as the daemon
 // reads it, two CONFLICTING reads of the head a minute apart against a base that requires a check
 // the head has not passed. In testing that asks the implementer and in merging the merger
-// (dispatch://INFRA-5218); in accepting and retro the conflict waits for merging and nothing is
+// (cybermonklabs/legion#4979); in accepting and retro the conflict waits for merging and nothing is
 // asked. The cap has room for every issue here, so a merge forward that owed a worker a start
 // would put the issue in the waiting line and the pass would grant it a slot; none does. The
 // active set the state shows (projection.Project's Admission.Active) agrees with the slot rows.

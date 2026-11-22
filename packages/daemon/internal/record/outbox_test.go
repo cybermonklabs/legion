@@ -90,7 +90,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		MergeQueueRemoval{Number: 42, Head: "c0de", Unread: true},
 		ConflictConfirm{Number: 42, Head: "c0de", FirstReadAt: now.Add(-time.Minute)},
 		MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Implementing, PullRequest: 42, Why: ConflictCheckNotGreen},
-		// In merging the merger is asked (dispatch://INFRA-5218); the hold to the merger above is a
+		// In merging the merger is asked (cybermonklabs/legion#4979); the hold to the merger above is a
 		// row a daemon before it queued, which still reads after the upgrade.
 		MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext},
 		MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext},

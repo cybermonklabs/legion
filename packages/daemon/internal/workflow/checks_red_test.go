@@ -23,7 +23,7 @@ import (
 // role to the roles that decide: the worker holding the issue's phase, the implementer, whose code
 // the checks ran on, and the architect that owns the issue, here the root's, since the issue is the
 // tree's root. In merging the implementer is not told: the merge and what breaks it are the
-// merger's, which asks the implementer when it needs it (dispatch://INFRA-5218 R1). Each message
+// merger's, which asks the implementer when it needs it (cybermonklabs/legion#4979). Each message
 // names every check the settlement reports and the conclusion it reports for it, in name order. A
 // role named twice - the implementer holding the phase, the architect holding admitted or
 // accepting - is told once, and a phase no worker holds names none. Nothing else happens: no phase

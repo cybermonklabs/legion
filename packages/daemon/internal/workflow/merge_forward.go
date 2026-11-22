@@ -20,7 +20,7 @@ import (
 // its review takes no admission slot for the merge, and the role the phase asks
 // (record.MergeForwardAsker) is asked, on its own role topic, to merge the base forward onto the
 // head and push (record.MergeForwardAsk): the implementer before merging, and in merging the
-// merger, whose merge it is (dispatch://INFRA-5218 R1). Outside implementing it also tells the
+// merger, whose merge it is (cybermonklabs/legion#4979). Outside implementing it also tells the
 // worker of that phase, when that is the tester or the reviewer, to stop writing the workspace the
 // roles share while the merge runs (record.MergeForwardHold), and the architect that owns the
 // issue one checks-red notice whose phase is the phase the issue stays in and whose reason names
@@ -114,7 +114,7 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 //   - At a head the record holds in a confirmed conflict (classify.ConflictRound), a move into
 //     merging asks the merger for the merge forward for record.ConflictMergeNext: the merge comes
 //     next, GitHub merges no head that conflicts with its base, and the merge is the merger's
-//     (dispatch://INFRA-5218 R1). This is where an approval of a conflicting head, which ends its
+//     (cybermonklabs/legion#4979). This is where an approval of a conflicting head, which ends its
 //     round (reviewRound), is acted on: a move into accepting or retro at it asks nothing, since
 //     the conflict waits for the merger (classify.ConflictNeedsMerge). Where the record still holds
 //     an ask of that head, made of another role in a phase before merging and not landed, that

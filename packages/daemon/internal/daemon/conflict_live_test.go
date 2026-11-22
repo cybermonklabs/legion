@@ -3,7 +3,7 @@
 // The harness the two live proofs of a head that conflicts with its base share:
 // conflict_no_takeover_live_test.go's, a conflict in testing that the implementer merges forward
 // (dispatch://INFRA-4374), and conflict_merger_live_test.go's, a conflict past the review that the
-// merger merges forward (dispatch://INFRA-5218). Each driver embeds conflictLive, liveIssueProof
+// merger merges forward (cybermonklabs/legion#4979). Each driver embeds conflictLive, liveIssueProof
 // (live_issue_proof_test.go) grown for a conflict: the daemon booted with its own log kept in
 // memory as it is written, which the steps read the daemon's decisions of a conflicting head from;
 // what the listener stand-in took on each role topic of an issue since a step's baseline; the

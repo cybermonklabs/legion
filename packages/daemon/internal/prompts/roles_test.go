@@ -333,7 +333,7 @@ func TestTheMergersSquashMessageIsItsOwn(t *testing.T) {
 	}
 }
 
-// Past the review a conflict with the base is the merger's (dispatch://INFRA-5218 R1, R2): the
+// Past the review a conflict with the base is the merger's (cybermonklabs/legion#4979): the
 // merger merges the base forward itself, keeps both sides' intent, adapts in that merge what the
 // base's newer code breaks, has the reviewer read the merge's resolution and approve the new head
 // before it merges it, may ask the other workers, and sends the issue back only for a change to the

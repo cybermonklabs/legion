@@ -280,7 +280,7 @@ Each item below names a script, then what it proves.
 
 - `conflict-merger.sh`
 
-  a pull request that conflicts with its base past the review is the merger's to resolve (dispatch://INFRA-5218), driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with the push onto the base, the merger's push and its synchronize, CI's settlement and the merge as GitHub envelopes and each role's registration, turns, sign-off and completions over the daemon's own HTTP routes and worker stream:
+  a pull request that conflicts with its base past the review is the merger's to resolve (cybermonklabs/legion#4979), driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with the push onto the base, the merger's push and its synchronize, CI's settlement and the merge as GitHub envelopes and each role's registration, turns, sign-off and completions over the daemon's own HTTP routes and worker stream:
   in `accepting` the daemon's two reads a minute apart record the conflict and send nothing to any role, the architect's `checks-red` notice included;
   the sign-off and `retro` ask nothing either, and the move into `merging` starts the merger and asks it on its own role topic to merge the base forward, while the implementer's topic takes no merge-forward message and the architect is told once in a `checks-red` notice naming `merging` and the merger;
   once the merger's merge lands it is told to merge only once the reviewer's approval of the new head is on the pull request, and the reviewer is asked to read the merge with `git show --remerge-diff`;
@@ -4476,7 +4476,7 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
   [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/conflict-merger.sh     # → "conflict merger e2e: PASS in <n>s", exit 0
 ```
 
-The live proof that a pull request which conflicts with its base past the review is the merger's to resolve (dispatch://INFRA-5218).
+The live proof that a pull request which conflicts with its base past the review is the merger's to resolve (cybermonklabs/legion#4979).
 In `accepting` and `retro` the daemon records a confirmed conflict and asks nobody;
 the move into `merging` asks the merger, and the issue never goes back to the implementer for it.
 Runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no agent — so a Legion pod, CI and a devbox all run it.
