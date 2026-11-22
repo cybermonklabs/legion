@@ -17,8 +17,8 @@ const ghostWisprMaxBody = 1 << 20
 
 // ghostWisprRoomWait is the most a Ghost Wispr event waits, in all, for room in the listener's
 // body budget (BodyBudget) before it is answered 503: the server's 10 s to answer, less the bus's
-// 5 s publish bound and a second for the rest.
-const ghostWisprRoomWait = 4 * time.Second
+// 5 s publish bound and a second for the rest. It is a variable so a test can shorten it.
+var ghostWisprRoomWait = 4 * time.Second
 
 // ghostWisprSkip returns true for event types that should be accepted but not published.
 func ghostWisprSkip(event string) bool {

@@ -109,7 +109,7 @@ func TestAGitHubDeliveryWhoseBodyArrivesOverMoreThanTenSecondsIsPublished(t *tes
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)
 	pub := &slowBodyPublisher{}
-	status := serveSlowly(t, "/webhook/github", webhook.GitHubHandler(secret, "@legion", "", pub, noCI{}, webhook.NewBodyBudget(webhook.DefaultBodyBudget)), map[string]string{
+	status := serveSlowly(t, "/webhook/github", webhook.GitHubHandler(secret, "@legion", "", pub, noCI{}, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil)), map[string]string{
 		"X-GitHub-Delivery":   "delivery-slow-body",
 		"X-GitHub-Event":      "push",
 		"X-Hub-Signature-256": "sha256=" + hex.EncodeToString(mac.Sum(nil)),
@@ -131,7 +131,7 @@ func TestAGitHubBodyReadFailureIsLogged(t *testing.T) {
 	previous := log.Writer()
 	log.SetOutput(logged)
 	t.Cleanup(func() { log.SetOutput(previous) })
-	addr := serveWebhook(t, "/webhook/github", webhook.GitHubHandler("s", "@legion", "", &slowBodyPublisher{}, noCI{}, webhook.NewBodyBudget(webhook.DefaultBodyBudget)))
+	addr := serveWebhook(t, "/webhook/github", webhook.GitHubHandler("s", "@legion", "", &slowBodyPublisher{}, noCI{}, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil)))
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
@@ -160,7 +160,7 @@ func TestASlackBodyStillHasTheServersReadTimeout(t *testing.T) {
 	pub := &slowBodyPublisher{}
 	body := []byte(`{"type":"url_verification","challenge":"` + strings.Repeat("c", 4000) + `"}`)
 	start := time.Now()
-	status := serveSlowly(t, "/webhook/slack", webhook.SlackHandler("s", pub, webhook.NewBodyBudget(webhook.DefaultBodyBudget)), slackHeaders("s", start, body), body, 12*time.Second)
+	status := serveSlowly(t, "/webhook/slack", webhook.SlackHandler("s", pub, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil)), slackHeaders("s", start, body), body, 12*time.Second)
 	elapsed := time.Since(start)
 	if status == http.StatusOK {
 		t.Fatalf("status = 200 after %s; want the server's 10 s read timeout to cut the body off", elapsed.Round(time.Millisecond))

@@ -777,6 +777,10 @@ type webhookRoute struct {
 	handler func(webhook.Publisher, *cistore.Store) http.Handler
 }
 
+// webhookBodyRefusedMetric counts the webhook deliveries the body budget turned away with a 503
+// (webhook.BodyBudget), by route path, so a sustained fill of the budget shows as a rate.
+const webhookBodyRefusedMetric = "envoy_webhook_body_refused_total"
+
 // webhookRoutes lists the webhook routes the configuration enables. main registers the paths
 // before NATS is up, so they answer 503 while it connects, and builds the handlers once NATS and,
 // for the GitHub route, the CI store are open.
@@ -788,8 +792,8 @@ type webhookRoute struct {
 // Every route publishes through the rename publisher, which costs the Slack and the Ghost Wispr
 // routes nothing: a pair names a GitHub repository, and a subject that is not
 // `notifications.github.<owner>.<name>.…` names none, so those two publish exactly as they did.
-func webhookRoutes(cfg *webhook.WebhookConfig) []webhookRoute {
-	bodies := webhook.NewBodyBudget(cfg.BodyBudget)
+func webhookRoutes(cfg *webhook.WebhookConfig, refused *metrics.Counter) []webhookRoute {
+	bodies := webhook.NewBodyBudget(cfg.BodyBudget, refused)
 	var routes []webhookRoute
 	if github := cfg.GitHub; github != nil {
 		routes = append(routes, webhookRoute{"/webhook/github", func(publisher webhook.Publisher, ciStore *cistore.Store) http.Handler {
@@ -1222,7 +1226,7 @@ func main() {
 	// interest and session caches are too (Phase 6). Neither waits for the durable consumer, which
 	// only /healthz reads. The webhook paths reach their gate bare, /v1 through apiAuth.
 	webhookGate, v1Gate := newStartingGate("webhook", logger), newStartingGate("v1", logger)
-	hooks := webhookRoutes(webhookCfg)
+	hooks := webhookRoutes(webhookCfg, met.NewCounter(webhookBodyRefusedMetric, "Webhook deliveries answered 503 because their body found no room in the listener's webhook body budget within the route's room wait, by route path"))
 	for _, hook := range hooks {
 		mux.Handle(hook.path, webhookGate)
 	}

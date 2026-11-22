@@ -391,10 +391,18 @@ declared length, and stays charged until its handler returns, a refusal included
 that sends only headers holds nothing. One read at a time may take the total past the budget, by
 at most its own body. A delivery whose next bytes do not fit waits for room at most its route's
 room wait, in all: Slack 1 s, GitHub 5 s, Ghost Wispr 4 s. It is then answered `503` with
-`Retry-After: 1`, and the listener logs `webhook body refused path=<route> ...`. Slack retries a
-failed event nearly at once, then after one minute and after five; GitHub does not redeliver, and
-the redelivery sweep (`internal/dispatch/redeliver`) asks it again; Ghost Wispr documents no
-retry.
+`Retry-After: 1`, the listener logs `webhook body refused path=<route> ...`, and
+`envoy_webhook_body_refused_total{path}` counts it. Slack retries a failed event nearly at once,
+then after one minute and after five. GitHub does not redeliver: the redelivery sweep
+(`internal/dispatch/redeliver`) asks again only for the GitHub App webhook's failed deliveries, so
+a delivery from any other GitHub webhook is lost. No Ghost Wispr retry policy is recorded.
+
+Anonymous senders can keep the budget full. One read that holds the total past the limit stops
+every other read from charging a byte, and a stalled GitHub read keeps its charge for 60 s at a
+25 MiB cap, so several senders taking turns, at about 32 MiB of body every 60 s (4.5 Mbit/s),
+keep every signed delivery at a `503` for as long as they send. The listener has no cheap bound
+for that; the bound is a limit per source in front of it, such as a relay that refuses unsigned
+requests.
 
 ## Webhook and health check bounds
 

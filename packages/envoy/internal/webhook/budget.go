@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // DefaultBodyBudget is the body budget a listener holds when ENVOY_WEBHOOK_BODY_BUDGET is unset:
@@ -15,9 +17,9 @@ import (
 // githubMaxBody, so any body GitHub sends fits. What the budget lets the listener hold before any
 // signature is checked is the budget plus what the one read allowed past it charges beyond it, at
 // most twice the largest route's cap (2 x githubMaxBody), so 114 MiB; a body that then checks
-// decodes to about two and a half times its size again, about 400 MiB in all. The deployed
-// listener runs in a 3 GiB container whose worst measured resident memory is 2.0 GiB, and that
-// 400 MiB fits in the 1 GiB between them with room to spare.
+// decodes to about two and a half times its size again, about 400 MiB in all. A deployment sizes
+// the listener's memory to hold that beside the rest of its resident memory, or sets a smaller
+// budget.
 const DefaultBodyBudget = 64 << 20
 
 // bodyRetryAfter is the Retry-After, in seconds, of the 503 a delivery that found no room in the
@@ -61,11 +63,14 @@ type BodyBudget struct {
 	most  int64         // the most held at once, which the bound above caps
 	over  *bodyRead     // the one request that may take held past limit, or nil
 	room  chan struct{} // closed and replaced whenever held falls or over is given back
+	// refused counts the deliveries answered 503 for finding no room (refuseBody), by route path.
+	refused *metrics.Counter
 }
 
-// NewBodyBudget returns a budget of limit bytes, which must be positive.
-func NewBodyBudget(limit int64) *BodyBudget {
-	return &BodyBudget{limit: limit, room: make(chan struct{})}
+// NewBodyBudget returns a budget of limit bytes, which must be positive, that counts the
+// deliveries it refuses for want of room in refused (nil counts nothing).
+func NewBodyBudget(limit int64, refused *metrics.Counter) *BodyBudget {
+	return &BodyBudget{limit: limit, room: make(chan struct{}), refused: refused}
 }
 
 // mostHeld is the most the budget has held at once.
@@ -171,28 +176,40 @@ func (b *BodyBudget) signalLocked() {
 // for room. It runs before the route checks the sender or parses anything, and it returns the
 // body with the release the route must defer whatever the outcome, so a body stays charged until
 // the handler that read it returns, a refusal included. A body it does not take is answered here
-// (refuseBody) and its error returned, so the route only returns, or logs and returns.
+// (refuseBody) and its error returned, so the route only returns, or logs and returns. A panic
+// inside the read gives back what the read charged before it unwinds: net/http recovers a
+// handler's panic, and a charge it kept would shrink the budget for the life of the process.
 func (b *BodyBudget) readBody(ctx context.Context, w http.ResponseWriter, r *http.Request, body io.Reader, limit int64, wait time.Duration) ([]byte, func(), error) {
 	read := b.begin(wait)
+	handed := false
+	defer func() {
+		if !handed {
+			read.release()
+		}
+	}()
 	data, err := read.readAll(ctx, body, r.ContentLength, limit)
 	if err != nil {
-		refuseBody(w, r, err)
+		b.refuseBody(w, r, err)
 	}
+	handed = true
 	return data, read.release, err
 }
 
 // refuseBody answers a body readBody did not take: 413 for one over its route's cap, 503 with
 // Retry-After for one that waited its route's whole room wait for room in the budget, and 400 for
-// any other failure, a body cut short or a read that outlasted its deadline. The 503 logs a line,
-// since nothing else records that the budget turned a delivery away: Slack retries it, and a
-// GitHub delivery waits for the redelivery sweep (packages/envoy/internal/dispatch/redeliver).
-func refuseBody(w http.ResponseWriter, r *http.Request, err error) {
+// any other failure, a body cut short or a read that outlasted its deadline. The 503 logs a line
+// and counts it (envoy_webhook_body_refused_total), since nothing else records that the budget
+// turned a delivery away. Slack retries it. A GitHub App webhook's delivery waits for the
+// redelivery sweep (packages/envoy/internal/dispatch/redeliver), which asks only for the App
+// webhook's failed deliveries: a delivery from any other GitHub webhook is lost.
+func (b *BodyBudget) refuseBody(w http.ResponseWriter, r *http.Request, err error) {
 	var tooLarge *http.MaxBytesError
 	switch {
 	case errors.As(err, &tooLarge):
 		http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
 	case errors.Is(err, errNoRoom):
 		log.Printf("webhook body refused path=%s content_length=%d: %v; answered 503", r.URL.Path, r.ContentLength, err)
+		b.refused.Inc([2]string{"path", r.URL.Path})
 		w.Header().Set("Retry-After", bodyRetryAfter)
 		http.Error(w, "webhook body budget full", http.StatusServiceUnavailable)
 	default:

@@ -32,8 +32,8 @@ const slackMaxBody = 1 << 20
 
 // slackRoomWait is the most a Slack event waits, in all, for room in the listener's body budget
 // (BodyBudget) before it is answered 503, which Slack retries: inside slackAnswerBudget, with
-// 1.5 s of it left for the publish.
-const slackRoomWait = time.Second
+// 1.5 s of it left for the publish. It is a variable so a test can shorten it.
+var slackRoomWait = time.Second
 
 // SlackHandler returns the HTTP handler for Slack webhook events, which reads its bodies against
 // bodies, the listener's one body budget. It checks every event's signature with secret before it

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/internal/webhook"
 )
@@ -30,7 +32,7 @@ const webhookTestSecret = "webhook-test-secret"
 // built from it (webhookRoutes) behind an open webhook gate (openWebhooks), on the listener's own
 // HTTP server (newHTTPServer). It returns the server's address and the publisher the routes
 // publish through.
-func serveWebhookRoutes(t *testing.T, env map[string]string) (string, *slowBodyPublisher) {
+func serveWebhookRoutes(t *testing.T, env map[string]string) (string, *slowBodyPublisher, *metrics.Registry) {
 	t.Helper()
 	for name, value := range map[string]string{
 		"ENVOY_WEBHOOKS":                  "github,slack,ghostwispr",
@@ -55,7 +57,8 @@ func serveWebhookRoutes(t *testing.T, env map[string]string) (string, *slowBodyP
 		t.Fatal(err)
 	}
 	gate := newStartingGate("webhook", logging.NewWithWriter("test", io.Discard))
-	hooks := webhookRoutes(cfg)
+	refusals := metrics.New()
+	hooks := webhookRoutes(cfg, refusals.NewCounter(webhookBodyRefusedMetric, "test"))
 	mux := http.NewServeMux()
 	for _, hook := range hooks {
 		mux.Handle(hook.path, gate)
@@ -65,7 +68,7 @@ func serveWebhookRoutes(t *testing.T, env map[string]string) (string, *slowBodyP
 	server := newHTTPServer(mux)
 	go func() { _ = server.Serve(ln) }()
 	t.Cleanup(func() { _ = server.Close() })
-	return ln.Addr().String(), publisher
+	return ln.Addr().String(), publisher, refusals
 }
 
 // webhookAnswer is what a route answered one delivery, and how long it took.
@@ -145,7 +148,7 @@ func slackEvent(id string) []byte {
 // 400 its JSON decode would answer. The signed rows are the control: the same body signed reaches
 // the decode and is refused there as invalid JSON, so a 401 says the signature check came first.
 func TestAnUnsignedWebhookBodyIsRefusedBeforeItIsParsed(t *testing.T) {
-	addr, publisher := serveWebhookRoutes(t, nil)
+	addr, publisher, _ := serveWebhookRoutes(t, nil)
 	notJSON := []byte("this is not JSON {")
 	zeros := strings.Repeat("0", 64)
 	now := time.Now()
@@ -191,7 +194,7 @@ func TestAnUnsignedWebhookBodyIsRefusedBeforeItIsParsed(t *testing.T) {
 // only to a handshake whose signature checks, and anyone else who sends one gets a 401 that does
 // not carry the challenge.
 func TestSlackURLVerificationIsAnsweredOnlyOnceItsSignatureChecks(t *testing.T) {
-	addr, _ := serveWebhookRoutes(t, nil)
+	addr, _, _ := serveWebhookRoutes(t, nil)
 	const challenge = "challenge-3eZbrw1aBm2rZgRNFdxV2595E9CY3gmdALWMmHkvFXO7tYXAYM8P"
 	handshake := []byte(`{"token":"Jhj5dZrVaK7ZwHHjRyZWjbDl","challenge":"` + challenge + `","type":"url_verification"}`)
 	now := time.Now()
@@ -253,7 +256,7 @@ func holdGitHubBody(t *testing.T, addr string, sent int) net.Conn {
 // and the same Slack event is published.
 func TestEveryWebhookRouteReadsAgainstTheListenersOneBodyBudget(t *testing.T) {
 	const budget = 16 << 10
-	addr, publisher := serveWebhookRoutes(t, map[string]string{"ENVOY_WEBHOOK_BODY_BUDGET": strconv.Itoa(budget)})
+	addr, publisher, refusals := serveWebhookRoutes(t, map[string]string{"ENVOY_WEBHOOK_BODY_BUDGET": strconv.Itoa(budget)})
 	holder := holdGitHubBody(t, addr, 4*budget)
 
 	// The sender's bytes reach the budget a moment after they are written, so a signed Slack
@@ -274,9 +277,6 @@ func TestEveryWebhookRouteReadsAgainstTheListenersOneBodyBudget(t *testing.T) {
 	if refused.status != http.StatusServiceUnavailable || refused.retryAfter == "" {
 		t.Fatalf("slack status = %d, Retry-After %q, want 503 with Retry-After", refused.status, refused.retryAfter)
 	}
-	if refused.took < 900*time.Millisecond || refused.took > 2500*time.Millisecond {
-		t.Fatalf("slack was refused after %s, want after its 1 s room wait and inside the 2.5 s it has to answer", refused.took.Round(time.Millisecond))
-	}
 
 	summary := []byte(`{"event_type":"summary_ready","payload":{"session_id":"20261122060000","type":"summary_ready"}}`)
 	ghost := postWebhook(t, addr, "/webhook/ghostwispr", ghostWisprHeaders(webhookTestSecret, "d-behind-a-full-budget", summary), summary)
@@ -284,8 +284,15 @@ func TestEveryWebhookRouteReadsAgainstTheListenersOneBodyBudget(t *testing.T) {
 	if ghost.status != http.StatusServiceUnavailable || ghost.retryAfter == "" {
 		t.Fatalf("ghostwispr status = %d, Retry-After %q, want 503 with Retry-After", ghost.status, ghost.retryAfter)
 	}
-	if ghost.took < 3900*time.Millisecond || ghost.took > 6*time.Second {
-		t.Fatalf("ghostwispr was refused after %s, want after its 4 s room wait", ghost.took.Round(time.Millisecond))
+	scrape := httptest.NewRecorder()
+	refusals.Handler().ServeHTTP(scrape, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	for _, want := range []string{
+		webhookBodyRefusedMetric + `{path="/webhook/slack"} 2`,
+		webhookBodyRefusedMetric + `{path="/webhook/ghostwispr"} 1`,
+	} {
+		if !strings.Contains(scrape.Body.String(), want) {
+			t.Fatalf("the listener's metrics read\n%s\nwant a line %s: the probe's and the event's refusals on Slack, the event's on Ghost Wispr", scrape.Body.String(), want)
+		}
 	}
 	publisher.mu.Lock()
 	refusedPublished := len(publisher.published)

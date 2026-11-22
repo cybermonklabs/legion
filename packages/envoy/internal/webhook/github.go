@@ -55,10 +55,13 @@ const githubMaxBody = 25 << 20
 
 // githubRoomWait is the most a GitHub delivery waits, in all, for room in the listener's body
 // budget (BodyBudget) before it is answered 503: half the 10 s GitHub waits for an answer, so a
-// delivery that gets room late still has the other half to be read and answered. GitHub does not
-// redeliver a failed delivery itself; the redelivery sweep asks it again
-// (packages/envoy/internal/dispatch/redeliver).
-const githubRoomWait = 5 * time.Second
+// delivery that gets room late still has the other half to be read and answered. A delivery that
+// would have got room between 5 s and GitHub's 10 s was served before the budget had a room wait
+// and is a 503 now. GitHub does not redeliver a failed delivery itself; the redelivery sweep
+// (packages/envoy/internal/dispatch/redeliver) asks again only for the App webhook's failed
+// deliveries, so a delivery from any other GitHub webhook is lost. It is a variable so a test can
+// shorten it.
+var githubRoomWait = 5 * time.Second
 
 // githubBodyDeadline bounds how long, from the handler's start, the route reads a delivery's body,
 // and githubHandleDeadline how long after that the handler has to verify, record, publish and

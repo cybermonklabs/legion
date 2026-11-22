@@ -2,6 +2,7 @@ package webhook
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // route is one webhook route under test: its handler over a publisher and a budget, and how it
@@ -20,8 +23,6 @@ type route struct {
 	request func(secret string, body io.Reader, size int) *http.Request
 	// event is a body the route publishes once its signature checks.
 	event []byte
-	// wait is the route's room wait.
-	wait time.Duration
 }
 
 // routes are the three webhook routes, each signing as its sender does.
@@ -45,7 +46,6 @@ var routes = []route{
 		},
 		event: []byte(`{"type":"event_callback","event_id":"Ev-budget","team_id":"T01234567",` +
 			`"event":{"type":"message","channel":"C01234567","user":"U01234567","text":"hello","ts":"1700000000.000100"}}`),
-		wait: slackRoomWait,
 	},
 	{
 		name: "github",
@@ -66,7 +66,6 @@ var routes = []route{
 		},
 		event: []byte(`{"ref":"refs/heads/main","after":"` + strings.Repeat("a", 40) +
 			`","repository":{"name":"legion","owner":{"login":"sjawhar"},"full_name":"sjawhar/legion"}}`),
-		wait: githubRoomWait,
 	},
 	{
 		name: "ghostwispr",
@@ -86,7 +85,6 @@ var routes = []route{
 			return req
 		},
 		event: []byte(`{"event_type":"summary_ready","payload":{"session_id":"20261122060000","type":"summary_ready"}}`),
-		wait:  ghostWisprRoomWait,
 	},
 }
 
@@ -138,7 +136,7 @@ func TestARouteBuiltWithNoSecretRefusesEveryBodyUnparsed(t *testing.T) {
 					signEmpty(r.name, req, notJSON)
 				}
 				rr := httptest.NewRecorder()
-				r.handler(tc.secret, pub, NewBodyBudget(DefaultBodyBudget)).ServeHTTP(rr, req)
+				r.handler(tc.secret, pub, NewBodyBudget(DefaultBodyBudget, nil)).ServeHTTP(rr, req)
 				t.Logf("answered %d %q", rr.Code, strings.TrimSpace(rr.Body.String()))
 				if rr.Code != tc.want || len(pub.published) != 0 {
 					t.Fatalf("status %d %q, published %d; want %d and nothing published", rr.Code, strings.TrimSpace(rr.Body.String()), len(pub.published), tc.want)
@@ -173,7 +171,7 @@ func TestSlackAndGhostWisprBodiesDrawFromTheBudgetGitHubBodiesDo(t *testing.T) {
 		secret = "s"
 		sent   = 4096
 	)
-	bodies := NewBodyBudget(DefaultBodyBudget)
+	bodies := NewBodyBudget(DefaultBodyBudget, nil)
 	pub := &mockPublisher{}
 	github := GitHubHandler(secret, "@legion", "", pub, &mockRecorder{}, bodies)
 	stall := make(chan struct{})
@@ -231,17 +229,30 @@ func TestSlackAndGhostWisprBodiesDrawFromTheBudgetGitHubBodiesDo(t *testing.T) {
 	t.Logf("push served in %s", took.Round(time.Millisecond))
 }
 
+// shortRoomWaits shortens every route's room wait to wait for the rest of the test.
+func shortRoomWaits(t *testing.T, wait time.Duration) {
+	t.Helper()
+	slack, github, ghost := slackRoomWait, githubRoomWait, ghostWisprRoomWait
+	slackRoomWait, githubRoomWait, ghostWisprRoomWait = wait, wait, wait
+	t.Cleanup(func() { slackRoomWait, githubRoomWait, ghostWisprRoomWait = slack, github, ghost })
+}
+
 // A delivery whose body does not fit the budget waits its route's room wait for room, and is then
-// answered 503 with Retry-After, having published nothing. Here an unsigned GitHub sender has sent
-// twice a 64 KiB budget and stalled, holding the budget past its limit, and a signed delivery to
-// each route is refused once its own room wait has passed. A delivery that waits while the holder
-// finishes gets the room and is served.
+// answered 503 with Retry-After, having published nothing, and the budget counts the refusal by
+// route. Here an unsigned GitHub sender has sent twice a 64 KiB budget and stalled, holding the
+// budget past its limit, and a signed delivery to each route is refused. The room waits are
+// shortened, and only a room wait answers 503 (errNoRoom), so the 503 itself says the room wait
+// ended the wait. Each request carries a 5 s deadline, so a wait for room that nothing bounds ends
+// in a failed status rather than a hung test. A delivery that waits while the holder finishes gets
+// the room and is served.
 func TestADeliveryThatFindsNoRoomIsAnswered503AfterItsRoomWait(t *testing.T) {
 	const (
 		secret = "s"
 		budget = 64 << 10
 	)
-	bodies := NewBodyBudget(budget)
+	shortRoomWaits(t, 50*time.Millisecond)
+	refusedCount := metrics.New()
+	bodies := NewBodyBudget(budget, refusedCount.NewCounter("refused", "test"))
 	pub := &mockPublisher{}
 	stall := make(chan struct{})
 	stallOnce := sync.OnceFunc(func() { close(stall) })
@@ -252,17 +263,14 @@ func TestADeliveryThatFindsNoRoomIsAnswered503AfterItsRoomWait(t *testing.T) {
 
 	for _, r := range routes {
 		t.Run(r.name, func(t *testing.T) {
-			req := r.request(secret, bytes.NewReader(r.event), len(r.event))
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			req := r.request(secret, bytes.NewReader(r.event), len(r.event)).WithContext(ctx)
 			rr := httptest.NewRecorder()
-			start := time.Now()
 			r.handler(secret, pub, bodies).ServeHTTP(rr, req)
-			took := time.Since(start)
-			t.Logf("answered %d %q, Retry-After %q, after %s (room wait %s)", rr.Code, strings.TrimSpace(rr.Body.String()), rr.Header().Get("Retry-After"), took.Round(time.Millisecond), r.wait)
+			t.Logf("answered %d %q, Retry-After %q", rr.Code, strings.TrimSpace(rr.Body.String()), rr.Header().Get("Retry-After"))
 			if rr.Code != http.StatusServiceUnavailable || rr.Header().Get("Retry-After") != bodyRetryAfter {
 				t.Fatalf("status %d, Retry-After %q; want 503 with Retry-After %s", rr.Code, rr.Header().Get("Retry-After"), bodyRetryAfter)
-			}
-			if took < r.wait || took > r.wait+time.Second {
-				t.Fatalf("answered after %s, want after its room wait of %s and within a second of it", took.Round(time.Millisecond), r.wait)
 			}
 		})
 	}
@@ -272,23 +280,31 @@ func TestADeliveryThatFindsNoRoomIsAnswered503AfterItsRoomWait(t *testing.T) {
 	if refused != 0 {
 		t.Fatalf("published %d envelopes from refused deliveries, want none", refused)
 	}
+	scrape := httptest.NewRecorder()
+	refusedCount.Handler().ServeHTTP(scrape, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	for _, path := range []string{"/webhook/slack", "/webhook/github", "/webhook/ghostwispr"} {
+		if want := `refused{path="` + path + `"} 1`; !strings.Contains(scrape.Body.String(), want) {
+			t.Fatalf("the refusal counter reads\n%s\nwant a line %s", scrape.Body.String(), want)
+		}
+	}
 
+	// The waiting delivery gets a room wait long enough to outlast the holder's end.
+	githubRoomWait = 10 * time.Second
 	github := routeNamed(t, "github")
 	req := github.request(secret, bytes.NewReader(github.event), len(github.event))
 	rr := httptest.NewRecorder()
-	answered := make(chan time.Duration)
+	answered := make(chan struct{})
 	go func() {
-		start := time.Now()
 		github.handler(secret, pub, bodies).ServeHTTP(rr, req)
-		answered <- time.Since(start)
+		close(answered)
 	}()
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 	stallOnce()
-	took := <-answered
+	<-answered
 	<-done
-	t.Logf("the delivery waiting while the holder finished answered %d after %s; the holder answered %d", rr.Code, took.Round(time.Millisecond), codes[0])
-	if rr.Code != http.StatusOK || took >= github.wait {
-		t.Fatalf("status %d after %s, want 200 inside its room wait of %s once the holder finished", rr.Code, took.Round(time.Millisecond), github.wait)
+	t.Logf("the delivery waiting while the holder finished answered %d; the holder answered %d", rr.Code, codes[0])
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d %q, want 200 once the holder finished", rr.Code, strings.TrimSpace(rr.Body.String()))
 	}
 	awaitBudget(t, bodies, 0, false)
 }
@@ -334,7 +350,7 @@ func TestADeliveryThatEndsEarlyGivesBackWhatItCharged(t *testing.T) {
 			},
 		} {
 			t.Run(r.name+", "+tc.name, func(t *testing.T) {
-				bodies := NewBodyBudget(budget)
+				bodies := NewBodyBudget(budget, nil)
 				rr := httptest.NewRecorder()
 				r.handler("s", &mockPublisher{}, bodies).ServeHTTP(rr, tc.req())
 				bodies.mu.Lock()

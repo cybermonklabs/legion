@@ -12,7 +12,8 @@ body: |-
   size), the start logs it, and any other value refuses the start naming the variable. A body is
   still charged as its bytes arrive. A delivery that finds no room waits at most its route's room
   wait (Slack 1 s, GitHub 5 s, Ghost Wispr 4 s) and is then answered `503` with `Retry-After: 1`,
-  and the listener logs `webhook body refused`. A Slack body over 1 MiB is now a `413`.
+  the listener logs `webhook body refused`, and `envoy_webhook_body_refused_total{path}` counts
+  it. A Slack body over 1 MiB is now a `413`.
 time: 2026-11-22T06:48:29Z
 custom:
     Issue: pr4965
