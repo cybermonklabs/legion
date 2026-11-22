@@ -102,10 +102,15 @@ func TestARefusedWriteKeepsTheHeadsETags(t *testing.T) {
 	// answer: GitHub refuses its Checks fields, which sends the pass to the REST reads these
 	// tests are about.
 	h.github.refuseChecks(gitHubRepository, headSHA)
+	ci := checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z")
 	h.github.setCheckRuns(gitHubRepository, headSHA,
-		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
+		ci,
 		checkRun(2, "enormous", "completed", "success", otherApp, "2026-11-05T03:01:01Z"),
 	)
+	// The listener recorded ci-ok from its webhook, so the head has a record, and a refusal for
+	// the bounds leaves it there: cistore writes it as it was, marked Overflowed
+	// (TestRecordRunsPastTheRecordBoundWritesNoneOfThem), which this writer does not mimic.
+	h.post("check_run", webhookBody("check_run", ci), "d1")
 	h.refuseWrites("enormous")
 
 	h.pass()
