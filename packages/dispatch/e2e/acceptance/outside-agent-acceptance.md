@@ -353,8 +353,9 @@ secret, and asks no terminal. In this gate it does these steps:
 6. It reads the run every 10 s (`gh run view --json status,jobs`) until its step
    `The delisting window` reads `in_progress`; then it reads the person on the access list with the
    list command (the control) and runs the owner's remove command, its clock read before and after,
-   as T5's removal above does. A step read `completed` before it was read running, a run that ended
-   first, or an hour with no such read is T5's UNKNOWN, and no removal is made.
+   as T5's removal above does. A step read `completed` or `skipped` before it was read running (the
+   step ends at once when the driver kept no cookie), a run that ended first, or an hour with no such
+   read is T5's UNKNOWN, and no removal is made.
 7. It waits for the run's end and downloads its artifacts `outside-edge-refusals`,
    `outside-path-reach`, `outside-edge`, `restricted-sweep` and `outside-edge-t5`.
 
