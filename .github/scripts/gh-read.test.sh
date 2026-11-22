@@ -62,18 +62,17 @@ fi
 #                release view and edit send that lookup and the REST read together and take the
 #                REST answer when the lookup finds no draft, so the REST answer closes second,
 #                after both requests opened.
-#   rate-limit-delay  seconds the rate_limit route takes to answer: it moves the stand-in clock
-#                (below) on by that many before it answers, as a route that took that long would.
+#   rate-limit-delay  seconds the rate_limit route holds its answer, read when it was asked.
 #   raw          present: GET /repos/o/r/raw answers this file's bytes as text/plain, a body gh's
 #                request trace prints as it came, line for line.
 # and appends `<epoch> <method> <path>` to `log` for every request it answers.
 #
 # Its clock is the real one plus clock-offset, in whole seconds (0 while the file is absent). A
-# case driven on the stand-in clock (drive_on_clock below) runs the helper with a `sleep` that adds
-# its seconds to clock-offset and returns at once, and with a `date +%s` that answers the same
-# clock. So a wait the helper sleeps takes no time, and the helper, the stand-in's spends and
+# case driven on the stand-in clock (drive_on_clock below) runs the helper with a `sleep` that waits
+# one real second and then adds its seconds to clock-offset, and with a `date +%s` that answers the
+# same clock. So a wait the helper sleeps takes a second, and the helper, the stand-in's spends and
 # resets and the time logged for each request all read one clock: a call the helper makes before a
-# reset reaches the stand-in before that reset, however the helper waited. The server answers
+# reset, or before its sleep has ended, reaches the stand-in before that reset. The server answers
 # each request in a thread of its own, and gh release view and edit send two at once, so the steps
 # that read a state file and then write one (spent-until, secondary-done, refused-calls) run under
 # one lock, and so does the read of spent-until each answer is made from. The two hold knobs make
@@ -125,15 +124,6 @@ def write(name, value, mode="w"):
 def clock():
     """The stand-in's clock: the real one plus clock-offset."""
     return time.time() + int(read("clock-offset", "0"))
-
-
-def move_clock(seconds):
-    """Moves the stand-in clock on by whole seconds, in one rename, so no read finds the file half
-    written."""
-    path = os.path.join(state, "clock-offset")
-    with open(f"{path}.next", "w") as handle:
-        handle.write(str(int(read("clock-offset", "0")) + seconds))
-    os.replace(f"{path}.next", path)
 
 
 def knob(name):
@@ -228,8 +218,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             bucket = {"limit": 15000, "used": 15000 if spent else 0,
                       "remaining": 0 if spent else 15000,
                       "reset": spent_until if spent else int(now) + 3600}
-            if read("rate-limit-delay"):
-                move_clock(int(read("rate-limit-delay")))
+            time.sleep(float(read("rate-limit-delay", "0")))
             self.answer(200, {"resources": {"core": bucket, "graphql": dict(bucket, limit=5000)},
                               "rate": bucket})
         elif secondary:
@@ -370,16 +359,20 @@ logged_wait_names() {
 }
 
 # The stand-in clock (the stand-in GitHub's header says what it is). $work/clockbin holds a sleep
-# that adds its whole seconds to the stand-in's clock-offset and returns at once, and a date whose
+# that waits one real second, then adds its whole seconds to the stand-in's clock-offset, and a date whose
 # `+%s` answers the real time plus that offset, every other form of it being the real date's.
 mkdir -p "$work/clockbin"
 {
-  printf '#!/usr/bin/env bash\nset -euo pipefail\nstate=%q\n' "$work/state"
+  printf '#!/usr/bin/env bash\nset -euo pipefail\nstate=%q\nreal_sleep=%q\n' "$work/state" "$(command -v sleep)"
   cat <<'SH'
 if ! [[ $# -eq 1 && $1 =~ ^[0-9]+$ ]]; then
   echo "the stand-in clock's sleep takes whole seconds, not '$*'" >&2
   exit 2
 fi
+# A second of real time before the clock moves: a helper that did not wait for its sleep (one
+# that sent it to the background) makes its next call inside that second, before the clock has
+# moved, and the stand-in refuses it as a real GitHub would.
+"$real_sleep" 1
 offset=$(cat "$state/clock-offset" 2>/dev/null || echo 0)
 echo "$((offset + $1))" > "$state/clock-offset.next"
 mv "$state/clock-offset.next" "$state/clock-offset"
@@ -397,7 +390,7 @@ SH
 } > "$work/clockbin/date"
 chmod +x "$work/clockbin/sleep" "$work/clockbin/date"
 # drive_on_clock <as for drive>: drive with the stand-in clock's sleep and date first on PATH, so a
-# wait the helper sleeps takes no time and a call it makes after the wait reaches the stand-in that
+# wait the helper sleeps takes a second and a call it makes after the wait reaches the stand-in that
 # many seconds later by the stand-in's clock. The case's `github` starts the clock at the real time.
 drive_on_clock() { drive PATH="$work/clockbin:$PATH" "$@"; }
 
@@ -766,13 +759,13 @@ check "prints the raw answer on stdout, whole" "$(contains "$out" '^a raw line a
 check "and nothing on stderr" "$(is "$err" '')"
 
 echo "case: the wait is measured from after the rate_limit read, not before it"
-# The rate_limit route takes 5 s to answer a reset 3 s after the refusal (it moves the stand-in clock
-# on 5 s before it answers): the budget is back by the time the answer arrives, so the call goes
-# again at once and logs no wait. A clock read before the probe would see the reset still ahead and
-# sleep for it, logging the wait.
+# The rate_limit route takes 5 s to answer a reset 3 s after the refusal: the budget is back by the
+# time the answer arrives, so the call goes again at once and logs no wait. A clock read before the
+# probe would see the reset still ahead and sleep for it, logging the wait. The 5 s are real, so the
+# helper's own bound on that read (timeout 30) meets a slow answer too.
 github 3
 echo 5 > "$work/state/rate-limit-delay"
-drive_on_clock JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 check "exits 0" "$(is "$status" 0)"
 check "calls the route twice" "$(is "$(calls /repos/o/r/pulls/1)" 2)"
 check "logs no wait: the reset passed while the rate-limit read answered" "$(is "$(warnings)" 0)"
