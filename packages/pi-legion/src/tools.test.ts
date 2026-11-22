@@ -10,7 +10,11 @@ import {
   LegionStateResponse,
 } from "@legion/contracts/legion-api";
 import { DispatchServiceError } from "@legion/envoy-client/dispatch-http";
-import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
+import {
+  createLegionDaemonClient,
+  LegionDaemonApiError,
+  type LegionDaemonClient,
+} from "@legion/pi-shared/daemon-client";
 import {
   findHandoffReport,
   type JjRunner,
@@ -106,11 +110,11 @@ function recordingDaemon(options: {
     "phaseRetry",
     "signOff",
     "rootClose",
-    "childPark",
     "childRerun",
     "issueStatus",
     "freshSession",
     "compact",
+    "relaunch",
     "handoffComplete",
     "releaseRecords",
   ];
@@ -244,12 +248,30 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
   "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
   "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
-  "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: run each one " +
-  "to done, and sign off again. " +
-  "Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. " +
-  "Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer. " +
+  "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work. " +
+  "Sign off again when each of them has left the workflow. " +
+  "The daemon takes the owning architect's done, backlog, icebox or triage on a child as it takes a person's move. " +
+  "End a child with your own status write in Dispatch. " +
+  "Write done with a reason when the child's work is done, folded into another issue or no longer needed: " +
+  "dispatch issue-update --issue <KEY> --status done --reason '<why>'. " +
+  "For a fold, name the carrier in the reason: the issue that carries the work. " +
+  "Before the done of a fold, make each issue that is blocked_by the child wait on the carrier instead. " +
+  "Done starts those issues, and the Referenced by list of dispatch read names each of them as blocked_by. " +
+  "Before done on a running child, have its worker push the work that the carrier needs. " +
+  "Done ends the worker's turn and the pod at once. " +
+  "Unless the work of the child's open pull request should land, close that pull request with your own App (gh pr close). " +
+  "When it is in the merge queue, first take it out (GraphQL dequeuePullRequest). " +
+  "Do this before done, or at once after a done that you wrote first. " +
+  "Write backlog or icebox only when a person asked for that move, or as the first step of a restart. " +
+  "A restart is backlog, then rerun_child. " +
+  "Say why in a dispatch comment. " +
+  "Write no status on a child that is already done, because a move out of done ends an open production check. " +
+  "After each move, read the child back (dispatch read --issue <KEY>). " +
+  "When the daemon set the move back, write it again. " +
+  "A status that you wrote and that the daemon has not taken yet does not count until read_record shows it. " +
+  "When a child can neither finish nor take one of these moves, ask the person. Hold the acceptance until they answer. " +
   "close_root is refused the same way and with the same code while an issue beneath the root is still in the workflow, " +
-  "since closing it would stop that work mid-turn: answer it the same way, park_child under the same rule included. " +
+  "because closing it would stop that work mid-turn. Answer that refusal the same way. " +
   "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
   "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
   "under it now: wait for the ancestor to close, then release it. " +
@@ -258,7 +280,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +
   "state with its last turn times — and with issue, issues, phase or settings returns the full records it names; " +
   "set_status moves an issue to todo, backlog or icebox. " +
-  "Move an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. " +
+  "With set_status, the controller moves an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cites that reason in a comment on the issue. " +
   "Two writes are not that move: a root's restart, which sets backlog and then todo in the same turn, and the " +
   "controller's report issue's icebox, because that issue holds no work. " +
   "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
@@ -302,6 +324,31 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "Each refusal says what the claim does now and which operation reaches each state. It " +
   "names no moment to come back at: ask again later, and read the claim's state in " +
   "read_state. " +
+  "relaunch (claim) starts again, on the session it recorded, a claim that Envoy cannot reach, as the daemon starts " +
+  "a claim again after a death, and charges it nothing: claim is the claim's token, as the daemon's notice of an " +
+  "unreachable claim and the claim's locator in read_state name it. It reaches a claim in a turn: the daemon stops " +
+  "the old process through the role's launcher, and the resumed session reads what its cut turn did. The answer is " +
+  "empty, also where the daemon's store did not answer the launch after the stop: the daemon then starts the claim " +
+  "itself at its probe interval. " +
+  "The daemon refuses it, stopping nothing, for a grant that is not the controller's (CONTROLLER_REQUIRED), " +
+  "for a token it holds no claim under (NO_CLAIM), for a claim Envoy can reach (CLAIM_REACHABLE), for a claim " +
+  "between states (CLAIM_UNSETTLED), for the project's controller, which only the daemon relaunches, and only " +
+  "where it runs the controller itself (controller: daemon in legion.yaml) (CLAIM_IS_CONTROLLER), for a claim " +
+  "whose tree allows it no launch, because the tree's cleanup is reserved or the tree was opened again since " +
+  "(TREE_REFUSES_LAUNCH), which that tree's close or its next start decides, and for a " +
+  "claim whose worker stream showed a step in the last 20 minutes, which is in " +
+  "a turn whose session sent an activity report in that turn in the last 20 minutes, whose open call is not a " +
+  "wait, or whose last activity report since its launch is missing or shows a background job or a " +
+  "subagent running (RELAUNCH_GUARD): relaunch that claim again when the daemon's notice says the guard would let " +
+  "it through. While the daemon is stopping it answers 503 with no code and stops nothing: relaunch again once " +
+  "it is back. TREE_CHECK_FAILED (503) says the daemon could not check the claim's tree and stopped nothing: " +
+  "relaunch it again. RELAUNCH_FAILED says the relaunch failed or the daemon could not record it, and the claim may " +
+  "already be stopped: read it in read_state before you relaunch it again. The refusals coded " +
+  "LAUNCHER_NOT_CONNECTED (the role's launcher is not connected), " +
+  "RELAUNCH_REPLACES_POD (the launch would replace the pod and end every other role in it), PROCESS_OUTLIVED_STOP " +
+  "(the old process outlived its stop), POD_UNREACHABLE (every claim of a pod of two or more claims is " +
+  "unreachable) and RELAUNCHED_RECENTLY (the claim was relaunched in the last 6 hours) are cases for a person: " +
+  "ask one with a dispatch ask. " +
   "pause (reason) pauses the whole project, and resume ends its pause; neither takes an issue. While the project " +
   "is paused the daemon admits no issue, and it starts no role and gives no role a task except the controller. Every " +
   "other role stops with its conversation kept, an idle one at once and one in a turn when that turn ends, and the " +
@@ -312,8 +359,8 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "starts once, at the daemon's wake pacing, and every other role it stopped stays stopped until its next wake. " +
   "The answer is the pause with endedAt and endedBy, and released, how many held rows the resume let out. The " +
   "daemon refuses a resume of a project that is not paused (PROJECT_NOT_PAUSED, naming its last pause when it has one). While " +
-  "the project is paused it refuses fresh_session and compact (PROJECT_PAUSED, naming the pause that stands), " +
-  "since each would start a turn. " +
+  "the project is paused it refuses fresh_session, compact and relaunch (PROJECT_PAUSED, naming the pause that " +
+  "stands), since each would start a turn. " +
   "What a later phase needs goes in your handoff; a question for another live role goes to its role topic with envoy_publish.";
 
 /** Every session kind the tool answers for: a root architect, a sub-architect, each phase worker,
@@ -346,6 +393,25 @@ test("the legion tool's description is the exact text Oh My Pi agents read, for 
   }
 });
 
+// The daemon's refusals and notices over children carry its rules for ending a child
+// (record.EndChildRule) and its sentence on a status it has not taken yet
+// (record.StatusNotTakenYet), and the description gives an architect the same words. The daemon's
+// golden test (`packages/daemon/internal/api`, TestTheEndChildRuleGolden) writes both texts to
+// `end-child-rule.json`. This case holds the description to the file, so a word changed on either
+// side alone fails one test or the other. The first and the last sentence of the rule are written
+// out here, so a fixture that holds only a part of the rule fails here too.
+test("the legion tool's description carries the daemon's rules for ending a child and its not-taken-yet sentence, word for word", () => {
+  const { rule, notTakenYet } = daemonFixture("end-child-rule.json") as {
+    readonly rule: string;
+    readonly notTakenYet: string;
+  };
+  expect(rule).toStartWith("End a child with your own status write in Dispatch. ");
+  expect(rule).toEndWith(" When the daemon set the move back, write it again.");
+  const { description } = toolFor(claimSession("architect"));
+  expect(description).toContain(rule);
+  expect(description).toContain(notTakenYet);
+});
+
 /** The `legion` tool's parameter schema as Oh My Pi agents are given it, serialized whole: every
  * property and every `op` value in the order the tool declares them. */
 const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
@@ -361,7 +427,6 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "retry_or_escalate",
         "sign_off",
         "close_root",
-        "park_child",
         "rerun_child",
         "read_record",
         "read_release_records",
@@ -372,6 +437,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "set_status",
         "fresh_session",
         "compact",
+        "relaunch",
         "pause",
         "resume",
       ],
@@ -409,7 +475,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     reason: {
       type: "string",
       description:
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, and the controller's pause's why; no other operation takes it. park_child and rerun_child take only issue: say why you park a child in a dispatch comment on it",
+        "close_root's and request_backward_move's why, retry_or_escalate's optional why, and the controller's pause's why. No other operation takes it. rerun_child takes only issue: say why in a dispatch comment on the child",
     },
     decision: { type: "string", enum: ["retry", "escalate"] },
     summary: { type: "string" },
@@ -424,6 +490,11 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     role: {
       type: "string",
       enum: ["architect", "planner", "implementer", "tester", "reviewer", "merger"],
+    },
+    claim: {
+      type: "string",
+      description:
+        "relaunch's claim: the token of a claim Envoy cannot reach, as the daemon's notice of it names it",
     },
   },
   required: ["op"],
@@ -626,10 +697,6 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
   await expect(run(architect, { op: "close_root", issue: "LEGION-208" })).resolves.toMatchObject({
     isError: true,
   });
-  await expect(run(architect, { op: "park_child", issue: "LEGION-209" })).resolves.toMatchObject({
-    details: {},
-  });
-  expect(calls.at(-1)).toEqual(["childPark", { grantId: "grant-208", issue: "LEGION-209" }]);
   await expect(run(architect, { op: "rerun_child", issue: "LEGION-209" })).resolves.toMatchObject({
     details: {},
   });
@@ -637,7 +704,7 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
   await expect(run(architect, { op: "read_record", issue: "LEGION-208" })).resolves.toMatchObject({
     details: { record: state.issues["LEGION-208"] },
   });
-  for (const op of ["sign_off", "close_root", "park_child", "rerun_child"]) {
+  for (const op of ["sign_off", "close_root", "rerun_child"]) {
     await expect(run(worker, { op, issue: "LEGION-208" })).resolves.toMatchObject({
       isError: true,
     });
@@ -718,13 +785,13 @@ test("retry_or_escalate takes a reason", async () => {
   expect(calls).toHaveLength(before);
 });
 
-// Architects sent park_child a `reason`, as close_root and request_backward_move take one, and
-// were told only that the field is refused: five refusals over four days of architect sessions,
-// each sent again without it and its why lost. The daemon keeps no why for a park or a rerun, so
-// a refusal of their `reason` names the fields the operation takes and the dispatch comment on
-// the child the why goes in, before any grant is minted. Any other operation's refusal names the
+// Architects sent a child operation a `reason`, as close_root and request_backward_move take one,
+// and were told only that the field is refused: five refusals over four days of architect
+// sessions, each sent again without it and its why lost. The daemon keeps no why for a rerun, so a
+// refusal of its `reason` names the fields the operation takes and the dispatch comment on the
+// child the why goes in, before any grant is minted. Any other operation's refusal names the
 // fields it takes alone: it may name no single issue (release_children, whose field is `issues`).
-test("park_child refuses a reason before any grant, naming issue and the dispatch comment the why goes in", async () => {
+test("rerun_child refuses a reason before any grant, naming issue and the dispatch comment the why goes in", async () => {
   const { calls, daemon } = recordingDaemon({});
   const tool = createLegionTool({
     pi,
@@ -738,10 +805,6 @@ test("park_child refuses a reason before any grant, naming issue and the dispatc
     session: () => claimSession("architect"),
   });
   const refusals = [
-    [
-      { op: "park_child", issue: "LEGION-209", reason: "Folded into LEGION-208's pull request" },
-      'park_child does not accept field "reason"; it takes issue. Say why in a dispatch comment on the child',
-    ],
     [
       { op: "rerun_child", issue: "LEGION-209", reason: "The spec changed" },
       'rerun_child does not accept field "reason"; it takes issue. Say why in a dispatch comment on the child',
@@ -1958,6 +2021,167 @@ test("the controller reads the state without a grant and sets an issue's status 
   });
   expect(calls).toHaveLength(before);
   expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller"]);
+});
+
+// R5: the controller relaunches a claim Envoy cannot reach on its same session. It names the claim
+// by its token, as the daemon's notice of the claim does, mints its grant as set_status does, and
+// hands on the daemon's answer; a refusal reaches it with the code it decides on, since five of
+// them are a person's case and the rest are not. A call that names no claim, or names it by issue
+// and role as the two other recoveries do, is refused before any grant, and no claim's session has
+// the operation.
+test("relaunch posts the claim's token under the controller's grant, and hands on the daemon's refusal", async () => {
+  const token = "legion-acme-acme-209-implementer"; // fixture-secret: a claim token, the name the notices carry
+  const minted: string[] = [];
+  const { calls, daemon } = recordingDaemon({});
+  const run = (parameters: Record<string, unknown>) =>
+    controllerTool(daemon, minted).execute(
+      "",
+      parameters,
+      undefined,
+      undefined,
+      context("ses_controller")
+    );
+
+  await expect(run({ op: "relaunch", claim: token })).resolves.toEqual({
+    content: [{ type: "text", text: "{}" }],
+    details: {},
+  });
+  expect(minted).toEqual(["ses_controller"]);
+  expect(calls).toEqual([["relaunch", { grantId: "controller-grant-1", claim: token }]]);
+
+  const refusals = [
+    [{ op: "relaunch" }, "relaunch requires claim"],
+    [{ op: "relaunch", claim: " " }, "relaunch requires claim"],
+    [
+      { op: "relaunch", issue: "ACME-209", role: "implementer" },
+      'relaunch does not accept field "issue"; relaunch does not accept field "role"; it takes claim',
+    ],
+    [
+      { op: "fresh_session", issue: "ACME-209", role: "implementer", claim: token },
+      'fresh_session does not accept field "claim"; it takes issue, role',
+    ],
+  ] as const;
+  for (const [parameters, message] of refusals) {
+    const result = await run(parameters);
+    expect(result.isError).toBe(true);
+    expect(result.content).toEqual([{ type: "text", text: expect.stringContaining(message) }]);
+  }
+  expect(calls).toHaveLength(1);
+  expect(minted).toEqual(["ses_controller"]);
+
+  for (const session of [claimSession("architect"), claimSession("implementer")]) {
+    const result = await createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => session,
+    }).execute("", { op: "relaunch", claim: token }, undefined, undefined, context());
+    expect(result.content).toEqual([
+      { type: "text", text: `relaunch is not available to a ${session.kind} session` },
+    ]);
+  }
+  expect(calls).toHaveLength(1);
+
+  const refused = new LegionDaemonApiError(
+    "POST",
+    "/legion/v1/claims/relaunch",
+    409,
+    "LAUNCHER_NOT_CONNECTED",
+    "the role's launcher is not connected"
+  );
+  const refusing = recordingDaemon({ answers: { relaunch: refused } });
+  const answer = await controllerTool(refusing.daemon, []).execute(
+    "",
+    { op: "relaunch", claim: token },
+    undefined,
+    undefined,
+    context("ses_controller")
+  );
+  expect(answer.isError).toBe(true);
+  expect(answer.content).toEqual([
+    {
+      type: "text",
+      text: "POST /legion/v1/claims/relaunch failed with 409 LAUNCHER_NOT_CONNECTED: the role's launcher is not connected",
+    },
+  ]);
+});
+
+// R5: `read_state` shows a claim Envoy cannot reach as unreachable, with the time the daemon
+// found it so. The summary is what read_state answers with no field, so it carries the mark on
+// the claim's own line, with the token relaunch takes; and the controller's own mark, which
+// stands on no issue, on a line of its own. A reachable claim's line is as it was.
+test("read_state's summary marks each claim Envoy cannot reach, and the controller", async () => {
+  const claim = (session: string, unreachable?: Record<string, string>) => ({
+    session,
+    state: "working",
+    locator: {
+      runtime: "sandbox",
+      claim: `legion-acme-acme-209-${session}`,
+      incarnation: "uid-209/1",
+      sandbox: {
+        namespace: "legion",
+        name: "acme-209",
+        podUid: "uid-209",
+        container: "roles",
+        generation: 1,
+      },
+    },
+    pluginContract: 208,
+    lastTurnStart: "2026-11-12T15:45:39Z",
+    ...(unreachable === undefined ? {} : { unreachable }),
+  });
+  const state = legionState({
+    controllerLocator: {
+      runtime: "kubernetes",
+      external: true,
+      sessionId: "ses_controller",
+      registeredAt: "2026-11-12T10:00:00Z",
+      pluginContract: 208,
+      unreachable: { since: "2026-11-12T18:20:00Z", lastSeen: "2026-11-12T17:59:00Z" },
+    },
+    issues: {
+      "ACME-209": {
+        key: "ACME-209",
+        generation: 1,
+        phase: "implementing",
+        status: "in_progress",
+        repo: "acme/widgets",
+        defaultBranch: "main",
+        architect: claim("architect"),
+        workers: {
+          implementer: {
+            claim: claim("implementer", {
+              since: "2026-11-12T16:11:01Z",
+              lastSeen: "2026-11-12T15:51:01Z",
+            }),
+            pass: 1,
+            rounds: 0,
+          },
+        },
+      },
+    },
+  });
+  const { daemon } = recordingDaemon({ state });
+  const result = await controllerTool(daemon, []).execute(
+    "",
+    { op: "read_state" },
+    undefined,
+    undefined,
+    context("ses_controller")
+  );
+  const [block] = result.content;
+  const lines = (block !== undefined && block.type === "text" ? block.text : "").split("\n");
+
+  expect(lines).toContain("controller unreachable 2026-11-12T18:20:00Z");
+  expect(lines).toContain("  architect working 2026-11-12T15:45:39Z -");
+  expect(lines).toContain(
+    "  implementer working 2026-11-12T15:45:39Z - unreachable 2026-11-12T16:11:01Z claim legion-acme-acme-209-implementer"
+  );
 });
 
 // R6: a role reads which plugin build its own process runs. The build is the manifest of the

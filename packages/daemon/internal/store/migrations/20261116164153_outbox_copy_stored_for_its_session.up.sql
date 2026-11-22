@@ -1,0 +1,21 @@
+-- 20261116164153_outbox_copy_stored_for_its_session.up.sql — the record that a role message or hook
+-- prompt was stored by the Envoy listener for one session (R5).
+--
+-- outbox.stored_for is the session a publish of the row was answered 504 receipt_timeout for: the
+-- listener stored the forward in the stream for that holder, which reads it from its own consumer
+-- whenever it runs again, and a later publish under the same key is dropped by the stream as the
+-- copy it already holds, so the listener answers receipt_timeout again for ever. stored_generation
+-- is the generation of the claim's process when the copy was first stored for that session. A
+-- later try finishes the row with no new publish once a newer process of the claim says ready on
+-- that same session (internal/daemon's storedForItsSession); a role held by another session is
+-- published again under the same key. Written in the transaction that returns the row to the
+-- outbox after the try the listener answered, and kept when a later answer names the same
+-- session; an answer naming another session replaces both. Every existing row takes '' and 0: no
+-- copy of it is known to be stored.
+--
+-- Rolling the image back needs no statement: the release before this one names neither column,
+-- and its outbox retries leave both as they stand. It publishes such a row again as before.
+--
+-- There is no down file: migrations here are forward-only.
+alter table outbox add column stored_for text not null default '';
+alter table outbox add column stored_generation bigint not null default 0;

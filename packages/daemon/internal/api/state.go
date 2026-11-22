@@ -462,6 +462,10 @@ type ControllerLocator struct {
 	// PluginContract is the contract the registered session's plugin declared, 0 when none
 	// recorded, always emitted.
 	PluginContract int `json:"pluginContract"`
+	// Unreachable is the daemon's mark of its own controller out of reach of Envoy, as every
+	// claim view carries it (ClaimView.Unreachable); absent while it is reachable, under
+	// `controller: operator`, and for a caller below the contract that added it.
+	Unreachable *UnreachableView `json:"unreachable,omitempty"`
 }
 
 // ControllerLocatorOf is record as the state shows it under the runtime runtimeName names: the
@@ -1023,6 +1027,29 @@ type ClaimView struct {
 	// cause word the launch chooses, and this key says which check refused it, from the first
 	// refused try on.
 	LeakCheckCause string `json:"leakCheckCause,omitempty"`
+	// Unreachable is the daemon's mark of a claim whose session has not registered with Envoy for
+	// 20 minutes (supervise.Reach, R5), and is absent while it is reachable. The claim keeps its
+	// state, so `state` reads as before and every rule that reads it is unchanged; this is the case
+	// for the controller's `relaunch`.
+	Unreachable *UnreachableView `json:"unreachable,omitempty"`
+}
+
+// UnreachableView is a claim's mark out of reach as the state shows it: Since, the moment the 20
+// minutes were counted from — the latest of its session's last registration, the daemon's boot,
+// the session's first ready, and the daemon's last failed or empty read of Envoy's list — and
+// LastSeen, the last registration of the session the daemon read, absent where it read none
+// since its boot.
+type UnreachableView struct {
+	Since    time.Time  `json:"since"`
+	LastSeen *time.Time `json:"lastSeen,omitempty"`
+}
+
+// UnreachableViewOf is r's mark as a view shows it, and nil for a claim not marked.
+func UnreachableViewOf(r supervise.Reach) *UnreachableView {
+	if !r.Unreachable() {
+		return nil
+	}
+	return &UnreachableView{Since: r.Since, LastSeen: instant(r.LastSeen)}
 }
 
 // ClaimFailureView is the failure record a claim carries as a claim view shows it: Cause is the
@@ -1137,6 +1164,8 @@ func ClaimViewOf(c supervise.Claim) ClaimView {
 		Failure:        FailureViewOf(c),
 		PendingCause:   c.PendingCause,
 		LeakCheckCause: c.LeakCheckCause,
+		// The mark of a claim Envoy cannot reach, which changes no state (supervise.Reach).
+		Unreachable: UnreachableViewOf(c.Reach),
 	}
 }
 

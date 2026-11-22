@@ -69,18 +69,36 @@ func TestTheRegistrationDeadlineLogsTheClaimTheReasonAndTheAttempt(t *testing.T)
 
 // A daemon stopping mid-relaunch leaves a claim with no Locator at all, in StateLaunching: the
 // registration deadline retires the live process (letGo clears Locator) and starts its relaunch,
-// but the relaunch's own backoff wait (launchAfter's backOff, machine.go) returns the context's
-// own cancellation before ever reaching a new Spawn, since the daemon's shutdown context is what
-// every internally-armed timer's Handle call carries (arm, machine.go). The retired process's own
+// the daemon's stop lands while the retirement's stop of the process waits in the runtime, and the
+// relaunch's own backoff wait (launchAfter's backOff, machine.go) then returns the context's own
+// cancellation before ever reaching a new Spawn, since the deadline's decision runs on the
+// machine's own context (arm, machine.go), which the stop cancels. The retired process's own
 // connection then closing (onClosed is valid in StateLaunching, table.go) must not crash: probe
 // has nothing to probe and nothing to arm, since the claim's own relaunch path, not this stream
 // event, decides what happens to it next.
 func TestAStreamClosedAfterAShutdownInterruptedRelaunchDoesNotCrash(t *testing.T) {
-	h := newHarness(t)
+	h := newBareHarness(t)
+	gated := &gatedRuntime{Runtime: h.rt, entered: make(chan struct{}, 1), release: make(chan struct{})}
+	h.deps.Runtime = gated
+	if err := h.store.PutClaim(h.ctx, queuedClaim()); err != nil {
+		t.Fatal(err)
+	}
+	h.start(queuedClaim())
 	h.reach(StateShimConnected)
+	advanced := make(chan struct{})
+	go func() {
+		defer close(advanced)
+		h.clock.Advance(deadline)
+	}()
+	select {
+	case <-gated.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the registration deadline's retirement never reached the runtime")
+	}
 	h.shutdown()
-
-	h.advance(deadline)
+	close(gated.release)
+	<-advanced
+	h.m.Wait()
 
 	if loc := h.claim().Locator; loc != nil {
 		t.Fatalf("claim %+v, want no Locator: the relaunch's own backoff wait should have been cut short by the shutdown before any new Spawn", loc)

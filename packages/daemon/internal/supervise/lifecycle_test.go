@@ -45,7 +45,7 @@ func (s *epochStore) CheckLaunch(_ context.Context, c Claim) error {
 		return treelifecycle.ErrCleanupReserved
 	}
 	if c.TreeEpoch != s.epoch {
-		return fmt.Errorf("bound epoch %d is stale; current is %d", c.TreeEpoch, s.epoch)
+		return fmt.Errorf("bound epoch %d, current is %d: %w", c.TreeEpoch, s.epoch, treelifecycle.ErrEpochStale)
 	}
 	return nil
 }
@@ -141,6 +141,19 @@ type unansweredSuspend struct {
 
 func (r *unansweredSuspend) Suspend(ctx context.Context, loc runtime.Locator) error {
 	r.store.unanswered = r.checks
+	return r.Runtime.Suspend(ctx, loc)
+}
+
+// reopeningSuspend has the claim's tree confirm its cleanup and open its next lifetime while a
+// stop waits out its grace, as a fresh admission does: after a relaunch's own lifecycle check, and
+// before its launch's, so the claim is bound to an epoch that is no longer open.
+type reopeningSuspend struct {
+	*fake.Runtime
+	store *epochStore
+}
+
+func (r *reopeningSuspend) Suspend(ctx context.Context, loc runtime.Locator) error {
+	r.store.epoch++
 	return r.Runtime.Suspend(ctx, loc)
 }
 

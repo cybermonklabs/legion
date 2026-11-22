@@ -175,7 +175,13 @@ import {
   noteInjectedUserTurn,
   noteTypedUserTurn,
 } from "@legion/pi-shared/injected-user-turns";
-import { LOCAL_ENVOY_NOTICE, publishEnvoyPluginInterface } from "@legion/pi-shared/interface";
+import {
+  CUT_TURN_NOTE_BOUND_MS,
+  type CutTurnNote,
+  LOCAL_ENVOY_NOTICE,
+  publishEnvoyPluginInterface,
+  waitForCutTurnNote,
+} from "@legion/pi-shared/interface";
 import type {
   ContentBlock,
   ContextUsage,
@@ -208,6 +214,7 @@ import { name as packageName, version as packageVersion } from "../package.json"
 };
 import { CARD_DELIVERED_ENTRY, CardAges } from "../src/card-age";
 import { CardWake, type EnvoyCardMarker } from "../src/card-wake";
+import { cutTurn, cutTurnNoticeText, TURN_MARK_ENTRY, type TurnMark } from "../src/cut-turn";
 import { withDispatchFirst } from "../src/dispatch-first";
 import { sessionDispatchClient } from "../src/dispatch-session";
 import { recordEnvoySession, resolveEnvoySession } from "../src/envoy-session";
@@ -231,6 +238,11 @@ import {
   type TaskHandle,
   taskWasAbandoned,
 } from "../src/registration-state";
+import {
+  REGISTRATION_WATCHDOG_MS,
+  RegistrationWatchdog,
+  watchdogCheckMs,
+} from "../src/registration-watchdog";
 import { scrubbedConsole, scrubbedHost, scrubbedLogger } from "../src/scrubbed-host";
 import { ServerClock } from "../src/server-clock";
 import {
@@ -888,6 +900,28 @@ export default function envoyExtension(hostApi: PiApi): void {
   // the transcript path leaves no entry behind for a subagent to resolve (`src/envoy-session.ts`).
   let recordedSessionKey: string | undefined;
   let heartbeatRegistered = false;
+  // How many heartbeats this process has armed, which numbers each: the first is the one the rig's
+  // seam stops, and only the one armed last runs (`ensureHeartbeat`).
+  let heartbeatArmings = 0;
+  // When this process armed its first heartbeat, when the live heartbeat's own interval tick
+  // last ran, and the tick itself, which the watchdog over a stopped heartbeat reads and runs
+  // (`armRegistrationWatchdog`). Both are undefined until a heartbeat is armed, and the arming
+  // time stands for a heartbeat whose timer never fired at all.
+  let heartbeatArmedAt: number | undefined;
+  let heartbeatTickedAt: number | undefined;
+  let heartbeatTick: ((cause: "interval" | "retry" | "watchdog") => void) | undefined;
+  // This process's own timer, cleared at the session's shutdown.
+  let registrationWatchdogTimer: Timer | undefined;
+  // How long this session may run with no accepted registration and no heartbeat tick before its
+  // heartbeat is armed again (`../src/registration-watchdog`). Read inline, as this file's other
+  // knobs are; a rig shortens it to drive whole windows in seconds.
+  const REGISTRATION_WATCHDOG_WINDOW_MS =
+    Number(process.env.ENVOY_REGISTRATION_WATCHDOG_MS ?? "") || REGISTRATION_WATCHDOG_MS;
+  // The rig's seam for one end of R4, and the only reader of this variable: the heartbeat armed
+  // first stops firing this many milliseconds after it was armed, which is what a stopped heartbeat
+  // timer does to a live process. No production path sets it, and R4's own restart of the heartbeat
+  // runs free of it.
+  const HEARTBEAT_STOP_AFTER_MS = Number(process.env.ENVOY_HEARTBEAT_STOP_AFTER_MS ?? "") || 0;
   // The session the host last announced it was leaving (`session_before_switch`,
   // `session_before_branch`) and why: read until the next pass sees where the host went, to learn
   // whether the session it went to continues the one it left, and by the frame drop meanwhile. A
@@ -1406,6 +1440,18 @@ export default function envoyExtension(hostApi: PiApi): void {
     await postDeliveryReply(dispatchConfigFor(replySessionID), replySessionID, delivery, result);
   };
 
+  // The cut-turn note this process sent at `session_start` and the host has not yet written: its
+  // text, which the host's `message_end` of it carries, what settles the interface's promise of
+  // it, and that promise as the interface holds it (`tellCutTurn`, below). Undefined while no note
+  // is on its way.
+  let cutTurnNoteOnItsWay:
+    | {
+        readonly content: string;
+        readonly markWritten: () => void;
+        readonly published: CutTurnNote;
+      }
+    | undefined;
+
   // A typed input's pictures, until the host's message carrying its Dispatch id starts
   // (`src/typed-pictures.ts`).
   const typedPictures = new TypedPictures();
@@ -1413,6 +1459,9 @@ export default function envoyExtension(hostApi: PiApi): void {
     // An input that finds the host idle is a prompt sent from idle: any run, one the host dropped
     // with no `agent_end` included, is over (`../src/card-wake`).
     cardWake.noteIfIdle(context);
+    // The host prompts this input once every handler returns: a cut-turn note still on its way
+    // is written first (`awaitCutTurnNote`).
+    await awaitCutTurnNote(context);
     if (event.source !== "extension") return undefined;
     const images = typedPictures.handOver(event.text);
     return images === undefined ? undefined : { images: [...(event.images ?? []), ...images] };
@@ -3186,6 +3235,7 @@ export default function envoyExtension(hostApi: PiApi): void {
   // (`../src/card-age`). A card the host appended also arms the wake's check (`../src/card-wake`).
   pi.on("message_end", async (event, context) => {
     const { message } = event;
+    noteCutTurnNoteWritten(message);
     if (!shuttingDown) cardWake.messageEnd(message, context);
     const host = eventSessionID(context);
     recordAgentStreamMessage(message, false, host);
@@ -3680,7 +3730,24 @@ export default function envoyExtension(hostApi: PiApi): void {
         "warning"
       );
     };
-    const tick = (fromRetry: boolean): void => {
+    const armedAt = Date.now();
+    heartbeatArmings += 1;
+    // The host's interval hands back no handle to clear (`SessionContext.setInterval`), so a
+    // heartbeat the watchdog has armed again since is stopped by its number: each of its calls,
+    // its interval's and its retry's, returns at once, and one heartbeat runs one registration
+    // loop whatever the host's timers do once they fire again.
+    const generation = heartbeatArmings;
+    if (heartbeatArmedAt === undefined) heartbeatArmedAt = armedAt;
+    /** One pass of the heartbeat. `cause` says who called it: its own interval, the extra call a
+     *  failed tick buys (`armRetry`), or the watchdog over a heartbeat that stopped. Only the
+     *  interval's own call says the host's timer fired, which is what the watchdog reads: its
+     *  own call would otherwise answer its own question. */
+    const tick = (cause: "interval" | "retry" | "watchdog"): void => {
+      if (generation !== heartbeatArmings) return;
+      const fromRetry = cause === "retry";
+      // A tick that registers nothing because the session is shutting down or has no id yet
+      // still says the host's timer fired.
+      if (cause === "interval") heartbeatTickedAt = Date.now();
       // A shutting-down session is about to be deregistered: a tick past that point would put a
       // registration back on the wire behind the DELETE and leave the record standing.
       if (shuttingDown) return;
@@ -3779,12 +3846,80 @@ export default function envoyExtension(hostApi: PiApi): void {
         // A pass settled while the delay ran: the registration is fresh and the call is dropped.
         if (!retryArmed) return;
         retryArmed = false;
-        tick(true);
+        tick("retry");
       }, delayMs);
       return delayMs;
     };
-    context.setInterval(() => tick(false), requireEnvoy().settings.heartbeatMs);
+    // The rig's seam for the end this process's own watchdog exists for
+    // (`HEARTBEAT_STOP_AFTER_MS`): the heartbeat armed first in this process stops firing that long
+    // after it was armed, and nothing of its tick runs again (`../src/registration-watchdog`); a
+    // heartbeat the watchdog arms afterwards runs free. It is chosen here, once, so the interval
+    // production arms runs the tick and nothing else.
+    const onInterval =
+      generation === 1 && HEARTBEAT_STOP_AFTER_MS > 0
+        ? () => {
+            if (Date.now() - armedAt < HEARTBEAT_STOP_AFTER_MS) tick("interval");
+          }
+        : () => tick("interval");
+    context.setInterval(onInterval, requireEnvoy().settings.heartbeatMs);
     heartbeatRegistered = true;
+    // What the watchdog runs when it finds this heartbeat stopped: a heartbeat armed again, and
+    // a tick of it at once, which registers. The tick's cause says it was the watchdog's, so its
+    // own call never reads as the host's timer firing; a failure there buys the extra call the
+    // interval allows, which is the try R4 counts.
+    heartbeatTick = tick;
+    armRegistrationWatchdog();
+  };
+
+  /**
+   * Arms the watchdog over a heartbeat that stopped, once per process (R4,
+   * `../src/registration-watchdog`).
+   *
+   * On this process's own timer, never the host's: the end it exists for is the host's interval
+   * no longer firing, so a watchdog on that same interval would stop with it. It is unreferenced,
+   * so it holds no process open, and the session's shutdown clears it, so a session stopped
+   * cleanly never registers again.
+   */
+  const armRegistrationWatchdog = (): void => {
+    if (registrationWatchdogTimer !== undefined) return;
+    const watchdog = new RegistrationWatchdog({
+      now: () => Date.now(),
+      windowMs: () => REGISTRATION_WATCHDOG_WINDOW_MS,
+      registrationFresherThan: (ms) => registrationState.registrationFresherThan(sessionID, ms),
+      // The first arming, until a tick of the host's timer: a heartbeat that never fired at all
+      // is a stopped one, and the window runs from the moment it was armed.
+      lastTickAt: () => heartbeatTickedAt ?? heartbeatArmedAt,
+      restart: () => {
+        const context = activeSessionContext;
+        if (context === undefined) return;
+        const sinceLastTick = heartbeatTickedAt ?? heartbeatArmedAt;
+        logger.warn("envoy: the registration heartbeat stopped; it is armed again", {
+          sessionID,
+          sinceLastTickMs: sinceLastTick === undefined ? undefined : Date.now() - sinceLastTick,
+        });
+        // The same Envoy session, as ZooKeeper's client keeps its own across a reconnect: a
+        // registration under it takes the session's place in the listener's list back, with its
+        // role and its consumer. The NATS connection is left alone — the pass this tick runs
+        // dials only a connection that is down (`ensureConnection`) — so a listener outage makes
+        // no session redial NATS.
+        heartbeatRegistered = false;
+        ensureHeartbeat(context);
+        heartbeatTick?.("watchdog");
+      },
+    });
+    registrationWatchdogTimer = setInterval(() => {
+      if (shuttingDown) return;
+      try {
+        watchdog.check();
+      } catch (error) {
+        // Never let the watchdog's own failure end the process: OMP treats an unhandled
+        // rejection as fatal, and a reading that throws is no reason to lose the session.
+        logger.warn("envoy: the registration watchdog could not read its window", {
+          error: messageFor(error),
+        });
+      }
+    }, watchdogCheckMs(REGISTRATION_WATCHDOG_WINDOW_MS));
+    registrationWatchdogTimer.unref?.();
   };
 
   const recoverRegisteredInterests = async (handle: TaskHandle): Promise<void> => {
@@ -3908,6 +4043,105 @@ export default function envoyExtension(hostApi: PiApi): void {
       if (topic !== undefined) return want(topic.slice(ROLE_TOPIC_PREFIX.length));
     }
     return undefined;
+  };
+
+  // Says, before the first turn this process runs, that the previous process ended in a turn (R2).
+  // The transcript holds that turn, so no delivery is sent again: what is missing is the news that
+  // the turn was cut, which the daemon already gives a task's resumed worker (`interruptedTask` in
+  // packages/daemon/internal/supervise/delivery.go) and this gives for the deliveries written into
+  // the turn (`../src/cut-turn`).
+  //
+  // Only a session Legion drives is told, since only there does a process end and resume under
+  // one session (`legionManaged`: the transcript entry a claim leaves, which a resumed session
+  // carries, or this process's own claim). Once per session id: a session told at its start is
+  // not told again by a later pass of the same process, and a turn still cut at the next
+  // process's start is told by that process.
+  //
+  // Where it lands. It goes with no `deliverAs` and no turn: an idle host writes it into the
+  // transcript and the model's context at once, and ends its message, so it is ahead of whatever
+  // opens the next turn, and starts none itself (`#dispatchCustomMessage` in Oh My Pi's
+  // `session/agent-session.ts`). But the host holds a send made in `session_start` until its
+  // startup discovery has run, and RPC mode reads commands without waiting for the send to land
+  // (`initializeExtensions` in `modes/runtime-init.ts`, `drainSends: false` in
+  // `modes/rpc/rpc-mode.ts`); a prompt set up before the send reaches the session would take the
+  // note after its own opening message. So until the note's `message_end`, every start of a turn
+  // waits for it: the `input` handler here (`awaitCutTurnNote`), which the host runs before it
+  // prompts an RPC prompt, a typed line or a `sendUserInput`, and the Legion entry's phase
+  // reminder, which reads the note on its way from the interface (`cutTurnNote`). A card this
+  // plugin hands, and another extension's startup send, go after the note, which the host writes
+  // first, in the order it was sent.
+  const cutTurnToldSessions = new Set<string>();
+  const tellCutTurn = (context: SessionContext): void => {
+    const id = context.sessionManager.getSessionId();
+    if (id === "" || !legionManaged(id) || cutTurnToldSessions.has(id)) return;
+    const cut = cutTurn(context.sessionManager.getBranch?.() ?? []);
+    if (cut === undefined) return;
+    cutTurnToldSessions.add(id);
+    const content = cutTurnNoticeText(cut);
+    const { promise, resolve } = Promise.withResolvers<void>();
+    const published: CutTurnNote = { session: id, written: promise };
+    cutTurnNoteOnItsWay = { content, markWritten: resolve, published };
+    if (publishedInterface !== undefined) publishedInterface.cutTurnNote = published;
+    // No options: no `deliverAs`, and no turn (the host reads an absent `triggerTurn` as none).
+    pi.sendMessage({
+      customType: "envoy-message",
+      content,
+      display: true,
+      details: LOCAL_ENVOY_NOTICE,
+    });
+  };
+
+  // No turn start waits for the note any more: the host wrote it, or the bound passed.
+  const forgetCutTurnNote = (): void => {
+    const note = cutTurnNoteOnItsWay;
+    if (note === undefined) return;
+    cutTurnNoteOnItsWay = undefined;
+    if (publishedInterface?.cutTurnNote === note.published)
+      publishedInterface.cutTurnNote = undefined;
+  };
+
+  // A host `message_end` of the note on its way: the host has written it into the transcript.
+  const noteCutTurnNoteWritten = (message: unknown): void => {
+    const note = cutTurnNoteOnItsWay;
+    if (note === undefined || typeof message !== "object" || message === null) return;
+    if (!("content" in message) || message.content !== note.content) return;
+    note.markWritten();
+    forgetCutTurnNote();
+  };
+
+  // An input waits for the cut-turn note of the session it is for until the host has written it,
+  // or for `CUT_TURN_NOTE_BOUND_MS` at most: a note the host never writes must not hold a
+  // person's or the daemon's prompt back for longer than that, and it goes ahead with a warning.
+  const awaitCutTurnNote = async (context: SessionContext): Promise<void> => {
+    const note = cutTurnNoteOnItsWay;
+    const waited = await waitForCutTurnNote(
+      note?.published,
+      context.sessionManager.getSessionId(),
+      CUT_TURN_NOTE_BOUND_MS
+    );
+    if (waited !== "bound" || cutTurnNoteOnItsWay !== note || note === undefined) return;
+    forgetCutTurnNote();
+    logger.warn("envoy: the cut-turn note was not written in time; the input goes ahead of it", {
+      sessionID: note.published.session,
+      waitedMs: CUT_TURN_NOTE_BOUND_MS,
+    });
+  };
+
+  // Marks each run of a session Legion drives at its start and at its settle (`../src/cut-turn`),
+  // so the next process can tell a turn that ended from one its process ended in. The host's own
+  // transcript cannot: a failed attempt it will retry reads like any provider error until the
+  // retry closes, and it waits in a retry's backoff, or for a credential before announcing one,
+  // with nothing written. A run the host continues (`willContinue`: a retry, a reminder, a
+  // background job's result) is settled by the run that finishes it, and is marked started once.
+  // Only a session Legion drives is told, so only such a session is marked.
+  const openRuns = new Set<string>();
+  const markRun = (context: SessionContext, ended: boolean): void => {
+    const id = context.sessionManager.getSessionId();
+    if (id === "" || !legionManaged(id)) return;
+    if (!ended && openRuns.has(id)) return;
+    if (ended) openRuns.delete(id);
+    else openRuns.add(id);
+    pi.appendEntry(TURN_MARK_ENTRY, { ended } satisfies TurnMark);
   };
 
   // Says, once per session, that the agent now lives under a new id when a fork or a branch
@@ -4440,6 +4674,9 @@ export default function envoyExtension(hostApi: PiApi): void {
     if (await isSubagent(context)) return;
     bindDispatchSession(context.sessionManager.getSessionId());
     restoreLocalSessionState(context);
+    // Before any registration, any delivery and any turn: a process whose Envoy is off, or whose
+    // listener never answers, still tells its session what its previous process left unfinished.
+    tellCutTurn(context);
     lastHeard = context.sessionManager.getSessionId();
     if (startNotice !== "") context.ui.notify(`envoy: ${startNotice}`, "warning");
     await askgateLoad;
@@ -4566,6 +4803,11 @@ export default function envoyExtension(hostApi: PiApi): void {
     // leaves behind, and a place written after it would be a registration the heartbeat has
     // stopped refreshing (dispatch://INFRA-392).
     tmuxPlaces.shutDown();
+    // The session stops here, so nothing registers it again: a stopped session must not come back
+    // (R4). `shuttingDown` already refuses every tick; this takes the watchdog's own timer out of
+    // the process with it.
+    clearInterval(registrationWatchdogTimer);
+    registrationWatchdogTimer = undefined;
     cardWake.cancel();
     // A person's `!command` runs in a process group of its own, which outlives this process
     // unless something kills it: the session that was asked for it is going, so it goes too,
@@ -4812,6 +5054,7 @@ export default function envoyExtension(hostApi: PiApi): void {
   // starts on the session a switch announced leaving is marked, and its end tells whether that
   // switch went ahead (`runUnderAnnouncement`).
   pi.on("agent_start", async (_event, context) => {
+    markRun(context, false);
     runSeq += 1;
     cardWake.agentStart();
     runUnderAnnouncement =
@@ -4897,6 +5140,9 @@ export default function envoyExtension(hostApi: PiApi): void {
   // ACP host, but a client that defers agent-initiated turns gets the steer queued as hidden
   // next-turn context instead of a turn of its own, consumed when the user next prompts.
   pi.on("agent_end", async (event, context) => {
+    // First, before any await: a run settled with nothing to follow is the end the next
+    // process reads, and every later await widens the window a kill would take it in.
+    if (event.willContinue !== true) markRun(context, true);
     cardWake.agentEnd(context);
     const id = context.sessionManager.getSessionId();
     const lastReply = event.messages?.findLast((message) => message.role === "assistant");

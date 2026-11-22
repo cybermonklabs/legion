@@ -286,6 +286,8 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			Tool: "bash", CallID: "toolu_impl_11", ArgsBytes: 128, ArgsHash: "9b2e45c0d1f8a673",
 			StartedAt: projectedAt.Add(-time.Minute), EndedAt: projectedAt.Add(-30 * time.Second),
 		},
+		Reach: supervise.Reach{Session: "ses_implementer_500", FirstReady: projectedAt.Add(-50 * time.Minute),
+			Since: projectedAt.Add(-25 * time.Minute), LastSeen: projectedAt.Add(-25 * time.Minute), Reported: true},
 	}
 
 	store := projectionStore{
@@ -356,6 +358,12 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			},
 			"pendingCause":   current.PendingCause,
 			"leakCheckCause": current.LeakCheckCause,
+			// The claim's mark out of reach (R5): when the 20 minutes were counted from and the
+			// last registration the daemon read, never the rest of the reach record, which is the
+			// daemon's own bookkeeping of what it told.
+			"unreachable": map[string]any{
+				"since": current.Reach.Since, "lastSeen": current.Reach.LastSeen,
+			},
 		})
 		if got, wanted := canonical(t, document), canonical(t, want); got != wanted {
 			t.Errorf("the claim view is %s, want the record's own values, %s", got, wanted)

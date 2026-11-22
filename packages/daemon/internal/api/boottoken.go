@@ -15,6 +15,15 @@ type BootTokenStore interface {
 	ClaimByBootTokenHash(ctx context.Context, hash []byte) (supervise.Claim, bool, error)
 }
 
+// PriorBootTokenStore finds the claim one of whose previous launches minted a boot token, and
+// that launch's generation — the store's ClaimByPriorBootTokenHash, which keeps the hash a launch
+// replaced in the write that moved the generation on (R3). A BootTokenStore that is not one (a
+// test's fake) knows of a replaced launch only through this process's own record of the launches it
+// saw persisted.
+type PriorBootTokenStore interface {
+	ClaimByPriorBootTokenHash(ctx context.Context, hash []byte) (supervise.Claim, uint64, bool, error)
+}
+
 // BootToken is what a boot token resolves to: the claim its launch was minted for and that
 // launch's generation. Stale is a token whose claim has launched again since, so the pane holding
 // it answers for a generation the claim has left.
@@ -30,8 +39,10 @@ type BootToken struct {
 // The claim row carries only its current launch's hash, and that is durable: a daemon restarted
 // under a live pane resolves the pane's token from the store, which is how the shim's reconnect
 // hello is accepted after a restart. A token of a launch the claim has since replaced is no longer
-// on the row; this process still recognises it as stale when it saw that launch persisted (an
-// in-memory mint record beside the persisted hash). After a restart such a token is simply unknown.
+// on the row: this process recognises it as stale when it saw that launch persisted (an in-memory
+// mint record beside the persisted hash), and the store keeps the hash of every launch the claim
+// replaced, with its generation, until the claim itself is deleted (PriorBootTokenStore), so a
+// daemon restarted since knows it as stale too.
 type BootTokens struct {
 	store BootTokenStore
 
@@ -56,13 +67,21 @@ func (b *BootTokens) Resolve(ctx context.Context, token string) (BootToken, bool
 		return BootToken{Claim: c.Token, Generation: c.Generation}, true, nil
 	}
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	launch, ok := b.minted[hex.EncodeToString(hash)]
-	if !ok {
+	b.mu.Unlock()
+	if ok {
+		launch.Stale = true
+		return launch, true, nil
+	}
+	prior, keeps := b.store.(PriorBootTokenStore)
+	if !keeps {
 		return BootToken{}, false, nil
 	}
-	launch.Stale = true
-	return launch, true, nil
+	c, generation, found, err := prior.ClaimByPriorBootTokenHash(ctx, hash)
+	if err != nil || !found {
+		return BootToken{}, false, err
+	}
+	return BootToken{Claim: c.Token, Generation: generation, Stale: true}, true, nil
 }
 
 // Recording is store with every launch it persists remembered: a claim written with a boot token

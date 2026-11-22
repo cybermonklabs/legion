@@ -478,13 +478,20 @@ func TestASwitchedBackDaemonRegistersNoEarlierLaunchOfItsController(t *testing.T
 	if locator := d.state().ControllerLocator; locator != nil {
 		t.Errorf("controllerLocator = %+v once the operator's daemon stopped the controller, want none", locator)
 	}
+	// The store keeps the boot tokens of a claim's previous launches (R3), so the restarted daemon
+	// knows the first launch's token as a launch of its controller, and refuses it as a launch of
+	// the controller it leaves to its operator: never through the operator's capability path, and
+	// with no registration recorded.
 	status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: first.BootToken, SessionID: "ses_stale", OmpSessionFile: "/sessions/stale.jsonl",
 		AgentID: "ses_stale", PluginContract: api.DaemonAPIVersion,
 	}, false)
-	if status != claim.InvalidBootToken.Status || !strings.Contains(string(body), claim.InvalidBootToken.Message) {
-		t.Fatalf("the first launch's boot token registered on the operator's daemon = %d %s, want %d %q",
-			status, body, claim.InvalidBootToken.Status, claim.InvalidBootToken.Message)
+	if status != http.StatusConflict || !strings.Contains(string(body), "leaves the controller to its operator") {
+		t.Fatalf("the first launch's boot token registered on the operator's daemon = %d %s, want 409 naming the controller this daemon leaves to its operator",
+			status, body)
+	}
+	if locator := d.state().ControllerLocator; locator != nil {
+		t.Errorf("controllerLocator = %+v after the refused registration, want none", locator)
 	}
 }
 

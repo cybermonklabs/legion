@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+    The `envoy_publish` tool's description, which both plugins show their model, says that for a
+    role holder that is not live, a session starts no replacement for that holder's session while
+    its `last_seen` is 20 minutes old or less. It also says that a Legion claim whose session Envoy
+    has not heard from for more than 20 minutes is unreachable, and the case for the `legion` tool's
+    `relaunch`, which starts that claim's process again on the same session and replaces no session.
+time: 2026-11-18T13:20:10Z
+custom:
+    Issue: pr4175

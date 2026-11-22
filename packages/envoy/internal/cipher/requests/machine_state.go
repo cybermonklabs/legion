@@ -276,9 +276,16 @@ type Machine struct {
 	Policy     *policy.Current
 	Secrets    secrets.Reader
 	PendingTTL time.Duration
-	// Audience is BROKER_PUBLIC_URL: the aud every request object's signature is checked against.
+	// Audience is BROKER_PUBLIC_URL: the aud a new request object is held to exactly (Create), and
+	// the origin a stored record's object is read back by (record.VerifyStoredRequestObject).
 	Audience string
-	Skew     time.Duration
+	// EdgeAudience is BROKER_EDGE_URL, and "" for a broker with no edge. Every read of a stored
+	// record here hands it to record.VerifyStoredRequestObject beside Audience: the pending
+	// lists, the record a lookup reads, and the decision's re-verification. That check takes it
+	// for a machine login's record alone, since the edge opens nothing else, so a session's
+	// request signed for the edge is another broker's here, as one of a third address is.
+	EdgeAudience string
+	Skew         time.Duration
 	// Replay records a request object's jti (the proof_jtis table), answering false when it was
 	// already seen. Wired to enroll.Service.Replay in production.
 	Replay func(ctx context.Context, jti string, expires time.Time) (fresh bool, err error)
@@ -2270,7 +2277,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 		// how long the resulting decision window may stay open (PendingTTL, hours) — re-verifying
 		// it with the real current time would fail every decision made more than a few minutes
 		// after creation.
-		verified, err := record.VerifyRequestObject(parsed.Request, m.Audience, m.Skew, createdAt)
+		verified, err := record.VerifyStoredRequestObject(parsed.Request, m.Audience, m.EdgeAudience, m.Skew, createdAt)
 		if err != nil {
 			return fmt.Errorf("%w: request object no longer verifies: %s", ErrGrantChainInvalid, err)
 		}

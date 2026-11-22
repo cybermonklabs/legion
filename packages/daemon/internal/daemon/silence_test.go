@@ -606,7 +606,7 @@ func TestSilentPhaseWorkerExits(t *testing.T) {
 				known, err := r.st.PutClaimActivity(r.ctx, r.tokens[claim.RoleImplementer], r.claimOf(claim.RoleImplementer).Generation, claim.SessionActivity{
 					At:             r.clock.Now(),
 					BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"async-job"}},
-				})
+				}, r.clock.Now())
 				if err != nil || !known {
 					r.t.Fatalf("report the background work of the implementer: known %v, %v", known, err)
 				}
@@ -813,7 +813,7 @@ func (r *podUpdateRig) reportsBackgroundWork(role claim.Role, kinds ...string) t
 	known, err := r.st.PutClaimActivity(r.ctx, r.tokens[role], r.claimOf(role).Generation, claim.SessionActivity{
 		At:             at,
 		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: kinds},
-	})
+	}, at)
 	if err != nil || !known {
 		r.t.Fatalf("report the background work of the %s: known %v, %v", role, known, err)
 	}
@@ -828,7 +828,7 @@ func (r *podUpdateRig) reportsBackgroundWork(role claim.Role, kinds ...string) t
 func (r *podUpdateRig) reportsNothingRunning(role claim.Role) {
 	r.t.Helper()
 	known, err := r.st.PutClaimActivity(r.ctx, r.tokens[role], r.claimOf(role).Generation, claim.SessionActivity{
-		At: r.clock.Now().UTC()})
+		At: r.clock.Now().UTC()}, r.clock.Now())
 	if err != nil || !known {
 		r.t.Fatalf("report that nothing of the %s runs: known %v, %v", role, known, err)
 	}
@@ -1143,7 +1143,7 @@ func TestSilentPhaseWorkerWhoseReminderReArmedAfterTheSweepReadGetsItsTaskOnceIt
 	// The reminder re-arms before the sweep's facts are applied.
 	due := rig.clock.Now().UTC().Add(2 * time.Minute)
 	known, err := rig.st.PutClaimActivity(rig.ctx, rig.tokens[worker], rig.claimOf(worker).Generation,
-		claim.SessionActivity{At: rig.clock.Now().UTC(), Phase: claim.PhaseActivity{NextReminderAt: &due}})
+		claim.SessionActivity{At: rig.clock.Now().UTC(), Phase: claim.PhaseActivity{NextReminderAt: &due}}, rig.clock.Now())
 	if err != nil || !known {
 		t.Fatalf("report the re-armed reminder of the %s: known %v, %v", worker, known, err)
 	}
@@ -1199,7 +1199,7 @@ func TestSilentPhaseWorkerWhoseDeadProcessReportLandedAfterItsRelaunchGetsItsTas
 	if _, err := rig.st.PutClaimActivity(rig.ctx, token, old, claim.SessionActivity{
 		At:             rig.clock.Now().UTC(),
 		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"claude-background-task"}},
-	}); err != nil {
+	}, rig.clock.Now()); err != nil {
 		t.Fatalf("write the dead process's report: %v", err)
 	}
 	conn := rig.workers[worker]

@@ -98,7 +98,6 @@
       "POST /legion/v1/phase/retry",
       "POST /legion/v1/signoff",
       "POST /legion/v1/roots/close",
-      "POST /legion/v1/children/park",
       "POST /legion/v1/children/rerun"
     ],
     "since": 46,
@@ -156,6 +155,14 @@
       "POST /legion/v1/project/resume"
     ],
     "since": 178,
+    "noBody": false
+  },
+  {
+    "id": "relaunch",
+    "routes": [
+      "POST /legion/v1/claims/relaunch"
+    ],
+    "since": 208,
     "noBody": false
   }
 ]

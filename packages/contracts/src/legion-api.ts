@@ -23,12 +23,14 @@ import {
  * Reached as `@legion/contracts/legion-api`, never from the barrel.
  */
 
-/** The controller's two claim recoveries keep their own module, and every importer reads them
- * from here. */
+/** The controller's claim recoveries keep their own module, and every importer reads them from
+ * here. */
 export {
   LegionClaimRequest,
   LegionCompactResponse,
   LegionFreshSessionResponse,
+  LegionRelaunchRequest,
+  LegionRelaunchResponse,
 } from "./legion-claim-recovery";
 
 const nonEmptyString = z.string().min(1);
@@ -263,6 +265,18 @@ const legionPendingTaskView = z.object({
   lastSendError: nonEmptyString.optional(),
 });
 
+/** The shape of `api.ClaimView.Unreachable` and `api.ControllerLocator.Unreachable`: a claim
+ * Envoy cannot reach (R5), one whose session has not registered with the listener for more than 20
+ * minutes, counted from the latest of that registration, the daemon's boot, the first ready of the
+ * claim's session and the end of the daemon's last failed or empty read of the listener's session
+ * list. `since` is when the daemon found it so, and `lastSeen` is the last registration of its
+ * session the daemon read, absent where it read none. The claim keeps its state: this says only
+ * that no message reaches it, which is the case for the controller's `relaunch`. */
+const legionUnreachableView = z.object({
+  since: timestamp,
+  lastSeen: timestamp.optional(),
+});
+
 /** `api.ClaimView` — `session` is empty until the claim's agent registers one, `locator` is
  * absent while no process runs (queued, suspended, failed, retired), `capabilities` is absent
  * until a session of the claim reports on `claims/ready` (the controller's never does), and
@@ -354,6 +368,9 @@ const legionClaimView = z.object({
    * with no such key at all (the daemon's `withoutLeakCheckCause`), so every reader takes it as
    * optional. */
   leakCheckCause: nonEmptyString.optional(),
+  /** `api.ClaimView.Unreachable`: when the daemon found this claim's session out of Envoy's
+   * reach, and absent while the claim is reachable (contract 208). */
+  unreachable: legionUnreachableView.optional(),
 });
 
 /** `api.HandoffRecordView` — the Dispatch handoff record a worker's completion of its current
@@ -1045,6 +1062,12 @@ const legionControllerLocator = z.object({
   registeredAt: timestamp.optional(),
   /** 0 = no contract recorded. */
   pluginContract: z.number().int().nonnegative().optional(),
+  /** `api.ControllerLocator.Unreachable`: when the daemon found the controller's session out of
+   * Envoy's reach, as a claim view carries it, and absent while it is reachable (contract 208).
+   * Nobody else can relaunch the controller, so the daemon relaunches it on its same session
+   * itself, at most once in 6 hours; a controller this key still names after that is a person's
+   * to recover. */
+  unreachable: legionUnreachableView.optional(),
 });
 
 /** `api.AgentSecretsLoginView` — the daemon's own agent-secrets token login's current status
@@ -1487,12 +1510,13 @@ export const LegionSessionActivity = z.strictObject({
 export type LegionSessionActivityBody = z.output<typeof LegionSessionActivity>;
 
 /** `claim.ActivityRequest`, the body of `POST /legion/v1/claims/activity`: a live role's session
- * reporting what it is doing, after each of its turns and whenever the report's content changes,
- * so the daemon can decide whether the session's pod may be released. It is authenticated by the
- * registration's secret, as `claims/ready` is, and names no generation: it decides nothing about
- * the claim, and a relaunch mints a secret of its own, so the secret is the fence. A claim with
- * no report after its last turn is never released, which is what makes a host that cannot report
- * safe. */
+ * reporting what it is doing, after each of its turns, whenever the report's content changes and,
+ * on Oh My Pi, every 5 minutes while a turn is open whatever it says, so the daemon can decide
+ * whether the session's pod may be released and its relaunch guard can read a turn as running
+ * (R5). It is authenticated by the registration's secret, as `claims/ready` is, and names no
+ * generation: it decides nothing about the claim, and a relaunch mints a secret of its own, so the
+ * secret is the fence. A claim with no report after its last turn is never released, which is what
+ * makes a host that cannot report safe. */
 export const LegionActivityRequest = z.strictObject({
   claimToken: nonEmptyString,
   sessionId: nonEmptyString,
@@ -1645,7 +1669,8 @@ export const LegionControllerCredentialResponse = z.object({
  * One object with an optional `code`, not a union of a sentence-only shape and a coded one: now
  * that the answer side ignores unknown keys, a union matches its first member and drops `code`,
  * and `daemonUnreachable` in `packages/pi-shared/src/daemon-client.ts` reads a 502 with no code as
- * a restarting daemon and retries it for ten minutes, so a coded refusal must keep its code. */
+ * a restarting daemon and retries it for up to an hour (`DAEMON_RESTART_BUDGET_MS`), so a coded
+ * refusal must keep its code. */
 export const LegionErrorResponse = z.object({
   error: nonEmptyString,
   code: nonEmptyString.optional(),
@@ -1810,7 +1835,7 @@ export type LegionGrant = z.output<typeof LegionGrantResponse>;
 /** Every completed fact route returns an intentional empty JSON object. The shape names no field,
  * so it accepts any JSON object and refuses a body that is not one (an array, a string); a field
  * the daemon adds to a fact route is caught by the golden drift test in `legion-api.test.ts`,
- * where each of the eight fact-route goldens is `{}`, not at runtime. */
+ * where each fact-route golden is `{}`, not at runtime. */
 export const LegionEmptyResponse = z.object({});
 /** `api.HandoffCompleteResponse`: an empty object. The merger merges and the daemon merges
  * nothing, so no completion has anything to answer with. */
@@ -2092,9 +2117,9 @@ export const LegionRootCloseRequest = z.strictObject({
   reason: nonEmptyString,
 });
 
-/** `api.ChildRequest`, an architect's park_child or rerun_child of one issue it owns: any child of
- * its tree for the tree root's architect, and only an issue under its own issue for a child's own
- * architect (`ISSUE_NOT_OWNED` otherwise). */
+/** `api.ChildRequest`, an architect's rerun_child of one issue it owns: any child of its tree for
+ * the tree root's architect, and only an issue under its own issue for a child's own architect
+ * (`ISSUE_NOT_OWNED` otherwise). */
 export const LegionChildRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
@@ -2126,6 +2151,17 @@ const ISSUE_RECORD_READS = [
   "workers{}.claim.state",
   "workers{}.claim.lastTurnStart",
   "workers{}.claim.lastTurnEnd",
+  // The `read_state` summary's mark of a claim Envoy cannot reach (contract 208): when the daemon
+  // found it so, and the token `relaunch` takes, which is its locator's. The summary reads them
+  // off a claim view whichever path reached it, so each is named under every parent of its name.
+  "architect.unreachable.since",
+  "architect.locator|0.claim",
+  "architect.locator|1.claim",
+  "workers{}.claim.unreachable",
+  "workers{}.claim.unreachable.since",
+  "workers{}.claim.locator",
+  "workers{}.claim.locator|0.claim",
+  "workers{}.claim.locator|1.claim",
   "check",
   "check.role",
   "check.looks",
@@ -2238,6 +2274,9 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "lastPause.endedBy|0.kind",
     "lastPause.endedBy|1.kind",
     "lastPause.endedBy|0.session",
+    // The summary's line on a controller the daemon found out of Envoy's reach (contract 208).
+    "controllerLocator.unreachable",
+    "controllerLocator.unreachable.since",
   ],
   // The same record read of one issue, by the same readers.
   LegionIssueRecordResponse: ISSUE_RECORD_READS,

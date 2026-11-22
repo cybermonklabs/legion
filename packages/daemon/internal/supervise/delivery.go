@@ -1363,10 +1363,13 @@ func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locat
 // carries the sentence again: told twice, never not at all. So it goes where a let-go cuts off a
 // turn that confirmed the task while the send of its prompt was still in flight or a prompt of the
 // task still waited on its result: that turn may have been another input's, so the let-go takes
-// the telling back (untellInFlight). Both records are the claim's fields, so they go in the same
-// write as the confirmation, and a restart reads both or neither. The one record told anywhere
-// else is the old session's record of a let-go, which the abandonment of that session ends by no
-// delivery (forgetSession, where that rule is written).
+// the telling back (untellInFlight). For the same reason a prompt that comes to nothing takes it
+// back once the claim no longer holds its delivery — a newer task took its place, or the turn's
+// end retired it — whether its send failed or Oh My Pi answered it with no turn (untellUnread).
+// Both records are the claim's fields, so they go in the same write as the confirmation, and a
+// restart reads both or neither. The one record told anywhere else is the old session's record of
+// a let-go, which the abandonment of that session ends by no delivery (forgetSession, where that
+// rule is written).
 func (m *Machine) confirm(ctx context.Context) error {
 	p := m.claim.Pending
 	p.ConfirmedAt = m.deps.Clock.Now()
@@ -1596,34 +1599,64 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // write, as queue writes it: the claim goes with the delivery when either changed, and a write
 // that fails leaves the handshake as the store holds it, for the take-back made again to read.
 func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool) error {
+	back, taking := m.decideTakeBack(why, outOfMemory)
+	if !taking {
+		return nil
+	}
+	stored := m.stored()
+	stored.Handshake = back.handshake
+	var err error
+	if back.claimToo {
+		err = m.putClaimAndDelivery(ctx, stored, back.next)
+	} else {
+		err = m.putDelivery(ctx, back.next)
+	}
+	if err != nil {
+		return err
+	}
+	m.tookBack(back)
+	return nil
+}
+
+// takeBack is a let-go's take-back of the pending task as interrupted decides it, before the write
+// that records it: the task as it goes back to waiting, the claim's handshake with it, and whether
+// that write must carry the claim, because a telling or the handshake moved.
+type takeBack struct {
+	next      Delivery
+	handshake EntryHandshake
+	claimToo  bool
+}
+
+// decideTakeBack is interrupted's decision, made before anything forgets the send or the prompts
+// outstanding that the doubt is read from (confirmationInDoubt): the take-back of a confirmed
+// task, and false where the claim holds none. The untelling is made here, in memory, as interrupted
+// states; nothing else of the claim moves until tookBack.
+func (m *Machine) decideTakeBack(why string, outOfMemory bool) (takeBack, bool) {
 	p := m.claim.Pending
 	if p == nil || p.ConfirmedAt.IsZero() {
-		return nil
+		return takeBack{}, false
 	}
 	m.log.Warn("supervise: "+why+"; the task waits for the relaunch", "delivery", p.ID)
 	next := *p
 	next.ID, next.ConfirmedAt, next.Interrupted, next.OutOfMemory = rotateTaskID(p.ID), time.Time{}, true, outOfMemory
 	doubt := m.confirmationInDoubt()
-	untold := m.untellInFlight()
-	stored := m.stored()
-	var handshakeMoved bool
+	back := takeBack{next: next, handshake: m.claim.Handshake, claimToo: m.untellInFlight()}
 	if doubt {
-		stored.Handshake, handshakeMoved = m.claim.Handshake.unconfirmed(*p)
+		var moved bool
+		back.handshake, moved = m.claim.Handshake.unconfirmed(*p)
+		back.claimToo = back.claimToo || moved
 	}
-	var err error
-	if untold || handshakeMoved {
-		err = m.putClaimAndDelivery(ctx, stored, next)
-	} else {
-		err = m.putDelivery(ctx, next)
-	}
-	if err != nil {
-		return err
-	}
-	*p = next
-	m.claim.Handshake = stored.Handshake
+	return back, true
+}
+
+// tookBack puts a decided take-back on the claim: the task under its new id, the handshake, the
+// end of the wait for the prompts' results, and the mark that the task was taken from a turn of
+// the process the claim records (Machine.cutTurnOf).
+func (m *Machine) tookBack(back takeBack) {
+	*m.claim.Pending = back.next
+	m.claim.Handshake = back.handshake
 	m.outstanding = nil
-	m.cutTurnOf = next.ID
-	return nil
+	m.cutTurnOf = back.next.ID
 }
 
 // taskRead and taskUnread say whether the agent may have read a task being taken back: the task
@@ -1816,6 +1849,9 @@ func (m *Machine) takeBackConfirmation(p *Delivery) bool {
 //     prompt was in flight or a prompt of the task still waited on its result. Of its two callers,
 //     interrupted writes the claim with the delivery (putClaimAndDelivery) when this reports true,
 //     and recordEnd writes nothing, since the let-go's own write carries the claim.
+//   - untellUnread, a prompt of a delivery the claim no longer holds that came to nothing after a
+//     turn confirmed that delivery: its send failed, or Oh My Pi answered it with no turn run. It
+//     writes the claim (persist) when this reports true.
 func (m *Machine) moveTelling(from, to string) bool {
 	moved := false
 	if a := &m.claim.Abandoned; a.Told && a.ToldBy == from {
@@ -1865,15 +1901,49 @@ func (m *Machine) confirmationInDoubt() bool {
 // the pending id. recordEnd and interrupted both call it, and whichever of them a let-go runs first
 // untells. recordEnd calls it before anything else, in memory only, since the let-go's own write
 // carries the claim: a death and a displacement record the end before they take the task back
-// (died, displaced). interrupted calls it before the id moves and writes the claim with the
-// delivery when it reports true, for every path that takes the task back before the let-go records
-// the end: the held suspension's deadline (suspendAtTimeout), a paced launch whose turn has come
-// (runWake), a suspension over a dead process (suspendOverADeadProcess), and the replacement of a
-// process still running (replaceProcess, replaceNow) for a stale address (repoint), a stale plugin
-// (relaunchMarked) and the stall backstop (backstopStalledTurn).
+// (died, displaced). interrupted calls it, through decideTakeBack, before the id moves and writes
+// the claim with the delivery when it reports true, for every path that takes the task back before
+// the let-go records the end: the held suspension's deadline (suspendAtTimeout), a paced launch
+// whose turn has come (runWake), a suspension over a dead process (suspendOverADeadProcess), and
+// the replacement of a process still running (replaceProcess, replaceNow) for a stale address
+// (repoint), a stale plugin (relaunchMarked) and the stall backstop (backstopStalledTurn). The
+// relaunch of a claim Envoy cannot reach calls decideTakeBack itself, and writes the take-back
+// once its process is let go (relaunchUnreachable).
 func (m *Machine) untellInFlight() bool {
 	if !m.confirmationInDoubt() {
 		return false
 	}
 	return m.moveTelling(m.claim.Pending.ID, "")
+}
+
+// untellUnread takes back what the confirmation of delivery id told, where a prompt of id came to
+// nothing after the claim stopped holding id: a newer task took the place of the confirmed
+// delivery (queue), or the turn that confirmed it ended and retired it (settle). Two answers say
+// so. The machine's own send of id can come back failed — a refusal, or no answer within the RPC
+// timeout (fenceOutcome) — and the turn then confirmed it while that send was in flight
+// (beginTurn). Or Oh My Pi, which had acknowledged the prompt, answers it late: a refusal, a
+// result that says it ran no turn, or a result whose turn ended in a provider error (fence). Each
+// is what takes the telling back from a delivery the claim still holds (refused, lateRefused,
+// promptResulted, providerErrored): the turn that confirmed the delivery may have been another
+// input's, as untellInFlight states, or the model call that would have read the prompt failed.
+// Once the claim stops holding the delivery, the fence drops every answer that names it, so
+// nothing else takes the telling back. The rig showed one such order: the relaunch's delivery was
+// confirmed, replaced by a newer task and its send timed out; Oh My Pi's busy answer, after the
+// timeout, reached no request the connection still waited on, the prompt's result named a
+// delivery the claim no longer held, and no later prompt carried the relaunch's sentence.
+//
+// So the record goes back to untold (moveTelling), and the next prompt carries its sentence again:
+// the task the claim holds, or, where it holds none, the daemon's own delivery of the record
+// (queueRelaunch), as a drop that leaves the claim holding nothing queues it (relaunchAfterDrop).
+// Where the prompt did reach the agent, the agent is told twice, which is the accepted cost: told
+// twice, never not at all. The untelling stands in memory whether or not its write lands, since
+// untold is the safe way round, and a write the store did not take is owed (persist).
+func (m *Machine) untellUnread(ctx context.Context, id string) error {
+	if !m.moveTelling(id, "") {
+		return nil
+	}
+	if err := m.persist(ctx); err != nil {
+		return err
+	}
+	return m.queueRelaunch(ctx)
 }

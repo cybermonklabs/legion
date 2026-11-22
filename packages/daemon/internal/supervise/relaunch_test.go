@@ -21,6 +21,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/stream"
 )
 
 // wantEndedTold is whether the claim's record of what its last let-go ended has been told, and by
@@ -1081,4 +1083,232 @@ func TestARelaunchSentenceDeliveryGivesWayToANewerTask(t *testing.T) {
 			t.Fatalf("the newer task was sent as %+v once the relaunch's turn was over, want it as queued: that turn told the record", sent)
 		}
 	})
+}
+
+// answeredConn holds every prompt at the door until the test answers it: with an error the
+// prompt fails with, or nil, which lets it through to the agent. It is what a test needs to fail
+// one prompt of the claim's and let the next one through, which a failure set on the connection
+// itself (fake.Conn's FailPrompt) cannot tell apart while both are in flight.
+type answeredConn struct {
+	*fake.Conn
+	entered chan string
+	answer  chan error
+}
+
+func newAnsweredConn() *answeredConn {
+	return &answeredConn{Conn: fake.NewConn(), entered: make(chan string, 8), answer: make(chan error)}
+}
+
+func (c *answeredConn) Prompt(ctx context.Context, deliveryID, message string) error {
+	c.entered <- deliveryID
+	if err := <-c.answer; err != nil {
+		return err
+	}
+	return c.Conn.Prompt(ctx, deliveryID, message)
+}
+
+// A relaunch's sentence is never lost to a send whose delivery the claim stopped holding while the
+// send was on its way, as on the rig. The relaunched claim holds nothing, so its ready queues the
+// daemon's own delivery of the record and sends it. A turn starts while that prompt is in flight
+// and is taken for the delivery's (beginTurn), which confirms it and tells the record by it. The
+// claim then stops holding the delivery: a newer task takes the place of the confirmed delivery
+// (queue), which is what the rig showed, or the turn ends and retires it (settle). The send then
+// fails. On the rig it came back with no answer within the RPC timeout (stream.ErrNoAnswer): Oh My
+// Pi's busy answer to that prompt reached no request the connection still waited on, and the
+// prompt's result named a delivery the claim no longer held. Oh My Pi can also refuse the prompt
+// busy within the timeout. Either way the send's own outcome is the last word of that prompt that
+// reaches the machine. It takes the telling back as a let-go does (untellInFlight): the turn may
+// have been another input's. The next prompt carries the sentence — the newer task, at the turn's
+// end, or the daemon's own delivery of the record again, where the claim holds nothing — and the
+// turn that takes it tells the record. Told twice, never not at all.
+func TestARelaunchSentenceIsToldAgainWhenTheSendOfADeliveryNoLongerHeldFails(t *testing.T) {
+	failures := []struct {
+		name string
+		err  error
+		// result is whether Oh My Pi writes the prompt's result after the send failed, as it did on
+		// the rig behind the busy answer no request waited on.
+		result bool
+	}{
+		{name: "with no answer within the RPC timeout", err: fmt.Errorf("worker-stream: %s prompt: %w", testToken, stream.ErrNoAnswer), result: true},
+		{name: "refused busy", err: &stream.RefusedError{Claim: testToken, Command: shimwire.TypePrompt, Reason: busyAnswer}},
+	}
+	cases := []struct {
+		name string
+		// leave makes the claim stop holding the delivery the turn confirmed while its send is
+		// in flight.
+		leave func(t *testing.T, h *harness)
+		// next is the prompt that carries the record's sentence once the send came back: it
+		// ends whatever turn still runs and returns the prompt, and the text it must be.
+		next func(t *testing.T, h *harness, conn *answeredConn) (fake.Prompt, string)
+	}{
+		{name: "a newer task takes its place",
+			leave: func(t *testing.T, h *harness) {
+				if err := h.m.Handle(h.ctx, RequestDeliver{Claim: testToken, Task: "review it", ID: "outbox:7", Row: 7, Generation: 5}); err != nil {
+					t.Fatalf("the newer task: %v", err)
+				}
+				if p := h.pending(); p.ID != "outbox:7" {
+					t.Fatalf("the claim holds %+v after the newer task, want the newer task in the confirmed delivery's place", p)
+				}
+			},
+			next: func(t *testing.T, h *harness, conn *answeredConn) (fake.Prompt, string) {
+				h.mustQuiet(StreamTurnEnd{Claim: testToken})
+				sent := lastPrompt(t, conn)
+				if sent.DeliveryID != "outbox:7" {
+					t.Fatalf("the turn's end sent %+v, want the newer task", sent)
+				}
+				return sent, relaunchSentence(h.claim().EndedWork.inFrontOf(h.pending()), true) + "\n\n" + "review it"
+			}},
+		{name: "its turn ends and retires it",
+			leave: func(t *testing.T, h *harness) {
+				if err := h.m.Handle(h.ctx, StreamTurnEnd{Claim: testToken}); err != nil {
+					t.Fatal(err)
+				}
+				if p := h.claim().Pending; p != nil || h.state() != StateIdle {
+					t.Fatalf("the claim is %s holding %+v after the turn's end, want it idle holding nothing", h.state(), p)
+				}
+			},
+			next: func(t *testing.T, h *harness, conn *answeredConn) (fake.Prompt, string) {
+				sent := lastPrompt(t, conn)
+				if !relaunchTask(sent.DeliveryID) {
+					t.Fatalf("the claim was sent %+v, want the daemon's own delivery of the record again", sent)
+				}
+				return sent, RelaunchSentence(h.claim().EndedWork)
+			}},
+	}
+	for _, tc := range cases {
+		for _, failure := range failures {
+			t.Run(tc.name+" "+failure.name, func(t *testing.T) {
+				h := newHarness(t)
+				h.reach(StateIdle)
+				h.observe(runtime.Gone)
+				conn := newAnsweredConn()
+				h.conns.Register(testToken, conn)
+				h.must(StreamHello{Claim: testToken, Generation: h.generation()})
+				h.register()
+				if err := h.m.Handle(h.ctx, RequestReady{Claim: testToken, Generation: h.generation(), Session: session}); err != nil {
+					t.Fatal(err)
+				}
+				relaunch := waitFor(t, "the send of the relaunch's delivery", conn.entered)
+				if !relaunchTask(relaunch) || !h.claim().EndedWork.Tells() {
+					t.Fatalf("the ready sent %s over the record %+v, want the daemon's own delivery of an untold record", relaunch, h.claim().EndedWork)
+				}
+				if err := h.m.Handle(h.ctx, StreamTurnStart{Claim: testToken}); err != nil {
+					t.Fatal(err)
+				}
+				h.wantEndedTold(true, relaunch, "once the turn confirmed the relaunch's delivery")
+				tc.leave(t, h)
+
+				conn.answer <- failure.err
+				// Every later prompt goes through.
+				go func() {
+					for range conn.entered {
+						conn.answer <- nil
+					}
+				}()
+				h.m.Wait()
+				if failure.result {
+					h.must(StreamPromptResult{Claim: testToken, DeliveryID: relaunch, Error: busyAnswer})
+				}
+				if got := h.claim().EndedWork; got.ToldBy == relaunch {
+					t.Errorf("the machine records the let-go told=%v by %q once the send of the delivery it no longer holds failed, want that telling taken back", got.Told, got.ToldBy)
+				}
+				if got := h.store.load(h.token).EndedWork; got.ToldBy == relaunch {
+					t.Errorf("the store records the let-go told=%v by %q once the send of the delivery it no longer holds failed, want that telling taken back", got.Told, got.ToldBy)
+				}
+
+				sent, want := tc.next(t, h, conn)
+				if sent.Message != want {
+					t.Fatalf("the claim was sent %q under %s, want %q: the agent never read the sentence", sent.Message, sent.DeliveryID, want)
+				}
+				h.must(StreamTurnStart{Claim: testToken})
+				h.wantEndedTold(true, sent.DeliveryID, "once the turn of the prompt that carried the sentence again began")
+			})
+		}
+	}
+}
+
+// The same holds for a prompt Oh My Pi acknowledged. The relaunched claim's ready sends the
+// daemon's own delivery of the record, and Oh My Pi acknowledges it, so the prompt waits on its
+// result (Machine.outstanding). A turn starts and is taken for the delivery's (beginTurn), which
+// confirms it and tells the record by it. A newer task then takes the place of the confirmed
+// delivery (queue), and that retirement ends the wait for the prompt's result (retirePending).
+// Oh My Pi's answer to the prompt comes after, and names a delivery the claim no longer holds: a
+// late refusal, a result that says it ran no turn, or a result of a turn that ended in a provider
+// error. Each says that the agent may never have read the sentence, as the same answer says of a
+// delivery the claim still holds (lateRefused, promptResulted, providerErrored), so it takes the
+// telling back, and the newer task the turn's end sends carries the sentence. The control is a
+// result of a turn that ran with no error: the agent read the sentence, the record stays told,
+// and the newer task goes as queued.
+func TestARelaunchSentenceIsToldAgainWhenAnAcknowledgedPromptOfADeliveryNoLongerHeldRanNoTurn(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		answer func(id string) Event
+		// untells is whether the answer takes the telling back.
+		untells bool
+	}{
+		{name: "a late refusal", untells: true, answer: func(id string) Event {
+			return StreamLateRefusal{Claim: testToken, DeliveryID: id, Error: busyAnswer}
+		}},
+		{name: "a result that ran no turn", untells: true, answer: func(id string) Event {
+			return StreamPromptResult{Claim: testToken, DeliveryID: id, Error: busyAnswer}
+		}},
+		{name: "a result of a turn that ended in a provider error", untells: true, answer: func(id string) Event {
+			return StreamPromptResult{Claim: testToken, DeliveryID: id, AgentInvoked: true, Error: "overloaded_error", HTTPStatus: 529}
+		}},
+		{name: "a result of a turn that ran", answer: func(id string) Event {
+			return StreamPromptResult{Claim: testToken, DeliveryID: id, AgentInvoked: true}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateIdle)
+			h.observe(runtime.Gone)
+			h.relaunched()
+			relaunch := h.pending().ID
+			if !relaunchTask(relaunch) || !slices.Contains(h.outstanding(), relaunch) {
+				t.Fatalf("the relaunched claim holds %s with %v outstanding, want the daemon's own delivery of the record acknowledged", relaunch, h.outstanding())
+			}
+			h.must(StreamTurnStart{Claim: testToken})
+			h.wantEndedTold(true, relaunch, "once the turn confirmed the relaunch's delivery")
+			h.must(RequestDeliver{Claim: testToken, Task: "review it", ID: "outbox:7", Row: 7, Generation: 5})
+			if p := h.pending(); p.ID != "outbox:7" || len(h.outstanding()) != 0 {
+				t.Fatalf("the claim holds %+v with %v outstanding after the newer task, want the newer task in the confirmed delivery's place and no prompt waiting", p, h.outstanding())
+			}
+
+			h.must(tc.answer(relaunch))
+			if tc.untells {
+				for where, got := range map[string]EndedWork{"the machine": h.claim().EndedWork, "the store": h.store.load(h.token).EndedWork} {
+					if got.ToldBy == relaunch {
+						t.Errorf("%s records the let-go told=%v by %q after Oh My Pi's answer, want that telling taken back", where, got.Told, got.ToldBy)
+					}
+				}
+			} else {
+				h.wantEndedTold(true, relaunch, "after the result of the turn that ran the prompt")
+			}
+
+			h.mustQuiet(StreamTurnEnd{Claim: testToken})
+			sent := h.prompts()[len(h.prompts())-1]
+			want := "review it"
+			if tc.untells {
+				want = relaunchSentence(h.claim().EndedWork.inFrontOf(h.pending()), true) + "\n\n" + want
+			}
+			if sent.DeliveryID != "outbox:7" || sent.Message != want {
+				t.Fatalf("the turn's end sent %+v, want %q under outbox:7", sent, want)
+			}
+			if tc.untells {
+				h.must(StreamTurnStart{Claim: testToken})
+				h.wantEndedTold(true, "outbox:7", "once the newer task's turn began")
+			}
+		})
+	}
+}
+
+// lastPrompt is the newest prompt the agent took over conn, failing the test when it took none.
+func lastPrompt(t *testing.T, conn *answeredConn) fake.Prompt {
+	t.Helper()
+	prompts := conn.Prompts()
+	if len(prompts) == 0 {
+		t.Fatal("the agent took no prompt, want the one that carries the record's sentence again")
+	}
+	return prompts[len(prompts)-1]
 }

@@ -52,7 +52,10 @@ const (
 	// Live is a session whose last registration is within the live window.
 	Live State = "live"
 	// Unresponsive is a session past the live window and within the gone horizon. It is not dead:
-	// nothing of its is taken away, and no replacement is started for it.
+	// nothing of its is taken away, and no replacement is started for it while its last
+	// registration is 20 minutes old or less (a grace past the longest measured heartbeat gap,
+	// 1,148 s, after which another session may take its issue claims). A Legion claim whose session
+	// is older than that is relaunched on that same session, never replaced by a new one.
 	Unresponsive State = "unresponsive"
 	// Gone is a session past the gone horizon, or one the registry holds no record for.
 	Gone State = "gone"

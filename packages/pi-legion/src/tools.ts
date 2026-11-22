@@ -65,7 +65,6 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "retry_or_escalate",
     "sign_off",
     "close_root",
-    "park_child",
     "rerun_child",
     "read_record",
     "read_release_records",
@@ -87,6 +86,7 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "set_status",
     "fresh_session",
     "compact",
+    "relaunch",
     "pause",
     "resume",
   ],
@@ -102,13 +102,13 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   retry_or_escalate: ["issue", "decision", "reason"],
   sign_off: ["issue"],
   close_root: ["issue", "reason"],
-  park_child: ["issue"],
   rerun_child: ["issue"],
   read_build: [],
   read_state: ["issue", "issues", "phase", "settings"],
   set_status: ["issue", "status"],
   fresh_session: ["issue", "role"],
   compact: ["issue", "role"],
+  relaunch: ["claim"],
   pause: ["reason"],
   resume: [],
 };
@@ -209,12 +209,15 @@ const SUMMARY_LEGEND =
   "legion state summary. Lines: project; paused: while the project is paused (the pause, since " +
   "when, by whom and why, the roles whose stop it still waits on, how many rows it holds) or " +
   "last pause: once a pause has ended (that pause, then when and by whom it was ended); " +
-  "admission cap; active/waiting/blocked; wakes waiting <count> [next <earliest due time>], the " +
+  "admission cap; active/waiting/blocked; " +
+  "controller unreachable <since> while Envoy cannot reach the controller; " +
+  "wakes waiting <count> [next <earliest due time>], the " +
   "wakes the daemon's pacing holds until their turn, 0 outside a wave; " +
   "capability <name> <status> [detail] [config <legion.yaml line>]; issues <count>; then " +
   "<KEY> <phase> <status> for every issue the daemon records, and under each issue Legion still " +
   "runs its slot, hold, gate <current> approved <version|none> and <role> <claim state> " +
-  "<last turn start> <last turn end> lines, - for a value the daemon has none for. " +
+  "<last turn start> <last turn end> [unreachable <since> claim <token>] lines, - for a value " +
+  "the daemon has none for. " +
   "read_state with issue, issues, phase or settings returns the full records it names.";
 
 /**
@@ -252,6 +255,10 @@ function stateSummary(state: LegionState): string {
       lines.push(`blocked ${blocked.issue} on ${blocked.blockedBy?.join(" ") ?? "(none)"}`);
     }
   }
+  // The daemon relaunches its own controller once in 6 hours; a mark still standing after that is
+  // a person's case, and the controller holds no issue line to carry it on.
+  const controllerMark = state.controllerLocator?.unreachable;
+  if (controllerMark !== undefined) lines.push(`controller unreachable ${controllerMark.since}`);
   const wakesWaiting = wakesWaitingSummary(state);
   if (wakesWaiting !== undefined) lines.push(wakesWaiting);
   for (const capability of state.capabilities ?? []) {
@@ -285,9 +292,15 @@ function stateSummary(state: LegionState): string {
     }
     for (const [role, claim] of claims) {
       // A working claim whose last turn began hours ago is wedged; an idle claim's end is when
-      // it last did anything, and a dash is a turn the daemon recorded none of.
+      // it last did anything, and a dash is a turn the daemon recorded none of. A claim Envoy
+      // cannot reach carries when the daemon found it so and the token `relaunch` takes, which
+      // is its locator's, a dash where the claim records no process at this read.
+      const mark =
+        claim.unreachable === undefined
+          ? ""
+          : ` unreachable ${claim.unreachable.since} claim ${claim.locator?.claim ?? "-"}`;
       lines.push(
-        `  ${role} ${claim.state} ${claim.lastTurnStart ?? "-"} ${claim.lastTurnEnd ?? "-"}`
+        `  ${role} ${claim.state} ${claim.lastTurnStart ?? "-"} ${claim.lastTurnEnd ?? "-"}${mark}`
       );
     }
   }
@@ -362,12 +375,12 @@ function toolSchema(pi: PiApi): unknown {
     issues: z.array(z.string()).optional(),
     to: phaseOp.to,
     // The why of the operations that take one, a string as the phase op's own `reason` is.
-    // Agents sent it to park_child too, whose daemon route keeps no why, so the field says where
+    // Agents sent it to rerun_child too, whose daemon route keeps no why, so the field says where
     // that why goes.
     reason: z
       .string()
       .describe(
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, and the controller's pause's why; no other operation takes it. park_child and rerun_child take only issue: say why you park a child in a dispatch comment on it"
+        "close_root's and request_backward_move's why, retry_or_escalate's optional why, and the controller's pause's why. No other operation takes it. rerun_child takes only issue: say why in a dispatch comment on the child"
       )
       .optional(),
     decision: z.enum(["retry", "escalate"]).optional(),
@@ -381,6 +394,14 @@ function toolSchema(pi: PiApi): unknown {
     phase: z.enum([...LEGION_PHASES]).optional(),
     settings: z.boolean().optional(),
     role: z.enum(LEGION_ROLES).optional(),
+    // A claim's token, which relaunch names its claim by: the daemon's notice of an unreachable
+    // claim names it so, where the two other recoveries take an issue and a role.
+    claim: z
+      .string()
+      .describe(
+        "relaunch's claim: the token of a claim Envoy cannot reach, as the daemon's notice of it names it"
+      )
+      .optional(),
   });
 }
 
@@ -396,17 +417,16 @@ function requiredString(
 }
 
 /** Refuses every field `operation` does not take, in the phase ops' wording
- * (`unknownFieldsRefusal`). A `reason` refused on park_child or rerun_child also says where its
- * why goes: agents send one there, and the daemon keeps no why for either. */
+ * (`unknownFieldsRefusal`). A `reason` refused on rerun_child also says where its why goes:
+ * agents send one there, and the daemon keeps no why for it. */
 function assertOperationInput(parameters: Record<string, unknown>, operation: string): void {
   const fields = OPERATION_FIELDS[operation];
   if (fields === undefined) throw new Error(`Unsupported legion operation: ${operation}`);
   const refused = Object.keys(parameters).filter((name) => name !== "op" && !fields.includes(name));
   if (refused.length === 0) return;
   const refusal = unknownFieldsRefusal(operation, refused, fields);
-  const childOperation = operation === "park_child" || operation === "rerun_child";
   throw new Error(
-    childOperation && refused.includes("reason")
+    operation === "rerun_child" && refused.includes("reason")
       ? `${refusal}. Say why in a dispatch comment on the child`
       : refusal
   );
@@ -439,8 +459,14 @@ export function createLegionTool(deps: {
    * the commit the workspace stands on, alone. Throws
    * naming the remedy when the phase the role works has no record, Dispatch does not answer, or,
    * in implementing, the implementer's record names no head, the commit its workspace stands on
-   * is not pushed, or its record's head is not that pushed commit. */
-  readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
+   * is not pushed, or its record's head is not that pushed commit. `signal` is the
+   * `handoff_complete` attempt's, which stops the read once the agent aborts the call; the read
+   * runs off the attempt's limit, since it is no request to the daemon (`OutsideTheDaemon`). */
+  readonly handoffReport: (
+    phase: LegionPhase,
+    role: LegionRole,
+    signal?: AbortSignal
+  ) => Promise<HandoffReport>;
   /** The head of `legion/<issue>@origin` an update signal reports, read with the pane's jj
    * (`findPushedBranchHead`), and `""` when the branch is not on the remote. */
   readonly branchHead: () => Promise<string>;
@@ -448,8 +474,9 @@ export function createLegionTool(deps: {
    * looked up in Dispatch as a `dispatch` command's `--artifact` is; throws naming the reference
    * when none matches, or when it names two documents. */
   readonly resolveDocument: (issue: string, reference: string) => Promise<string>;
-  /** The clock `handoff_complete` and `sign_off` wait out a daemon restart on; a test's own. */
-  readonly restartClock?: Pick<DaemonRestartRetry, "now" | "sleep">;
+  /** The clock `handoff_complete`, `sign_off` and `register_gate` wait out a daemon restart on,
+   * and how one attempt's limit is timed; a test's own. */
+  readonly restartClock?: Pick<DaemonRestartRetry, "now" | "sleep" | "attemptLimit">;
 }): RegisteredTool {
   const {
     pi,
@@ -473,7 +500,12 @@ export function createLegionTool(deps: {
     // the issue it returns from accepting) and read_build, then the architect's
     // retry_or_escalate, its sign_off and the controller's operations: the exact text
     // tools.test.ts pins, so a change to the shared template cannot reach an Oh My Pi agent
-    // unnoticed.
+    // unnoticed. The rules for ending a child are the words of the daemon's record.EndChildRule,
+    // and the sentence after them is the daemon's record.StatusNotTakenYet (both in
+    // packages/daemon/internal/record/project.go). These tests hold the copies together: the
+    // daemon's TestTheEndChildRuleGolden writes both texts to
+    // packages/contracts/fixtures/daemon-api/end-child-rule.json, and tools.test.ts holds this
+    // description to that file.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
@@ -486,12 +518,30 @@ export function createLegionTool(deps: {
         "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
         "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
         "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
-        "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: run each one " +
-        "to done, and sign off again. " +
-        "Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. " +
-        "Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer. " +
+        "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work. " +
+        "Sign off again when each of them has left the workflow. " +
+        "The daemon takes the owning architect's done, backlog, icebox or triage on a child as it takes a person's move. " +
+        "End a child with your own status write in Dispatch. " +
+        "Write done with a reason when the child's work is done, folded into another issue or no longer needed: " +
+        "dispatch issue-update --issue <KEY> --status done --reason '<why>'. " +
+        "For a fold, name the carrier in the reason: the issue that carries the work. " +
+        "Before the done of a fold, make each issue that is blocked_by the child wait on the carrier instead. " +
+        "Done starts those issues, and the Referenced by list of dispatch read names each of them as blocked_by. " +
+        "Before done on a running child, have its worker push the work that the carrier needs. " +
+        "Done ends the worker's turn and the pod at once. " +
+        "Unless the work of the child's open pull request should land, close that pull request with your own App (gh pr close). " +
+        "When it is in the merge queue, first take it out (GraphQL dequeuePullRequest). " +
+        "Do this before done, or at once after a done that you wrote first. " +
+        "Write backlog or icebox only when a person asked for that move, or as the first step of a restart. " +
+        "A restart is backlog, then rerun_child. " +
+        "Say why in a dispatch comment. " +
+        "Write no status on a child that is already done, because a move out of done ends an open production check. " +
+        "After each move, read the child back (dispatch read --issue <KEY>). " +
+        "When the daemon set the move back, write it again. " +
+        "A status that you wrote and that the daemon has not taken yet does not count until read_record shows it. " +
+        "When a child can neither finish nor take one of these moves, ask the person. Hold the acceptance until they answer. " +
         "close_root is refused the same way and with the same code while an issue beneath the root is still in the workflow, " +
-        "since closing it would stop that work mid-turn: answer it the same way, park_child under the same rule included. " +
+        "because closing it would stop that work mid-turn. Answer that refusal the same way. " +
         "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
         "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
         "under it now: wait for the ancestor to close, then release it. " +
@@ -500,7 +550,7 @@ export function createLegionTool(deps: {
         "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +
         "state with its last turn times — and with issue, issues, phase or settings returns the full records it names; " +
         "set_status moves an issue to todo, backlog or icebox. " +
-        "Move an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. " +
+        "With set_status, the controller moves an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cites that reason in a comment on the issue. " +
         "Two writes are not that move: a root's restart, which sets backlog and then todo in the same turn, and the " +
         "controller's report issue's icebox, because that issue holds no work. " +
         "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
@@ -544,6 +594,31 @@ export function createLegionTool(deps: {
         "Each refusal says what the claim does now and which operation reaches each state. It " +
         "names no moment to come back at: ask again later, and read the claim's state in " +
         "read_state. " +
+        "relaunch (claim) starts again, on the session it recorded, a claim that Envoy cannot reach, as the daemon starts " +
+        "a claim again after a death, and charges it nothing: claim is the claim's token, as the daemon's notice of an " +
+        "unreachable claim and the claim's locator in read_state name it. It reaches a claim in a turn: the daemon stops " +
+        "the old process through the role's launcher, and the resumed session reads what its cut turn did. The answer is " +
+        "empty, also where the daemon's store did not answer the launch after the stop: the daemon then starts the claim " +
+        "itself at its probe interval. " +
+        "The daemon refuses it, stopping nothing, for a grant that is not the controller's (CONTROLLER_REQUIRED), " +
+        "for a token it holds no claim under (NO_CLAIM), for a claim Envoy can reach (CLAIM_REACHABLE), for a claim " +
+        "between states (CLAIM_UNSETTLED), for the project's controller, which only the daemon relaunches, and only " +
+        "where it runs the controller itself (controller: daemon in legion.yaml) (CLAIM_IS_CONTROLLER), for a claim " +
+        "whose tree allows it no launch, because the tree's cleanup is reserved or the tree was opened again since " +
+        "(TREE_REFUSES_LAUNCH), which that tree's close or its next start decides, and for a " +
+        "claim whose worker stream showed a step in the last 20 minutes, which is in " +
+        "a turn whose session sent an activity report in that turn in the last 20 minutes, whose open call is not a " +
+        "wait, or whose last activity report since its launch is missing or shows a background job or a " +
+        "subagent running (RELAUNCH_GUARD): relaunch that claim again when the daemon's notice says the guard would let " +
+        "it through. While the daemon is stopping it answers 503 with no code and stops nothing: relaunch again once " +
+        "it is back. TREE_CHECK_FAILED (503) says the daemon could not check the claim's tree and stopped nothing: " +
+        "relaunch it again. RELAUNCH_FAILED says the relaunch failed or the daemon could not record it, and the claim may " +
+        "already be stopped: read it in read_state before you relaunch it again. The refusals coded " +
+        "LAUNCHER_NOT_CONNECTED (the role's launcher is not connected), " +
+        "RELAUNCH_REPLACES_POD (the launch would replace the pod and end every other role in it), PROCESS_OUTLIVED_STOP " +
+        "(the old process outlived its stop), POD_UNREACHABLE (every claim of a pod of two or more claims is " +
+        "unreachable) and RELAUNCHED_RECENTLY (the claim was relaunched in the last 6 hours) are cases for a person: " +
+        "ask one with a dispatch ask. " +
         "pause (reason) pauses the whole project, and resume ends its pause; neither takes an issue. While the project " +
         "is paused the daemon admits no issue, and it starts no role and gives no role a task except the controller. Every " +
         "other role stops with its conversation kept, an idle one at once and one in a turn when that turn ends, and the " +
@@ -554,19 +629,22 @@ export function createLegionTool(deps: {
         "starts once, at the daemon's wake pacing, and every other role it stopped stays stopped until its next wake. " +
         "The answer is the pause with endedAt and endedBy, and released, how many held rows the resume let out. The " +
         "daemon refuses a resume of a project that is not paused (PROJECT_NOT_PAUSED, naming its last pause when it has one). While " +
-        "the project is paused it refuses fresh_session and compact (PROJECT_PAUSED, naming the pause that stands), " +
-        "since each would start a turn. ",
+        "the project is paused it refuses fresh_session, compact and relaunch (PROJECT_PAUSED, naming the pause that " +
+        "stands), since each would start a turn. ",
     }),
     defaultInactive: true,
     parameters: toolSchema(pi),
-    execute: async (_id, parameters, signal, onUpdate, context) => {
+    execute: async (toolCallId, parameters, signal, onUpdate, context) => {
       // The three writes the daemon applies at most once however often they arrive
-      // (handoff_complete, sign_off, register_gate) wait out its restart until the agent's abort.
-      // The retry notice goes out once as a partial result, which Oh My Pi shows in its TUI and
-      // RPC event stream; the model sees only the final result.
+      // (handoff_complete, sign_off, register_gate) wait out its restart until the agent's abort,
+      // which also ends the attempt in flight. The retry notice goes out once as a partial
+      // result, which Oh My Pi shows in its TUI and RPC event stream; the model sees only the
+      // final result. The call's time on the daemon, from its first request, is recorded under
+      // this call's id, so the stall watch takes it off this call's clock and no other's.
       const restart: DaemonRestartRetry = {
         ...restartClock,
         ...(signal === undefined ? {} : { signal }),
+        ...(toolCallId === "" ? {} : { toolCallId }),
         onRetrying: (message) => {
           if (typeof onUpdate === "function") {
             onUpdate({ content: [{ type: "text", text: message }], details: {} });
@@ -607,6 +685,16 @@ export function createLegionTool(deps: {
             return jsonSuccess(await readBuild({ daemon: client, build: BUILD }));
           }
           if (operation === "read_state") return readState(await client.state(), parameters);
+          // The relaunch names its claim by token, and is validated whole before its grant is
+          // minted.
+          if (operation === "relaunch") {
+            // Posted once, never through `retryWhileDaemonRestarts`: a relaunch whose answer was
+            // lost may have stopped and started the claim, and the daemon refuses a second one
+            // within 6 hours as a person's case, so a repeat would turn one relaunch into that.
+            const claim = requiredString(parameters, operation, "claim");
+            const { grantId } = await controllerGrant(active.sessionID);
+            return jsonSuccess(await client.relaunch({ grantId, claim }));
+          }
           // The project's pause and its resume name no issue: the daemon acts on its own project.
           // Each is validated whole before its grant is minted, and each answer is the daemon's
           // own: the pause it began, or the pause it ended with how many held rows it let out.
@@ -680,17 +768,21 @@ export function createLegionTool(deps: {
             const step = named.data;
             // The fact is keyed by the gate's issue, generation, step, document, version and
             // Dispatch sequence; a repeat after the sequence moved is a re-registration the gate
-            // absorbs.
+            // absorbs. The grant and the registration carry the attempt's signal, so an attempt
+            // given up on registers nothing.
             await retryWhileDaemonRestarts(
               "register_gate",
-              async () =>
-                client.gateRegister({
-                  grantId: await mintClaimGrant(client, active),
-                  issue,
-                  artifactId,
-                  version,
-                  ...(step === undefined ? {} : { step }),
-                }),
+              async (attempt) =>
+                client.gateRegister(
+                  {
+                    grantId: await mintClaimGrant(client, active, attempt),
+                    issue,
+                    artifactId,
+                    version,
+                    ...(step === undefined ? {} : { step }),
+                  },
+                  { signal: attempt }
+                ),
               restart
             );
             return jsonSuccess({});
@@ -726,10 +818,16 @@ export function createLegionTool(deps: {
           }
           case "sign_off": {
             // A repeat after a sign-off that landed finds the issue in retro and changes nothing.
+            // The grant and the sign-off carry the attempt's signal, so an attempt given up on
+            // signs off nothing.
             const issue = requiredString(parameters, operation, "issue");
             await retryWhileDaemonRestarts(
               "sign_off",
-              async () => client.signOff({ grantId: await mintClaimGrant(client, active), issue }),
+              async (attempt) =>
+                client.signOff(
+                  { grantId: await mintClaimGrant(client, active, attempt), issue },
+                  { signal: attempt }
+                ),
               restart
             );
             return jsonSuccess({});
@@ -743,13 +841,12 @@ export function createLegionTool(deps: {
             });
             return jsonSuccess({});
           }
-          case "park_child":
           case "rerun_child": {
             const grantId = await mintClaimGrant(client, active);
-            const request = { grantId, issue: requiredString(parameters, operation, "issue") };
-            await (operation === "park_child"
-              ? client.childPark(request)
-              : client.childRerun(request));
+            await client.childRerun({
+              grantId,
+              issue: requiredString(parameters, operation, "issue"),
+            });
             return jsonSuccess({});
           }
           default:

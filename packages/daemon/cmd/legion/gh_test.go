@@ -3110,15 +3110,11 @@ func TestGhConfigShapeRefusesADirectoryThatSendsElsewhere(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			// A check that opened a named pipe would wait on it, so each runs with a bound.
+			// A check that opened a named pipe would wait on it, and fails the row by name before
+			// the test binary's deadline (testwait.Receive), the only bound on the wait.
 			done := make(chan error, 1)
 			go func() { done <- ghConfigShape(dir) }()
-			var err error
-			select {
-			case err = <-done:
-			case <-time.After(5 * time.Second):
-				t.Fatalf("ghConfigShape did not return within 5 s")
-			}
+			err := testwait.Receive(t, "ghConfigShape with "+tc.name, done)
 			switch {
 			case tc.want == "" && err != nil:
 				t.Fatalf("ghConfigShape = %v, want none", err)

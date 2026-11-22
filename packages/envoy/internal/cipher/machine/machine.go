@@ -62,9 +62,17 @@ type Service struct {
 	// Policy is the secret policy, whose version a machine-login record carries.
 	Policy *policy.Current
 
-	Audience   string
-	Skew       time.Duration
-	PendingTTL time.Duration
+	// Audience is what a new login's request object must name as its aud exactly
+	// (BROKER_PUBLIC_URL): the broker's own address as the login's caller reached it.
+	Audience string
+	// EdgeAudience is BROKER_EDGE_URL, the broker's address at its edge, and "" for a broker with
+	// no edge. A login the edge opens is held to it exactly (AtEdge), and a record read back for
+	// its lookup or its decision, which Dispatch relays to Audience, is held to the origin of
+	// either address (record.VerifyStoredRequestObject): each is this broker, and the record's
+	// object was held to the one its caller reached when the login was opened.
+	EdgeAudience string
+	Skew         time.Duration
+	PendingTTL   time.Duration
 	// CredentialLifetime is how long a minted credential lasts, and how far each refresh of its
 	// device login moves its expiry.
 	CredentialLifetime time.Duration
@@ -88,7 +96,7 @@ type Service struct {
 const jtiRetentionMargin = time.Minute
 
 // embeddedJWK extracts the raw JWK embedded in a request object's JWS header. It is called only
-// after record.VerifyRequestObject already checked that JWS's signature and structure, so
+// after record.VerifyStoredRequestObject already checked that JWS's signature and structure, so
 // ApplyDecision can store the exact public key material a launcher credential is bound to.
 func embeddedJWK(compact string) (json.RawMessage, error) {
 	sig, err := jose.ParseSigned(compact, []jose.SignatureAlgorithm{jose.ES256})
@@ -105,12 +113,44 @@ func deref(s *string) string {
 	return *s
 }
 
-// verifyLauncherRequest verifies a machine request object for a launcher credential at now: its
-// signature and freshness (record.VerifyRequestObject), exactly one launcher_credential detail, a
-// reason naming no more projects than a new request may (record.CheckReasonProjects), then the
-// caller's own check, then its jti, which it records, so a replayed request is refused. Every
+// AtEdge is s as the broker's edge opens a login with: the same store, enrollment, policy and
+// provider, with the edge's address as the audience a login's request object must name. It
+// answers nil for a service with no EdgeAudience, a broker with no edge. The edge opens logins
+// and decides none, so what it answers is read only by LoginDevice, by CheckPersonLogin (the
+// edge's pre-check of its shared device bucket) and by the device route's own bucket spend, which
+// verify an object against Audience.
+func (s *Service) AtEdge() *Service {
+	if s.EdgeAudience == "" {
+		return nil
+	}
+	edge := *s
+	edge.Audience = s.EdgeAudience
+	return &edge
+}
+
+// verifyLauncherRequest verifies a machine request object for a launcher credential at now
+// (checkLauncherRequest), then its jti, which it records, so a replayed request is refused. Every
 // refusal but check's own is record.ErrRequestInvalid.
 func (s *Service) verifyLauncherRequest(ctx context.Context, compact string, now time.Time, check func(record.RequestObject) error) (record.RequestObject, error) {
+	obj, err := s.checkLauncherRequest(compact, now, check)
+	if err != nil {
+		return record.RequestObject{}, err
+	}
+	fresh, err := s.Replay(ctx, obj.JTI, obj.Expires.Add(s.Skew+jtiRetentionMargin))
+	if err != nil {
+		return record.RequestObject{}, err
+	}
+	if !fresh {
+		return record.RequestObject{}, fmt.Errorf("%w: replayed jti", record.ErrRequestInvalid)
+	}
+	return obj, nil
+}
+
+// checkLauncherRequest is verifyLauncherRequest short of its jti: the object's signature and
+// freshness (record.VerifyRequestObject), exactly one launcher_credential detail, a reason naming
+// no more projects than a new request may (record.CheckReasonProjects), then the caller's own
+// check. It reads and writes nothing.
+func (s *Service) checkLauncherRequest(compact string, now time.Time, check func(record.RequestObject) error) (record.RequestObject, error) {
 	obj, err := record.VerifyRequestObject(compact, s.Audience, s.Skew, now)
 	if err != nil {
 		return record.RequestObject{}, err
@@ -124,14 +164,17 @@ func (s *Service) verifyLauncherRequest(ctx context.Context, compact string, now
 	if err := check(obj); err != nil {
 		return record.RequestObject{}, err
 	}
-	fresh, err := s.Replay(ctx, obj.JTI, obj.Expires.Add(s.Skew+jtiRetentionMargin))
-	if err != nil {
-		return record.RequestObject{}, err
-	}
-	if !fresh {
-		return record.RequestObject{}, fmt.Errorf("%w: replayed jti", record.ErrRequestInvalid)
-	}
 	return obj, nil
+}
+
+// CheckPersonLogin reports, with nil, that compact and dpopJKT are a person's machine login
+// LoginDevice would open at now, short of the one check that needs the store, whether its jti was
+// seen before: every other refusal of verifyPersonLogin, the same way. It reads and writes
+// nothing, so a caller can judge a request before it spends anything on it (the edge's shared
+// device bucket).
+func (s *Service) CheckPersonLogin(compact, dpopJKT string, now time.Time) error {
+	_, err := s.checkLauncherRequest(compact, now, personLoginCheck(dpopJKT))
+	return err
 }
 
 // LoginDevice opens a person's machine login as an OAuth device authorization: the provider's
@@ -173,25 +216,34 @@ func (s *Service) LoginDevice(ctx context.Context, form url.Values, userCode str
 // verifyPersonLogin verifies a person's machine login request object at now (verifyLauncherRequest)
 // and answers the approver its login_hint names. A request naming a service is
 // ErrServiceLogsInWithToken, and one naming no person, or record.AnyoneApprover, or whose key
-// thumbprint is not dpopJKT, is record.ErrRequestInvalid, each checked before the jti is recorded.
-func (s *Service) verifyPersonLogin(ctx context.Context, compact string, now time.Time, dpopJKT string) (approver string, err error) {
-	_, err = s.verifyLauncherRequest(ctx, compact, now, func(obj record.RequestObject) error {
+// thumbprint is not dpopJKT, is record.ErrRequestInvalid, each checked before the jti is recorded
+// (personLoginCheck).
+func (s *Service) verifyPersonLogin(ctx context.Context, compact string, now time.Time, dpopJKT string) (string, error) {
+	obj, err := s.verifyLauncherRequest(ctx, compact, now, personLoginCheck(dpopJKT))
+	if err != nil {
+		return "", err
+	}
+	return record.CanonicalLogin(obj.LoginHint), nil
+}
+
+// personLoginCheck is the check of a person's machine login request object: no service, a login_hint
+// naming a person other than record.AnyoneApprover, and a key thumbprint that is dpopJKT.
+func personLoginCheck(dpopJKT string) func(record.RequestObject) error {
+	return func(obj record.RequestObject) error {
 		if obj.Service() != "" {
 			return ErrServiceLogsInWithToken
 		}
-		approver = record.CanonicalLogin(obj.LoginHint)
-		if approver == "" {
+		switch record.CanonicalLogin(obj.LoginHint) {
+		case "":
 			return fmt.Errorf("%w: login_hint is required for a person's machine login", record.ErrRequestInvalid)
-		}
-		if approver == record.AnyoneApprover {
+		case record.AnyoneApprover:
 			return fmt.Errorf("%w: a person's machine login's login_hint names its operator, never %q", record.ErrRequestInvalid, record.AnyoneApprover)
 		}
 		if dpopJKT != obj.Thumbprint {
 			return fmt.Errorf("%w: dpop_jkt is not the request object's key thumbprint", record.ErrRequestInvalid)
 		}
 		return nil
-	})
-	return approver, err
+	}
 }
 
 // ApplyDecision decides a pending machine login. code must match the record's own — a wrong code
@@ -254,7 +306,7 @@ func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bo
 
 	// now is the record's own creation time: the request object's iat and exp bound how fresh it
 	// had to be when its login was opened, never how long the login may wait for its decision.
-	obj, err := record.VerifyRequestObject(body.Request, s.Audience, s.Skew, createdAt)
+	obj, err := record.VerifyStoredRequestObject(body.Request, s.Audience, s.EdgeAudience, s.Skew, createdAt)
 	if err != nil {
 		return "", "", err
 	}
@@ -504,7 +556,7 @@ func (s *Service) LookupByCode(ctx context.Context, code string) (RecordView, er
 	if err != nil {
 		return RecordView{}, err
 	}
-	obj, err := record.VerifyRequestObject(body.Request, s.Audience, s.Skew, createdAt)
+	obj, err := record.VerifyStoredRequestObject(body.Request, s.Audience, s.EdgeAudience, s.Skew, createdAt)
 	if err != nil {
 		return RecordView{}, err
 	}

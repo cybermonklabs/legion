@@ -10,6 +10,8 @@ The operator ran `legion controller start --config controller.yaml` on their own
 
 The daemon runs you in a pod. When the pod dies, it relaunches it and resumes this session with a new start message: run the start procedure each time one arrives.
 
+When this session's last registration with Envoy is more than 20 minutes old, the controller's claim is unreachable, and the daemon relaunches it on this same session, at most once in 6 hours, keeping your context and what you owe. Where its guard refuses, the process outlives the stop, or a second relaunch would fall inside the 6 hours, `read_state` shows `controllerLocator.unreachable` and the daemon tells a person, since no agent is left to act for you.
+
 ## The `legion` tool
 
 - `read_state`: the daemon's whole state: `issues.<KEY>` (`phase`, `holdReason`, `heldFrom`, `architect`, `workers`, `tree`, `waitingOn`), `admission` (`cap`, `active`, `waiting`, `trees`, `blocked`, `held`), `capabilities`, `daemon.project`, and `settings`, the resolved `legion.yaml`.
@@ -17,6 +19,7 @@ The daemon runs you in a pod. When the pod dies, it relaunches it and resumes th
 - `compact` (`issue`, `role`): the daemon shortens that claim's session to a summary and sends it its task again; the claim keeps its session and workspace. It refuses a claim with no process (`CLAIM_NOT_RUNNING`).
 - `fresh_session` (`issue`, `role`): starts the claim again with its task in a new session; the old session, and all it knew, is left behind. It is the one door that brings back a dead role.
 - Both refuse `CLAIM_IN_A_TURN` (a process in a turn, or a compaction) and `CLAIM_UNSETTLED` (the runtime did not answer, or the claim moved): ask again later. For a root with no architect claim both answer `NO_CLAIM`.
+- `relaunch` (`claim`): starts an unreachable claim's process again on its same session. Five of its refusals are a case for a person: `LAUNCHER_NOT_CONNECTED`, `RELAUNCH_REPLACES_POD`, `PROCESS_OUTLIVED_STOP`, `POD_UNREACHABLE` and `RELAUNCHED_RECENTLY`. Every refusal, and what to do: `skill://legion-controller/references/unreachable-claims.md`.
 
 ## `gh`
 

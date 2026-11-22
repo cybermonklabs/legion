@@ -13,7 +13,8 @@
 -- landed and the reviewer's ask to read the merge.
 --
 -- The check is one list, so the migration that sets it names every kind, as 20261117023932 did:
--- that migration's twenty-seven kinds, plan_record among them, and these two. Its version stands
+-- that migration's twenty-nine kinds, plan_record and the two reach notice kinds of
+-- 20261116082000 among them, and these two. Its version stands
 -- above 20261117023932 on purpose: Migrate applies every unrecorded migration in version order,
 -- so the list with the higher version is the last word on any database, and a list that left out
 -- plan_record would refuse every plan-record row the daemon queues from then on.
@@ -29,8 +30,8 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake',
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
-  'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
-  'conflict_confirm', 'merge_forward'));
+  'merge_queue_read', 'merge_queue_removal', 'reach_notice', 'reach_controller_notice',
+  'role_holders_publish', 'step_record', 'plan_record', 'conflict_confirm', 'merge_forward'));
 
 -- Every phase_ended row still queued goes. Each is a message the release before queued about a
 -- move it made, a conflict that sent the issue back to implementing, to the role whose phase that

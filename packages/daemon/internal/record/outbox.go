@@ -56,6 +56,24 @@ const (
 	// left (MergeQueueRemoval).
 	OutboxKindMergeQueueRead    OutboxKind = "merge_queue_read"
 	OutboxKindMergeQueueRemoval OutboxKind = "merge_queue_removal"
+	// OutboxKindReachNotice and OutboxKindReachControllerNotice are the kinds of the notices this
+	// change adds (reachNoticeKind): an architect's Notice and a ControllerNotice, decoded and
+	// delivered exactly as the two kinds above them are, under kinds of their own so that a daemon
+	// of the release before never selects one. That release decodes outbox rows strictly
+	// (DecodeOutboxPayload's DisallowUnknownFields) and knows neither these notice kinds nor their
+	// claim and unreachable fields, so under `notice` or `controller_notice` such a row is one it
+	// fails on at every attempt, for ever, and under `notice` one whose backoff also fails that
+	// release's every read of the project's state, which lists the notices not yet due and decodes
+	// each (WaitingNotices). It runs a row only through a lane that lists the row's kind
+	// (UnfinishedLanes leaves out a kind it has no lane for), so a daemon a rollback starts — or
+	// the older half of a rolling restart — leaves each of these rows where it stands, and the next
+	// daemon of this release delivers it. That is the standard answer to a message a new writer
+	// adds that an old reader cannot read, a type of its own the old reader skips, and it is the
+	// route that needs no release in between: a decoder the release before made tolerant would
+	// protect a rollback only to a release that carries it, and no release before this one carries
+	// one (scripts/e2e/rollback-notices.sh runs the one before it).
+	OutboxKindReachNotice           OutboxKind = "reach_notice"
+	OutboxKindReachControllerNotice OutboxKind = "reach_controller_notice"
 	// OutboxKindRoleHoldersPublish publishes the live role sessions of one issue onto its Dispatch
 	// row (RoleHoldersPublish).
 	OutboxKindRoleHoldersPublish OutboxKind = "role_holders_publish"
@@ -123,7 +141,7 @@ const (
 // one lane (TestEveryOutboxKindIsInExactlyOneLane).
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
-	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
+	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindReachNotice, OutboxKindReachControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
 	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward},
 	LaneClaim:       {OutboxKindClaimRelease},
 	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},
@@ -174,12 +192,14 @@ type pauseHold struct {
 // pauseHolds is the one list of the rows a project's pause holds (decision 9 of
 // dispatch://INFRA-3759): every row that launches a role, hands it a task or a message, or starts
 // or ends a production check's look. Those are a supervise row whose op is `start`, an architect's
-// notice (which resumes a released architect, the daemon's wakeForDelivery), the four messages to
-// one role (hook_prompt, role_message, update_ask, merge_forward) and the merger's merge-queue
+// notice under either kind it is queued as (notice, and reach_notice for a notice of a claim out
+// of reach: either resumes a released architect, the daemon's wakeForDelivery), the four messages
+// to one role (hook_prompt, role_message, update_ask, merge_forward) and the merger's merge-queue
 // message, and the three rows of a production check (check_wake, check_look, check_bound). Every
 // other row runs while the project is paused: the stops (a supervise row of any other op,
 // issue_suspend, issue_release), the writes to Dispatch, and the controller's notices
-// (controller_notice), since the pause never holds the controller (spec Design item 8).
+// (controller_notice and reach_controller_notice), since the pause never holds the controller
+// (spec Design item 8).
 //
 // The outbox's claim reads the list as SQL literals (store.go's outboxPauseFree, built from it),
 // so DueRows, ClaimRow, HeldRows and PauseHeldRows hold exactly these rows, and the resume marks
@@ -189,6 +209,7 @@ type pauseHold struct {
 var pauseHolds = []pauseHold{
 	{kind: OutboxKindSupervise, op: "start"},
 	{kind: OutboxKindNotice},
+	{kind: OutboxKindReachNotice},
 	{kind: OutboxKindHookPrompt},
 	{kind: OutboxKindRoleMessage},
 	{kind: OutboxKindUpdateAsk},
@@ -474,6 +495,18 @@ type Notice struct {
 	// Update is an update-stalled notice's account of the round that is not finishing, and is
 	// absent from every other kind. Only an UpdateStalledNotice carries one.
 	Update *UpdateStalled `json:"update,omitempty"`
+	// Claim is the claim token a notice of R5 or R3 speaks for, and is absent from every other
+	// kind: the claim whose relaunch the guard would now let through, whose relaunch the guard has
+	// refused for 60 minutes, that is still unreachable after a relaunch, whose marked process
+	// exits at its Envoy role claim, whose newer process the worker stream still refuses, and, for
+	// the architect's own kind, the claim of its tree that is out of reach. The role is beside it
+	// as every claim notice carries one; the token is what `legion claims list` and the `relaunch`
+	// operation name, so the reader can act on the notice without deriving it.
+	Claim string `json:"claim,omitempty"`
+	// Unreachable is every claim that has become unreachable since the controller's last such
+	// notice (R5). Only an UnreachableClaimsNotice carries it, and one that carries no claim is
+	// never queued: the list is the whole of what it says.
+	Unreachable []UnreachableClaim `json:"unreachable,omitempty"`
 	// Pause is a project-paused or project-resumed notice's account of the act, and is absent
 	// from every other kind. Only those two kinds carry one.
 	Pause *ProjectPause `json:"pause,omitempty"`
@@ -647,6 +680,18 @@ func (v VolumeNearFull) MarshalJSON() ([]byte, error) {
 		out.Sizes = []VolumeSize{}
 	}
 	return json.Marshal(out)
+}
+
+// UnreachableClaim is one claim of an unreachable-claims notice: the claim token, its issue, the
+// role it holds, the state the daemon still records it in — the mark changes no state (R5) — and
+// the last registration of its session that the daemon read from Envoy's session list, which is
+// what the 20 minutes are counted from.
+type UnreachableClaim struct {
+	Claim    string     `json:"claim"`
+	Issue    string     `json:"issue,omitempty"`
+	Role     claim.Role `json:"role,omitempty"`
+	State    string     `json:"state,omitempty"`
+	LastSeen time.Time  `json:"lastSeen,omitzero"`
 }
 
 // NoticeFailure is why a claim failed, as the notices of that failure name it: Cause is the one
@@ -854,7 +899,14 @@ type CatchUpIssue struct {
 	Status string      `json:"status"`
 }
 
-func (Notice) OutboxKind() OutboxKind { return OutboxKindNotice }
+// OutboxKind is the kind a notice is queued as: OutboxKindNotice, or OutboxKindReachNotice for a
+// notice the release before this change cannot decode (reachNoticeKind).
+func (n Notice) OutboxKind() OutboxKind {
+	if reachNoticeKind(n.Kind) {
+		return OutboxKindReachNotice
+	}
+	return OutboxKindNotice
+}
 
 // Published is the notice the runner publishes for outbox row id, and the dedupe key it goes under:
 // a re-held copy goes under the key of the row it copies, and without ResendOf. The reserved
@@ -883,7 +935,15 @@ func (n Notice) Published(id int64) (Notice, string) {
 // published as the Notice it is.
 type ControllerNotice Notice
 
-func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNotice }
+// OutboxKind is the kind a controller notice is queued as: OutboxKindControllerNotice, or
+// OutboxKindReachControllerNotice for one the release before this change cannot decode
+// (reachNoticeKind).
+func (n ControllerNotice) OutboxKind() OutboxKind {
+	if reachNoticeKind(n.Kind) {
+		return OutboxKindReachControllerNotice
+	}
+	return OutboxKindControllerNotice
+}
 
 // The controller notices no architect is told of. A triage notice's root is unrecorded, so no
 // architect owns it; a slot-free notice names the issue whose slot admission released while no
@@ -953,9 +1013,55 @@ const (
 	ProviderErrorsNotice   NoticeKind = "provider-errors"
 	TreeStalledNotice      NoticeKind = "tree-stalled"
 	ArchitectStalledNotice NoticeKind = "architect-stalled"
-	ProjectPausedNotice    NoticeKind = "project-paused"
-	ProjectResumedNotice   NoticeKind = "project-resumed"
+
+	// The controller's notices of the claims Envoy cannot reach (R5) and of a claim whose newer
+	// process its worker stream still refuses (R3).
+	//
+	// UnreachableClaimsNotice lists each claim that has become unreachable since the last such
+	// notice: its session's last registration with Envoy is more than 20 minutes old, counted as
+	// R5 counts it. The claim keeps its state; the controller decides a relaunch.
+	// RelaunchReadyNotice names a claim whose relaunch the guard refused and would now let
+	// through, sent once. RelaunchGuardHeldNotice names a claim the guard has refused for 60
+	// minutes, and RelaunchNotBackNotice one that a relaunch reached and that is still
+	// unreachable 20 minutes later; each is sent once and names its claim as a case for a person.
+	// UnreachableExitNotice names a marked claim that owes no task and whose process exits at its
+	// Envoy role claim, sent at the first such exit, also a case for a person.
+	// EnvoyNoLiveSessionNotice says Envoy's whole list has held no live session for 20 minutes,
+	// so nothing is marked at all. WorkerLockedOutNotice names a claim whose newer process the
+	// worker stream has refused for 5 minutes because an older connection will not close, which
+	// only a person can end.
+	UnreachableClaimsNotice  NoticeKind = "unreachable-claims"
+	RelaunchReadyNotice      NoticeKind = "relaunch-ready"
+	RelaunchGuardHeldNotice  NoticeKind = "relaunch-guard-held"
+	RelaunchNotBackNotice    NoticeKind = "relaunch-not-back"
+	UnreachableExitNotice    NoticeKind = "unreachable-exit"
+	EnvoyNoLiveSessionNotice NoticeKind = "envoy-no-live-session"
+	WorkerLockedOutNotice    NoticeKind = "worker-locked-out"
+
+	// ClaimOutOfReachNotice is the one unreachable notice an architect is told: one for each
+	// claim of its tree other than its own (R5). It asks nothing of the architect, since the
+	// controller decides the relaunch, and an architect that is itself out of reach is never told
+	// of its own claim, which it could not hear. Its word is not the architect stall arm's
+	// (ArchitectClaimUnreachable), which names a failed or missing architect claim instead.
+	ClaimOutOfReachNotice NoticeKind = "claim-out-of-reach"
+	ProjectPausedNotice   NoticeKind = "project-paused"
+	ProjectResumedNotice  NoticeKind = "project-resumed"
 )
+
+// reachNoticeKind says whether a notice of kind is one of the unreachable-claim notices, which the
+// release before them cannot decode, so it is queued as OutboxKindReachNotice or
+// OutboxKindReachControllerNotice, which that release never runs. The claim and unreachable fields
+// ride on these kinds alone (validateUnreachableNotice), so no other notice carries a field that
+// release does not know.
+func reachNoticeKind(kind NoticeKind) bool {
+	switch kind {
+	case UnreachableClaimsNotice, RelaunchReadyNotice, RelaunchGuardHeldNotice, RelaunchNotBackNotice,
+		UnreachableExitNotice, EnvoyNoLiveSessionNotice, WorkerLockedOutNotice, ClaimOutOfReachNotice:
+		return true
+	default:
+		return false
+	}
+}
 
 // ArchitectStallArm names which reading raised an architect-stalled notice. It is part of the
 // mark that keeps one wake to one root, one run and one arm (ArchitectStall,
@@ -1047,8 +1153,21 @@ type ArchitectStall struct {
 //
 // Every other kind says something about the project — a free slot, a todo issue, the day's tick
 // — which one wake carries however many facts find it pending.
+//
+// The five notices of a claim the daemon cannot reach answer true for the same reason the
+// provider-errors notice does (R5): one pod's loss takes every claim of that pod out of reach at
+// once, each owing a notice of its own, and each is sent once and never again while the claim stays
+// out of reach, so a second claim's notice dropped behind the first claim's would never be sent at
+// all. The unreachable-claims list and the notice that Envoy lists nobody speak for the project, as
+// a tick does, so both answer false.
 func NoticePerClaim(kind NoticeKind) bool {
-	return kind == ProviderErrorsNotice || kind == TreeStalledNotice
+	switch kind {
+	case ProviderErrorsNotice, TreeStalledNotice,
+		RelaunchReadyNotice, RelaunchGuardHeldNotice, RelaunchNotBackNotice, UnreachableExitNotice, WorkerLockedOutNotice:
+		return true
+	default:
+		return false
+	}
 }
 
 // SuperviseOp identifies a worker-session operation: "start" starts, resumes, or retries the role's
@@ -1984,13 +2103,13 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
-	case OutboxKindNotice:
+	case OutboxKindNotice, OutboxKindReachNotice:
 		value := Notice{}
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
-	case OutboxKindControllerNotice:
+	case OutboxKindControllerNotice, OutboxKindReachControllerNotice:
 		value := ControllerNotice{}
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
@@ -2251,6 +2370,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if err := validateNoticeEscalation(value.Kind, value.Reason, value.Escalation); err != nil {
 			return err
 		}
+		if err := validateUnreachableNotice(value.Kind, value.Claim, value.Unreachable); err != nil {
+			return err
+		}
 	case ControllerNotice:
 		if !controllerOnlyNoticeKind(value.Kind) && !validNoticeKind(value.Kind) {
 			return fmt.Errorf("unknown controller notice kind %q", value.Kind)
@@ -2294,6 +2416,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.Kind == ArchitectStalledNotice && value.Reason == "" {
 			return fmt.Errorf("an architect-stalled notice carries the reason that names its arm, the root and what the record says")
+		}
+		if err := validateUnreachableNotice(value.Kind, value.Claim, value.Unreachable); err != nil {
+			return err
 		}
 	case SuperviseRequest:
 		if !validSuperviseOp(value.Op) {
@@ -2549,6 +2674,7 @@ var validNoticeKinds = []NoticeKind{
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
 	"session-lost", "session-forgotten", "session-store-fault",
+	ClaimOutOfReachNotice,
 }
 
 // VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left
@@ -2605,12 +2731,52 @@ func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error 
 	return nil
 }
 
+// validateUnreachableNotice holds the claim token and the list of unreachable claims to the notices
+// of R5 and R3 that carry them, as every other field of a notice is held to its own kinds. Both
+// arms of the switch above call it, because the architect reads one of these kinds and the
+// controller the rest.
+//
+// A kind that speaks for one claim names it: the notice is what the controller acts on, and a
+// relaunch names a claim token, so a notice that named none would send its reader to the claims
+// list to work out which claim it meant. The list notice carries at least one claim, since the
+// list is the whole of what it says.
+func validateUnreachableNotice(kind NoticeKind, claimToken string, unreachable []UnreachableClaim) error {
+	switch kind {
+	case RelaunchReadyNotice, RelaunchGuardHeldNotice, RelaunchNotBackNotice, UnreachableExitNotice,
+		WorkerLockedOutNotice, ClaimOutOfReachNotice:
+		if claimToken == "" {
+			return fmt.Errorf("a %s notice names the claim it speaks for", kind)
+		}
+	default:
+		if claimToken != "" {
+			return fmt.Errorf("a %s notice names a claim; only a notice of a claim out of reach or locked out does", kind)
+		}
+	}
+	if kind == UnreachableClaimsNotice {
+		if len(unreachable) == 0 {
+			return fmt.Errorf("an %s notice lists at least one claim", kind)
+		}
+		for _, entry := range unreachable {
+			if entry.Claim == "" {
+				return fmt.Errorf("an %s notice names its claim in every row", kind)
+			}
+		}
+		return nil
+	}
+	if len(unreachable) > 0 {
+		return fmt.Errorf("a %s notice lists unreachable claims; only an %s notice does", kind, UnreachableClaimsNotice)
+	}
+	return nil
+}
+
 // controllerOnlyNoticeKind says whether kind is a notice for the controller alone, never an
 // architect's.
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
 	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice,
-		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice, ProjectPausedNotice, ProjectResumedNotice:
+		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice,
+		UnreachableClaimsNotice, RelaunchReadyNotice, RelaunchGuardHeldNotice, RelaunchNotBackNotice,
+		UnreachableExitNotice, EnvoyNoLiveSessionNotice, WorkerLockedOutNotice, ProjectPausedNotice, ProjectResumedNotice:
 		return true
 	default:
 		return false

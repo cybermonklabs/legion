@@ -219,6 +219,10 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// `repositories.refused` (repositoryAppsContract), the contract that added it, so a pod at
 		// it is served the key and every pod below it is not.
 		apps bool
+		// unreachable is whether the caller is served a claim view's `unreachable`, the mark of a
+		// claim Envoy cannot reach (unreachableContract), this daemon's own contract, so a pod at
+		// it is served the mark and every pod below it is not.
+		unreachable bool
 		// pause is whether the caller is served the project's pause, `paused` here, which
 		// pauseContract added beside `lastPause`, so a pod at it is served the key and every pod
 		// below it is not.
@@ -316,9 +320,18 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// a later row of stateNarrowings adds is held back, the repositories block written in the
 		// shape contract 152 gave it.
 		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, contract: pauseContract},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, contract: DaemonAPIVersion},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, contract: DaemonAPIVersion},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, contract: DaemonAPIVersion},
+		// A pod whose claims record shapedAnswersContract or above is in no pod reading
+		// (podContracts): every build from that contract on states its contract in the header, so
+		// the reading falls through to the body this daemon writes, the repositories block this
+		// contract writes and `unreachable` included. The header's reading serves a caller that
+		// states a contract below unreachableContract the state without the mark
+		// (daemon_contract_header_test.go, contract_shapes_test.go).
+		{name: "a pod just below unreachableContract", remote: statePodAddr + ":41000", claims: podClaims(unreachableContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, unreachable: true, contract: DaemonAPIVersion},
+		// This daemon's own contract, unreachableContract: the claim views' `unreachable` is served
+		// too.
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, unreachable: true, contract: DaemonAPIVersion},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, unreachable: true, contract: DaemonAPIVersion},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, unreachable: true, contract: DaemonAPIVersion},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -561,6 +574,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 					}
 					if !tc.leak {
 						delete(view, "leakCheckCause")
+					}
+					if !tc.unreachable {
+						delete(view, "unreachable")
 					}
 				}
 			}

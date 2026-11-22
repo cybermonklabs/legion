@@ -329,16 +329,28 @@ func (s *shim) connect() (acked bool, err error) {
 		return false, fmt.Errorf("send hello: %w", err)
 	}
 	r := shimwire.NewReader(conn)
+readAck:
 	for {
 		line, err := r.ReadLine()
 		if err != nil {
 			return false, fmt.Errorf("stream closed before hello_ack: %w", err)
 		}
-		if frame, err := shimwire.Decode(line); err == nil && frame.FrameType() == shimwire.TypeHelloAck {
-			break
+		switch frame, err := shimwire.Decode(line); {
+		case err != nil:
+		case frame.FrameType() == shimwire.TypeHelloAck:
+			break readAck
+		case frame.FrameType() == shimwire.TypeShutdown:
+			// The daemon refused this hello because its claim has left this generation, and told
+			// this shim so before closing (R3). The process ends rather than redialling: a newer
+			// one of the same claim has the stream, or is about to, and two processes would write
+			// one Oh My Pi session and one branch. A hello refused with nothing written — an
+			// unknown boot token, which can also mean a wrong or restored database — leaves the
+			// shim dialling, as it always did.
+			s.stopBeforeAck()
+			return false, errors.New("the daemon told this shim to stop before acking its hello")
 		}
-		// Nothing the daemon sends before its ack is meant for a child that does not exist yet
-		// (cmdWorkerShimConnect's onLine before hello_ack, worker-shim.ts). The line is the far
+		// Nothing else the daemon sends before its ack is meant for a child that does not exist
+		// yet (cmdWorkerShimConnect's onLine before hello_ack, worker-shim.ts). The line is the far
 		// side's, so the URL rule reads it whole before it is cut (redact.Runes).
 		s.log.Printf("[worker-shim] ignoring a frame received before hello_ack: %s", redact.Runes(string(line), 80))
 	}
@@ -359,6 +371,18 @@ func (s *shim) connect() (acked bool, err error) {
 		}
 		s.fromDaemon(line)
 	}
+}
+
+// stopBeforeAck ends this shim's process on the daemon's stop frame before a hello_ack. With a
+// child it is the stop the frame always was — SIGTERM, then a kill at the grace — and the
+// child's own exit status is the shim's; with none it exits as its own SIGTERM would have left
+// it, and spawns nothing, as the signal path does (watch).
+func (s *shim) stopBeforeAck() {
+	if s.terminate("the daemon's stop frame before hello_ack") {
+		return
+	}
+	s.log.Print("[worker-shim] told to stop before its hello was acked, with no wrapped process; exiting")
+	s.finish(128+int(syscall.SIGTERM), nil)
 }
 
 // fromDaemon routes one daemon frame: those the shim acts on or answers itself, a delivery the

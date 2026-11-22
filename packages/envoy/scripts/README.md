@@ -943,6 +943,147 @@ it sources; CI runs it in the `envoy-go-checks` job of `.github/workflows/ci.yam
 with it: a copy of the gate whose VM leg reads an absent `listenerImage` as no hub, and one that
 reads pi-envoy alone in an image, must each open on the fixture that exists to catch it.
 
+## legacy-subjects-gate.sh
+
+Says whether any reader or writer of the bus still uses the old form of a name the project rename
+moved: an issue event named by its key alone (`notifications.dispatch.issue.ACME-12.…`), an agent's
+or a role's name with no project (`notifications.agent.<session>`, `notifications.role.<role>`), a
+kept lane with no project, and a failed-delivery report of one. It is the reading a pull request
+quotes before it refuses the old form and deletes the code that reads both forms. One reading
+cannot show that nothing moved, so the gate is read twice, at least the stream's retention apart
+(`ENVOY_NOTIFICATIONS`' `max_age`, 72 hours):
+
+```bash
+packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record first.json [--listener <machine>=<url>]...
+# at or after the time the first run names:
+packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record second.json --since first.json [--listener <machine>=<url>]...
+```
+
+A listener outside the cluster is read over `https`; `--insecure` takes an `http://` URL, whose
+answer anyone on the way could read or change. Once the hub is not static, `--token-file <path>`
+names where the listener Deployment mounts its projected NATS token, which the Job then connects
+with in place of the seed, and `--inbox-prefix <prefix>` the inbox prefix the listener identity's
+grant subscribes, which every `nats` call of the Job then takes.
+
+What it reads, all of it read-only:
+
+- **Every listener's counter**: `envoy_listener_legacy_subjects_total` (every label set: `interest`
+  for a topic a registration named, `role` for a role a claim named, `role_read` for a valid role a
+  publish, the role lane or `GET /v1/roles/<role>` named) and the start-time gauge
+  `envoy_listener_start_time_seconds`, whose one label, `machine`, is the listener's
+  `ENVOY_MACHINE_ID`. The listeners in the cluster are found by what they run, not by name: every
+  container, in any namespace, of an image whose path ends `legion/envoy` that runs the image's own
+  entrypoint (`envoy-listener`), on the bus the reading is about, the `NATS_URLS` of the
+  `envoy-listener` Deployment; a listener container on another bus (a load-test stack's, on its own
+  NATS) is named (`SKIP`) and not read. Each is read from its pod's log: a listener logs the two
+  metrics, as `/metrics` serves them, on a `listener legacy subjects` line every minute, and the
+  gate takes the newest of the last five minutes, which must be at most three minutes older than
+  the reading. The log and not `/metrics`, because the operator may read every listener pod's log
+  and may not reach Dispatch's listener's `/metrics`: the API server's pod proxy is refused in
+  namespace `dispatch`, and that listener's NetworkPolicy admits its port from Dispatch's own pods
+  alone. A listener outside the cluster, such as a VM hub's, is named with
+  `--listener <machine>=<url>`, the machine being its `ENVOY_MACHINE_ID`, and read at
+  `<url>/metrics`. Each reading is held to the machine it was read as: an outside listener's gauge
+  must name the machine the operator gave, and a pod's must name its container's
+  `ENVOY_MACHINE_ID` when it names one, so a URL serving another listener prints `UNKNOWN` rather
+  than counting for that machine. Every listener with its durable on the bus (`listener-<machine>`),
+  bound now or not, must be one of those: one that is not prints `UNKNOWN` by name, so a listener
+  nobody named, or one offline, asleep or restarting at the reading, is never left out of the count
+  while its durable lasts (7 days unbound).
+- **Over NATS**, from a one-off Job in namespace `envoy` that connects as the in-cluster listener
+  does (`lib/legacy-subjects-gate-nats.sh`): who the server says the connection is
+  (`$SYS.REQ.USER.INFO`, which the in-cluster listener's static grant refuses, so the gate then
+  names the credential: the seed's nkey user, or the token's subject); the stream's info; every
+  consumer of the stream (`$JS.API.CONSUMER.LIST`, which the listener's grant holds, where `nats
+  consumer ls` asks `CONSUMER.NAMES`, which it does not); the stream's subjects under
+  `notifications.dispatch.issue.>`, `notifications.agent.>`,
+  `notifications.envoy.exceptions.notifications.agent.>` and `notifications.envoy.kept.>`; the
+  last message of each of those subjects in an old form (`$JS.API.STREAM.MSG.GET` by
+  `last_by_subj`: its subject, stream sequence and time alone, never its content; at most 1000 of
+  them, the rest counted, since they only name the newest old-form message and decide no verdict);
+  and every record of the interest store `envoy_interests`. A list longer than one answer is read
+  page by page, each page from the last item of the page before, and a refused or empty answer
+  ends that list's reads at once.
+
+The first reading shuts on no old-form name. The stream keeps the old-form messages published
+before every producer moved for its whole retention, and interest records and consumer filters may
+still be in an old form, so the first reading names each it finds (`FOUND`) and records the
+stream's last sequence, the newest old-form message and every old-form counter. The second reading,
+at least the retention later, shuts on any old-form message the stream still holds (one published
+after the first reading's last stream sequence named apart); a listener whose count rose
+under any kind; a consumer one of whose filters only an old-form name matches and whose new form
+the same consumer does not also filter under every project its names carry (a Legion daemon's
+`legion-go-<project>-<kind>` or any other; a session consumer filters both forms of its topics
+until the old form is refused, so its old filter loses nothing; a new form under one project,
+beside an old filter whose names carry any, covers that project alone); an interest record holding
+an old-form topic other than its session's own agent subject, which the listener writes into every
+record itself until the old form is
+refused; a reading named with `--since` that shut the gate; and less than the retention between the
+two, the readings' and each listener's own two reads of its counter. The old form is the gate's own
+rule (`lib/legacy-subjects-gate-forms.jq`, `old_form`, which the gate also hands the Job to choose
+the subjects whose last message it reads), so the gate stays right once the code that reads both
+forms is deleted. It takes as old a filter that matches some old-form name of a family the rename
+moved and no new-form name of it, even where it names no key: `notifications.dispatch.issue.*.comment.created`
+has the old form's length, one token short of every new-form issue event's name, so it hears the
+old form alone; the listener's counter takes it as old too (`contracts.LegacyIssueFilter`). A filter
+that reaches a family through a wildcard in the family's own tokens
+(`notifications.dispatch.*.*.comment.created`, `notifications.*.reviewer`, `*.role.reviewer`,
+`notifications.envoy.kept.*.x`) is held to the same rule; the counter holds an issue filter to it,
+and is narrower on the agent, role and kept families' wildcards.
+
+What it cannot see prints `UNKNOWN`, never `GATE OPEN`: a surface it could not read or that
+answered nothing (no listener, no Legion daemon consumer, no issue or agent subject on the stream,
+no interest record, which a production bus always holds), a refused read named by its request, a
+list whose pages do not join (the server's count changed between them, a page does not start at
+the last item of the one before, or fewer distinct items were read than the server counts), an
+answer that is no JSON object, a listener that is not running or whose newest counter line is
+stale, a build that logs or serves no old-form counter, a reading whose start-time gauge names
+another machine than the one read (or none, outside the cluster), a listener that restarted between
+the readings (its pod's restart count or its start-time gauge moved, or it is a new pod), a
+listener of the first reading that is gone, a start-time gauge served at one reading only, a record
+that cannot be written, and at the second reading: a first reading that did not read every surface,
+a stream that is not the
+one the first reading read (its `envoy_stream_id` changed), a stream that does not hold the whole
+window (its first message is younger than the window, less an hour: it was purged or made anew),
+and readings further apart than a listener's durable outlives its listener. A listener read at two
+readings is compared only while both readings show it is the one process. A judgement that fails
+on what it was given prints `UNKNOWN` and writes its record too.
+
+The Job takes the ServiceAccount, the NATS URL, and the NATS seed file (or, with `--token-file`,
+the projected token) and the volume holding it from the listener Deployment `envoy/envoy-listener`
+as deployed, runs the nats-box image the deployment pins for its own NATS Jobs as nobody (65534)
+with every capability dropped, no Kubernetes API token mounted and a scratch directory in memory,
+with `backoffLimit: 0`, `activeDeadlineSeconds: 300`, `ttlSecondsAfterFinished: 600`, and labels
+`created-by: legacy-subjects-gate` and `owner: <your login>` (`unknown` for a uid with no name).
+The gate reads the Job's log, deletes it and reads back that no Job or pod of its name is left;
+one it could not delete prints `UNKNOWN` with the command that deletes it, and one it could not
+create is never deleted. The Job's log holds what the gate judges and no more: of an interest
+record, its session id and its topics, never its directory, machine or title; of a stored message,
+its subject, stream sequence and time; of a seed `nsc` could not read, a fixed line. The cluster
+keeps that log in its logging backend after the Job is deleted, as it keeps the listener's own,
+which already logs every topic it delivers, so the Job adds no kind of text the namespace does not
+log.
+
+It prints `IDENTITY` (whom the NATS reads ran as), `READ`, `PASS`, `FOUND` (an old-form name a
+first reading found), `GATE SHUT` or `UNKNOWN` per surface, the Job's creation and deletion, and the
+verdict alone on the last line: `GATE OPEN` (exit 0) at a clean second reading, `GATE SHUT` (exit
+1), `UNKNOWN` (exit 3), and at a first reading that read every surface `FIRST READING`, naming its
+`FOUND` count, the stream sequence the second reading reads after, and when to read again (exit 4).
+It writes the reading to `--record` in every case, as a new file in a directory that exists when
+the gate starts: a file made at that path meanwhile is left as it is, and the reading prints
+`UNKNOWN`. A second reading that opened is a first reading for the next window. A usage error exits
+2 and reads nothing. It
+needs `kubectl` signed in to the cluster as an account that may list pods in every namespace, read
+the logs of the listener pods in each namespace that runs one, read the listener Deployment, and
+create, read, read the logs of and delete Jobs and pods in `envoy` (a developer box's account: list
+through its `container.viewer` role, the rest through its `edit` role in `envoy` and its `pods/log`
+read in `dispatch`), plus `jq`, `curl` and `base64`.
+
+`legacy-subjects-gate.test.sh` proves every verdict behind a fake `kubectl` and a fake `curl`,
+with the Job's log written in its own format, runs the Job's own script under `sh` behind a fake
+`nats`, and holds the old-form rule row by row; CI runs it in the `envoy-go-checks` job of
+`.github/workflows/ci.yaml`.
+
 ## Measuring search on a copy of the corpus
 
 Three scripts measure a change to Dispatch search against the real corpus rather than a seeded

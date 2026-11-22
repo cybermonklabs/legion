@@ -83,7 +83,8 @@ func BenchmarkClaimHotWrites(b *testing.B) {
 		})
 		b.Run("activity/"+name, func(b *testing.B) {
 			timed(b, func(i int) error {
-				_, err := st.PutClaimActivity(ctx, latencyToken, 1, claim.SessionActivity{At: base.Add(time.Duration(i) * time.Millisecond)})
+				at := base.Add(time.Duration(i) * time.Millisecond)
+				_, err := st.PutClaimActivity(ctx, latencyToken, 1, claim.SessionActivity{At: at}, at)
 				return err
 			})
 		})

@@ -51,6 +51,20 @@ const (
 // DECLARED_DEADLINE_MOST_MS, so neither copy can move alone.
 const StallDeclaredDeadlineCap = time.Hour
 
+// StallDaemonWait is the longest a worker's call waits for a daemon that is not serving before
+// it gives up (`packages/pi-shared/src/daemon-client.ts`, DAEMON_RESTART_BUDGET_MS: R1). A call
+// that waits it out is open with no step for that hour, and the worker's own stall watch does not
+// judge it for the wait (`packages/pi-shared/src/daemon-wait.ts`), so the whole ladder a working
+// plugin can run grows by it and the daemon's backstop floor with it (StallLadderFor) — a paused
+// watch still finishes first.
+//
+// It is no LEGION_STALL_* variable either: the client waits what it waits. It is held to the
+// plugin's own constant the same way as the hour above — TestStallDefaultsGolden writes it to
+// `packages/contracts/fixtures/daemon-api/stall-defaults.json` as `daemonWaitBudgetMs` and
+// `packages/pi-shared/src/stall-limits.test.ts` holds that field equal to
+// DAEMON_RESTART_BUDGET_MS — so neither copy can move alone.
+const StallDaemonWait = time.Hour
+
 // StallCallBoundFor is the default bound of a call no deadline judges for role: four hours for an
 // implementer and a reviewer, one hour for every other role and for the controller.
 func StallCallBoundFor(role claim.Role) time.Duration {

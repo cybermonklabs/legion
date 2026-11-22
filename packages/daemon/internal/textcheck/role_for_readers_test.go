@@ -56,6 +56,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/admit/stalled.go", fn: "stalledTreeReason"}:                  {calls: 1, test: "TestAWaitByDesignIsNeverToldAsAStall"},
 	{file: "internal/api/handoff.go", fn: "entryFence"}:                           {calls: 1, test: "TestArchitectUnchangedByItsCompletionAtAdmitted"},
 	{file: "internal/daemon/daemon.go", fn: "serve"}:                              {calls: 1, test: "TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine"},
+	{file: "internal/daemon/outbox.go", fn: "outbox.roleMessage"}:                 {calls: 1, test: "TestARoleMessageHeldAtAdmittedStaysForTheArchitectAndEndsForAWorker"},
 	{file: "internal/phase/phase.go", fn: "Of"}:                                   {calls: 1, test: "TestArchitectUnchangedByItsCompletionAtAdmitted"},
 	{file: "internal/projection/project.go", fn: "Project"}:                       {calls: 1, test: "TestProjectShowsARootsArchitectHandshake"},
 	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}:       {calls: 1, test: "TestTheArchitectTaskOfEachShape"},

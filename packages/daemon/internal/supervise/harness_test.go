@@ -141,6 +141,26 @@ func (c *fakeClock) Live() int {
 	return live
 }
 
+// Armed is how many timers have been armed on the clock since it was made.
+func (c *fakeClock) Armed() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.armed
+}
+
+// Fired is how many of the timers armed on the clock have fired.
+func (c *fakeClock) Fired() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	fired := 0
+	for _, timer := range c.timers {
+		if timer.fired {
+			fired++
+		}
+	}
+	return fired
+}
+
 // memStore is the store as a double: what was written, in order, and a way to fail a write.
 type memStore struct {
 	mu         sync.Mutex
@@ -776,10 +796,12 @@ func newBareHarness(t *testing.T) *harness {
 	return h
 }
 
-// shutdown cancels the machine's own context, as a stopping daemon does: every internally-armed
-// timer's callback (arm, machine.go) calls Handle with this same context (NewMachine stores it as
-// m.ctx), so a timer that fires after shutdown sees it already canceled, exactly as the real
-// daemon's stop does.
+// shutdown cancels the machine's own context, as a stopping daemon does: every decision a goroutine
+// of the machine's own makes — a timer's callback (arm, machine.go), a send's outcome — runs on
+// this same context (NewMachine stores it as m.ctx), so one made after shutdown sees it already
+// canceled, exactly as the real daemon's stop does. The end of the context also disarms every
+// timer the machine holds, on a goroutine of its own (halt), and a timer that fires after it
+// decides nothing.
 func (h *harness) shutdown() { h.cancel() }
 
 // start builds the machine over c, as a daemon does for a claim it created or loaded.

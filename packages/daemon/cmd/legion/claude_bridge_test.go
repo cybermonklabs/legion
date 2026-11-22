@@ -165,10 +165,12 @@ func goneShim(t *testing.T) *os.File {
 	return stdout
 }
 
-// The bridge's own lines pass the URL rule. A turn's outcome that cannot be reported is logged
-// with the error of the post, which quotes the daemon's URL as the pane names it
+// The bridge's own lines pass the URL rule. A turn's outcome whose report the daemon does not
+// answer is logged with the error of the post, which quotes the daemon's URL as the pane names it
 // (LEGION_DAEMON_URL), user name and query included: the line keeps the URL's host and path, and
-// neither the user name nor the query reaches the pane.
+// neither the user name nor the query reaches the pane. A refused dial reads as a daemon that is
+// restarting, so the bridge logs that it sends the outcome again rather than that it could not
+// report it (R1); either line quotes the post's error.
 func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
 	stdout, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
 	if err != nil {
@@ -187,8 +189,9 @@ func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
 		"exec sleep 300\n", stdout,
 		"LEGION_DAEMON_URL=http://legion-reader@"+daemon+"/daemon?token=planted-query-token-3",
 		"LEGION_BOOT_TOKEN_FILE="+bootToken, "LEGION_GENERATION=4")
-	p.await("the failed report logged", func() bool {
-		return strings.Contains(p.logged(), "could not report the outcome of turn 1")
+	p.await("the report's failure logged", func() bool {
+		return strings.Contains(p.logged(), "the outcome of turn 1 (clean) is being sent again") ||
+			strings.Contains(p.logged(), "could not report the outcome of turn 1")
 	})
 	p.hangUp()
 	logged := p.logged()

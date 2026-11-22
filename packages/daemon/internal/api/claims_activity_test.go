@@ -8,11 +8,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
-// storedActivity is the four activity columns of a claim's row, which is where the report lives
+// storedActivity is the five activity columns of a claim's row, which is where the report lives
 // and what the idle rule reads: a route that wrote onto the claim's machine and nothing else
 // would pass against the machine and fail here. No claim read carries them.
 type storedActivity struct {
 	at         time.Time
+	sent       time.Time
 	background bool
 	kinds      string
 	reminder   time.Time
@@ -21,14 +22,17 @@ type storedActivity struct {
 func readActivity(t *testing.T, h *harness, token claim.Token) storedActivity {
 	t.Helper()
 	var read storedActivity
-	var at, reminder *time.Time
+	var at, sent, reminder *time.Time
 	if err := h.store.Pool().QueryRow(h.ctx,
-		`select activity_at, activity_background, activity_kinds, activity_next_reminder_at from claims where token = $1`,
-		string(token)).Scan(&at, &read.background, &read.kinds, &reminder); err != nil {
+		`select activity_at, activity_sent_at, activity_background, activity_kinds, activity_next_reminder_at from claims where token = $1`,
+		string(token)).Scan(&at, &sent, &read.background, &read.kinds, &reminder); err != nil {
 		t.Fatalf("read the activity of %s: %v", token, err)
 	}
 	if at != nil {
 		read.at = *at
+	}
+	if sent != nil {
+		read.sent = *sent
 	}
 	if reminder != nil {
 		read.reminder = *reminder
@@ -45,6 +49,7 @@ func TestClaimActivityIsWrittenOntoTheClaimAndReadBack(t *testing.T) {
 
 	read := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	wake := read.Add(5 * time.Minute)
+	before := time.Now().UTC()
 	recorder := h.request(http.MethodPost, "/legion/v1/claims/activity", claim.ActivityRequest{
 		ClaimToken: token, SessionID: "ses_implementer", Secret: registered.Secret,
 		Activity: claim.SessionActivity{
@@ -53,13 +58,19 @@ func TestClaimActivityIsWrittenOntoTheClaimAndReadBack(t *testing.T) {
 			Phase:          claim.PhaseActivity{NextReminderAt: &wake},
 		},
 	}, nil)
+	after := time.Now().UTC()
 	if recorder.Code != http.StatusNoContent || recorder.Body.Len() != 0 {
 		t.Fatalf("activity = %d with body %s, want 204 and nothing", recorder.Code, recorder.Body)
 	}
 
+	// The report is dated by the daemon's receipt, and the session's own time is kept beside it
+	// for the guard that drops a reading older than the one recorded (store's PutClaimActivity).
 	stored := readActivity(t, h, token)
-	if !stored.at.Equal(read) {
-		t.Errorf("activity_at = %s, want %s", stored.at, read)
+	if stored.at.Before(before.Truncate(time.Microsecond)) || stored.at.After(after) {
+		t.Errorf("activity_at = %s, want the daemon's receipt between %s and %s", stored.at, before, after)
+	}
+	if !stored.sent.Equal(read) {
+		t.Errorf("activity_sent_at = %s, want the session's own %s", stored.sent, read)
 	}
 	if !stored.background {
 		t.Error("activity_background = false, want true")
@@ -84,7 +95,7 @@ func TestClaimActivityIsWrittenOntoTheClaimAndReadBack(t *testing.T) {
 		t.Fatalf("the second activity = %d; body %s", recorder.Code, recorder.Body)
 	}
 	quiet := readActivity(t, h, token)
-	if !quiet.at.Equal(later) || quiet.background || quiet.kinds != "" || !quiet.reminder.IsZero() {
+	if !quiet.sent.Equal(later) || quiet.at.Before(stored.at) || quiet.background || quiet.kinds != "" || !quiet.reminder.IsZero() {
 		t.Errorf("the quiet report read back as %+v", quiet)
 	}
 }
