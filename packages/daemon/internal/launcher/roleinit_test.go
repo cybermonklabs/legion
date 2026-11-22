@@ -463,7 +463,11 @@ func runStage(t *testing.T, plan stagePlan) error {
 		}
 	}
 
+	// A process outside the role, which the role must not see or signal. A parent-death signal ends
+	// it with the stage, so a stage that dies at its own alarm, which runs no defer, leaves no sleep
+	// behind it on the machine; the deferred kill ends it on every return.
 	outside := exec.Command("/bin/sleep", "600")
+	outside.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	if err := outside.Start(); err != nil {
 		return err
 	}
