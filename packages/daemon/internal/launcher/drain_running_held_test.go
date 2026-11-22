@@ -178,9 +178,12 @@ exit 5`, "sh", started, finished, released)
 	// it runs to its own exit. The held child exits once the case releases it, after the drain, so
 	// it runs beside the drain however loaded the machine is (it once lived by `sleep 2`, which a
 	// slow machine let end before the drain began). The left process outlives any wait of the
-	// case, so the drain returns only by killing it: the drain's return and the left process's
-	// reap are waited for under the test's hang guard, where the case once allowed the drain ten
-	// seconds past its grace.
+	// case, so the drain returns only by killing it, and it must kill it at the grace configured:
+	// the drain returns no sooner than the grace and before underTheDefaultGrace, so a kill at the
+	// launcher's default grace of 30 s fails, and one a few seconds late on a loaded machine
+	// passes. The wait for the return runs under the test's hang guard, for a drain that never
+	// kills, and the bounds are read after it; the left process's reap is waited for under the
+	// guard too.
 	t.Run("what the generation left is ended around a held child", func(t *testing.T) {
 		grace := 500 * time.Millisecond
 		guard := &pidGuard{}
@@ -217,6 +220,9 @@ exit 5`, "sh", started, finished, released)
 		t.Logf("the drain returned after %s", took.Round(time.Millisecond))
 		if took < grace {
 			t.Errorf("the drain returned after %s, want past its %s grace: the process it left ignores SIGTERM", took, grace)
+		}
+		if took >= underTheDefaultGrace {
+			t.Errorf("the drain returned after %s, not before %s: it killed the process it left at the launcher's default grace of 30 s, not at the %s the case configured", took, underTheDefaultGrace, grace)
 		}
 		testwait.Eventually(t, "the process the generation left to be ended and reaped", func() bool {
 			return errors.Is(syscall.Kill(left.Process.Pid, 0), syscall.ESRCH)

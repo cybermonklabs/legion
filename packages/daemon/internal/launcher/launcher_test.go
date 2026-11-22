@@ -1846,11 +1846,13 @@ func TestASessionDatabaseIsHeldForItsGenerationAndNothingBetween(t *testing.T) {
 // upstream for that connection, with the child still alive and Run not yet returned, and only then
 // lets it end. The second gives a child that ignores SIGTERM a short grace and reads only what a
 // slow machine cannot change: Run returns no sooner than the grace after the shutdown, with the
-// child gone, the socket no longer served and the directory removed. Neither half alone shows the
-// proxy closed only once the child is gone: the first shows it served while the child lives, and
-// the second that the child is killed at the grace and the proxy closed by the time Run returns.
-// The row once dialed the socket inside a grace of 500 ms and waited 5 s for the proxy's upstream
-// dial and 10 s for Run, so a loaded machine could fail it with nothing wrong.
+// child gone, the socket no longer served and the directory removed, and it returns before
+// underTheDefaultGrace, which a loaded machine does not reach and a kill at the launcher's default
+// grace does. Neither half alone shows the proxy closed only once the child is gone: the first
+// shows it served while the child lives, and the second that the child is killed at the grace and
+// the proxy closed by the time Run returns. The row once dialed the socket inside a grace of 500 ms
+// and waited 5 s for the proxy's upstream dial and 10 s for Run, so a loaded machine could fail it
+// with nothing wrong.
 func TestOnTheContainersShutdownASessionDatabaseEndsOnceItsWedgedChildIsKilled(t *testing.T) {
 	t.Run("its child is served for as long as it lives through the stop", func(t *testing.T) {
 		// The directory comes first, so its removal is the last of the case's cleanups: the release
@@ -1965,6 +1967,8 @@ func TestOnTheContainersShutdownASessionDatabaseEndsOnceItsWedgedChildIsKilled(t
 		}
 		if waited := time.Since(stopped); waited < grace {
 			t.Fatalf("Run returned %s after the shutdown, inside the %s grace a child ignoring SIGTERM is owed", waited, grace)
+		} else if waited >= underTheDefaultGrace {
+			t.Fatalf("Run returned %s after the shutdown, not before %s: it killed the wedged child at the launcher's default grace of 30 s, not at the %s the case configured", waited, underTheDefaultGrace, grace)
 		}
 		if !gone(t, pid) {
 			t.Fatalf("the wedged child %d outlived its stop grace", pid)
@@ -1978,6 +1982,13 @@ func TestOnTheContainersShutdownASessionDatabaseEndsOnceItsWedgedChildIsKilled(t
 		}
 	})
 }
+
+// underTheDefaultGrace is how soon a case that configures a stop grace well under a second wants
+// the kill it is owed: Run gives a generation 30 s when its Config names no grace (launcher.go),
+// so a kill before this bound came at the grace the case configured, and one at that default
+// fails. A kill that comes a few seconds after the configured grace, but before this bound, passes:
+// a bound short enough to see a few seconds is one a loaded machine reaches with nothing wrong.
+const underTheDefaultGrace = 20 * time.Second
 
 // echoUpstream is an instance that answers every connection by echoing it back, and holds it open
 // until its far end closes it or the test ends, as a database holds an idle session.
