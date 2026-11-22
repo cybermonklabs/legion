@@ -70,25 +70,43 @@ func TestMain(m *testing.M) {
 }
 
 // reentry is the arguments that run this test binary's helper test alone, in a process of its own
-// the test starts: the -test.run of that one test, and a -test.timeout whose deadline is the
-// moment beforeDeadline runs out here. The child is a wait of this process's, so its whole life,
-// its own waits under its own beforeDeadline, its cleanups and its alarm included, ends while
-// this process still has the 30 s beforeDeadline leaves it: a child whose fact never comes fails
-// with its own text, and its parent prints that text before the parent's own timeout. Under
+// the test starts: the -test.run of that one test, and a -test.timeout that ends reentryMargin
+// before this process's own deadline. The child's own waits end 30 s before that (beforeDeadline)
+// and its cleanups 10 s before (cleanupBeforeDeadline), so a child whose fact never comes fails
+// with its own text, and its parent prints that text, before the parent's own timeout. Under
 // -timeout 0 this process has no deadline, and the child is given none either.
+//
+// A child that would get less than reentryMargin is still started, with that, so it ends at once,
+// and t fails on a line that names the deadline: what fails is the time the starter had left,
+// not whatever the child was too short to finish. t.Errorf rather than t.Fatalf, because a
+// launcher may call this from a goroutine of its own (roleInitHelperLaunch).
 func reentry(t *testing.T, helper string) []string {
-	return reentryUntil(reentryEnd(t), helper)
+	end := reentryEnd(t)
+	if !end.IsZero() && time.Until(end) < reentryMargin {
+		deadline, _ := t.Deadline()
+		t.Errorf("%s started with %s of the test binary's deadline (%s) left, less %s kept back for this process: less than the %s a child needs",
+			helper, time.Until(deadline).Round(time.Millisecond), deadline.Format(time.RFC3339), reentryMargin, reentryMargin)
+	}
+	return reentryUntil(end, helper)
 }
 
-// reentryEnd is when a child this test starts now must end (reentry): when beforeDeadline runs
-// out, or the zero time under -timeout 0. A child that the launcher starts by an argv the test
-// does not write, and that has no test of its own to read it from, is handed it in its plan
-// (peerPlan.End).
+// reentryMargin is how much of its deadline a test keeps back from a child it re-enters: the time
+// it needs to read the child's exit and print what the child said. It is a few seconds rather than
+// beforeDeadline's 30 s, because the child's own waits and cleanups already end before its deadline,
+// so the role stage's three levels of nesting cost 15 s, and a case of a few seconds still runs
+// under a -timeout of a minute or so.
+const reentryMargin = 5 * time.Second
+
+// reentryEnd is when a child this test starts now must end (reentry): reentryMargin before this
+// process's deadline, or the zero time under -timeout 0. A child that the launcher starts by an
+// argv the test does not write, and that has no test of its own to read it from, is handed it in
+// its plan (peerPlan.End).
 func reentryEnd(t *testing.T) time.Time {
-	if _, ok := t.Deadline(); !ok {
+	deadline, ok := t.Deadline()
+	if !ok {
 		return time.Time{}
 	}
-	return time.Now().Add(beforeDeadline(t))
+	return deadline.Add(-reentryMargin)
 }
 
 // reentryUntil is reentry for a child that must end by end, the zero time for no end. The timeout
