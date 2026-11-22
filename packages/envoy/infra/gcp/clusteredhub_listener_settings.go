@@ -96,7 +96,7 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 	if !dnsSubdomain(l.SeedSecretName) {
 		return nil, nil, core.InputErrorf(path+".seedSecretName", "%s.seedSecretName %q must be a DNS subdomain, the name of a Secret in namespace %s", path, l.SeedSecretName, s.namespace)
 	}
-	if !secretKeyRule.MatchString(l.SeedSecretKey) {
+	if !isSecretKey(l.SeedSecretKey) {
 		return nil, nil, core.InputErrorf(path+".seedSecretKey", "%s.seedSecretKey %q must match %s", path, l.SeedSecretKey, secretKeyRule)
 	}
 	if err := checkNamespaces(path+".clientNamespaces", l.ClientNamespaces); err != nil {

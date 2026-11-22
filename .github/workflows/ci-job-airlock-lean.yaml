@@ -47,7 +47,7 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # No Go cache family: the airlock package imports the standard library and internal/fold,
+      # No Go cache family: the proxyrules package imports the standard library and internal/fold,
       # which imports nothing, so this job downloads no module and compiles no third-party code,
       # as envoy-go-race-api does.
       #
