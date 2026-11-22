@@ -216,6 +216,23 @@ Object.defineProperty(globalThis, "fetch", {
   },
 });
 
+/**
+ * The row a session's own work runs for. `bootDirectSession` starts its session inside this
+ * scope, so what the session goes on to do (a delivery, a person's `!command` and its answer)
+ * carries the row that booted it; the file's `beforeEach` makes each row a new one. Bun fails a
+ * row at its timeout and starts the next while that row's session still runs (bun kills the
+ * row's dangling child, and the command it was running then answers), so what such a session
+ * writes afterwards, a reply on Dispatch or a frame on NATS, is dropped rather than read as the
+ * next row's.
+ */
+const rowScope = new AsyncLocalStorage<symbol>();
+let currentRow = Symbol("row");
+/** Whether the code running now is the work of a session whose row has ended. */
+function fromEndedRow(): boolean {
+  const row = rowScope.getStore();
+  return row !== undefined && row !== currentRow;
+}
+
 test("a row's fetch that hands on through globalThis.fetch fails at once, naming rowFetch", async () => {
   // The mistake that recursed without end: the row's wrapper takes `globalThis.fetch`, which is
   // the recording wrapper, and so is handed its own request again on every call, each after an
@@ -470,6 +487,7 @@ const natsStandInConnect = async (options: {
         natsState.failPublishes -= 1;
         throw new Error("PUBLISH_FAILED");
       }
+      if (fromEndedRow()) return;
       natsState.published.push({ subject, data });
       natsState.onPublish?.(subject);
     },
@@ -716,6 +734,7 @@ beforeAll(() => setNatsConnectForTests(natsStandInConnect));
 afterAll(() => resetNatsConnectForTests());
 
 beforeEach(() => {
+  currentRow = Symbol("row");
   // `bun test` runs every file in one process: a Legion suite's bootstrapped-session record on
   // the process-wide interface would otherwise make every transcript here look like a
   // subagent's, the top-level session one test publishes would be the reply address the next
@@ -1280,7 +1299,10 @@ async function bootDirectSession(
       // The session asks Dispatch nothing else about a direct message but its reply and, where
       // the event carried the body in part, the read of the message whole: a row that expects
       // that read answers it itself, and every other call is recorded and refused, so a
-      // read-back would keep the card.
+      // read-back would keep the card. Such a call from a session whose row has ended
+      // (`fromEndedRow`), its reply to a command that ran on past the row, is answered as Dispatch
+      // answers a reply and recorded nowhere: it is that row's, not this one's.
+      if (fromEndedRow()) return new Response(JSON.stringify({}), { status: 201 });
       posts.push(`${init?.method ?? "GET"} ${url.pathname}`);
       if ((init?.method ?? "GET") === "POST" && url.pathname.endsWith("/reply")) {
         replies.push({ body: JSON.parse(init?.body?.toString() ?? "null"), path: url.pathname });
@@ -1365,7 +1387,10 @@ async function bootDirectSession(
       ...(options.hostSessionID !== undefined && { getSessionId: options.hostSessionID }),
     },
   };
-  await fixture.handlers.get("session_start")?.({}, context);
+  // Inside the row's scope, so the session's work carries this row (`rowScope`).
+  await rowScope.run(currentRow, async () => {
+    await fixture.handlers.get("session_start")?.({}, context);
+  });
   const agent = natsState.controls.get("notifications.agent.ses_delivery");
   if (agent === undefined) throw new Error("agent subject was not subscribed");
   const delivered = (count: number): Promise<void> => {
@@ -2168,9 +2193,20 @@ async function settle(): Promise<void> {
 // clock, which `setSystemTime` leaves alone. A caller waiting on a real child process rather
 // than on this process's own work passes a longer bound: starting a shell and killing its group
 // is the operating system's work, and two seconds of it is a wait a loaded machine can lose.
-async function until(condition: () => boolean, what: string, timeoutMs = 2_000): Promise<void> {
+// A row whose wait can still be parked when the row ends (bun fails a row at its timeout and
+// goes on to the next while the row's own code waits on a turn of `settle`) passes `ended`, which
+// its teardown aborts: once it is aborted the wait reads the condition no more and returns, so it
+// neither polls on after the row nor throws into a later one.
+async function until(
+  condition: () => boolean,
+  what: string,
+  timeoutMs = 2_000,
+  ended?: AbortSignal
+): Promise<void> {
   const deadline = performance.now() + timeoutMs;
-  while (!condition()) {
+  for (;;) {
+    if (ended?.aborted === true) return;
+    if (condition()) return;
     if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}`);
     await settle();
   }
@@ -15096,11 +15132,43 @@ console.log(JSON.stringify(args));
     describe("a person's shell command", () => {
       /** The working directories these rows ran their commands in. */
       const workDirectories: string[] = [];
+      /** Each row's end, which its waits take (`until`'s `ended`). The teardown aborts it, whether
+       *  the row returned or bun failed it at its timeout with a wait still parked. */
+      const rowEnds: AbortController[] = [];
       afterEach(() => {
+        for (const ended of rowEnds.splice(0)) ended.abort();
         for (const directory of workDirectories.splice(0)) {
           rmSync(directory, { recursive: true, force: true });
         }
       });
+
+      /** The timeout bun holds each row that waits on its command to, and how long before it the
+       *  row's wait gives up (`rowWait`). */
+      const SHELL_ROW_TIMEOUT_MS = 20_000;
+      const SHELL_ROW_MARGIN_MS = 1_000;
+      /**
+       * Starts the waits of a row on its command, measured from this call, which is the row's
+       * first line. The row's one clock is its own timeout: a wait gives up `SHELL_ROW_MARGIN_MS`
+       * before `SHELL_ROW_TIMEOUT_MS`, so a command that never does what the row waits for fails by
+       * the wait's own name rather than by bun's timeout line. A wait held past both (a turn of
+       * the event loop that came back late) is still parked when bun fails the row and runs the
+       * teardown, which aborts the row's end (`rowEnds`): the wait then returns without reading
+       * and answers false, and the row returns, so nothing of it polls or throws after it ended.
+       */
+      const rowWait = () => {
+        const started = performance.now();
+        const ended = new AbortController();
+        rowEnds.push(ended);
+        return async (condition: () => boolean, what: string): Promise<boolean> => {
+          await until(
+            condition,
+            what,
+            SHELL_ROW_TIMEOUT_MS - SHELL_ROW_MARGIN_MS - (performance.now() - started),
+            ended.signal
+          );
+          return !ended.signal.aborted;
+        };
+      };
 
       /** The user messages this session's live stream carried. */
       const streamFrames = () =>
@@ -15404,6 +15472,7 @@ console.log(JSON.stringify(args));
       // session the host moved to must not be handed it as its own, while the person is answered
       // and the live view of the session that ran it still shows the report.
       test("hands the agent no copy when the session moved on while the command ran", async () => {
+        const wait = rowWait();
         const { agent, fixture, replied, replies, work } = await bootShellSession(
           "shell-command-switched",
           {
@@ -15415,7 +15484,9 @@ console.log(JSON.stringify(args));
         );
 
         agent.push(directDispatchEnvelope("steer", "shell-command-switched"));
-        await until(() => existsSync(join(work, "running")), "the command to be running", 10_000);
+        if (!(await wait(() => existsSync(join(work, "running")), "the command to be running"))) {
+          return;
+        }
 
         // A `/new` while the command runs. The viewer follows the session the host moved to, as
         // the relay's watch does, so the publisher is armed again and the frame this command
@@ -15449,7 +15520,7 @@ console.log(JSON.stringify(args));
             delivery.content.includes("A person ran this shell command")
           )
         ).toEqual([]);
-      }, 20_000);
+      }, SHELL_ROW_TIMEOUT_MS);
 
       // The same move, with no session event for it: the host moves its session manager first
       // and emits `session_switch` after its resets, and a move the host makes without an event
@@ -15458,6 +15529,7 @@ console.log(JSON.stringify(args));
       // is already on another conversation. The agent's copy follows the host's live id, so the
       // conversation the host is on is handed nothing here either.
       test("hands the agent no copy when the host moved on with no session event", async () => {
+        const wait = rowWait();
         let live = "ses_delivery";
         const { agent, fixture, replied, replies, work } = await bootShellSession(
           "shell-command-host-moved",
@@ -15471,7 +15543,9 @@ console.log(JSON.stringify(args));
         );
 
         agent.push(directDispatchEnvelope("steer", "shell-command-host-moved"));
-        await until(() => existsSync(join(work, "running")), "the command to be running", 10_000);
+        if (!(await wait(() => existsSync(join(work, "running")), "the command to be running"))) {
+          return;
+        }
 
         // The host is on another conversation now. No handler is fired for it, so the plugin's
         // own `sessionID` still reads ses_delivery.
@@ -15498,7 +15572,7 @@ console.log(JSON.stringify(args));
             delivery.content.includes("A person ran this shell command")
           )
         ).toEqual([]);
-      }, 20_000);
+      }, SHELL_ROW_TIMEOUT_MS);
 
       // The same move, made before the command is asked for: the delivery awaits the whole body
       // and then the Dispatch accept, and a host that leaves inside that window is already on
@@ -16147,6 +16221,7 @@ console.log(JSON.stringify(args));
       // second message with the first session's command, which was neither this session's
       // command nor a command this session was running.
       test("runs a command for the session the host moved to while another session's still runs", async () => {
+        const wait = rowWait();
         const other = otherSessionDirectory();
         const { agent, fixture, replied, replies, work } = await bootShellSession(
           "shell-command-busy-other-session",
@@ -16162,11 +16237,14 @@ console.log(JSON.stringify(args));
         );
 
         agent.push(directDispatchEnvelope("steer", "shell-command-busy-other-1"));
-        await until(
-          () => existsSync(join(work, "running")),
-          "the first session's command to be running",
-          10_000
-        );
+        if (
+          !(await wait(
+            () => existsSync(join(work, "running")),
+            "the first session's command to be running"
+          ))
+        ) {
+          return;
+        }
 
         // A `/new` to a conversation of its own, with ses_delivery's command still running.
         await moveHost(fixture, other);
@@ -16199,13 +16277,14 @@ console.log(JSON.stringify(args));
           attempt: 1,
           body: `!touch running; until [ -f go ]; do sleep 0.05; done; printf first\n\n\`\`\`\nfirst\n\`\`\`\n\n${withheldOutput}`,
         });
-      }, 20_000);
+      }, SHELL_ROW_TIMEOUT_MS);
 
       // The agent's copy is withheld where the session the command was asked of is not the one
       // open here by the time the report is ready, and the person is told so: the reply and the
       // live view's frame carry the sentence, so neither reads as output the agent went on to
       // act on.
       test("says the agent was handed no output when the session moved on while the command ran", async () => {
+        const wait = rowWait();
         const other = otherSessionDirectory();
         const { agent, fixture, replied, replies, sends, work } = await bootShellSession(
           "shell-command-withheld-copy",
@@ -16218,7 +16297,9 @@ console.log(JSON.stringify(args));
         );
 
         agent.push(directDispatchEnvelope("steer", "shell-command-withheld-copy"));
-        await until(() => existsSync(join(work, "running")), "the command to be running", 10_000);
+        if (!(await wait(() => existsSync(join(work, "running")), "the command to be running"))) {
+          return;
+        }
 
         await moveHost(fixture, other);
         writeFileSync(join(work, "go"), "");
@@ -16241,7 +16322,7 @@ console.log(JSON.stringify(args));
           )
         ).toEqual([]);
         expect(movedSessionFrames()).toEqual([]);
-      }, 20_000);
+      }, SHELL_ROW_TIMEOUT_MS);
 
       // A command runs in a process group of its own, and the session that was asked for it is
       // going, so the plugin hands that group's kill to the shutdown rather than letting the
@@ -16250,6 +16331,7 @@ console.log(JSON.stringify(args));
       // the kill ends the group is `src/typed-shell.ts`'s own contract, proven in its own rows,
       // one of which starts a real shell in a process that exits and shows nothing survives it.
       test("ends a running command when the session shuts down", async () => {
+        const wait = rowWait();
         const { agent, context, fixture, replied, replies, work } = await bootShellSession(
           "shell-command-shutdown-kill",
           // Written in the session's own working directory, which the command runs in: the pid
@@ -16260,10 +16342,20 @@ console.log(JSON.stringify(args));
 
         agent.push(directDispatchEnvelope("steer", "shell-command-shutdown-kill"));
         // The command itself, not the agent's copy of its report: nothing is sent until the
-        // command ends, and this one would run for ten minutes.
-        await until(() => existsSync(pidFile), "the command to be running", 10_000);
-        const pid = Number(readFileSync(pidFile, "utf8").trim());
-        expect(Number.isInteger(pid)).toBe(true);
+        // command ends, and this one would run for ten minutes. The shell creates `pid` when it
+        // opens it for `echo`, before `echo` writes to it, so the file can be there and empty; the
+        // pid is read once the file holds it as one whole line, as `echo` writes it. An empty read
+        // is pid 0, and `alive(0)` asks about this process's own group, not the command: Linux
+        // answers that it is there, and gVisor, which answers kill(0, 0) with the last answer of
+        // the group, can answer EPERM.
+        let written = "";
+        const read = await wait(() => {
+          written = existsSync(pidFile) ? readFileSync(pidFile, "utf8") : "";
+          return /^\d+\n$/u.test(written);
+        }, "the command to write its pid");
+        if (!read) return;
+        const pid = Number(written);
+        expect(pid).toBeGreaterThan(0);
         // The command is still running: nothing but the shutdown below ends it.
         expect(alive(pid)).toBe(true);
 
@@ -16275,7 +16367,7 @@ console.log(JSON.stringify(args));
         expect(replies[0]?.body).toMatchObject({
           body: "!echo $$ > pid; exec sleep 600\n\nThe command printed nothing.\n\nThe command was stopped.",
         });
-      }, 20_000);
+      }, SHELL_ROW_TIMEOUT_MS);
 
       // A session shutting down runs no command: one started now would outlive the session it
       // was asked of. The message is answered saying so rather than left with no answer. The

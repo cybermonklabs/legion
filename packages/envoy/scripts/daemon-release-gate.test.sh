@@ -19,6 +19,15 @@
 # expects a comparison prints `UNKNOWN` instead, which is the blindness an index-shaped pin causes.
 set -euo pipefail
 
+# Its developer-box rows hide a directory with `chmod 000` to show the gate's refusal of what it
+# cannot read, and root reads it anyway, so those rows fail as root for no fault of the gate's
+# (lib/daemon-release-gate-cases-developer-box.sh, "this user cannot search the hidden directory").
+# Say so once, rather than as a dozen row failures.
+if [ "$(id -u)" = 0 ]; then
+  echo "daemon-release-gate.test.sh: run it as a user other than root: its rows hide a directory with chmod 000, which root reads anyway" >&2
+  exit 1
+fi
+
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 readonly script="${project_root}/packages/envoy/scripts/daemon-release-gate.sh"
 # shellcheck source=lib/daemon-release-gate-harness.sh

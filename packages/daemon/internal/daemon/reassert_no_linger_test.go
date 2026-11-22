@@ -57,7 +57,7 @@ func TestAReassertLeavesItsRecordedIssueInTheWorkflow(t *testing.T) {
 			client := &refusedOnceDispatch{outboxDispatch: outboxDispatch{issue: shown}, reread: reread}
 			runner := &outbox{pool: pool, records: records, dispatch: client,
 				handlers: []intake.Handler{engine, admission}, log: quietLogger()}
-			row := mustOutboxRow(t, tc.key, record.ReassertStatusWrite("in_progress", tc.wrote), time.Now())
+			row := mustOutboxRow(t, tc.key, record.ReassertStatusWrite("in_progress", tc.wrote, shown.LastSeq), time.Now())
 
 			if err := runner.execute(ctx, row); err != nil {
 				t.Fatalf("execute the re-assert: %v", err)
