@@ -15,7 +15,9 @@ import {
   type AppRole,
   appCredentialSources,
   appLogin,
+  DEFAULT_DRAIN_LIMIT_MS,
   firstInstallationToken,
+  MAX_DRAIN_LIMIT_MS,
 } from "./app-logins";
 import {
   appPrivateKey,
@@ -353,10 +355,27 @@ describe("app-logins.ts", () => {
   }, 30_000);
 
   // The drain rows run the helper at a drain bound of two seconds (APP_LOGINS_DRAIN_MS) in place
-  // of its five, and scale every span that is measured against the bound with it: each row asserts
-  // what it asserted at five seconds, and waits out two-fifths of the time.
+  // of its five. A span a row's verdict hangs on is measured against the bound and moves with it;
+  // a span that is only a margin keeps its length (the reader's stall stays three seconds past the
+  // bound, the descendant's late newline half a second after the exit). The row after them holds
+  // the five-second default itself.
   const drainMs = 2000;
   const drainEnv = { APP_LOGINS_DRAIN_MS: String(drainMs) };
+
+  test("with no APP_LOGINS_DRAIN_MS the drain bound is the default", async () => {
+    // The silent escaped descendant of the row below, at the default: the run ends once the bound
+    // has run, and before one and a half bounds, so a default set shorter or longer fails here.
+    await withEscapedDescendant("escaped-default.pid", async (pidFile) => {
+      const escaped = `setsid sh -c 'echo $$ >${pidFile}; exec sleep 60' >&2 & exit 0`;
+      const started = Date.now();
+      const { code, stderr } = await run(config(app("101", escaped), app("202")));
+      const elapsed = Date.now() - started;
+      expect(code).toBe(1);
+      expect(stderr).toContain("still held its output open");
+      expect(elapsed, `${elapsed} ms`).toBeGreaterThanOrEqual(DEFAULT_DRAIN_LIMIT_MS);
+      expect(elapsed, `${elapsed} ms`).toBeLessThan(DEFAULT_DRAIN_LIMIT_MS * 1.5);
+    });
+  }, 30_000);
 
   test("a token command whose escaped descendant holds its output open fails within the drain bound", async () => {
     // The pid the descendant records is the one it ends up with: `sh` prints its own, then
@@ -445,7 +464,7 @@ describe("app-logins.ts", () => {
   // escaped descendant a second stall to hold the pipes in, and hide its diagnosis for it.
   test("a reader that falls behind before the exit does not buy an escaped descendant a second stall", async () => {
     // A bound of its own: the row holds a reader for five seconds on purpose and then waits out
-    // the two the drain gives the descendant, with room for the twelve this row refuses.
+    // the two the drain gives the descendant.
     // The pid the descendant records is the one it ends up with: `sh` prints its own, then
     // becomes the `sleep` through `exec`.
     await withEscapedDescendant("escaped-before-exit.pid", async (pidFile) => {
@@ -453,26 +472,30 @@ describe("app-logins.ts", () => {
         `printf 'a%0300000d\\n' 0 >&2; sleep 3; setsid sh -c 'echo $$ >${pidFile}; exec sleep 40'` +
         " >&2 & exit 3";
       const path = config(app("101", escaped), app("202"));
+      const stallMs = 5000;
       const started = Date.now();
       const printed = await behindReader(
         `  APP_LOGINS_DRAIN_MS=${drainMs} bun "${script}" --roles implement "${path}" "${standIn}" >/dev/null
   echo "exit=$?"`,
-        5
+        stallMs / 1000
       );
       const elapsed = Date.now() - started;
       expect(printed).toContain("still held its output open");
       expect(printed.split("\n")).toContain("exit=1");
-      // Seven seconds is the stall the exit waits out plus the two the drain bound gives;
-      // twelve is that stall counted a second time, as a bound that gave back every block
-      // since the spawn counts it. The window takes the first and refuses the second, and
-      // refuses an end at the stall itself, before the bound has run.
-      expect(elapsed, `${elapsed} ms`).toBeGreaterThan(6_000);
-      expect(elapsed, `${elapsed} ms`).toBeLessThan(9_500);
+      // The stall the exit waits out plus one bound, 7 s, is the only end the window takes: it
+      // refuses an end at the stall itself (5 s, the bound never run), a drain that ran twice its
+      // bound (9 s), and the stall counted a second time (12 s), as a bound that gave back every
+      // block since the spawn counts it. Half a bound of room on each side.
+      expect(elapsed, `${elapsed} ms`).toBeGreaterThan(stallMs + drainMs / 2);
+      expect(elapsed, `${elapsed} ms`).toBeLessThan(stallMs + drainMs * 1.5);
     });
   }, 30_000);
 
-  test("a drain bound that is no whole number of milliseconds above 0 is refused before any App is read", async () => {
-    for (const value of ["0", "1.5", "-1", "two", ""]) {
+  test("a drain bound that is no whole number of milliseconds from 1 to the timer's longest is refused before any App is read", async () => {
+    const tooLong = String(MAX_DRAIN_LIMIT_MS + 1);
+    // Twenty-five digits: Number() reads it as 1e24, past every whole number a double holds.
+    const overLong = "1".repeat(25);
+    for (const value of ["0", "1.5", "-1", "two", "", tooLong, overLong]) {
       seen.length = 0;
       const { code, stdout, stderr } = await run(config(app("101"), app("202")), {
         APP_LOGINS_DRAIN_MS: value,
@@ -480,7 +503,7 @@ describe("app-logins.ts", () => {
       expect(code, value).toBe(2);
       expect(stdout, value).toBe("");
       expect(stderr, value).toBe(
-        `app-logins: APP_LOGINS_DRAIN_MS is '${value}', not a whole number of milliseconds above 0`
+        `app-logins: APP_LOGINS_DRAIN_MS is '${value}', not a whole number of milliseconds from 1 to ${MAX_DRAIN_LIMIT_MS}`
       );
       expect(seen, value).toEqual([]);
     }

@@ -142,9 +142,15 @@ const commandLimitMs = 35 * 60 * 1000;
  * one 300,008-byte line relayed into a pipe whose reader slept eight seconds blocked for those
  * eight seconds. Every time the bound is made of — the exit, the blocked time, and each re-arm
  * of its timer — is read from performance.now(), the clock no step of the wall clock moves.
- * APP_LOGINS_DRAIN_MS, a whole number of milliseconds above 0, sets another bound for one run:
- * app-logins.test.ts's drain rows run at two seconds, so each waits out two rather than five. */
-let drainLimitMs = 5000;
+ * APP_LOGINS_DRAIN_MS, a whole number of milliseconds from 1 to MAX_DRAIN_LIMIT_MS, sets another
+ * bound for one run: app-logins.test.ts's drain rows run at two seconds, so each waits out two
+ * rather than five. */
+export const DEFAULT_DRAIN_LIMIT_MS = 5000;
+/** The longest bound APP_LOGINS_DRAIN_MS may set: the longest delay a timer takes, 2^31 - 1 ms. A
+ * longer one fires at once (Bun 1.4.4: a 2^31 ms setTimeout fired after 10 ms), so a longer
+ * bound would end every drain at the exit. */
+export const MAX_DRAIN_LIMIT_MS = 2 ** 31 - 1;
+let drainLimitMs = DEFAULT_DRAIN_LIMIT_MS;
 /** The GitHub token forms, which a command's stderr may carry and no log or error may. */
 const tokenPattern = /(gh[opsur]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})/g;
 /** A GitHub account login: what a release may name an installation by (internal/appauth,
@@ -663,10 +669,12 @@ if (import.meta.main) {
   }
   const drain = process.env.APP_LOGINS_DRAIN_MS;
   if (drain !== undefined) {
-    if (!/^[1-9][0-9]*$/.test(drain)) {
+    // The spelling first, so that a digit string too long for a number is refused by its text
+    // rather than read as Infinity or a rounded value.
+    if (!/^[1-9][0-9]{0,9}$/.test(drain) || Number(drain) > MAX_DRAIN_LIMIT_MS) {
       writeAll(
         2,
-        `app-logins: APP_LOGINS_DRAIN_MS is '${drain}', not a whole number of milliseconds above 0\n`
+        `app-logins: APP_LOGINS_DRAIN_MS is '${drain}', not a whole number of milliseconds from 1 to ${MAX_DRAIN_LIMIT_MS}\n`
       );
       process.exit(2);
     }
