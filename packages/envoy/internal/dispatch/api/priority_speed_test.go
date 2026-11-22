@@ -41,8 +41,8 @@
 // box at a load near 1,000 the body read 3.10 times the listing (47.4 ms against 15.3 ms), and a
 // server that answered each statement of the body's batch 30 ms late, as a loaded one answers
 // them, put it at 8.26 times (135.9 ms against 16.5 ms, 2026-11-22), over the bound, though the
-// read did the same work in both. The Go side of the read, the scan of its rows and the encoding
-// of its body, was inside those times and is held by no test now.
+// read did the same work in both. The Go side of the read, which was inside those times, is held
+// in the objects it allocates (speedPriorityAllocs); the encoding of its body is held by no test.
 package api
 
 import (
@@ -140,8 +140,8 @@ func (w speedWork) String() string {
 
 // speedReadings is every reading the two tests report, taken over the one corpus: the page with
 // the relation read under each of its two plans and the page without it under its own, the Go
-// side of reading each (speedScanAllocs), and the three requests the priorities read is held by
-// (speedRequestWork).
+// side of reading each (speedScanAllocs), the three requests the priorities read is held by
+// (speedRequestWork), and the Go side of the body and of the summary (speedPriorityAllocs).
 type speedReadings struct {
 	advancesCustom  speedWork
 	advancesGeneric speedWork
@@ -151,6 +151,8 @@ type speedReadings struct {
 	pagedIssues     speedRequestWork
 	prioritiesFull  speedRequestWork
 	prioritiesLite  speedRequestWork
+	bodyAllocs      float64
+	summaryAllocs   float64
 }
 
 // speedScanRuns is how many scans of the page testing.AllocsPerRun averages, after the one it does
@@ -170,6 +172,23 @@ const speedScanRuns = 5
 const (
 	speedScanAllocsPerID  = 1
 	speedScanAllocsPerRow = 3
+)
+
+// The most objects the Go side of a priorities read may allocate for each `advances` relation the
+// store holds (speedPriorityAllocs): what readPriorities allocates to scan the priorities, the
+// relations and the batch's rows, to send the relations as the seed of every statement of the
+// batch, and to build the body from them. The relations are what the read's work grows with: it
+// scans each once and sends each with every statement of its batch, so a read that allocated
+// more for each relation, or for each relation and priority, would show here at once. Correct
+// code allocates 10,876 objects for the whole body and 4,243 for the summary over the corpus's
+// 20 priorities and 400 relations (27.19 and 10.61 a relation), and under the race detector,
+// which CI's run of this package uses and whose sync.Pool keeps fewer objects, 11,078 to 11,087
+// and 4,362 to 4,375 (two runs each, PostgreSQL 18.6, 2026-11-22). The bounds stand between the
+// race build's readings and one object more for each relation in the plain build, 400 more:
+// 11,200 for the body and 4,500 for the summary.
+const (
+	speedBodyAllocsPerRelation    = 28.0
+	speedSummaryAllocsPerRelation = 11.25
 )
 
 // measuredSpeedReadings is what the first of the two tests to run left behind. It is written and
@@ -265,6 +284,10 @@ func TestAdvancesListingSpeed(t *testing.T) {
 // other. Under the generic plans the body produces 10.75 times the listing's rows (438,298 against
 // 40,786) where it accesses 2.20 times its buffers, and when the two were timed side by side the
 // body took 3.10 times the listing (47.4 ms against 15.3 ms, the least of 21 runs each).
+//
+// The Go side of each read, the scan of its rows and the building of the body, is held in the
+// objects it allocates, per relation the store holds (speedBodyAllocsPerRelation,
+// speedSummaryAllocsPerRelation).
 func TestPrioritiesReadSpeed(t *testing.T) {
 	readings := speedCorpusReadings(t)
 	paged := readings.pagedIssues
@@ -298,6 +321,22 @@ func TestPrioritiesReadSpeed(t *testing.T) {
 			}
 		}
 	}
+	for _, held := range []struct {
+		name        string
+		allocs      float64
+		perRelation float64
+	}{
+		{speedPriorityFullName, readings.bodyAllocs, speedBodyAllocsPerRelation},
+		{"the priorities summary", readings.summaryAllocs, speedSummaryAllocsPerRelation},
+	} {
+		allowed := held.perRelation * speedCorpusRelations
+		t.Logf("%s allocates %.0f objects in Go over %d priorities and %d relations, %.2f a relation, at most %.2f (%.0f)",
+			held.name, held.allocs, speedCorpusPriorities, speedCorpusRelations, held.allocs/speedCorpusRelations, held.perRelation, allowed)
+		if held.allocs > allowed {
+			t.Errorf("%s allocates %.0f objects in Go over %d priorities and %d relations, %.2f a relation, want at most %.2f a relation (%.0f)",
+				held.name, held.allocs, speedCorpusPriorities, speedCorpusRelations, held.allocs/speedCorpusRelations, held.perRelation, allowed)
+		}
+	}
 }
 
 // measureSpeedCorpus builds the corpus, holds the reads to what they answer over it, and counts
@@ -325,6 +364,8 @@ func measureSpeedCorpus(t *testing.T) speedReadings {
 		pagedIssues:     countSpeedRequest(t, corpus, "the paged listing of every open issue", speedPagedListingTarget),
 		prioritiesFull:  countSpeedRequest(t, corpus, speedPriorityFullName, "/api/v1/priorities"),
 		prioritiesLite:  countSpeedRequest(t, corpus, "the priorities summary", "/api/v1/priorities?summary=true"),
+		bodyAllocs:      speedPriorityAllocs(t, corpus, false),
+		summaryAllocs:   speedPriorityAllocs(t, corpus, true),
 	}
 	for _, read := range []speedWork{readings.advancesCustom, readings.advancesGeneric} {
 		if read.walks != readings.advancesUnread.walks+1 {
@@ -333,6 +374,30 @@ func measureSpeedCorpus(t *testing.T) speedReadings {
 		}
 	}
 	return readings
+}
+
+// speedPriorityAllocs reads the Go side of one priorities read, in the objects one read allocates
+// (testing.AllocsPerRun over speedScanRuns reads): readPriorities, which the route calls for the
+// whole body and for the summary (summary), with no project named, as the page asks. Its round
+// trips are in it as well. The encoding of the body, which the route does after it, is not. An
+// allocation count does not move with the box's load; a Go-side change that costs CPU and
+// allocates nothing more is not in it.
+func speedPriorityAllocs(t *testing.T, corpus speedCorpusShape, summary bool) float64 {
+	t.Helper()
+	ctx := context.Background()
+	var failed error
+	allocs := testing.AllocsPerRun(speedScanRuns, func() {
+		if _, err := corpus.server.readPriorities(ctx, []string{}, summary); err != nil {
+			failed = err
+		}
+	})
+	if failed != nil {
+		t.Fatalf("read the priorities: %v", failed)
+	}
+	if allocs < speedCorpusRelations {
+		t.Fatalf("reading the priorities over %d relations allocated %.0f objects: fewer than one a relation, so the read was not counted", speedCorpusRelations, allocs)
+	}
+	return allocs
 }
 
 // speedPagedListingTarget is the paged read of every open issue: one page of the most issues a
