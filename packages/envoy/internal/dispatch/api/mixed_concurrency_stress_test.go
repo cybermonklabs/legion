@@ -18,23 +18,25 @@ import (
 // pooledDocumentHandler serves a Dispatch API whose pool is maxConns wide and whose documents
 // settle after settle, and returns the document service so a test can evict or settle a room.
 func pooledDocumentHandler(t *testing.T, maxConns int32, settle time.Duration) (http.Handler, *docs.Service) {
-	handler, service, _ := pooledDocumentHandlerWith(t, maxConns, settle, nil)
+	handler, service, _, _ := pooledDocumentHandlerWith(t, maxConns, settle, nil)
 	return handler, service
 }
 
 // pooledDocumentHandlerWith lets a test wrap the document service the API sees, so it can hold
-// one document call open while it arranges the rest of the pool. The service's shutdown at the
-// test's end is waited for with one bound, the test binary's deadline (testwait.Receive): a
-// shutdown a loaded machine runs slowly passes, and one that never returns fails by name.
+// one document call open while it arranges the rest of the pool. It answers also the Deps it
+// registered, for a test that runs a request on a connection of its own (oneConnectionHandler).
+// The service's shutdown at the test's end is waited for with one bound, the test binary's
+// deadline (testwait.Receive): a shutdown a loaded machine runs slowly passes, and one that never
+// returns fails by name.
 func pooledDocumentHandlerWith(
 	t *testing.T,
 	maxConns int32,
 	settle time.Duration,
 	wrap func(*docs.Service) docs.API,
-) (http.Handler, *docs.Service, *store.Store) {
+) (http.Handler, *docs.Service, *store.Store, Deps) {
 	t.Helper()
 	var service *docs.Service
-	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+	handler, database, deps := newInteractionDeps(t, func(database *store.Store) docs.API {
 		config := database.Pool.Config().Copy()
 		config.MaxConns = maxConns
 		database.Pool.Close()
@@ -57,7 +59,7 @@ func pooledDocumentHandlerWith(
 		}
 		return service
 	})
-	return handler, service, database
+	return handler, service, database, deps
 }
 
 func TestConditionalEditFloodDoesNotStarveSmallPool(t *testing.T) {

@@ -806,7 +806,7 @@ func TestTheSweepsKeyedSendReadUsesItsPartialIndex(t *testing.T) {
 // holding no transaction id. The test holds the lock and requires exactly that, then lets the
 // settle through and requires the attempt settled failed.
 func TestTheSweepSettlesAnUndeliverableMentionBehindItsOwnersLockHoldingNoTransactionID(t *testing.T) {
-	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{})
 	rig := sweepRig{t: t, database: database}
 	issue := createTestIssue(t, handler, "STUCK", "A mention that is gone")
 	gone := rig.strandMentions(issue, 1, "10 minutes", false)
@@ -828,14 +828,24 @@ func TestTheSweepSettlesAnUndeliverableMentionBehindItsOwnersLockHoldingNoTransa
 		settled bool
 		err     error
 	}
+	// The settle runs on a connection of its own, so the wait watches its backend alone
+	// (storetest.WaitForQueuedBehind) and the transaction id read is that backend's: any other
+	// backend queued on the comment's owner lock, the server's own among them, is never taken for it.
+	callStore, callPID := oneConnectionStore(t, deps)
+	callDeps := deps
+	callDeps.Store = callStore
+	settler := directServer(callDeps)
 	settled := make(chan settle, 1)
 	go func() {
-		ok, err := served.settleUndeliverableMention(ctx, owed[0])
+		ok, err := settler.settleUndeliverableMention(ctx, owed[0])
 		settled <- settle{settled: ok, err: err}
 	}()
-	if early, answered, holdingXid := storetest.AwaitOwnerLockWaiter(t, database, "the sweep's settle", settled); answered {
+	if early, answered := storetest.WaitForQueuedBehind(t, holder, callPID, settled); answered {
 		t.Fatalf("the settle answered (%v, %v) while this test held the comment's owner lock", early.settled, early.err)
-	} else if holdingXid != 0 {
+	}
+	if holdingXid, err := storetest.HoldsTransactionID(ctx, database, callPID); err != nil {
+		t.Fatal(err)
+	} else if holdingXid {
 		t.Fatalf("the settle waits for the comment's owner lock with a transaction id already open: it failed the " +
 			"attempt before it took that lock, under a writer holding the comment's owner")
 	}

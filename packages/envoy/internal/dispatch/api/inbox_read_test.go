@@ -746,7 +746,7 @@ func TestInboxReadRacingAnotherMarkAll(t *testing.T) {
 // whose appends took the projects as they reached them would hold the second project's lock while
 // it waited for the first's, and Postgres would break the cycle as a deadlock.
 func TestAMarkAllOverTwoProjectsTakesTheirLocksInLockKeyOrder(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
 	// Two project keys whose order by name, which the events follow, is the opposite of their
 	// order by lock key.
@@ -783,11 +783,15 @@ func TestAMarkAllOverTwoProjectsTakesTheirLocksInLockKeyOrder(t *testing.T) {
 	if err := store.LockOwner(ctx, holder, store.ProjectOwner(sorted)); err != nil {
 		t.Fatalf("hold %s's owner lock: %v", sorted, err)
 	}
+	// The press runs on a connection of its own, so the wait watches its backend alone
+	// (storetest.WaitForQueuedBehind): the other writer takes the second lock only once the press
+	// itself waits, and no other backend queued on the project's owner lock is taken for it.
+	pressHandler, pressPID := oneConnectionHandler(t, deps)
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		answered <- postInboxRead(t, handler, "alice", map[string]any{"read_through": time.Now().UTC().Format(time.RFC3339Nano)})
+		answered <- postInboxRead(t, pressHandler, "alice", map[string]any{"read_through": time.Now().UTC().Format(time.RFC3339Nano)})
 	}()
-	if early, answeredEarly, _ := storetest.AwaitOwnerLockWaiter(t, database, "the Mark all read", answered); answeredEarly {
+	if early, answeredEarly := storetest.WaitForQueuedBehind(t, holder, pressPID, answered); answeredEarly {
 		t.Fatalf("the press answered %d %s while this test held %s's owner lock", early.Code, early.Body.String(), sorted)
 	}
 	if err := store.LockOwner(ctx, holder, store.ProjectOwner(named)); err != nil {
