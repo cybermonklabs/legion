@@ -340,7 +340,8 @@ export async function withLoginLock<T>(
  * at most {@link DEVICE_LOGIN_MOST_BYTES} read. Synchronous for a caller that must act on the
  * answer before any other task of its process runs: claude-envoy's open-asks hook asks it and
  * exits in one step, so its own trade cannot take the lock, and start a refresh the exit would
- * cut, between the two. No lock, and one that cannot be read, is held by no process.
+ * cut, between the two. No lock, and one that cannot be read, is held by no process; no error
+ * leaves it.
  */
 export function loginLockHeldBy(path: string, pid: number): boolean {
   let fd: number;
@@ -357,7 +358,10 @@ export function loginLockHeldBy(path: string, pid: number): boolean {
   } catch {
     return false;
   } finally {
-    closeSync(fd);
+    // A close that fails changes nothing read, and must not throw out of the caller's exit.
+    try {
+      closeSync(fd);
+    } catch {}
   }
 }
 
