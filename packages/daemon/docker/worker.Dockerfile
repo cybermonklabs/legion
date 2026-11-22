@@ -127,13 +127,13 @@ ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # (packages/daemon/internal/leakguard's
 # Source and InstallServed). R5 of dispatch://INFRA-1527 requires the newest
 # `leak-check-v<n>` tag at the time the pin is written, never a number a spec fixed: this is the
-# newest, read with `gh api repos/example-org/deployment/git/refs/tags` at 2026-11-20T00:45:44Z,
+# newest, read with `gh api repos/example-org/deployment/git/refs/tags` at 2026-11-21T18:04:21Z,
 # and a bump reads that list again. The runtime stage exports it as LEGION_LEAK_CHECK_TAG, which
 # is where the launcher and each role's shim read it. Go holds the same tag once more:
 # ghReadsProvenCheck in packages/daemon/cmd/legion/gh_reads.go, the check `legion gh`'s list of
 # reads was proven against, and TestGhReadsAreProvenAgainstThePinnedCheck holds the two equal, so
 # a bump moves both, by the steps ghReadsProvenCheck's comment gives.
-ARG LEAK_CHECK_TAG=leak-check-v21
+ARG LEAK_CHECK_TAG=leak-check-v31
 # go.work's `go` line: the Go stage builds in workspace mode, and the golang image's GOTOOLCHAIN=local
 # fails the build if go.work moves past this. The toolchain stage ships the same release to the workers
 # (/opt/go), checked against GO_SHA256: the SHA-256 https://go.dev/dl/ publishes for
@@ -1494,11 +1494,12 @@ COPY --chmod=0755 packages/daemon/docker/gh /opt/legion/bin/gh
 # core.hooksPath=/dev/null pin, which still holds for every other command (mainEnvironment,
 # packages/daemon/internal/runtime/sandbox/manifest.go): packages/daemon/docker/git.
 COPY --chmod=0755 packages/daemon/docker/git /opt/legion/bin/git
-# jj in a pod is Legion's wrapper too, which runs the real jj at /usr/local/bin/jj with the
-# arguments it was given and checks one thing before a `jj git push`: that the git jj will shell
-# out to is the wrapper above, on PATH and in jj's own git.executable-path. jj's push is a
-# `git … push --porcelain --no-verify`, so that wrapper is what puts the leak guard in front of
-# it, and a jj that would run another git is refused rather than pushing unchecked:
+# jj in a pod is Legion's wrapper too, which runs the real jj at /usr/local/bin/jj with the wrapper
+# above as jj's git.executable-path on every command line, and again as the line's last layer
+# after a push. jj's push is a `git … push --porcelain --no-verify`, so that wrapper is what puts
+# the leak guard in front of it. Before a `jj git push` or `jj gerrit upload`, aliases and the
+# default command expanded as jj expands them, it also checks that the git on PATH is the wrapper
+# and refuses a push whose configuration names another git, rather than pushing unchecked:
 # packages/daemon/docker/jj.
 COPY --chmod=0755 packages/daemon/docker/jj /opt/legion/bin/jj
 # The pre-push hook the git wrapper points git at, in a root-owned directory no role can write:
