@@ -74,21 +74,22 @@ func pidNamespace(t *testing.T) []string {
 const pidOneHelperEnv = "LEGION_LAUNCHER_PID_ONE_HELPER"
 
 // runAsPIDOne runs the test binary's helper test as PID 1 of a PID namespace of its own
-// (pidNamespace), with only the test's own PATH, where its jj and git are, and pidOneHelperEnv in
-// its environment, fails t unless the helper ran and passed, and answers what it printed. The
-// helper's own deadline is this test's less 20 s, so a helper whose wait gives up at its deadline
-// (reaperBound) prints why, and ends, before this test's alarm.
-func runAsPIDOne(t *testing.T, helper string) string {
+// (pidNamespace), with only the test's own PATH, where its jj and git are, pidOneHelperEnv and
+// env (NAME=value each) in its environment, fails t unless the helper ran and passed, and answers
+// what it printed. The helper's own deadline is this test's less helperDeadlineGap, so a helper
+// whose wait gives up near its deadline (reaperBound) prints why and ends, and this test then
+// still has that gap for its own cleanups before its alarm.
+func runAsPIDOne(t *testing.T, helper string, env ...string) string {
 	t.Helper()
 	prefix := pidNamespace(t)
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := append(append([]string{}, prefix...), "/usr/bin/env", "-i", "PATH="+os.Getenv("PATH"), pidOneHelperEnv+"=1",
-		self, "-test.run=^"+helper+"$", "-test.v", "-test.count=1")
+	args := append(append([]string{}, prefix...), "/usr/bin/env", "-i", "PATH="+os.Getenv("PATH"), pidOneHelperEnv+"=1")
+	args = append(append(args, env...), self, "-test.run=^"+helper+"$", "-test.v", "-test.count=1")
 	if deadline, ok := t.Deadline(); ok {
-		args = append(args, "-test.timeout="+max(time.Until(deadline)-20*time.Second, time.Second).String())
+		args = append(args, "-test.timeout="+max(time.Until(deadline)-helperDeadlineGap, time.Second).String())
 	}
 	output, err := exec.Command("sudo", args...).CombinedOutput()
 	if err != nil || !bytes.Contains(output, []byte("--- PASS: "+helper)) {
@@ -96,6 +97,14 @@ func runAsPIDOne(t *testing.T, helper string) string {
 	}
 	return string(output)
 }
+
+// helperDeadlineGap is how much sooner than its test a helper of runAsPIDOne reaches its own
+// deadline: the time the test has, once a helper that gave up has ended, for its own cleanups,
+// among them the removal of a tree the helper built in a directory the test gave it
+// (TestPutBacksPIDOneHelper's fixture). On this dev box under a one-minute load of about 760 on
+// 288 CPUs that removal took more than 15 s, inside the helper's own alarm at the time, and 7.8 s
+// to 10.7 s in runs that finished (2026-11-21); a minute is more than twice the most seen.
+const helperDeadlineGap = time.Minute
 
 func namespaceRig(t *testing.T, grace time.Duration) *rig {
 	t.Helper()

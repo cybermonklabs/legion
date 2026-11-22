@@ -214,9 +214,19 @@ func TestAReleasedWorkspacesWorkIsBundledByTheShimAndRestoredByTheLauncher(t *te
 // and the roles start without the saved work. The race needs a pod's shape, as
 // TestTheLeakCheckInstallSurvivesPID1sReaper says, so the put-backs run in the test binary as PID 1
 // of a PID namespace of its own (TestPutBacksPIDOneHelper).
+//
+// The fixture's tree, ten workspaces of real git and jj, lives in a directory of this test's,
+// which the helper builds in and never removes: on a loaded machine its removal outlasted the 15 s
+// a helper that gave up has before its own alarm, which then panicked the helper, while this test
+// has helperDeadlineGap for it.
 func TestPutBacksUnderThePodsReaperKeepTheirExitStatus(t *testing.T) {
-	t.Logf("%s", runAsPIDOne(t, "TestPutBacksPIDOneHelper"))
+	root := t.TempDir()
+	t.Logf("%s", runAsPIDOne(t, "TestPutBacksPIDOneHelper", putBackFixtureRootEnv+"="+root))
 }
+
+// putBackFixtureRootEnv names the directory TestPutBacksPIDOneHelper builds its fixture in, which
+// its outer test made and removes.
+const putBackFixtureRootEnv = "LEGION_LAUNCHER_PUT_BACK_FIXTURE_ROOT"
 
 // putBacksUnderReaper is how many put-backs TestPutBacksPIDOneHelper makes through the guard, and
 // controlPutBacks how many it makes with no guard. Every command of each meets the reaper
@@ -241,7 +251,11 @@ func TestPutBacksPIDOneHelper(t *testing.T) {
 		t.Fatal("the put-back helper is not PID 1")
 	}
 	testbin.RequireJJFilters(t)
-	f := newBundleFixture(t)
+	root := os.Getenv(putBackFixtureRootEnv)
+	if root == "" {
+		t.Fatalf("the put-back helper was given no fixture directory (%s)", putBackFixtureRootEnv)
+	}
+	f := newBundleFixtureIn(t, root)
 	f.workOne()
 	saved := f.bundleWorkspaceOne()
 	workspaces := make([]string, putBacksUnderReaper+controlPutBacks)
@@ -435,12 +449,17 @@ type bundleFixture struct {
 
 func newBundleFixture(t *testing.T) *bundleFixture {
 	t.Helper()
+	return newBundleFixtureIn(t, t.TempDir())
+}
+
+// newBundleFixtureIn is newBundleFixture built in root, an empty directory the caller removes.
+func newBundleFixtureIn(t *testing.T, root string) *bundleFixture {
+	t.Helper()
 	for _, tool := range []string{"jj", "git"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skipf("%s is required: %v", tool, err)
 		}
 	}
-	root := t.TempDir()
 	// Neither the workspace, the configuration, the remote nor the credential of the process that
 	// runs the tests reaches the fixture's git and jj: its environment is fixtureenv.Isolated of
 	// a home of this test's own, which holds none of the host's jj and git configuration — its
