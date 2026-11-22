@@ -93,37 +93,21 @@ func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
 				t.Fatal(err)
 			}
 			writerPID := writer.Conn().PgConn().PID()
+			// The earlier build's write runs on a connection of its own, and the wait reads that
+			// backend alone (awaitBlockedBy): another backend waiting on this build's write would
+			// let it go on before the earlier build's write had queued.
+			racing, racingPID := oneConnection(t, s)
 			wrote := make(chan error, 1)
 			go func() {
-				_, err := raceWriter(ctx, s, rowFirstWriter, []Owner{issue}, []Owner{issue})
+				_, err := raceWriter(ctx, racing, rowFirstWriter, []Owner{issue}, []Owner{issue})
 				wrote <- err
 			}()
-			ended := false
-			for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) {
-				select {
-				case err := <-wrote:
-					if err != nil {
-						t.Fatalf("the earlier build's write: %v", err)
-					}
-					t.Errorf("the earlier build's write went through while this build's write was between its owner lock and its write phase; want it to wait for the owner's row")
-					ended = true
-				default:
+			err, ended := awaitBlockedBy(t, s, writerPID, racingPID, wrote)
+			if ended {
+				if err != nil {
+					t.Fatalf("the earlier build's write: %v", err)
 				}
-				if ended {
-					break
-				}
-				var queued bool
-				if err := s.Pool.QueryRow(ctx, `
-					select exists (select from pg_stat_activity where datname = current_database() and $1::integer = any(pg_blocking_pids(pid)))`,
-					writerPID).Scan(&queued); err != nil {
-					t.Fatal(err)
-				}
-				if queued {
-					break
-				}
-				if time.Now().After(deadline) {
-					t.Fatal("the earlier build's write neither went through nor queued behind this build's write within 10s")
-				}
+				t.Errorf("the earlier build's write went through while this build's write was between its owner lock and its write phase; want it to wait for the owner's row")
 			}
 			if _, err := writer.Exec(ctx, ownerLock, OwnerLockNamespace, issue.LockKey()); err != nil {
 				t.Fatal(err)

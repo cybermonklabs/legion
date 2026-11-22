@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -263,6 +264,9 @@ func TestExclusiveLeavesThePeriodUnservedWhenShutdownCutsThePassShort(t *testing
 // read keeps waiting after the cancel, and once it answers the stopped gate starts no pass, gives
 // the lease back with its unlock, and returns the connection to the lease pool. A first gate
 // leaves the period read prepared on that connection, as a running process's earlier ticks do.
+// Both reads of the wait name the gate's own lease connection (pidLeases, storetest.QueuedBehind):
+// another backend queued on duty_passes neither starts the cancel early nor stands in for a read
+// that stopped waiting.
 func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T) {
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
@@ -288,10 +292,14 @@ func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T)
 	defer stop()
 	passRan := false
 	answered := make(chan bool, 1)
+	gateLeases := pidLeases{Leases: leases, pids: make(chan uint32, 1)}
 	go func() {
-		answered <- duty.Exclusive(stopping, leases, name, time.Now(), time.Hour, func(context.Context) { passRan = true })
+		answered <- duty.Exclusive(stopping, gateLeases, name, time.Now(), time.Hour, func(context.Context) { passRan = true })
 	}()
-	storetest.WaitForLockWaiters(t, holder, 1)
+	gatePID := testwait.Receive(t, "the gate's lease connection", gateLeases.pids)
+	if ran, early := storetest.WaitForQueuedBehind(t, holder, gatePID, answered); early {
+		t.Fatalf("the gate answered (ran %v) before its period read queued behind duty_passes\n%s", ran, logs.String())
+	}
 	stop()
 	// A read on the pass's context would end at the cancel: pgx sets the socket's deadline to now,
 	// and the gate returns within milliseconds while duty_passes is still held.
@@ -301,9 +309,9 @@ func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T)
 	case <-time.After(500 * time.Millisecond):
 	}
 	// Still waiting at the cancel is one reading, not a wait: a read that stopped waiting and was
-	// replaced by another waiter must not pass.
-	if waiting, err := storetest.LockWaiters(ctx, holder); err != nil || waiting < 1 {
-		t.Fatalf("the gate's period read stopped waiting on duty_passes at the cancel (%d waiting, read error %v)", waiting, err)
+	// replaced by another waiter must not pass, so this reads the gate's own backend.
+	if waiting, err := storetest.QueuedBehind(ctx, holder, gatePID); err != nil || !waiting {
+		t.Fatalf("the gate's period read stopped waiting on duty_passes at the cancel (backend %d waiting %v, read error %v)", gatePID, waiting, err)
 	}
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("release duty_passes: %v", err)
@@ -567,6 +575,21 @@ type slowLeases struct {
 func (s slowLeases) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
 	time.Sleep(s.delay)
 	return s.Leases.Acquire(ctx)
+}
+
+// pidLeases is a lease pool that sends the backend process id of each connection it hands out on
+// pids, so a test names the backend a gate reads its period on.
+type pidLeases struct {
+	duty.Leases
+	pids chan uint32
+}
+
+func (l pidLeases) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
+	conn, err := l.Leases.Acquire(ctx)
+	if err == nil {
+		l.pids <- conn.Conn().PgConn().PID()
+	}
+	return conn, err
 }
 
 // A lone loop's ticks come at least one period apart (RunLeased, RunJittered), and each must run:

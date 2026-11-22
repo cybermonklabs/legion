@@ -19,7 +19,9 @@ import (
 // lock both run the same three statements inside their window, the marking update, the batch
 // appending issue.deployed (whose first statement is that lock) and the COMMIT, and a wait inside
 // the append is statement time, not a gap. Only holding the lock and asking what the waiter holds
-// does.
+// does. The recorder runs on a connection of its own, and the test reads that backend alone, both
+// for the wait (storetest.WaitForQueuedBehind) and for its transaction id
+// (storetest.HoldsTransactionID): another backend queued on the lock answers for neither.
 func TestTheDeployRecorderWaitsForTheIssuesOwnerLockHoldingNoTransactionID(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
@@ -41,17 +43,21 @@ func TestTheDeployRecorderWaitsForTheIssuesOwnerLockHoldingNoTransactionID(t *te
 		written int
 		err     error
 	}
+	recorderPool, recorderPID := storetest.OneConnection(t, pool)
 	passes := make(chan outcome, 1)
 	go func() {
-		written, err := RecordDeployedEvents(context.Background(), pool, settings, events.NewBroker())
+		written, err := RecordDeployedEvents(context.Background(), recorderPool, settings, events.NewBroker())
 		passes <- outcome{written, err}
 	}()
-	early, answeredEarly, holdingXid := storetest.AwaitOwnerLockWaiter(t, &store.Store{Pool: pool}, "the deploy recorder", passes)
-	if answeredEarly {
+	if early, answeredEarly := storetest.WaitForQueuedBehind(t, holder, recorderPID, passes); answeredEarly {
 		t.Fatalf("the deploy recorder finished (wrote %d, err %v) while this test held %s: it marked the row "+
 			"without the lock issue.deployed's append takes", early.written, early.err, store.IssueOwner(deployedIssue).LockKey())
 	}
-	if holdingXid > 0 {
+	holdingXid, err := storetest.HoldsTransactionID(ctx, &store.Store{Pool: pool}, recorderPID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if holdingXid {
 		t.Fatalf("the deploy recorder waits for %s with a transaction id already open: it marked the pull "+
 			"request's row before it took that lock. Take the issue's owner lock (store.LockOwner) before the "+
 			"update.", store.IssueOwner(deployedIssue).LockKey())

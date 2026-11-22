@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // latestChange is the change log's newest seq, which a test reads after its setup so its
@@ -430,7 +431,9 @@ func TestEveryLoggedChangeNotifiesAtCommit(t *testing.T) {
 
 // TestChangeSeqsFollowCommitOrder: a second writer's change waits on the trigger's advisory lock
 // until the first writer commits, so it cannot take a seq a reader could pass before the first
-// writer's lands.
+// writer's lands. B runs on a connection of its own and the test commits A only once that backend
+// queues behind A (storetest.WaitForQueuedBehind): a count of every waiter on the change log's key
+// reads any database's waiter, since an advisory lock's pg_locks row is the whole server's.
 func TestChangeSeqsFollowCommitOrder(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	before := latestChange(t, ctx, pool)
@@ -447,12 +450,13 @@ func TestChangeSeqsFollowCommitOrder(t *testing.T) {
 		t.Fatalf("A's insert: %v", err)
 	}
 
+	bPool, bPID := storetest.OneConnection(t, pool)
 	var wg sync.WaitGroup
 	bErr := make(chan error, 1)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		b, err := pool.Begin(ctx)
+		b, err := bPool.Begin(ctx)
 		if err != nil {
 			bErr <- err
 			return
@@ -465,14 +469,9 @@ func TestChangeSeqsFollowCommitOrder(t *testing.T) {
 		bErr <- b.Commit(ctx)
 	}()
 
-	waitFor(t, 10*time.Second, func() bool {
-		var waiting int
-		err := pool.QueryRow(ctx, `
-			select count(*) from pg_locks
-			where locktype = 'advisory' and not granted and classid = 6900 and objid = 0 and objsubid = 2
-		`).Scan(&waiting)
-		return err == nil && waiting == 1
-	}, func() string { return "B never waited on the change log's advisory lock" })
+	if err, early := storetest.WaitForQueuedBehind(t, a, bPID, bErr); early {
+		t.Fatalf("B answered (%v) before it waited on the change log's advisory lock A holds", err)
+	}
 
 	if err := a.Commit(ctx); err != nil {
 		t.Fatalf("commit A: %v", err)

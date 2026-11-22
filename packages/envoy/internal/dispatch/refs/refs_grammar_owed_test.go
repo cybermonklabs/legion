@@ -245,7 +245,10 @@ func TestTheScopeDrainReadsASourceBeforeItLocksIt(t *testing.T) {
 // re-indexes the text the edit wrote rather than the one it read before the lock. The test holds
 // the owner lock as the edit does, lets the drain queue behind it, and commits an edit that drops
 // the comment's `#id`: under the lock the drain reads the edited text, finds nothing to move and
-// writes nothing; read before the lock it would index the text the edit replaced.
+// writes nothing; read before the lock it would index the text the edit replaced. The drain runs
+// on a connection of its own, and the test reads that backend alone, for the wait
+// (storetest.WaitForQueuedBehind) and for its transaction id (storetest.HoldsTransactionID), so
+// another backend waiting on the lock never lets the edit commit before the drain has queued.
 func TestTheScopeDrainReadsACitingSourceAgainUnderItsOwnerLock(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -267,16 +270,20 @@ func TestTheScopeDrainReadsACitingSourceAgainUnderItsOwnerLock(t *testing.T) {
 		t.Fatalf("take the comment's owner lock as an edit does: %v", err)
 	}
 
+	drainPool, drainPID := storetest.OneConnection(t, database.Pool)
 	drained := make(chan drainAnswer, 1)
 	go func() {
-		indexed, err := ReindexScopeSource(ctx, database.Pool, "comment", comment, refsGrammarServer)
+		indexed, err := ReindexScopeSource(ctx, drainPool, "comment", comment, refsGrammarServer)
 		drained <- drainAnswer{indexed: indexed, err: err}
 	}()
-	if answer, early, holdingXid := storetest.AwaitOwnerLockWaiter(t, database, "the scope drain", drained); early {
+	if answer, early := storetest.WaitForQueuedBehind(t, edit, drainPID, drained); early {
 		t.Fatalf("the scope drain answered (indexed %v, error %v) without waiting for the comment's owner lock, which the edit holds",
 			answer.indexed, answer.err)
-	} else if holdingXid != 0 {
-		t.Fatalf("%d backends wait on the owner lock holding a transaction id, want none: the drain reads and plans before its first write", holdingXid)
+	}
+	if holdingXid, err := storetest.HoldsTransactionID(ctx, database, drainPID); err != nil {
+		t.Fatal(err)
+	} else if holdingXid {
+		t.Fatal("the scope drain holds a transaction id while it waits on the owner lock, want none: the drain reads and plans before its first write")
 	}
 	if _, err := edit.Exec(ctx, `update comments set body = 'No question cited.' where id = $1`, comment); err != nil {
 		t.Fatalf("edit the comment: %v", err)

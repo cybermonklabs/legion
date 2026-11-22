@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -346,7 +347,11 @@ func TestRegisterRefusesAKeySetALivePeerDoesNotShare(t *testing.T) {
 // first's row and is refused, so exactly one of them registers; the first's heartbeat keeps it
 // live through the second's wait. Both are held at their first read of the registry by a lock
 // this test takes on the table, and released together, which is the moment two reads without the
-// registry's own lock would both find the registry empty.
+// registry's own lock would both find the registry empty. Each registration opens its registry
+// pool from a store named for it, so the wait counts those two backends alone
+// (storetest.WaitForLockWaitersFrom) and no other backend queued on the table releases the lock
+// before both are held. It names them by pool because Register opens its connection itself, so no
+// pid is known before it waits.
 func TestTwoRegistrationsAtOnceWithKeysOfTheirOwnAreSerialised(t *testing.T) {
 	quickRegistry(t)
 	database := storetest.Open(t)
@@ -361,14 +366,20 @@ func TestTwoRegistrationsAtOnceWithKeysOfTheirOwnAreSerialised(t *testing.T) {
 
 	var wg sync.WaitGroup
 	results := make([]error, 2)
-	for i, setting := range []string{"K0", "K1"} {
+	settings := []string{"K0", "K1"}
+	applications := make([]string, len(settings))
+	for i, setting := range settings {
+		applications[i] = "registration holding " + setting
+		registering := storetest.Reopened(t, database, func(config *pgxpool.Config) {
+			config.ConnConfig.RuntimeParams["application_name"] = applications[i]
+		})
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, results[i] = register(t, database, "c1", setting)
+			_, results[i] = register(t, registering, "c1", setting)
 		}()
 	}
-	storetest.WaitForLockWaiters(t, gate, 2)
+	storetest.WaitForLockWaitersFrom(t, gate, 2, applications...)
 	if err := gate.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the registry: %v", err)
 	}

@@ -145,7 +145,10 @@ func TestTheTriggerOwesAnItemItsWindowsAndWritingThemClearsIt(t *testing.T) {
 // LockItemOwner), the lock every writer of the item's text holds from before its first read, so
 // it reads the text its windows are cut from as that writer left it. It appends no event, so that
 // lock is the only one it takes: the test holds it and requires the arm to wait for it having
-// written nothing, and to write the windows once it is given back.
+// written nothing, and to write the windows once it is given back. The arm runs on a connection of
+// its own, and the test reads that backend alone, for the wait (storetest.WaitForQueuedBehind) and
+// for its transaction id (storetest.HoldsTransactionID): another backend waiting on the lock
+// answers for neither.
 func TestTheWindowArmWaitsForTheItemsOwnerLockHoldingNoTransactionID(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -172,10 +175,11 @@ func TestTheWindowArmWaitsForTheItemsOwnerLockHoldingNoTransactionID(t *testing.
 	if err := store.LockOwner(ctx, holder, store.IssueOwner("CORE-1")); err != nil {
 		t.Fatalf("hold the comment's owner lock: %v", err)
 	}
+	armPool, armPID := storetest.OneConnection(t, database.Pool)
 	windowed := make(chan error, 1)
 	go func() {
 		windowed <- func() error {
-			tx, err := database.Pool.Begin(ctx)
+			tx, err := armPool.Begin(ctx)
 			if err != nil {
 				return err
 			}
@@ -186,11 +190,14 @@ func TestTheWindowArmWaitsForTheItemsOwnerLockHoldingNoTransactionID(t *testing.
 			return tx.Commit(ctx)
 		}()
 	}()
-	if err, early, holdingXid := storetest.AwaitOwnerLockWaiter(t, database, "the window arm", windowed); early {
+	if err, early := storetest.WaitForQueuedBehind(t, holder, armPID, windowed); early {
 		t.Fatalf("the window arm answered (%v) while this test held the comment's owner lock: it wrote the windows "+
 			"under no owner lock", err)
-	} else if holdingXid != 0 {
-		t.Fatalf("%d backends wait on the owner lock holding a transaction id, want none", holdingXid)
+	}
+	if holdingXid, err := storetest.HoldsTransactionID(ctx, database, armPID); err != nil {
+		t.Fatal(err)
+	} else if holdingXid {
+		t.Fatal("the window arm waits on the owner lock holding a transaction id, want none")
 	}
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("release the owner lock: %v", err)

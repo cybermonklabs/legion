@@ -608,7 +608,10 @@ func TestAnIssueWhoseSpecIsBlankEmbedsItsTitleAlone(t *testing.T) {
 
 // The repair is a compare-and-swap: a trigger write that commits after the pass read the row and
 // before it updated it wins, keeping the trigger's text, hash, claim and counters. The trigger's
-// transaction holds the row while the pass's update waits on it, so the interleaving is exact.
+// transaction holds the row while the pass's update waits on it, so the interleaving is exact. The
+// pass runs on a connection of its own and the writer commits only once that backend queues behind
+// it (storetest.WaitForQueuedBehind): another backend queued on the row would let the commit land
+// before the pass read it.
 func TestCoverKeepsATriggerWriteThatLandsBetweenItsReadAndItsUpdate(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -631,11 +634,14 @@ func TestCoverKeepsATriggerWriteThatLandsBetweenItsReadAndItsUpdate(t *testing.T
 		t.Fatalf("claim the live row: %v", err)
 	}
 
+	passPool, passPID := storetest.OneConnection(t, database.Pool)
 	passDone := make(chan error, 1)
 	go func() {
-		passDone <- Cover(ctx, Deps{Store: storetest.SecondProcess(t, database), Embedder: newPlaceEmbedder(configuredIdentity)})
+		passDone <- Cover(ctx, Deps{Store: &store.Store{Pool: passPool}, Embedder: newPlaceEmbedder(configuredIdentity)})
 	}()
-	storetest.WaitForLockWaiters(t, writer, 1)
+	if err, early := storetest.WaitForQueuedBehind(t, writer, passPID, passDone); early {
+		t.Fatalf("Cover answered (%v) before its update queued behind the live write", err)
+	}
 	if err := writer.Commit(ctx); err != nil {
 		t.Fatalf("commit the live write: %v", err)
 	}
@@ -1389,8 +1395,11 @@ func TestRunsCoveragePassIsNotRefusedWhileTheScanLoopHoldsACursor(t *testing.T) 
 	seedIssue(t, database, "SIDE", "SIDE-2", longTitle)
 
 	// Run reaches the database through the proxy, which holds the scan loop's claim open once
-	// the claim's row, the only message longer than the long title, reaches the client.
+	// the claim's row, the only message longer than the long title, reaches the client. Its pool
+	// names itself runApplication, so the wait below counts Run's own backends alone.
 	config := database.Pool.Config().Copy()
+	const runApplication = "embedqueue run through the proxy"
+	config.ConnConfig.RuntimeParams["application_name"] = runApplication
 	proxy := startPausingProxy(t, net.JoinHostPort(config.ConnConfig.Host, strconv.Itoa(int(config.ConnConfig.Port))), len(longTitle))
 	released := false
 	releaseProxy := func() {
@@ -1440,22 +1449,10 @@ func TestRunsCoveragePassIsNotRefusedWhileTheScanLoopHoldsACursor(t *testing.T) 
 	case <-time.After(15 * time.Second):
 		t.Fatal("the scan loop's claim of SIDE-2 never reached the client")
 	}
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		var waiting int
-		if err := database.Pool.QueryRow(ctx, `
-			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock' and wait_event = 'transactionid'`).Scan(&waiting); err != nil {
-			t.Fatalf("count lock waiters: %v", err)
-		}
-		if waiting == 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d statements wait on a transaction, want the pass's insert", waiting)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	// The pass's insert of SIDE-1's row is the one backend of Run's pool queued behind the insert
+	// this test holds (storetest.WaitForLockWaitersFrom): a count of every backend waiting on a
+	// transaction would end on another backend's wait as well.
+	storetest.WaitForLockWaitersFrom(t, insert, 1, runApplication)
 	if err := insert.Commit(ctx); err != nil {
 		t.Fatalf("commit SIDE-1's row: %v", err)
 	}
@@ -1463,7 +1460,7 @@ func TestRunsCoveragePassIsNotRefusedWhileTheScanLoopHoldsACursor(t *testing.T) 
 	time.Sleep(500 * time.Millisecond)
 	releaseProxy()
 
-	deadline = time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	for {
 		items, current, lacking, failed, _ := coverage(t, database, configuredIdentity)
 		if items == 3 && current == 3 {
