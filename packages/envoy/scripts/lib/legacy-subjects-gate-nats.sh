@@ -205,41 +205,4 @@ if [ "$status" = 0 ]; then
   done <"$work/keys"
 fi
 
-# The census of connections, at a second reading given CENSUS_NKEY: $SYS.REQ.SERVER.PING.CONNZ,
-# which every server of the hub answers, each for the account the asking connection sits in (the
-# clients' own, for the census identity), measured on a three-server nats-server 2.15.1 cluster. It
-# connects as the nkey user of CENSUS_NKEY alone, with none of the listener's credential, under the
-# connection name CENSUS_NAME, which the gate drew for this reading and leaves out of the census,
-# and takes CENSUS_INBOX_PREFIX as its inbox prefix when set. Every reply is read until none comes
-# for 2 s (`--replies=0`), whatever number of servers answers; a next page is asked while a server
-# holds more connections than it has answered, at most 16 pages. Of each answer only the server's
-# name and id, its counts and, of each connection, its id, name, account, client library and NATS
-# user reach the log; an answer that is no JSON object is logged as "no JSON", never as it came.
-if [ -n "${CENSUS_NKEY:-}" ]; then
-  offset=0
-  limit=1024
-  pages=0
-  while [ "$pages" -lt 16 ]; do
-    pages=$((pages + 1))
-    if [ -n "${CENSUS_INBOX_PREFIX:-}" ]; then
-      set -- --inbox-prefix "$CENSUS_INBOX_PREFIX"
-    else
-      set --
-    fi
-    env -u NATS_NKEY -u NATS_USER -u NATS_PASSWORD -u NATS_TOKEN nats req --raw --replies=0 --timeout=10s --reply-timeout=2s \
-      --nkey "$CENSUS_NKEY" --connection-name "${CENSUS_NAME:-}" "$@" \
-      "\$SYS.REQ.SERVER.PING.CONNZ" "{\"offset\":$offset,\"limit\":$limit,\"auth\":true}" >"$work/census" 2>"$work/err"
-    status=$?
-    jq -c -R 'select(length > 0) | (fromjson? // "no JSON") | if type == "object"
-      then {server: {name: .server.name, id: .server.id}, error,
-            data: {total: .data.total, offset: .data.offset, limit: .data.limit,
-              connections: [.data.connections[]? | {cid, name, account, lang, version, authorized_user}]}}
-      else "no JSON" end' "$work/census" >"$work/out" 2>/dev/null || : >"$work/out"
-    emit census "$offset" "$status"
-    more=$(jq -s '[.[] | objects | select((.data.offset // 0) + (.data.connections | length) < (.data.total // 0))] | length' "$work/out" 2>/dev/null)
-    [ "${more:-0}" -gt 0 ] || break
-    offset=$((offset + limit))
-  done
-fi
-
 printf 'end\t-\t0\t\t\n'

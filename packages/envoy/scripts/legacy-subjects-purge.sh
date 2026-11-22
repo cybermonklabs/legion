@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 # packages/envoy/scripts/legacy-subjects-purge.sh --context <kube-context> --reading <record>
-#   --seed-class <SecretProviderClass> --seed-file <file> --service-account <name>
-#   [--inbox-prefix <prefix>]
 #
 # Purges the old-form messages ENVOY_NOTIFICATIONS still holds, once legacy-subjects-gate.sh's
 # second reading has read three of its four facts true: (a1) every pinned build, and (a2) every
@@ -14,16 +12,18 @@
 # It refuses to purge anything (REFUSED, exit 1) unless --reading is a second reading of the gate,
 # of the cluster --context names, whose record holds (a1), (a2) and (b) true; it reads that record
 # before it calls anything. It then runs one Job in namespace envoy (lib/legacy-subjects-purge-nats.sh)
-# that connects as the nkey user whose seed file --seed-file names in the volume the
-# SecretProviderClass --seed-class mounts (read through ServiceAccount --service-account, which
-# that class's secret admits), at the NATS URL of the listener Deployment envoy/envoy-listener. The
-# Job purges nothing when the stream is not the one the reading read (its envoy_stream_id), when
-# its subjects cannot be read whole, or when an old-form subject holds a message after the newest
+# that connects as the legacy-cutover user, at the NATS URL of the listener Deployment
+# envoy/envoy-listener: the Job runs as the ServiceAccount legacy-cutover and mounts that user's
+# nkey seed through the SecretProviderClass legacy-cutover-nats-seed, as the file nats-seed, and
+# every call takes the user's inbox prefix, _INBOX_legacy_cutover (legacy-subjects-gate.sh's
+# header says what the user may do; the deployment declares all four for it alone). The Job
+# purges nothing when the stream is not the one the reading read (its envoy_stream_id), when its
+# subjects cannot be read whole, or when an old-form subject holds a message after the newest
 # old-form message the reading found; otherwise it purges each old-form subject by itself, with
 # that literal subject as the purge's filter, so no new-form message goes, and lists the stream's
-# subjects again. The identity needs $JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS,
-# $JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS and $JS.API.STREAM.PURGE.ENVOY_NOTIFICATIONS, and a
-# subscription to its inbox prefix; no service grant of this repository holds the purge.
+# subjects again. It calls $JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS,
+# $JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS and $JS.API.STREAM.PURGE.ENVOY_NOTIFICATIONS alone; no
+# service grant of this repository holds the purge.
 #
 # It prints the Job's creation and deletion, a PURGED line for each subject purged, and the verdict
 # alone on the last line: PURGED (exit 0) when the read-back finds no old-form subject, REFUSED
@@ -40,36 +40,22 @@ set -euo pipefail
 
 usage() {
   [ -z "${1:-}" ] || echo "legacy-subjects-purge.sh: $1" >&2
-  echo "usage: legacy-subjects-purge.sh --context <kube-context> --reading <record> --seed-class <SecretProviderClass> --seed-file <file> --service-account <name> [--inbox-prefix <prefix>]" >&2
+  echo "usage: legacy-subjects-purge.sh --context <kube-context> --reading <record>" >&2
   echo "  <record> is a second reading's --record of legacy-subjects-gate.sh, which read (a1), (a2) and (b) true" >&2
-  echo "  <SecretProviderClass> in envoy mounts the purging identity's nkey seed as the file <file>, read through ServiceAccount <name>" >&2
-  echo "  <prefix> is the inbox prefix the purging identity's grant subscribes" >&2
   exit 2
 }
 
 context=""
 reading=""
-seed_class=""
-seed_file=""
-service_account=""
-inbox_prefix=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --context) [ "$#" -ge 2 ] || usage "--context takes a value"; context=$2; shift 2 ;;
     --reading) [ "$#" -ge 2 ] || usage "--reading takes a value"; reading=$2; shift 2 ;;
-    --seed-class) [ "$#" -ge 2 ] || usage "--seed-class takes a value"; seed_class=$2; shift 2 ;;
-    --seed-file) [ "$#" -ge 2 ] || usage "--seed-file takes a value"; seed_file=$2; shift 2 ;;
-    --service-account) [ "$#" -ge 2 ] || usage "--service-account takes a value"; service_account=$2; shift 2 ;;
-    --inbox-prefix) [ "$#" -ge 2 ] || usage "--inbox-prefix takes a value"; inbox_prefix=$2; shift 2 ;;
     *) usage "unknown argument $1" ;;
   esac
 done
 [ -n "$context" ] || usage "--context <kube-context> is required"
 [ -n "$reading" ] || usage "--reading <record> is required: the driver purges only on a reading that read (a1), (a2) and (b) true"
-[[ $seed_class =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]] || usage "--seed-class <SecretProviderClass> is required, as a Kubernetes object name"
-[[ $seed_file =~ ^[A-Za-z0-9_-][A-Za-z0-9._-]*$ ]] || usage "--seed-file <file> is required, as one file name"
-[[ $service_account =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]] || usage "--service-account <name> is required, as a Kubernetes object name"
-[ -z "$inbox_prefix" ] || [[ $inbox_prefix =~ ^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$ ]] || usage "--inbox-prefix $inbox_prefix is not a NATS subject of literal tokens"
 for tool in kubectl jq base64 od; do
   command -v "$tool" >/dev/null 2>&1 || usage "$tool is required and is not on PATH"
 done
@@ -77,8 +63,15 @@ done
 record=$(jq -c . "$reading" 2>/dev/null) || usage "--reading $reading is no JSON"
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-readonly here context reading seed_class seed_file service_account inbox_prefix record
+readonly here context reading record
 readonly job_script="$here/lib/legacy-subjects-purge-nats.sh"
+# The legacy-cutover user's Job runs as this ServiceAccount, mounts its seed through this
+# SecretProviderClass as this file, and takes this inbox prefix, as legacy-subjects-gate.sh's census
+# Job does.
+readonly cutover_account=legacy-cutover
+readonly cutover_seed_class=legacy-cutover-nats-seed
+readonly cutover_seed_file=nats-seed
+readonly cutover_inbox=_INBOX_legacy_cutover
 # The nats-box image legacy-subjects-gate.sh's Job runs, the one the deployment pins for its own
 # NATS Jobs.
 readonly nats_box="mirror.gcr.io/natsio/nats-box:0.19.0@sha256:00f10dd4156f28ece84bb3a52cf356ef220ebaa0494310caa90dec184d9e2b89"
@@ -166,8 +159,8 @@ owner=${owner%-}
 owner=${owner:-unknown}
 jq -n --arg name "$name" --arg namespace "$job_namespace" --arg owner "$owner" --arg image "$nats_box" \
   --rawfile script "$job_script" --rawfile forms "$here/lib/legacy-subjects-gate-forms.jq" \
-  --argjson deadline "$job_deadline" --arg url "$nats_url" --arg sa "$service_account" \
-  --arg class "$seed_class" --arg file "$seed_file" --arg inbox "$inbox_prefix" \
+  --argjson deadline "$job_deadline" --arg url "$nats_url" --arg sa "$cutover_account" \
+  --arg class "$cutover_seed_class" --arg file "$cutover_seed_file" --arg inbox "$cutover_inbox" \
   --arg stream_id "$stream_id" --arg last "$last_old_seq" '
   {"app.kubernetes.io/name": "legacy-subjects-purge", "created-by": "legacy-subjects-purge", owner: $owner} as $labels
   | {apiVersion: "batch/v1", kind: "Job",
@@ -178,15 +171,15 @@ jq -n --arg name "$name" --arg namespace "$job_namespace" --arg owner "$owner" -
          securityContext: {runAsNonRoot: true, runAsUser: 65534, runAsGroup: 65534, fsGroup: 65534,
            seccompProfile: {type: "RuntimeDefault"}},
          containers: [{name: "purge", image: $image, command: ["sh", "-c", $script],
-           env: ([{name: "NATS_URL", value: $url}, {name: "NATS_NKEY", value: "/var/run/secrets/purge/\($file)"},
-                  {name: "WORK_DIR", value: "/work"}, {name: "FORMS_JQ", value: $forms},
-                  {name: "STREAM_ID", value: $stream_id}, {name: "LAST_OLD_SEQ", value: $last}]
-                 + (if $inbox == "" then [] else [{name: "NATS_INBOX_PREFIX", value: $inbox}] end)),
-           volumeMounts: [{name: "purge-seed", mountPath: "/var/run/secrets/purge", readOnly: true},
+           env: [{name: "NATS_URL", value: $url}, {name: "NATS_NKEY", value: "/var/run/secrets/legacy-cutover/\($file)"},
+                 {name: "WORK_DIR", value: "/work"}, {name: "FORMS_JQ", value: $forms},
+                 {name: "STREAM_ID", value: $stream_id}, {name: "LAST_OLD_SEQ", value: $last},
+                 {name: "NATS_INBOX_PREFIX", value: $inbox}],
+           volumeMounts: [{name: "legacy-cutover-seed", mountPath: "/var/run/secrets/legacy-cutover", readOnly: true},
              {name: "legacy-subjects-purge-work", mountPath: "/work"}],
            resources: {requests: {cpu: "250m", memory: "256Mi"}, limits: {cpu: "250m", memory: "256Mi"}},
            securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}}}],
-         volumes: [{name: "purge-seed", csi: {driver: "secrets-store-gke.csi.k8s.io", readOnly: true, volumeAttributes: {secretProviderClass: $class}}},
+         volumes: [{name: "legacy-cutover-seed", csi: {driver: "secrets-store-gke.csi.k8s.io", readOnly: true, volumeAttributes: {secretProviderClass: $class}}},
            {name: "legacy-subjects-purge-work", emptyDir: {medium: "Memory", sizeLimit: "16Mi"}}]}}}}' >"$work/job.json"
 if ! kc -n "$job_namespace" create -f "$work/job.json" -o name >"$work/create.out" 2>"$work/create.err"; then
   echo "UNKNOWN: the Job could not be created: $(first_line "$work/create.err")"

@@ -16,8 +16,9 @@
 # either, a consumer list that cannot be read
 # at all, a listener whose counter cannot be read, a listener whose restart only its start-time
 # gauge shows, a listener offline at the reading, a list that moved between its pages, a stream that
-# is not the first reading's or does not hold the whole window, and an answer that is no JSON
-# object. A first reading on a bus that still holds old-form messages, interests and consumer
+# is not the first reading's, a second reading sooner than a counter line may be old, and an answer
+# that is no JSON object. A first reading on a bus that still holds old-form messages, interests and
+# consumer
 # filters is a first reading that names each. A listener that dials the bus by another address
 # than the listener Deployment's is skipped, and its durable unread, until --bus-alias names that
 # address, and is then held to its restarts as any listener is, while a listener on another bus
@@ -84,17 +85,21 @@ case "$*" in
   "get pods --all-namespaces -o json")
     [ ! -e "$FAKE/pods.fail" ] || { echo "error: You must be logged in to the server (Unauthorized)" >&2; exit 1; }
     cat "$FAKE/pods.json" ;;
-  "-n envoy logs job/"*)
-    # The census rows name the census connection by the name the gate drew for this reading,
-    # which the Job was created with (CENSUS_NAME); the fixture writes @CENSUS_NAME@ for it.
-    census=$(jq -r '[.spec.template.spec.containers[0].env[]? | select(.name == "CENSUS_NAME") | .value] | first // "no-census-name"' "$FAKE/created-job.json" 2>/dev/null)
+  "-n envoy logs job/legacy-subjects-census-"*)
+    # The census Job's log: the fixture's census rows, which name the census connection by the
+    # name the gate drew for this reading and created the Job with (CENSUS_NAME), written
+    # @CENSUS_NAME@ in the fixture, then its end line unless census.cut says the log was cut short.
+    census=$(jq -r '[.spec.template.spec.containers[0].env[]? | select(.name == "CENSUS_NAME") | .value] | first // "no-census-name"' "$FAKE/created-census-job.json" 2>/dev/null)
     while IFS= read -r row; do
-      if [ "$(cut -f1 <<<"$row")" = census ]; then
-        out=$(cut -f4 <<<"$row" | base64 -d | sed "s/@CENSUS_NAME@/${census:-no-census-name}/g" | base64 -w 0)
-        printf '%s\t%s\t%s\t%s\t%s\n' census "$(cut -f2 <<<"$row")" "$(cut -f3 <<<"$row")" "$out" "$(cut -f5 <<<"$row")"
-      else
-        printf '%s\n' "$row"
-      fi
+      [ "$(cut -f1 <<<"$row")" = census ] || continue
+      out=$(cut -f4 <<<"$row" | base64 -d | sed "s/@CENSUS_NAME@/${census:-no-census-name}/g" | base64 -w 0)
+      printf '%s\t%s\t%s\t%s\t%s\n' census "$(cut -f2 <<<"$row")" "$(cut -f3 <<<"$row")" "$out" "$(cut -f5 <<<"$row")"
+    done <"$FAKE/job.log"
+    [ -e "$FAKE/census.cut" ] || printf 'end\t-\t0\t\t\n' ;;
+  "-n envoy logs job/"*)
+    # The listener-identity Job's log: the fixture's rows but the census's.
+    while IFS= read -r row; do
+      [ "$(cut -f1 <<<"$row")" = census ] || printf '%s\n' "$row"
     done <"$FAKE/job.log" ;;
   "-n envoy get statefulset envoy-nats -o json")
     [ ! -e "$FAKE/statefulset.fail" ] || { echo 'Error from server (NotFound): statefulsets.apps "envoy-nats" not found' >&2; exit 1; }
@@ -111,7 +116,10 @@ case "$*" in
   "-n envoy get deployment envoy-listener -o json") cat "$FAKE/deployment.json" ;;
   "-n envoy create -f "*" -o name")
     [ ! -e "$FAKE/create.fail" ] || { echo "Error from server (Forbidden): jobs.batch is forbidden" >&2; exit 1; }
-    cp "$5" "$FAKE/created-job.json"
+    case "$(jq -r .metadata.name "$5")" in
+      legacy-subjects-census-*) cp "$5" "$FAKE/created-census-job.json" ;;
+      *) cp "$5" "$FAKE/created-job.json" ;;
+    esac
     # A file made at the record's path while the gate runs, the path named in record.racer.
     [ ! -e "$FAKE/record.racer" ] || echo '{"made":"while the gate ran"}' >"$(cat "$FAKE/record.racer")"
     echo "job.batch/$(jq -r .metadata.name "$5")" ;;
@@ -371,8 +379,7 @@ done
 echo '{"status":"behind","behind_by":12}' >"$base/compare/pi-envoy-v19.0.0"
 
 # facts are the four facts' flags a second reading takes.
-readonly facts=(--deployment example/deploy --new-form-commit "$new_form" --census-seed-class envoy-census-seed
-  --census-seed-file census.nk --hub-statefulset envoy-nats)
+readonly facts=(--deployment example/deploy --new-form-commit "$new_form" --hub-statefulset envoy-nats)
 
 # --- running a case -------------------------------------------------------------------------------
 # new_case NAME copies the clean fixture into a fresh case directory, sets FAKE to it and names the
@@ -662,8 +669,7 @@ expect_status 4
 expect_last "FIRST READING: $FAKE/record.json holds a first reading of every surface, with 0 FOUND line(s) naming old-form names still in use; read again at or after $(jq -r '(.finished_at + 180) | todate' "$FAKE/record.json") with --since $FAKE/record.json and the four facts' flags: that reading opens only if the stream then holds no old-form message (none after stream sequence 900), no listener's count moved, no interest record or consumer filter holds an old form, and the pins, the running clients and the consumers are all past the old form"
 [ "$(jq -c .facts "$FAKE/record.json")" = null ] || fail "a first reading recorded facts: $(jq -c .facts "$FAKE/record.json")"
 [ ! -e "$FAKE/release-gate.args" ] || fail "a first reading ran the release gate: $(cat "$FAKE/release-gate.args")"
-jq -e '[.spec.template.spec.containers[0].env[] | select(.name | startswith("CENSUS_"))] | length == 0' "$FAKE/created-job.json" >/dev/null ||
-  fail "a first reading's Job asks the census"
+[ ! -e "$FAKE/created-census-job.json" ] || fail "a first reading created a census Job: $(jq -c .metadata "$FAKE/created-census-job.json")"
 expect_no_line "GATE OPEN"
 expect_line "PASS: the stream holds 2 subject(s) under notifications.dispatch.issue.>, none in an old form"
 expect_line "PASS: no consumer of the stream's 7 filters a name only the old form matches (3 of them are Legion daemons')"
@@ -757,12 +763,26 @@ expect_line "PASS: (c) the stream: the stream holds no old-form message under"
   fail "the record's facts are $(jq -c .facts "$FAKE/record.json")"
 [ "$(cat "$FAKE/release-gate.args" 2>/dev/null)" = "--deployment example/deploy --clients $new_form" ] ||
   fail "the release gate was run as $(cat "$FAKE/release-gate.args" 2>/dev/null)"
-jq -e --arg nkey /var/run/secrets/census/census.nk '.spec.template.spec as $s
-  | ([$s.containers[0].env[] | select(.name == "CENSUS_NKEY") | .value] == [$nkey])
+# The census runs in a Job of its own, as the legacy-cutover user's ServiceAccount with that user's
+# seed alone mounted; the listener-identity Job takes nothing of the census.
+jq -e '.spec.template.spec as $s
+  | .metadata.labels["created-by"] == "legacy-subjects-gate-census" and .spec.ttlSecondsAfterFinished == 600 and .spec.backoffLimit == 0
+  and $s.serviceAccountName == "legacy-cutover" and $s.automountServiceAccountToken == false and $s.securityContext.runAsUser == 65534
+  and $s.containers[0].securityContext.capabilities.drop == ["ALL"]
+  and ([$s.containers[0].env[] | select(.name == "CENSUS_NKEY") | .value] == ["/var/run/secrets/legacy-cutover/nats-seed"])
+  and ([$s.containers[0].env[] | select(.name == "CENSUS_INBOX_PREFIX") | .value] == ["_INBOX_legacy_cutover"])
+  and ([$s.containers[0].env[] | select(.name == "NATS_URL") | .value] == ["nats://envoy-hub.envoy.svc.cluster.local:4222"])
   and ([$s.containers[0].env[] | select(.name == "CENSUS_NAME") | .value | test("^legacy-subjects-gate-census-[0-9a-f]{16}$")] == [true])
-  and ($s.containers[0].volumeMounts | any(. == {name: "census-seed", mountPath: "/var/run/secrets/census", readOnly: true}))
-  and ($s.volumes | any(. == {name: "census-seed", csi: {driver: "secrets-store-gke.csi.k8s.io", readOnly: true, volumeAttributes: {secretProviderClass: "envoy-census-seed"}}}))' \
-  "$FAKE/created-job.json" >/dev/null || fail "the second reading's Job does not ask the census as the seed envoy-census-seed mounts: $(jq -c .spec.template.spec "$FAKE/created-job.json")"
+  and ($s.containers[0].volumeMounts == [{name: "legacy-cutover-seed", mountPath: "/var/run/secrets/legacy-cutover", readOnly: true}, {name: "legacy-subjects-census-work", mountPath: "/work"}])
+  and ($s.volumes[0] == {name: "legacy-cutover-seed", csi: {driver: "secrets-store-gke.csi.k8s.io", readOnly: true, volumeAttributes: {secretProviderClass: "legacy-cutover-nats-seed"}}})' \
+  "$FAKE/created-census-job.json" >/dev/null || fail "the census Job does not ask as the legacy-cutover user alone: $(jq -c .spec.template "$FAKE/created-census-job.json" 2>/dev/null)"
+[ "$(jq -r '.spec.template.spec.containers[0].command[2]' "$FAKE/created-census-job.json")" = "$(cat "$here/lib/legacy-subjects-gate-census.sh")" ] ||
+  fail "the census Job does not run lib/legacy-subjects-gate-census.sh"
+jq -e '[.spec.template.spec.containers[0].env[] | select(.name | startswith("CENSUS_"))] | length == 0' "$FAKE/created-job.json" >/dev/null ||
+  fail "the listener-identity Job takes something of the census"
+for job in "$FAKE/created-job.json" "$FAKE/created-census-job.json"; do
+  expect_line "JOB: deleted envoy/$(jq -r .metadata.name "$job"), and envoy holds no Job or pod of that name"
+done
 done_case
 
 # The time a first reading names must open a clean fleet however old each listener's counter line
@@ -1252,7 +1272,8 @@ first_reading_secs 200 reading
 run_gate --context example-cluster --record "$FAKE/record.json" --listener envoy-hub=https://envoy-hub.example-tailnet.ts.net:9020 --since "$FAKE/earlier.json"
 expect_status 3
 expect_line "UNKNOWN: (a1) the pins: the census of pinned builds was not read: name --deployment <owner/repo> and --new-form-commit <commit>"
-expect_line "UNKNOWN: (a2) the running clients: no census of the hub's connections was read: name --census-seed-class <SecretProviderClass> and --census-seed-file <file> and --new-form-commit <commit>"
+expect_line "UNKNOWN: (a2) the running clients: no census of the hub's connections was read: name --new-form-commit <commit>"
+[ ! -e "$FAKE/created-census-job.json" ] || fail "a reading with no --new-form-commit created a census Job"
 [ "$(jq -c '.facts | {a1, a2, b, c}' "$FAKE/record.json")" = '{"a1":"unknown","a2":"unknown","b":"true","c":"true"}' ] ||
   fail "the record's facts are $(jq -c .facts "$FAKE/record.json")"
 done_case
@@ -1330,6 +1351,14 @@ expect_status 3
 expect_line "UNKNOWN: (a2) the running clients: the hub servers that must each answer the census could not be read: the StatefulSet envoy/envoy-nats could not be read: Error from server (NotFound)"
 done_case
 
+new_case "(a2) a census Job whose log ends before its last read is UNKNOWN"
+first_reading_secs 200 reading
+touch "$FAKE/census.cut"
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: (a2) the running clients: the census of the hub's connections, as the legacy-cutover user: the census Job's log ends before its last read, so what it read is not whole"
+done_case
+
 # The bus a second reading finds before the purge: every producer has moved and the old-form
 # messages are still stored. ACME-13's old-form subject's last message is stream sequence 812.
 # old_stream_rows replaces the case's issue subjects with one that still holds it.
@@ -1394,8 +1423,7 @@ expect_line "PASS: (a1) the pins:"
 expect_line "GATE SHUT: (a2) the running clients: 1 connection(s) run @sjawhar/pi-envoy@19.0.0"
 : >"$FAKE/calls"
 set +e
-output=$(PATH="$root/bin:$PATH" bash "$here/legacy-subjects-purge.sh" --context example-cluster --reading "$FAKE/record.json" \
-  --seed-class envoy-purge-seed --seed-file purge.nk --service-account envoy-purge 2>&1)
+output=$(PATH="$root/bin:$PATH" bash "$here/legacy-subjects-purge.sh" --context example-cluster --reading "$FAKE/record.json" 2>&1)
 status=$?
 set -e
 expect_status 1

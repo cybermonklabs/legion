@@ -3,7 +3,6 @@
 #   [--since <earlier record>] [--listener <machine>=<url>]... [--insecure]
 #   [--bus-alias <nats-urls>]... [--token-file <path>] [--inbox-prefix <prefix>]
 #   [--deployment <owner/repo> --new-form-commit <commit> [--dotfiles <dir>]]
-#   [--census-seed-class <SecretProviderClass> --census-seed-file <file> [--census-inbox-prefix <prefix>]]
 #   [--hub-statefulset <name>] [--hub-server <name>]...
 #
 # Says whether any reader or writer of the bus still uses the old form of a name the rename moved
@@ -26,24 +25,38 @@
 #        is true when that gate opens having read at least one pin; its GATE SHUT lines make it
 #        false; anything else, a census that read no pin among it, is unknown.
 #   (a2) The running clients: every connection of every hub server, read by the census of
-#        connections, $SYS.REQ.SERVER.PING.CONNZ, which the Job requests page by page as the
-#        identity whose nkey seed --census-seed-class mounts (file --census-seed-file); each server
-#        answers for the account that identity sits in, the clients' own. Each server --hub-
-#        statefulset (its pods, <name>-<ordinal>, as the servers name themselves) and --hub-server
-#        name must answer every page, and no other may. Each connection but the census's own must
-#        end its name with its build (lib/legacy-subjects-gate-forms.jq, build_token):
-#        legion@<commit>, judged by GitHub's compare of --new-form-commit with that commit, or
-#        @sjawhar/<plugin>@<version>, judged by the commit of its release tag (pi-envoy-v<version>,
-#        claude-envoy-v<version> for claude-envoy and codex-envoy), as daemon-release-gate.sh
-#        judges a pin. A build behind or beside the commit makes it false; a connection that names
-#        no build, a server that does not answer, a census that moved between its pages and one
-#        that enumerates no connection make it unknown.
+#        connections, $SYS.REQ.SERVER.PING.CONNZ, which a Job of its own (lib/legacy-subjects-gate-
+#        census.sh) requests page by page as the legacy-cutover user (below); each server answers
+#        for the account that user sits in, the clients' own. Each server --hub-statefulset (its
+#        pods, <name>-<ordinal>, as the servers name themselves) and --hub-server name must answer
+#        every page, and no other may. Each connection but the census's own must end its name with
+#        its build (lib/legacy-subjects-gate-forms.jq, build_token): legion@<commit>, judged by
+#        GitHub's compare of --new-form-commit with that commit, or @sjawhar/<plugin>@<version>,
+#        judged by the commit of its release tag (pi-envoy-v<version>, claude-envoy-v<version> for
+#        claude-envoy and codex-envoy), as daemon-release-gate.sh judges a pin. A build behind or
+#        beside the commit makes it false; a connection that names no build, a server that does not
+#        answer, a census that moved between its pages and one that enumerates no connection make
+#        it unknown.
 #   (b)  The consumers: each consumer of the stream has acknowledged (its ack floor's stream
-#        sequence) the newest message of the old-form subjects its filters match; a stream that
-#        holds no old-form message hands none. A consumer list that lists none is unknown.
+#        sequence) the newest message of the old-form subjects its filters match: a floor equal to
+#        that message's sequence holds, since the floor's own message is acknowledged, and a floor
+#        below it shuts. A stream that holds no old-form message hands none. A consumer list that
+#        lists none is unknown.
 #   (c)  The stream: it holds no old-form message. Once (a1), (a2) and (b) read true, the committed
 #        driver legacy-subjects-purge.sh, given that reading, purges each old-form subject and reads
 #        back that none is left, in place of waiting out the stream's retention.
+#
+# The legacy-cutover user: the one NATS user that reads the census and purges, a temporary static
+# user of the account the hub's clients connect in, the global account $G on a hub that renders no
+# accounts block (no private project), which the deployment adds for the cutover and removes
+# before any project is private. It publishes exactly $SYS.REQ.SERVER.PING.CONNZ,
+# $JS.API.STREAM.PURGE.ENVOY_NOTIFICATIONS, $JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS,
+# $JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS and $JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS, and
+# subscribes its own inbox prefix alone, _INBOX_legacy_cutover.>. Its Jobs, this gate's census and
+# legacy-subjects-purge.sh's purge, run in namespace envoy as the ServiceAccount legacy-cutover and
+# mount its nkey seed through the SecretProviderClass legacy-cutover-nats-seed, as the file
+# nats-seed; the deployment grants that ServiceAccount alone the read of that seed, which no
+# developer box reads, and no other workload names the class.
 #
 # What it reads, all of it read-only:
 #
@@ -141,14 +154,17 @@
 # delete is UNKNOWN and named with the command that deletes it, and one it could not create is
 # never deleted. The Job's log holds what the gate judges and no more: of an interest record, its
 # session id and its topics; of a stored message, its subject, stream sequence and time; of a seed
-# nsc could not read, a fixed line; of a connection the census lists, its server, id, name,
-# account, client library and NATS user. The cluster keeps a container's log in its logging
-# backend as it keeps the listener's own, which logs every topic it delivers, so the Job adds no
-# kind of text the namespace does not already log. At a second reading with --census-seed-class,
-# the Job also mounts that SecretProviderClass's volume, read-only, at /var/run/secrets/census
-# (its CSI driver reads the secret as the Job's ServiceAccount, the listener's), and requests the
-# census as the nkey user of the seed file --census-seed-file names there, under a connection name
-# of its own that this reading draws at random and leaves out of the census.
+# nsc could not read, a fixed line. The cluster keeps a container's log in its logging backend as
+# it keeps the listener's own, which logs every topic it delivers, so the Job adds no kind of text
+# the namespace does not already log.
+#
+# The census Job, at a second reading given --new-form-commit: one more Job of the same shape and
+# limits, labelled created-by legacy-subjects-gate-census, that runs lib/legacy-subjects-gate-
+# census.sh as the ServiceAccount legacy-cutover with the legacy-cutover user's seed mounted (above)
+# and nothing of the listener's, under a connection name this reading draws at random and leaves
+# out of the census. Its log holds, of each connection the census lists, its server, id, name,
+# account, client library and NATS user. It is created, read, deleted and read back as the
+# listener-identity Job is.
 #
 # It prints the identity the NATS reads ran as (`IDENTITY`), one line per surface, `READ`, `SKIP` (a
 # listener on another bus, with its machine), `PASS`, `FOUND` (an old-form name a first reading
@@ -169,12 +185,13 @@
 # the logs of and delete Jobs and pods in envoy: a developer box's account holds list through its
 # container.viewer role, and the rest through its edit role in envoy and its pods/log read in
 # dispatch), jq, curl, base64 and date; at a second reading, gh too (signed in with read access to
-# cybermonklabs/legion, for each build a connection names), and what daemon-release-gate.sh needs.
+# cybermonklabs/legion, for each build a connection names), read of the hub StatefulSet in envoy,
+# and what daemon-release-gate.sh needs.
 set -euo pipefail
 
 usage() {
   [ -z "${1:-}" ] || echo "legacy-subjects-gate.sh: $1" >&2
-  echo "usage: legacy-subjects-gate.sh --context <kube-context> --record <file> [--since <earlier record>] [--listener <machine>=<url>]... [--insecure] [--bus-alias <nats-urls>]... [--token-file <path>] [--inbox-prefix <prefix>] [--deployment <owner/repo> --new-form-commit <commit> [--dotfiles <dir>]] [--census-seed-class <name> --census-seed-file <file> [--census-inbox-prefix <prefix>]] [--hub-statefulset <name>] [--hub-server <name>]..." >&2
+  echo "usage: legacy-subjects-gate.sh --context <kube-context> --record <file> [--since <earlier record>] [--listener <machine>=<url>]... [--insecure] [--bus-alias <nats-urls>]... [--token-file <path>] [--inbox-prefix <prefix>] [--deployment <owner/repo> --new-form-commit <commit> [--dotfiles <dir>]] [--hub-statefulset <name>] [--hub-server <name>]..." >&2
   echo "  <kube-context> is the kubectl context of the cluster that runs the listeners and the hub bridge" >&2
   echo "  <file> is where this reading is written; it must not exist" >&2
   echo "  <earlier record> is the first reading's --record, taken at least 180 s before" >&2
@@ -186,7 +203,6 @@ usage() {
   echo "  at a second reading, for the four facts:" >&2
   echo "  <owner/repo> is the deployment repository daemon-release-gate.sh --clients reads the pins of (a1)" >&2
   echo "  <commit> is the full commit from which every client writes only new-form names (a1, a2)" >&2
-  echo "  --census-seed-class names the SecretProviderClass in envoy that mounts the census identity's nkey seed, and --census-seed-file its file there (a2)" >&2
   echo "  --hub-statefulset names the hub's StatefulSet in envoy, and --hub-server a hub server outside it, each of which must answer the census (a2)" >&2
   exit 2
 }
@@ -200,9 +216,6 @@ inbox_prefix=""
 deployment=""
 new_form_commit=""
 dotfiles=""
-census_class=""
-census_file=""
-census_inbox=""
 hub_statefulset=""
 outside=()
 aliases=()
@@ -220,9 +233,6 @@ while [ "$#" -gt 0 ]; do
     --deployment) [ "$#" -ge 2 ] || usage "--deployment takes a value"; deployment=$2; shift 2 ;;
     --new-form-commit) [ "$#" -ge 2 ] || usage "--new-form-commit takes a value"; new_form_commit=$2; shift 2 ;;
     --dotfiles) [ "$#" -ge 2 ] || usage "--dotfiles takes a value"; dotfiles=$2; shift 2 ;;
-    --census-seed-class) [ "$#" -ge 2 ] || usage "--census-seed-class takes a value"; census_class=$2; shift 2 ;;
-    --census-seed-file) [ "$#" -ge 2 ] || usage "--census-seed-file takes a value"; census_file=$2; shift 2 ;;
-    --census-inbox-prefix) [ "$#" -ge 2 ] || usage "--census-inbox-prefix takes a value"; census_inbox=$2; shift 2 ;;
     --hub-statefulset) [ "$#" -ge 2 ] || usage "--hub-statefulset takes a value"; hub_statefulset=$2; shift 2 ;;
     --hub-server) [ "$#" -ge 2 ] || usage "--hub-server takes a value"; hub_servers+=("$2"); shift 2 ;;
     *) usage "unknown argument $1" ;;
@@ -247,17 +257,8 @@ case "$token_file/" in
   */../* | */./*) usage "--token-file $token_file holds a . or .. segment; name the token's own path" ;;
 esac
 [ -z "$inbox_prefix" ] || [[ $inbox_prefix =~ ^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$ ]] || usage "--inbox-prefix $inbox_prefix is not a NATS subject of literal tokens"
-[ -z "$census_inbox" ] || [[ $census_inbox =~ ^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$ ]] || usage "--census-inbox-prefix $census_inbox is not a NATS subject of literal tokens"
 [ -z "$deployment" ] || [[ $deployment =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || usage "--deployment $deployment is not <owner>/<repo>"
 [ -z "$new_form_commit" ] || [[ $new_form_commit =~ ^[0-9a-f]{40}$ ]] || usage "--new-form-commit $new_form_commit is not a full commit id (40 lowercase hex digits): GitHub's compare resolves any ref, so a branch would compare as wherever it points now"
-[ -z "$census_class" ] || [[ $census_class =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]] || usage "--census-seed-class $census_class is not a Kubernetes object name"
-case "$census_file" in
-  '' | [A-Za-z0-9_-]*) [[ $census_file =~ ^[A-Za-z0-9._-]*$ ]] || usage "--census-seed-file $census_file is not one file name" ;;
-  *) usage "--census-seed-file $census_file is not one file name" ;;
-esac
-if { [ -n "$census_class" ] && [ -z "$census_file" ]; } || { [ -z "$census_class" ] && [ -n "$census_file" ]; }; then
-  usage "--census-seed-class and --census-seed-file name the census identity's seed together"
-fi
 [ -z "$hub_statefulset" ] || [[ $hub_statefulset =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || usage "--hub-statefulset $hub_statefulset is not a Kubernetes object name"
 for server in ${hub_servers[@]+"${hub_servers[@]}"}; do
   [[ $server =~ ^[A-Za-z0-9._-]+$ ]] || usage "--hub-server $server is not a NATS server name"
@@ -268,9 +269,17 @@ done
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 readonly here context record since insecure token_file inbox_prefix deployment new_form_commit dotfiles
-readonly census_class census_file census_inbox hub_statefulset
+readonly hub_statefulset
 readonly judge="$here/lib/legacy-subjects-gate-judge.jq"
 readonly job_script="$here/lib/legacy-subjects-gate-nats.sh"
+readonly census_script="$here/lib/legacy-subjects-gate-census.sh"
+# The legacy-cutover user's Jobs run as this ServiceAccount, mount its seed through this
+# SecretProviderClass as this file, and take this inbox prefix, the only one its grant subscribes.
+# The deployment declares all four for that user alone.
+readonly cutover_account=legacy-cutover
+readonly cutover_seed_class=legacy-cutover-nats-seed
+readonly cutover_seed_file=nats-seed
+readonly cutover_inbox=_INBOX_legacy_cutover
 # (a1)'s census of pinned builds: the release gate beside this script, in its --clients mode.
 readonly release_gate="$here/daemon-release-gate.sh"
 # The nats-box image the deployment pins for its own NATS Jobs (envoy-cluster/Pulumi.prod.yaml
@@ -300,9 +309,10 @@ fi
 
 work=$(mktemp -d)
 readonly work
-job=""
-job_deleted=0
-job_delete_tried=0
+# Each Job the gate made, and what became of it: tried while its deletion runs, deleted once
+# envoy is read back holding neither it nor a pod of it, or kept when it is not shown deleted.
+jobs_made=()
+declare -A job_state=()
 
 kc() {
   kubectl --context "$context" --request-timeout=60s "$@"
@@ -313,31 +323,81 @@ first_line() {
   awk 'NF {print; exit}' "$1"
 }
 
-# delete_job deletes the gate's Job and its pod, once, and reads back that envoy holds neither; it
-# sets job_deleted to 1 when it does, and prints the line saying which.
+# delete_job NAME deletes the gate's Job NAME and its pod, once, and reads back that envoy holds
+# neither, and prints the line saying which.
 delete_job() {
-  [ -n "$job" ] || return 0
-  local left_job="" left_pods=""
-  [ "$job_delete_tried" = 0 ] || return 0
-  job_delete_tried=1
-  kc -n "$job_namespace" delete job "$job" --cascade=foreground --wait=true --timeout=120s >/dev/null 2>"$work/delete.err" || true
-  if left_job=$(kc -n "$job_namespace" get job "$job" --ignore-not-found -o name 2>"$work/get.err") &&
-    left_pods=$(kc -n "$job_namespace" get pods -l "job-name=$job" -o name 2>>"$work/get.err") &&
+  local name=$1 left_job="" left_pods=""
+  [ "${job_state[$name]:-}" = made ] || return 0
+  job_state[$name]=tried
+  kc -n "$job_namespace" delete job "$name" --cascade=foreground --wait=true --timeout=120s >/dev/null 2>"$work/delete.err" || true
+  if left_job=$(kc -n "$job_namespace" get job "$name" --ignore-not-found -o name 2>"$work/get.err") &&
+    left_pods=$(kc -n "$job_namespace" get pods -l "job-name=$name" -o name 2>>"$work/get.err") &&
     [ -z "$left_job$left_pods" ]; then
-    job_deleted=1
-    echo "JOB: deleted $job_namespace/$job, and $job_namespace holds no Job or pod of that name"
+    job_state[$name]=deleted
+    echo "JOB: deleted $job_namespace/$name, and $job_namespace holds no Job or pod of that name"
   else
-    echo "JOB: $job_namespace/$job was not shown deleted${left_job:+ (still listed: $left_job)}$(first_line "$work/delete.err" | sed 's/^/ (/; s/$/)/')"
+    job_state[$name]=kept
+    echo "JOB: $job_namespace/$name was not shown deleted${left_job:+ (still listed: $left_job)}$(first_line "$work/delete.err" | sed 's/^/ (/; s/$/)/')"
   fi
 }
 
-# cleanup deletes the Job when the gate stops before its own deletion ran (an error, a signal).
+# run_job NAME SPEC LOG LINES creates the Job the file SPEC describes, named NAME, waits for it to
+# end, keeps its log in LOG and its lines, read as the Job scripts print them, in LINES, and
+# deletes it; it sets run_error to why the Job's reads are not whole, or "". A Job it could not
+# create is never reported deleted.
+run_job() {
+  local name=$1 spec=$2 log=$3 lines=$4 deadline outcome=""
+  run_error=""
+  : >"$lines"
+  if ! kc -n "$job_namespace" create -f "$spec" -o name >"$work/create.out" 2>"$work/create.err"; then
+    run_error="the Job could not be created: $(first_line "$work/create.err")"
+    return 0
+  fi
+  jobs_made+=("$name")
+  job_state[$name]=made
+  echo "JOB: created $job_namespace/$name at $(date -u +%Y-%m-%dT%H:%M:%SZ), owner $owner"
+  deadline=$((SECONDS + job_deadline + 60))
+  while :; do
+    if kc -n "$job_namespace" get job "$name" -o json >"$work/job-status.json" 2>"$work/job-status.err"; then
+      outcome=$(jq -r 'if (.status.succeeded // 0) >= 1 then "succeeded" elif (.status.failed // 0) >= 1 then "failed" else "" end' "$work/job-status.json")
+    fi
+    [ -z "$outcome" ] || break
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      outcome="not finished after $((job_deadline + 60)) s"
+      break
+    fi
+    sleep 2
+  done
+  if ! kc -n "$job_namespace" logs "job/$name" >"$log" 2>"$work/logs.err"; then
+    run_error="the Job ($outcome) left no log that could be read: $(first_line "$work/logs.err")"
+  elif ! jq -R -c 'split("\t") | select(length == 5)
+      | {leg: .[0], arg: .[1], rc: (.[2] | tonumber? // -1), out: (.[3] | @base64d), err: (.[4] | @base64d)}' \
+    "$log" >"$lines" 2>"$work/parse.err"; then
+    run_error="the Job's log could not be read: $(first_line "$work/parse.err")"
+  elif [ "$outcome" != succeeded ]; then
+    run_error="the Job $outcome; its log ends: $(tail -n 1 "$log" | cut -c1-200)"
+  fi
+  delete_job "$name"
+}
+
+# cleanup deletes each Job when the gate stops before its own deletion ran (an error, a signal).
 # shellcheck disable=SC2329 # cleanup runs through the EXIT trap below
 cleanup() {
-  delete_job >&2 || true
+  local name
+  for name in ${jobs_made[@]+"${jobs_made[@]}"}; do
+    delete_job "$name" >&2 || true
+  done
   rm -rf "$work"
 }
 trap cleanup EXIT
+
+# Whose reading this is, for the Jobs' owner label: a uid with no passwd entry (a container run as
+# an arbitrary uid) has no name, and is `unknown` rather than the end of the reading.
+owner=$(id -un 2>/dev/null || echo unknown)
+owner=$(printf '%s' "$owner" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-63)
+owner=${owner%-}
+owner=${owner:-unknown}
+readonly owner
 
 started_at=$(date -u +%s)
 
@@ -471,7 +531,6 @@ if [ -n "$since" ]; then
     fi
   fi
   census_missing=()
-  [ -n "$census_class" ] || census_missing+=("--census-seed-class <SecretProviderClass> and --census-seed-file <file>")
   [ -n "$new_form_commit" ] || census_missing+=("--new-form-commit <commit>")
   [ "${#census_missing[@]}" != 0 ] || census_name="legacy-subjects-gate-census-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
   hub_error=""
@@ -526,21 +585,13 @@ else
     job_error="the listener Deployment $job_namespace/$listener_deployment lacks $missing"
   else
     name="legacy-subjects-gate-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
-    # Whose reading this is, for the Job's owner label: a uid with no passwd entry (a container run
-    # as an arbitrary uid) has no name, and is `unknown` rather than the end of the reading.
-    owner=$(id -un 2>/dev/null || echo unknown)
-    owner=$(printf '%s' "$owner" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-63)
-    owner=${owner%-}
-    owner=${owner:-unknown}
     # The pod mounts no Kubernetes API token: the NATS credential is the seed file's secret volume
     # (its CSI driver takes the pod's token from the kubelet, tokenRequests) or a projected volume,
     # and neither path needs the API.
     jq -n --arg name "$name" --arg namespace "$job_namespace" --arg owner "$owner" \
       --arg image "$nats_box" --rawfile script "$job_script" --argjson deadline "$job_deadline" \
       --rawfile forms "$here/lib/legacy-subjects-gate-forms.jq" \
-      --arg inbox "$inbox_prefix" --slurpfile identity "$work/identity.json" \
-      --arg census_class "$census_class" --arg census_file "$census_file" --arg census_inbox "$census_inbox" \
-      --arg census_name "$census_name" '
+      --arg inbox "$inbox_prefix" --slurpfile identity "$work/identity.json" '
       $identity[0] as $id
       | {"app.kubernetes.io/name": "legacy-subjects-gate", "created-by": "legacy-subjects-gate", owner: $owner} as $labels
       | "legacy-subjects-gate-work" as $scratch
@@ -555,51 +606,61 @@ else
                env: ([{name: "NATS_URL", value: $id.urls},
                       (if $id.credential == "token" then {name: "NATS_TOKEN_FILE", value: $id.file} else {name: "NATS_NKEY", value: $id.file} end),
                       {name: "WORK_DIR", value: "/work"}, {name: "FORMS_JQ", value: $forms}]
-                     + (if $inbox == "" then [] else [{name: "NATS_INBOX_PREFIX", value: $inbox}] end)
-                     + (if $census_name == "" then [] else
-                         [{name: "CENSUS_NKEY", value: "/var/run/secrets/census/\($census_file)"}, {name: "CENSUS_NAME", value: $census_name}]
-                         + (if $census_inbox == "" then [] else [{name: "CENSUS_INBOX_PREFIX", value: $census_inbox}] end) end)),
-               volumeMounts: ([$id.mount + {readOnly: true}, {name: $scratch, mountPath: "/work"}]
-                 + (if $census_name == "" then [] else [{name: "census-seed", mountPath: "/var/run/secrets/census", readOnly: true}] end)),
+                     + (if $inbox == "" then [] else [{name: "NATS_INBOX_PREFIX", value: $inbox}] end)),
+               volumeMounts: [$id.mount + {readOnly: true}, {name: $scratch, mountPath: "/work"}],
                resources: {requests: {cpu: "250m", memory: "512Mi"}, limits: {cpu: "250m", memory: "512Mi"}},
                securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}}}],
-             volumes: ([$id.volume, {name: $scratch, emptyDir: {medium: "Memory", sizeLimit: "16Mi"}}]
-               + (if $census_name == "" then [] else
-                   [{name: "census-seed", csi: {driver: "secrets-store-gke.csi.k8s.io", readOnly: true, volumeAttributes: {secretProviderClass: $census_class}}}] end))}}}}' >"$work/job.json"
-    if ! kc -n "$job_namespace" create -f "$work/job.json" -o name >"$work/create.out" 2>"$work/create.err"; then
-      job_error="the Job could not be created: $(first_line "$work/create.err")"
+             volumes: [$id.volume, {name: $scratch, emptyDir: {medium: "Memory", sizeLimit: "16Mi"}}]}}}}' >"$work/job.json"
+    run_job "$name" "$work/job.json" "$work/job.log" "$work/job-lines.jsonl"
+    if [ -n "$run_error" ]; then
+      job_error=$run_error
     else
-      # The Job is the gate's to delete from here on, and not before: a Job never made is never
-      # reported deleted.
-      job=$name
-      echo "JOB: created $job_namespace/$job at $(date -u +%Y-%m-%dT%H:%M:%SZ), owner $owner"
-      deadline=$((SECONDS + job_deadline + 60))
-      outcome=""
-      while :; do
-        if kc -n "$job_namespace" get job "$job" -o json >"$work/job-status.json" 2>"$work/job-status.err"; then
-          outcome=$(jq -r 'if (.status.succeeded // 0) >= 1 then "succeeded" elif (.status.failed // 0) >= 1 then "failed" else "" end' "$work/job-status.json")
-        fi
-        [ -z "$outcome" ] || break
-        if [ "$SECONDS" -ge "$deadline" ]; then
-          outcome="not finished after $((job_deadline + 60)) s"
-          break
-        fi
-        sleep 2
-      done
-      if ! kc -n "$job_namespace" logs "job/$job" >"$work/job.log" 2>"$work/logs.err"; then
-        job_error="the Job ($outcome) left no log that could be read: $(first_line "$work/logs.err")"
-      elif ! jq -R -c 'split("\t") | select(length == 5)
-          | {leg: .[0], arg: .[1], rc: (.[2] | tonumber? // -1), out: (.[3] | @base64d), err: (.[4] | @base64d)}' \
-        "$work/job.log" >"$work/job-lines.jsonl" 2>"$work/parse.err"; then
-        job_error="the Job's log could not be read: $(first_line "$work/parse.err")"
-      elif [ "$outcome" = succeeded ]; then
-        job_ok=1
-      else
-        job_error="the Job $outcome; its log ends: $(tail -n 1 "$work/job.log" | cut -c1-200)"
-      fi
-      delete_job
+      job_ok=1
     fi
   fi
+fi
+
+# --- (a2)'s census of connections, from a Job of its own as the legacy-cutover user --------------
+# It dials the listener Deployment's NATS_URLS, the bus this reading is about, and mounts nothing
+# of the listener's.
+if [ -n "$census_name" ]; then
+  census_urls=$(jq -r '.urls // ""' "$work/identity.json")
+  census_error=""
+  : >"$work/census-lines.jsonl"
+  if [ -z "$census_urls" ]; then
+    census_error="the listener Deployment $job_namespace/$listener_deployment names no NATS_URLS for the census to dial${deployment_error:+: $deployment_error}"
+  else
+    name="legacy-subjects-census-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+    jq -n --arg name "$name" --arg namespace "$job_namespace" --arg owner "$owner" \
+      --arg image "$nats_box" --rawfile script "$census_script" --argjson deadline "$job_deadline" \
+      --arg url "$census_urls" --arg census_name "$census_name" --arg account "$cutover_account" \
+      --arg class "$cutover_seed_class" --arg file "$cutover_seed_file" --arg inbox "$cutover_inbox" '
+      {"app.kubernetes.io/name": "legacy-subjects-gate", "created-by": "legacy-subjects-gate-census", owner: $owner} as $labels
+      | {apiVersion: "batch/v1", kind: "Job",
+         metadata: {name: $name, namespace: $namespace, labels: $labels},
+         spec: {backoffLimit: 0, activeDeadlineSeconds: $deadline, ttlSecondsAfterFinished: 600,
+           template: {metadata: {labels: $labels}, spec: {
+             serviceAccountName: $account, automountServiceAccountToken: false, restartPolicy: "Never",
+             securityContext: {runAsNonRoot: true, runAsUser: 65534, runAsGroup: 65534, fsGroup: 65534,
+               seccompProfile: {type: "RuntimeDefault"}},
+             containers: [{name: "census", image: $image, command: ["sh", "-c", $script],
+               env: [{name: "NATS_URL", value: $url}, {name: "CENSUS_NKEY", value: "/var/run/secrets/legacy-cutover/\($file)"},
+                     {name: "CENSUS_NAME", value: $census_name}, {name: "CENSUS_INBOX_PREFIX", value: $inbox},
+                     {name: "WORK_DIR", value: "/work"}],
+               volumeMounts: [{name: "legacy-cutover-seed", mountPath: "/var/run/secrets/legacy-cutover", readOnly: true},
+                 {name: "legacy-subjects-census-work", mountPath: "/work"}],
+               resources: {requests: {cpu: "250m", memory: "256Mi"}, limits: {cpu: "250m", memory: "256Mi"}},
+               securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}}}],
+             volumes: [{name: "legacy-cutover-seed", csi: {driver: "secrets-store-gke.csi.k8s.io", readOnly: true, volumeAttributes: {secretProviderClass: $class}}},
+               {name: "legacy-subjects-census-work", emptyDir: {medium: "Memory", sizeLimit: "16Mi"}}]}}}}' >"$work/census-job.json"
+    run_job "$name" "$work/census-job.json" "$work/census.log" "$work/census-lines.jsonl"
+    census_error=$run_error
+    [ -n "$census_error" ] || [ "$(tail -n 1 "$work/census-lines.jsonl" | jq -r .leg 2>/dev/null)" = end ] ||
+      census_error="the census Job's log ends before its last read, so what it read is not whole"
+  fi
+  jq --arg error "$census_error" --slurpfile lines "$work/census-lines.jsonl" \
+    '.census.error = (if $error == "" then null else $error end) | .census.lines = $lines' "$work/facts.json" >"$work/facts.tmp" &&
+    mv "$work/facts.tmp" "$work/facts.json"
 fi
 
 # --- (a2)'s builds: each build a connection of the census names, judged as daemon-release-gate.sh
@@ -607,10 +668,10 @@ fi
 # tag's, passes when the build is ahead of it or identical (behind_by 0). The builds are few (one per
 # release and image in use); a census naming more than max_builds is not judged, and is unknown.
 readonly max_builds=40
-if [ -n "$census_name" ] && [ -s "$work/job-lines.jsonl" ]; then
+if [ -n "$census_name" ] && [ -s "$work/census-lines.jsonl" ]; then
   jq -r -L "$here/lib" -s 'include "legacy-subjects-gate-forms";
     [.[] | select(.leg == "census") | .out | split("\n")[] | select(length > 0) | try fromjson catch empty
-      | .data.connections[]? | .name | build_token | strings] | unique[]' "$work/job-lines.jsonl" >"$work/builds" 2>/dev/null || : >"$work/builds"
+      | .data.connections[]? | .name | build_token | strings] | unique[]' "$work/census-lines.jsonl" >"$work/builds" 2>/dev/null || : >"$work/builds"
   : >"$work/build-verdicts.jsonl"
   if [ "$(wc -l <"$work/builds")" -gt "$max_builds" ]; then
     jq -cn --arg n "$(wc -l <"$work/builds")" --argjson max "$max_builds" '{verdict: "unknown", detail: "the census names \($n) builds, more than the \($max) this gate asks GitHub about in one reading"}' >"$work/too-many"
@@ -679,11 +740,12 @@ if ! jq -L "$here/lib" -f "$judge" "$work/input.json" >"$work/judgement.json" 2>
 fi
 
 jq -r '.lines[]' "$work/judgement.json"
-if [ "$job" != "" ] && [ "$job_deleted" = 0 ]; then
-  echo "UNKNOWN: the Job $job_namespace/$job was not shown deleted; delete it: kubectl --context $context -n $job_namespace delete job $job"
-  jq '.record.unknown += ["the Job was not shown deleted"] | (.record.verdict, .verdict) |= (if . == "shut" then . else "unknown" end)' \
+for name in ${jobs_made[@]+"${jobs_made[@]}"}; do
+  [ "${job_state[$name]}" != deleted ] || continue
+  echo "UNKNOWN: the Job $job_namespace/$name was not shown deleted; delete it: kubectl --context $context -n $job_namespace delete job $name"
+  jq --arg name "$name" '.record.unknown += ["the Job \($name) was not shown deleted"] | (.record.verdict, .verdict) |= (if . == "shut" then . else "unknown" end)' \
     "$work/judgement.json" >"$work/judgement.tmp" && mv "$work/judgement.tmp" "$work/judgement.json"
-fi
+done
 # The record is written as a new file (noclobber): one made since the gate began is left as it is,
 # and a record not kept is a reading that cannot be compared.
 if ! (set -o noclobber && jq '.record' "$work/judgement.json" >"$record") 2>"$work/record.err"; then

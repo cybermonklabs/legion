@@ -517,13 +517,14 @@ def old_filters:
     # connection sits in), each of whose names must end with its build.
     ($fi.census // {}) as $census
     | ($fi.hub // {}) as $hub
-    | ($jl | map(select(.leg == "census"))) as $clines
+    | ($census.lines // [] | map(select(.leg == "census"))) as $clines
     | ([$clines[] | {offset: .arg, line: ., replies: (.out | split("\n") | map(select(length > 0) | try fromjson catch "no JSON"))}]) as $cpages
     | ($hub.servers // []) as $expected
     | (if ($census.missing // []) | length > 0 then [{fact: "a2", unknown: "\(fact_names.a2): no census of the hub's connections was read: name \($census.missing | join(" and "))"}]
+       elif $census.error then [{fact: "a2", unknown: "\(fact_names.a2): the census of the hub's connections, as the legacy-cutover user: \($census.error | printable)"}]
        elif $hub.error then [{fact: "a2", unknown: "\(fact_names.a2): the hub servers that must each answer the census could not be read: \($hub.error | printable)"}]
        elif ($expected | length) == 0 then [{fact: "a2", unknown: "\(fact_names.a2): no hub server was named (--hub-statefulset, --hub-server), so a census that one server did not answer could not be told from a whole one"}]
-       elif ($clines | length) == 0 then [{fact: "a2", unknown: "\(fact_names.a2): the Job printed no census of the hub's connections"}]
+       elif ($clines | length) == 0 then [{fact: "a2", unknown: "\(fact_names.a2): the census Job printed no census of the hub's connections"}]
        else
          ([$cpages[] | .line as $line | .offset as $o
            | if $line.rc != 0 then "\($line | read_name): \($line | cli_failure)"

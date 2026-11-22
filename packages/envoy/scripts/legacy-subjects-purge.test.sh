@@ -132,8 +132,7 @@ new_case() {
 # purge [ARG...] runs the driver on the case's reading, keeping its output and exit status.
 purge() {
   set +e
-  output=$(PATH="$root/bin:$PATH" bash "$driver" --context example-cluster --reading "$FAKE/reading.json" \
-    --seed-class envoy-purge-seed --seed-file purge.nk --service-account envoy-purge "$@" 2>&1)
+  output=$(PATH="$root/bin:$PATH" bash "$driver" --context example-cluster --reading "$FAKE/reading.json" "$@" 2>&1)
   status=$?
   set -e
 }
@@ -169,7 +168,7 @@ done_case() {
 
 # --- the cases ------------------------------------------------------------------------------------
 new_case "the driver purges every old-form subject and leaves every new-form message"
-purge --inbox-prefix _INBOX_envoy_purge
+purge
 expect_status 0
 expect_last "PURGED"
 expect_line "PURGED: $old_issue, 2 message(s)"
@@ -178,14 +177,14 @@ expect_line "PASS: the stream holds no old-form subject after the purge of 2 sub
 stream_holds "$new_issue" "$new_agent"
 [ "$(grep -c 'STREAM.PURGE' "$FAKE/nats.calls")" = 2 ] || fail "the Job sent $(grep -c 'STREAM.PURGE' "$FAKE/nats.calls") purges, want 2, one per old-form subject"
 ! grep 'STREAM.PURGE' "$FAKE/nats.calls" | grep -qv -- '"filter":"notifications\.[a-z.A-Z0-9_-]*"' || fail "a purge named no literal subject: $(grep 'STREAM.PURGE' "$FAKE/nats.calls")"
-[ "$(grep -c -v -- '--inbox-prefix _INBOX_envoy_purge nkey=/var/run/secrets/purge/purge.nk$' "$FAKE/nats.calls")" = 0 ] ||
-  fail "a nats call took another prefix or credential: $(grep -v -- '--inbox-prefix _INBOX_envoy_purge' "$FAKE/nats.calls" | head -n 1)"
+[ "$(grep -c -v -- '--inbox-prefix _INBOX_legacy_cutover nkey=/var/run/secrets/legacy-cutover/nats-seed$' "$FAKE/nats.calls")" = 0 ] ||
+  fail "a nats call took another prefix or credential than the legacy-cutover user's: $(grep -v -- '--inbox-prefix _INBOX_legacy_cutover' "$FAKE/nats.calls" | head -n 1)"
 jq -e '.metadata.namespace == "envoy" and .metadata.labels["created-by"] == "legacy-subjects-purge"
   and .spec.backoffLimit == 0 and .spec.ttlSecondsAfterFinished == 600 and .spec.activeDeadlineSeconds == 300
-  and .spec.template.spec.serviceAccountName == "envoy-purge" and .spec.template.spec.automountServiceAccountToken == false
+  and .spec.template.spec.serviceAccountName == "legacy-cutover" and .spec.template.spec.automountServiceAccountToken == false
   and .spec.template.spec.securityContext.runAsUser == 65534
   and .spec.template.spec.containers[0].securityContext.capabilities.drop == ["ALL"]
-  and .spec.template.spec.volumes[0] == {name: "purge-seed", csi: {driver: "secrets-store-gke.csi.k8s.io", readOnly: true, volumeAttributes: {secretProviderClass: "envoy-purge-seed"}}}
+  and .spec.template.spec.volumes[0] == {name: "legacy-cutover-seed", csi: {driver: "secrets-store-gke.csi.k8s.io", readOnly: true, volumeAttributes: {secretProviderClass: "legacy-cutover-nats-seed"}}}
   and ([.spec.template.spec.containers[0].env[] | select(.name == "STREAM_ID" or .name == "LAST_OLD_SEQ") | .value] == ["stream-id-1", "805"])' \
   "$FAKE/created-job.json" >/dev/null || fail "the Job is not the purge Job the driver declares: $(jq -c .spec "$FAKE/created-job.json")"
 name=$(jq -r .metadata.name "$FAKE/created-job.json")
