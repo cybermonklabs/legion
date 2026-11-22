@@ -286,6 +286,14 @@ test("a table that cannot be read is named in the unknown, never read as no conn
   expect(owner).toContain("ENOENT")
 })
 
+test("a host with no /proc/net/tcp6, as one with IPv6 off, names the owner from /proc/net/tcp", async () => {
+  // A kernel booted with IPv6 off has no tcp6 table: its absence is no reason to name no owner.
+  const proc = await standInProc({ tcp: TABLE }, [
+    { pid: 200, comm: "bun", fds: { "3": "socket:[111]" } },
+  ])
+  expect(await socketOwner(54321, GATE, { proc })).toBe("bun pid=200")
+})
+
 // It reads this machine's own /proc, which only Linux has: a macOS host runs the stand-in rows.
 test.skipIf(process.platform !== "linux")(
   "a live connection's owner is named from this machine's /proc, by a process whose PATH finds no ss",
