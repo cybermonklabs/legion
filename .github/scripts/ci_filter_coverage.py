@@ -2321,6 +2321,12 @@ def shell_unquoted(text: str) -> str:
             out.append(c)
             i += 1
             continue
+        if c == "#" and (i == 0 or text[i - 1] in " \t\n;&|("):
+            # A comment runs to the end of its line, and a quote inside it is text: dropped, so an
+            # apostrophe there (`f() { # the filter's verdicts`) opens no string.
+            end = text.find("\n", i)
+            i = n if end < 0 else end
+            continue
         if c == "(":
             top[1] += 1
         elif c == ")":

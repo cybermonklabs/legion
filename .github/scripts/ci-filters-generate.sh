@@ -48,9 +48,10 @@ computed="${out%.yaml}.computed.yaml"
 cd "$(dirname "$0")/../.." || exit 1
 head_root=$PWD
 
-# The generation took 46 s of the ci-filters job's check in run 44974321862, against the 10 minutes
-# the changes job may take: a run five times that long is one that has stopped making progress. A
-# child that ignores the TERM is killed 15 s later.
+# The generation took 46 s of the ci-filters job's check in run 44974321862 and 52 s of the changes
+# job in run 45017125244: a run past 300 s is one that has stopped making progress. A child that
+# ignores the TERM is killed 15 s later. The changes job's step timeout of 9 minutes holds this
+# tree's run, the base's fetch and install, and the base's run together (ci.yaml says the sum).
 LIMIT=${CI_FILTERS_LIMIT:-300}
 
 # every_filter <first line>: a filters file whose every filter is `'**'`, under that first line.
@@ -98,7 +99,9 @@ base=${CI_FILTERS_BASE:-}
 if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
   timeout -k 5 60 git fetch -q --no-tags --depth=1 origin "$base" 2>&1 | tail -3
 fi
-if ! changed=$(git diff --name-only "$base" HEAD 2>/dev/null); then
+# --no-renames: a renamed file is its old path deleted and its new one added, so a tsconfig moved
+# away is counted as touched by its old name too.
+if ! changed=$(git diff --no-renames --name-only "$base" HEAD 2>/dev/null); then
   force_every_filter "the base commit $base cannot be read, so whether this change alters the computation is unknown"
   exit 0
 fi

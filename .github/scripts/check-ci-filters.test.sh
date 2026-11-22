@@ -567,6 +567,37 @@ check "names it as a file the filters are computed with that the change touches"
 check "prints the bundled file only the base tree has" "$(contains "$out" '^  - pkg/lib/a.ts$')"
 check "the paths-filter step reads app as every path" "$(is "$(filter_of app | tr '\n' ' ')" '** ')"
 
+# A tsconfig renamed away moves resolution to a farther one, and git reads the change as a rename:
+# without --no-renames only the new name (here no tsconfig at all) is listed, and nothing is touched.
+echo "case: a tsconfig renamed away is touched by its old name"
+root=$(fixture base-tsconfig-renamed)
+mkdir -p "$root/pkg/cli" "$root/pkg/lib/src" "$root/bin"
+printf 'export const cli = 1;\n' > "$root/pkg/cli/main.ts"
+printf 'export * from "lib-impl";\n' > "$root/pkg/lib/src/index.ts"
+printf 'export const a = 1;\n' > "$root/pkg/lib/a.ts"
+printf 'export const b = 2;\n' > "$root/pkg/lib/b.ts"
+printf '{ "compilerOptions": { "paths": { "lib-impl": ["./a.ts"] } } }\n' > "$root/pkg/lib/tsconfig.json"
+printf 'pkg/cli/main.ts\npkg/lib/src/index.ts\npkg/lib/a.ts\n' > "$root/pkg/cli/bundled"
+cat > "$root/bin/bun" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$1" = build ] || exit 0  # the base tree's `bun install`
+beside=$(dirname "$2"); outdir=$6
+mkdir -p "$outdir"
+{ printf '{"inputs": {'; sep=; while IFS= read -r line; do printf '%s"%s": {}' "$sep" "$line"; sep=', '; done < "$beside/bundled"; printf '}}\n'; } > "$outdir/meta.json"
+SH
+chmod +x "$root/bin/bun"
+printf 'PROGRAMS = []\nBUNDLES = [("app", "pkg/cli/main.ts", "app runs the CLI")]\nLISTED = [("app", "pkg/lib", ("app",), "app loads what its bundle loads")]\n' \
+  > "$root/.github/scripts/ci_ts_programs.py"
+base_commit=$(commit_all "$root" base)
+git -C "$root" mv pkg/lib/tsconfig.json pkg/lib/settings.json.bak
+printf 'pkg/cli/main.ts\npkg/lib/src/index.ts\npkg/lib/b.ts\n' > "$root/pkg/cli/bundled"
+commit_all "$root" head >/dev/null
+run_generate "$root" PATH="$root/bin:$PATH" CI_FILTERS_BASE="$base_commit"
+check "the wrapper exits 0" "$(is "$status" 0)"
+check "names the old tsconfig as touched" "$(contains "$out" '^  pkg/lib/tsconfig.json$')"
+check "the paths-filter step reads app as every path" "$(is "$(filter_of app | tr '\n' ' ')" '** ')"
+
 # The go commands run in a pool (CI_FILTERS_JOBS); each answer is keyed by what it asks, so the
 # filters are one text whatever the pool's size, and a command that fails in the pool fails the
 # computation by name, as it does one after another.
@@ -856,6 +887,9 @@ here=$(dirname "${BASH_SOURCE[0]}")
 repo_root=$(cd "$script_dir/../.." && pwd)
 dir=$script_dir
 # helper_comment.sh, named in a comment only, is no reach.
+f() { # the filter's own verdicts, its one apostrophe opening no string
+  :
+}
 for linked in helper.sh; do ln -s "$script_dir/$linked" "/tmp/$linked"; done
 "$here/runner.sh"
 for linked in second.sh; do ln -s "$script_dir/$linked" "/tmp/$linked"; done
