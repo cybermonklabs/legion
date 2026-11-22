@@ -48,48 +48,30 @@ type stack struct {
 
 	mu  sync.Mutex
 	dbs map[string]*pgxpool.Pool
-	// conns are the operator's connections operator opened that are still open: run closes them
-	// before a held command, whose re-read admits no connection but its own and the auth
-	// service's (heldReread's report).
+	// conns are the connections the rows opened through the stack (operator, replaceWriter,
+	// enrollDaemonConnect) that are still open: run closes them before a held command, whose
+	// re-read admits no connection but its own and the auth service's (heldReread's report).
 	conns []*nats.Conn
 }
 
-// stackDisks is compute.disks.get over holdtest's volumes: each claim's disk, by its handle's
-// name, with an id of its own.
-type stackDisks map[string]uint64
+// stackDisks is writerhold.Disks over holdtest's disks (holdtest.NewDisks), by the disk's name.
+type stackDisks struct{ *holdtest.Disks }
 
 func (d stackDisks) DiskID(_ context.Context, disk writerhold.DiskRef) (uint64, error) {
-	id, ok := d[disk.Name]
-	if !ok {
-		return 0, fmt.Errorf("compute.disks.get %s: 404 notFound", disk.Name)
-	}
-	return id, nil
+	return d.ID(disk.Name)
 }
 
 // newStack starts a stack, stopped when t ends.
 func newStack(t *testing.T) *stack {
 	t.Helper()
 	s := holdtest.Start(t)
-	disks := stackDisks{}
-	for i := range s.Cluster.Servers {
-		disks["pvc-"+holdtest.Pod(i)] = uint64(7000000000000000000 + i)
-	}
 	op := &writerhold.Operator{
 		Hub: writerhold.KubeHub{Client: s.Kube.Client, Namespace: holdtest.Namespace, StatefulSet: holdtest.StatefulSet,
 			ConfigMap: holdtest.ConfigMap, Forward: s.Kube},
-		Disks: disks,
-		URLs:  s.Cluster.URLs(),
-		Connect: func(context.Context) (*nats.Conn, error) {
-			return nats.Connect(s.Cluster.URL(), append(s.OperatorCredential(), nats.Name("envoy-infra hold"),
-				nats.MaxReconnects(-1), nats.ReconnectWait(100*time.Millisecond), nats.Timeout(10*time.Second))...)
-		},
-		Probe: func(_ context.Context, url string) error {
-			nc, err := nats.Connect(url, s.ProbeCredential(), nats.Name("envoy-infra hold probe"), nats.NoReconnect(), nats.Timeout(10*time.Second))
-			if err == nil {
-				nc.Close()
-			}
-			return err
-		},
+		Disks:        stackDisks{holdtest.NewDisks(len(s.Cluster.Servers))},
+		URLs:         s.Cluster.URLs(),
+		Connect:      s.ConnectOperator,
+		Probe:        s.DialProbe,
 		RestartLimit: 3 * time.Minute,
 	}
 	h := &stack{t: t, s: s, op: op, dbs: map[string]*pgxpool.Pool{}}
@@ -125,25 +107,35 @@ var commonArgs = []string{"--broker-url", "https://broker.consumernames-test", "
 var writingArgs = []string{"--signing-key-secret", "projects/consumernames-test/secrets/operator-only-envoy-hold-signing",
 	"--probe-token-file", "/dev/null"}
 
-// run runs `envoy-infra consumer-names <args>` in the stack, with the common flags, and returns its
-// exit code and output. Before a held command (every word but status and prepare) it closes every
-// connection operator opened (closeOperators): a row connects again after it.
+// run runs `envoy-infra consumer-names <args>` in the stack, with the common flags
+// (createBucketRun), and returns its exit code and output. Before a held command (every word but
+// status and prepare) it closes every connection the rows opened through the stack
+// (closeOperators): a row connects again after it.
 func (h *stack) run(args ...string) (int, string, string) {
 	h.t.Helper()
-	full := append(append([]string{}, args...), commonArgs...)
-	if args[0] != actionStatus {
-		full = append(full, writingArgs...)
-	}
 	if args[0] != actionStatus && args[0] != actionPrepare {
 		h.closeOperators()
 	}
-	var stdout, stderr bytes.Buffer
-	code := runCommand(context.Background(), full, &stdout, &stderr, h.e)
-	h.t.Logf("envoy-infra consumer-names %s: exit %d\n%s%s", strings.Join(args, " "), code, stdout.String(), stderr.String())
-	return code, stdout.String(), stderr.String()
+	return createBucketRun(h.t, context.Background(), h.e, args...)
 }
 
-// closeOperators closes every connection operator opened that is still open, so a held command's
+// runDialed runs `envoy-infra consumer-names <args>` as run does a held command, with ctx in place
+// of the stack's and every connection the command opens dialed through dialer: a run a test cuts
+// part way on the wire.
+func (h *stack) runDialed(ctx context.Context, dialer nats.CustomDialer, args ...string) (int, string, string) {
+	h.t.Helper()
+	e := h.e
+	e.connect = func(context.Context, options) (*nats.Conn, error) {
+		return nats.Connect(h.s.Cluster.URL(), append(h.s.OperatorCredential(), nats.SetCustomDialer(dialer), nats.Name("envoy-infra consumer-names"),
+			nats.MaxReconnects(-1), nats.ReconnectWait(100*time.Millisecond), nats.Timeout(10*time.Second))...)
+	}
+	// The held re-read's report admits no connection but the command's and the auth service's,
+	// which run sees to; this run is the test's own.
+	h.closeOperators()
+	return createBucketRun(h.t, ctx, e, args...)
+}
+
+// closeOperators closes every connection in conns that is still open, so a held command's
 // re-read finds no connection but its own and the auth service's.
 func (h *stack) closeOperators() {
 	h.mu.Lock()
@@ -153,6 +145,13 @@ func (h *stack) closeOperators() {
 	for _, nc := range conns {
 		nc.Close()
 	}
+}
+
+// track adds nc to conns, the connections run closes before a held command (closeOperators).
+func (h *stack) track(nc *nats.Conn) {
+	h.mu.Lock()
+	h.conns = append(h.conns, nc)
+	h.mu.Unlock()
 }
 
 // streamsDeps are what writerhold.StreamsCommandOn reaches in place of the broker, Secret Manager
@@ -278,6 +277,18 @@ func (h *stack) release(id string) error {
 	return h.s.Records.AppendDone(ctx, id, holdrecord.CommandRelease, nil)
 }
 
+// censusDone writes `streams census`'s entries in hold id's journal as its contract writes them
+// around a clean run (its admission and intent, then its done entry, which completes the record of
+// a cutover or streams-census hold), without the run itself: these rows test what comes before or
+// after the census, and the census's own rows are admittedCensus's (completion_test.go).
+func (h *stack) censusDone(id string) {
+	h.t.Helper()
+	ctx := context.Background()
+	_, err := h.records().Admit(ctx, id, holdrecord.Request{Command: censusCommandName}, nil)
+	require.NoError(h.t, err)
+	require.NoError(h.t, h.records().AppendDone(ctx, id, censusCommandName, nil))
+}
+
 // journal reads hold id's journal.
 func (h *stack) journal(id string) holdrecord.Done {
 	h.t.Helper()
@@ -296,8 +307,14 @@ func readJournal(t *testing.T, records *holdrecord.Client, id string) holdrecord
 // the zero Operation when it holds none.
 func (h *stack) lastEntry(id, command string) holdrecord.Operation {
 	h.t.Helper()
+	return lastOf(h.journal(id), command)
+}
+
+// lastOf is d's latest entry of command, or of any command when command is "": the zero
+// Operation when it holds none.
+func lastOf(d holdrecord.Done, command string) holdrecord.Operation {
 	var last holdrecord.Operation
-	for _, op := range h.journal(id).Ops {
+	for _, op := range d.Ops {
 		if command == "" || op.Command == command {
 			last = op
 		}
@@ -406,9 +423,30 @@ func (h *stack) consumer(name string) *jetstream.ConsumerInfo {
 	h.t.Helper()
 	nc, _ := h.operator()
 	defer nc.Close()
-	info, err := consumerInfo(context.Background(), nc, notifications, name)
-	require.NoError(h.t, err)
+	return replaceInfo(h.t, nc, name)
+}
+
+// makeConsumer creates config on the notification stream through nc's connection, as the
+// operator's or a listener's grant allows (CONSUMER.CREATE.<stream>.<name>), and answers its info.
+func makeConsumer(t *testing.T, nc *nats.Conn, config jetstream.ConsumerConfig) *jetstream.ConsumerInfo {
+	t.Helper()
+	info, err := writeConsumer(context.Background(), nc, notifications, config, actionCreateConsumer)
+	require.NoError(t, err, "create %s", config.Durable)
 	return info
+}
+
+// consumersOf are the consumers of the notification stream whose logical name is one of logicals,
+// in any form (the fixed name, or a fresh one cut at its last '~', selection.LogicalOf), in the
+// listing's order.
+func consumersOf(t *testing.T, nc *nats.Conn, logicals ...string) []string {
+	t.Helper()
+	var out []string
+	for _, name := range censusConsumers(t, nc) {
+		if slices.Contains(logicals, selection.LogicalOf(name)) {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // familyStore is family's store on nc, the operator's connection: the selection bucket for the
@@ -455,6 +493,14 @@ func (h *stack) record(family, logical string) selection.Record {
 	return record
 }
 
+// writeRecord writes record under logical in store, failing t, naming logical, when the store
+// refuses it.
+func writeRecord(t *testing.T, store selection.Store, logical string, record selection.Record) {
+	t.Helper()
+	_, err := store.Write(t.Context(), logical, record, 0)
+	require.NoError(t, err, "write %s", logical)
+}
+
 // operator connects to the hub as the operator, decided under the row's phase now: a test that
 // changes the phase connects again for the new phase's grant. run closes it before a held command.
 // Its JetStream calls a row's setup makes wait up to harnessAPITimeout, not nats.go's 5 s default:
@@ -466,9 +512,7 @@ func (h *stack) operator() (*nats.Conn, jetstream.JetStream) {
 	require.NoError(h.t, err)
 	js, err := jetstream.New(nc, jetstream.WithDefaultTimeout(harnessAPITimeout))
 	require.NoError(h.t, err)
-	h.mu.Lock()
-	h.conns = append(h.conns, nc)
-	h.mu.Unlock()
+	h.track(nc)
 	return nc, js
 }
 
@@ -479,15 +523,20 @@ const harnessAPITimeout = time.Minute
 // as `envoy-infra streams update` would under a hold, and answers its info.
 func (h *stack) notificationStream(js jetstream.JetStream) *jetstream.StreamInfo {
 	h.t.Helper()
-	ctx := context.Background()
-	config := bus.NotificationStreamConfig(1, 0)
-	raw, err := json.Marshal(config)
-	require.NoError(h.t, err)
-	var cfg jetstream.StreamConfig
-	require.NoError(h.t, json.Unmarshal(raw, &cfg))
-	stream, err := js.CreateStream(ctx, cfg)
+	stream, err := js.CreateStream(context.Background(), notificationStreamConfig(h.t, 1))
 	require.NoError(h.t, err)
 	return stream.CachedInfo()
+}
+
+// notificationStreamConfig is the build's notification stream configuration at replicas copies,
+// in jetstream's form.
+func notificationStreamConfig(t testing.TB, replicas int) jetstream.StreamConfig {
+	t.Helper()
+	raw, err := json.Marshal(bus.NotificationStreamConfig(replicas, 0))
+	require.NoError(t, err)
+	var config jetstream.StreamConfig
+	require.NoError(t, json.Unmarshal(raw, &config))
+	return config
 }
 
 // The migrations of the families' stores, by the store's own files, so a test's table is the one

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -38,9 +39,6 @@ type restoreRig struct {
 	replicas int
 }
 
-// restoreStreamsUpdate is the one command of the streams-update workflow (holdrecord table.go).
-const restoreStreamsUpdate = "streams update"
-
 // newRestoreRig starts a rig of one copy with a store of each of families (familyDispatch,
 // daemonFamily(p)).
 func newRestoreRig(t *testing.T, families ...string) *restoreRig {
@@ -54,25 +52,16 @@ func newRestoreRig(t *testing.T, families ...string) *restoreRig {
 // a streams-update hold, which is released again.
 func newRestoreRigOf(t *testing.T, replicas int, families ...string) *restoreRig {
 	t.Helper()
-	ctx := context.Background()
 	rig := restoreRigOn(newStack(t), families...)
 	rig.replicas = replicas
-	id := rig.heldHold(holdrecord.WorkflowStreamsUpdate)
-	_, err := rig.records().Admit(ctx, id, holdrecord.Request{Command: restoreStreamsUpdate}, nil)
-	require.NoError(t, err)
-	_, js := rig.operator()
-	raw, err := json.Marshal(bus.NotificationStreamConfig(replicas, 0))
-	require.NoError(t, err)
-	var config jetstream.StreamConfig
-	require.NoError(t, json.Unmarshal(raw, &config))
-	config.Metadata = map[string]string{bus.StreamIDMetadataKey: restoreStreamID}
-	stream, err := js.CreateStream(ctx, config)
-	require.NoError(t, err)
-	require.Equal(t, replicas, stream.CachedInfo().Config.Replicas)
-	nc, _ := rig.operator()
-	rig.waitLeader(nc, notifications)
-	require.NoError(t, rig.records().AppendDone(ctx, id, restoreStreamsUpdate, nil))
-	require.NoError(t, rig.release(id))
+	operatorInHold(t, rig.stack, holdrecord.WorkflowStreamsUpdate, func(nc *nats.Conn, js jetstream.JetStream) {
+		config := notificationStreamConfig(t, replicas)
+		config.Metadata = map[string]string{bus.StreamIDMetadataKey: restoreStreamID}
+		stream, err := js.CreateStream(context.Background(), config)
+		require.NoError(t, err)
+		require.Equal(t, replicas, stream.CachedInfo().Config.Replicas)
+		rig.waitLeader(nc, notifications)
+	})
 	return rig
 }
 
@@ -258,7 +247,7 @@ func (rig *restoreRig) cutover(conversions ...restoreConversion) string {
 		require.NoError(t, err)
 		rig.mark(nc, family, selection.CutoverDone)
 	}
-	for _, command := range []string{actionCreateBucket, actionConvert, "streams census"} {
+	for _, command := range []string{actionCreateBucket, actionConvert, censusCommandName} {
 		_, err := rig.records().Admit(ctx, id, holdrecord.Request{Command: command}, nil)
 		require.NoError(t, err)
 		require.NoError(t, rig.records().AppendDone(ctx, id, command, nil))
@@ -369,10 +358,7 @@ func restoreWithRules(t *testing.T, rules restoreRuleSet) {
 func restoreKilledAt(t *testing.T, points map[string]string) *[]string {
 	t.Helper()
 	var ended []string
-	pending := map[string]string{}
-	for logical, point := range points {
-		pending[logical] = point
-	}
+	pending := maps.Clone(points)
 	restoreHook = func(point, logical string) error {
 		if pending[logical] != point {
 			return nil
@@ -440,8 +426,8 @@ func (rig *restoreRig) freshCreator(family string) *selection.Names {
 	return selection.New(selection.Config{Store: rig.familyStore(nc, family), Prefix: prefix})
 }
 
-// TestCutoverRollbackThenUpgradeAgain (review H4): after the rollback every family's broker cutover
-// row and store marker read rolled_back, a creator in the fresh mode refuses every consumer call,
+// TestCutoverRollbackThenUpgradeAgain: after the rollback every family's broker cutover row and
+// store marker read rolled_back, a creator in the fresh mode refuses every consumer call,
 // every restored fixed name delivers from its saved start, and a second cutover's convert converts
 // the restored fixed names and marks the bucket's sentinel with that cutover's B and hold, as the
 // session row names it; after a STREAM.INFO answer is stored over that sentinel, repair-sentinel
@@ -532,9 +518,7 @@ func TestCutoverRollbackThenUpgradeAgain(t *testing.T) {
 		require.True(t, found, "the second cutover's prepare wrote no cohort record")
 		require.Equal(t, ownSentinel(familySession, selection.StoreState{Cutover: selection.CutoverDone, Boundary: cohort.Boundary, Hold: again}), rig.marker(familySession),
 			"the second cutover's sentinel names the cutover that converted it")
-		_, err = rig.records().Admit(ctx, again, holdrecord.Request{Command: "streams census"}, nil)
-		require.NoError(t, err)
-		require.NoError(t, rig.records().AppendDone(ctx, again, "streams census", nil))
+		rig.censusDone(again)
 		require.NoError(t, rig.release(again))
 		converted := repairSentinelValue(t, rig.stack)
 		nc, _ := rig.listener()
@@ -611,8 +595,8 @@ func restoreH5Rig(t *testing.T) (*restoreRig, string, map[string][]uint64, uint6
 	return rig, rollback, want, expiresSeqs[2]
 }
 
-// TestTheRestoreTargetExpiresBetweenFinishAndItsResume (review H5): restore --finish creates F, is
-// killed before it completes the hold, and F is removed for inactivity. The resumed finish finds F
+// TestTheRestoreTargetExpiresBetweenFinishAndItsResume: restore --finish creates F, is killed
+// before it completes the hold, and F is removed for inactivity. The resumed finish finds F
 // absent, runs the restart again, creates F at S, and every message from S arrives on F, which
 // the previous release pulls by name. A kept F that fails its start check is replaced at S.
 // Control: round 17's rule skips the created record and completes with F missing.
@@ -650,16 +634,6 @@ func TestTheRestoreTargetExpiresBetweenFinishAndItsResume(t *testing.T) {
 			}
 		}
 	})
-}
-
-// restoreStoppableOrSkip skips a treatment that needs command Stoppable in rollback while this
-// tree's table holds it not Stoppable: the stop rows wait on #4679's next head, which makes
-// restore --prepare and restore --key Stoppable. A skip is no pass.
-func restoreStoppableOrSkip(t *testing.T, command string) {
-	t.Helper()
-	if !holdrecord.Stoppable(holdrecord.WorkflowRollback, command) {
-		t.Skipf("waiting on #4679's next head: %s is not Stoppable in rollback in this tree's internal/holdrecord/table.go", command)
-	}
 }
 
 // restoreStopRig is the prepare stop row's state: Dispatch's two durables, each acked through the
@@ -723,7 +697,7 @@ func TestARestorePrepareRefusalAfterItsIntentWritesAStopNamingWhatItLeft(t *test
 		require.ErrorIs(t, rig.release(rollback), holdrecord.ErrBusy, "hold release is refused as busy")
 	})
 	t.Run("treatment", func(t *testing.T) {
-		restoreStoppableOrSkip(t, restoreCommandPrepare)
+		requireStoppable(t, holdrecord.WorkflowRollback, restoreCommandPrepare)
 		rig, rollback := restoreStopRig(t)
 		fresh := rig.record(familyDispatch, "delivery-events").Current
 		require.Contains(t, fresh, "~", "the hold point: delivery-events is converted to a fresh name")
@@ -789,7 +763,7 @@ func TestARestoreKeyRefusalAfterItsIntentWritesAStopSoFinishRuns(t *testing.T) {
 		require.ErrorIs(t, rig.release(rollback), holdrecord.ErrBusy, "hold release is refused: the hold is stranded")
 	})
 	t.Run("treatment", func(t *testing.T) {
-		restoreStoppableOrSkip(t, restoreCommandKey)
+		requireStoppable(t, holdrecord.WorkflowRollback, restoreCommandKey)
 		rig, rollback, start := restoreKeyStopRig(t)
 		wrong := formatSeq(start + 7)
 		code, _, stderr := rig.restore(rollback, "--key", "keyed", "--from", wrong)
@@ -893,7 +867,7 @@ const restoreNoBarrier = "this run changed no selection record, consumer, cutove
 // is admitted over it; under the first of them alone it records unknown, and hold release is
 // refused.
 func TestARestorePrepareStopNamesTheBarrierKeyItPut(t *testing.T) {
-	restoreStoppableOrSkip(t, restoreCommandPrepare)
+	requireStoppable(t, holdrecord.WorkflowRollback, restoreCommandPrepare)
 	rig := newRestoreRig(t)
 	seqs := rig.publish("notifications.agent.keyed", 3)
 	rig.fixed(restoreFixedConfig(sessionFixedPrefix+"keyed", "notifications.agent.keyed"), 1)
@@ -935,7 +909,7 @@ func TestARestorePrepareStopNamesTheBarrierKeyItPut(t *testing.T) {
 // key. Control: under the earlier rule that the key is no change (leftRuleSet.barrierNoChange), the
 // same refusal records unchanged.
 func TestARestoreKeyStopNamesTheBarrierKeyItPut(t *testing.T) {
-	restoreStoppableOrSkip(t, restoreCommandKey)
+	requireStoppable(t, holdrecord.WorkflowRollback, restoreCommandKey)
 	rig, rollback, start := restoreKeyStopRig(t)
 	wrong := formatSeq(start + 7)
 	refused := func() holdrecord.Operation {
@@ -962,7 +936,7 @@ func TestARestoreKeyStopNamesTheBarrierKeyItPut(t *testing.T) {
 // Control: under the earlier rule that the key is no change (leftRuleSet.barrierNoChange), the same
 // refusal records unchanged.
 func TestARestoreFinishStopNamesTheBarrierKeyItPut(t *testing.T) {
-	restoreStoppableOrSkip(t, restoreCommandFinish)
+	requireStoppable(t, holdrecord.WorkflowRollback, restoreCommandFinish)
 	rig := newRestoreRig(t)
 	rig.fixed(restoreFixedConfig(sessionFixedPrefix+"nostart", "notifications.agent.nostart"), 0)
 	rig.cutover(restoreConversion{fixed: sessionFixedPrefix + "nostart", start: 1, deleteFresh: true,

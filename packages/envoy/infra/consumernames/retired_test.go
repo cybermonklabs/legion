@@ -78,10 +78,10 @@ func (h *stack) retire(data map[string]string) {
 // project's entry or with no ConfigMap at all, which is no error; an entry missing its database
 // key or its instance key, naming the key; and an entry whose address a live project's Deployment
 // names too, naming both sources and both projects. A read of the ConfigMap the API server refuses
-// fails the whole call, naming the ConfigMap, so the census is UNKNOWN. Control: 2b1d598844's
-// reader, which never reads the ConfigMap, leaves the retired project unreconciled ("0 Deployments
-// of namespace legion name project RETIRED"), reads BOTH at its Deployment and calls it gone, and
-// answers the refused read with no error.
+// fails the whole call, naming the ConfigMap, so the census is UNKNOWN. Control (a red run,
+// by -overlay): the reader before it read the retired projects' ConfigMap leaves the retired
+// project unreconciled ("0 Deployments of namespace legion name project RETIRED"), reads BOTH at
+// its Deployment and calls it gone, and answers the refused read with no error.
 func TestTheCensusRuleReadsEachStoreAtOneSource(t *testing.T) {
 	ctx := t.Context()
 	conn, _ := censusHeldOperator(t, "stream-2")
@@ -156,9 +156,9 @@ func TestTheCensusRuleReadsEachStoreAtOneSource(t *testing.T) {
 // entry naming gone.daemon/RETIRED. Then cleanup --gone, in a consumer-cleanup hold, reads the
 // store gone at the same address and removes those consumers. Before that, a census whose read of
 // the ConfigMap the API server refuses is UNKNOWN, naming the ConfigMap, removes nothing, and its
-// stop records only this hold's barrier key. Control: 2b1d598844's reader leaves daemon/RETIRED
-// unreconciled ("0 Deployments of namespace legion name project RETIRED"), so every census is
-// UNKNOWN and cleanup --gone refuses.
+// stop records only this hold's barrier key. Control (a red run, by -overlay): the reader before
+// it read the retired projects' ConfigMap leaves daemon/RETIRED unreconciled ("0 Deployments of
+// namespace legion name project RETIRED"), so every census is UNKNOWN and cleanup --gone refuses.
 func TestTheCensusReadsARetiredProjectsStoreGoneAtItsEntry(t *testing.T) {
 	h := newStack(t)
 	ctx := t.Context()
@@ -245,8 +245,8 @@ func TestTheCensusReadsARetiredProjectsStoreGoneAtItsEntry(t *testing.T) {
 // writes a stop entry naming the project's Deployment and the ConfigMap, with both projects,
 // recording the run unchanged, writes neither the store's marker nor the broker's cutover record,
 // and the hold is released. Control: with the entry naming another database, the same enroll is
-// done and marks the store; and 2b1d598844's reader, which never reads the ConfigMap, lets the
-// first enroll through.
+// done and marks the store; and the reader before it read the retired projects' ConfigMap (a red
+// run, by -overlay) lets the first enroll through.
 func TestEnrollRefusesAStoreAddressARetiredProjectNames(t *testing.T) {
 	h := newStack(t)
 	ctx := context.Background()

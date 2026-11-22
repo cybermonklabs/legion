@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
@@ -34,18 +33,17 @@ type wiringOpeners struct {
 
 func (w *wiringOpeners) openers(hub func(writerhold.HubFlags, context.Context) (*writerhold.Operator, error)) hubOpeners {
 	return hubOpeners{
-		records: func(f writerhold.HubFlags, _ context.Context, signing bool) (*holdrecord.Client, error) {
+		records: func(f writerhold.HubFlags, ctx context.Context, signing bool) (*holdrecord.Client, error) {
 			w.mu.Lock()
 			w.records, w.signing = append(w.records, f), append(w.signing, signing)
 			w.mu.Unlock()
-			return w.h.s.Broker.Client(w.h.t), nil
+			return w.h.e.records(ctx, options{}, signing)
 		},
 		connect: func(f writerhold.HubFlags) (*nats.Conn, error) {
 			w.mu.Lock()
 			w.connects = append(w.connects, f)
 			w.mu.Unlock()
-			return nats.Connect(w.h.s.Cluster.URL(), append(w.h.s.OperatorCredential(), nats.Name("envoy-infra consumer-names"),
-				nats.MaxReconnects(-1), nats.ReconnectWait(100*time.Millisecond), nats.Timeout(10*time.Second))...)
+			return w.h.e.connect(context.Background(), options{})
 		},
 		hub: func(f writerhold.HubFlags, ctx context.Context) (*writerhold.Operator, error) {
 			w.mu.Lock()
@@ -71,10 +69,10 @@ var wiringRefusal = errors.New("this build takes no flags for the hub's Kubernet
 // command writes nothing to the hold's journal.
 func TestEveryHeldCommandReachesTheHubThroughItsFlags(t *testing.T) {
 	daemonDB := func(h *stack) string {
-		t.Helper()
-		url := testdb.DatabaseOn(t, os.Getenv("BROKER_TEST_DATABASE_URL"), "cnames")
-		file := filepath.Join(t.TempDir(), "daemon.url")
-		require.NoError(t, os.WriteFile(file, []byte(url+"\n"), 0o600))
+		h.t.Helper()
+		url := testdb.DatabaseOn(h.t, os.Getenv("BROKER_TEST_DATABASE_URL"), "cnames")
+		file := filepath.Join(h.t.TempDir(), "daemon.url")
+		require.NoError(h.t, os.WriteFile(file, []byte(url+"\n"), 0o600))
 		return file
 	}
 	for _, row := range []struct {
@@ -101,7 +99,7 @@ func TestEveryHeldCommandReachesTheHubThroughItsFlags(t *testing.T) {
 			return []string{actionRestore, "--key", "ses_wiring", "--from", "1"}
 		}, true},
 		{"restore --finish", holdrecord.WorkflowRollback, func(*stack) []string {
-			return []string{actionRestore, "--finish", "--probe-token-file", "/dev/null"}
+			return []string{actionRestore, "--finish"}
 		}, true},
 		{"enroll", holdrecord.WorkflowEnroll, func(h *stack) []string {
 			return []string{actionEnroll, "--daemon", "WIRE", "--daemon-database", "WIRE=" + daemonDB(h)}

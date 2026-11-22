@@ -2,7 +2,6 @@ package consumernames
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -47,9 +46,7 @@ func (h *stack) replaceWriter() (*nats.Conn, jetstream.JetStream) {
 	require.NoError(h.t, err)
 	js, err := jetstream.New(nc)
 	require.NoError(h.t, err)
-	h.mu.Lock()
-	h.conns = append(h.conns, nc)
-	h.mu.Unlock()
+	h.track(nc)
 	return nc, js
 }
 
@@ -94,15 +91,6 @@ func replaceBadConfig(name, durable, deliver string, start uint64) jetstream.Con
 	}
 }
 
-// replaceMake creates config on the notification stream through nc's connection, as the
-// operator's or a listener's grant allows (CONSUMER.CREATE.<stream>.<name>), and answers its info.
-func replaceMake(t *testing.T, nc *nats.Conn, config jetstream.ConsumerConfig) *jetstream.ConsumerInfo {
-	t.Helper()
-	info, err := writeConsumer(context.Background(), nc, notifications, config, actionCreateConsumer)
-	require.NoError(t, err, "create %s", config.Durable)
-	return info
-}
-
 // replaceInfo reads consumer name of the notification stream, nil when the server does not hold it.
 func replaceInfo(t *testing.T, nc *nats.Conn, name string) *jetstream.ConsumerInfo {
 	t.Helper()
@@ -117,21 +105,6 @@ func replaceRecord(t *testing.T, store selection.Store, durable string) (selecti
 	record, revision, err := store.Read(context.Background(), selection.DurableKey(durable))
 	require.NoError(t, err, "read %s's record", durable)
 	return record, revision
-}
-
-// replaceNamesOf are the consumers of the notification stream whose logical name is durable, in
-// any form: the fixed name, or a fresh one cut at its last '~' (selection.LogicalOf).
-func replaceNamesOf(t *testing.T, nc *nats.Conn, durable string) []string {
-	t.Helper()
-	listed, err := consumerNames(context.Background(), nc, notifications)
-	require.NoError(t, err)
-	var out []string
-	for _, name := range listed {
-		if selection.LogicalOf(name) == durable {
-			out = append(out, name)
-		}
-	}
-	return out
 }
 
 // replaceRequireReplaced asserts the state one replace of durable leaves, whatever runs crashed
@@ -155,7 +128,7 @@ func (h *stack) replaceRequireReplaced(durable string, start uint64, gone ...str
 		require.NotEqual(t, name, record.Current)
 		require.Nil(t, replaceInfo(t, nc, name), "gone %s is deleted", name)
 	}
-	require.Equal(t, []string{record.Current}, replaceNamesOf(t, nc, durable), "the stream holds %s's current alone", durable)
+	require.Equal(t, []string{record.Current}, consumersOf(t, nc, durable), "the stream holds %s's current alone", durable)
 	info := replaceInfo(t, nc, record.Current)
 	require.NotNil(t, info)
 	require.Equal(t, jetstream.DeliverByStartSequencePolicy, info.Config.DeliverPolicy)
@@ -201,14 +174,13 @@ func replaceFirstDelivered(t *testing.T, nc *nats.Conn, deliver string) uint64 {
 // (after its reservation, after its create, after its publish) ends in the same state. A floor
 // past the stream's end starts at the stream's first sequence. The last rerun, with --final,
 // completes the hold's record, so hold release follows. Control: a consumer created as the
-// README's delete-and-let-the-
-// listener-recreate-it does (deliver policy all) hands over the stream's first message, which the
-// listener had acknowledged.
+// README's delete-and-let-the-listener-recreate-it does (deliver policy all) hands over the
+// stream's first message, which the listener had acknowledged.
 func TestReplaceAListenerDurableAtItsFloor(t *testing.T) {
 	h := newStack(t)
 	ctx := context.Background()
 	const acked = 4
-	durable := func(m string) string { return bus.ListenerDurable(m) }
+	durable := bus.ListenerDurable
 
 	// While the row is released, a listener's connection publishes ten messages and acknowledges
 	// the first four of them on the main durable's current, so its ack floor is 4.
@@ -219,7 +191,7 @@ func TestReplaceAListenerDurableAtItsFloor(t *testing.T) {
 	mainDeliver := nats.NewInbox()
 	sub, err := wc.SubscribeSync(mainDeliver)
 	require.NoError(t, err)
-	replaceMake(t, wc, replaceBadConfig(main, durable("replace-main"), mainDeliver, 1))
+	makeConsumer(t, wc, replaceBadConfig(main, durable("replace-main"), mainDeliver, 1))
 	for range acked {
 		msg, err := sub.NextMsg(10 * time.Second)
 		require.NoError(t, err)
@@ -231,7 +203,7 @@ func TestReplaceAListenerDurableAtItsFloor(t *testing.T) {
 	// Control: a consumer created at deliver policy all, as the listener creates its durable after
 	// the README's delete, hands over the first message again.
 	control := nats.NewInbox()
-	replaceMake(t, wc, jetstream.ConsumerConfig{Durable: "replace-control", DeliverSubject: control, AckPolicy: jetstream.AckExplicitPolicy, FilterSubjects: bus.StreamSubjects()})
+	makeConsumer(t, wc, jetstream.ConsumerConfig{Durable: "replace-control", DeliverSubject: control, AckPolicy: jetstream.AckExplicitPolicy, FilterSubjects: bus.StreamSubjects()})
 	require.Equal(t, uint64(1), replaceFirstDelivered(t, wc, control), "control: deliver policy all hands over the acknowledged first message")
 	require.NoError(t, deleteConsumer(ctx, wc, notifications, "replace-control"))
 
@@ -242,11 +214,11 @@ func TestReplaceAListenerDurableAtItsFloor(t *testing.T) {
 	publishedOld, publishedNew := selection.FreshName(durable("replace-crash-publish")), selection.FreshName(durable("replace-crash-publish"))
 	for name, logical := range map[string]string{reserved: "replace-crash-reserve", createdOld: "replace-crash-create", createdNew: "replace-crash-create",
 		publishedOld: "replace-crash-publish", publishedNew: "replace-crash-publish"} {
-		replaceMake(t, wc, replaceBadConfig(name, durable(logical), nats.NewInbox(), acked+1))
+		makeConsumer(t, wc, replaceBadConfig(name, durable(logical), nats.NewInbox(), acked+1))
 	}
 	// A durable an earlier build left past the stream's end: created at 1000, so its floor is 999.
 	pastEnd := selection.FreshName(durable("replace-past-end"))
-	replaceMake(t, wc, replaceBadConfig(pastEnd, durable("replace-past-end"), nats.NewInbox(), 1000))
+	makeConsumer(t, wc, replaceBadConfig(pastEnd, durable("replace-past-end"), nats.NewInbox(), 1000))
 	require.Equal(t, uint64(999), replaceInfo(t, wc, pastEnd).AckFloor.Stream)
 	wc.Close()
 
@@ -276,7 +248,7 @@ func TestReplaceAListenerDurableAtItsFloor(t *testing.T) {
 	require.Equal(t, 1, code)
 	require.Contains(t, stderr, "selects no current")
 	nc, _ = h.replaceOp()
-	require.Empty(t, replaceNamesOf(t, nc, durable("replace-none")))
+	require.Empty(t, consumersOf(t, nc, durable("replace-none")))
 	stop := h.lastEntry(id, "")
 	require.Equal(t, "consumer-names replace stop", stop.Command+" "+stop.State, "the refused replace ends in its stop entry")
 	require.Equal(t, "this run wrote no record and made or deleted no consumer; it put "+barrierLeft, stop.Outputs["left"],
@@ -285,10 +257,10 @@ func TestReplaceAListenerDurableAtItsFloor(t *testing.T) {
 	code, stdout, _ := h.run(actionReplace, "--hold", id, "--listener", "replace-main")
 	require.Equal(t, 0, code)
 	replaced := h.replaceRequireReplaced(durable("replace-main"), acked+1, main)
-	mainRecord, _ := replaceRecord(t, func() selection.Store { _, s := h.replaceOp(); return s }(), durable("replace-main"))
+	nc, mainStore := h.replaceOp()
+	mainRecord, _ := replaceRecord(t, mainStore, durable("replace-main"))
 	require.NotContains(t, mainRecord.Retired, main, "a predecessor whose delete the server confirmed is dropped from the retired names")
 	require.Contains(t, stdout, main+" replaced by "+replaced+" at stream sequence 5")
-	nc, _ = h.replaceOp()
 	require.NotEqual(t, mainDeliver, replaceInfo(t, nc, replaced).Config.DeliverSubject, "the fresh name delivers to a new inbox")
 	done := h.lastEntry(id, "")
 	require.Equal(t, "consumer-names replace done", done.Command+" "+done.State)
@@ -361,13 +333,9 @@ func TestReplaceAListenerDurableAtAFullCap(t *testing.T) {
 	ctx := context.Background()
 	id := h.heldHold(holdrecord.WorkflowConsumerCleanup)
 	nc, js := h.operator()
-	config := bus.NotificationStreamConfig(1, 0)
+	config := notificationStreamConfig(t, 1)
 	config.MaxConsumers = 2
-	raw, err := json.Marshal(config)
-	require.NoError(t, err)
-	var streamConfig jetstream.StreamConfig
-	require.NoError(t, json.Unmarshal(raw, &streamConfig))
-	_, err = js.CreateStream(ctx, streamConfig)
+	_, err := js.CreateStream(ctx, config)
 	require.NoError(t, err)
 	_, err = selection.CreateSessionBucket(ctx, nc, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
 	require.NoError(t, err)
@@ -382,8 +350,8 @@ func TestReplaceAListenerDurableAtAFullCap(t *testing.T) {
 	retiredDurable := bus.ListenerDurable("replace-cap-retired")
 	old, retired := selection.FreshName(retiredDurable), selection.FreshName(retiredDurable)
 	nc, store := h.replaceOp()
-	replaceMake(t, nc, replaceBadConfig(old, retiredDurable, nats.NewInbox(), 1))
-	replaceMake(t, nc, replaceBadConfig(retired, retiredDurable, nats.NewInbox(), 1))
+	makeConsumer(t, nc, replaceBadConfig(old, retiredDurable, nats.NewInbox(), 1))
+	makeConsumer(t, nc, replaceBadConfig(retired, retiredDurable, nats.NewInbox(), 1))
 	_, err = store.Write(ctx, selection.DurableKey(retiredDurable), selection.Record{Current: old, Start: 1, Retired: []string{retired}}, 0)
 	require.NoError(t, err)
 	requireFull(nc)
@@ -395,7 +363,7 @@ func TestReplaceAListenerDurableAtAFullCap(t *testing.T) {
 	plainDurable := bus.ListenerDurable("replace-cap-plain")
 	plain := selection.FreshName(plainDurable)
 	nc, store = h.replaceOp()
-	replaceMake(t, nc, replaceBadConfig(plain, plainDurable, nats.NewInbox(), 1))
+	makeConsumer(t, nc, replaceBadConfig(plain, plainDurable, nats.NewInbox(), 1))
 	_, err = store.Write(ctx, selection.DurableKey(plainDurable), selection.Record{Current: plain, Start: 1}, 0)
 	require.NoError(t, err)
 	requireFull(nc)
@@ -408,7 +376,7 @@ func TestReplaceAListenerDurableAtAFullCap(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, info.Config.MaxConsumers, "the cap is never changed")
 	require.Equal(t, natsgrant.OperatorPhaseHeld, h.row().Phase)
-	require.True(t, slices.Contains(replaceNamesOf(t, nc, retiredDurable), kept))
+	require.True(t, slices.Contains(consumersOf(t, nc, retiredDurable), kept))
 }
 
 // A replace stop counts this hold's barrier key, which the run put before it read the durable's
@@ -458,7 +426,7 @@ func TestAReplaceWhoseDoneEntryIsLostStops(t *testing.T) {
 	require.NoError(t, err)
 	durable := bus.ListenerDurable("replace-lost")
 	current := selection.FreshName(durable)
-	replaceMake(t, nc, replaceBadConfig(current, durable, nats.NewInbox(), 1))
+	makeConsumer(t, nc, replaceBadConfig(current, durable, nats.NewInbox(), 1))
 	_, err = store.Write(ctx, selection.DurableKey(durable), selection.Record{Current: current, Start: 1}, 0)
 	require.NoError(t, err)
 	h.requireALostDoneStops(id, replaceCommand, func() (int, string, string) {
