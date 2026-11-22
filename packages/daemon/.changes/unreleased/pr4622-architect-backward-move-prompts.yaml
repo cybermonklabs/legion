@@ -7,6 +7,6 @@ body: |-
   `reviewing` (a red required check, a `behind` or `blocked` head, a path filter that skips the
   change), the prompt has the architect tell the reviewer to make the `request_backward_move`, since
   the daemon refuses the architect's own move outside `accepting`. Under an ancestor in
-  `retro` or `merging`, it has the architect ask the role that holds that phase to move the
-  ancestor back. The reviewer's prompt no longer says that nothing holds the head that merges to
+  `retro` or `merging`, it no longer tells the architect to move the ancestor back, which the
+  daemon refuses it. The reviewer's prompt no longer says that nothing holds the head that merges to
   the head it approved: a forward merge past its review is the exception.
