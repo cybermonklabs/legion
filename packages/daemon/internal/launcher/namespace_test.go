@@ -75,7 +75,9 @@ const pidOneHelperEnv = "LEGION_LAUNCHER_PID_ONE_HELPER"
 
 // runAsPIDOne runs the test binary's helper test as PID 1 of a PID namespace of its own
 // (pidNamespace), with only the test's own PATH, where its jj and git are, and pidOneHelperEnv in
-// its environment, fails t unless the helper ran and passed, and answers what it printed.
+// its environment, fails t unless the helper ran and passed, and answers what it printed. The
+// helper's own deadline is this test's less 20 s, so a helper whose wait gives up at its deadline
+// (reaperBound) prints why, and ends, before this test's alarm.
 func runAsPIDOne(t *testing.T, helper string) string {
 	t.Helper()
 	prefix := pidNamespace(t)
@@ -85,6 +87,9 @@ func runAsPIDOne(t *testing.T, helper string) string {
 	}
 	args := append(append([]string{}, prefix...), "/usr/bin/env", "-i", "PATH="+os.Getenv("PATH"), pidOneHelperEnv+"=1",
 		self, "-test.run=^"+helper+"$", "-test.v", "-test.count=1")
+	if deadline, ok := t.Deadline(); ok {
+		args = append(args, "-test.timeout="+max(time.Until(deadline)-20*time.Second, time.Second).String())
+	}
 	output, err := exec.Command("sudo", args...).CombinedOutput()
 	if err != nil || !bytes.Contains(output, []byte("--- PASS: "+helper)) {
 		t.Fatalf("%s as PID 1: %v\n%s", helper, err, output)

@@ -256,7 +256,7 @@ func TestPutBacksPIDOneHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stop := relentlessReaper(t, managers, guard)
+	stop, _ := relentlessReaper(t, managers, guard)
 	type answer struct {
 		restored bool
 		notice   string

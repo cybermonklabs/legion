@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -542,7 +543,19 @@ func testerRolesDir(t *testing.T) string {
 // process may have taken by then. The reaper takes every exited child of the test process, so a
 // test that runs it is not parallel, and runs its own commands through guard or while the reaper
 // is stopped.
-func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop func()) {
+//
+// passed waits until a whole pass of the reaper that began after the call has ended, and reports
+// whether one did. The signals channel holds one SIGCHLD, so a send completes only once the reaper
+// has taken the one before it, and the reaper takes the next only once its pass is over. When
+// passed is called, n sends are counted: send n+2 completes after the call (the count of send n+1
+// had not been made, and the sender counts each send before it makes the next), so the pass that
+// takes it begins after the call, and send n+4 completes only once the reaper has taken send n+3,
+// after that pass ended.
+//
+// Neither waits on the reaper past 30 s before the test binary's deadline (reaperBound): a pass
+// that never ends fails t by name there, in stop, or answers false from passed, rather than hold
+// the test until Go's alarm.
+func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop func(), passed func() bool) {
 	t.Helper()
 	orphan := exec.Command("/bin/sh", "-c", "exit 0")
 	if err := orphan.Start(); err != nil {
@@ -550,6 +563,7 @@ func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop 
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	signals := make(chan os.Signal, 1)
+	var sent atomic.Uint64
 	var reaping sync.WaitGroup
 	reaping.Go(func() { reapOrphans(ctx, signals, managers, guard) })
 	reaping.Go(func() {
@@ -558,18 +572,86 @@ func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop 
 			case <-ctx.Done():
 				return
 			case signals <- syscall.SIGCHLD:
+				sent.Add(1)
 			}
 		}
 	})
-	return func() {
+	stop = func() {
 		t.Helper()
 		cancel()
-		reaping.Wait()
+		ended := make(chan struct{})
+		go func() { reaping.Wait(); close(ended) }()
+		began := time.Now()
+		select {
+		case <-ended:
+		case <-time.After(reaperBound(t)):
+			t.Errorf("the reaper's goroutines had not ended %s after its stop, to 30 s before the test binary's deadline: a pass of it never ended", time.Since(began).Round(time.Millisecond))
+			return
+		}
 		if err := orphan.Wait(); !reapedByAnother(err) {
 			t.Errorf("the orphan %d's own wait answered %v, want ECHILD or ESRCH: the reaper left it unreaped, so it never ran while the test's commands did", orphan.Process.Pid, err)
 		}
 	}
+	passed = func() bool {
+		from := sent.Load()
+		return testwait.Holds(reaperBound(t), time.Millisecond, func() bool { return sent.Load() >= from+4 })
+	}
+	return stop, passed
 }
+
+// reaperBound is how long a wait on PID 1's reaper that begins now may last: until 30 s before
+// the test binary's deadline, three years at most under -timeout 0, so every such wait in a row
+// gives up at the same moment however many there are, and the failure and the row's cleanups
+// still run before Go's alarm.
+func reaperBound(t *testing.T) time.Duration {
+	return testwait.Bounded(t, 3*365*24*time.Hour, 30*time.Second)
+}
+
+// metTheReaper is start with the race between PID 1's reaper and a command's own wait run to its
+// end before that wait reads the command's exit: once start has started the command, the answer
+// waits for the command to exit and then for a whole pass of the reaper that began after it
+// (passed). By then a command the guard holds is still its own wait's, and any other's exit is
+// the reaper's, so its own wait answers ECHILD. A row whose control left the race to the machine
+// needed a pass to land between an unguarded command's exit and its wait, and failed whenever none
+// did (TestPutBacksUnderThePodsReaperKeepTheirExitStatus in CI's daemon-go, 2026-11-21: "none of 5
+// put-backs with no guard lost an exit to the reaper"). A command that never exits, or a reaper
+// that never finishes a pass, fails t by name at 30 s before the test binary's deadline
+// (reaperBound), naming how long the wait took. A start that begins once that moment has passed
+// waits for nothing: the first such start in t says so, once (deadlinePassed), since the row then
+// ran out of time, whatever the reaper did.
+func metTheReaper(t *testing.T, start procgroup.Starter, passed func() bool) procgroup.Starter {
+	return func(cmd *exec.Cmd) (func(), error) {
+		done, err := start(cmd)
+		if err != nil {
+			return done, err
+		}
+		pid := cmd.Process.Pid
+		if reaperBound(t) <= 0 {
+			if _, said := deadlinePassed.LoadOrStore(t, true); !said {
+				t.Errorf("the test binary's deadline less 30 s had passed before the command %d (%s) started, so it and every later command met the reaper unwaited", pid, strings.Join(cmd.Args, " "))
+			}
+			return done, nil
+		}
+		ended := func() bool {
+			_, err := os.Stat(filepath.Join("/proc", strconv.Itoa(pid)))
+			return errors.Is(err, os.ErrNotExist) || zombie(pid)
+		}
+		began := time.Now()
+		if !testwait.Holds(reaperBound(t), time.Millisecond, ended) {
+			t.Errorf("the command %d (%s) had not exited %s after it started, to 30 s before the test binary's deadline", pid, strings.Join(cmd.Args, " "), time.Since(began).Round(time.Millisecond))
+			return done, nil
+		}
+		exited := time.Now()
+		if !passed() {
+			t.Errorf("the reaper finished no pass in the %s after the command %d exited, to 30 s before the test binary's deadline", time.Since(exited).Round(time.Millisecond), pid)
+		}
+		return done, nil
+	}
+}
+
+// deadlinePassed holds, for each test, whether metTheReaper has said that the test binary's
+// deadline less 30 s passed before a command started.
+var deadlinePassed sync.Map
 
 // While the install's verification runs — the served check's `--help`, a child of the launcher,
 // which is its pod's PID 1 — the guard holds its pid, so no pass of the pod's reaper can take its
@@ -630,9 +712,13 @@ func TestTheLeakCheckInstallsVerificationIsHeldFromThePodsReaperWhileItRuns(t *t
 	}
 }
 
-// installsUnderReaper is how many installs TestLeakCheckInstallPIDOneHelper makes under PID 1's
-// reaper, and how many its control may try before one is reaped.
-const installsUnderReaper = 200
+// installsUnderReaper is how many installs TestLeakCheckInstallPIDOneHelper makes through the
+// guard, and controlInstalls how many it makes with no guard. Every run of the check meets the
+// reaper (metTheReaper), so each install is a race the reaper has run, not a chance at one.
+const (
+	installsUnderReaper = 5
+	controlInstalls     = 5
+)
 
 // The launcher is its pod's PID 1, whose reaper reaps every exited child the launcher does not
 // hold (reapOrphans), and the install's one run of the served check (`--help`, leakguard's
@@ -640,10 +726,10 @@ const installsUnderReaper = 200
 // (pidGuard.starter, which newManagers gives the pod's install): a run whose exit the reaper took
 // first fails its own wait with `waitid: no child processes`, or under gVisor at times `wait: no
 // child processes` or `waitid: no such process`, and the role's launch is refused with it.
-// The race needs a pod's shape: PID 1 of a PID namespace whose /proc lists a handful of processes,
-// so a reaper's pass is short. Under a host's /proc of thousands, a pass took long enough that 200
-// unguarded installs met no reap at all, so the installs run in the test binary as PID 1 of a PID
-// namespace of its own (TestLeakCheckInstallPIDOneHelper).
+// The row runs in the pod's shape, the test binary as PID 1 of a PID namespace of its own
+// (TestLeakCheckInstallPIDOneHelper), so the reaper's passes read that namespace's /proc, a handful
+// of processes, and reap only the helper's own children. Each run of the check meets a pass because
+// metTheReaper waits for one, not because passes are short.
 func TestTheLeakCheckInstallSurvivesPID1sReaper(t *testing.T) {
 	t.Logf("%s", runAsPIDOne(t, "TestLeakCheckInstallPIDOneHelper"))
 }
@@ -651,10 +737,12 @@ func TestTheLeakCheckInstallSurvivesPID1sReaper(t *testing.T) {
 // TestLeakCheckInstallPIDOneHelper is TestTheLeakCheckInstallSurvivesPID1sReaper's body, run as
 // PID 1 under relentlessReaper. The check is installed installsUnderReaper times, each by a
 // container's managers as newManagers wires them, and every install must succeed. The control
-// comes after them, with the reaper still running: the same check installed with
-// procgroup.NoReaper, as an install outside a launcher runs it, must be refused, its run reaped by
-// the reaper (reapedByAnother), within installsUnderReaper tries, or the reaper never met a run's
-// exit and the installs before it prove nothing.
+// comes after them, with the reaper still running: the same check installed controlInstalls times
+// with procgroup.NoReaper, as an install outside a launcher runs it, and every one must be
+// refused, its run reaped by the reaper (reapedByAnother). Every run of the check, both ways, meets
+// the reaper before its own wait reads its exit (metTheReaper, through the start newManagers gave
+// the install): the row once left that race to the machine, its control trying up to 200 installs
+// for one a pass happened to land on.
 func TestLeakCheckInstallPIDOneHelper(t *testing.T) {
 	if os.Getenv(pidOneHelperEnv) != "1" {
 		return
@@ -676,7 +764,24 @@ func TestLeakCheckInstallPIDOneHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stop := relentlessReaper(t, managers, guard)
+	stop, passed := relentlessReaper(t, managers, guard)
+	// Each install runs in a goroutine of its own and is waited for until 15 s before the test
+	// binary's deadline, after reaperBound's 30 s: a pass that never ends while it holds the
+	// guard's lock holds every guarded start with it, and the row then fails here, by name, with
+	// how long it waited. A message of metTheReaper's before it says whether the reaper finished
+	// its passes; without one, the install itself was slow.
+	install := func(what string, run func() error) error {
+		got := make(chan error, 1)
+		go func() { got <- run() }()
+		began := time.Now()
+		select {
+		case err := <-got:
+			return err
+		case <-time.After(testwait.Bounded(t, 3*365*24*time.Hour, 15*time.Second)):
+			t.Fatalf("%s had not returned %s after it began, to 15 s before the test binary's deadline: its start waits on the guard's lock, which a reaper pass that never ends holds, or the install is slow", what, time.Since(began).Round(time.Millisecond))
+			return nil
+		}
+	}
 
 	var refused []string
 	for index := range installsUnderReaper {
@@ -686,39 +791,39 @@ func TestLeakCheckInstallPIDOneHelper(t *testing.T) {
 			stop()
 			t.Fatal(err)
 		}
+		// The start newManagers gave the install, the guard's, meeting the reaper on every run.
+		installers[0].check.start = metTheReaper(t, installers[0].check.start, passed)
 		var last shimwire.LauncherLeakCheckResult
-		for _, frame := range frames {
-			last = installers[0].check.receive(context.Background(), frame, func(string, ...any) {})
-		}
+		_ = install(fmt.Sprintf("install %d", index), func() error {
+			for _, frame := range frames {
+				last = installers[0].check.receive(context.Background(), frame, func(string, ...any) {})
+			}
+			return nil
+		})
 		if !last.OK || !last.Installed {
 			refused = append(refused, fmt.Sprintf("install %d: %s", index, last.Error))
 		}
 		_ = os.RemoveAll(dir)
 	}
 
-	controlTries, controlCause := 0, ""
-	for controlTries < installsUnderReaper && controlCause == "" {
-		controlTries++
-		dir := filepath.Join(installs, fmt.Sprintf("control-%d", controlTries))
-		err := leakguard.InstallServed(context.Background(), leakguard.ServedInstall{Dir: dir, Tag: leakCheckPin, Body: body, Start: procgroup.NoReaper})
-		switch {
-		case err == nil:
-			// Each install is read once, so it goes before the next: the fixture is large.
-			_ = os.RemoveAll(dir)
-		case reapedByAnother(err):
-			controlCause = err.Error()
-		default:
-			stop()
-			t.Fatalf("the control's install %d failed otherwise: %v", controlTries, err)
+	var kept []string
+	for index := range controlInstalls {
+		dir := filepath.Join(installs, fmt.Sprintf("control-%d", index))
+		err := install(fmt.Sprintf("the control's install %d", index), func() error {
+			return leakguard.InstallServed(context.Background(), leakguard.ServedInstall{Dir: dir, Tag: leakCheckPin, Body: body, Start: metTheReaper(t, procgroup.NoReaper, passed)})
+		})
+		if !reapedByAnother(err) {
+			kept = append(kept, fmt.Sprintf("install %d: %v", index, err))
 		}
+		_ = os.RemoveAll(dir)
 	}
 	stop()
 
-	if controlCause == "" {
-		t.Fatalf("none of %d installs with no guard was reaped: the reaper never met a run's exit, so the installs before them prove nothing", controlTries)
+	if len(kept) != 0 {
+		t.Errorf("%d of %d installs with no guard kept their run's exit, want each reaped by the reaper, which met it:\n%s", len(kept), controlInstalls, strings.Join(kept, "\n"))
+	} else {
+		t.Logf("control: %d of %d installs with no guard were refused, their run reaped by the reaper", controlInstalls, controlInstalls)
 	}
-	t.Logf("control: install %d with no guard was refused: %s", controlTries, controlCause)
-
 	if len(refused) != 0 {
 		t.Errorf("%d of %d installs under the reaper were refused, want none:\n%s", len(refused), installsUnderReaper, strings.Join(refused, "\n"))
 	} else {
