@@ -89,15 +89,19 @@ func restoreStartDispatch(t *testing.T, h *stack, binary, databaseURL string) *c
 }
 
 // restoreDispatchAcked waits up to within until consumer name of the stream has acked every
-// message through seq and holds none pending, and answers its info.
+// message through seq and holds none pending, and answers its info. It reads the info every 250 ms
+// on the test's goroutine, so a run that times out names the last info it read.
 func (rig *restoreRig) restoreDispatchAcked(name string, seq uint64, within time.Duration) *jetstream.ConsumerInfo {
 	rig.t.Helper()
-	var info *jetstream.ConsumerInfo
-	require.Eventually(rig.t, func() bool {
-		info = rig.consumer(name)
-		return info != nil && info.AckFloor.Stream >= seq && info.NumPending == 0 && info.NumAckPending == 0
-	}, within, 250*time.Millisecond, "%s never acked through %d (last info %+v)", name, seq, info)
-	return info
+	for deadline := time.Now().Add(within); ; time.Sleep(250 * time.Millisecond) {
+		info := rig.consumer(name)
+		if info != nil && info.AckFloor.Stream >= seq && info.NumPending == 0 && info.NumAckPending == 0 {
+			return info
+		}
+		if time.Now().After(deadline) {
+			rig.t.Fatalf("%s never acked through %d (last info %+v)", name, seq, info)
+		}
+	}
 }
 
 // restoreDispatchDatabase makes the Dispatch store of a row whose previous envoy-dispatch boots on
