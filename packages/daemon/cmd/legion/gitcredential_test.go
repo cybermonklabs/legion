@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // gitCredentialBundle writes a gh bundle of a role whose issue is acme's: one directory per
@@ -669,7 +671,8 @@ func TestGitCredentialPrefersTheParentWhenBothOwnersAreServed(t *testing.T) {
 // reach it. The fake GitHub answers 401 to any other header, so the answer, acme's token from
 // either directory, proves which token went. curl's last argument is the repository git named at
 // https://api.github.com, and the value after its --max-time is seconds of one decimal inside the
-// read's bound of 10 s; leakguard's own tests read the guard's other curl options (Guard.CurlGet).
+// read's bound (forkReadBound, which the product sets to 10 s and this binary to what is left of
+// its deadline); leakguard's own tests read the guard's other curl options (Guard.CurlGet).
 func TestGitCredentialReadsTheForkWithGHConfigDirsToken(t *testing.T) {
 	root, acme := gitCredentialBundle(t)
 	forkOfAcme := forkReadFixture(t, "fork-of-a-served-repository.http")
@@ -707,7 +710,8 @@ func TestGitCredentialReadsTheForkWithGHConfigDirsToken(t *testing.T) {
 				}
 			}
 			// What the fork read hands the guard's curl read (leakguard's Guard.CurlGet): the
-			// repository git named, and a --max-time inside the read's bound. The guard's own
+			// repository git named, and a --max-time inside the read's bound, forkReadBound, which
+			// this binary sets to what is left of its own deadline (testBounds). The guard's own
 			// tests read its other options.
 			const wantURL = "https://api.github.com/repos/outside-author/sample-project"
 			if len(read.argv) == 0 || read.argv[len(read.argv)-1] != wantURL {
@@ -718,8 +722,8 @@ func TestGitCredentialReadsTheForkWithGHConfigDirsToken(t *testing.T) {
 				maxTime = read.argv[at+1]
 			}
 			seconds, err := strconv.ParseFloat(maxTime, 64)
-			if _, decimals, _ := strings.Cut(maxTime, "."); err != nil || len(decimals) != 1 || seconds <= 0 || seconds > 10 {
-				t.Errorf("curl ran with %q, whose --max-time is %q; want seconds of one decimal, more than 0 and at most 10", read.argv, maxTime)
+			if _, decimals, _ := strings.Cut(maxTime, "."); err != nil || len(decimals) != 1 || seconds <= 0 || seconds > forkReadBound.Seconds() {
+				t.Errorf("curl ran with %q, whose --max-time is %q; want seconds of one decimal, more than 0 and at most the read's bound of %s", read.argv, maxTime, forkReadBound)
 			}
 		})
 	}
@@ -971,44 +975,95 @@ func TestGitCredentialNamesTheForksRouteWhenItsParentHoldsNoToken(t *testing.T) 
 	}
 }
 
-// R2: a fork read that GitHub never answers is stopped at the read's bound, here shortened to
-// 2 s: the helper answers nothing, exit 1, within the bound and 3 s more, naming the bound, and
-// nothing the curl started still runs. The fake GitHub starts a sleep of its own, detached from
-// its output so nothing holds the read's pipes, records that sleep's PID, and then waits far past
-// the bound. curl runs in a process group of its own (leakguard's Guard.run), and the read's end
-// stops that whole group; a stop that killed curl alone would leave the sleep running,
-// reparented and waited for by nobody.
+// R2: a fork read that GitHub never answers is stopped, and with it what the curl started: curl
+// runs in a process group of its own (leakguard's Guard.run), and the read's end stops that whole
+// group. A stop that killed curl alone would leave what curl started running, reparented and
+// waited for by nobody.
+//
+// The row reads that in two reads, as TestAHelpReadThatTimesOutStopsWhatGhStarted does, so that
+// no verdict of it is a race with the clock. In the first, the read's bound is 2 s and the fake
+// GitHub never answers: the helper answers nothing, exit 1, naming the bound. In the second, the
+// fake GitHub starts a sleep of its own, detached from its output so nothing holds the read's
+// pipes, records that sleep's PID and never answers, and the helper's context ends once the sleep
+// is recorded: the helper answers nothing, naming the cancel, and the sleep is gone too. Guard.run
+// gives curl the one stop procgroup makes whichever end of the read's context comes, its bound's or
+// this one. In one read under the bound of 2 s, a loaded machine could let the bound stop curl
+// before curl had recorded its sleep. Each wait, the helper's answer included, has the test
+// binary's deadline as its only bound, and each stand-in sleeps about a day, so a stop that never
+// comes fails the row by name and no sleep ends by itself before it.
 func TestGitCredentialStopsAForkReadThatNeverAnswers(t *testing.T) {
 	if _, err := os.ReadFile("/proc/self/cmdline"); err != nil {
 		t.Fatalf("/proc does not answer (%v): this test reads from it whether the fake GitHub's sleep is still running", err)
 	}
-	root, acme := gitCredentialBundle(t)
-	pidFile := filepath.Join(t.TempDir(), "sleep")
-	const sleepSeconds = "289"
-	github := newFakeGitHub(t, "ghs_acme_write",
-		"sleep "+sleepSeconds+" </dev/null >/dev/null 2>&1 &\necho $! > "+shellWord(pidFile)+"\nexec sleep 290\n")
-	useForkRead(t, github.program, 2*time.Second)
-	forkReadPane(t, root, acme)
-	killRecordedHelper(t, pidFile, sleepSeconds)
-	start := time.Now()
-	code, stdout, stderr := runGitCredentialHere(t, forkRequest("outside-author/sample-project"), "get")
-	if took := time.Since(start); took > 5*time.Second {
-		t.Errorf("legion git-credential get took %s, want at most the bound of 2 s and 3 s more", took)
-	}
-	answersNothingForTheFork(t, code, stdout, stderr, root, "outside-author/sample-project", "bound of 2 s")
-	data, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatalf("the fake GitHub recorded no sleep: %v", err)
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		t.Fatalf("the fake GitHub recorded the sleep's PID %q: %v", data, err)
-	}
-	for deadline := time.Now().Add(3 * time.Second); helperRunning(pid, sleepSeconds); time.Sleep(50 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the fake GitHub's sleep, PID %d, still runs 3 s after the helper answered; want the read's end to stop curl's whole process group", pid)
-		}
-	}
+	t.Run("a read GitHub never answers is stopped at its bound", func(t *testing.T) {
+		root, acme := gitCredentialBundle(t)
+		curlPid := filepath.Join(t.TempDir(), "curl.pid")
+		const curlSeconds = "86388"
+		github := newFakeGitHub(t, "ghs_acme_write", holdsStandIn(curlPid, curlSeconds))
+		useForkRead(t, github.program, 2*time.Second)
+		forkReadPane(t, root, acme)
+		killRecordedHelper(t, curlPid, curlSeconds)
+		answered, _ := startGitCredentialGet(t, forkRequest("outside-author/sample-project"))
+		got := testwait.Receive(t, "legion git-credential get to answer once the fork read's bound of 2 s passed", answered)
+		answersNothingForTheFork(t, got.code, got.stdout, got.stderr, root, "outside-author/sample-project", "stopped by its bound of 2 s")
+	})
+	t.Run("the stop reaches the sleep curl started", func(t *testing.T) {
+		root, acme := gitCredentialBundle(t)
+		dir := t.TempDir()
+		curlPid, sleepPid := filepath.Join(dir, "curl.pid"), filepath.Join(dir, "sleep.pid")
+		const curlSeconds, sleepSeconds = "86390", "86389"
+		github := newFakeGitHub(t, "ghs_acme_write",
+			"sleep "+sleepSeconds+" </dev/null >/dev/null 2>&1 &\necho $! > "+shellWord(sleepPid)+"\n"+holdsStandIn(curlPid, curlSeconds))
+		useForkRead(t, github.program, forkReadBound)
+		forkReadPane(t, root, acme)
+		killRecordedHelper(t, sleepPid, sleepSeconds)
+		killRecordedHelper(t, curlPid, curlSeconds)
+		answered, stop := startGitCredentialGet(t, forkRequest("outside-author/sample-project"))
+		var pid int
+		testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, testBoundMargin), testwait.Poll, "the fake GitHub to record the sleep it starts", func() bool {
+			var running bool
+			pid, running = recordedHelper(sleepPid, sleepSeconds)
+			return running
+		})
+		stop()
+		got := testwait.Receive(t, "legion git-credential get to answer once its context ended", answered)
+		answersNothingForTheFork(t, got.code, got.stdout, got.stderr, root, "outside-author/sample-project", "stopped by a cancel")
+		testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, testBoundMargin), testwait.Poll,
+			fmt.Sprintf("the fake GitHub's sleep, PID %d, to end once the helper answered: want the read's end to stop curl's whole process group", pid),
+			func() bool { return !helperRunning(pid, sleepSeconds) })
+	})
+}
+
+// gitCredentialAnswer is what one `legion git-credential get` answered: its exit status and what
+// it printed.
+type gitCredentialAnswer struct {
+	code           int
+	stdout, stderr string
+}
+
+// startGitCredentialGet starts `legion git-credential get` in process, as runGitCredentialHere
+// runs it, with stdin as git's request and under a context of its own, and answers the channel its
+// answer comes on and that context's cancel. The end of t cancels the context and waits for the
+// call before the cleanups registered earlier run, so a call the row gave up on is stopped, and
+// never reads the helper's stdin or the fork read's curl and bound while a cleanup puts them back.
+func startGitCredentialGet(t *testing.T, stdin string) (<-chan gitCredentialAnswer, context.CancelFunc) {
+	t.Helper()
+	previous := gitCredentialStdin
+	gitCredentialStdin = strings.NewReader(stdin)
+	t.Cleanup(func() { gitCredentialStdin = previous })
+	ctx, cancel := context.WithCancel(context.Background())
+	answered, ended := make(chan gitCredentialAnswer, 1), make(chan struct{})
+	go func() {
+		defer close(ended)
+		var out, errb bytes.Buffer
+		code := run(ctx, []string{"legion", "git-credential", "get"}, &out, &errb)
+		answered <- gitCredentialAnswer{code: code, stdout: out.String(), stderr: errb.String()}
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-ended
+	})
+	return answered, cancel
 }
 
 // R2: a request for a repository of an owner the bundle holds a directory for is answered as it

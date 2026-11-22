@@ -3,61 +3,101 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
-	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// A help read that outlives its timeout stops everything gh started, not gh alone. The gh here
-// starts a helper of its own, detached from gh's output so nothing holds the read's pipes, and
-// then never answers. Once readGhHelp has given up, the helper is gone too. A timeout that killed
-// gh alone, as exec.CommandContext's own does, left that helper running, reparented and waited
-// for by nobody; under a gh that led back to `legion gh`, every level of the chain was such a
-// helper.
+// A help read that outlives its timeout stops everything gh started, not gh alone. A timeout that
+// killed gh alone, as exec.CommandContext's own does, left what gh started running, reparented and
+// waited for by nobody; under a gh that led back to `legion gh`, every level of the chain was such
+// a helper.
+//
+// The row reads that in two reads, so that no verdict of it is a race with the clock. In the
+// first, ghHelpTimeout is a second and gh never answers: readGhHelp gives up naming the timeout and
+// the stop of gh's process group, which it says only where procgroup's stop ended the read. In the
+// second, gh starts a helper of its own, detached from gh's output so nothing holds the read's
+// pipes, and never answers, and the read's context ends once gh has recorded that helper:
+// readGhHelp gives up naming the stop of gh's group, and the helper is gone too. exec runs the one
+// stop procgroup gives the read whichever end of its context comes, the timeout's or this one. In
+// one read under a timeout of a second, a loaded machine let the timeout stop gh before gh had
+// recorded its helper, and the row failed with "gh recorded no helper". Each wait has the test
+// binary's deadline as its only bound, and each stand-in sleeps about a day, so a stop that never
+// comes fails the row by name and no sleep ends by itself before it.
 func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 	if _, err := os.ReadFile("/proc/self/cmdline"); err != nil {
 		t.Fatalf("/proc does not answer (%v): this row reads from it whether gh's helper is still running", err)
 	}
-	dir := t.TempDir()
-	pidFile := filepath.Join(dir, "helper")
-	const helperSeconds = "299"
-	gh := filepath.Join(dir, "gh")
-	script := "#!/bin/sh\nsleep " + helperSeconds + " </dev/null >/dev/null 2>&1 &\necho $! >'" + pidFile + "'\nexec sleep 300\n"
-	if err := os.WriteFile(gh, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
+	// read starts readGhHelp of gh's `pr` help and answers the channel its error comes on and the
+	// cancel of its context. The end of t cancels that context and waits for the read before the
+	// cleanups registered earlier run, so a read the row gave up on is stopped, and never reads
+	// ghHelpTimeout while a cleanup puts it back.
+	read := func(t *testing.T, gh string) (<-chan error, context.CancelFunc) {
+		ctx, cancel := context.WithCancel(context.Background())
+		answered, ended := make(chan error, 1), make(chan struct{})
+		go func() {
+			defer close(ended)
+			_, err := readGhHelp(ctx, gh, os.Environ(), []string{"pr"})
+			answered <- err
+		}()
+		t.Cleanup(func() {
+			cancel()
+			<-ended
+		})
+		return answered, cancel
 	}
-	timeout := ghHelpTimeout
-	ghHelpTimeout = time.Second
-	t.Cleanup(func() { ghHelpTimeout = timeout })
-	killRecordedHelper(t, pidFile, helperSeconds)
-
-	_, err := readGhHelp(context.Background(), gh, os.Environ(), []string{"pr"})
-	if err == nil || !strings.Contains(err.Error(), "did not answer its help within") {
-		t.Fatalf("readGhHelp of a gh that never answers = %v; want it to give up naming the timeout", err)
-	}
-	raw, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatalf("gh recorded no helper: %v", err)
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-	if err != nil {
-		t.Fatalf("gh recorded helper pid %q: %v", raw, err)
-	}
-	// The group's stop is SIGTERM, then SIGKILL after procgroup.StopGrace; the helper, a sleep,
-	// ends on the SIGTERM, and the bound leaves room for a loaded machine to reap it.
-	for deadline := time.Now().Add(procgroup.StopGrace + 5*time.Second); helperRunning(pid, helperSeconds); time.Sleep(50 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("gh's helper (pid %d) is still running after the help read gave up; want the read's timeout to stop gh's whole process group", pid)
+	t.Run("a gh that never answers is stopped at the timeout", func(t *testing.T) {
+		dir := t.TempDir()
+		gh, ghPid := filepath.Join(dir, "gh"), filepath.Join(dir, "gh.pid")
+		const ghSeconds = "86398"
+		if err := os.WriteFile(gh, []byte("#!/bin/sh\n"+holdsStandIn(ghPid, ghSeconds)), 0o700); err != nil {
+			t.Fatal(err)
 		}
-	}
+		timeout := ghHelpTimeout
+		ghHelpTimeout = time.Second
+		t.Cleanup(func() { ghHelpTimeout = timeout })
+		killRecordedHelper(t, ghPid, ghSeconds)
+		answered, _ := read(t, gh)
+		err := testwait.Receive(t, "the help read of a gh that never answers to end at its timeout of 1s", answered)
+		if want := "gh did not answer its help within 1s, and its process group was stopped"; err == nil || err.Error() != want {
+			t.Fatalf("readGhHelp of a gh that never answers = %v; want %q", err, want)
+		}
+	})
+	t.Run("the stop reaches the helper gh started", func(t *testing.T) {
+		dir := t.TempDir()
+		gh, ghPid, helperPid := filepath.Join(dir, "gh"), filepath.Join(dir, "gh.pid"), filepath.Join(dir, "helper.pid")
+		const ghSeconds, helperSeconds = "86400", "86399"
+		script := "#!/bin/sh\nsleep " + helperSeconds + " </dev/null >/dev/null 2>&1 &\necho $! >'" + helperPid + "'\n" + holdsStandIn(ghPid, ghSeconds)
+		if err := os.WriteFile(gh, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		killRecordedHelper(t, helperPid, helperSeconds)
+		killRecordedHelper(t, ghPid, ghSeconds)
+		answered, stop := read(t, gh)
+		var pid int
+		testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, testBoundMargin), testwait.Poll, "gh to record the helper it starts", func() bool {
+			var running bool
+			pid, running = recordedHelper(helperPid, helperSeconds)
+			return running
+		})
+		stop()
+		err := testwait.Receive(t, "the help read to end once its context ended", answered)
+		if want := "gh's help read was stopped, with its process group: context canceled"; err == nil || err.Error() != want {
+			t.Fatalf("readGhHelp of a gh that never answers, its context ended = %v; want %q", err, want)
+		}
+		// The group's stop is SIGTERM, then SIGKILL after procgroup.StopGrace; the helper, a
+		// sleep, ends on the SIGTERM.
+		testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, testBoundMargin), testwait.Poll,
+			fmt.Sprintf("gh's helper (pid %d) to end once the help read was stopped: want the stop to reach gh's whole process group", pid),
+			func() bool { return !helperRunning(pid, helperSeconds) })
+	})
 }
 
 // A signal the terminal sends `legion gh`'s process group stops everything `legion gh` started
@@ -68,7 +108,7 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 // stand-in holds that work (signalWhileHeld).
 //
 // A SIGINT to the group, a Ctrl-C, cancels the command's context (main's signal.NotifyContext),
-// which stops the held work's group, and `legion gh` ends with 130 within a few seconds. A SIGHUP
+// which stops the held work's group, and `legion gh` ends with 130. A SIGHUP
 // to the group, a pane that closes, is caught until gh would start (hangupCancels) and stops the
 // held work's group the same way, and `legion gh` ends with 129.
 //
@@ -97,7 +137,7 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 	passes := func(string, string) string { return leakguardtest.Passes }
 	for _, held := range []struct {
 		name string
-		// seconds is the holding stand-in's sleep, one per row.
+		// seconds is the holding stand-in's sleep, one per row (holdsStandIn).
 		seconds string
 		// gh and check are the stand-in gh and the stand-in shared check, given the file the
 		// holding one records its pid in and its sleep.
@@ -107,21 +147,21 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 		keepsNothing bool
 	}{
 		{
-			name: "the help read", seconds: "297", check: passes, keepsNothing: true,
+			name: "the help read", seconds: "86397", check: passes, keepsNothing: true,
 			gh: func(pidFile, seconds string) string {
 				return "#!/bin/sh\nfor last; do :; done\nif [ \"$last\" = --help ]; then\n  cat '" + filepath.Join(help, "gh.txt") + "'\n" +
 					holdsStandIn(pidFile, seconds) + "fi\nexit 0\n"
 			},
 		},
 		{
-			name: "the shared check", seconds: "296", check: holdsStandIn,
+			name: "the shared check", seconds: "86396", check: holdsStandIn,
 			gh: func(string, string) string { return ghStandInPrefix(help) + "exit 0\n" },
 		},
 		{
 			// The stand-in gh answers the outer `legion gh`'s help reads, and holds the guard's
 			// read, which reads no help of its own. It tells that read by its argv
 			// (ghVisibilityReadArgv): gh is handed no Legion variable naming it (ghChildEnviron).
-			name: "the guard's visibility read", seconds: "295", check: passes,
+			name: "the guard's visibility read", seconds: "86395", check: passes,
 			gh: func(pidFile, seconds string) string {
 				return ghStandInHelp(help) +
 					"case \" $* \" in\n" + ghVisibilityReadArgv + ")\n" + holdsStandIn(pidFile, seconds) + ";;\nesac\nexit 0\n"
