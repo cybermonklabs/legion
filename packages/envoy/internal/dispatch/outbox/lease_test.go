@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // process is one envoy-dispatch process's outbox under test: its own pool, its own events broker
@@ -110,11 +111,7 @@ func startProcess(t *testing.T, name string, database *store.Store, url string, 
 	go func() { p.outbox.Run(ctx); close(done) }()
 	p.stop = sync.OnceFunc(func() {
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			t.Errorf("%s's outbox did not stop", name)
-		}
+		testwait.Receive(t, name+"'s outbox Run to return once its context ended", done)
 	})
 	t.Cleanup(p.stop)
 	return p
