@@ -1,7 +1,6 @@
 package gcp
 
 import (
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -33,7 +32,7 @@ import (
 
 // The front door's certificate scripts (dispatch_frontdoor.go), run rather than read: each test
 // renders a script as the Deployment does, for paths rooted in the test's own directories, and runs
-// it on the shell tailnetTestShell names, against real certificates on disk and a stand-in API
+// it on the shell shellCommand names, against real certificates on disk and a stand-in API
 // server holding Secret <hostname>-tailnet-tls. A missing tool fails the test rather than skipping
 // it: without it nothing here judges the scripts.
 
@@ -56,14 +55,12 @@ func requireFrontDoorTools(t *testing.T) {
 // and how it exited.
 func runFrontDoorScript(t *testing.T, script string, env ...string) (stdout, stderr string, err error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
 	var out, errOut strings.Builder
-	cmd := tailnetTestShell(ctx, "-c", script)
+	cmd := shellCommand(t, "-c", script)
 	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	err = cmd.Run()
-	if ctx.Err() != nil {
+	if killedBySignal(cmd) {
 		t.Fatalf("the script did not finish:\n%s\n%s", out.String(), errOut.String())
 	}
 	return out.String(), errOut.String(), err
@@ -505,7 +502,7 @@ esac
 	stderr, err := os.Create(run.stderr)
 	require.NoError(t, err)
 	defer stderr.Close()
-	cmd := tailnetTestShell(context.Background(), "-c", dispatchCertPublishScript(paths, frontDoorTestFQDN))
+	cmd := shellCommand(t, "-c", dispatchCertPublishScript(paths, frontDoorTestFQDN))
 	cmd.Env = append(os.Environ(), "PATH="+shim+string(os.PathListSeparator)+os.Getenv("PATH"), "HOSTNAME="+frontDoorTestPod+"a")
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

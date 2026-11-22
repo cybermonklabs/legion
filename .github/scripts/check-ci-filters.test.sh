@@ -35,7 +35,8 @@
 # hand the action exactly .github/ci-filters.yaml as its `filters` input, every output of the
 # changes job must name that step and a filter that file holds, that file must be there and open,
 # and a listed block's patterns are passed over by rule 9 only while its marker names a check a
-# job of CI runs.
+# job of CI runs. A script's go command is read under every step of each job that may run it, and
+# the header's run recipe runs the check, or says why it stops.
 #
 # Each case builds a miniature repository under a temporary directory - a go.work binding one
 # module, a ci.yaml whose `changes` job gates one job, a .github/ci-filters.yaml holding the
@@ -1723,10 +1724,11 @@ check "names the script's command and its line" \
   "$(contains "$out" 'build.sh, which job app runs, runs `go build ./cmd/app`, which this check does not reduce (its line is `go build ./cmd/app ./other`, not the text alone), so it counts as reading every Go file of the repository')"
 check "and the file the module adds" "$(contains "$out" '::error file=mod/other/other.go::')"
 
-# A script's go command is read under each job's steps up to the last one whose run: names the
-# script, since a later step runs after the script; and under every step of a job that names it
-# nowhere, since it may be started some way this check does not see. script_job <root>:
-# script-line's Run of build.sh, its line the text alone.
+# A script's go command is read under every step of each job that may run it. Which step starts
+# the script is nothing this check can prove: a step can start it through another script, from
+# another directory or by a test it compiles, and a step that only names its path (to chmod or
+# lint it) starts nothing. So a write anywhere in such a job may reach the script's commands.
+# script_job <root>: script-line's Run of build.sh, its line the text alone.
 script_job() {
   printf '#!/bin/sh\ngo build ./cmd/app\n' > "$1/build.sh"
   replace "$1/.github/scripts/ci_job_reads.py" 'text="go test ./cmd/app ./lib"),' \
@@ -1735,13 +1737,7 @@ script_job() {
 path_write=$'      - name: Put a tool on the path of the steps after\n        run: echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"\n'
 build_step=$'      - name: Build the app\n        run: sh build.sh\n'
 report_step="      - name: Report ci-ok when this job decides a merge-group run"
-
-echo "case: a write after the step that runs a script reaches none of the script's commands"
-root=$(fixture script-write-after)
-script_job "$root"
-replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$path_write$report_step"
-run_check "$root"
-check "exits 0" "$(is "$status" 0)"
+widened='build.sh, which job app runs, runs `go build ./cmd/app`, which this check does not reduce (step "Put a tool on the path of the steps after" runs `$GITHUB_PATH`, which every later step inherits)'
 
 echo "case: a write before the step that runs a script widens the script's commands"
 root=$(fixture script-write-before)
@@ -1749,8 +1745,15 @@ script_job "$root"
 replace "$root/.github/workflows/ci.yaml" "$report_step" "$path_write$build_step$report_step"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the script's command and the write" \
-  "$(contains "$out" 'build.sh, which job app runs, runs `go build ./cmd/app`, which this check does not reduce (step "Put a tool on the path of the steps after" runs `$GITHUB_PATH`, which every later step inherits)')"
+check "names the script's command and the write" "$(contains "$out" "$widened")"
+
+echo "case: a write after the step that runs a script widens the script's commands too"
+root=$(fixture script-write-after)
+script_job "$root"
+replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$path_write$report_step"
+run_check "$root"
+check "fails, since a later step may start the script again" "$(is "$status" 1)"
+check "names the script's command and the write" "$(contains "$out" "$widened")"
 
 echo "case: a write anywhere in a job no step of which names the script widens the script's commands"
 root=$(fixture script-write-unnamed)
@@ -1758,63 +1761,66 @@ script_job "$root"
 replace "$root/.github/workflows/ci.yaml" "$report_step" "$path_write$report_step"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
+check "names the script's command and the write" "$(contains "$out" "$widened")"
+
+# Jobs that start the script again after a write, in a form no step's text shows as a start of it:
+# through a wrapper script that runs it, or by a cd into its directory and a start by its name
+# there. The write comes after the job's plain start of the script, or after a step that only
+# names its path. The check reads neither the wrapper nor the cd: it fails because it reads every
+# step of the job, which is the only reading that does not miss such a start.
+wrap_step=$'      - name: Build through the wrapper\n        run: sh wrap.sh\n'
+chmod_step=$'      - name: Make the script executable\n        run: chmod +x build.sh\n'
+
+echo "case: a write after the script's start, then a start through a wrapper script, widens the script's commands"
+root=$(fixture script-start-wrapper)
+script_job "$root"
+printf '#!/bin/sh\nsh build.sh\n' > "$root/wrap.sh"
+replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$path_write$wrap_step$report_step"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the script's command and the write" "$(contains "$out" "$widened")"
+
+echo "case: a write after the script's start, then a start from the script's own directory, widens the script's commands"
+root=$(fixture script-start-cd)
+mkdir -p "$root/scripts"
+printf '#!/bin/sh\ngo build ./cmd/app\n' > "$root/scripts/build.sh"
+replace "$root/.github/scripts/ci_job_reads.py" 'text="go test ./cmd/app ./lib"),' \
+  'text="go test ./cmd/app ./lib"), run("mod", ["./cmd/app"], "scripts/build.sh: go build ./cmd/app", mode="build", source="scripts/build.sh", text="go build ./cmd/app"),'
+replace "$root/.github/workflows/ci.yaml" "$report_step" \
+  $'      - name: Build the app\n        run: sh scripts/build.sh\n'"$path_write"$'      - name: Build the app from its directory\n        run: cd scripts && ./build.sh\n'"$report_step"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
 check "names the script's command and the write" \
-  "$(contains "$out" 'build.sh, which job app runs, runs `go build ./cmd/app`, which this check does not reduce (step "Put a tool on the path of the steps after" runs `$GITHUB_PATH`, which every later step inherits)')"
+  "$(contains "$out" 'scripts/build.sh, which job app runs, runs `go build ./cmd/app`, which this check does not reduce (step "Put a tool on the path of the steps after" runs `$GITHUB_PATH`, which every later step inherits)')"
 
-# The forms a workflow starts a script in: after a path a directory ends (the workspace, the
-# repository's top level) or inside a substitution. Each is a start after a write the plain start
-# before it does not see, so the script's commands are read under the write.
-widened='build.sh, which job app runs, runs `go build ./cmd/app`, which this check does not reduce (step "Put a tool on the path of the steps after" runs `$GITHUB_PATH`, which every later step inherits)'
-for form in workspace-variable workspace-expression substitution backticks rev-parse; do
-  case $form in
-    workspace-variable) start='sh "$GITHUB_WORKSPACE/build.sh"' ;;
-    workspace-expression) start='sh ${{ github.workspace }}/build.sh' ;;
-    substitution) start='version=$(build.sh --version)' ;;
-    backticks) start='version=`build.sh --version`' ;;
-    rev-parse) start='sh "$(git rev-parse --show-toplevel)/build.sh"' ;;
-  esac
-  echo "case: a script started again after a write, as $start, is read under the write"
-  root=$(fixture "script-start-$form")
-  script_job "$root"
-  again=$'      - name: Build the app again\n        run: '"$start"$'\n'
-  replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$path_write$again$report_step"
-  run_check "$root"
-  check "fails" "$(is "$status" 1)"
-  check "names the script's command and the write" "$(contains "$out" "$widened")"
-done
-
-# A path that only begins with the script's - a copy beside it, a longer name - names no start of
-# it, and nor does a name whose letters merely end with it (xbuild.sh): the write before such a
-# step is no write before the script.
-for other in build.sh.bak build.sh-old build.shx xbuild.sh; do
-  echo "case: a step that runs $other after a write does not start the script"
-  root=$(fixture "script-other-$other")
-  script_job "$root"
-  again=$'      - name: Build something else\n        run: sh '"$other"$'\n'
-  replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$path_write$again$report_step"
-  run_check "$root"
-  check "exits 0" "$(is "$status" 0)"
-done
-
-# A script of the same name in another directory is another script: tools/build.sh does not start
-# build.sh, whose path a `/` after anything but a variable, a `}` or a `)` does not begin. Were it
-# read as a start, a write before it would count where it reaches nothing of build.sh's, and a job
-# that names build.sh nowhere would be read only up to it, so a write after it would be missed.
-other_dir_step=$'      - name: Build the tools\n        run: sh tools/build.sh\n'
-echo "case: a step that runs a same-named script of another directory does not start the script"
-root=$(fixture script-other-directory)
+echo "case: a write after a step that only names the script, then a start through a wrapper script, widens the script's commands"
+root=$(fixture script-mention-wrapper)
 script_job "$root"
-replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$path_write$other_dir_step$report_step"
+printf '#!/bin/sh\nsh build.sh\n' > "$root/wrap.sh"
+replace "$root/.github/workflows/ci.yaml" "$report_step" "$chmod_step$path_write$wrap_step$report_step"
 run_check "$root"
-check "after the script's own start and a write, exits 0" "$(is "$status" 0)"
-root=$(fixture script-other-directory-only)
-script_job "$root"
-replace "$root/.github/workflows/ci.yaml" "$report_step" "$other_dir_step$path_write$report_step"
-run_check "$root"
-check "in a job that names the script nowhere, a write after it still widens the script's commands" \
-  "$(contains "$out" "$widened")"
+check "fails" "$(is "$status" 1)"
+check "names the script's command and the write" "$(contains "$out" "$widened")"
 
-echo "case: a job of the called workflow that names the script nowhere is read whole beside one that names it"
+# The same job with a write that does change what go compiles: under -tags=probe the app imports
+# mod/other, which filter app does not select, so a change to it would skip a job that compiles it.
+# The check does not read the tag: the write widens the script's commands to every Go file, and
+# mod/other/other.go is the one of them that the filter misses.
+echo "case: a GOFLAGS write after a step that only names the script compiles a file outside the job's filter"
+root=$(fixture script-mention-goflags)
+script_job "$root"
+printf '#!/bin/sh\nsh build.sh\n' > "$root/wrap.sh"
+printf '//go:build probe\n\npackage main\n\nimport _ "example.com/m/other"\n' > "$root/mod/cmd/app/probe.go"
+replace "$root/.github/workflows/ci.yaml" "$report_step" \
+  "$chmod_step"$'      - name: Build every later step with the probe tag\n        run: echo "GOFLAGS=-tags=probe" >> "$GITHUB_ENV"\n'"$wrap_step$report_step"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the write that widens the script's commands" \
+  "$(contains "$out" 'build.sh, which job app runs, runs `go build ./cmd/app`, which this check does not reduce (step "Build every later step with the probe tag" runs `$GITHUB_ENV`, which every later step inherits)')"
+check "and the file the tagged build compiles outside the filter" \
+  "$(contains "$out" '::error file=mod/other/other.go::app reads mod/other/other.go, which its filter app does not match, so a change to it skips the job')"
+
+echo "case: every job of the called workflow is read whole, one that runs nothing of the script's among them"
 root=$(fixture called-script-other-job)
 called_input_gate "$root"
 printf '#!/bin/sh\ngo build ./cmd/app\n' > "$root/build.sh"
@@ -1822,11 +1828,11 @@ replace "$root/.github/scripts/ci_job_reads.py" 'text="go test ./lib"),' \
   'text="go test ./lib"), run("mod", ["./cmd/app"], "build.sh: go build ./cmd/app", mode="build", source="build.sh", text="go build ./cmd/app"),'
 replace "$root/.github/workflows/called.yaml" "$report_step" "$build_step$report_step"
 run_check "$root"
-check "passes while the job that starts the script writes nothing before it" "$(is "$status" 0)"
+check "passes while no job of the file writes the path" "$(is "$status" 0)"
 replace "$root/.github/workflows/called.yaml" "  called:" \
   $'  other:\n    runs-on: ubuntu-24.04\n    steps:\n'"$path_write"'  called:'
 run_check "$root"
-check "fails once another job of the file writes the path, naming the script nowhere" "$(is "$status" 1)"
+check "fails once another job of the file writes the path" "$(is "$status" 1)"
 check "and names the script's command and the write" \
   "$(contains "$out" 'build.sh, which job called runs, runs `go build ./cmd/app`, which this check does not reduce (step "Put a tool on the path of the steps after" runs `$GITHUB_PATH`, which every later step inherits)')"
 
@@ -3653,5 +3659,34 @@ except ValueError as exc:
   check "refuses the directory spelled $spelling, naming the spelling" \
     "$(contains "$refusal" "files_but_tests is given '$spelling', which is not a path relative to the repository root in normal form")"
 done
+
+# The header's run recipe, run as the header writes it, from a fixture's root and over a module
+# cache that holds no toolchain, with GOPROXY=off so that go can fetch none. Where the go PATH
+# finds already is the version go.work names - the state setup-go or mise leaves when it installs
+# that version itself - the recipe runs the check on that go. Where go cannot have that version,
+# the recipe stops and go says why, rather than stopping without a word.
+recipe=$(sed -n '/^#   v=/,/check-ci-filters\.sh$/s/^#   //p' "$script_dir/check-ci-filters.sh")
+run_recipe() {
+  set +e
+  out=$(cd "$1" && env -u GOROOT GOMODCACHE="$1.modcache" GOPROXY=off bash -c "$recipe" 2>&1)
+  status=$?
+  set -e
+}
+
+echo "case: the header's recipe runs the check on the go PATH finds where that go is go.work's version"
+check "the header holds a recipe that runs the check" "$(contains "$recipe" 'check-ci-filters\.sh$')"
+root=$(fixture recipe-local-go)
+version=$(cd "$root" && env -u GOROOT GOTOOLCHAIN=local go env GOVERSION)
+printf 'go %s\n\nuse ./mod\n' "${version#go}" > "$root/go.work"
+run_recipe "$root"
+check "exits 0" "$(is "$status" 0)"
+check "says what it checked" "$(contains "$out" 'every ci.yaml filter matches every file its job reads (1 gates)')"
+
+echo "case: the header's recipe says why it stops where go cannot have go.work's version"
+root=$(fixture recipe-missing-go)
+printf 'go 1.999.0\n\nuse ./mod\n' > "$root/go.work"
+run_recipe "$root"
+check "fails" "$(is "$status" 1)"
+check "names the version it could not have" "$(contains "$out" 'go1\.999\.0')"
 
 summary "check-ci-filters.sh holds each filter to its job's Go closure, its rules and its table"

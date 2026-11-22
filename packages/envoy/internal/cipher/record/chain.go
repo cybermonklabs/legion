@@ -62,10 +62,13 @@ type ChainVerifier struct {
 	// (MayDecide).
 	Kind string
 
-	// Audience and Skew re-verify the embedded request object exactly as VerifyRequestObject
-	// enforced them when the record was first created.
-	Audience string
-	Skew     time.Duration
+	// Audience and Skew re-verify the embedded request object as VerifyStoredRequestObject reads
+	// every stored record: its aud is Audience's origin, its times are checked as of the record's
+	// creation. EdgeAudience is BROKER_EDGE_URL on the launcher credentials' verifier of a broker
+	// with an edge, whose machine logins may be signed for it, and "" on every other.
+	Audience     string
+	EdgeAudience string
+	Skew         time.Duration
 
 	// FetchRecord resolves a record id to its stored canonical body and creation time. found is
 	// false when no such record exists — including, per the caller's own query, one that exists
@@ -131,7 +134,7 @@ func (c *ChainVerifier) Verify(ctx context.Context, recordID string) (Body, erro
 		}
 		return Body{}, fmt.Errorf("%w: stored body does not parse: %s", ErrChainBroken, err)
 	}
-	obj, err := VerifyRequestObject(body.Request, c.Audience, c.Skew, createdAt)
+	obj, err := VerifyStoredRequestObject(body.Request, c.Audience, c.EdgeAudience, c.Skew, createdAt)
 	if err != nil {
 		return Body{}, fmt.Errorf("%w: request object: %s", ErrChainBroken, err)
 	}
