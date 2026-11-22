@@ -993,6 +993,13 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // once as such, and a child's own architect is not told of the root's gate, whose merge hold
 // reaches the child's merger once it holds merging.
 //
+// An opening by exemption (exempt, openedByExemption) is no person's approval, and its message
+// says so: version proposes nothing, so no person approves it, and a merge waits for the ending
+// condition of the change request (R23, D10). The merger's message ends with the step it takes
+// before each merge and each enqueue (mergerEndingStep), since a merger that runs under the gate
+// that just opened was started before the gate opened with no person, and its task does not name
+// that step.
+//
 // Linger holds a member of a closed tree where it stood (record.TreeLingers): every role of it is
 // suspended there, so a gate that moves then tells nobody, as a CI settlement tells nobody.
 //
@@ -1002,7 +1009,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // daemon could not spell - a tree whose root key is not an issue key is one such - which would
 // leave the gate closed under workers the message existed to warn.
 func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step record.DesignStep,
-	document string, version int, open bool) error {
+	document string, version int, open, exempt bool) error {
 	root, err := e.store.Issue(ctx, tx, key)
 	if err != nil || root == nil {
 		return err
@@ -1035,22 +1042,31 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	// version this event carries is that step's document's, and a message naming the spec would
 	// send a reader to the wrong one (INFRA-1272).
 	var body string
-	if open {
+	switch {
+	case open && exempt:
+		body = fmt.Sprintf("The design gate of %s opened with no person's approval: version %d of its change request proposes nothing, "+
+			"so no person approves it. The change request is its %s document (%s). Every step the deployment gates now stands open. "+
+			"A merge waits until the ending condition of the change request holds.", root.Tree, version, step, document)
+	case open:
 		body = fmt.Sprintf("The design gate of %s opened: a person approved version %d of its %s document (%s), "+
 			"and every step the deployment gates now stands open, so the design you are working to is the approved one. "+
 			"A merge the closed gate held is released.", root.Tree, version, step, document)
-	} else {
+	default:
 		body = fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s) is with its reviewer, "+
 			"so the design you are working to may change. Your phase goes on; the merge waits until every gated step "+
 			"stands open again.", root.Tree, version, step, document)
 	}
 	for _, to := range told {
-		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
+		text := body
+		if open && exempt && to.role == claim.RoleMerger {
+			text += " " + mergerEndingStep(root.Tree)
+		}
+		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: text}); err != nil {
 			return err
 		}
 	}
 	e.logOnCommit(ctx, "workflow: the design gate moved and every phase worker of the tree and the root's architect are told", "issue", key, "tree", root.Tree,
-		"step", string(step), "version", version, "open", open, "told", len(told))
+		"step", string(step), "version", version, "open", open, "exempt", exempt, "told", len(told))
 	return nil
 }
 
@@ -1074,7 +1090,8 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 // that record is no part of whether a gate is open.
 //
 // version and the row's own document are what the message names, so a reader is sent to the
-// document that moved rather than to the spec.
+// document that moved rather than to the spec. An opening this row makes with no person
+// (openedByExemption) is told as one.
 func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignGate, version int) error {
 	step := gate.Step.OrSpec()
 	gates, err := e.store.GatesOf(ctx, tx, gate.Issue)
@@ -1090,7 +1107,7 @@ func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignG
 	if stands == stood {
 		return nil
 	}
-	return e.tellGateMoved(ctx, tx, gate.Issue, step, gate.ArtifactID, version, stands)
+	return e.tellGateMoved(ctx, tx, gate.Issue, step, gate.ArtifactID, version, stands, stands && openedByExemption(gate))
 }
 
 // standingGateOpen is whether the tree's work stands released under gates, the rows an issue

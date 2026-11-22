@@ -46,14 +46,21 @@ func exemptAt(gate record.DesignGate, version int, read *intake.ChangeRequestRea
 
 // openedNotice is the design-approved notice of gate's opening at version, the one notice every
 // opening the architect is told of sends: a person's approval names that person (reviewer), and
-// an opening by exemption alone names nobody and gives the reason no person approved it, since
-// version proposes nothing (R23). ref is the step's document (stepRef).
+// an opening by exemption alone (openedByExemption) names nobody and gives the reason no person
+// approved it, since version proposes nothing (R23). ref is the step's document (stepRef).
 func openedNotice(gate record.DesignGate, version int, reviewer, ref string) record.Notice {
-	approved := gate.ApprovedVersion != nil && *gate.ApprovedVersion == gate.LatestVersion
-	if record.GateExempt(gate) && !approved {
+	if openedByExemption(gate) {
 		return record.Notice{Kind: "design-approved", Version: version, Ref: ref, Reason: exemptionReason(version)}
 	}
 	return record.Notice{Kind: "design-approved", Version: version, Actor: reviewer, Ref: ref}
+}
+
+// openedByExemption is whether gate stands open with no person: open by exemption at its latest
+// version (record.GateExempt), and approved by no person at that version. An approval at the
+// latest version is a person's opening, whatever the exemption beside it.
+func openedByExemption(gate record.DesignGate) bool {
+	approved := gate.ApprovedVersion != nil && *gate.ApprovedVersion == gate.LatestVersion
+	return record.GateExempt(gate) && !approved
 }
 
 // exemptionReason is the reason a design-approved notice of an opening by exemption gives.
