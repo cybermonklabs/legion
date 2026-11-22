@@ -486,7 +486,9 @@ def old_filters:
 | ($in.facts // {}) as $fi
 | ($fi.new_form_commit // null) as $commit
 # What the stream holds now, family by family: each family whole (every page read, joined, and as
-# many subjects as the server counts) or not, and its subjects.
+# many subjects as the server counts) or not, its subjects, and whether a whole read of a family
+# every issue event or every send passes through saw nothing (empty), which the surface above reads
+# as UNKNOWN, so the facts that read the stream do too.
 | ([["notifications.dispatch.issue.>", "notifications.agent.>", "notifications.envoy.exceptions.notifications.agent.>", "notifications.envoy.kept.>"][]
     | . as $family
     | ($subjectpages | map(select(.family == $family))) as $pages
@@ -494,7 +496,9 @@ def old_filters:
     | (if $read then [$pages[] | .page.value.state.subjects // {} | keys[]] | unique else [] end) as $subjects
     | {family: $family, subjects: $subjects,
        whole: ($read and ([$pages[] | .page.value] | paging_problem([.state.subjects // {} | keys[]])) == null
-         and ($subjects | length) == ($pages | last | .page.value.total))}]) as $families
+         and ($subjects | length) == ($pages | last | .page.value.total)),
+       empty: ($read and ($subjects | length) == 0 and ($family == "notifications.dispatch.issue.>" or $family == "notifications.agent.>"))}]) as $families
+| ([$families[] | select(.whole and .empty) | .family]) as $emptyfamilies
 | ([$families[] | .subjects[] | select(old_form)] | unique) as $oldnow
 | (if $in.earlier == null then [] else [
     # (a1) the pins: the release gate's census, as daemon-release-gate.sh --clients printed it.
@@ -542,7 +546,22 @@ def old_filters:
              end]) as $problems
          | ([$cpages[] | .replies[] | objects | {server: .server.name, total: .data.total}] | group_by(.server)
             | map(select((map(.total) | unique | length) > 1) | "hub server \(.[0].server | printable) counted \(map(.total | tostring) | unique | join(" then ")) connections between the census's pages, so the list moved while it was read; read again")) as $moved
-         | if ($problems + $moved | length) > 0 then [($problems + $moved)[] | {fact: "a2", unknown: "\(fact_names.a2): \(.)"}]
+         # Each next page is asked from the last connection of the page before (census.sh), and a
+         # server lists its open connections by id, so a page after a full one must begin with the
+         # connection that page ended on. A connection that closes below the page read and one that
+         # opens above it leave the count unchanged and shift every later connection down by one, so
+         # one would pass onto the page already read unseen; the shift is read here instead.
+         | ([[$cpages[] | .replies[] | objects
+             | select((.data.offset | type) == "number" and (.data.total | type) == "number" and (.data.connections | type) == "array")
+             | {server: .server.name, offset: .data.offset, total: .data.total, cids: [.data.connections[] | objects | .cid]}]
+            | group_by(.server) | .[] | sort_by(.offset) | . as $ps
+            | first(range(1; $ps | length) as $i | $ps[$i - 1] as $p | $ps[$i] as $q
+                | select($p.offset + ($p.cids | length) < $p.total)
+                | ($p.offset + ($p.cids | length) - 1) as $want
+                | if $q.offset != $want then "hub server \($p.server | printable)'s census page at offset \($q.offset) does not start at the last connection of the page at offset \($p.offset) (offset \($want)), so the pages are not one reading of its list"
+                  elif ($q.cids[0] // null) != $p.cids[-1] then "hub server \($p.server | printable)'s census page at offset \($q.offset) begins with connection \($q.cids[0] // "none"), not \($p.cids[-1]), the last of the page before, so the list moved between the two reads and a connection may have been passed over; read again"
+                  else empty end)]) as $shifted
+         | if ($problems + $moved + $shifted | length) > 0 then [($problems + $moved + $shifted)[] | {fact: "a2", unknown: "\(fact_names.a2): \(.)"}]
            else
              ([$cpages[] | .replies[] | .server.name as $server | .data.connections[] | objects | . + {server: $server}] | unique_by([.server, .cid])) as $conns
              | ([$cpages[] | .replies[] | {server: .server.name, end: (.data.offset + (.data.connections | length)), total: .data.total}]
@@ -569,10 +588,20 @@ def old_filters:
     # takes, the newest message of the old-form subjects its filters match (its ack floor's stream
     # sequence at or after it): one that has not would still be handed an old-form message once
     # the code that reads the old form is gone. A stream that holds no old-form message hands none.
+    # legacy-subjects-purge.sh purges on this fact, so every read the surface lines above call
+    # UNKNOWN makes it unknown too: a log cut short, a consumer the server could not read, a list
+    # shorter than the server's count, a list with no Legion daemon's consumer on it, and a family a
+    # whole read of which saw nothing. A consumer this fact does not read is one whose old-form
+    # messages the purge would take unacknowledged.
     ([$oldnow[] | {subject: ., last: $oldlast[.]}]) as $oldlasts
-    | (if ($consumerpages | length) == 0 or ($consumersread | not) or $consumerpaging then {fact: "b", unknown: "\(fact_names.b): the stream's consumers were not read whole"}
+    | (if ($whole | not) then {fact: "b", unknown: "\(fact_names.b): the NATS reads' log ends before its last read, so what they read is not whole"}
+       elif ($consumerpages | length) == 0 or ($consumersread | not) or $consumerpaging then {fact: "b", unknown: "\(fact_names.b): the stream's consumers were not read whole"}
+       elif ($missingconsumers | length) > 0 then {fact: "b", unknown: "\(fact_names.b): the server could not read \($missingconsumers | length) consumer(s) of the stream (\($missingconsumers[:5] | map(printable) | join(", "))), so what they acknowledged is not known"}
+       elif ($consumers | length) != ($consumerpages | last | .value.total) then {fact: "b", unknown: "\(fact_names.b): the list read \($consumers | length) distinct consumer(s) of the \($consumerpages | last | .value.total) the server counts, so what the others acknowledged is not known"}
        elif ($consumers | length) == 0 then {fact: "b", unknown: "\(fact_names.b): the stream lists no consumer, and a census that read nothing passes nothing"}
+       elif ($consumers | map(select(.name | test("^legion-go-.+-dispatch$"))) | length) == 0 then {fact: "b", unknown: "\(fact_names.b): no Legion daemon consumer (legion-go-<project>-dispatch) is on the stream, so the daemons' consumers were not read"}
        elif ($families | all(.whole) | not) then {fact: "b", unknown: "\(fact_names.b): the stream's subjects were not read whole, so its old-form messages are not known"}
+       elif ($emptyfamilies | length) > 0 then {fact: "b", unknown: "\(fact_names.b): the stream's subjects under \($emptyfamilies | join(", ")) read none, so the read saw nothing and its old-form messages are not known"}
        elif any($oldlasts[]; (.last.seq | type) != "number" and (.last.gone | not)) then {fact: "b", unknown: "\(fact_names.b): the last message of \([$oldlasts[] | select((.last.seq | type) != "number" and (.last.gone | not))] | length) old-form subject(s) was not read, so the last old-form message a consumer takes is not known"}
        else
          [$consumers[] | . as $c
@@ -589,8 +618,11 @@ def old_filters:
        end),
 
     # (c) the stream: it holds no old-form message, under any family the rename moved. The
-    # families' own lines above name each old-form subject; this one states the fact.
-    (if ($families | all(.whole) | not) then {fact: "c", unknown: "\(fact_names.c): the stream's subjects were not read whole"}
+    # families' own lines above name each old-form subject; this one states the fact, unknown
+    # wherever the surface lines call the stream's subjects unread.
+    (if ($whole | not) then {fact: "c", unknown: "\(fact_names.c): the NATS reads' log ends before its last read, so what they read is not whole"}
+     elif ($families | all(.whole) | not) then {fact: "c", unknown: "\(fact_names.c): the stream's subjects were not read whole"}
+     elif ($emptyfamilies | length) > 0 then {fact: "c", unknown: "\(fact_names.c): the stream's subjects under \($emptyfamilies | join(", ")) read none, so the read saw nothing"}
      elif ($oldnow | length) > 0 then {fact: "c", shut: "\(fact_names.c): the stream holds \($oldnow | length) old-form subject(s); once (a1), (a2) and (b) read true, legacy-subjects-purge.sh purges them"}
      else {fact: "c", pass: "\(fact_names.c): the stream holds no old-form message under \($families | map(.family) | join(", "))"}
      end)

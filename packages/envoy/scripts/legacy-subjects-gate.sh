@@ -57,7 +57,11 @@
 # legacy-subjects-purge.sh's purge, run in namespace envoy as the ServiceAccount legacy-cutover and
 # mount its nkey seed through the SecretProviderClass legacy-cutover-nats-seed, as the file
 # nats-seed; the deployment grants that ServiceAccount alone the read of that seed, which no
-# developer box reads, and no other workload names the class.
+# developer box's own identity reads, and no other workload names the class. Any principal that
+# may create pods in envoy can still start one as that ServiceAccount with that class mounted, as
+# these Jobs do, and read the seed (this gate's operator holds that role), so while the deployment
+# keeps the user the boundary around its grant is who may create pods in envoy, as it is for the
+# listener's own seed.
 #
 # What it reads, all of it read-only:
 #

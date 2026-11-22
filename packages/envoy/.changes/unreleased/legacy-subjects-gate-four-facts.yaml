@@ -7,14 +7,17 @@ body: |-
   enumerated nothing: (a1) every pinned build is at or after `--new-form-commit`, from
   `daemon-release-gate.sh --deployment <owner/repo> --clients`; (a2) every connection of every hub
   server (`--hub-statefulset`, `--hub-server`), read by `$SYS.REQ.SERVER.PING.CONNZ` from a Job of
-  its own as the `legacy-cutover` user, names its build at or after that commit; (b) every consumer
-  of the stream has acknowledged the last old-form message it takes; (c) the stream holds no
-  old-form message. New `scripts/legacy-subjects-purge.sh --context <ctx> --reading <record>`
-  makes (c) true once (a1), (a2) and (b) read true: it refuses any other reading, purges each
-  old-form subject by itself, up to the newest old-form message the reading found, as the
-  `legacy-cutover` user, and reads back that none is left. Every Envoy NATS connection now names its
-  build after its name (`legion@<commit>` for an image build; the envoy image stamps its binaries
-  with its commit), before a trailing ` privacy-required`, which stays last; (a2) reads it there.
+  its own as the `legacy-cutover` user, each page from the last connection of the one before, names
+  its build at or after that commit; (b) every consumer of the stream has acknowledged the last
+  old-form message it takes, unknown wherever a read it rests on is (a consumer the server could not
+  read, a list shorter than the server's count among them); (c) the stream holds no old-form
+  message. New `scripts/legacy-subjects-purge.sh --context <ctx> --reading <record>` makes (c) true
+  once (a1), (a2) and (b) read true: it refuses any other reading, purges each old-form subject by
+  itself, up to the newest old-form message the reading found, as the `legacy-cutover` user, and
+  reads back that none is left. Every Envoy NATS connection now names its build after its name
+  (`legion@<commit>` for an image build and for the release archive's listener, each stamped with
+  its commit), before a trailing ` privacy-required`, which stays last; (a2) reads it there. The
+  scripts README names the clients the facts do not see and what each meets after the switch.
 time: 2026-11-22T02:59:25Z
 custom:
     Issue: legacy-subjects-gate

@@ -991,29 +991,77 @@ printed on lines that name it first, `(a1) the pins`, `(a2) the running clients`
   true when that gate prints `GATE OPEN` having read at least one pin, false on any of its
   `GATE SHUT` lines, and unknown otherwise.
 - **(a2) The running clients**: every connection of every hub server, read with
-  `$SYS.REQ.SERVER.PING.CONNZ`, page by page, from a Job of its own
-  (`lib/legacy-subjects-gate-census.sh`) as the `legacy-cutover` user, under a connection name the
-  reading draws and leaves out. Each server answers for the account that user sits in, the
-  clients' own (`$G` on a hub with no private project). Every server `--hub-statefulset` names
-  (its pods, `<name>-<ordinal>`, as each server names itself) and every `--hub-server` must answer
-  every page, and no other server may. Each connection must end its name with its build, or with
-  its build and then `privacy-required`, which a listener in required privacy mode keeps last:
-  `legion@<commit>`, judged by GitHub's compare of `--new-form-commit` with that commit, or
-  `@sjawhar/<plugin>@<version>`, judged by its release tag (`pi-envoy-v<version>`;
-  `claude-envoy-v<version>` for claude-envoy and codex-envoy). A build behind or beside the commit
-  makes it false; a connection that names no build, a server that does not answer, a census that
-  moved between its pages and one with no connection but its own make it unknown. It never reads
-  port 8222.
+  `$SYS.REQ.SERVER.PING.CONNZ`, page by page, each from the last connection of the page before,
+  from a Job of its own (`lib/legacy-subjects-gate-census.sh`) as the `legacy-cutover` user, under
+  a connection name the reading draws and leaves out. Each server answers for the account that
+  user sits in, the clients' own (`$G` on a hub with no private project). Every server
+  `--hub-statefulset` names (its pods, `<name>-<ordinal>`, as each server names itself) and every
+  `--hub-server` must answer every page, and no other server may. Each connection must end its
+  name with its build, or with its build and then `privacy-required`, which a listener in required
+  privacy mode keeps last: `legion@<commit>`, judged by GitHub's compare of `--new-form-commit`
+  with that commit, or `@sjawhar/<plugin>@<version>`, judged by its release tag
+  (`pi-envoy-v<version>`; `claude-envoy-v<version>` for claude-envoy and codex-envoy). A build
+  behind or beside the commit makes it false; a connection that names no build, a server that does
+  not answer, a census that moved between its pages (a count that changed, or a page that does not
+  begin with the connection the page before ended on, which a connection closing below the pages
+  read shifts at an unchanged count) and one with no connection but its own make it unknown. It
+  never reads port 8222.
 - **(b) The consumers**: each consumer of the stream has acknowledged the newest message of the
   old-form subjects its filters match: its ack floor's stream sequence equal to that message's
-  holds, since the floor's own message is acknowledged, and one below it shuts. An empty consumer
-  list is unknown.
-- **(c) The stream** holds no old-form message, under any of the four families.
+  holds, since the floor's own message is acknowledged, and one below it shuts. It is unknown for
+  every read the surface lines call unread: the NATS reads' log cut short, a consumer list not read
+  whole, a consumer the server could not read (`missing`), fewer distinct consumers than the
+  server counts, an empty list, a list with no Legion daemon's consumer, the stream's subjects not
+  read whole or a read of the issue or agent family that saw nothing, and an old-form subject whose
+  last message was not read. `legacy-subjects-purge.sh` purges on this fact and reads no consumer
+  itself, so a consumer (b) did not read is one whose messages a purge would take unacknowledged.
+- **(c) The stream** holds no old-form message, under any of the four families; unknown when the
+  log is cut short, the subjects were not read whole, or a read of the issue or agent family saw
+  nothing.
 
 Every Envoy client names its build after its connection name: the listener, Dispatch and the
-broker by the commit the envoy image stamps (`internal/buildversion`), the daemon by the commit
+broker by the commit the envoy image stamps (`internal/buildversion`), the listener of the release
+tarball by the commit its release build stamps the same way, the daemon by the commit
 `legion version` prints, and pi-envoy and claude-envoy by the `dist/build-commit` stamp the
 worker image writes beside their bundles, else a release's version.
+
+**What the four facts do not cover.** The 72-hour wait they replace saw any client that used an
+old form while the stream kept its messages, connected at the reading or not. The facts see a
+client only while a pin `daemon-release-gate.sh --clients` reads names its build (a1) or while it
+is connected as the census runs (a2); between the two readings the listeners' counters and the
+stream's old-form messages see one that writes. So no reading sees a client at an older build that
+no pin names and that is not connected from the first reading to the census: a session started
+with a custom `--image`, a session parked or on a machine that is off, a session on a developer box
+other than the one `--clients` reads, or an Envoy listener outside the cluster. The span between
+the readings bounds it: the longer it is, the more such clients come back and write while it runs,
+and nothing here sets it longer than the 180 s above. What such a client meets when it comes back,
+read from the code at this commit and from what the switch is to do (refuse the old form and
+delete the code that reads both):
+
+- **A session plugin** (pi-envoy, claude-envoy, codex-envoy) publishes no notification subject
+  itself: its NATS grant publishes reply inboxes and its own agent-stream frames alone
+  (`natsgrant`'s `session`), and every message, interest and role claim it gives goes through the
+  listener's routes (`/v1/messages/send`, `/v1/messages/publish`, the registration). Until the
+  switch the listener takes an old form and counts it. After it, the listener refuses it with
+  `400 legacy_subject`, naming the new form: the call fails where the plugin sees it, nothing is
+  stored, and an interest it cannot register delivers it nothing.
+- **An Envoy listener at an older build** writes a session's agent subject in the old form itself,
+  for the messages it builds for a session (`contracts.LegacyAgentSubject` in `cmd/listener`'s
+  `role_lane.go`, `confirmed.go`, `role_keep.go` and `role_takeover.go` at this commit), straight
+  to the stream, which its grant (`notifications.>`) and the stream's subjects let it store. Until
+  the switch every reader takes both forms. After it no session consumer filters the old form, so
+  such a message is stored, acknowledged to the listener and never delivered: lost, with no error
+  to anyone. Its durable `listener-<machine>` on the stream names it to a reading (`UNKNOWN`)
+  until the durable lapses, 7 days after the listener last used it (`cmd/listener/durable.go`).
+- **A session whose consumer is gone** (deregistered, swept, or unpulled past its inactive
+  threshold, an hour or more, `bus.InactiveThresholdFor`) is no consumer (b) reads. When it
+  registers again its consumer starts after its resume record's floor and takes what the stream
+  stored for it since, in both forms until the switch (`bus.SessionConsumers`' `create`). The purge
+  takes every old-form message up to the reading's last one, read by such a session or not, where
+  the wait left them until they aged out. So a session whose consumer went while it was away and
+  that comes back between the purge and the switch never gets the old-form messages sent to it
+  before the producers moved. After the switch its consumer filters the new form alone, so it would
+  not get them then either.
 
 **The `legacy-cutover` user.** The census and the purge run as one temporary static NATS user of
 the hub, which the deployment adds for the cutover and removes before any project is private (a
@@ -1023,8 +1071,12 @@ hub with a private project refuses every static client user). It publishes exact
 `$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS`, and subscribes `_INBOX_legacy_cutover.>` alone.
 Its Jobs run in `envoy` as the ServiceAccount `legacy-cutover`, mount its nkey seed through the
 SecretProviderClass `legacy-cutover-nats-seed` as the file `nats-seed`, and take the inbox prefix
-`_INBOX_legacy_cutover`; the deployment grants that ServiceAccount alone the read of the seed,
-and no developer box reads it.
+`_INBOX_legacy_cutover`. The deployment grants that ServiceAccount alone the read of the seed, and
+no developer box's own identity reads it, but any principal that may create pods in `envoy` can
+start one as that ServiceAccount with that class mounted, as these Jobs do, and read the seed:
+the gate's operator already holds that role. So while the deployment keeps the user, the boundary
+around its grant, the purge of `ENVOY_NOTIFICATIONS` among it, is who may create pods in `envoy`,
+the boundary the listener's own seed has.
 
 ### legacy-subjects-purge.sh
 

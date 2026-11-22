@@ -29,11 +29,14 @@
 # four facts, each with a case that shuts the gate or makes it UNKNOWN for that fact alone: a pin
 # behind the new-form commit (a1), a census of pins that read none, a connected client at an older
 # build (a2), a connection that names no build, a hub server that does not answer the census, a
-# census with no connection, a consumer that has not acknowledged the last old-form message it
-# takes (b), a session's as well as a daemon's, an empty consumer list, and an old-form message
-# still on the stream (c); new pins with one older client still connected keep the gate shut, and
-# the purge driver refuses that reading; and a required-mode listener's connection, its build
-# before its trailing privacy suffix, is judged by that build. Every case runs from the same clean
+# census with no connection, a census whose list moved under it at an unchanged count, a consumer
+# that has not acknowledged the last old-form message it takes (b), a session's as well as a
+# daemon's, an empty consumer list, a consumer the server could not read, a list shorter than the
+# server's count and one with no daemon's consumer, a read of a family that saw nothing (b and c),
+# and an old-form message still on the stream (c); new pins with one older client still connected
+# keep the gate shut, and the purge driver refuses that reading and each reading whose (b) is
+# unknown; and a required-mode listener's connection, its build before its trailing privacy
+# suffix, is judged by that build. Every case runs from the same clean
 # fixture with one thing changed, so each fails for its own reason. The old-form rule itself is
 # held row by row. The summary counts cases.
 set -euo pipefail
@@ -1001,6 +1004,35 @@ while IFS=$'\t' read -r _ _ _ out _; do printf '%s' "$out" | base64 -d; echo; do
 ! grep -q -- "a private message" "$FAKE/reads.decoded" || fail "the Job's log holds a message's content"
 done_case
 
+# The census Job's own script, under sh, behind a fake nats that answers $SYS.REQ.SERVER.PING.CONNZ
+# as one server holding 2000 connections does, cids 1 to 2000 in order, one page of the limit asked
+# from the offset asked. Each page after the first is asked from the last connection of the page
+# before, so the judge can read a list that moved between two pages.
+mkdir -p "$root/censusbin"
+cat >"$root/censusbin/nats" <<'EOF'
+#!/usr/bin/env bash
+subject=${*: -2:1}
+body=${*: -1}
+[ "$subject" = '$SYS.REQ.SERVER.PING.CONNZ' ] || { echo "fake nats: no answer for $*" >&2; exit 99; }
+jq -cn --argjson q "$body" '($q.offset) as $o | ($q.limit) as $l
+  | {server: {name: "envoy-nats-0", id: "N0"}, data: {total: 2000, offset: $o, limit: $l,
+      connections: [range($o; [$o + $l, 2000] | min) | {cid: (. + 1), name: "c\(. + 1) legion@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}}'
+EOF
+chmod +x "$root/censusbin/nats"
+new_case "the census asks each next page from the last connection of the page before, and reads the list whole"
+set +e
+env CENSUS_NKEY=/dev/null CENSUS_NAME=legacy-subjects-gate-census-test CENSUS_INBOX_PREFIX=_INBOX_legacy_cutover WORK_DIR="$FAKE" \
+  PATH="$root/censusbin:$PATH" timeout 60 sh -c "$(cat "$here/lib/legacy-subjects-gate-census.sh")" >"$FAKE/census.out" 2>"$FAKE/census.err"
+status=$?
+set -e
+[ "$status" = 0 ] || fail "the census exited $status: $(cat "$FAKE/census.err")"
+offsets=$(awk -F'\t' '$1 == "census" {print $2}' "$FAKE/census.out" | paste -sd, -)
+[ "$offsets" = "0,1023" ] || fail "the census asked its pages at offsets $offsets, want 0,1023: each from the last connection of the page before"
+read_cids=$(awk -F'\t' '$1 == "census" {print $4}' "$FAKE/census.out" | while IFS= read -r out; do base64 -d <<<"$out"; echo; done | jq -r 'objects | .data.connections[].cid' | sort -nu | wc -l)
+[ "$read_cids" = 2000 ] || fail "the census read $read_cids distinct connections, want 2000"
+[ "$(tail -n 1 "$FAKE/census.out" | cut -f1)" = end ] || fail "the census did not reach its end line"
+done_case
+
 # A hub behind the auth service admits a service by CONNECT's user `service` and the token as its
 # password (natscred.Service; natscallout's credentialKind), and reads a bare token as no
 # credential at all.
@@ -1444,6 +1476,95 @@ set -e
 expect_status 1
 expect_line "REFUSED: the reading $FAKE/record.json read (a2) the running clients false, not true"
 [ ! -s "$FAKE/calls" ] || fail "the refused purge called $(head -n 1 "$FAKE/calls")"
+done_case
+
+# purge_refuses FACT WORDS runs legacy-subjects-purge.sh on the case's record and fails the case
+# unless it refuses, naming FACT read as WORDS, before any call.
+purge_refuses() {
+  : >"$FAKE/calls"
+  set +e
+  output=$(PATH="$root/bin:$PATH" bash "$here/legacy-subjects-purge.sh" --context example-cluster --reading "$FAKE/record.json" 2>&1)
+  status=$?
+  set -e
+  expect_status 1
+  expect_line "REFUSED: the reading $FAKE/record.json read $1 $2, not true"
+  [ ! -s "$FAKE/calls" ] || fail "the refused purge called $(head -n 1 "$FAKE/calls")"
+}
+
+# The reading the purge exists for, with the consumer list the server answered not whole: (b)
+# reads no consumer it could not read, so it is unknown, and the purge, which reads (b) alone of
+# the consumers, refuses it.
+new_case "(b) a consumer the server could not read is unknown, and the purge driver refuses that reading"
+first_reading_secs 200 reading
+old_stream_rows
+replace_row consumers 0 "$(line consumers 0 0 "$(consumers_page "$(clean_consumers)" | jq -c '.missing = ["legion-go-ZED-dispatch"]')" "")"
+reading --since "$FAKE/earlier.json"
+expect_status 1
+expect_line "UNKNOWN: (b) the consumers: the server could not read 1 consumer(s) of the stream (legion-go-ZED-dispatch), so what they acknowledged is not known"
+[ "$(jq -r .facts.b "$FAKE/record.json")" = unknown ] || fail "the record's (b) is $(jq -r .facts.b "$FAKE/record.json"), want unknown"
+purge_refuses "(b) the consumers" unknown
+done_case
+
+new_case "(b) a consumer list shorter than the server's count is unknown, and the purge driver refuses that reading"
+first_reading_secs 200 reading
+old_stream_rows
+replace_row consumers 0 "$(line consumers 0 0 "$(consumers_page "$(clean_consumers)" | jq -c '.total += 1')" "")"
+reading --since "$FAKE/earlier.json"
+expect_status 1
+expect_line "UNKNOWN: (b) the consumers: the list read 7 distinct consumer(s) of the 8 the server counts, so what the others acknowledged is not known"
+[ "$(jq -r .facts.b "$FAKE/record.json")" = unknown ] || fail "the record's (b) is $(jq -r .facts.b "$FAKE/record.json"), want unknown"
+purge_refuses "(b) the consumers" unknown
+done_case
+
+new_case "(b) a consumer list with no Legion daemon's consumer is unknown, and the purge driver refuses that reading"
+first_reading_secs 200 reading
+old_stream_rows
+replace_row consumers 0 "$(line consumers 0 0 "$(consumers_page "$(clean_consumers | grep -v '"legion-go-')")" "")"
+reading --since "$FAKE/earlier.json"
+expect_status 1
+expect_line "UNKNOWN: (b) the consumers: no Legion daemon consumer (legion-go-<project>-dispatch) is on the stream, so the daemons' consumers were not read"
+[ "$(jq -r .facts.b "$FAKE/record.json")" = unknown ] || fail "the record's (b) is $(jq -r .facts.b "$FAKE/record.json"), want unknown"
+purge_refuses "(b) the consumers" unknown
+done_case
+
+# A whole read of the agent family that lists no subject saw nothing (the surface line's rule), so
+# neither fact that reads the stream holds: its old-form messages are not known.
+new_case "(b) and (c) are unknown when a read of the agent family saw nothing, and the purge driver refuses that reading"
+first_reading_secs 200 reading
+old_stream_rows
+replace_row subjects "notifications.agent.> 0" "$(line subjects "notifications.agent.> 0" 0 "$(subjects_page)" "")"
+reading --since "$FAKE/earlier.json"
+expect_status 1
+expect_line "UNKNOWN: (b) the consumers: the stream's subjects under notifications.agent.> read none, so the read saw nothing and its old-form messages are not known"
+expect_line "UNKNOWN: (c) the stream: the stream's subjects under notifications.agent.> read none, so the read saw nothing"
+[ "$(jq -c '.facts | {b, c}' "$FAKE/record.json")" = '{"b":"unknown","c":"unknown"}' ] || fail "the record's facts are $(jq -c .facts "$FAKE/record.json")"
+purge_refuses "(b) the consumers" unknown
+done_case
+
+# census_page SERVER OFFSET LIMIT TOTAL [CONNECTION...] prints one server's census answer for the
+# page asked at OFFSET.
+census_page() {
+  local server=$1 offset=$2 limit=$3 total=$4
+  shift 4
+  printf '%s\n' "$@" | jq -cs --arg s "$server" --argjson o "$offset" --argjson l "$limit" --argjson t "$total" 'map(select(. != null)) as $c
+    | {server: {name: $s, id: "N\($s)"}, error: null, data: {total: $t, offset: $o, limit: $l, connections: $c}}'
+}
+
+# A server's list moved under the census: between its first two pages, connections 12 and 13
+# closed below the page read and 17 and 18 opened above it, so the count stayed 6 and every later
+# connection moved down two places. Connection 14, an older client's, moved onto the page already
+# read and is on no page; the second page, asked from the first's last connection, begins with 15
+# and not 13, which is how the shift is read.
+new_case "(a2) a census whose list moved under it at an unchanged count is UNKNOWN"
+first_reading_secs 200 reading
+replace_row census 0 \
+  "$(line census 0 0 "$(census_page envoy-nats-0 0 3 6 "$(conn 11 "envoy legion@$new_form")" "$(conn 12 "omp-ses_a @sjawhar/pi-envoy@21.0.0")" "$(conn 13 "dispatch legion@$new_form")"; clean_census | sed '1d')" "")" \
+  "$(line census 2 0 "$(census_page envoy-nats-0 2 3 6 "$(conn 15 "@CENSUS_NAME@" UCENSUS)" "$(conn 16 "legion-daemon ACME legion@$newer")" "$(conn 17 "omp-ses_c @sjawhar/pi-envoy@21.0.0")"; census_page envoy-nats-1 2 3 2; census_page envoy-nats-2 2 3 1)" "")" \
+  "$(line census 4 0 "$(census_page envoy-nats-0 4 3 6 "$(conn 17 "omp-ses_c @sjawhar/pi-envoy@21.0.0")" "$(conn 18 "omp-ses_d @sjawhar/pi-envoy@21.0.0")"; census_page envoy-nats-1 4 3 2; census_page envoy-nats-2 4 3 1)" "")"
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: (a2) the running clients: hub server envoy-nats-0's census page at offset 2 begins with connection 15, not 13, the last of the page before, so the list moved between the two reads and a connection may have been passed over; read again"
+[ "$(jq -r .facts.a2 "$FAKE/record.json")" = unknown ] || fail "the record's (a2) is $(jq -r .facts.a2 "$FAKE/record.json"), want unknown"
 done_case
 
 new_case "a stream whose configuration carries no identity is UNKNOWN at a first reading"
