@@ -191,28 +191,22 @@ test("the frame after it opens, a dialog gives the focus to its first control an
 
 /** A sheet whose own Search closes it and opens another dialog in one handler, as the navigation
  *  sheet's Search and New issue do (`app.tsx`). With `staysMounted`, the closed sheet keeps its
- *  element and its Search, as the margin sheet's `aside` does; otherwise it is removed. */
+ *  element and its Search, as the margin sheet's `aside` does; otherwise it is removed. With
+ *  `withInner`, Search opens a second dialog inside the Search dialog, in a child component, in
+ *  the same commit. */
 function SheetThatOpensAnother({
   onMenu,
   staysMounted,
+  withInner = false,
 }: {
   onMenu: () => void;
   staysMounted: boolean;
+  withInner?: boolean;
 }) {
   const [sheet, setSheet] = useState(false);
   const [search, setSearch] = useState(false);
+  const [inner, setInner] = useState(false);
   const sheetDialog = useDialog<HTMLDivElement>({ onClose: () => setSheet(false), open: sheet });
-  const searchButton = (
-    <button
-      onClick={() => {
-        setSheet(false);
-        setSearch(true);
-      }}
-      type="button"
-    >
-      Search
-    </button>
-  );
   return (
     <>
       <button
@@ -224,15 +218,28 @@ function SheetThatOpensAnother({
       >
         Menu
       </button>
-      {/* One `div` in both branches, so the closed sheet keeps its element. */}
-      {sheet ? (
-        <div aria-label="Sheet" ref={sheetDialog.containerRef} role="dialog">
-          {searchButton}
+      {sheet || staysMounted ? (
+        // biome-ignore lint/a11y/useAriaPropsSupportedByRole: named only while it is an open dialog, as the margin sheet's `aside` is
+        <div
+          aria-label={sheet ? "Sheet" : undefined}
+          ref={sheetDialog.containerRef}
+          role={sheet ? "dialog" : undefined}
+        >
+          <button
+            onClick={() => {
+              setSheet(false);
+              setSearch(true);
+              setInner(withInner);
+            }}
+            type="button"
+          >
+            Search
+          </button>
         </div>
-      ) : staysMounted ? (
-        <div ref={sheetDialog.containerRef}>{searchButton}</div>
       ) : null}
-      <Dialog label="Search" onClose={() => setSearch(false)} open={search} />
+      <Dialog label="Search" onClose={() => setSearch(false)} open={search}>
+        <Dialog label="Inner" onClose={() => setInner(false)} open={search && inner} />
+      </Dialog>
     </>
   );
 }
@@ -267,9 +274,12 @@ for (const staysMounted of [false, true]) {
       frames.run();
       await user.keyboard("{Escape}");
       expect(view.queryByRole("dialog", { name: "Search" }), "Escape left Search open").toBeNull();
-      expect(document.activeElement, "Search gave the focus back to no opener").toBe(
-        view.getByRole("button", { name: "Menu" })
-      );
+      expect(
+        document.activeElement,
+        staysMounted
+          ? "Search gave the focus back to its own opener in the closed sheet, not to Menu"
+          : "Search gave the focus back to no opener"
+      ).toBe(view.getByRole("button", { name: "Menu" }));
     } finally {
       frames.restore();
       view.unmount();
@@ -277,11 +287,48 @@ for (const staysMounted of [false, true]) {
   });
 }
 
+// A pair of nested dialogs - one in a child component of the other - opened in the commit that
+// closes another dialog: the closing one hands its target to both dialogs that hold the focus, so
+// the outer one, which has none of its own, gives the focus back to the closed one's opener.
+test("a nested pair opened as another closes gives the focus back in turn, then to that one's opener", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <KeymapProvider>
+      <SheetThatOpensAnother onMenu={() => {}} staysMounted={false} withInner />
+    </KeymapProvider>
+  );
+  const frames = holdFrames();
+  try {
+    await user.click(view.getByRole("button", { name: "Menu" }));
+    frames.run();
+    await user.click(view.getByRole("button", { name: "Search" }));
+    expect(document.activeElement, "the inner dialog took no focus as it opened").toBe(
+      view.getByRole("dialog", { name: "Inner" })
+    );
+    frames.run();
+    await user.keyboard("{Escape}");
+    expect(
+      document.activeElement,
+      "the inner dialog gave the focus to no control of Search's dialog"
+    ).toBe(view.getByRole("button", { name: "First control of Search" }));
+    await user.keyboard("{Escape}");
+    expect(view.queryByRole("dialog", { name: "Search" }), "Escape left Search open").toBeNull();
+    expect(document.activeElement, "the outer of the pair gave the focus back to no opener").toBe(
+      view.getByRole("button", { name: "Menu" })
+    );
+  } finally {
+    frames.restore();
+    view.unmount();
+  }
+});
+
 /** Two dialogs, one in a child component of the other, opened by one press. The child's layout
- *  effect runs before the parent's. */
-function NestedInAChild() {
+ *  effect runs before the parent's. Without `outerControl`, the outer one has no control of its
+ *  own: its only controls are the inner one's. */
+function NestedInAChild({ outerControl = true }: { outerControl?: boolean }) {
   const [outer, setOuter] = useState(false);
   const [inner, setInner] = useState(false);
+  const outerDialog = useDialog<HTMLDivElement>({ onClose: () => setOuter(false), open: outer });
   return (
     <>
       <button
@@ -293,9 +340,13 @@ function NestedInAChild() {
       >
         Opener
       </button>
-      <Dialog label="Outer" onClose={() => setOuter(false)} open={outer}>
-        <Dialog label="Inner" onClose={() => setInner(false)} open={outer && inner} />
-      </Dialog>
+      {outer ? (
+        <div aria-label="Outer" ref={outerDialog.containerRef} role="dialog">
+          <p>Words of Outer</p>
+          {outerControl ? <button type="button">First control of Outer</button> : null}
+          <Dialog label="Inner" onClose={() => setInner(false)} open={inner} />
+        </div>
+      ) : null}
     </>
   );
 }
@@ -326,15 +377,85 @@ test("two nested dialogs of a parent and a child opened in one commit give the f
       document.activeElement,
       "the inner dialog gave the focus to no control of the outer"
     ).toBe(view.getByRole("button", { name: "First control of Outer" }));
-    expect(
-      view.getByRole("dialog", { name: "Outer" }).hasAttribute("tabindex"),
-      "the outer dialog stayed focusable after its frame"
-    ).toBe(false);
+    await user.click(view.getByText("Words of Outer"));
+    expect(document.activeElement, "a press on the outer dialog's text focused the dialog").toBe(
+      document.body
+    );
     await user.keyboard("{Escape}");
     expect(
       view.queryByRole("dialog", { name: "Outer" }),
       "Escape left the outer dialog open"
     ).toBeNull();
+    expect(document.activeElement, "the outer dialog gave the focus back to no opener").toBe(
+      view.getByRole("button", { name: "Opener" })
+    );
+  } finally {
+    frames.restore();
+    view.unmount();
+  }
+});
+
+// The late frame this hook is for: the inner dialog closes before the outer one's frame has run.
+// Until that frame the inner one gives the focus back to the outer element, which is focusable
+// for it (happy-dom focuses an element without `tabindex` too, so the row reads the attribute).
+// The outer's frame then gives the focus to its first control.
+test("a dialog inside another that closes before the outer's frame gives the focus to the outer", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <KeymapProvider>
+      <NestedInAChild />
+    </KeymapProvider>
+  );
+  const frames = holdFrames();
+  try {
+    await user.click(view.getByRole("button", { name: "Opener" }));
+    const outer = view.getByRole("dialog", { name: "Outer" });
+    expect(
+      outer.getAttribute("tabindex"),
+      "the outer dialog could take no focus back from the inner one before its frame"
+    ).toBe("-1");
+    await user.keyboard("{Escape}");
+    expect(
+      view.queryByRole("dialog", { name: "Inner" }),
+      "Escape left the inner dialog open"
+    ).toBeNull();
+    expect(document.activeElement, "the inner dialog gave the focus to no part of the outer").toBe(
+      outer
+    );
+    frames.run();
+    expect(document.activeElement, "the outer's frame gave the focus to no control of it").toBe(
+      view.getByRole("button", { name: "First control of Outer" })
+    );
+  } finally {
+    frames.restore();
+    view.unmount();
+  }
+});
+
+// A dialog whose only controls are a dialog's inside it is its own field: when the inner one
+// closes the focus goes to the outer element, which stays focusable for it, and not to a control
+// the inner one took with it.
+test("a dialog whose only controls are inside a dialog inside it gets the focus back on itself", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <KeymapProvider>
+      <NestedInAChild outerControl={false} />
+    </KeymapProvider>
+  );
+  const frames = holdFrames();
+  try {
+    await user.click(view.getByRole("button", { name: "Opener" }));
+    frames.run();
+    await user.keyboard("{Escape}");
+    expect(
+      view.queryByRole("dialog", { name: "Inner" }),
+      "Escape left the inner dialog open"
+    ).toBeNull();
+    expect(
+      document.activeElement,
+      "the inner dialog gave the focus to the body, not to the outer"
+    ).toBe(view.getByRole("dialog", { name: "Outer" }));
+    await user.keyboard("{Escape}");
     expect(document.activeElement, "the outer dialog gave the focus back to no opener").toBe(
       view.getByRole("button", { name: "Opener" })
     );
