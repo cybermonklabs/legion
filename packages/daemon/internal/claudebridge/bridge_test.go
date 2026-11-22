@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
@@ -1214,7 +1215,7 @@ func TestAClaudeCodeThatStopsReadingEndsTheBridge(t *testing.T) {
 	stdin, daemon := io.Pipe()
 	t.Cleanup(func() { _ = daemon.Close() })
 	logged := &lockedBuffer{}
-	cfg := Config{Argv: []string{"/bin/sh", "-c", "cat " + stream + "\nexec sleep 300\n"}, Env: os.Environ(),
+	cfg := Config{Argv: []string{"/bin/sh", "-c", "cat " + shellprefix.Literal(stream) + "\nexec sleep 300\n"}, Env: os.Environ(),
 		SessionID: sessionID, Stdin: stdin, Stdout: io.Discard, Log: logged}
 	done := make(chan int, 1)
 	go func() {

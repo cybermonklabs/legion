@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { plainPathDirectories, shellQuote } from "./script-functions";
 
 // The key-file route's own installer: unlike the Hawk gateway route, its key command has no mint
 // and no cache, so there is nothing to fake — every call is a plain read of a caller-supplied file.
@@ -11,6 +12,11 @@ const operatorHome = join(dir, "operator-home");
 beforeAll(() => {
   mkdirSync(operatorHome);
 });
+// Every --dest and --key-dir this file hands the installer: it refuses any character in them but
+// letters, digits and `_ . / -`, since the profile's `!exec` word carries them, so they come from
+// a base that holds no other (plainPathDirectories). The rest of each run, --home and --key-file
+// among it, stays under `dir`, the system's tmpdir.
+const plainDirectory = plainPathDirectories("install-key-file-test");
 
 // install writes a fresh profile's route from a fresh --key-file. --dest and --key-dir are always
 // two different directories (the installer refuses otherwise): --dest gets only the call record,
@@ -23,8 +29,9 @@ function install(keyContents = "sk-ant-test-key-00000000000000000000000") {
   const run = join(dir, `install-${++installs}`);
   const home = join(run, "omp-home");
   mkdirSync(join(home, ".omp"), { recursive: true });
-  const dest = join(run, "model-gateway");
-  const keyDir = join(run, "model-gateway-key");
+  const plain = plainDirectory();
+  const dest = join(plain, "model-gateway");
+  const keyDir = join(plain, "model-gateway-key");
   const keyFile = join(run, "anthropic-key-file");
   writeFileSync(keyFile, `${keyContents}\n`, { mode: 0o600 });
   const result = Bun.spawnSync(
@@ -50,7 +57,7 @@ function install(keyContents = "sk-ant-test-key-00000000000000000000000") {
 // call runs the key command as Oh My Pi does, in a pane's own working directory.
 async function call(keyCommand: string, cwd: string) {
   mkdirSync(cwd, { recursive: true });
-  const child = Bun.spawn(["/bin/sh", "-c", `exec ${keyCommand}`], {
+  const child = Bun.spawn(["/bin/sh", "-c", `exec ${shellQuote(keyCommand)}`], {
     cwd,
     env: { PATH: process.env.PATH ?? "" },
     stdout: "pipe",
@@ -93,7 +100,7 @@ describe("the key-file model route installer", () => {
     const run = join(dir, `install-${++installs}`);
     const home = join(run, "omp-home");
     mkdirSync(join(home, ".omp"), { recursive: true });
-    const dest = join(run, "model-gateway");
+    const dest = join(plainDirectory(), "model-gateway");
     const keyFile = join(run, "anthropic-key-file");
     writeFileSync(keyFile, "sk-ant-x\n", { mode: 0o600 });
     const result = Bun.spawnSync(
@@ -123,7 +130,8 @@ describe("the key-file model route installer", () => {
     mkdirSync(join(home, ".omp"), { recursive: true });
     const keyFile = join(run, "anthropic-key-file");
     writeFileSync(keyFile, "sk-ant-x\n", { mode: 0o600 });
-    const dest = join(run, "model-gateway");
+    const plain = plainDirectory();
+    const dest = join(plain, "model-gateway");
     const nestedKeyDir = join(dest, "key");
     const result = Bun.spawnSync(
       [
@@ -145,7 +153,7 @@ describe("the key-file model route installer", () => {
     expect(result.exitCode).toBe(2);
     expect(result.stderr.toString()).toContain("--key-dir");
 
-    const keyDir = join(run, "model-gateway-key");
+    const keyDir = join(plain, "model-gateway-key");
     const nestedDest = join(keyDir, "dest");
     const reversed = Bun.spawnSync(
       [
@@ -183,7 +191,7 @@ describe("the key-file model route installer", () => {
         "--home",
         home,
         "--dest",
-        join(run, "model-gateway"),
+        join(plainDirectory(), "model-gateway"),
         "--key-file",
         keyFile,
       ],

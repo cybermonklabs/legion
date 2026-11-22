@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -30,7 +31,7 @@ func TestInstallServedAnswersAParentSwappedForAFifo(t *testing.T) {
 	t.Run("during the verification", func(t *testing.T) {
 		// The check's own --help makes the swap, before the staged copy is moved into place.
 		scratch := filepath.Join(t.TempDir(), "scratch")
-		swapping := "#!/bin/sh\nmv '" + scratch + "' '" + scratch + ".moved' && mkfifo '" + scratch + "'\n" +
+		swapping := "#!/bin/sh\nmv " + shellprefix.Literal(scratch) + " " + shellprefix.Literal(scratch+".moved") + " && mkfifo " + shellprefix.Literal(scratch) + "\n" +
 			"echo '# Usage: check-public-text FILE..., --commits REV..., --tree DIR, gh-guard ARGS, or REMOTE URL.'\nexit 1\n"
 		body := served(t, wholeCheck(t, swapping))
 		if err := os.MkdirAll(scratch, 0o755); err != nil {

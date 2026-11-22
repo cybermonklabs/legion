@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // role_config_files reaches the runtime that launches each role, under either runtime, as the file
@@ -54,7 +55,7 @@ func TestTheTmuxBootGateRefusesARoleOverlayOhMyPiCannotParse(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	image := capabilities.Image{Launch: omp, Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: dir}
+	image := capabilities.Image{Launch: shellprefix.Word(omp), Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: dir}
 	cfg := config.Config{Runtime: config.Runtime{Name: "tmux", Tmux: &config.Tmux{PiConfigFiles: []string{operator}}}}
 	for _, tc := range []struct {
 		name  string

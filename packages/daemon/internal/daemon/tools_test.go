@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 func executable(t *testing.T, dir, name string) string {
@@ -109,7 +110,7 @@ func TestResolveClaudeNamesEveryGap(t *testing.T) {
 	}
 	var logged strings.Builder
 	read.log(slog.New(slog.NewTextHandler(&logged, nil)))
-	for _, want := range []string{"claude=" + pinned, "bun=" + filepath.Join(onPath, "bun"), "plugin=" + plugin} {
+	for _, want := range []string{textAttr("claude", pinned), textAttr("bun", filepath.Join(onPath, "bun")), textAttr("plugin", plugin)} {
 		if !strings.Contains(logged.String(), want) {
 			t.Errorf("resolveClaude logged %q, want %s", logged.String(), want)
 		}
@@ -121,6 +122,20 @@ func TestResolveClaudeNamesEveryGap(t *testing.T) {
 	if _, err := resolve(); err == nil || !strings.Contains(err.Error(), "LEGION_CLAUDE_PLUGIN_DIR is not an absolute path") {
 		t.Errorf("a relative plugin dir = %v", err)
 	}
+}
+
+// textAttr is key=value as slog's text handler writes the pair: a value it must quote, such as a
+// path under a temporary directory whose name holds a space, quoted as the log quotes it.
+func textAttr(key, value string) string {
+	var b strings.Builder
+	pairOnly := func(_ []string, a slog.Attr) slog.Attr {
+		if a.Key == slog.TimeKey || a.Key == slog.LevelKey || a.Key == slog.MessageKey {
+			return slog.Attr{}
+		}
+		return a
+	}
+	slog.New(slog.NewTextHandler(&b, &slog.HandlerOptions{ReplaceAttr: pairOnly})).Info("", key, value)
+	return strings.TrimSuffix(b.String(), "\n")
 }
 
 // The gh boot finds on PATH is every pane's real gh (LEGION_GH_PATH), which `legion gh` runs with
@@ -214,7 +229,7 @@ func TestTheJJVersionCheckGetsNoNATSSeed(t *testing.T) {
 	dir := t.TempDir()
 	dump := filepath.Join(dir, "env")
 	jj := filepath.Join(dir, "jj")
-	if err := os.WriteFile(jj, []byte("#!/bin/sh\nenv >"+dump+"\necho '"+currentJJ+"'\n"), 0o755); err != nil {
+	if err := os.WriteFile(jj, []byte("#!/bin/sh\nenv >"+shellprefix.Literal(dump)+"\necho '"+currentJJ+"'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := checkJJVersion(jj); err != nil {

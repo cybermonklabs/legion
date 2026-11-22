@@ -11,6 +11,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { shellQuote } from "@legion/pi-shared/test/test-paths";
 
 // Where a session sits in tmux, as the real Oh My Pi reports it (envoy-client's `readTmuxPlace`,
 // the cached reading extensions/envoy.ts takes a registration's place from without waiting on it,
@@ -57,16 +58,13 @@ const SESSION_NAME = "tmux-place-case";
 const WINDOW_NAME = "the-window";
 const WINDOW_INDEX = 4;
 const PANE_INDEX = 1;
+/** The case's tmux server socket, under the case's root. */
+const TMUX_SOCKET = "tmux.sock";
 
 const cleanup: Cleanup = [];
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
 });
-
-/** `value` as one word of the shell tmux runs a pane's command through. */
-function quote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
 
 /**
  * Runs one tmux command on the case's server, resolving with its stdout and failing on its
@@ -141,13 +139,13 @@ function paneCommand(options: {
     options.workspace,
   ];
   return [
-    `printf '%s\\n%s\\n' "$TMUX" "$TMUX_PANE" > ${quote(options.environmentFile)}`,
+    `printf '%s\\n%s\\n' "$TMUX" "$TMUX_PANE" > ${shellQuote(options.environmentFile)}`,
     "&& exec env",
     ...Object.entries(sessionEnvironment(options.listener, options.nats)).map(
-      ([name, value]) => `${name}=${quote(value)}`
+      ([name, value]) => `${name}=${shellQuote(value)}`
     ),
-    ...[options.binary, ...flags].map(quote),
-    `> ${quote(options.log)} 2>&1`,
+    ...[options.binary, ...flags].map(shellQuote),
+    `> ${shellQuote(options.log)} 2>&1`,
   ].join(" ");
 }
 
@@ -261,10 +259,14 @@ test.skipIf(skip)(
   "a session in a tmux pane registers the pane it sits in, and the split that follows it",
   async () => {
     const { binary, nats, tmux } = setup();
-    const { root, home, workspace, sessions } = await ompRoot(binary, "tmux-place-omp-", cleanup);
+    // The case's tmux server listens on a socket under the root, so the root is one that leaves
+    // the socket's path within what a unix socket path holds (`ompRoot`'s `socket`).
+    const { root, home, workspace, sessions } = await ompRoot(binary, "tmux-place-omp-", cleanup, {
+      socket: TMUX_SOCKET,
+    });
     const { requests, base } = await standin(home, workspace);
 
-    const socket = path.join(root, "tmux.sock");
+    const socket = path.join(root, TMUX_SOCKET);
     const environmentFile = path.join(root, "pane-environment");
     const log = path.join(root, "omp.log");
     const environment = paneEnvironment(home, tmux);

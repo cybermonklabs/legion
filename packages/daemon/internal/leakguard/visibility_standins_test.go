@@ -101,7 +101,7 @@ func pathWith(dir string) string {
 // and the headers first as --include prints them, then the body and gh's own error, exit 1. Each
 // read appends a line to the file reads names, which is how a test counts them.
 func spentRateLimit(reset time.Time, reads string) string {
-	return "echo read >> '" + reads + "'\n" +
+	return "echo read >> " + shQuote(reads) + "\n" +
 		printsResponse("HTTP/2.0 403 Forbidden", []string{"Content-Type: application/json; charset=utf-8",
 			"X-Ratelimit-Limit: 15000", "X-Ratelimit-Remaining: 0", fmt.Sprintf("X-Ratelimit-Reset: %d", reset.Unix()),
 			"X-Ratelimit-Resource: core", "X-Ratelimit-Used: 15000"},
@@ -176,7 +176,7 @@ func recordsItsCall(record string) string {
 		`"${GIT_CONFIG_PARAMETERS-unset}" "${GIT_DIR-unset}" "${GIT_ALLOW_PROTOCOL-unset}" ` +
 		`"${GIT_SSL_CAINFO-unset}" "${GIT_SSL_CAPATH-unset}" "${HTTPS_PROXY-unset}" ` +
 		`"${LC_ALL-unset}" "${HOME-unset}" "${NETRC-unset}" "$(ls -A "${HOME-/nonexistent}" 2>&1 | tr '\n' ' ')" ` +
-		`"$(pwd -P)" >> '` + record + "'\n"
+		`"$(pwd -P)" >> ` + shQuote(record) + "\n"
 }
 
 // readCalls is each call recordsItsCall wrote to record, as its keys and values, and none where

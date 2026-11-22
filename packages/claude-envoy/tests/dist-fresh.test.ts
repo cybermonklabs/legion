@@ -6,6 +6,7 @@ import { isAbsolute, join, resolve } from "node:path"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import ts from "typescript"
 import { assertPinnedBun, BUNDLE_ENTRYPOINTS, buildBundles } from "../scripts/build"
+import { bunModuleDirectory } from "./channel-session-harness"
 
 const packageRoot = resolve(import.meta.dir, "..")
 /** The Dispatch token the bundle is handed. */
@@ -87,10 +88,12 @@ async function findExternalDependencySpecifiers(source: string): Promise<string[
 }
 
 test("the fresh bundle starts without node_modules and, with no envoy.json, says Envoy is off and exits 0 once stdin ends", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-dist-"))
+  const scratch = await bunModuleDirectory("claude-envoy-dist-", { outsideRepository: true })
   try {
     await cp(distDirectory, join(scratch, "dist"), { recursive: true })
-    const run = Bun.spawn(["bun", join(scratch, "dist", "envoy-channel.js")], {
+    // `--no-install`: with no node_modules to resolve from, Bun's auto-install would otherwise
+    // supply a package the bundle imports (from its global cache), and this check could not fail.
+    const run = Bun.spawn(["bun", "--no-install", join(scratch, "dist", "envoy-channel.js")], {
       cwd: scratch,
       env: {
         PATH: process.env["PATH"] ?? "",
@@ -114,7 +117,7 @@ test("the fresh bundle starts without node_modules and, with no envoy.json, says
 })
 
 test("with Envoy off the bundle still writes the session title the dispatch command stamps", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-dist-"))
+  const scratch = await bunModuleDirectory("claude-envoy-dist-")
   try {
     await cp(distDirectory, join(scratch, "dist"), { recursive: true })
     const run = Bun.spawn(["bun", join(scratch, "dist", "envoy-channel.js")], {
@@ -144,7 +147,7 @@ test("with Envoy off the bundle still writes the session title the dispatch comm
 })
 
 test("the bundle stamps nothing with Dispatch off, or under the QA override ENVOY_SESSION_ID", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-dist-"))
+  const scratch = await bunModuleDirectory("claude-envoy-dist-")
   try {
     await cp(distDirectory, join(scratch, "dist"), { recursive: true })
     const start = (env: Record<string, string>) =>
@@ -179,7 +182,7 @@ test("the bundle stamps nothing with Dispatch off, or under the QA override ENVO
 })
 
 test("with Envoy off and no session id the bundle still serves the Envoy-off server and exits 0", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-dist-"))
+  const scratch = await bunModuleDirectory("claude-envoy-dist-")
   try {
     await cp(distDirectory, join(scratch, "dist"), { recursive: true })
     const run = Bun.spawn(["bun", join(scratch, "dist", "envoy-channel.js")], {
@@ -305,15 +308,17 @@ test("the fresh bundles contain only runtime builtin module specifiers", async (
 // tree with no node_modules, so bin/dispatch has to run the built bundle as it stands.
 test("bin/dispatch is executable and runs a fresh dist/dispatch.js without node_modules", async () => {
   expect(BUNDLE_ENTRYPOINTS).toHaveProperty("dispatch", "../envoy-client/bin/dispatch.ts")
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-bin-"))
+  const scratch = await bunModuleDirectory("claude-envoy-bin-", { outsideRepository: true })
   try {
     await cp(join(packageRoot, "bin"), join(scratch, "bin"), { recursive: true })
     await cp(distDirectory, join(scratch, "dist"), { recursive: true })
     const shim = join(scratch, "bin", "dispatch")
     expect((await stat(join(packageRoot, "bin", "dispatch"))).mode & 0o111).toBe(0o111)
+    // The shim runs `bun` itself, and BUN_OPTIONS hands it `--no-install`: otherwise Bun's
+    // auto-install would supply a package the bundle imports, and this check could not fail.
     const run = Bun.spawn([shim, "--help"], {
       cwd: scratch,
-      env: { PATH: process.env["PATH"] ?? "", HOME: scratch },
+      env: { PATH: process.env["PATH"] ?? "", HOME: scratch, BUN_OPTIONS: "--no-install" },
       stdout: "pipe",
       stderr: "pipe",
     })

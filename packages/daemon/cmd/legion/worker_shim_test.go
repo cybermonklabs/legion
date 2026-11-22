@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -55,7 +56,7 @@ func TestWorkerShimRefusesBeforeDialOrSpawn(t *testing.T) {
 	t.Setenv("LEGION_WORKSPACE", "")
 
 	marker := filepath.Join(dir, "spawned")
-	omp := []string{"--", "sh", "-c", "touch " + marker}
+	omp := []string{"--", "sh", "-c", "touch " + shellprefix.Literal(marker)}
 	for _, tc := range []struct {
 		name string
 		args []string

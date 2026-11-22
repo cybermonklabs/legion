@@ -95,7 +95,7 @@ func requestSystem(body []byte) string {
 // prompt.
 func TestOhMyPiAppendsTheWholePromptFileItIsNamed(t *testing.T) {
 	omp := testbin.OMP(t)
-	dir := t.TempDir()
+	dir := testbin.OMPDir(t, omp)
 	home, work := filepath.Join(dir, "home"), filepath.Join(dir, "work")
 	if err := os.MkdirAll(work, 0o700); err != nil {
 		t.Fatal(err)
@@ -180,7 +180,7 @@ func TestOhMyPiAppendsTheWholePromptFileItIsNamed(t *testing.T) {
 // operator's current role is resolved per launch (TestAgentArgvCarriesTheConfiguredModel).
 func TestTheResumedAgentRunsTheConfiguredModel(t *testing.T) {
 	omp := testbin.OMP(t)
-	dir := t.TempDir()
+	dir := testbin.OMPDir(t, omp)
 	home, work := filepath.Join(dir, "home"), filepath.Join(dir, "work")
 	if err := os.MkdirAll(work, 0o700); err != nil {
 		t.Fatal(err)
@@ -281,7 +281,7 @@ func TestTheResumedAgentRunsTheConfiguredModel(t *testing.T) {
 // is Oh My Pi's signal to stop waiting, and the chain's next model answers the turn.
 func TestAFallbackChainStillWalksUnderAnExplicitModel(t *testing.T) {
 	omp := testbin.OMP(t)
-	dir := t.TempDir()
+	dir := testbin.OMPDir(t, omp)
 	home, work := filepath.Join(dir, "home"), filepath.Join(dir, "work")
 	if err := os.MkdirAll(work, 0o700); err != nil {
 		t.Fatal(err)
@@ -345,7 +345,7 @@ func TestAFallbackChainStillWalksUnderAnExplicitModel(t *testing.T) {
 // deploy/kubernetes/operator-route/README.md says so.
 func TestMeasuredNoDefaultRoleLaunchesOnABuiltInModel(t *testing.T) {
 	omp := testbin.OMP(t)
-	dir := t.TempDir()
+	dir := testbin.OMPDir(t, omp)
 	home, work := filepath.Join(dir, "home"), filepath.Join(dir, "work")
 	if err := os.MkdirAll(work, 0o700); err != nil {
 		t.Fatal(err)

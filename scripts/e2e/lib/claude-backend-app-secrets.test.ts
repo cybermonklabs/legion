@@ -10,21 +10,27 @@ import {
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { plainPathDirectories, shellQuote } from "./script-functions";
 
 // claude-backend-tmux.sh's prerequisites on a box whose own `secrets` store holds no App credential
 // (the devbox once its local copies of another deployment's keys were removed): the run must reach
 // its two role Apps' credentials through the secrets broker's client, `agent-secrets`, and the
 // operator's own key command alone, and never ask the local store, or it can never pass there.
 // Every tool the prerequisites ask for is a stand-in, so the run touches nothing outside this
-// test's directory, and the stand-ins answer as far as read_app_logins, the last prerequisite that
-// reaches an App credential: a run that stopped before it would say nothing about where those
-// credentials came from. It stops soon after: `mise` resolves no real binary for the run's own
-// PATH, and then the stand-in `gh` acts as no account for the proof human, which ends the run.
+// test's own directories, and the stand-ins answer as far as read_app_logins, the last
+// prerequisite that reaches an App credential: a run that stopped before it would say nothing
+// about where those credentials came from. It stops soon after: `mise` resolves no real binary for
+// the run's own PATH, and then the stand-in `gh` acts as no account for the proof human, which
+// ends the run.
 const script = join(import.meta.dir, "..", "claude-backend-tmux.sh");
 const dir = temporaryDirectory("claude-backend-key-runner-test");
 
 const bin = join(dir, "bin");
-const scratch = join(dir, "tmp");
+// The run's TMPDIR, made in the row: claude-backend-tmux.sh makes its work directory there, whose
+// app-key it hands write_github_apps as --key-dir, and lib/github-apps.sh's app_token_dir_ok
+// refuses any character in that path but letters, digits and `_ . / -`. So it comes from a base
+// that holds no other (plainPathDirectories); every other path of this file stays under `dir`.
+const scratchDirectory = plainPathDirectories("claude-backend-key-runner-tmp");
 // Where the stand-in `secrets` records that it was asked.
 const asked = join(dir, "secrets-asked");
 const keyFile = join(dir, "anthropic-key");
@@ -105,14 +111,16 @@ const skip = skipWithout(...tools);
 beforeAll(() => {
   if (skip) return;
   mkdirSync(bin);
-  mkdirSync(scratch);
   // The stand-ins the prerequisites need only find: each prints nothing and exits 0.
   const quiet = ["go", "docker", "ss", "tmux", "mise", "gh", "jj", "pgrep", "claude", "python3"];
   for (const name of quiet) stub(name, "exit 0");
   // Anthropic accepts the model key.
   stub("curl", "printf 200");
   // The box's own store holds no App credential, and records that it was asked.
-  stub("secrets", `printf '%s\\n' "$*" >> '${asked}'\necho "no secret named $2" >&2\nexit 1`);
+  stub(
+    "secrets",
+    `printf '%s\\n' "$*" >> ${shellQuote(asked)}\necho "no secret named $2" >&2\nexit 1`
+  );
   // The broker's client the implement App's token comes through: it runs the command after `--`
   // with that secret's release in its environment, under whatever flags the token command gave.
   stub(
@@ -127,8 +135,8 @@ beforeAll(() => {
     "bun",
     `case $1 in --version) echo ${pinned}; exit 0 ;; esac
 for arg in "$@"; do case $arg in *github-apps.yaml) yaml=$arg ;; esac; done
-sh -c "$(sed -n 's/^    private_key_command: //p' "$yaml" | jq -r .)" >'${keyRead}'
-sh -c "$(sed -n 's/^    token_command: //p' "$yaml" | jq -r .)" >'${tokenRead}'
+sh -c "$(sed -n 's/^    private_key_command: //p' "$yaml" | jq -r .)" >${shellQuote(keyRead)}
+sh -c "$(sed -n 's/^    token_command: //p' "$yaml" | jq -r .)" >${shellQuote(tokenRead)}
 printf '{"implement":"example-implement[bot]","review":"example-review[bot]"}'`
   );
   for (const [name, path] of found) {
@@ -140,6 +148,7 @@ printf '{"implement":"example-implement[bot]","review":"example-review[bot]"}'`
 test.skipIf(skip)(
   "the prerequisites reach both Apps' credentials and never ask the box's own secrets store",
   () => {
+    const scratch = scratchDirectory();
     const run = Bun.spawnSync(["bash", script], {
       env: {
         HOME: dir,

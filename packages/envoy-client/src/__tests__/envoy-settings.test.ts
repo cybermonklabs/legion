@@ -45,6 +45,10 @@ const ENVIRONMENT_TOKEN = fixtureSecret("envoy");
 const FILE_TOKEN = fixtureSecret("file");
 /** The listener's bearer an ENVOY_TOKEN_FILE holds. */
 const POINTER_TOKEN = fixtureSecret("pointer");
+/** `value` as one single-quoted shell word, each `'` in it closed, escaped and reopened. */
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
 
 /** The configuration read from a file holding `contents`, with no checkout file beside it. */
 function configFrom(contents: unknown) {
@@ -408,7 +412,9 @@ describe("envoySettings", () => {
       url: "http://listener.internal.example:9020",
       token: FILE_TOKEN,
     });
-    const noServers = configFrom({ envoy: { enabled: true, natsSeed: `!touch ${ran}; echo SU` } });
+    const noServers = configFrom({
+      envoy: { enabled: true, natsSeed: `!touch ${shellQuote(ran)}; echo SU` },
+    });
     expect(envoySettings({ PATH: process.env.PATH }, noServers)).toMatchObject({
       enabled: true,
       inbound: { off: "Envoy has no NATS server (envoy.natsUrls, ENVOY_NATS_URL)" },
@@ -422,7 +428,7 @@ describe("envoySettings", () => {
     const home = tempDir();
     const ran = path.join(home, "ran");
     const config = configFrom({
-      envoy: { ...listener, natsSeed: `!touch ${ran}; exit 1` },
+      envoy: { ...listener, natsSeed: `!touch ${shellQuote(ran)}; exit 1` },
     });
     for (const env of [
       { PATH: process.env.PATH },
@@ -567,7 +573,7 @@ describe("the NATS seed in envoy.json", () => {
         url: "http://listener.internal.example:9020",
         token: FILE_TOKEN,
         natsUrls: fileServers,
-        natsSeed: `!echo run >> ${runs}; echo SUSEED`,
+        natsSeed: `!echo run >> ${shellQuote(runs)}; echo SUSEED`,
       },
     });
     const other = {
@@ -874,7 +880,7 @@ describe("which inbound a session takes", () => {
         url: "http://envoy.example:9020",
         inbound: "listener",
         natsUrls: ["nats://nats.internal.example:4222"],
-        token: `!echo run >> ${runs}; echo ${FILE_TOKEN}`,
+        token: `!echo run >> ${shellQuote(runs)}; echo ${FILE_TOKEN}`,
       },
     });
     const fromFile = envoySettings({ PATH: process.env.PATH }, config, {
@@ -883,7 +889,7 @@ describe("which inbound a session takes", () => {
     });
     expect(fromFile.enabled).toBe(false);
     expect("error" in fromFile ? fromFile.error : undefined).toMatch(
-      /^envoy\.inbound in \S+ is listener, and envoy\.natsUrls in \S+ names NATS servers: set one of the two\. And the listener's address is plain http to envoy\.example/
+      /^envoy\.inbound in .+ is listener, and envoy\.natsUrls in .+ names NATS servers: set one of the two\. And the listener's address is plain http to envoy\.example/
     );
     expect(existsSync(runs)).toBe(false);
   });
@@ -924,7 +930,7 @@ describe("which inbound a session takes", () => {
           enabled: true,
           url,
           inbound: "listener",
-          token: `!echo run >> ${runs}; echo ${FILE_TOKEN}`,
+          token: `!echo run >> ${shellQuote(runs)}; echo ${FILE_TOKEN}`,
         },
       });
     expect(

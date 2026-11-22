@@ -48,6 +48,8 @@ set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 readonly project_root
+# shellcheck source=packages/envoy/scripts/lib/rig-banner.sh
+source "${project_root}/packages/envoy/scripts/lib/rig-banner.sh"
 readonly driver="${project_root}/packages/envoy/scripts/dev-broker.sh"
 temporary_dir="$(mktemp -d)"
 readonly temporary_dir
@@ -407,7 +409,7 @@ run_instance() {
 wait_for_ready() {
   local log_file="$1"
   for _ in $(seq 1 50); do
-    grep -q 'dev-broker: ready\.' "$log_file" 2>/dev/null && return 0
+    rig_banner_complete "$log_file" "${DEV_BROKER_BANNER[@]}" && return 0
     sleep 0.1
   done
   return 1
@@ -460,11 +462,37 @@ curled_port() {
 }
 
 exported_port() {
-  # dev-broker.sh's own printed "export AGENT_SECRETS_URL=http://127.0.0.1:<port>" line: the
-  # value a human or agent-secrets would actually be told to use.
-  local log_file="$1"
-  grep -o 'AGENT_SECRETS_URL=http://127\.0\.0\.1:[0-9]\+' "$log_file" | head -n1 | sed -E 's/.*:([0-9]+)$/\1/' || true
+  # dev-broker.sh's own printed "export AGENT_SECRETS_URL=http://127.0.0.1:<port>" line, from its
+  # banner's own block (lib/rig-banner.sh): the value a human or agent-secrets would actually be told
+  # to use.
+  exported "$1" AGENT_SECRETS_URL | sed -nE 's|^http://127\.0\.0\.1:([0-9]+)$|\1|p'
 }
+
+exported() {
+  # The value of one "export NAME=..." line of dev-broker.sh's banner, from the banner's own block
+  # of the log alone (lib/rig-banner.sh), as the shell that sources the line reads it: the banner
+  # prints each path with printf %q, so the line is evaluated, in a subshell, rather than cut at its
+  # "=".
+  rig_banner_value "$1" "${DEV_BROKER_BANNER[@]}" "$2"
+}
+
+# A process's line ahead of the banner that names an export of the same name, and would run a
+# command if evaluated, is not the banner's: exported reads the banner's value and runs nothing.
+decoy_dir="${temporary_dir}/exported-decoy"
+mkdir -p "$decoy_dir"
+{
+  # shellcheck disable=SC2016 # a literal $(...), which only a reader's eval runs
+  printf 'fake: a pasted line: export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=$(touch %s)/decoy\n' "$(printf %q "${decoy_dir}/ran")"
+  printf '\n%s\n\n' "${DEV_BROKER_BANNER[0]}"
+  printf '  export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=%s\n' "$(printf %q "${decoy_dir}/the banner's")"
+  printf '%s\n' "${DEV_BROKER_BANNER[1]}"
+} >"${decoy_dir}/log"
+decoy_value="$(exported "${decoy_dir}/log" AGENT_SECRETS_ACCOUNT_TOKEN_FILE)"
+if [[ -e "${decoy_dir}/ran" || "$decoy_value" != "${decoy_dir}/the banner's" ]]; then
+  echo "FAIL: exported read '$decoy_value' and ran a line of the log ahead of the banner: $([[ -e "${decoy_dir}/ran" ]] && echo yes || echo no)" >&2
+  exit 1
+fi
+echo "PASS: exported reads the banner's own value and runs no line of the log ahead of it"
 
 # Sets the global "db"/"port" variables to the database and port this instance used; exits the
 # whole test on any assertion failure.
@@ -558,7 +586,7 @@ assert_instance_isolated() {
     echo "FAIL: $label's broker does not trust its own issuer (${issuer:-none logged}) with both dev callers, the exchange account and the read entry listed" >&2
     exit 1
   fi
-  token_file="$(grep -o 'AGENT_SECRETS_ACCOUNT_TOKEN_FILE=[^ ]*' "$log_file" | head -n1 | cut -d= -f2- || true)"
+  token_file="$(exported "$log_file" AGENT_SECRETS_ACCOUNT_TOKEN_FILE)"
   if [[ -z "$token_file" ]] || [[ "$(cat "$token_file" 2>/dev/null)" != "fake-token-for-system:serviceaccount:example-ns:example-dispatch" ]]; then
     echo "FAIL: $label's AGENT_SECRETS_ACCOUNT_TOKEN_FILE (${token_file:-none printed}) does not hold the token its issuer wrote for the listed caller" >&2
     exit 1
@@ -571,7 +599,8 @@ assert_instance_isolated() {
   # itself is never printed; and the banner tells a person to approve a secret on this broker's
   # own page.
   local workdir signin_file
-  workdir="$(grep -o 'dev-broker: workdir [^ ]*' "$log_file" | head -n1 | cut -d' ' -f3 || true)"
+  # Every field after the second, so a TMPDIR with a space in its name is read whole.
+  workdir="$(grep -o 'dev-broker: workdir .*' "$log_file" | head -n1 | cut -d' ' -f3- || true)"
   signin_file="${workdir}/signin-client-secret"
   if [[ -z "$workdir" ]] \
     || ! grep -qF "fake issuer: code-flow client=dev-broker secret-file=${signin_file} secret-mode=600 sign-in-as=ada@example.com" "$log_file" \
@@ -655,7 +684,7 @@ assert_instance_isolated() {
   # would leave the store holding something else.
   local stands_url stands_owners
   stands_url="$(grep -o 'github stand: *http://127\.0\.0\.1:[0-9]\+' "$log_file" | head -n1 | grep -o 'http://.*' || true)"
-  stands_owners="$(grep -o 'fake stands: dir=[^ ]* owners=.*' "$log_file" | head -n1 | sed -E 's/.*owners=//' || true)"
+  stands_owners="$(grep -o 'fake stands: dir=.* owners=.*' "$log_file" | head -n1 | sed -E 's/.*owners=//' || true)"
   if [[ "$stands_owners" != "acme-org=7 ada=8 Ada=9" ]] || [[ -z "$stands_url" ]] \
     || ! grep -qF "github=${stands_url}" "$log_file"; then
     cat "$log_file" >&2
@@ -872,7 +901,7 @@ if ! wait_for_ready "$log1"; then
   echo "FAIL: a DEV_BROKER_GCP_* run never reached ready" >&2
   exit 1
 fi
-gcp_workdir="$(grep -o 'dev-broker: workdir [^ ]*' "$log1" | head -n1 | cut -d' ' -f3 || true)"
+gcp_workdir="$(grep -o 'dev-broker: workdir .*' "$log1" | head -n1 | cut -d' ' -f3- || true)"
 if ! grep -qF "fake broker: store=gcp-secret-manager prefix=${gcp_prefix} key-arn= key-name=${gcp_key} fake-secrets=${gcp_workdir}/fake-secrets.json" "$log1" \
   || [[ "$(jq -c . "${gcp_workdir}/fake-secrets.json" 2>/dev/null || true)" != '{"secrets":[]}' ]] \
   || ! grep -qF "  secret store:        gcp-secret-manager under ${gcp_prefix}, key ${gcp_key}" "$log1"; then
