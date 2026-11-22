@@ -881,6 +881,14 @@ func TestTheLauncherHelloSaysItResumesBySession(t *testing.T) {
 
 // A stop reaches the role it names and nothing else: the stopped role's processes end, and every
 // other role's child keeps running in its own namespaces.
+//
+// Both are read from the roles' beats, each the role's own clock reading (date +%s%N), and not
+// from a clock of the case's. The stop returns once the tester's generation has been waited for,
+// so its last beat is the one read then. The reviewer's beats must then go on for half a second
+// of their own timestamps, which the case waits for under its hang guard, and the tester's must
+// not move in that time. A fixed half-second sleep once stood in for the reviewer's beats: on a
+// loaded machine the reviewer's beat did not move inside it, and the case failed, in a whole run of
+// the package at a load average of about 800 on 2026-11-21, while it passed five of five alone.
 func TestAStopOfOneRolesGenerationLeavesTheOtherRoleRunning(t *testing.T) {
 	requireRoleNamespaces(t)
 	f := newFleet(t, 10*time.Second, "tester", "reviewer")
@@ -898,12 +906,23 @@ func TestAStopOfOneRolesGenerationLeavesTheOtherRoleRunning(t *testing.T) {
 	f.role("tester").stop(1)
 	stopped := f.waitForRoleFile(f.roleTmp("tester", "beat"))
 	running := f.waitForRoleFile(f.roleTmp("reviewer", "beat"))
-	time.Sleep(500 * time.Millisecond)
-	if again := f.waitForRoleFile(f.roleTmp("tester", "beat")); again != stopped {
-		t.Fatalf("the tester's processes outlived its stop: its beat moved from %s to %s", stopped, again)
+	beatAt := func(beat string) int64 {
+		at, err := strconv.ParseInt(strings.TrimSpace(beat), 10, 64)
+		if err != nil {
+			t.Fatalf("a beat reads %q, which is no date +%%s%%N: %v", beat, err)
+		}
+		return at
 	}
-	if again := f.waitForRoleFile(f.roleTmp("reviewer", "beat")); again == running {
-		t.Fatalf("the tester's stop ended the reviewer's child too: its beat stayed at %s", running)
+	since := beatAt(running)
+	var beat string
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
+		beat = f.waitForRoleFile(f.roleTmp("reviewer", "beat"))
+		return time.Duration(beatAt(beat)-since) >= 500*time.Millisecond
+	}) {
+		t.Fatalf("the tester's stop ended the reviewer's child too: its beat went from %s to %s and no further", running, beat)
+	}
+	if again := f.waitForRoleFile(f.roleTmp("tester", "beat")); again != stopped {
+		t.Fatalf("the tester's processes outlived its stop: its beat moved from %s to %s while the reviewer's beats went on for half a second", stopped, again)
 	}
 	f.role("reviewer").stop(2)
 }
