@@ -44,7 +44,7 @@ func TestASeverDoesNotWaitForACallerHoldingTheClientsLock(t *testing.T) {
 				t.Fatalf("flush the marker's subscription: %v", err)
 			}
 			conn := client.Connection()
-			thaw := hold.HoldWriteLock(t, conn)
+			thaw := hold.HoldStalledWrite(t, conn)
 			go func() { _ = conn.Publish(subject, []byte("before")) }()
 			testnats.RequireLockHeld(t, conn)
 			if withRead {

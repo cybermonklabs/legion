@@ -62,7 +62,7 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 	hook := func() {
 		holding.Do(func() {
 			restoreWait()
-			thawed <- link.HoldWriteLock(t, holderConn)
+			thawed <- link.HoldStalledWrite(t, holderConn)
 			close(held)
 		})
 	}
@@ -127,7 +127,7 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 // A lost hold ends the connection of an unconfirmed hand-back even while the finalizer's flush waits
 // for nats.go's lock. The holder's stop hands back the message behind its handler onto a frozen
 // link: the publish lands in the socket, the stop's flush gets no answer, and the stop returns with
-// the hold renewing (finalizeHandBacks). Then a write holds nats.go's lock (HoldWriteLock), so the
+// the hold renewing (finalizeHandBacks). Then a stalled write holds nats.go's lock, so the
 // finalizer's next flush waits for that lock with no bound of its own, and the holder's renewals are
 // refused. By the time the standby creates the durable, the holder's connection must be closed. A
 // finalizer that read the lost hold only between its flushes, and severed from there, waited inside
@@ -204,7 +204,7 @@ func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *tes
 	if !loggedMessage(logs(), intakeHoldFinalizing) || !holdLive(t, pool) {
 		t.Fatalf("control: the stop released its hold although no flush could confirm its hand-back; logged %q", loggedMessages(logs()))
 	}
-	thaw := link.HoldWriteLock(t, holderConn)
+	thaw := link.HoldStalledWrite(t, holderConn)
 	holder.leases.cut.Store(true)
 	waitFor(t, 60*time.Second, func() bool { return slices.Contains(recorded.since(from), durableCreated) }, func() string {
 		return fmt.Sprintf("the standby did not take over the lapsed hold and create the durable: %q; %s", recorded.since(from), consumerState(publisher))

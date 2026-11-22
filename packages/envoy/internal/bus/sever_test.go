@@ -45,9 +45,9 @@ func TestASeverableDialThroughTheProxyKeepsItsTCPSocket(t *testing.T) {
 // A severed connection sends nothing it had not sent, without waiting for nats.go's lock, and the
 // client goes on with a connection of its own.
 //
-// The row holds a write on the client's link (HoldWriteLock), which holds nats.go's connection lock
-// on a connection that stays connected, and begins a publish of a marker on that connection, which
-// waits for the lock behind the write. Two subtests:
+// The row holds a write on the client's link (HoldStalledWrite), which holds nats.go's connection
+// lock on a connection that stays connected, and begins a publish of a marker on that connection,
+// which waits for the lock behind the write. Two subtests:
 //   - the link moves (the control): the publish answers nil, and the marker reaches a subscriber of
 //     the row's own.
 //   - severed while the publish waits: Sever returns while the write still holds its socket, and
@@ -72,7 +72,7 @@ func TestASeveredConnectionSendsNothingAPublishWaitedBehindAHeldWrite(t *testing
 			t.Fatalf("flush the marker's subscription: %v", err)
 		}
 		conn := client.Connection()
-		thaw := hold.HoldWriteLock(t, conn)
+		thaw := hold.HoldStalledWrite(t, conn)
 		published := make(chan error, 1)
 		go func() { published <- conn.Publish(subject, []byte("before")) }()
 		testnats.RequireLockHeld(t, conn)
