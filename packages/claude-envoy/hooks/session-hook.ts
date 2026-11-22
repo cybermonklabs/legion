@@ -88,6 +88,7 @@
 
 import { appendFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { deviceLoginFile } from "@legion/cipher-client/device-login-file"
 import { scrubProcessStreams } from "@legion/contracts/held-secrets"
 import { urlForText } from "@legion/contracts/log-text"
 import { formatOpenAsksSummary, linkBaseOf } from "@legion/envoy-client/dispatch-execute"
@@ -620,21 +621,12 @@ async function answersRefresh(session: string, cwd: string): Promise<never> {
  * Code would have killed it. Exiting cuts that trade, which writes nothing the next process reads,
  * except on the device-login route: there the trade holds the login's lock and may yet save a
  * refresh token the broker rotated, so a hook whose process holds that lock is left to finish as
- * before. The exit waits until stdout and stderr have taken every byte written to them.
+ * before. The exit waits until stdout and stderr have taken every byte written to them; the lock is
+ * read after that, so a trade that takes it while they drain is left to finish too. Nothing the
+ * trade runs writes to `process.stderr` (its retry line goes through `console.warn`, which writes to
+ * the file descriptor and needs no open stream), so ending the streams first cannot fail it.
  */
 async function endOnceWritten(): Promise<void> {
-  // AGENT_SECRETS_DEVICE_LOGIN_FILE (`@legion/cipher-client/device-login-file`): its lock beside it
-  // holds the pid of the process that holds it (`device-login-lock.ts`).
-  const login = configuredValue(process.env["AGENT_SECRETS_DEVICE_LOGIN_FILE"])
-  if (login !== undefined) {
-    let holder = ""
-    try {
-      holder = readFileSync(`${login}.lock`, "utf8")
-    } catch {
-      // No lock: no trade of this login is under way.
-    }
-    if (holder.startsWith(`${process.pid} `)) return
-  }
   // Ending each stream waits until it has taken every byte: in Bun 1.4.4 an empty write's callback,
   // `writableLength` and `writableNeedDrain` each let an exit drop the tail of a 300,000-byte write
   // to a pipe (2 or 3 runs of 5), and `end` lost nothing (5 of 5).
@@ -643,7 +635,28 @@ async function endOnceWritten(): Promise<void> {
     stream.end(() => ended.resolve())
     await ended.promise
   }
+  if (holdsDeviceLoginLock()) return
   process.exit(0)
+}
+
+/** Whether this process holds the machine's device-login lock: `<login>.lock`, beside the login at
+ *  the path cipher-client keeps it (`deviceLoginFile`: `AGENT_SECRETS_DEVICE_LOGIN_FILE`, else
+ *  `$HOME/.config/legion/device-login.json`), whose first word is its holder's pid
+ *  (`device-login-lock.ts`). */
+function holdsDeviceLoginLock(): boolean {
+  let login: string
+  try {
+    login = deviceLoginFile(process.env)
+  } catch {
+    // Neither the variable nor HOME names a place: this machine keeps no login, so holds no lock.
+    return false
+  }
+  try {
+    return readFileSync(`${login}.lock`, "utf8").startsWith(`${process.pid} `)
+  } catch {
+    // No lock: no trade of this login is under way.
+    return false
+  }
 }
 
 if (mode === "answers-refresh") {
