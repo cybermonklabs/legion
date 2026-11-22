@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
@@ -611,7 +612,7 @@ func TestEventDoesNotMoveIssueUpdatedAtBackward(t *testing.T) {
 // something stamped past it. The PATCH waits on the project's rank lock, which a message takes
 // no part of, so the message's whole transaction begins and commits inside the wait.
 func TestAPatchThatWaitedNeverMovesUpdatedAtBackward(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
 	}, "alice"); response.Code != http.StatusCreated {
@@ -638,13 +639,18 @@ func TestAPatchThatWaitedNeverMovesUpdatedAtBackward(t *testing.T) {
 	if _, err := gate.Exec(ctx, `select pg_advisory_xact_lock(hashtext('issue-rank:' || 'TEST'))`); err != nil {
 		t.Fatalf("hold the project's rank lock: %v", err)
 	}
+	// The PATCH runs on a connection of its own, so the wait below watches its backend alone: the
+	// message lands only once the PATCH waits on the rank lock, whatever else queues there.
+	patchHandler, patchPID := oneConnectionHandler(t, deps)
 	responses := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		responses <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{
+		responses <- dispatchRequest(t, patchHandler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{
 			"title": "Moved and retitled", "rank": map[string]string{"before": neighbour},
 		}, "alice")
 	}()
-	waitForDatabaseLocks(t, gate, 1)
+	if response, early := storetest.WaitForQueuedBehind(t, gate, patchPID, responses); early {
+		t.Fatalf("the PATCH answered status=%d body=%s before it queued behind the project's rank lock", response.Code, response.Body.String())
+	}
 
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+key+"/messages", map[string]string{
 		"body": "Lands while the PATCH waits.",
