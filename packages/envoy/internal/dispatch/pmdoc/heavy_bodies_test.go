@@ -26,11 +26,13 @@ import (
 // lines that carry no marker of their own; a run of brackets; 49 items nested by indentation and
 // then blank lines, and 100 items nested the same way; 49 markers on one line and then blank
 // lines; a chain of list markers on one line; and a typed fence whose label opens a run of
-// brackets. A tenth, footnote references and then their definitions, is the body whose
-// references goldmark resolves by walking the definitions (heavybodies.Shapes has why). Each is
-// stored or refused here as it is written to be, and six of the ten are the very same bytes the
-// browser suite draws in a page (e2e/heavy-bodies.ts, held to these by
-// heavybodies/testdata/shared-bodies.json), so the two read one body, not two.
+// brackets. Two more froze no tab: footnote references and then their definitions, which pmdoc
+// resolves from maps of the definitions where goldmark walked them for each reference, and a line
+// of bangs each before a letter and a caret, which goldmark's reference parser read as carets and
+// scanned the line from (heavybodies.Shapes has why). Each is stored or refused here as it is
+// written to be, and six of the eleven are the very same bytes the browser suite draws in a page
+// (e2e/heavy-bodies.ts, held to these by heavybodies/testdata/shared-bodies.json), so the two read
+// one body, not two.
 //
 // The shapes themselves are heavybodies.Shapes (pmdoc/heavybodies), not this file: the API's own
 // test of the verdict each write gets reads the same bodies from there, and a _test.go file of
@@ -538,7 +540,7 @@ func cpuGrowsLinearly(t *testing.T, mode string, shape heavybodies.Shape) {
 	}
 	var perCharacter [2]float64
 	var characters [2]int
-	for i, size := range [2]int{shape.Grown, cpuCheckLength * shape.Grown} {
+	for i, size := range [2]int{shape.Grown, cpuCheckLengthOf(shape) * shape.Grown} {
 		op := heavyOp{mode: mode, shape: shape.Name, size: size}
 		spent, runs, outcome := cpuOf(t, op)
 		expectVerdict(t, mode, shape, outcome)
@@ -641,6 +643,23 @@ func TestCPUGrowthVerdictCatchesQuadraticWorkAndRefusesATimeOfNone(t *testing.T)
 // cpuCheckLength times more a character there than at its length, where linear work costs no
 // more.
 const cpuCheckLength = 8
+
+// cpuCheckLengthOf is how many times its length shape is read and written whole at
+// (cpuCheckLength), and footnoteCheckLength for the footnote references and their definitions.
+func cpuCheckLengthOf(shape heavybodies.Shape) int {
+	if shape.ID == "footnote-references-then-definitions" {
+		return footnoteCheckLength
+	}
+	return cpuCheckLength
+}
+
+// footnoteCheckLength is how many times its length the footnote shape is read and written whole
+// at: the resolution that walked every definition for each reference was a small part of the
+// shape's CPU time at its length, about a tenth of the whole write's, so at cpuCheckLength times
+// it its read grew 2.0 to 4.2 times and its whole write 1.0 to 2.7, around the bound
+// (cpuGrowthPerCharacter); at 32 times it is FOOTNOTE_REVERT_MEASURE, and the shape, which costs
+// some 600 ns a character, is read at a million characters in a fifth of a second.
+const footnoteCheckLength = 32
 
 // cpuMeasuredGrowth is the most the CPU time for each character grew from a shape's length to
 // cpuCheckLength times it, among every read and whole write of these rows, measured on 2026-11-22

@@ -93,20 +93,23 @@ func nestedRefusal(line int) string {
 // at 30,000: a plain list of 8,000 items; a quote and a list item each followed by lines that
 // carry no marker of their own; a run of brackets; 49 items nested by indentation and then blank
 // lines, and 100 items nested the same way; 49 markers on one line and then blank lines; a chain
-// of list markers on one line; and a typed fence whose label opens a run of brackets. A tenth,
-// footnote references and then their definitions, froze no tab: it holds the resolution of a
-// body's references to their definitions linear in their number. goldmark's footnote parser found
-// each reference's definition by walking the definitions from the first (footnoteParser.Parse,
+// of list markers on one line; and a typed fence whose label opens a run of brackets. Two more
+// froze no tab. Footnote references and then their definitions hold the resolution of a body's
+// references to their definitions linear in their number: goldmark's footnote parser found each
+// reference's definition by walking the definitions from the first (footnoteParser.Parse,
 // extension/footnote.go:155 at v1.8.6), work that grows with the square of the references, and
-// pmdoc's reference parser no longer calls it (footnoteReferenceParser, pmdoc/footnotes.go).
+// pmdoc's reference parser no longer calls it (footnoteReferenceParser, pmdoc/footnotes.go). A line
+// of bangs, each before a letter and a caret, beside a footnote definition, holds the reading of a
+// bang linear in the line: goldmark's parser read the byte after each such bang's letter as a
+// reference's caret, and looked for the label's closer to the end of the line for every one.
 //
 // A list opener opens a list and its first item, two of the blocks MaxNesting counts, so 49 items
 // nested by indentation stand inside 98 blocks and are stored, while the 51st line of 100 such
 // items opens a block inside 100 and is refused - as the chain of markers on one line is, at its
 // 51st marker. The browser draws exactly those lines as the text they are instead.
 //
-// Six of the ten are bytes for bytes what e2e/heavy-bodies.ts spells for the browser suite, and
-// four are Go's alone, drawn by no browser row: which is which, and what each of the six digests
+// Six of the eleven are bytes for bytes what e2e/heavy-bodies.ts spells for the browser suite, and
+// five are Go's alone, drawn by no browser row: which is which, and what each of the six digests
 // to, is testdata/shared-bodies.json, held over the shapes here by digests_test.go and over the
 // TypeScript by e2e/__tests__/heavy-bodies-digests.test.ts.
 func Shapes() []Shape {
@@ -120,6 +123,9 @@ func Shapes() []Shape {
 	// A footnote pair is a reference on the body's first line and its definition below, both
 	// under a label of five characters, so each pair costs footnotePair characters wherever it is.
 	const footnotePair = len("[^a0000] ") + len("[^a0000]: x\n")
+	// The bangs' line ends the body's first paragraph, and the definition its carets would name
+	// follows it.
+	const bangDefinition = "\n\n[^a]: d\n"
 	return []Shape{
 		{
 			ID:    "plain-list",
@@ -206,6 +212,14 @@ func Shapes() []Shape {
 				return references.String() + "\n\n" + definitions.String()
 			},
 			Grown: BlockCap - len("\n\n"),
+		},
+		{
+			ID:   "bangs-before-carets",
+			Name: "10,663 bangs each before a letter and a caret, beside a footnote definition",
+			Body: func(size int) string {
+				return strings.Repeat("!x^", (size-len(bangDefinition))/3) + bangDefinition
+			},
+			Grown: BlockCap,
 		},
 	}
 }

@@ -12,16 +12,22 @@ import (
 	"golang.org/x/text/language"
 )
 
-// footnoteReferenceParser reads a footnote reference as goldmark's footnote parser does, and
-// resolves its label from maps of the parse's definitions built once (footnoteDefinitionsOf): a
-// label equal byte for byte to a definition's resolves to the first such definition, as goldmark
-// resolves it, and one that matches a definition's only up to case (footnoteLabelKey) to the first
-// definition with that key, as the browser editor's parser resolves it, where goldmark read `[^A]`
-// as text beside `[^a]: `. Such a reference carries its label as written (referenceLabelAttr),
-// which the browser editor keeps on it. Goldmark's own parser found the definition by walking
-// every one of them for each reference, so a body of n references and their n definitions cost
-// it n²/2 comparisons: the parser is goldmark's for its trigger alone.
-type footnoteReferenceParser struct{ parser.InlineParser }
+// footnoteReferenceParser reads a footnote reference, `[^label]`, or `![^label]` after an image's
+// bang, and resolves its label from maps of the parse's definitions built once
+// (footnoteDefinitionsOf): a label equal byte for byte to a definition's resolves to the first such
+// definition, as goldmark's footnote parser resolves it, and one that matches a definition's only
+// up to case (footnoteLabelKey) to the first definition with that key, as the browser editor's
+// parser resolves it, where goldmark read `[^A]` as text beside `[^a]: `. Such a reference carries
+// its label as written (referenceLabelAttr), which the browser editor keeps on it. It is a parser
+// of its own, not goldmark's wrapped: goldmark's found the definition by walking every one of them
+// for each reference, so a body of n references and their n definitions cost it n²/2 comparisons,
+// and after a bang it read the third byte as the caret without asking whether the second opened
+// the label, so `!x^a]` beside `[^a]: ` lost its `x` to a reference and every `!x^` scanned the
+// rest of its line for a closer.
+type footnoteReferenceParser struct{}
+
+// Trigger is the bytes a reference starts with: the label's opener, or an image's bang before it.
+func (footnoteReferenceParser) Trigger() []byte { return []byte{'!', '['} }
 
 // footnoteLabelKey is a footnote label as the browser editor's parser compares it: with full case
 // mapping, lowered and then uppercased, so `ß` matches `SS` and `İ` matches `i̇`, which simple case
@@ -34,13 +40,15 @@ func footnoteLabelKey(label string) string {
 // is written with.
 var referenceLabelAttr = []byte("pmdoc-reference-label")
 
-func (p footnoteReferenceParser) Parse(parent ast.Node, block gmtext.Reader, pc parser.Context) ast.Node {
+func (footnoteReferenceParser) Parse(parent ast.Node, block gmtext.Reader, pc parser.Context) ast.Node {
 	line, segment := block.PeekLine()
-	start := 1
+	opener := 0
 	if len(line) > 0 && line[0] == '!' {
-		start++
+		opener++
 	}
-	if start+1 >= len(line) || line[start] != '^' {
+	// start is the caret's index, after the opener.
+	start := opener + 1
+	if start+1 >= len(line) || line[opener] != '[' || line[start] != '^' {
 		return nil
 	}
 	closure := util.FindClosure(line[start+1:], '[', ']', false, false) //nolint:staticcheck
@@ -129,14 +137,14 @@ func (footnotes) Extend(m goldmark.Markdown) {
 }
 
 // footnoteParserOptions registers footnotes: the definition parser (footnoteDefinitionParser) and
-// goldmark's reference parser (footnoteReferenceParser), which numbers the definitions it refers
-// to. Goldmark's footnote transformer is left out: it only orders the definitions, drops those
-// nothing refers to and appends backlinks, and the parser keeps every definition where it is
-// written (definitionsInPlace) and writes no backlink.
+// the reference parser (footnoteReferenceParser), which numbers the definitions it refers to.
+// Goldmark's footnote transformer is left out: it only orders the definitions, drops those nothing
+// refers to and appends backlinks, and the parser keeps every definition where it is written
+// (definitionsInPlace) and writes no backlink.
 func footnoteParserOptions() []parser.Option {
 	return []parser.Option{
 		parser.WithBlockParsers(util.Prioritized(frontmatterAttempt{endsContainers{footnoteDefinitionParser{nestingGuard{BlockParser: extension.NewFootnoteBlockParser()}}}}, 999)),
-		parser.WithInlineParsers(util.Prioritized(footnoteReferenceParser{extension.NewFootnoteParser()}, 101)),
+		parser.WithInlineParsers(util.Prioritized(footnoteReferenceParser{}, 101)),
 	}
 }
 

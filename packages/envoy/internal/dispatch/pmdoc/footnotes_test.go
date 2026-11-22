@@ -13,7 +13,10 @@ import (
 // failing that to the first whose label matches it up to case (footnoteLabelKey), carrying its
 // label as written then; a reference that matches no definition stays text. That was goldmark's
 // walk of the definitions and this package's fallback together, before footnoteReferenceParser
-// resolved every reference from maps of its own: each case here reads the same at main.
+// resolved every reference from maps of its own: each case here but the last reads the same at
+// main. The last is a bang whose next byte opens no label: goldmark's parser read its third byte
+// as the caret, so at main `t !x^a] u` beside `[^a]: ` became `t !`, a reference and ` u`, and
+// lost the `x`.
 func TestFootnoteReferencesResolveToAnEqualLabelFirstAndThenToOneEqualUpToCase(t *testing.T) {
 	for _, test := range []struct {
 		name, markdown string
@@ -46,6 +49,12 @@ func TestFootnoteReferencesResolveToAnEqualLabelFirstAndThenToOneEqualUpToCase(t
 			markdown: "None [^zz], one [^ab].\n\n[^ab]: lower\n",
 			resolved: []string{`1: definition "ab", as written`},
 			rendered: "None [^zz], one [^ab].\n\n[^ab]: lower\n",
+		},
+		{
+			name:     "a bang whose next byte opens no label, beside the definition its rest would name",
+			markdown: "t !x^a] u\n\n[^a]: d\n",
+			resolved: nil,
+			rendered: "t !x^a] u\n\n[^a]: d\n",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
