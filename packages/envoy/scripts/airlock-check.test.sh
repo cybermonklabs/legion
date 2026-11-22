@@ -100,15 +100,15 @@ AIRLOCK_GCLOUD_SECRET=GCLOUD_EXAMPLE_LOGIN
 AIRLOCK_GWS_READ_SECRET=GWS_EXAMPLE_VIEW_2
 AIRLOCK_GWS_ADMIN_SECRET=GWS_EXAMPLE_ADMIN_2
 AIRLOCK_GWS_TIER_KEY="operator.with space's [key]"
-AIRLOCK_RULES_FILE="$work/k7-rules.json"
-printf '{"secrets":[]}\n' >"$AIRLOCK_RULES_FILE"
+AIRLOCK_PROFILES_FILE="$work/k7-profiles.json"
+printf '{"profiles":[]}\n' >"$AIRLOCK_PROFILES_FILE"
 STACK_SECRETS_PREFIX=k7-fixture-
 K7_CONSUMER_WORK_DIR="$work/k7"
 k7_consumer_add_fixtures
 jq -e --arg gcloud "$AIRLOCK_GCLOUD_SECRET" --arg read "$AIRLOCK_GWS_READ_SECRET" --arg admin "$AIRLOCK_GWS_ADMIN_SECRET" \
-  'any(.secrets[]; .name == $gcloud and .hosts == ["cloudresourcemanager.googleapis.com", "oauth2.googleapis.com", "www.googleapis.com", "cloudkms.googleapis.com"])
-   and any(.secrets[]; .name == $read and .hosts == ["www.googleapis.com", "oauth2.googleapis.com"])
-   and any(.secrets[]; .name == $admin and .hosts == ["admin.googleapis.com"])' "$work/k7/rules.json" >/dev/null
+  'any(.profiles[]; .name == $gcloud and .proxy.hosts == ["cloudresourcemanager.googleapis.com", "oauth2.googleapis.com", "www.googleapis.com", "cloudkms.googleapis.com"])
+   and any(.profiles[]; .name == $read and .proxy.hosts == ["www.googleapis.com", "oauth2.googleapis.com"])
+   and any(.profiles[]; .name == $admin and .proxy.hosts == ["admin.googleapis.com"])' "$work/k7/profiles.json" >/dev/null
 # Each login's fake secret is stored under policy.NameToSlug's slug of the operator's name.
 for slug in gcloud-example-login gws-example-view-2 gws-example-admin-2; do
   grep -qFx "k7-fixture-$slug" "$work/k7-names"
@@ -169,7 +169,7 @@ run_consumers() {
       cat "$K7_CONSUMER_WORK_DIR/out"' bash "$work/preamble.sh" "$@" 2>&1)" || status=$?
 }
 run_consumers
-label='operator inputs build matching rules, store names, prepare consumers and run valid commands'; check test "$status" -eq 0
+label='operator inputs build matching profiles, store names, prepare consumers and run valid commands'; check test "$status" -eq 0
 label='the gcloud login, selected tier and both Google Workspace logins reach the real consumer boundary'
 check test "$output" = $'kms=error: token gcloud-placeholder\ngcloud=ERROR: gcloud-placeholder\ngws_tier=secret-run GWS_EXAMPLE_VIEW_2\ngws=200\nadmin=200'
 
@@ -213,7 +213,7 @@ cat >"$start_dir/broker" <<EOF
 #!/usr/bin/env bash
 tr '\0' ' ' </proc/\$\$/cmdline >"$start_dir/broker-cmdline"
 tr '\0' '\n' </proc/\$\$/environ | sed 's/=.*//' | sort >"$start_dir/broker-environ"
-echo "fake broker: fatal: \$BROKER_AIRLOCK_RULES_FILE is refused" >&2
+echo "fake broker: fatal: \$BROKER_PROFILES_FILE is refused" >&2
 exit 1
 EOF
 chmod +x "$start_dir/bin/env" "$start_dir/broker"
@@ -243,7 +243,7 @@ done
 STACK_LOG="$start_dir/stack.log" WORK_DIR="$start_dir" BROKER_BIN="$start_dir/broker"
 printf '  broker 1: api 127.0.0.1:1, proxy 127.0.0.1:2, pid %s, log x\n' "$stand_in" >"$STACK_LOG"
 status=0
-PATH="$start_dir/bin:$PATH" k8a_start_broker "$start_dir/rules.json" label || status=$?
+PATH="$start_dir/bin:$PATH" k8a_start_broker "$start_dir/profiles.json" label || status=$?
 kill "$stand_in" 2>/dev/null || true
 output="$(cat "$start_dir/argv" "$start_dir/broker-cmdline" 2>/dev/null || true)"
 label="k8a's broker start puts the stack broker's password in no process's arguments"
@@ -252,7 +252,7 @@ passed=false
   ! grep -qs not-a-secret "$start_dir/argv" && passed=true
 check "$passed"
 output="$(cat "$start_dir/broker-environ" 2>/dev/null || true)"
-want_environ="$(printf '%s\n' BROKER_AIRLOCK_LISTEN_ADDR BROKER_AIRLOCK_RULES_FILE BROKER_DATABASE_URL BROKER_LISTEN_ADDR BROKER_METRICS_LISTEN_ADDR BROKER_PUBLIC_URL PATH STAND_IN | sort)"
+want_environ="$(printf '%s\n' BROKER_AIRLOCK_LISTEN_ADDR BROKER_DATABASE_URL BROKER_LISTEN_ADDR BROKER_METRICS_LISTEN_ADDR BROKER_PROFILES_FILE BROKER_PUBLIC_URL PATH STAND_IN | sort)"
 label="k8a's broker start gives the broker exactly the stack broker's environment and its overrides"
 check test "$output" = "$want_environ"
 

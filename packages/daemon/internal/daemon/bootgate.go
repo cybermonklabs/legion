@@ -922,9 +922,6 @@ func (r ran) killed(launch string, budget time.Duration) string {
 // is no error: it is judged as a run that exited -1, which each probe reads as its doc says, and
 // its messages name the signal (ran.end, ran.ended).
 func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran, error) {
-	// The attempt's time is read from before its budget starts, so an attempt the budget ended
-	// reads the whole budget or more (ran.killed), however long the box holds the work between.
-	started := time.Now()
 	attempt, cancel := context.WithTimeout(ctx, g.timeout)
 	defer cancel()
 	job := foregroundOf(g.stdin, g.echo)
@@ -936,6 +933,7 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	killed := procgroup.Configure(cmd)
 	job.attach(cmd)
+	started := time.Now()
 	err := cmd.Run()
 	job.release()
 	if ctx.Err() != nil {

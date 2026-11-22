@@ -80,8 +80,7 @@ jobs:
       - uses: ./.github/actions/install-jj
       # extensions/legion-phase-stall-omp.test.ts and controller-start-omp.test.ts run the pinned
       # Oh My Pi against stand-ins (packages/pi-shared/test/omp-harness.ts) and refuse on GitHub
-      # Actions without one. The pin is read from .omp-pin, the repository's one copy of it,
-      # installed through the mise install-jj leaves at ~/.local/bin/mise
+      # Actions without one. The pin is read from .omp-pin, the repository's one copy of it
       # (.github/actions/install-omp).
       - uses: ./.github/actions/install-omp
       # scripts/skill-scenarios/rig.test.ts runs rig.sh judge-omp's container with the runner's own

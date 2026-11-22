@@ -2,7 +2,7 @@ import {
   createIssue,
   createIssueArtifact,
   createProject,
-  putRepoProject,
+  putProjectDefaultRepository,
   recordCheckResult,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
@@ -46,7 +46,7 @@ test("a result's line names the whole commit, so a result at a mistyped commit i
   browser,
 }) => {
   await createProject({ key: "VER", name: "Verification" });
-  await putRepoProject(repository, { default: true, project: "VER" });
+  await putProjectDefaultRepository("VER", repository);
   const issue = await createIssue({ project: "VER", spec, title: "Whole commits in a result" });
   // A result at a commit the repository does not hold is refused (`refuseUnknownCommit`), so the
   // mistyped commit is seeded as one the fake GitHub answers for: `commits` is the field that

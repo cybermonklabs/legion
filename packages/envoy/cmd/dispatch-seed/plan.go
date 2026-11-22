@@ -45,8 +45,8 @@ type seedPlan struct {
 	deepest   int
 }
 
-// projectPlan is one project with its default repository mapping and the second repository the
-// issues that carry one of their own use.
+// projectPlan is one project with its default repository and the second repository the issues
+// that carry one of their own use.
 type projectPlan struct {
 	Key        string
 	Name       string

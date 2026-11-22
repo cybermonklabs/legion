@@ -77,22 +77,30 @@ of that spec as a `requirement` block, and write the child's Verification docume
 (`verification.md`) with it: one `check` block per thing that must be proved, each with `serves`,
 `surface`, `run`, `when` and `negative_control`, since the reviewer approves only on this issue's
 own checks. A check carrying `ci_check` is CI's and takes no `run`
-(`skill://legion-architect/references/design-gate.md`). A child issue's spec is never gated: the
-architect above you reviews each version of this child's spec and Verification document instead
-(`skill://legion-architect/references/decomposition.md`, "Reviewing a child's spec"). So do not
-call `dispatch request-approval`, do not register a gate, and do not wait for `design-approved`.
-Tell the architect above you of each version you write, with `envoy_publish`. Tell your workers of
-that version only after its approving `Spec review of` comment. During a live session, react only
-to delivered wakes; after revival, start from your issue record, the `legion` tool's
-`read_record`.
+(`skill://legion-architect/references/design-gate.md`). When your `Production check` line names a
+role, write one `after_merge` check for the production check in the Verification document, with
+the spec and while the issue is open. Under `Production check: off`, write none. A child issue's
+spec is never gated: the architect above you reviews each version of this child's spec and
+Verification document instead (`skill://legion-architect/references/decomposition.md`,
+"Reviewing a child's spec"). So do not call `dispatch request-approval`, do not register a gate,
+and do not wait for `design-approved`. Tell the architect above you of each version you write,
+with `envoy_publish`. Tell your workers of that version only after its approving `Spec review of`
+comment. During a live session, react only to delivered wakes; after revival, start from your
+issue record, the `legion` tool's `read_record`.
 
-Create children under your own issue, each past the red-team check in
-`skill://legion-architect/references/decomposition.md`. Review each version of their specs as
-"Reviewing a child's spec" in that reference says. Release every child with `release_children` as
+A new version of a spec or Verification document you write reaches no worker from the daemon,
+because a person approves only the root's documents. So you send that news yourself, whether the
+version is your own issue's or that of an issue under it, once the version has its approving
+`Spec review of` comment: `envoy_publish` to the role topic of the phase holder of each issue the
+version changes, naming the version and what changed. Request no approval for it.
+
+Create children under your own issue as `skill://legion-architect/references/decomposition.md`
+says, and review each version of their specs as "Reviewing a child's spec" in that reference
+says. Release every child with `release_children` as
 soon as it is filed (the daemon holds it until the issues its `--blocked-by` links name close), and
 adjust open children when closures change the plan. Your issue's own first phase has already
 started when you start, so a child you file runs beside your issue's own work. Your issue's
-sign-off then waits for its last round, whose head carries their merges
+sign-off then waits for its last round
 (`skill://legion-architect`, sections 3 and 4). When a person sets your issue back to `todo` while
 it runs or is held, you stay live: your issue goes back to `admitted`, and while Dispatch shows an
 open child under it, its first phase waits and the `children-first` notice of that wait comes to
@@ -116,7 +124,7 @@ hold its role, which the daemon's `holdsRole` decides, the child's notices come 
 | --- | --- |
 | A child that looks independent of the tree, capacity, or a cross-tree conflict | Message the controller with `envoy_publish` to the controller topic your `Legion addressing` line names. The controller asks a person before it re-files a child as a root. |
 | A problem outside this tree | Never file an issue for it. A clear defect in code this tree touches or depends on is fixed in this tree's own pull request. Send any other clear defect to the controller with its evidence, and it goes to the tree that owns that code. Send a problem that needs a decision to the architect above you. The root architect opens the `dispatch ask` for it, as `skill://legion-worker/references/findings.md` says. |
-| Product, scope, or design decision, yours or a worker's | Answer from tree context, or send it up. A sub-architect writes no decision block. It sends a decision only a person can make to the architect above it, never into the child's spec, and the root architect asks it on the root. The root architect writes the root spec's, knowing the new version closes the design gate for the whole tree until the human answers. An answer that is the whole change since the version they approved carries their approval to the new version, so it requests nothing. After an answer that changes the spec's text outside the block, it rewrites that text and runs the two fresh reviews of the new version. `plan-gap-analyst` finds its gaps, and `plan-reviewer`, told that the document is a spec, checks each factual claim. It resolves every finding, and checks with a command or removes each claim either review marks unverified. Then it requests approval again with a `--summary` of two sentences: what changed since the earlier approval, and both reviews' results. A to-do only a human can do goes up the same way, and the root architect opens a `dispatch ask` for it. |
+| Product, scope, or design decision, yours or a worker's | Answer from tree context, or send it up. A sub-architect writes no decision block. It sends a decision only a person can make to the architect above it, never into the child's spec, and the root architect asks it on the root. The root architect writes the root spec's, knowing the new version closes the design gate for the whole tree until the human answers. An answer that is the whole change since the version they approved carries their approval to the new version, so it requests nothing. After an answer that changes the spec's text outside the block, it rewrites that text and requests approval again with a one-sentence `--summary` naming what changed since the earlier approval. A to-do only a human can do goes up the same way, and the root architect opens a `dispatch ask` for it. |
 | Worker question or failure | Handle it or message the worker with `envoy_publish` to its role token. |
 
 The reviewer's approval moves this child to `accepting`, where no worker runs and the acceptance
@@ -130,7 +138,12 @@ Before deciding the acceptance, have `goal-red-team` read the issue's goal, ever
 requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
 each `unmet` finding there.
 Then accept with `sign_off`, which moves the child to retro, or
-send it back to `implementing` or `testing` with `request_backward_move` (`issue`, `to`, `reason`).
+send it back to `planning`, `implementing` or `testing` with `request_backward_move` (`issue`, `to`, `reason`).
+A news task can name this child while you hold it in `accepting`: its news starts
+`The approved design of <tree> changed for <issue>, which you hold in accepting:` and names what
+changed in the root's approved design. Read each named section and check at the new version.
+Then sign the child off, or send it back to `planning`, `implementing` or `testing` with a
+`reason` that names the version and the change.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
 `dispatch results --issue <issue>` shows. A result one of its children recorded against one of

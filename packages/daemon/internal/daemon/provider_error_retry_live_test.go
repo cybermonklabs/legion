@@ -181,7 +181,6 @@ func newProviderErrorLive(t *testing.T) *providerErrorLive {
 	if omp == "" {
 		t.Skipf("%s is unset, so there is no Oh My Pi for a pane to run; scripts/e2e/provider-error-retry.sh requires it", liveOmpPathEnv)
 	}
-	takeOwnDatabase(t)
 	proof := newLiveProof(t, "scripts/e2e/provider-error-retry.sh")
 	r := &providerErrorLive{
 		liveAgentProof: liveAgentProof{liveProof: proof, omp: omp},

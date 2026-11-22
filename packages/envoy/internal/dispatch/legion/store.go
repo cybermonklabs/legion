@@ -93,8 +93,8 @@ func GetSettings(ctx context.Context, pool *store.Pool, project string) (Setting
 }
 
 // PutSettings sets the daemon a project is read from, and answers the row as it stands. created_by
-// is the actor that first set the project's setting, as repo_projects.created_by is the actor that
-// first mapped a repository: a later write changes the URL and the time and keeps it.
+// is the actor that first set the project's setting: a later write changes the URL and the time
+// and keeps it.
 func PutSettings(ctx context.Context, pool *store.Pool, project, stateURL string, actor model.Actor) (Settings, error) {
 	createdBy, err := json.Marshal(actor)
 	if err != nil {

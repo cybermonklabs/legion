@@ -7,12 +7,12 @@
  *  makes a directory takes the test file's own `scratch`, whose directories that file's hooks
  *  remove. */
 
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  closedPort,
   copyLeg,
   type LegRun,
   publicRows,
@@ -22,6 +22,7 @@ import {
   tailnetLeg,
   textToolPath,
 } from "./outside-agent-fixture";
+import { closedPort } from "./outside-path-reach-fixtures";
 
 /* The tailnet leg against stand-ins of what it drives, so the rows it judges by its own controls
  * can be read PASS, FAIL and UNKNOWN: a git checkout whose commits the pins name; a deployment
@@ -51,6 +52,14 @@ export const workflowInputs = [
   "sweep_fills",
 ];
 export const inviteUrl = "https://dispatch.edge.example/enroll#example-invite-token";
+/** The ids of the stand-in writer's comments (`c1`, `c2`) and direct messages (`m1`, `m2`), in the
+ *  lowercase 8-4-4-4-12 form of the ids Dispatch gives them. */
+export const writeIds = {
+  c1: "3f1c2a9e-8b7d-4c11-9e2a-5d6f7a8b9c0d",
+  m1: "7a2b9c1d-3e4f-4a5b-8c6d-1e2f3a4b5c6d",
+  c2: "1b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b",
+  m2: "9e8d7c6b-5a49-4382-9716-05f4e3d2c1b0",
+} as const;
 
 export interface StandIns {
   /** Whether the stand-in Dispatch approves the full member's machine login and serves the GitHub
@@ -87,13 +96,17 @@ export interface StandIns {
   /** How the public leg starts: the local command (default), or the workflow through `gh`, its
    *  other inputs those `OUTSIDE_WORKFLOW_INPUTS` holds (default the invite link alone), its
    *  repository's visibility as `gh repo view` reads it (default PRIVATE; INTERNAL and PUBLIC as
-   *  GitHub names them; empty, unreadable). */
-  readonly workflow?: { readonly inputs?: string; readonly visibility?: string };
+   *  GitHub names them; empty, unreadable), and that view's exit status (default 0). */
+  readonly workflow?: {
+    readonly inputs?: string;
+    readonly visibility?: string;
+    readonly viewExit?: number;
+  };
   /** The read sweep beside the leg and on the runner: the writer's one line (default a write
-   *  delivered inside the runner's window, in the `write <UTC> <comment id> <message id>
-   *  delivered` form); fills mode refusing to write a file, as it refuses one that lacks a fill;
-   *  the fills' version (default 3, #4608's contract at cd8a041312); and the runner's last line
-   *  and exit (default PASS, 0). */
+   *  delivered inside the runner's window, in the `write <began> <ended> <comment id> <message
+   *  id> delivered` form); fills mode refusing to write a file, as it refuses one that lacks a
+   *  fill; the fills' version (default 4, #4608's contract); and the runner's last line and exit
+   *  (default PASS, 0). */
   readonly sweep?: {
     readonly writer?: string;
     readonly fillsRefused?: boolean;
@@ -178,7 +191,10 @@ function standInPath(scratch: Scratch, state: string, publicCommand: string): st
     `#!/usr/bin/env bash
 state='${state}'
 case $1 in
-  repo) [ ! -f "$state/visibility" ] || cat "$state/visibility" ;;
+  repo)
+    [ ! -f "$state/visibility" ] || cat "$state/visibility"
+    exit "$(cat "$state/view-exit" 2>/dev/null || echo 0)"
+    ;;
   api)
     path=\${2#repos/${deployRepository}/contents/}
     path=\${path%%\\?ref=main}
@@ -292,6 +308,8 @@ esac
 
 export interface StandInDispatch {
   readonly origin: string;
+  /** Its process, whose environment a row can read as the kernel holds it. */
+  readonly pid: number;
   /** Each request it answered so far, `METHOD path`. */
   seen(): string[];
   stop(): void;
@@ -311,22 +329,25 @@ export function liveStandInDispatches(): number {
 
 /** The stand-in Dispatch (`outside-agent-stand-in-dispatch.ts`) as a process of its own, its
  *  /healthz naming the commit `serving` says: no event loop of a test worker holds its answers,
- *  the bounded runner's synchronous stop of a sibling run included. It answers before this
- *  returns. */
+ *  the bounded runner's synchronous stop of a sibling run included. The child binds a port of the
+ *  kernel's choosing and writes it to `<state>/dispatch-port`, so no port chosen here and closed
+ *  can be taken by another process before the child binds it; and it answers `/_ready` with a
+ *  nonce made here, so another run's stand-in on that port can never pass for this one. It
+ *  answers before this returns. */
 function standInDispatch(
   state: string,
   controls: StandIns["controls"],
   repo: Checkout,
   serving: NonNullable<StandIns["serving"]>
 ): StandInDispatch {
-  const port = closedPort();
-  const origin = `http://127.0.0.1:${port}`;
+  const nonce = randomUUID();
+  const portFile = join(state, "dispatch-port");
   const commit = serving === "other" ? repo.apart : repo.built;
   const child = Bun.spawn([process.execPath, standInDispatchFile], {
     env: {
       PATH: process.env.PATH ?? "",
       OUTSIDE_STAND_IN_DISPATCH: JSON.stringify({
-        port,
+        nonce,
         state,
         controls,
         commit,
@@ -340,21 +361,29 @@ function standInDispatch(
     stderr: "inherit",
   });
   liveDispatches.add(child.pid);
-  // Its readiness, read as the rest of the preparation is, before any leg starts: at most 10 s.
+  // Its readiness, read as the rest of the preparation is, before any leg starts: the port the
+  // child bound, answering this nonce at /_ready, read for at most 10 s by the clock, plus the 1 s
+  // of the last read, so a port that takes connections and never answers holds it 11 s at most.
   const ready = Bun.spawnSync([
     "bash",
     "-c",
-    'i=0; while [ "$i" -lt 200 ]; do curl -q -sf -o /dev/null --max-time 1 "$0/_ready" && exit 0; sleep 0.05; i=$((i + 1)); done; exit 1',
-    origin,
+    'deadline=$((SECONDS + 10)); while [ "$SECONDS" -lt "$deadline" ]; do if [ -s "$0" ]; then p=$(cat "$0"); [ "$(curl -q -sf --max-time 1 "http://127.0.0.1:$p/_ready")" = "$1" ] && { echo "$p"; exit 0; }; fi; sleep 0.05; done; exit 1',
+    portFile,
+    nonce,
   ]);
-  if (!ready.success) {
+  const port = ready.stdout.toString().trim();
+  if (!ready.success || !/^[0-9]+$/.test(port)) {
     child.kill();
     liveDispatches.delete(child.pid);
-    throw new Error(`the stand-in Dispatch did not answer at ${origin} within 10 s`);
+    throw new Error(
+      "the stand-in Dispatch did not answer its own nonce at the port it wrote within 10 s"
+    );
   }
+  const origin = `http://127.0.0.1:${port}`;
   const seenFile = join(state, "dispatch-seen");
   return {
     origin,
+    pid: child.pid,
     seen: () =>
       existsSync(seenFile)
         ? readFileSync(seenFile, "utf8")
@@ -401,12 +430,20 @@ if (command === "peer") {
 `;
 }
 
-export function prepareStandIn(scratch: Scratch, standIns: StandIns): PreparedStandIn {
+export async function prepareStandIn(
+  scratch: Scratch,
+  standIns: StandIns
+): Promise<PreparedStandIn> {
+  // The ports the broker and the listener are named at: refused, from a range the kernel hands no
+  // `port: 0` listener, each held by a UDP bind of this process so no other `closedPort` call gets
+  // it. A program that binds the number over TCP is not stopped; none of this suite does.
+  const brokerPort = await closedPort();
+  const listenerPort = await closedPort();
   const state = scratch("state");
   writeFileSync(join(state, "canary-refusal"), `${standIns.canaryRefusal}\n`);
   if (standIns.approve === false) writeFileSync(join(state, "login-expires"), "");
-  // The fills the sweep's fills mode writes, version 3: the project, where they were made, the
-  // SHA-256 of the routes.txt and of the deployment they were made from and at, when, the
+  // The fills the sweep's fills mode writes, version 4: the project, the SHA-256 of the origin they
+  // were made at, of the routes.txt and of the deployment they were made from and at, when, the
   // repository, and a `can_fail` line for each proxy read, but only with the full member's
   // cookie, as restricted-sweep.sh does.
   const canFail = [
@@ -419,9 +456,9 @@ export function prepareStandIn(scratch: Scratch, standIns: StandIns): PreparedSt
   writeFileSync(
     join(state, "fills"),
     [
-      `restricted-sweep-fills\t${standIns.sweep?.fillsVersion ?? 3}`,
+      `restricted-sweep-fills\t${standIns.sweep?.fillsVersion ?? 4}`,
       "project\tPRIV",
-      "origin\thttp://127.0.0.1",
+      `origin_sha256\t${"e".repeat(64)}`,
       `routes\t${"a".repeat(64)}`,
       `deployment\t${"b".repeat(64)}`,
       `made_at\t${Math.floor(Date.now() / 1000)}`,
@@ -466,7 +503,7 @@ export function prepareStandIn(scratch: Scratch, standIns: StandIns): PreparedSt
   // quote no shell string may.
   writeFileSync(
     join(state, "writer-line"),
-    `${standIns.sweep?.writer ?? "write 2026-01-01T00:00:05Z cmt-1 msg-1 delivered"}\n`
+    `${standIns.sweep?.writer ?? `write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z ${writeIds.c1} ${writeIds.m1} delivered`}\n`
   );
   writeFileSync(
     join(state, "sweep-verdict"),
@@ -521,6 +558,7 @@ esac
   if (standIns.t3Kills === true) writeFileSync(join(state, "t3-kills"), "");
   const visibility = standIns.workflow?.visibility ?? "PRIVATE";
   if (visibility !== "") writeFileSync(join(state, "visibility"), `${visibility}\n`);
+  writeFileSync(join(state, "view-exit"), `${standIns.workflow?.viewExit ?? 0}\n`);
   const approve =
     standIns.approve === false ? "" : `: >'${state}/approved-'"$OUTSIDE_TAILNET_USER_CODE"`;
   const moves =
@@ -575,7 +613,7 @@ exit ${standIns.publicExit ?? 0}
         blank: "  ",
         malformed: `${repo.held} HEAD`,
       }[standIns.dispatchCommits],
-      OUTSIDE_TAILNET_BROKER_URL: `http://127.0.0.1:${closedPort()}`,
+      OUTSIDE_TAILNET_BROKER_URL: `http://127.0.0.1:${brokerPort}`,
       OUTSIDE_TAILNET_DISPATCH_URL: dispatch.origin,
       ...(standIns.cookie === "absent" ? {} : { OUTSIDE_FULL_COOKIE_FILE: join(inputs, "cookie") }),
       OUTSIDE_PERSON: "outside-e2e@example.com",
@@ -595,7 +633,7 @@ exit ${standIns.publicExit ?? 0}
         ? {}
         : {
             OUTSIDE_PEER: "probe",
-            OUTSIDE_LISTENER_URL: `http://127.0.0.1:${closedPort()}`,
+            OUTSIDE_LISTENER_URL: `http://127.0.0.1:${listenerPort}`,
             OUTSIDE_OWNER_REMOVE_COMMAND: `sh ${remove}`,
           }),
     };

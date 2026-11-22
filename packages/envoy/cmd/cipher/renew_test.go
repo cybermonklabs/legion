@@ -71,7 +71,7 @@ func renewalSession(t *testing.T, broker string) (*client, Signer, string, strin
 	t.Setenv("AGENT_SECRETS_URL", broker)
 	t.Setenv("AGENT_SECRETS_KEY_DIR", dir)
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
-	base, enrollmentID, signer, err := sessionContext()
+	base, enrollmentID, signer, err := sessionContext(io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
