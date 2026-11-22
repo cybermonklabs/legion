@@ -34,19 +34,35 @@ import (
 // --- Unit Tests (no NATS needed — test Match() against pre-populated cache) ---
 
 // holding is a registry with no watcher whose cache holds interests, each delivered as a read
-// delivers it (interestCache.Apply).
+// delivers it (interestCache.Apply) and each a row of its key (interestFixture).
 func holding(t *testing.T, interests map[string]Interest) *Registry {
 	t.Helper()
 	r := &Registry{index: newSubjectIndex()}
 	r.cache = newInterestCopy(r)
 	for sessionID, item := range interests {
-		value, err := json.Marshal(item)
-		if err != nil {
-			t.Fatalf("encode %s: %v", sessionID, err)
-		}
-		interestCache{r}.Apply(kvwatch.Entry{Key: sessionID, Value: value, Revision: 1}, kvwatch.Read{})
+		interestCache{r}.Apply(kvwatch.Entry{Key: sessionID, Value: interestFixture(t, sessionID, item), Revision: 1}, kvwatch.Read{})
 	}
 	return r
+}
+
+// interestFixture is item encoded as the row the registry writes under key: one naming key, a
+// machine and the time of its write (boundInterest). A fixture naming no time is stamped now, the
+// time a write made now carries; one naming a time keeps it, which is how a case states the row's
+// age. A fixture that is still no row of key fails the test here, so a case written over a
+// session's row never runs over a record every reader drops.
+func interestFixture(t testing.TB, key string, item Interest) []byte {
+	t.Helper()
+	if item.UpdatedAt == 0 {
+		item.UpdatedAt = time.Now().UnixMilli()
+	}
+	value, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("encode %s's interest row: %v", key, err)
+	}
+	if _, err := boundInterest(key, value); err != nil {
+		t.Fatalf("the fixture stored under %s is no row of its key: %v", key, err)
+	}
+	return value
 }
 
 func TestMatch_FiltersByMachineID(t *testing.T) {
@@ -84,7 +100,7 @@ func TestMatchAllMachinesReturnsEachMatchingSessionOnceWhateverItsMachine(t *tes
 	r := holding(t, map[string]Interest{
 		"ses_a":     {SessionID: "ses_a", MachineID: "machine-A", Topics: []string{"notifications.team.x.>"}},
 		"ses_b":     {SessionID: "ses_b", MachineID: "machine-B", Topics: []string{"notifications.team.x.>", "notifications.team.*.update"}},
-		"ses_c":     {SessionID: "ses_c", MachineID: "", Topics: []string{"notifications.team.x.update"}},
+		"ses_c":     {SessionID: "ses_c", MachineID: "machine-C", Topics: []string{"notifications.team.x.update"}},
 		"ses_other": {SessionID: "ses_other", MachineID: "machine-A", Topics: []string{"notifications.team.y.>"}},
 	})
 
@@ -476,13 +492,11 @@ func connectNATS(t *testing.T) (*natsgo.Conn, func()) {
 	return conn, conn.Close
 }
 
+// putInterest stores item under its own session's key, straight to the bucket, as the row the
+// registry writes (interestFixture).
 func putInterest(t *testing.T, kv natsgo.KeyValue, item Interest) {
 	t.Helper()
-	buf, err := json.Marshal(item)
-	if err != nil {
-		t.Fatalf("failed to marshal interest: %v", err)
-	}
-	if _, err := kv.Put(item.SessionID, buf); err != nil {
+	if _, err := kv.Put(item.SessionID, interestFixture(t, item.SessionID, item)); err != nil {
 		t.Fatalf("failed to put interest: %v", err)
 	}
 }

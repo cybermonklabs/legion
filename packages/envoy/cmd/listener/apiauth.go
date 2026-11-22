@@ -424,7 +424,7 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 					writeJSON(w, http.StatusForbidden, listenerwire.EdgeRefusal{Reason: edgeTokenNotAdmitted, Error: err.Error()})
 					return
 				}
-				ctx = withEdgeHold(ctx)
+				ctx = withEdgeHold(ctx, auth.logger)
 			}
 			admit(w, r.WithContext(ctx), credentialBroker)
 			return
