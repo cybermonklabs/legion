@@ -506,6 +506,10 @@ func (s *Server) Log() string { return s.log.String() }
 // of them. It returns the block's size before the cut and after it, for the test's log, and fails
 // the test when the block or the index is not there.
 //
+// Before the stop it waits until the state file of every consumer of stream holds the position the
+// server reports for it (awaitConsumersStored), so the restarted server recovers each consumer from
+// the position a test read before the cut: the server's stop can keep an earlier one on disk.
+//
 // It works for a server whose streams are in the global account ($G), which is where the streams
 // of a server one Start made are: the shared server (URL) keeps each test's streams in the
 // directory of that test's account instead. The store survives the cut as it survives every Stop
@@ -513,6 +517,7 @@ func (s *Server) Log() string { return s.log.String() }
 // cut left of them.
 func (s *Server) CutStream(t testing.TB, stream string, keep func(size int64) int64) (before, after int64) {
 	t.Helper()
+	s.awaitConsumersStored(t, stream)
 	s.Stop(t)
 	messages := filepath.Join(s.store, "jetstream", "$G", "streams", stream, "msgs")
 	block, index := filepath.Join(messages, "1.blk"), filepath.Join(messages, "index.db")
