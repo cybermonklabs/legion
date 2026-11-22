@@ -15,7 +15,8 @@ When what you measure or read makes the plan build something differently from th
 ## Workspace restrictions
 
 Before your turn's first commit, run `jj -R "$LEGION_WORKSPACE" log -r @ --no-graph -T 'empty'`.
-Then follow the turn-start rule of the daemon part below. Never `jj describe` or `jj split` the
+When it prints `true`, run `jj -R "$LEGION_WORKSPACE" new @-`; otherwise run
+`jj -R "$LEGION_WORKSPACE" new @-` too. Never `jj describe` or `jj split` the
 working-copy commit you found at the turn's start. Do not move a bookmark you do
 not own. Put only your logical paths in `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
 Push any commits you make as the daemon part below says; your handoff is never a commit.
