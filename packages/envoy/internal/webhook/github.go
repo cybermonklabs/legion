@@ -144,8 +144,11 @@ func githubHandler(secret, mentionTrigger, reviewerAppID, verdictAppID string, p
 		// integration and the App's id, so a line that names it says which App delivered.
 		targetType := r.Header.Get("X-GitHub-Hook-Installation-Target-Type")
 		targetID := r.Header.Get("X-GitHub-Hook-Installation-Target-ID")
+		// The two headers are not covered by the body's signature, so a signed body replayed with
+		// forged headers chooses them: both lines log them quoted (%q), so a value holding a space
+		// or an `=` adds no field to the line.
 		if githubEvent(event) {
-			log.Printf("github sender login=%s type=%s target_type=%s target_id=%s delivery=%s event=%s",
+			log.Printf("github sender login=%s type=%s target_type=%q target_id=%q delivery=%s event=%s",
 				githubSenderField(payload, "login"),
 				githubSenderField(payload, "type"),
 				targetType, targetID,
@@ -207,7 +210,7 @@ func githubHandler(secret, mentionTrigger, reviewerAppID, verdictAppID string, p
 			// two Apps deliver of one event can be told apart and counted. A topic published before
 			// a later one failed is logged too.
 			err := publisher.PublishEachWithin(answer, item, func(topic string, duplicate bool) {
-				log.Printf("github published delivery=%s event=%s action=%s topic=%s key=%s target_id=%s result=%s",
+				log.Printf("github published delivery=%s event=%s action=%s topic=%s key=%s target_id=%q result=%s",
 					delivery, event, action, topic, item.DedupeKey, targetID, publishResult(duplicate))
 			})
 			if err != nil {

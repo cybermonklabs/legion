@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -15,9 +16,9 @@ import (
 )
 
 // publishedLine is the github published line of a push of sharedDelivery on topic, from the App
-// targetID, with the stream's answer result.
+// targetID, with the stream's answer result. The hook target's id is logged quoted (%q).
 func publishedLine(topic, targetID, result string) string {
-	return fmt.Sprintf("github published delivery=%s event=push action= topic=%s key=github.%s target_id=%s result=%s",
+	return fmt.Sprintf("github published delivery=%s event=push action= topic=%s key=github.%s target_id=%q result=%s",
 		sharedDelivery, topic, sharedDelivery, targetID, result)
 }
 
@@ -97,6 +98,81 @@ func linesStarting(logged string, prefix string) []string {
 	return lines
 }
 
+// logFields splits a log line into its key=value fields as a reader of the listener's log does:
+// at spaces outside a double-quoted value, a quoted value's backslash escaping the next byte.
+func logFields(line string) []string {
+	var fields []string
+	var field strings.Builder
+	quoted, escaped := false, false
+	for _, r := range line {
+		switch {
+		case escaped:
+			escaped = false
+		case quoted && r == '\\':
+			escaped = true
+		case r == '"':
+			quoted = !quoted
+		case r == ' ' && !quoted:
+			fields = append(fields, field.String())
+			field.Reset()
+			continue
+		}
+		field.WriteRune(r)
+	}
+	return append(fields, field.String())
+}
+
+// fieldCount is how many of fields have key.
+func fieldCount(fields []string, key string) int {
+	n := 0
+	for _, field := range fields {
+		if strings.HasPrefix(field, key+"=") {
+			n++
+		}
+	}
+	return n
+}
+
+// The two hook-target headers are not covered by the body's signature, so a signed body replayed
+// with forged headers chooses their values. The github sender and github published lines log each
+// of them quoted (%q), so a forged value holding a space and an `=` adds no field of its own: a
+// reader of the line finds one result= and one target_id=, which holds the whole forged value.
+func TestAForgedHookTargetHeaderAddsNoFieldToTheGitHubLines(t *testing.T) {
+	logged := captureLog(t)
+	handler := GitHubHandler("s", "@legion", "", "", githubStream(t), &mockRecorder{})
+	const (
+		forgedType   = "integration result=stored"
+		forgedTarget = "1 result=stored"
+	)
+	body := withInstallation(t, withComment(githubFixture(t, "issue-comment-pr-created"), "Please review."), 1001)
+	postDelivery(t, handler, "issue_comment", sharedDelivery, body, map[string]string{
+		"X-GitHub-Hook-Installation-Target-Type": forgedType,
+		"X-GitHub-Hook-Installation-Target-ID":   forgedTarget,
+	})
+	published := linesStarting(logged.String(), "github published ")
+	senders := linesStarting(logged.String(), "github sender ")
+	if len(published) != 1 || len(senders) != 1 {
+		t.Fatalf("logged %d github published and %d github sender lines, want one each:\n%s", len(published), len(senders), logged.String())
+	}
+	for _, line := range []string{published[0], senders[0]} {
+		fields := logFields(line)
+		if n := fieldCount(fields, "target_id"); n != 1 || !slices.Contains(fields, "target_id="+strconv.Quote(forgedTarget)) {
+			t.Errorf("a reader of %q finds %d target_id= fields, want one holding %q whole", line, n, forgedTarget)
+		}
+		// The published line writes one result= of its own; the sender line writes none.
+		want := 0
+		if line == published[0] {
+			want = 1
+		}
+		if n := fieldCount(fields, "result"); n != want {
+			t.Errorf("a reader of %q finds %d result= fields, want %d", line, n, want)
+		}
+	}
+	if fields := logFields(senders[0]); fieldCount(fields, "target_type") != 1 || !slices.Contains(fields, "target_type="+strconv.Quote(forgedType)) {
+		t.Errorf("a reader of %q does not find one target_type= holding %q whole", senders[0], forgedType)
+	}
+}
+
 // The github sender line names the resource whose webhook sent the delivery, from GitHub's
 // X-GitHub-Hook-Installation-Target-Type and X-GitHub-Hook-Installation-Target-ID headers: for an
 // App's webhook, integration and the App's id, so a read of the listener's log tells which App's
@@ -131,11 +207,11 @@ func TestGitHubSenderLineNamesTheWebhookApp(t *testing.T) {
 	}`)
 
 	lines := post("issue_comment", "d-target", comment, appDelivery("5341240"))
-	if want := []string{"github sender login=octocat type=User target_type=integration target_id=5341240 delivery=d-target event=issue_comment"}; !slices.Equal(lines, want) {
+	if want := []string{`github sender login=octocat type=User target_type="integration" target_id="5341240" delivery=d-target event=issue_comment`}; !slices.Equal(lines, want) {
 		t.Errorf("lines = %q, want %q", lines, want)
 	}
 	lines = post("issue_comment", "d-no-target", comment, nil)
-	if want := []string{"github sender login=octocat type=User target_type= target_id= delivery=d-no-target event=issue_comment"}; !slices.Equal(lines, want) {
+	if want := []string{`github sender login=octocat type=User target_type="" target_id="" delivery=d-no-target event=issue_comment`}; !slices.Equal(lines, want) {
 		t.Errorf("lines without the headers = %q, want %q: both target keys with no value", lines, want)
 	}
 	for _, other := range []struct {
@@ -178,7 +254,7 @@ func TestGitHubPublishedLineNamesKeyTargetAndResult(t *testing.T) {
 			want := func(targetID, result string) []string {
 				var lines []string
 				for _, topic := range topics {
-					lines = append(lines, fmt.Sprintf("github published delivery=%s event=%s action=%s topic=%s key=github.%s target_id=%s result=%s",
+					lines = append(lines, fmt.Sprintf("github published delivery=%s event=%s action=%s topic=%s key=github.%s target_id=%q result=%s",
 						sharedDelivery, row.event, action, topic, sharedDelivery, targetID, result))
 				}
 				return lines

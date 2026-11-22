@@ -63,7 +63,8 @@ The listener logs one `github published` line for each topic of each delivery it
 the delivery's GUID, its event and action, the topic, the key, the hook target's id
 (`X-GitHub-Hook-Installation-Target-ID`, an App's id for an App's webhook) and `result=stored` or
 `result=duplicate`, the stream's answer. A comment or a review also logs a `github sender` line,
-which names the sender and the hook target's type and id.
+which names the sender and the hook target's type and id. Both lines write the two hook-target
+headers quoted (`target_id="5341240"`), since the body's signature does not cover them.
 
 When a repository has been renamed, the listener publishes each of its events a second time under
 the former name, for every pair `ENVOY_GITHUB_REPOSITORY_RENAMES` configures as
