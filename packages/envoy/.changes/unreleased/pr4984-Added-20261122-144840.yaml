@@ -1,0 +1,21 @@
+kind: Added
+body: |-
+  `GET /api/v1/issues/{key}/change-request` gives four more fields. `digest` is the digest that a
+  person's approval of that version of the spec pins. `verification_digest` is the same digest for
+  `verification_version` of the Verification document, and it is "" where that version is 0. Each
+  proposal and changed check gives `text`, the block as that version holds it, and `approved_text`,
+  the current approved version of the node as The Spec's files print it. `approved_text` is "" where
+  the approved spec holds no such node or removed it.
+
+  On a phone, Approve of an issue of a spec-source repository first opens a sheet. This is true for
+  the Inbox card and for the header of the document. The sheet shows each node that the approval
+  adds, changes or removes, with its text, and the digests that the approval pins. Only the
+  sheet's Approve sends the approval. After the approval, the Spec tab of the issue shows the
+  approved change request. It reads each node from the approved version that the approval wrote,
+  and it shows who approved, when, the approval request and the digest. A refusal of the approved
+  spec (SPEC_REQUEST_STALE, SPEC_NODE_INVALID, SPEC_CHECKS_NOT_INCLUDED, SPEC_PARENT_MISSING,
+  SPEC_LOOP, APPROVAL_REQUEST_REQUIRED) shows the words of Dispatch and each node that the refusal
+  names. The card and the header offer no Retry for it.
+time: 2026-11-22T14:48:40Z
+custom:
+    Issue: pr4984

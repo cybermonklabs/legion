@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  `DispatchServiceError` keeps the `statements` and `problems` of a refusal of the approved spec as
+  Dispatch sent them. The refusal line of `dispatch review` names each node after the words of
+  Dispatch: a stale node with the version the request read and the current approved version (for
+  example `the refusal names a-bill (base 1, current 2)`), or a node with the rule it breaks (for
+  example `the refusal names a-receipt (parent-missing)`).
+time: 2026-11-22T14:48:40Z
+custom:
+    Issue: pr4984
