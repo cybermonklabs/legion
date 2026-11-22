@@ -18,15 +18,9 @@ name: CI job daemon-go
 # Go closure (`daemon_go_tests`, which already stood for exactly this set and gated nothing),
 # and the `test` job's is what its remaining steps read.
 #
-# TWO JOBS, AT ONCE. The race step is a job of its own, daemon-go-race, and daemon-go runs the
-# rest. The two steps share no package (ci_job_reads.py builds the plain step's pattern from the
-# race step's own list), so nothing ties their order, and in one job their two times added up.
-# Over the 158 green daemon-go jobs of ci.yaml runs on 2026-11-22 from 13:46Z to 18:10Z the race
-# step took 26.8 min at the median (36.3 at most) and the plain step 12.0 (15.0), after 1.4 min
-# of setup, and the job 41.0 min. Run at once, the race job alone sets the wall time, about
-# 28 min, and the second runner costs the 1.4 min of setup it repeats. The race step's time is
-# internal/daemon's: 1,352 s of its 1,422 s in run 45048924209, the four other packages ending
-# inside it.
+# Two jobs, which run at the same time: daemon-go-race runs the race step, and daemon-go runs the
+# rest. The two steps share no package, so nothing orders them.
+# why: .github/ci-notes/ci-job-daemon-go.md#why-the-race-step-is-a-job-of-its-own
 #
 # Everything here is what those steps need and nothing else, each job taking its own part:
 #   * the Postgres service in both, for LEGION_TEST_PG_DSN, the daemon's unit tests' store; and,
@@ -53,9 +47,10 @@ name: CI job daemon-go
 # workspace manifest and no skill, and a change to bun.lock or to one skill runs the plugin-pack
 # tests and no test of this job (dispatch://INFRA-1413, A4).
 #
-# Each job's last step reports ci-ok for the caller: on a merge-group run that job's own result
-# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends, so a failure of either job takes the group out without waiting for the other.
+# Each job's last step reports ci-ok for the caller: when that job's own result decides a
+# merge-group run at the front of the queue, it posts the failing ci-ok at once
+# (.github/actions/ci-ok-report, which says when it posts nothing), as every job of ci.yaml ends,
+# so a failure of either job does not wait for the other to end.
 # `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
 on:
   workflow_call:
@@ -81,9 +76,10 @@ jobs:
     runs-on: ubuntu-24.04
     # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
     # prints the goroutine dump that names it. A step's worst case is therefore its largest
-    # measured green duration plus its own -timeout. Over the 158 green daemon-go jobs the header
-    # counts: the setup's 1.7 min at most, the plain step's 15.0 and its 15 minutes, the
-    # race-impossible step's 0.5 and its 10, then Stage 1's 0.2 and the report. That is under
+    # measured green duration plus its own -timeout. Over the 158 green daemon-go jobs that
+    # ci-job-daemon-go.md#why-the-race-step-is-a-job-of-its-own counts: the setup's 1.7 min at
+    # most, the plain step's 15.0 and its 15 minutes, the race-impossible step's 0.5 and its 10,
+    # then Stage 1's 0.2 and the report. That is under
     # 43 minutes, and 45 is the limit.
     timeout-minutes: 45
     services:
@@ -225,7 +221,8 @@ jobs:
           changes: ${{ inputs.ci-ok-changes }}
           job-status: ${{ job.status }}
 
-  # The race step, in a job of its own beside daemon-go (the header says why, with the numbers).
+  # The race step, in a job of its own beside daemon-go.
+  # why: .github/ci-notes/ci-job-daemon-go.md#why-the-race-step-is-a-job-of-its-own
   # Its setup is daemon-go's, less what only the plain step and Stage 1 read: no uv
   # (internal/runtime/sandbox's), no BROKER_TEST_DATABASE_URL (internal/cipher's), no
   # LEGION_E2E_PG_DSN (Stage 1's) and no LEGION_RUN_FUZZ_ITERS (internal/classify's). The comment
@@ -234,7 +231,7 @@ jobs:
   daemon-go-race:
     runs-on: ubuntu-24.04
     # A step's worst case is its largest measured green duration plus its own -timeout, as
-    # daemon-go's says: over the 158 green daemon-go jobs the header counts, the setup's 1.7 min
+    # daemon-go's says: over the same 158 green daemon-go jobs, the setup's 1.7 min
     # at most, then the race step's 36.3 and its 30 minutes, then the report. That is under 69
     # minutes, and 70 is the limit.
     timeout-minutes: 70
