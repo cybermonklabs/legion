@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -215,18 +216,55 @@ func TestAReleasedWorkspacesWorkIsBundledByTheShimAndRestoredByTheLauncher(t *te
 // TestTheLeakCheckInstallSurvivesPID1sReaper says, so the put-backs run in the test binary as PID 1
 // of a PID namespace of its own (TestPutBacksPIDOneHelper).
 //
-// The fixture's tree, ten workspaces of real git and jj, lives in a directory of this test's,
-// which the helper builds in and never removes: on a loaded machine its removal outlasted the 15 s
-// a helper that gave up has before its own alarm, which then panicked the helper, while this test
-// has helperDeadlineGap for it.
+// The test binary as PID 1 does the put-backs alone. This test builds the fixture before it, ten
+// workspaces of real git and jj, and checks what the put-backs restored after it, so the helper's
+// time pays for the put-backs and nothing else: on a dev box under a one-minute load of 1,310 to
+// 1,390 the build alone outran the 90 s a helper had under -timeout 150s, and the helper ended on
+// its own alarm with no line of the row's. The tree is this test's, removed in its cleanup with
+// helperDeadlineGap for it.
 func TestPutBacksUnderThePodsReaperKeepTheirExitStatus(t *testing.T) {
-	root := t.TempDir()
-	t.Logf("%s", runAsPIDOne(t, "TestPutBacksPIDOneHelper", putBackFixtureRootEnv+"="+root))
+	testbin.RequireJJFilters(t)
+	f := newBundleFixture(t)
+	f.workOne()
+	saved := f.bundleWorkspaceOne()
+	plan := putBackPlan{Saved: saved, Bundle: saved.Bundle, Env: f.env}
+	for index := range putBacksUnderReaper + controlPutBacks {
+		workspace := f.secondPod(fmt.Sprintf("reaped-%d", index))
+		if index < putBacksUnderReaper {
+			plan.Guarded = append(plan.Guarded, workspace)
+		} else {
+			plan.Control = append(plan.Control, workspace)
+		}
+	}
+	body, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planPath := filepath.Join(f.root, "put-backs.json")
+	if err := os.WriteFile(planPath, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("%s", runAsPIDOne(t, "TestPutBacksPIDOneHelper", putBackPlanEnv+"="+planPath))
+	for _, dir := range plan.Guarded {
+		f.requireRestored(dir, saved)
+	}
+	t.Logf("%d of %d put-backs through the guard restored the whole of the saved work", len(plan.Guarded), len(plan.Guarded))
 }
 
-// putBackFixtureRootEnv names the directory TestPutBacksPIDOneHelper builds its fixture in, which
-// its outer test made and removes.
-const putBackFixtureRootEnv = "LEGION_LAUNCHER_PUT_BACK_FIXTURE_ROOT"
+// putBackPlan is what TestPutBacksUnderThePodsReaperKeepTheirExitStatus hands its PID 1 helper,
+// as JSON in the file putBackPlanEnv names: the saved work, its bundle's bytes (which
+// WorkspaceBundle leaves out of its JSON), the fixture's environment, and the workspaces to put it
+// back into through the guard and with none.
+type putBackPlan struct {
+	Saved   shimwire.WorkspaceBundle
+	Bundle  []byte
+	Env     []string
+	Guarded []string
+	Control []string
+}
+
+// putBackPlanEnv names the file of TestPutBacksPIDOneHelper's putBackPlan.
+const putBackPlanEnv = "LEGION_LAUNCHER_PUT_BACK_PLAN"
 
 // putBacksUnderReaper is how many put-backs TestPutBacksPIDOneHelper makes through the guard, and
 // controlPutBacks how many it makes with no guard. Every command of each meets the reaper
@@ -239,10 +277,11 @@ const (
 // TestPutBacksPIDOneHelper is TestPutBacksUnderThePodsReaperKeepTheirExitStatus's body, run as PID
 // 1 under relentlessReaper, which starts a new pass as soon as it ends one. Every command of every
 // put-back meets the reaper before its own wait reads its exit (metTheReaper). Each put-back
-// through the guard must answer with the whole of what was saved, and each of the control's, the
-// same put-back started with procgroup.NoReaper as a put-back outside a launcher runs it, must lose
-// its first command's exit to the reaper. The fixture's own jj and git run only while the reaper is
-// stopped, before it starts and after it stops.
+// through the guard must answer that the whole of what was saved is restored, and each of the
+// control's, the same put-back started with procgroup.NoReaper as a put-back outside a launcher
+// runs it, must lose its first command's exit to the reaper. The helper runs no command of its
+// own: the put-backs' are all it runs, each under a context that ends 30 s before the helper's
+// deadline (reaperBound), so one that hangs is killed then and its put-back fails by name.
 func TestPutBacksPIDOneHelper(t *testing.T) {
 	if os.Getenv(pidOneHelperEnv) != "1" {
 		return
@@ -250,19 +289,22 @@ func TestPutBacksPIDOneHelper(t *testing.T) {
 	if os.Getpid() != 1 {
 		t.Fatal("the put-back helper is not PID 1")
 	}
-	testbin.RequireJJFilters(t)
-	root := os.Getenv(putBackFixtureRootEnv)
-	if root == "" {
-		t.Fatalf("the put-back helper was given no fixture directory (%s)", putBackFixtureRootEnv)
+	body, err := os.ReadFile(os.Getenv(putBackPlanEnv))
+	if err != nil {
+		t.Fatalf("the put-back helper's plan (%s): %v", putBackPlanEnv, err)
 	}
-	f := newBundleFixtureIn(t, root)
-	f.workOne()
-	saved := f.bundleWorkspaceOne()
-	workspaces := make([]string, putBacksUnderReaper+controlPutBacks)
-	for index := range workspaces {
-		workspaces[index] = f.secondPod(fmt.Sprintf("reaped-%d", index))
+	var plan putBackPlan
+	if err := json.Unmarshal(body, &plan); err != nil {
+		t.Fatal(err)
 	}
-	guarded, control := workspaces[:putBacksUnderReaper], workspaces[putBacksUnderReaper:]
+	saved := plan.Saved
+	saved.Bundle = plan.Bundle
+	bound := reaperBound(t)
+	if bound <= 0 {
+		t.Fatalf("the put-back helper started %s past its deadline less 30 s: it was left no time for the put-backs", (-bound).Round(time.Millisecond))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), bound)
+	defer cancel()
 	// An issue pod's managers, whose restore is the one newManagers wires to the guard. A failed
 	// pass of a namespaced manager's reaper is logged rather than thrown, and the log is read
 	// below: a reaper whose passes failed raced nothing.
@@ -283,7 +325,7 @@ func TestPutBacksPIDOneHelper(t *testing.T) {
 	putBack := func(start procgroup.Starter, dir string) answer {
 		got := make(chan answer, 1)
 		go func() {
-			restored, notice := restoreWorkspace(context.Background(), metTheReaper(t, start, passed), dir, f.env, bundleRelease, saved)
+			restored, notice := restoreWorkspace(ctx, metTheReaper(t, start, passed), dir, plan.Env, bundleRelease, saved)
 			got <- answer{restored, notice}
 		}()
 		select {
@@ -294,12 +336,12 @@ func TestPutBacksPIDOneHelper(t *testing.T) {
 			return answer{}
 		}
 	}
-	answers := make([]answer, len(guarded))
-	for index, dir := range guarded {
+	answers := make([]answer, len(plan.Guarded))
+	for index, dir := range plan.Guarded {
 		answers[index] = putBack(managers[0].restore.start, dir)
 	}
-	controls := make([]answer, len(control))
-	for index, dir := range control {
+	controls := make([]answer, len(plan.Control))
+	for index, dir := range plan.Control {
 		controls[index] = putBack(procgroup.NoReaper, dir)
 	}
 	stop()
@@ -310,26 +352,22 @@ func TestPutBacksPIDOneHelper(t *testing.T) {
 			lost++
 			continue
 		}
-		t.Errorf("the put-back with no guard into %s answered %v, %q; want its command's exit lost to the reaper, which met it", control[index], got.restored, got.notice)
+		t.Errorf("the put-back with no guard into %s answered %v, %q; want its command's exit lost to the reaper, which met it", plan.Control[index], got.restored, got.notice)
 	}
-	t.Logf("control: %d of %d put-backs with no guard lost an exit to the reaper", lost, len(control))
+	t.Logf("control: %d of %d put-backs with no guard lost an exit to the reaper", lost, len(plan.Control))
 	for index, got := range answers {
 		if !got.restored || !strings.Contains(got.notice, "is restored") || strings.Contains(got.notice, "would not take") ||
 			strings.Contains(got.notice, "no child processes") || strings.Contains(got.notice, "no such process") {
 			t.Errorf("the put-back into %s answered %v, %q; want all of the saved work restored, each command's exit read by its own wait",
-				guarded[index], got.restored, got.notice)
+				plan.Guarded[index], got.restored, got.notice)
 		}
 	}
 	if failed := reaperLog.String(); failed != "" {
 		t.Errorf("the reaper's passes failed, so they raced nothing:\n%s", failed)
 	}
-	if t.Failed() {
-		t.FailNow()
+	if !t.Failed() {
+		t.Logf("%d of %d put-backs through the guard answered that the saved work is restored", len(plan.Guarded), len(plan.Guarded))
 	}
-	for _, dir := range guarded {
-		f.requireRestored(dir, saved)
-	}
-	t.Logf("%d of %d put-backs through the guard restored the whole of the saved work", len(guarded), len(guarded))
 }
 
 // A base the restore needs can be gone — a branch force-pushed away since the release — and the
@@ -449,17 +487,12 @@ type bundleFixture struct {
 
 func newBundleFixture(t *testing.T) *bundleFixture {
 	t.Helper()
-	return newBundleFixtureIn(t, t.TempDir())
-}
-
-// newBundleFixtureIn is newBundleFixture built in root, an empty directory the caller removes.
-func newBundleFixtureIn(t *testing.T, root string) *bundleFixture {
-	t.Helper()
 	for _, tool := range []string{"jj", "git"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skipf("%s is required: %v", tool, err)
 		}
 	}
+	root := t.TempDir()
 	// Neither the workspace, the configuration, the remote nor the credential of the process that
 	// runs the tests reaches the fixture's git and jj: its environment is fixtureenv.Isolated of
 	// a home of this test's own, which holds none of the host's jj and git configuration — its

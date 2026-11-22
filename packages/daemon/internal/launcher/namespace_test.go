@@ -78,7 +78,9 @@ const pidOneHelperEnv = "LEGION_LAUNCHER_PID_ONE_HELPER"
 // env (NAME=value each) in its environment, fails t unless the helper ran and passed, and answers
 // what it printed. The helper's own deadline is this test's less helperDeadlineGap, so a helper
 // whose wait gives up near its deadline (reaperBound) prints why and ends, and this test then
-// still has that gap for its own cleanups before its alarm.
+// still has that gap for its own cleanups before its alarm. When what ran before it left the
+// helper less than helperLeastTime, t fails by name and no helper starts: one would reach its own
+// alarm before its bounds could give up.
 func runAsPIDOne(t *testing.T, helper string, env ...string) string {
 	t.Helper()
 	prefix := pidNamespace(t)
@@ -89,7 +91,11 @@ func runAsPIDOne(t *testing.T, helper string, env ...string) string {
 	args := append(append([]string{}, prefix...), "/usr/bin/env", "-i", "PATH="+os.Getenv("PATH"), pidOneHelperEnv+"=1")
 	args = append(append(args, env...), self, "-test.run=^"+helper+"$", "-test.v", "-test.count=1")
 	if deadline, ok := t.Deadline(); ok {
-		args = append(args, "-test.timeout="+max(time.Until(deadline)-helperDeadlineGap, time.Second).String())
+		left := time.Until(deadline) - helperDeadlineGap
+		if left < helperLeastTime {
+			t.Fatalf("%s as PID 1 would have %s before its own deadline, %s before this test's, less than the %s it needs: what ran before it took the rest of the test binary's -timeout", helper, left.Round(time.Millisecond), helperDeadlineGap, helperLeastTime)
+		}
+		args = append(args, "-test.timeout="+left.String())
 	}
 	output, err := exec.Command("sudo", args...).CombinedOutput()
 	if err != nil || !bytes.Contains(output, []byte("--- PASS: "+helper)) {
@@ -100,11 +106,17 @@ func runAsPIDOne(t *testing.T, helper string, env ...string) string {
 
 // helperDeadlineGap is how much sooner than its test a helper of runAsPIDOne reaches its own
 // deadline: the time the test has, once a helper that gave up has ended, for its own cleanups,
-// among them the removal of a tree the helper built in a directory the test gave it
-// (TestPutBacksPIDOneHelper's fixture). On this dev box under a one-minute load of about 760 on
-// 288 CPUs that removal took more than 15 s, inside the helper's own alarm at the time, and 7.8 s
-// to 10.7 s in runs that finished (2026-11-21); a minute is more than twice the most seen.
+// among them the removal of the tree TestPutBacksUnderThePodsReaperKeepTheirExitStatus built for
+// its helper. On this dev box that removal took 17.3 s at a one-minute load of about 1,100 on 288
+// CPUs (2026-11-22), and more than 15 s in a helper's cleanup at a load of about 760 the day
+// before; a minute is more than twice the most seen.
 const helperDeadlineGap = time.Minute
+
+// helperLeastTime is the least a helper of runAsPIDOne starts with before its own deadline: its
+// waits on the reaper give up 30 s before that deadline (reaperBound), and a wait for a put-back or
+// an install 15 s before it, so a helper with less would reach its own alarm before either could
+// say why.
+const helperLeastTime = 45 * time.Second
 
 func namespaceRig(t *testing.T, grace time.Duration) *rig {
 	t.Helper()
