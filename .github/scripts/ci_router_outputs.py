@@ -43,6 +43,14 @@ class Refused(Exception):
     pass
 
 
+# The contexts an expression may read, whole: the event's name, the pull request's label names,
+# and a step's outputs or one of them. A read of anything else, `github.event.pull_request` or
+# `github.event` as a whole among them, is refused, so an output can read the labels only
+# through the path --label-readers finds in its text.
+MODELLED = re.compile(r"github\.event_name|github\.event\.pull_request\.labels\.\*\.name"
+                      r"|steps\.[A-Za-z0-9_-]+\.outputs(?:\.[A-Za-z0-9_-]+)?")
+
+
 def tokens(text):
     out, at = [], 0
     while at < len(text):
@@ -135,6 +143,8 @@ class Evaluator:
                 return None
             if self.peek() == "(":
                 return self.call(value)
+            if not MODELLED.fullmatch(value):
+                raise Refused(f"context {value} is outside the modelled contexts")
             return self.lookup(value)
         raise Refused(f"cannot read {value!r} here")
 
@@ -164,7 +174,7 @@ class Evaluator:
                 rest = ".".join(parts[at + 1:])
                 return [Evaluator(element).lookup(rest) if rest else element for element in value]
             if not isinstance(value, dict) or part not in value:
-                raise Refused(f"context {path} is not modelled")
+                raise Refused(f"context {path} is outside the modelled contexts")
             value = value[part]
         return value
 

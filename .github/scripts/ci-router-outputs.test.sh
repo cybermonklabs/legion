@@ -73,8 +73,12 @@ off_under() {
 baseline=$(outputs --event pull_request)
 mapfile -t held < <(held_of "$repo/.github/workflows/ci.yaml")
 
-echo "case: some outputs read the pull request's labels"
-check "at least one does (${#held[@]}: ${held[*]})" "$(is "$([ "${#held[@]}" -gt 0 ] && echo yes)" yes)"
+echo "case: exactly the nine gated outputs read the pull request's labels"
+# A count and the names, so an output whose label term is deleted outright fails here by name
+# rather than leaving the set. A tenth gated suite adds its name to this list.
+gated='dispatch_memory dispatch_multiprocess dispatch_two_builds envoy_go envoy_go_claim_model envoy_go_race envoy_go_race_api envoy_go_race_docs envoy_smoke'
+check "the reader finds ${#held[@]}: ${held[*]}" "$(is "${#held[@]}" 9)"
+check "and they are the nine" "$(is "$(printf '%s\n' "${held[@]}" | sort | tr '\n' ' ')" "$gated ")"
 
 echo "case: each of them is on for a merge group and for a push, where no label is read"
 check "a merge group leaves none off" \
@@ -145,6 +149,19 @@ check "the set keeps all ${#held[@]}" "$(is "$(held_of "$broken" | wc -l)" "${#h
 check "a merge group leaves exactly envoy_go_race off" \
   "$(is "$(not_value "$broken" true --event merge_group | tr '\n' ' ')" "envoy_go_race ")"
 
+echo "case: an output that reads the labels through the whole pull request is refused, never missed"
+broken=$(broken_copy "$work/whole-pr" envoy_smoke \
+  "contains\(github\.event\.pull_request\.labels\.\*\.name, 'lane:envoy_smoke'\)" \
+  "contains(toJSON(github.event.pull_request), 'lane:envoy_smoke')")
+check "the copy differs from ci.yaml" "$(is "$(cmp -s "$broken" "$repo/.github/workflows/ci.yaml" && echo same)" "")"
+set +e
+err=$("$script_dir/ci_router_outputs.py" "$broken" --event pull_request 2>&1 >/dev/null)
+status=$?
+set -e
+check "exits 2" "$(is "$status" 2)"
+check "names envoy_smoke and the read" \
+  "$(contains "$err" 'output envoy_smoke: context github.event.pull_request is outside the modelled contexts')"
+
 echo "case: an expression this reader does not model is refused, never read as false"
 mkdir -p "$work/.github/workflows"
 printf 'f: []\n' > "$work/.github/ci-filters.yaml"
@@ -159,6 +176,6 @@ err=$("$script_dir/ci_router_outputs.py" "$work/.github/workflows/ci.yaml" --eve
 status=$?
 set -e
 check "exits 2" "$(is "$status" 2)"
-check "names the output and the context" "$(contains "$err" 'output x: context github.actor is not modelled')"
+check "names the output and the context" "$(contains "$err" 'output x: context github.actor is outside the modelled contexts')"
 
 summary "ci.yaml's changes outputs turn on what full-ci and the lane labels name, and nothing else"
