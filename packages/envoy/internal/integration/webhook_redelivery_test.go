@@ -30,7 +30,7 @@ const redeliverySecret = "redelivery-secret"
 
 func TestWebhookRedelivery_AGitHubRedeliveryLandsOnceAndAnotherDeliveryLands(t *testing.T) {
 	env := setupTestEnv(t)
-	handler := webhook.GitHubHandler(redeliverySecret, "@legion", "", env.client, refusingRecorder{t})
+	handler := webhook.GitHubHandler(redeliverySecret, "@legion", "", "", env.client, refusingRecorder{t})
 	body := `{
 		"action": "submitted",
 		"repository": {"name": "widgets", "owner": {"login": "acme"}, "full_name": "acme/widgets"},
@@ -53,7 +53,7 @@ func TestWebhookRedelivery_AGitHubRedeliveryLandsOnceAndAnotherDeliveryLands(t *
 // trigger): each copy lands once, and the redelivery adds none.
 func TestWebhookRedelivery_AGitHubFanOutLandsOncePerTopic(t *testing.T) {
 	env := setupTestEnv(t)
-	handler := webhook.GitHubHandler(redeliverySecret, "@legion", "", env.client, refusingRecorder{t})
+	handler := webhook.GitHubHandler(redeliverySecret, "@legion", "", "", env.client, refusingRecorder{t})
 	body := `{
 		"action": "created",
 		"repository": {"name": "widgets", "owner": {"login": "acme"}, "full_name": "acme/widgets"},
@@ -275,7 +275,7 @@ func TestWebhookRedelivery_AFanOutThatFailedPartWayIsCompletedByTheRedelivery(t 
 
 	// The first attempt publishes the first topic and fails on the second.
 	failing := &failAfter{inner: env.client, after: 1}
-	partial := webhook.GitHubHandler(redeliverySecret, "@legion", "", failing, refusingRecorder{t})
+	partial := webhook.GitHubHandler(redeliverySecret, "@legion", "", "", failing, refusingRecorder{t})
 	postGitHubExpecting(t, partial, "issue_comment", "delivery-partial", body, http.StatusServiceUnavailable)
 	if failing.published != 1 {
 		t.Fatalf("the first attempt published %d envelopes, want the one before the failure", failing.published)
@@ -290,7 +290,7 @@ func TestWebhookRedelivery_AFanOutThatFailedPartWayIsCompletedByTheRedelivery(t 
 	}
 
 	// GitHub redelivers the failed delivery, now against a listener whose publishes all succeed.
-	whole := webhook.GitHubHandler(redeliverySecret, "@legion", "", env.client, refusingRecorder{t})
+	whole := webhook.GitHubHandler(redeliverySecret, "@legion", "", "", env.client, refusingRecorder{t})
 	postGitHub(t, whole, "issue_comment", "delivery-partial", body)
 
 	for _, topic := range topics {

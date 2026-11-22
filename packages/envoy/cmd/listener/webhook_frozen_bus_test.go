@@ -137,7 +137,7 @@ func TestAGitHubCIDeliveryAnswersAFrozenBusInsideTheRecordWait(t *testing.T) {
 	if err := store.WaitForCacheReady(ready); err != nil {
 		t.Fatalf("wait for the CI cache: %v", err)
 	}
-	handler := webhook.GitHubHandler(webhookSecret, "@legion", "", frozen.client, store)
+	handler := webhook.GitHubHandler(webhookSecret, "@legion", "", "", frozen.client, store)
 	checkSuite := func(number string) string {
 		return `{"action":"completed","check_suite":{"id":900,"status":"completed","conclusion":"success",` +
 			`"updated_at":"2026-10-26T03:01:00Z","head_sha":"abcdef1234567890abcdef1234567890abcdef12","app":{"id":77},` +
@@ -169,7 +169,7 @@ func TestTheWebhookPublishesAnswerAFrozenBusInsideTheirCallersWait(t *testing.T)
 	frozen := newFrozenWebhookBus(t)
 	slack := webhook.SlackHandler(webhookSecret, frozen.client)
 	ghostWispr := webhook.GhostWisprHandler(webhookSecret, frozen.client)
-	github := webhook.GitHubHandler(webhookSecret, "@legion", "", frozen.client, noCI{})
+	github := webhook.GitHubHandler(webhookSecret, "@legion", "", "", frozen.client, noCI{})
 	slackEvent := func(eventID string) string {
 		return `{"type":"event_callback","event_id":"` + eventID + `","team_id":"T01234567",` +
 			`"event":{"type":"message","channel":"C01234567","user":"U01234567","text":"hello world","ts":"1700000000.000100"}}`

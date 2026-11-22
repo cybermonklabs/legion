@@ -109,7 +109,7 @@ func TestAGitHubDeliveryWhoseBodyArrivesOverMoreThanTenSecondsIsPublished(t *tes
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)
 	pub := &slowBodyPublisher{}
-	status := serveSlowly(t, "/webhook/github", webhook.GitHubHandler(secret, "@legion", "", pub, noCI{}), map[string]string{
+	status := serveSlowly(t, "/webhook/github", webhook.GitHubHandler(secret, "@legion", "", "", pub, noCI{}), map[string]string{
 		"X-GitHub-Delivery":   "delivery-slow-body",
 		"X-GitHub-Event":      "push",
 		"X-Hub-Signature-256": "sha256=" + hex.EncodeToString(mac.Sum(nil)),
@@ -131,7 +131,7 @@ func TestAGitHubBodyReadFailureIsLogged(t *testing.T) {
 	previous := log.Writer()
 	log.SetOutput(logged)
 	t.Cleanup(func() { log.SetOutput(previous) })
-	addr := serveWebhook(t, "/webhook/github", webhook.GitHubHandler("s", "@legion", "", &slowBodyPublisher{}, noCI{}))
+	addr := serveWebhook(t, "/webhook/github", webhook.GitHubHandler("s", "@legion", "", "", &slowBodyPublisher{}, noCI{}))
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatal(err)

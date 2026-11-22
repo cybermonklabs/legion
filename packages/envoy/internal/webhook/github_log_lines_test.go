@@ -44,7 +44,7 @@ func TestGitHubSenderLineNamesTheWebhookApp(t *testing.T) {
 	post := func(event, delivery string, body []byte, headers map[string]string) []string {
 		t.Helper()
 		logged.Reset()
-		handler := GitHubHandler("s", "@legion", "", &mockPublisher{}, &mockRecorder{})
+		handler := GitHubHandler("s", "@legion", "", "", &mockPublisher{}, &mockRecorder{})
 		req := httptest.NewRequest(http.MethodPost, "/webhook/github", bytes.NewReader(body))
 		req.Header.Set("X-GitHub-Delivery", delivery)
 		req.Header.Set("X-GitHub-Event", event)
@@ -105,7 +105,7 @@ func TestGitHubPublishedLineNamesKeyTargetAndResult(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			logged := captureLog(t)
-			handler := GitHubHandler("s", "@legion", "", githubStream(t), &mockRecorder{})
+			handler := GitHubHandler("s", "@legion", "", "", githubStream(t), &mockRecorder{})
 			first := withInstallation(t, row.body, 1001)
 			topics := githubTopics(t, row.event, first)
 			if len(topics) == 0 {

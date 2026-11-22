@@ -52,6 +52,10 @@ type ListenerEnv struct {
 	NatsReplicas   int
 	Webhooks       []string
 	ReviewerAppId  *string // written only with github
+	// VerdictAppId is the verdict App's id, ENVOY_VERDICT_APP_ID, whose own check suites the
+	// listener leaves out of the CI record. It is optional, and written only with github and only
+	// when given.
+	VerdictAppId   *string
 	MentionTrigger *string // written only with github
 	// The sender limit as the component's inputs give it, nil for an input left unset; Check
 	// refuses it by core.CheckSenderLimit.
@@ -75,6 +79,16 @@ func (e ListenerEnv) Check() error {
 		{Owner: github, Field: "mentionTrigger", Given: e.MentionTrigger != nil, Set: set(e.MentionTrigger)},
 	}); err != nil {
 		return err
+	}
+	// The verdict App's id is optional: without it the listener leaves no App's suites out. Given,
+	// it is github's like the two above, and a blank one would write an empty variable.
+	if e.VerdictAppId != nil {
+		if !github.Present {
+			return core.InputErrorf("verdictAppId", "verdictAppId is given for %s, %s", github.Name, github.Absent)
+		}
+		if !set(e.VerdictAppId) {
+			return core.InputErrorf("verdictAppId", "verdictAppId is blank: give the verdict App's id, or leave it out")
+		}
 	}
 	if !slices.ContainsFunc(supportedWebhooks, func(w []string) bool { return slices.Equal(e.Webhooks, w) }) {
 		supported := make([]string, len(supportedWebhooks))
@@ -110,10 +124,11 @@ func (e ListenerEnv) Check() error {
 // container definitions list it: core.ListenerConfig.Env's, which writes the listen host after the
 // port where the reference lists it and the sender limit only when it is set, then the replicas
 // and the webhooks: ENVOY_WEBHOOKS only when one is listed, and the GitHub variables only with
-// github. It refuses NatsUrls as Env does, and the sender limit as Check does, since it reads the
-// limit through the same rule; it expects the rest to have passed Check, which the component and
-// the render command run first, and runs none of Check's other checks itself, so the container
-// definitions are written for any webhook list.
+// github, ENVOY_VERDICT_APP_ID last and only when it is given. It refuses NatsUrls as Env does,
+// and the sender limit as Check does, since it reads the limit through the same rule; it expects
+// the rest to have passed Check, which the component and the render command run first, and runs
+// none of Check's other checks itself, so the container definitions are written for any webhook
+// list.
 func (e ListenerEnv) Variables() ([]string, error) {
 	config, err := e.config()
 	if err != nil {
@@ -132,6 +147,9 @@ func (e ListenerEnv) Variables() ([]string, error) {
 			"ENVOY_GITHUB_MENTION_TRIGGER="+*e.MentionTrigger,
 			"ENVOY_REVIEWER_APP_ID="+*e.ReviewerAppId,
 		)
+		if e.VerdictAppId != nil {
+			variables = append(variables, "ENVOY_VERDICT_APP_ID="+*e.VerdictAppId)
+		}
 	}
 	return variables, nil
 }

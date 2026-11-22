@@ -25,7 +25,7 @@ func TestGithubCIObservationsUsesCheckRunStartedAtBeforeCompletion(t *testing.T)
 		},
 	}
 
-	observations := GithubCIObservations("check_run", body)
+	observations := GithubCIObservations("check_run", body, "")
 	if len(observations) != 1 {
 		t.Fatalf("observations = %d, want 1", len(observations))
 	}
@@ -51,7 +51,7 @@ func TestGithubCIObservationsExtractCheckSuite(t *testing.T) {
 		},
 	}
 
-	observations := GithubCIObservations("check_suite", body)
+	observations := GithubCIObservations("check_suite", body, "")
 	if len(observations) != 1 {
 		t.Fatalf("observations = %d, want 1", len(observations))
 	}
@@ -116,7 +116,7 @@ func TestGithubCIObservationsReadsASuitesRunCount(t *testing.T) {
 	// value.
 	mapsTo := func(t *testing.T, body map[string]any, want CIObservation) {
 		t.Helper()
-		observations := GithubCIObservations("check_suite", body)
+		observations := GithubCIObservations("check_suite", body, "")
 		if len(observations) != 1 {
 			t.Fatalf("observations = %+v, want one", observations)
 		}

@@ -2779,6 +2779,7 @@ environment, in this order:
 | `ENVOY_NATS_REPLICAS` | `natsReplicas` |
 | `ENVOY_WEBHOOKS` | `webhooks`, joined with commas, when it lists one |
 | `ENVOY_GITHUB_MENTION_TRIGGER`, `ENVOY_REVIEWER_APP_ID` | `mentionTrigger`, `reviewerAppId`, with `github` |
+| `ENVOY_VERDICT_APP_ID` | `verdictAppId`, with `github`, only when given |
 
 ECS injects its secrets from their ARNs: `ENVOY_GITHUB_WEBHOOK_SECRET` with `github`,
 `ENVOY_SLACK_SIGNING_SECRET` with `slack`, `ENVOY_API_TOKEN`, and `NATS_NKEY_SEED` with
@@ -2819,6 +2820,7 @@ Its outputs are `serviceArn`, `serviceName`, `logGroupName`, `taskDefinitionArn`
 | `seedSecretArn` | unset | The secret holding the seed of the NATS user the listener connects as. Unset, it connects with none. |
 | `webhooks` | required | The webhooks the listener serves: `["github", "slack"]`, or `[]` for none. With `[]` the container carries no webhook's setting or secret, and the listener mounts no webhook route. This version takes no other list. |
 | `githubWebhookSecretArn`, `reviewerAppId`, `mentionTrigger` | with `github` | Required while `webhooks` lists `github`, refused while it does not. |
+| `verdictAppId` | optional, with `github` | The App whose own check suites the listener leaves out of the CI record. Written only when given; refused blank, and refused while `webhooks` does not list `github`. |
 | `slackSigningSecretArn` | with `slack` | Required while `webhooks` lists `slack`, refused while it does not. |
 | `clusterArn`, `executionRoleArn`, `taskRoleArn` | required | The ECS cluster and the task's two roles. |
 | `executionRoleName` | required | The execution role's name, which the read policies attach to. |
@@ -3173,7 +3175,7 @@ authorization {
 ### webhook-listener-env
 
 ```text
-envoy-infra render webhook-listener-env --machine-id <id> --nats-url <url>... [--webhook <name>]... [--reviewer-app-id <id>] [--mention-trigger <t>] --listen-host <h> --nats-replicas <n> [--sender-messages-per-minute <n>] [--sender-message-burst <n>]
+envoy-infra render webhook-listener-env --machine-id <id> --nats-url <url>... [--webhook <name>]... [--reviewer-app-id <id>] [--verdict-app-id <id>] [--mention-trigger <t>] --listen-host <h> --nats-replicas <n> [--sender-messages-per-minute <n>] [--sender-message-burst <n>]
 ```
 
 Prints `aws:WebhookListener`'s container environment, one `KEY=value` line per variable in the
@@ -3198,6 +3200,9 @@ none for `webhooks: []`, and refuses `--reviewer-app-id` and `--mention-trigger`
 
 Without `--reviewer-app-id`, it prints
 `refused: --reviewer-app-id: reviewerAppId is required with webhook "github"` and exits 2.
+
+`--verdict-app-id` sets `verdictAppId` and prints `ENVOY_VERDICT_APP_ID` after the other GitHub
+lines; left out, it prints none.
 
 `--sender-messages-per-minute` and `--sender-message-burst` set `senderMessagesPerMinute` and
 `senderMessageBurst`. Each prints its variable, `ENVOY_SENDER_MESSAGES_PER_MINUTE` or

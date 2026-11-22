@@ -86,14 +86,16 @@ var (
 	githubHandleDeadline = 15 * time.Second
 )
 
-// GitHubHandler returns the HTTP handler for GitHub webhook events.
-func GitHubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publisher, ci CIRecorder) http.HandlerFunc {
-	return githubHandler(secret, mentionTrigger, reviewerAppID, publisher, ci, newBodyBudget(githubBodyBudget))
+// GitHubHandler returns the HTTP handler for GitHub webhook events. reviewerAppID is the App whose
+// verdict check runs the CI record takes (contracts.ReviewerVerdictDecision), and verdictAppID the
+// App whose own check suites it leaves out (contracts.VerdictAppsOwnSuite), none when empty.
+func GitHubHandler(secret, mentionTrigger, reviewerAppID, verdictAppID string, publisher Publisher, ci CIRecorder) http.HandlerFunc {
+	return githubHandler(secret, mentionTrigger, reviewerAppID, verdictAppID, publisher, ci, newBodyBudget(githubBodyBudget))
 }
 
 // githubHandler is GitHubHandler reading bodies against the given budget. Each handler remembers
 // the failed deliveries it has logged (failedDeliveries).
-func githubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publisher, ci CIRecorder, bodies *bodyBudget) http.HandlerFunc {
+func githubHandler(secret, mentionTrigger, reviewerAppID, verdictAppID string, publisher Publisher, ci CIRecorder, bodies *bodyBudget) http.HandlerFunc {
 	failures := newFailedDeliveries(githubFailuresKept, githubFailureAge)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -156,7 +158,7 @@ func githubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publi
 		// settled checks envelope for each commit whose suites and check runs are done. A finished
 		// Actions job on the default branch, of a run with no pull request, records nothing and is
 		// published below.
-		if obs := contracts.GithubCIObservations(event, payload); len(obs) > 0 {
+		if obs := contracts.GithubCIObservations(event, payload, verdictAppID); len(obs) > 0 {
 			for _, o := range obs {
 				if o.CheckName == "" {
 					if err := ci.RecordSuite(answer, o); err != nil {

@@ -21,6 +21,9 @@ type GitHubWebhook struct {
 	Secret         string
 	MentionTrigger string
 	ReviewerAppID  string
+	// VerdictAppID is ENVOY_VERDICT_APP_ID, trimmed: the App whose own check suites the listener
+	// leaves out of the CI record. It is optional; empty leaves no suite out.
+	VerdictAppID string
 	// RepositoryRenames is each repository GitHub renamed, as ENVOY_GITHUB_REPOSITORY_RENAMES
 	// configures it: the listener publishes a copy of every envelope of the current repository
 	// under the former name, so a session that subscribed before the rename keeps hearing about
@@ -75,6 +78,7 @@ func LoadWebhookConfig() (*WebhookConfig, error) {
 				Secret:            secret,
 				MentionTrigger:    trigger,
 				ReviewerAppID:     reviewerAppID,
+				VerdictAppID:      strings.TrimSpace(os.Getenv("ENVOY_VERDICT_APP_ID")),
 				RepositoryRenames: renames,
 			}
 		case "slack":
