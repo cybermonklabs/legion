@@ -624,6 +624,45 @@ func TestABootRunsEachAppsTokenCommandOnceForTheLoginsReadAcrossItsAttempts(t *t
 	}
 }
 
+// A token GitHub refuses on the boot's logins read (the review App's viewer read answered 401)
+// stops the boot at once, naming the App and GitHub's answer: a refusal is the App's answer, not
+// GitHub's trouble (appAttempt), so no attempt reads the login again under the release it kept
+// (appauth's loginRelease), and each App's token_command, whose run may wait on a person's
+// approval of a grant, runs once. The key proof never starts.
+func TestABootStopsAtOnceWhenGitHubRefusesAnAppsTokenOnTheLoginsRead(t *testing.T) {
+	quickAppMints(t)
+	dir := t.TempDir()
+	runs := func(role appauth.AppRole) string { return filepath.Join(dir, string(role)+".runs") }
+	var viewerReads atomic.Int32
+	tokens := commandTokensWith(t, func(w http.ResponseWriter, r *http.Request) bool {
+		review := strings.HasPrefix(r.Header.Get("Authorization"), "token ghs_"+string(appauth.Review)+"_")
+		if r.Method == http.MethodPost && r.URL.Path == "/graphql" && review {
+			viewerReads.Add(1)
+			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
+			return true
+		}
+		return false
+	}, func(role appauth.AppRole) string {
+		return fmt.Sprintf(`[ -n "${%s}" ] || echo run >>%q; `, appauth.TokenCommandOwner, runs(role))
+	})
+	err := bootsOrExits(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "read the review App's login") || !strings.Contains(err.Error(), "(401)") {
+		t.Fatalf("boot = %v, want it refused, naming the review App's login read and GitHub's 401", err)
+	}
+	if n := viewerReads.Load(); n != 1 {
+		t.Errorf("GitHub was asked the review App's login %d times, want once: the boot read a token GitHub refused again (%v)", n, err)
+	}
+	for _, role := range appauth.Roles {
+		ran, err := os.ReadFile(runs(role))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("read the %s App's runs: %v", role, err)
+		}
+		if n := strings.Count(string(ran), "run\n"); n != 1 {
+			t.Errorf("the %s App's token_command ran %d times, want once: the boot stops at the logins read", role, n)
+		}
+	}
+}
+
 // A start whose proof of an App's key GitHub refuses for a spent rate limit waits until the reset
 // GitHub names and serves after it (c-boot-mint-rate-limit case 1, on the key proof), saying so in
 // one line that names the call, the time it waits until and the total waited. The refusals outlast

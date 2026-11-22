@@ -738,6 +738,40 @@ func TestTokenModeAppLoginKeepsItsReleaseUntilItReadsTheLogin(t *testing.T) {
 	}
 }
 
+// A token GitHub refuses on the login read in token mode is a refusal, not GitHub's trouble: a
+// viewer read answered 401 or 403, and a token whose App is not the configured app_id, each answer
+// AppLogin with an error that is no TransientError, so the boot stops at once (internal/daemon's
+// appAttempt) rather than wait it out and read under the kept release again (loginRelease).
+func TestTokenModeAppLoginRefusesATokenGitHubRefuses(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		viewerErr int
+		role      AppRole
+		want      string
+	}{
+		{"viewer 401", http.StatusUnauthorized, Review, "read the review App's bot login (GraphQL viewer) failed (401)"},
+		{"viewer 403", http.StatusForbidden, Review, "read the review App's bot login (GraphQL viewer) failed (403)"},
+		{"another App's token", 0, Implement, "released a token of App 67890 (legion-reviewer), not of the configured app_id 12345"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+			broker := newFakeBroker(t, []string{"sjawhar"}, now.Add(time.Hour))
+			github := &fakeTokenGitHub{slug: "legion-reviewer", appID: "67890", viewerErr: tc.viewerErr}
+			var stderr bytes.Buffer
+			tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
+			defer tokens.Close()
+			_, err := tokens.AppLogin(context.Background(), tc.role)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("AppLogin = %v, want the refusal %q", err, tc.want)
+			}
+			var transient *TransientError
+			if errors.As(err, &transient) {
+				t.Errorf("AppLogin = %v, a TransientError: the boot would wait out a token GitHub refused and read under it again, want a refusal that stops the boot", err)
+			}
+		})
+	}
+}
+
 // InstalledOn in token mode reads the owner's installation's repositories: a repository it lists
 // is installed, one it does not list, or an owner with no installation, is not; GitHub's trouble is
 // transient. An installation token reads any public repository, so GET /repos/{owner}/{repo} could
