@@ -400,6 +400,81 @@ func TestLeakCheckRefusesACallItCannotRead(t *testing.T) {
 	}
 }
 
+// git hands a pre-push hook the remote's URL as its name too where the push names a URL rather
+// than a remote, and such a URL can carry a token in its userinfo or its query. Nothing the command
+// prints holds the token, on any of its answers: a call it cannot read, update lines it cannot
+// read, a refusal by either check, and GitHub's 404 for the destination. Each row also holds its
+// answer's own words, the push named by its URL with no credential, so a row that took another
+// path, or printed the push's name some other way, fails too.
+func TestLeakCheckPrePushPrintsNoCredentialItsRemoteCarries(t *testing.T) {
+	const token = "FAKEtok3nZQ9x"
+	tokenInUserinfo := "https://x-access-token:" + token + "@github.com/" + noSuchRepo + ".git"
+	shown := "the push to https://github.com/" + noSuchRepo + ".git"
+	root, defaultDir := gitCredentialBundle(t)
+	for _, remote := range []struct{ name, url string }{
+		{name: "in the userinfo", url: tokenInUserinfo},
+		{name: "in the query", url: "https://github.com/" + noSuchRepo + ".git?access_token=" + token},
+	} {
+		refusedPush := func(t *testing.T, check, message string) (int, string) {
+			dir, line := aPushFixture(t, message)
+			t.Chdir(dir)
+			t.Setenv("PUBLIC_LEAK_CHECK", leakguardtest.Write(t, t.TempDir(), check))
+			// A local path names no github.com repository, so the guard reads no visibility.
+			return leakCheck(t, line, "pre-push", remote.url, dir+".git")
+		}
+		for _, tc := range []struct {
+			name string
+			code int
+			says string
+			run  func(t *testing.T) (int, string)
+		}{
+			{
+				name: "a call it cannot read", code: leakguard.StatusSetupFailure, says: leakCheckPrePushUsage,
+				run: func(t *testing.T) (int, string) { return leakCheck(t, "", "pre-push", remote.url) },
+			},
+			{
+				name: "update lines it cannot read", code: leakguard.StatusSetupFailure,
+				says: "LEAK CHECK SETUP ERROR: " + shown + ": git's update lines could not be read",
+				run:  func(t *testing.T) (int, string) { return leakCheck(t, "a b c\n", "pre-push", remote.url, remote.url) },
+			},
+			{
+				name: "the shared check refuses", code: leakguard.StatusRefused,
+				says: "LEAK CHECK: refusing " + shown + ": the shared public leak check refused it",
+				run: func(t *testing.T) (int, string) {
+					return refusedPush(t, leakguardtest.Refuses, "a commit of nothing in particular")
+				},
+			},
+			{
+				name: "this repository's own rules refuse", code: leakguard.StatusRefused,
+				says: "LEAK CHECK: refusing " + shown + ": this repository's own private-name rules match it",
+				run: func(t *testing.T) (int, string) {
+					return refusedPush(t, leakguardtest.Passes, "a commit that names "+theLeakCheckHost)
+				},
+			},
+			{
+				name: "GitHub answers 404", code: leakguard.StatusSetupFailure, says: notFoundSays(shown),
+				run: func(t *testing.T) (int, string) {
+					pushVisibilityReadEnv(t, root, defaultDir, visibilityReadCases(shown)[0])
+					return leakCheck(t, refusedRefDeletion, "pre-push", remote.url, tokenInUserinfo)
+				},
+			},
+		} {
+			t.Run(remote.name+": "+tc.name, func(t *testing.T) {
+				code, printed := tc.run(t)
+				if code != tc.code {
+					t.Errorf("exited %d, want %d: %s", code, tc.code, strings.ReplaceAll(printed, token, "<the token>"))
+				}
+				if strings.Contains(printed, token) {
+					t.Errorf("printed the token the remote carries: %s", strings.ReplaceAll(printed, token, "<the token>"))
+				}
+				if !strings.Contains(printed, tc.says) {
+					t.Errorf("printed %q, want it to hold %q", strings.ReplaceAll(printed, token, "<the token>"), tc.says)
+				}
+			})
+		}
+	}
+}
+
 // `legion leak-check pre-push` to a repository whose owner the gh bundle holds no directory for:
 // the guard's REST read goes through the pod's `gh`, `legion gh`, which refuses it, exit 2, naming
 // the owner, and the real gh never runs. The guard then reads the visibility with git's

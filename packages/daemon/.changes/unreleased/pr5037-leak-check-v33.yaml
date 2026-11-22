@@ -14,8 +14,9 @@ body: |-
   These call forms need `leak-check-v33` or later, and the release before this one does not work
   under `leak-check-v33`. A pod gets the check and the binary from one image. A tmux pane runs the
   operator's own check. Under `leak-check-v32` or older, this release refuses every gh call that
-  writes and every `gh api` call, reads included, with exit 3 and "its options come before the
-  command", which blames the call and not the check's version, and every text check exits 2 (the
+  writes, `gh secret` aside, and every `gh api` call, reads included, with exit 3 and "its options
+  come before the command", which blames the call and not the check's version, and every text
+  check exits 2 (the
   check reads `--` as a file). Under `leak-check-v33`, the release before this one fails a gh call
   of one word and every text check with exit 2, refused as a call of two arguments: between a
   machine's install of `leak-check-v33` and this release reaching it, `legion leak-check text` there
