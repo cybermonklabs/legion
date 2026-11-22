@@ -693,6 +693,9 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/issues/{key}/summary": {Status: http.StatusOK, Response: issueSummary{}},
 	"PATCH /api/v1/issues/{key}": {
 		Status: http.StatusOK, Response: model.Issue{}, Request: updateIssueInput{}, Advice: writeAdvice{},
+		// An acceptance write that asks for the open-child check (refuse_open_foreign_children)
+		// over an open child of another project (refuseOpenForeignChildren).
+		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: foreignChildOpenError{}}},
 	},
 	"POST /api/v1/issues/{key}/claim": {
 		Status: http.StatusOK, Response: claimAnswer{}, Request: claimIssueInput{},

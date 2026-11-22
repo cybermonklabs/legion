@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // rules is count horizontal rules in a row, a block a walk of the live tree meets no lock at,
@@ -337,23 +338,19 @@ func TestColdReadsRunBesideStoredWrites(t *testing.T) {
 // typing brings that evidence at whatever speed the loaded machine allows, so no fixed time bounds
 // it. The loop ends with the test's failure once the test has failed, which is how a typing peer
 // whose send failed reports it (typeIntoDocument), and once the test binary's deadline is within
-// overlapMargin, so a room that stopped taking the peer's updates fails the subtest by name rather
-// than in the binary's timeout panic. A deadline that leaves no more than overlapMargin to begin
-// with - a local `-timeout` shorter than the margin - fails once, by name, before the loop: that
-// reads like a misconfigured run, not a peer that stopped overlapping.
+// overlapMargin (testwait.Remaining), so a room that stopped taking the peer's updates fails the
+// subtest by name rather than in the binary's timeout panic. A deadline that leaves no more than
+// overlapMargin to begin with fails once, by name, before the loop, saying whether the -timeout was
+// too short or the tests before used it up.
 func overlapping(t *testing.T, read func() bool) {
 	t.Helper()
-	rawDeadline, bounded := t.Deadline()
-	if bounded && time.Until(rawDeadline) <= overlapMargin {
-		t.Fatalf("the test binary's deadline leaves %s, not more than overlapMargin (%s): raise -timeout or lower overlapMargin for a local run", time.Until(rawDeadline).Round(time.Millisecond), overlapMargin)
-	}
-	deadline := rawDeadline.Add(-overlapMargin)
+	deadline := time.Now().Add(testwait.Remaining(t, overlapMargin))
 	runs := 0
 	for overlapped := 0; overlapped < overlapsWanted; runs++ {
 		if t.Failed() {
 			t.Fatalf("%d of %d runs overlapped a peer's update before the test failed, want %d", overlapped, runs, overlapsWanted)
 		}
-		if bounded && time.Now().After(deadline) {
+		if time.Now().After(deadline) {
 			t.Fatalf("%d of %d runs overlapped a peer's update with %s left before the test binary's deadline, want %d", overlapped, runs, overlapMargin, overlapsWanted)
 		}
 		if read() {
