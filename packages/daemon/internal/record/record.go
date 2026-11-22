@@ -987,10 +987,10 @@ type PullRequest struct {
 	// withJudgement), and so does a move of the head (classify's advance): it names its own head,
 	// and a read of another head confirms nothing of it.
 	ConflictRead *ConflictRead
-	// MergeForward is the daemon's ask that the implementer merge the base forward onto a head
-	// whose conflict was confirmed and acted on (dispatch://INFRA-4374 R1), nil while none stands.
-	// The issue keeps its phase, and the ask is a message on the implementer's role topic rather
-	// than a phase start: it names the head and the base branch of the conflict, the phase the
+	// MergeForward is the daemon's ask that a role merge the base forward onto a head whose
+	// conflict was confirmed and acted on (dispatch://INFRA-4374 R1), nil while none stands. The
+	// issue keeps its phase, and the ask is a message on the role's own topic rather than a phase
+	// start: it names the head and the base branch of the conflict, the role asked, the phase the
 	// issue stood in and stays in, why the act was needed, when it was asked, and, once a new head
 	// arrives, that head (MergeForward.Landed). It also keeps every merge forward that landed
 	// before it in the same stretch of work (MergeForward.Earlier).
@@ -1129,8 +1129,8 @@ func MergeForwardAsker(at phase.Phase) claim.Role {
 // (intake.PullRequestMergeability.Rules). It is what R0 decides a confirmed conflict on
 // (dispatch://INFRA-4374 R0, classify.ConflictNeedsMerge): a base that requires a check which has
 // not passed on the head, or that requires a pull request to be current with it, is a base the
-// head cannot merge into until the implementer merges it forward, and GitHub runs no check at
-// all on a head that conflicts with its base.
+// head cannot merge into until the base is merged forward, and GitHub runs no check at all on a
+// head that conflicts with its base.
 //
 // Required is every required status-check context, each once and sorted: the contexts of each
 // `required_status_checks` rule the base's rulesets apply, then a classic protection rule's

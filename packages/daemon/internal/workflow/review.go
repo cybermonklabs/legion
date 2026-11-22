@@ -307,9 +307,15 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 				return intake.Result{}, err
 			}
 		} else {
+			// Rules is nil for a read that carried none, which accepting and retro decide on too: the
+			// conflict waits there whatever the rules (classify.ConflictNeedsMerge).
+			var required []string
+			if fact.Rules != nil {
+				required = fact.Rules.Required
+			}
 			e.logOnCommit(ctx, "workflow: a confirmed conflict needs no merge yet",
 				"issue", pr.Issue, "pullRequest", pr.Number, "head", pr.HeadSHA, "base", base, "phase", issue.Phase,
-				"required", fact.Rules.Required, "green", green)
+				"required", required, "green", green)
 		}
 	}
 	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byMergeState)
@@ -509,8 +515,9 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // (owningArchitect) - each on its own role topic (record.RoleMessage), the way the daemon reaches
 // a role holder with a message. In merging the implementer is not told: the merge and what breaks
 // it are the merger's to decide, and the merger asks the implementer when it needs it
-// (dispatch://INFRA-5218 R1). A role named twice, the implementer holding the phase, is told
-// once, and a phase no worker holds names none (addressRoles). told is what the settlement
+// (dispatch://INFRA-5218 R1). A held issue keeps the worker of Hold.From (record.StandsAt).
+// A role named twice, the implementer holding the phase, is told once, and a phase no worker holds
+// names none (addressRoles). told is what the settlement
 // standing for the head said before this one, so a second settlement of the same head that leaves
 // the same conclusions tells nobody again, and so does a settlement that stands for no head. Linger
 // holds a member of a closed tree where it stood (record.TreeLingers): every role of the tree is
@@ -550,7 +557,7 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 		}
 		recipients = append(recipients, roleRecipient{issue: owner, role: claim.RoleArchitect, row: issue.Key})
 	}
-	roles := []claim.Role{RoleFor(issue.Phase)}
+	roles := []claim.Role{RoleFor(record.StandsAt(*issue))}
 	if !record.StandsIn(*issue, phase.Merging) {
 		roles = append(roles, claim.RoleImplementer)
 	}

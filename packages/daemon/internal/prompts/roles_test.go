@@ -350,6 +350,11 @@ func TestTheMergerResolvesAConflictItself(t *testing.T) {
 		"adapt the change in the same merge commit",
 		"Merge or enqueue the new head only once the reviewer's approval of it by SHA is on the pull request",
 		"You may ask the implementer, the tester or the reviewer what they know",
+		"Run again what the merge can reach",
+		"ask both, on their role topics, to record their results at the new head",
+		"### A check that failed",
+		"Read its log, and the same check on the base branch, and decide its cause.",
+		"re-run it, or wait for the base's fix",
 		"Send the issue back with `request_backward_move` only when the fix is a change to the change's own logic that no merge of the base resolves",
 	} {
 		if !strings.Contains(merger, want) {

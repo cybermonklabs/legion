@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -82,13 +81,9 @@ func TestConflictNeedsMergeAnswersTheFirstReasonThatHolds(t *testing.T) {
 			if got == "" {
 				return
 			}
-			// The merger is asked in merging, the implementer everywhere before it.
-			role := claim.RoleImplementer
-			if record.StandsAt(tc.issue) == phase.Merging {
-				role = claim.RoleMerger
-			}
-			ask := record.MergeForwardMessage{Role: role, Step: record.MergeForwardAsk, Head: head, Base: "main",
-				Phase: record.StandsAt(tc.issue), PullRequest: 42, Why: got}
+			at := record.StandsAt(tc.issue)
+			ask := record.MergeForwardMessage{Role: record.MergeForwardAsker(at), Step: record.MergeForwardAsk, Head: head, Base: "main",
+				Phase: at, PullRequest: 42, Why: got}
 			if _, err := record.NewOutboxRow(tc.issue.Key, ask, time.Date(2026, 11, 19, 1, 0, 0, 0, time.UTC)); err != nil {
 				t.Fatalf("the merge forward's ask with why %q cannot be queued: %v", got, err)
 			}

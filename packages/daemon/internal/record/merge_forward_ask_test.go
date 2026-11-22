@@ -48,11 +48,11 @@ func TestAMergeForwardNamesTheRoleItAsks(t *testing.T) {
 	}
 }
 
-// The merger's ask tells it that the merge and its conflict are its own, that the reviewer is
-// asked to approve the head it pushes, and that it merges only once that approval is on the pull
-// request (dispatch://INFRA-5218 R1, R2). The implementer's ask says none of that: an ask of the
+// The merger's ask tells it that the merge and its conflict are its own and that the reviewer is
+// asked to approve the head it pushes (dispatch://INFRA-5218 R1, R2); the landed message, not the
+// ask, holds its merge to that approval. The implementer's ask says none of that: an ask of the
 // implementer that a daemon before that change queued in merging still reads as it did.
-func TestTheMergersAskSaysTheMergeIsItsOwnAndWaitsForTheReview(t *testing.T) {
+func TestTheMergersAskSaysTheMergeIsItsOwn(t *testing.T) {
 	merger := MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Merging,
 		PullRequest: 42, Why: ConflictMergeNext}
 	said := merger.Message("LEGION-208", "sjawhar/legion")
@@ -62,7 +62,6 @@ func TestTheMergersAskSaysTheMergeIsItsOwnAndWaitsForTheReview(t *testing.T) {
 		"Merge main forward in the issue workspace",
 		"The merge and its conflict are yours to resolve, as your role says.",
 		"the daemon asks the reviewer to read it and approve the new head.",
-		"Merge the pull request at the new head only once that approval is on the pull request.",
 	} {
 		if !strings.Contains(said, want) {
 			t.Errorf("the merger's ask reads %q, want it to say %q", said, want)

@@ -88,9 +88,10 @@ const (
 // none of them back. The role-message lane runs the kinds the daemon addresses to one role of
 // the issue on that role's own topic: a hook's words, which go to a phase worker (hook_prompt),
 // the message that tells the merger its pull request left the merge queue (merge_queue_removal),
-// the messages of a merge forward, which go to the implementer and to the worker of the phase the
-// issue stays in (merge_forward), and an update round's ask, which goes to any role whose process
-// runs in the issue's pod, its architect included (update_ask). It also runs the two reads of
+// the messages of a merge forward, which go to the role asked to merge (MergeForwardAsker) and to
+// the worker of the phase the issue stays in (merge_forward), and an update round's ask, which
+// goes to any role whose process runs in the issue's pod, its architect included (update_ask).
+// It also runs the two reads of
 // GitHub that come before a message: the read before a merge-queue removal's message
 // (merge_queue_read), and the second read of a head a first read found conflicting, whose
 // confirmation is what writes a merge forward's messages (conflict_confirm). It is a lane of its
@@ -1772,11 +1773,12 @@ const (
 
 // mergeForwardRoles is the roles each step of a merge forward may go to: the ask to the
 // implementer or the merger, whose merge it is (MergeForwardAsker, which only in merging names
-// the merger); the hold and the landed to a worker of the phase the issue stays in that is neither
-// the role asked, whom the ask tells, nor the architect, whom the checks-red notice tells; and the
-// review to the reviewer. The hold still lists the merger, which a daemon before
-// dispatch://INFRA-5218 held in merging while it asked the implementer, so a row that daemon
-// queued is still read after the upgrade.
+// the merger); the hold to a worker of the phase the issue stays in that is neither the role
+// asked, whom the ask tells, nor the architect, whom the checks-red notice tells; the landed to the
+// worker of that phase, the merger included, which in merging made the merge and learns from it
+// to merge only once the reviewer approved the new head; and the review to the reviewer. The hold
+// still lists the merger, which a daemon before dispatch://INFRA-5218 held in merging while it
+// asked the implementer, so a row that daemon queued is still read after the upgrade.
 var mergeForwardRoles = map[MergeForwardStep][]claim.Role{
 	MergeForwardAsk:    {claim.RoleImplementer, claim.RoleMerger},
 	MergeForwardHold:   {claim.RoleTester, claim.RoleReviewer, claim.RoleMerger},
@@ -1851,8 +1853,8 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // reference, and to push the issue branch, with no handoff and no completion for the merge. In
 // implementing it also says that the implementer's own assignment and its completion stand: the
 // act starts no phase entry there. To the merger it also says that the merge is its own to
-// resolve, that the reviewer is asked to approve the head it pushes, and that it merges that head
-// only once that approval is on the pull request (dispatch://INFRA-5218 R1, R2).
+// resolve and that the reviewer is asked to approve the head it pushes (dispatch://INFRA-5218 R1,
+// R2); the landed, which comes when that matters, is what holds its merge to that approval.
 //
 // The hold gives why the daemon acted, and tells the worker that the implementer is asked to merge
 // the head forward in the workspace they share and that the issue stays in its phase, to stop
@@ -1861,10 +1863,11 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // its session and its turn's jobs, that it is told the new head when it lands, and that a result
 // it recorded at the old head stays a result of the old head.
 //
-// The landed names both heads and how to read what changed: `git diff` from the old head to the
-// new, and, for a merge of the base, `git show --remerge-diff` for how the merge resolved the
-// conflict and `git diff --stat` against the merge's first parent for the files the base brought
-// in. Then the worker goes on at the new head. To the merger in merging it also says to merge the
+// The landed names both heads and how to read what changed (readMerge): for a merge of the base,
+// `git show --remerge-diff` for how the merge resolved the conflict and `git diff --stat` against
+// the merge's first parent for the files the base brought in, and for any other new head `git
+// diff` from the old head to the new. Then the worker goes on at the new head. To the merger in
+// merging it also says to merge the
 // pull request or put it in the merge queue at the new head only once the reviewer's approval of
 // that head is on the pull request: in merging the landing asks the reviewer for that review, and
 // the merger's task says the same (workflow's task). The review names both heads and the phase,
@@ -1883,8 +1886,7 @@ func (p MergeForwardMessage) Message(issue, repo string) string {
 			own = " Your own assignment in implementing stands, and so does its completion."
 		case p.Role == claim.RoleMerger:
 			own = " The merge and its conflict are yours to resolve, as your role says." +
-				" When your merge lands, the daemon asks the reviewer to read it and approve the new head." +
-				" Merge the pull request at the new head only once that approval is on the pull request."
+				" When your merge lands, the daemon asks the reviewer to read it and approve the new head."
 		}
 		return fmt.Sprintf("%s: %s at head %s conflicts with its base branch %s, and a second read of GitHub confirmed it."+
 			" The issue stays in %s. %s"+
@@ -1930,13 +1932,14 @@ func (p MergeForwardMessage) Message(issue, repo string) string {
 }
 
 // readMerge is how the landed and the review tell their role to read what a landed merge forward
-// changed (Message): `git diff` from the old head to the new, and, for a merge of the base,
-// `git show --remerge-diff` and `git diff --stat` against the merge's first parent.
+// changed (Message): for a merge of the base, `git show --remerge-diff` for how the merge resolved
+// the conflict, which is what the reviewer reads (dispatch://INFRA-5218 R2), and `git diff --stat`
+// against the merge's first parent for the files the base brought in; for any other new head,
+// `git diff` from the old head to the new, whose diff holds the base's own changes too.
 func (p MergeForwardMessage) readMerge() string {
-	return fmt.Sprintf("run `git diff %s %s`."+
-		" For a merge of the base, `git show --remerge-diff %s` shows how the merge resolved the conflict,"+
-		" and `git diff --stat %s^1 %s` lists the files the base brought in.",
-		p.Head, p.Landed, p.Landed, p.Landed, p.Landed)
+	return fmt.Sprintf("for a merge of the base, `git show --remerge-diff %s` shows how the merge resolved the conflict,"+
+		" and `git diff --stat %s^1 %s` lists the files the base brought in; for any other new head, run `git diff %s %s`.",
+		p.Landed, p.Landed, p.Landed, p.Head, p.Landed)
 }
 
 // retryBackoffDoublings is how many times a row's backoff doubles before it stops at
@@ -2462,13 +2465,14 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if !MergeForwardReaches(value.Step, value.Role) {
 			return fmt.Errorf("a merge-forward ask goes to the implementer or the merger, a hold or a landed to the tester, the reviewer or the merger, and a review to the reviewer; a %s to %q is none of these", value.Step, value.Role)
 		}
-		// The merger is asked in merging alone (MergeForwardAsker). The implementer's ask is valid in
-		// every phase, so a row a daemon before dispatch://INFRA-5218 queued past the review reads.
-		if value.Step == MergeForwardAsk && value.Role == claim.RoleMerger && value.Phase != phase.Merging {
-			return fmt.Errorf("a merge-forward ask goes to the merger only while the issue stands in merging; this one names %q", value.Phase)
-		}
 		if value.Head == "" || value.Base == "" || value.Phase == "" || value.PullRequest < 1 {
 			return fmt.Errorf("a merge-forward message names the head, the base branch, the phase the issue stays in and the pull request; it names %q, %q, %q and #%d", value.Head, value.Base, value.Phase, value.PullRequest)
+		}
+		// The merger is asked only where MergeForwardAsker names it, in merging. The implementer's ask
+		// is valid in every phase, so a row a daemon before dispatch://INFRA-5218 queued past the
+		// review still reads.
+		if value.Step == MergeForwardAsk && value.Role == claim.RoleMerger && MergeForwardAsker(value.Phase) != claim.RoleMerger {
+			return fmt.Errorf("a merge-forward ask goes to the merger only while the issue stands in merging; this one names %q", value.Phase)
 		}
 		landing := value.Step == MergeForwardLanded || value.Step == MergeForwardReview
 		if landing != (value.Landed != "") {

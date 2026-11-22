@@ -589,3 +589,36 @@ func recordedPR(t *testing.T, pool *pgxpool.Pool, issue string) record.PullReque
 	}
 	return *pr
 }
+
+// A hold keeps the phase's work where it stood, so its worker still needs the CI result.
+// In merging that worker is the merger, and the implementer is not a substitute for it.
+func TestASettlementOfAHeldIssueTellsTheWorkerOfItsHeldPhase(t *testing.T) {
+	for _, tc := range []struct {
+		from  phase.Phase
+		roles []claim.Role
+	}{
+		{phase.Testing, []claim.Role{claim.RoleArchitect, claim.RoleTester, claim.RoleImplementer}},
+		{phase.Reviewing, []claim.Role{claim.RoleArchitect, claim.RoleReviewer, claim.RoleImplementer}},
+		{phase.Merging, []claim.Role{claim.RoleArchitect, claim.RoleMerger}},
+	} {
+		t.Run(string(tc.from), func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+				Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Held, Hold: &record.Hold{From: tc.from},
+				Generation: 1, Status: PhaseStatus(tc.from), Rank: "U"})
+			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
+				Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head"})
+			applyRefusingNothing(t, pool, mergingEngine(), settledAt("head", 1, "unit"))
+
+			want := make([]record.RoleMessage, 0, len(tc.roles))
+			for _, role := range tc.roles {
+				want = append(want, record.RoleMessage{Role: roleToken(t, role), Body: toldBody("CI settled at head: \"build\" succeeded, \"unit\" failed")})
+			}
+			assertRoleMessages(t, pool, "LEGION-208", want)
+			if issue := storedIssue(t, pool, "LEGION-208"); issue.Phase != phase.Held || issue.Hold == nil || issue.Hold.From != tc.from {
+				t.Fatalf("the settlement changed the held issue to %+v", issue)
+			}
+			assertOutboxCount(t, pool, "supervise", 0)
+		})
+	}
+}

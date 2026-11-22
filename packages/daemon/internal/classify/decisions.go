@@ -1273,8 +1273,8 @@ func MergeStateReadOwed(issue record.Issue, fact MergeStateFact) bool {
 //   - "": the issue stands in accepting or retro, or is held from one of them. The work is
 //     reviewed and the merge comes next, so the conflict waits for merging, where the merger
 //     resolves it (workflow's mergeForwardOnEntry), rather than going back to the implementer
-//     (dispatch://INFRA-5218). The head's required checks passed before the reviewer approved it,
-//     and the architect's acceptance and retro need no new run.
+//     (dispatch://INFRA-5218). Neither the architect's acceptance nor retro needs a head that
+//     merges, so nothing there waits on the merge forward.
 //   - record.ConflictRulesUnread: the daemon could not read the base's rules (rules nil, or
 //     rules.Unread set). It cannot tell whether every check the base requires passed, so it acts
 //     at once, which is never later than a daemon that acted on every conflicting read. GitHub's
