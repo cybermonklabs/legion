@@ -75,7 +75,9 @@ func rebuildDocument(t *testing.T, service *Service, artifactID string, markdown
 // Until the rebuild's transaction ends its room refuses loads and a second rebuild, which would
 // read the old history the transaction has not yet replaced; once it commits, the room opens.
 func TestRebuildDocumentRestoresDocumentThatCannotLoad(t *testing.T) {
-	t.Parallel()
+	// Not parallel: under the race detector this test grows the binary by about 1.3 GB
+	// (envoy-go-race-docs job 137302424274, whose memory sampler ran it alone), and beside
+	// the package's other tests that took the binary past the step's RACE_MEM_LIMIT_KB.
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
 	persistence := NewPgVersioned(database)

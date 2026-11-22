@@ -267,7 +267,9 @@ func TestALoadedDocumentIsTheLoadedStateDecoded(t *testing.T) {
 // one state a rebuild repairs (ErrDocumentUnloadable), and so does a read of it, not wrapped in
 // the unavailable service any failed room or store answers.
 func TestAnUndecodableHistoryLoadsAsDocumentUnloadable(t *testing.T) {
-	t.Parallel()
+	// Not parallel: under the race detector this test grows the binary by about 4.4 GB
+	// (envoy-go-race-docs job 137302424274, whose memory sampler ran it alone), and beside
+	// the package's other tests that took the binary past the step's RACE_MEM_LIMIT_KB.
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
 	versioned := NewPgVersioned(database)

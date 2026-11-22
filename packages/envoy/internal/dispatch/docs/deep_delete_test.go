@@ -27,7 +27,9 @@ import (
 // of the recursive delete is 208 bytes, so at this depth it needs about 40 MiB, two and a half
 // times the cap.
 func TestDeletingADeeplyNestedLiveTreeNeedsNoStackPerLevel(t *testing.T) {
-	t.Parallel()
+	// Not parallel: under the race detector this test grows the binary by about 1.3 GB
+	// (envoy-go-race-docs job 137302424274, whose memory sampler ran it alone), and beside
+	// the package's other tests that took the binary past the step's RACE_MEM_LIMIT_KB.
 	stacktest.Under(t, 16<<20, func(t *testing.T) {
 		const (
 			levels      = 200_000

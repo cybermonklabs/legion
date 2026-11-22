@@ -274,7 +274,9 @@ func TestTheStoreTakesOneBrowserUpdateItsRoomTook(t *testing.T) {
 // (reearth/ygo#268, in the pinned fork); a decode of it at ygo's default queue refuses it, which
 // fails the room on every reload, and the document is never stamped.
 func TestASettlementStampsMoreBlocksThanYgosDefaultQueue(t *testing.T) {
-	t.Parallel()
+	// Not parallel: under the race detector this test grows the binary by about 2.7 GB
+	// (envoy-go-race-docs job 137302424274, whose memory sampler ran it alone), and beside
+	// the package's other tests that took the binary past the step's RACE_MEM_LIMIT_KB.
 	service, artifactID := newTestService(t)
 	// The settlement runs below, once, on the test's own goroutine.
 	service.settle = time.Hour
