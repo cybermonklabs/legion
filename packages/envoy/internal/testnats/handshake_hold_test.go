@@ -1,6 +1,8 @@
 package testnats
 
 import (
+	"bufio"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -140,5 +142,99 @@ func holdOnAHooksGoroutine(t *testing.T, hold *HandshakeHold, conn *natsgo.Conn)
 		t.Log(hookWentOn)
 	default:
 		t.Log("HoldWriteLock ended the hook's goroutine without returning")
+	}
+}
+
+// The hold counts a handshake attempt at its CONNECT, not at its dial, and only under a hold, as
+// Attempts and Hold say: Attempts counts the CONNECTs whose answer the hold keeps, and the channel
+// Hold returns closes at the first of them. A bare TCP client stands in for nats.go, so the row says
+// when the CONNECT goes, and every reading is taken after a fact the hold itself made.
+//   - Outside a hold, a client that dials the hold's relay, sends CONNECT and PING and has the
+//     server's PONG back moves neither Dials nor Attempts.
+//   - Under a hold, a client that has dialed and has been sent the server's INFO, and has sent
+//     nothing, is counted as one dial and no attempt, and the channel stays open. The hold writes
+//     that INFO only after it has accepted the dial and dialed the server, so whatever it counts for
+//     the dial it has counted by then.
+//   - Once that client sends its CONNECT, the channel closes, and Attempts then reads 1.
+func TestAHoldCountsAnAttemptAtItsConnectNotAtItsDial(t *testing.T) {
+	_, uri := Start(t)
+	hold := StartHandshakeHold(t, uri)
+	const connect = "CONNECT {\"verbose\":false,\"pedantic\":false}\r\n"
+
+	free, freeLines := rawHoldClient(t, hold)
+	if info := testwait.Receive(t, "the server's INFO through the hold's relay, outside a hold", freeLines); !strings.HasPrefix(info, "INFO ") {
+		t.Fatalf("outside a hold, the hold's relay sent the client %q first, want the server's INFO", info)
+	}
+	writeRaw(t, free, connect+"PING\r\n")
+	if pong := testwait.Receive(t, "the server's PONG through the hold's relay, outside a hold", freeLines); pong != "PONG\r\n" {
+		t.Fatalf("outside a hold, the server answered the client's CONNECT and PING with %q, want PONG", pong)
+	}
+	if dials, attempts := hold.Dials(), hold.Attempts(); dials != 0 || attempts != 0 {
+		t.Fatalf("outside a hold, a client whose CONNECT was answered was counted as %d dial(s) and %d held handshake attempt(s), want none: the hold counts outside a hold", dials, attempts)
+	}
+	_ = free.Close()
+
+	held := hold.Hold()
+	t.Cleanup(hold.Release)
+	client, lines := rawHoldClient(t, hold)
+	if info := testwait.Receive(t, "the server's INFO through the hold's relay, under the hold", lines); !strings.HasPrefix(info, "INFO ") {
+		t.Fatalf("under the hold, the hold's relay sent the client %q first, want the server's INFO", info)
+	}
+	if dials := hold.Dials(); dials != 1 {
+		t.Fatalf("under the hold, a client that had been sent the server's INFO was counted as %d dial(s), want 1", dials)
+	}
+	if attempts := hold.Attempts(); attempts != 0 {
+		t.Fatalf("under the hold, a client that had dialed and sent no CONNECT was counted as %d held handshake attempt(s), want 0: the hold counts an attempt at its dial, not at its CONNECT", attempts)
+	}
+	select {
+	case <-held:
+		t.Fatal("under the hold, a client that had dialed and sent no CONNECT closed the channel Hold returned: the hold reads a dial as a held CONNECT")
+	default:
+	}
+	writeRaw(t, client, connect)
+	testwait.Receive(t, "the channel Hold returned to close once the client's CONNECT reached the hold", held)
+	if dials, attempts := hold.Dials(), hold.Attempts(); dials != 1 || attempts != 1 {
+		t.Fatalf("under the hold, a client whose CONNECT had closed the channel Hold returned was counted as %d dial(s) and %d held handshake attempt(s), want 1 of each", dials, attempts)
+	}
+}
+
+// rawHoldClient dials the hold's own relay as a bare TCP client and returns the connection and the
+// lines the relay sends it, one per receive. The channel is closed when the connection ends, so a
+// receive that finds it closed reads "" at once rather than waiting.
+func rawHoldClient(t *testing.T, hold *HandshakeHold) (net.Conn, <-chan string) {
+	t.Helper()
+	relay := hold.listener.Addr().String()
+	conn, err := net.DialTimeout("tcp", relay, dialTimeout)
+	if err != nil {
+		t.Fatalf("dial the hold's relay at %s: %v", relay, err)
+	}
+	lines, done := make(chan string), make(chan struct{})
+	t.Cleanup(func() {
+		close(done)
+		_ = conn.Close()
+	})
+	go func() {
+		defer close(lines)
+		reader := bufio.NewReader(conn)
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				return
+			}
+			select {
+			case lines <- line:
+			case <-done:
+				return
+			}
+		}
+	}()
+	return conn, lines
+}
+
+// writeRaw writes text, NATS protocol lines, on conn, failing the test when the write fails.
+func writeRaw(t *testing.T, conn net.Conn, text string) {
+	t.Helper()
+	if _, err := conn.Write([]byte(text)); err != nil {
+		t.Fatalf("write %q to the hold's relay: %v", text, err)
 	}
 }
