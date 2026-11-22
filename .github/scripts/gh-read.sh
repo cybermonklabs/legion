@@ -33,14 +33,16 @@
 #     detection mechanism"), which spends no budget. GitHub's documentation (REST API, "Rate
 #     limits for the REST API", "Exceeding the rate limit"): wait the seconds a retry-after header
 #     names, and where the answer names none, at least one minute. gh prints no header of an
-#     answer but under GH_DEBUG=api, which logs every request and answer between a `* Request at`
-#     line and a `* Request took` line, so the helper runs `gh api` under GH_DEBUG=api, reads the
-#     last answer's headers out of that log, and hands the caller gh's stderr without it. `gh
-#     api` alone: it has one request open at a time, where gh release view, edit and upload send
-#     a GraphQL lookup and a REST request together, and a log of two open requests holds the
-#     second answer's whole body (a draft release's name and body, ahead of release-push.sh's
-#     leak guard). Every other command, gh's own or a wrapper around it, runs as it is, leaves no
-#     headers to read, and its secondary limit takes the one-minute minimum.
+#     answer but under GH_DEBUG=api, which logs each request and its answer, body and all, from a
+#     `* Request at` line to a `* Request took` line, so the helper runs `gh api` under
+#     GH_DEBUG=api, reads the answer's headers out of that log, and hands the caller gh's stderr
+#     without it. Only a `gh api` without --paginate: one request, whose log ends at the last
+#     `took` line, which a line of the body cannot move (_gh_read_run). gh release view, edit and
+#     upload send a GraphQL lookup and a REST request together, and a paginated read sends one per
+#     page, so a log of theirs holds more than one answer's body (a draft release's name and body,
+#     ahead of release-push.sh's leak guard, or a raw page). Every other command, gh's own or a
+#     wrapper around it, runs as it is, leaves no headers to read, and its secondary limit takes
+#     the one-minute minimum.
 #
 # Where the limit comes from. GitHub enforces a job's timeout-minutes from the job's start, and
 # a step's from the step's, and the runner exposes neither the limit nor the start to a step.
@@ -184,37 +186,46 @@ gh_read() {
 }
 
 # _gh_read_run <dir> <command>...: one run, its stdout kept in <dir>/out and its stderr in
-# <dir>/err. `gh api` runs under GH_DEBUG=api, whose log of each request and answer, from its
-# `* Request at` line to its `* Request took` line, is left out of <dir>/err; the last answer's
-# headers in that log go to <dir>/headers, one `Name: value` a line. The filter counts the
-# requests open, and a line reaches <dir>/err only while none is: gh prints both `at` lines of two
-# requests it sends together before either `took`. Lines outside every block are gh's own and are
-# kept as they came (gh closes a block on a failed connection too, then prints its error), and a
-# block gh never closed (gh killed mid-request) ends the log with nothing of gh's own after it.
-# Every other command runs as it is, its stderr whole in <dir>/err.
+# <dir>/err. `gh api` without --paginate, one request, runs under GH_DEBUG=api. Its log of that
+# request and its answer runs from the first `* Request at` line to the last `* Request took`
+# line, and is left out of <dir>/err whole: the answer's body is printed inside it as it came, so
+# a raw body's line can read like any of gh's own markers, and only the last `took` is surely
+# gh's (the body precedes it). The answer's headers, from the first `< HTTP/` line to the first
+# line after it that is no header, go to <dir>/headers, one `Name: value` a line; the body comes
+# after that line, so nothing in it is read as a header. Lines before the request and after its
+# end are gh's own and are kept as they came (gh closes a request on a failed connection too,
+# then prints its error), and a request gh never closed (gh killed mid-request) ends the log with
+# nothing of gh's own after it. Every other command, a paginated `gh api` among them (several
+# requests, each page's body inside the log), runs as it is, its stderr whole in <dir>/err.
 _gh_read_run() {
-  local dir=$1 status=0
+  local dir=$1 status=0 arg traced=''
   shift
   # Emptied here, not by the awk below, which opens its file only when gh printed a line of its
   # own: a repeated run that printed none would otherwise hand on the refused run's words.
   : > "$dir/headers"
   : > "$dir/err"
-  if [ "$1" != gh ] || [ "${2:-}" != api ]; then
+  if [ "$1" = gh ] && [ "${2:-}" = api ]; then
+    traced=yes
+    for arg in "$@"; do
+      [ "$arg" != --paginate ] || traced=''
+    done
+  fi
+  if [ -z "$traced" ]; then
     "$@" > "$dir/out" 2> "$dir/err" || status=$?
     return "$status"
   fi
   GH_DEBUG=api "$@" > "$dir/out" 2> "$dir/trace" || status=$?
   awk -v err="$dir/err" -v headers="$dir/headers" '
-    /^\* Request at / { open++ }
-    open > 0 {
-      if (/^< HTTP\//) { answer = "" }
-      else if (/^< /) { answer = answer substr($0, 3) "\n" }
-      if (/^\* Request took /) { open--; last = answer }
+    NR == FNR {
+      if (!first && /^\* Request at /) first = FNR
+      if (/^\* Request took /) last = FNR
       next
     }
-    { print > err }
-    END { printf "%s", last > headers }
-  ' "$dir/trace"
+    !first || FNR < first || (last >= first && FNR > last) { print > err; next }
+    !answer && /^< HTTP\// { answer = 1; next }
+    answer == 1 && /^< / { printf "%s\n", substr($0, 3) > headers; next }
+    answer == 1 { answer = 2 }
+  ' "$dir/trace" "$dir/trace"
   return "$status"
 }
 

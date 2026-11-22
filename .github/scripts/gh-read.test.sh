@@ -53,6 +53,8 @@ fi
 #                REST answer when the lookup finds no draft, so the REST answer closes second,
 #                after both requests opened.
 #   rate-limit-delay  seconds the rate_limit route holds its answer, read when it was asked.
+#   raw          present: GET /repos/o/r/raw answers this file's bytes as text/plain, a body gh's
+#                request trace prints as it came, line for line.
 # and appends `<epoch> <method> <path>` to `log` for every request it answers.
 cat > "$work/github.py" <<'PY'
 import http.server
@@ -134,6 +136,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif os.path.exists(os.path.join(state, "release")) and path.startswith("/repos/o/r/releases"):
             time.sleep(float(read("release-delay", "0.3")))
             self.answer(200, RELEASE)
+        elif os.path.exists(os.path.join(state, "raw")) and path == "/repos/o/r/raw":
+            with open(os.path.join(state, "raw"), "rb") as handle:
+                data = handle.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
         elif read("answer", "200") == "404":
             self.answer(404, {"message": "Not Found",
                               "documentation_url": "https://docs.github.com/rest", "status": "404"})
@@ -234,7 +244,10 @@ at_least() { [ "$1" -ge "$2" ] && echo true || echo false; }
 below() { [ "$1" -lt "$2" ] && echo true || echo false; }
 
 echo "case: a spent budget whose reset falls before the job's limit is waited out"
-github 3
+# 10 s: the refused call and its rate_limit read must both land before the reset, or the helper
+# reads the window as turned over and calls again at once, with no wait to log; a loaded host was
+# seen to take over 3 s for the two. The same holds for each case below that wants the wait logged.
+github 10
 drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 reset=$(spent_until)
 check "exits 0" "$(is "$status" 0)"
@@ -287,7 +300,7 @@ check "with no sleep" "$(below "$seconds" 30)"
 check "naming the step's limit" "$(contains "$err" "past this step's limit at ")"
 
 echo "case: a step limit alone is a limit"
-github 3
+github 10
 drive STEP_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 check "waits and passes" "$(is "$status|$out" '0|{"title":"t"}')"
 check "within the step's limit" "$(contains "$err" "within this step's limit at ")"
@@ -369,7 +382,7 @@ check "after waiting once" "$(is "$(calls /repos/o/r/pulls/1)" 2)"
 check "naming it" "$(contains "$err" "^::error::the API budget is still spent after the wait for its reset at $(utc "$(spent_until)")")"
 
 echo "case: --stderr keeps the deciding call's words in a file and the helper's own lines in the log"
-github 3 404
+github 10 404
 drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset --stderr "$PWD/words" gh api repos/o/r/pulls/1 > body; echo "status=$?"; cat words'
 check "the call after the wait decides" "$(contains "$out" '^status=1$')"
 check "the file holds that call's words" "$(contains "$out" '^gh: Not Found (HTTP 404)$')"
@@ -494,7 +507,7 @@ check "and nothing on stderr" "$(is "$err" '')"
 check "it patched the release" "$(is "$(calls /repos/o/r/releases/1)" 1)"
 
 echo "case: gh release view under a spent budget waits, and the log holds no release"
-github 3
+github 10
 touch "$work/state/release"
 drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh release view v1 --repo o/r --json name,body -q ".name, .body"'
 check "exits 0" "$(is "$status" 0)"
@@ -503,17 +516,40 @@ check "after one wait" "$(is "$(warnings)" 1)"
 check "with nothing of the release on stderr" "$(is "$(contains "$err" "the draft's")" false)"
 check "and no line of a trace" "$(is "$(contains "$err" '^\* Request\|^< \|^> \|^{')" false)"
 
+# A raw answer is printed into gh's request trace as it came, and a line of it can read like gh's
+# own end of a request. The trace of one request runs from its `* Request at` line to its last
+# `* Request took` line, so no line of the body can end it early; a paginated read, several
+# requests in turn, is not traced at all.
+echo "case: a raw answer's line that reads like gh's own end of a request does not end the trace"
+github never
+printf '%s\n' "a raw file's first line" '* Request took 1.5ms' 'a raw line after the forged end of the request' \
+  > "$work/state/raw"
+drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/raw -H "Accept: application/vnd.github.raw"'
+check "exits 0" "$(is "$status" 0)"
+check "prints the raw answer on stdout, whole" "$(contains "$out" '^a raw line after the forged end of the request$')"
+check "and nothing on stderr" "$(is "$err" '')"
+
+echo "case: a paginated raw read through the helper writes nothing on stderr"
+github never
+printf '%s\n' "a raw file's first line" '* Request took 1.5ms' 'a raw line after the forged end of the request' \
+  > "$work/state/raw"
+drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api --paginate repos/o/r/raw -H "Accept: application/vnd.github.raw"'
+check "exits 0" "$(is "$status" 0)"
+check "prints the raw answer on stdout, whole" "$(contains "$out" '^a raw line after the forged end of the request$')"
+check "and nothing on stderr" "$(is "$err" '')"
+
 echo "case: the wait is measured from after the rate_limit read, not before it"
 # The rate_limit route takes 5 s to answer a reset 3 s after the refusal: the budget is back by the
 # time the answer arrives, so the call goes again at once. A clock read before the probe sleeps the
-# reset's 4 s on top of the probe's 5.
+# reset's 4 s on top of the probe's 5, so the second call lands 6 s or more after the reset; the row
+# allows 5, room for a loaded host.
 github 3
 echo 5 > "$work/state/rate-limit-delay"
 drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 reset=$(spent_until)
 check "exits 0" "$(is "$status" 0)"
 check "calls the route twice" "$(is "$(calls /repos/o/r/pulls/1)" 2)"
-check "the second call no later than 3 s after the reset" "$(at_least "$((reset + 3))" "$(nth_at /repos/o/r/pulls/1 2)")"
+check "the second call no later than 5 s after the reset" "$(at_least "$((reset + 5))" "$(nth_at /repos/o/r/pulls/1 2)")"
 
 echo "case: gh_read with no limit set keeps its ladder's retries for a rate limit"
 # With no limit the helper cannot wait, and says so; the ladder still makes its later attempts, as

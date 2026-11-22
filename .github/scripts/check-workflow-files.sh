@@ -38,9 +38,11 @@
 #      in the workflow's own `env:`, which stands for no one job's limit; STEP_TIMEOUT_MINUTES in a
 #      job's `env:`, which stands for no one step's; and a step with a timeout-minutes of its own
 #      that reaches gh-read.sh and sets no STEP_TIMEOUT_MINUTES, whose wait would see only the
-#      job's limit. A step reaches gh-read.sh when its `run:` names it, or names a script of
-#      .github/scripts that reaches it (sources it, or names one that does; test files aside), or
-#      when its `uses:` is an action of .github/actions whose action.yml names one.
+#      job's limit. A step reaches gh-read.sh when its `run:` runs or sources it, or a script of
+#      .github/scripts that does, followed through the scripts that run or source each other (test
+#      files aside; COMMAND_PLACE below says what counts as a run), or when its `uses:` is an
+#      action of .github/actions, at the checkout's root or under another checkout (`./base/`),
+#      whose steps' `run:` does. A path named in a comment or echoed is no reach.
 #
 # A file that is not valid YAML is still measured for its bytes, and cannot be read for the other
 # faults.
@@ -239,16 +241,20 @@ def scalar(node: object) -> str | None:
 HELPER = "gh-read.sh"
 # The ways a line of shell runs or sources a script, or keeps its path in a variable to run later:
 # the path as a command's first word (a line's start, or after `;`, `&`, `|`, `!`, `$(`, `( `, a
-# shell keyword, bash, sh, exec, time, env's assignments or timeout's limit); `source` or `.`
-# followed, anywhere later on the line, by the path, however a `$(...)` builds its directory; and
-# a shell assignment (no space around the `=`) whose value ends in the path. A path named in a
-# comment, a description or a Python string runs nothing and is no reach.
+# shell keyword, exec, time, env's assignments, timeout's limit, or bash or sh with their flags,
+# `bash -c '<path>'` among them), a `${{ ... }}` expression allowed as its first part
+# (`${{ github.workspace }}/.github/scripts/<x>`); `source` or `.` followed, anywhere later on the
+# line, by the path or the bare name, however a `$(...)` builds its directory; and a shell
+# assignment (no space around the `=`) whose value ends in the path. A path named in a comment, a
+# description or a Python string runs nothing and is no reach.
 COMMAND_PLACE = (
-    r"(?:^|[;&|!]|\$\(|\(\s|\b(?:then|do|else|if|while|until|bash|sh|exec|time)\s"
-    r"|\btimeout\s+\S+\s|\benv(?:\s+\w+=\S*)*\s)\s*[\"']?[^\s\"';&|()]*/"
+    r"(?:^|[;&|!]|\$\(|\(\s|\b(?:then|do|else|if|while|until|exec|time)\s|\b(?:bash|sh)(?:\s+-\w+)*\s"
+    r"|\btimeout\s+\S+\s|\benv(?:\s+\w+=\S*)*\s)\s*[\"']?(?:\$\{\{[^}]*\}\})?[^\s\"';&|()]*/"
 )
-SOURCED = r"(?:^|[\s;&|])(?:source|\.)\s.*/"
+SOURCED = r"(?:^|[\s;&|\"'])(?:source|\.)\s+[\"']?(?:.*/)?"
 ASSIGNED = r"(?:^|[\s;&|])[A-Za-z_]\w*=.*/"
+# A local action, at the root of the checkout or of another checkout inside it (`./base/`).
+LOCAL_ACTION = re.compile(r"^\./(?:[^/]+/)*\.github/actions/([^/]+)/?$")
 
 
 def runs_any(text: str, names: set[str]) -> list[str]:
@@ -365,7 +371,8 @@ def check_timeout_variables(path: Path, root: object, reachers: tuple[set[str], 
                 run = scalar(mapping_get(step, "run")) or ""
                 uses = scalar(mapping_get(step, "uses")) or ""
                 via = runs_any(run, scripts)
-                if uses.startswith("./.github/actions/") and uses.rstrip("/").rsplit("/", 1)[-1] in actions:
+                local = LOCAL_ACTION.match(uses)
+                if local and local.group(1) in actions:
                     via.append(uses)
                 if via:
                     misplaced(own, f"step {index} of job {job_id} sets timeout-minutes {scalar(own)} and "

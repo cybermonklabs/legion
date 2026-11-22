@@ -527,4 +527,50 @@ check "nor the one that passes its limit, nor the one with no limit of its own" 
   "$(is "$(contains "$out" 'step [56] of job build')" false)"
 check "refuses those four and nothing else" "$(contains "$out" '^4 problem(s) across the 1 workflow file(s) under .github/workflows$')"
 
+echo "case: STEP_TIMEOUT_MINUTES in a workflow's env, and steps reaching gh-read.sh through ./base/, bash -c, \${{ github.workspace }} or a bare source, are refused"
+root=$(fixture timeout-reach-ways)
+printf '%s\n' 'gh_wait_reset() { "$@"; }' > "$root/.github/scripts/gh-read.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'source "$(dirname "$0")/gh-read.sh"' 'gh_wait_reset gh api x' \
+  > "$root/.github/scripts/reader.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'cd "$(dirname "$0")"' 'source gh-read.sh' 'gh_wait_reset gh api x' \
+  > "$root/.github/scripts/bare.sh"
+mkdir -p "$root/.github/actions/report"
+printf '%s\n' 'name: report' 'description: d' 'runs:' '  using: composite' '  steps:' '    - shell: bash' \
+  '      run: .github/scripts/reader.sh' > "$root/.github/actions/report/action.yml"
+cat > "$root/.github/workflows/ci.yaml" <<'YAML'
+name: Build
+on: push
+env:
+  STEP_TIMEOUT_MINUTES: 3
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: ./base/.github/actions/report
+        timeout-minutes: 3
+      - run: bash -c '.github/scripts/reader.sh'
+        timeout-minutes: 4
+      - run: '"${{ github.workspace }}/.github/scripts/reader.sh"'
+        timeout-minutes: 5
+      - run: .github/scripts/bare.sh
+        timeout-minutes: 6
+      - run: bash -c 'echo .github/scripts/reader.sh'
+        timeout-minutes: 7
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the workflow-level STEP_TIMEOUT_MINUTES" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=4::.github/workflows/ci.yaml:4: the workflow's env sets STEP_TIMEOUT_MINUTES, which stands for no one step's timeout-minutes")"
+check "names the step that uses the action from ./base/" \
+  "$(contains "$out" "line=11::.github/workflows/ci.yaml:11: step 1 of job build sets timeout-minutes 3 and reaches gh-read.sh (through ./base/.github/actions/report)")"
+check "names the step that runs the reader through bash -c" \
+  "$(contains "$out" "line=13::.github/workflows/ci.yaml:13: step 2 of job build sets timeout-minutes 4 and reaches gh-read.sh (through reader.sh)")"
+check "names the step that runs it from \${{ github.workspace }}" \
+  "$(contains "$out" "line=15::.github/workflows/ci.yaml:15: step 3 of job build sets timeout-minutes 5 and reaches gh-read.sh (through reader.sh)")"
+check "names the step whose script sources gh-read.sh by its bare name" \
+  "$(contains "$out" "line=17::.github/workflows/ci.yaml:17: step 4 of job build sets timeout-minutes 6 and reaches gh-read.sh (through bare.sh)")"
+check "not the step whose bash -c only echoes the path" "$(is "$(contains "$out" 'step 5 of job build')" false)"
+check "refuses those five and nothing else" "$(contains "$out" '^5 problem(s) across the 1 workflow file(s) under .github/workflows$')"
+
 summary "check-workflow-files.sh"
