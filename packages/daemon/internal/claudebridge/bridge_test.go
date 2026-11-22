@@ -7,9 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"io"
 	"net"
 	"os"
@@ -1257,8 +1254,12 @@ func TestADeliveryWithPicturesIsSentAsItsBlocks(t *testing.T) {
 // drainTimeout + inboxFlushTimeout + flushTimeout (Run), so a pane's shim, which kills it 5 s after
 // stopping it, finds the inbox removed. The bridge runs on a stopClock raised to exactly that bound
 // at the stop: each of its timers runs its full length, and a hold of the bridge's past the bound
-// never ends, so a bridge whose exit waits for its client fails the row by name, and a machine that
-// is merely slow, which moves no clock, does not.
+// never ends, so a bridge whose exit waits for its client on its clock fails the row by name, and
+// a machine that is merely slow, which moves no clock, does not. The row reads no wall time, by
+// design: a hold on the wall clock (a read deadline set seconds ahead, a sleep) ends on its own,
+// and the row cannot tell it from a slow machine without a wall-clock bound, which a loaded runner
+// would race. TestTheBridgeWaitsOnlyOnItsClock (clockwaits_test.go) is the row that fails such a
+// hold, by the package's types.
 func TestTheBridgeEndsWithAnInboxClientConnected(t *testing.T) {
 	clock := &stopClock{}
 	r := newRigOn(t, clock, "-p", "--resume", sessionID)
@@ -1293,59 +1294,6 @@ func TestTheBridgeEndsWithAnInboxClientConnected(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Dir(path)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the inbox's directory %s is still there (%v)", filepath.Dir(path), err)
-	}
-}
-
-// The bridge waits on nothing but its Config.Clock: no file of it other than the wall clock's own
-// After (wallClock, config.go) calls a wall-clock wait. A row that reads the stop on a stopClock
-// sees every bound that passes on that clock; a wait on the wall clock in the stop path would end
-// on its own, so that row would pass a bridge it holds. This row is the one that sees that: it
-// parses every non-test file of the package and fails by name on each call of time.Sleep,
-// time.After, time.NewTimer, time.Tick, time.NewTicker, time.AfterFunc, or context.WithTimeout,
-// WithDeadline and their Cause forms.
-func TestTheBridgeWaitsOnlyOnItsClock(t *testing.T) {
-	waits := map[string][]string{
-		"time":    {"Sleep", "After", "NewTimer", "Tick", "NewTicker", "AfterFunc"},
-		"context": {"WithTimeout", "WithTimeoutCause", "WithDeadline", "WithDeadlineCause"},
-	}
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	read := 0
-	fset := token.NewFileSet()
-	for _, name := range files {
-		if strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(fset, name, nil, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		read++
-		ast.Inspect(file, func(n ast.Node) bool {
-			if fn, ok := n.(*ast.FuncDecl); ok && fn.Name.Name == "After" && fn.Recv != nil && len(fn.Recv.List) == 1 {
-				if ident, ok := fn.Recv.List[0].Type.(*ast.Ident); ok && ident.Name == "wallClock" {
-					return false // the wall clock's own After
-				}
-			}
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			pkg, ok := sel.X.(*ast.Ident)
-			if ok && slices.Contains(waits[pkg.Name], sel.Sel.Name) {
-				t.Errorf("%s: %s.%s waits on the wall clock; the bridge's waits run on its Config.Clock, so a row on a stopClock sees them", fset.Position(call.Pos()), pkg.Name, sel.Sel.Name)
-			}
-			return true
-		})
-	}
-	if read == 0 {
-		t.Fatal("no non-test file of the package was read: the row saw nothing")
 	}
 }
 
