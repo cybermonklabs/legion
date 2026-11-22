@@ -47,6 +47,7 @@ if ! grep -qxF package/bin/dispatch <<<"$members"; then
   exit 1
 fi
 listing=$(tar -tvzf "${tgz[0]}" package/bin/dispatch)
+[[ $listing != l* ]] || { echo "::error::the packed Codex tarball's package/bin/dispatch is a link, not the file a terminal runs"; exit 1; }
 if [[ $listing != -??x??x??x* ]]; then
   echo "::error::the packed Codex tarball's package/bin/dispatch is not executable by every user: ${listing%% *}"
   exit 1

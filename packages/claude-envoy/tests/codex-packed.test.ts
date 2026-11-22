@@ -217,6 +217,18 @@ test("the release's check refuses a bin/dispatch not every user can run", async 
   )
 }, 60_000)
 
+test("the release's check refuses a bin/dispatch that is a link", async () => {
+  const tar = await variant("release-linked-bin", async (dir) => {
+    await rm(join(dir, "bin", "dispatch"))
+    await symlink(join("..", "dist", "dispatch.js"), join(dir, "bin", "dispatch"))
+  })
+  const result = await releaseCheck(tar, "linked-bin")
+  expect(result.exitCode).toBe(1)
+  expect(result.stdout).toContain(
+    "::error::the packed Codex tarball's package/bin/dispatch is a link, not the file a terminal runs",
+  )
+}, 60_000)
+
 test("the release's check refuses a manifest whose bin is not bin/dispatch", async () => {
   const tar = await variant("release-no-bin-field", async (dir) => {
     const manifest = JSON.parse(await readFile(join(dir, "package.json"), "utf8"))
@@ -227,5 +239,16 @@ test("the release's check refuses a manifest whose bin is not bin/dispatch", asy
   expect(result.exitCode).toBe(1)
   expect(result.stdout).toContain(
     "::error::the packed Codex tarball's package.json does not name bin/dispatch as its dispatch bin",
+  )
+}, 60_000)
+
+test("the release's check refuses a tarball without dist/dispatch.js", async () => {
+  const tar = await variant("release-without-dispatch-js", (dir) =>
+    rm(join(dir, "dist", "dispatch.js")),
+  )
+  const result = await releaseCheck(tar, "without-dispatch-js")
+  expect(result.exitCode).toBe(1)
+  expect(result.stdout).toContain(
+    "::error::the packed Codex tarball holds no package/dist/dispatch.js, which the installed plugin runs from",
   )
 }, 60_000)
