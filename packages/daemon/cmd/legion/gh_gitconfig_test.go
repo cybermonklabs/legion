@@ -275,7 +275,9 @@ func TestGhRepoGitConfigRefusalNamesWhatHandsTheTokenOn(t *testing.T) {
 // Handed on by its path under the script's own PATH, a wrapper that takes the first other git on
 // PATH as the real one took the script, and the two ran each other until the read's timeout. The
 // PATH is written into the script, since the refusal runs git with only the names gh keeps
-// (ghChildEnviron).
+// (ghChildEnviron). The read's bound, ghGitReadBound, is this binary's deadline here
+// (boundByTheDeadline): at a box load of about 1,100 that script and the git it runs took past the
+// product's 30 s, which the rows read as a refusal.
 func TestGhRepoGitConfigRefusalWithNoGitOrAnOldGit(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on this machine")
