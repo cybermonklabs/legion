@@ -2504,6 +2504,9 @@ SCRIPT_TEST_GATES = [
          "directory it is given (go-tagged-tests.sh:97), so a second serverchange test, a rename of that "
          "function or a compound //go:build line there changes what this step prints"),
     ]),
+    harness("ci_router_outputs_test", "Test the router outputs' label terms", f"{SCRIPTS}/ci-router-outputs.test.sh", [
+        (f"{SCRIPTS}/ci_router_outputs.py", "the script under test"),
+    ]),
     harness("ci_ok_test", "Test ci-ok's verdict", f"{SCRIPTS}/ci-ok.test.sh", [
         (f"{SCRIPTS}/ci-ok.sh", "the script under test"),
         (f"{SCRIPTS}/ci-ok.jq", "ci-ok.sh:173-232 runs its program with `jq -L \"$script_dir\"` and `include \"ci-ok\"`"),

@@ -120,7 +120,6 @@ done
 root=$(cd "$(dirname "$0")/../.." && pwd)
 check=setup
 timeout_hook=
-ok=
 ran=0
 passed=0
 selection=all
@@ -224,6 +223,8 @@ begin() { echo "== $1"; }
 . "$root/scripts/e2e/lib/rig.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/model-endpoint.sh
 . "$root/scripts/e2e/lib/model-endpoint.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/run-verdict.sh
+. "$root/scripts/e2e/lib/run-verdict.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/dispatch-identity.sh
 . "$root/scripts/e2e/lib/dispatch-identity.sh"
 
@@ -387,13 +388,13 @@ cleanup() {
   rm -rf "$work"
   [ -z "$measured_kill_latency" ] ||
     echo "   measured SIGKILL-to-gone latency: ${measured_kill_latency}s"
-  if [ -n "$ok" ] && [ "$ran" -eq "$passed" ] && [ "$status" -eq 0 ]; then
-    echo "envoy session states e2e: $ran checks ran, $passed passed — PASS ($selection, ${SECONDS}s, evidence: $evidence)"
-  else
-    [ "$status" -ne 0 ] || status=1
-    echo "envoy session states e2e: $ran checks ran, $passed passed — FAIL at $check ($selection, ${SECONDS}s, evidence: $evidence)" >&2
-  fi
-  exit "$status"
+  # The last line is lib/run-verdict.sh's: PASS only for a run that reached run_end, the script's
+  # last statement, with every check it ran passed. A failed check fails the run though it reached
+  # its end, since run_check goes on to the next check.
+  [ "$ran" -eq "$passed" ] || [ "$status" -ne 0 ] || status=1
+  run_verdict "$status" \
+    "envoy session states e2e: $ran checks ran, $passed passed — PASS ($selection, ${SECONDS}s, evidence: $evidence)" \
+    "envoy session states e2e: $ran checks ran, $passed passed — FAIL at $check ($selection, ${SECONDS}s, evidence: $evidence)"
 }
 trap 'cleanup "$?"' EXIT
 trap 'cleanup 130' INT
@@ -1793,4 +1794,4 @@ for name in "${selected[@]}"; do
   run_check "$name"
 done
 check=summary
-ok=1
+run_end
