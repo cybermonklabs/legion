@@ -103,17 +103,19 @@ func Main(m *testing.M) int { return Run(m.Run) }
 // that ends before run returns, on a test's panic or the -timeout's, drops nothing, and leaves
 // its database on the server under its prefix, as it left its tests' schemas before.
 //
-// The drops are bounded (teardownDeadline), as internal/dispatch/store/storetest's teardown is,
-// because a drop can wait for a reason outside this process: DROP DATABASE waits until every
-// backend of the server, in any database, has accepted the barrier it raises (wait event
-// IPC/ProcSignalBarrier), and a statement timeout does not end that wait (storetest measured it on
-// PostgreSQL 18.6), so a backend that cannot run holds every drop on the server for as long as it
-// cannot. The binary's own -timeout alarm stops when run returns, and cmd/go kills the binary a
-// minute past it. A drop still waiting at the bound is left to the server, which finishes it once
-// the backend it waits on accepts the barrier: Run reads what the drop waits on while it still
-// waits (waitingOn), names the database and that read, so a database the server keeps can be
-// dropped by hand, stops waiting, and keeps the tests' exit code, since every test has reported by
-// then and the wait is another backend's.
+// The wait for the drops is bounded (teardownDeadline), as internal/dispatch/store/storetest's
+// teardown is, because a drop can wait for a reason outside this process: DROP DATABASE waits until
+// every backend of the server, in any database, has accepted the barrier it raises (wait event
+// IPC/ProcSignalBarrier), so a backend that cannot run holds every drop on the server for as long
+// as it cannot. The binary's own -timeout alarm stops when run returns, and cmd/go kills the
+// binary a minute past it. No drop has a deadline of its own: a cancel request does end the
+// barrier wait, and ends the drop with it, leaving the database on the server (measured on
+// PostgreSQL 18.6 and 16). So each drop runs on context.Background(), and at the bound Run reads
+// what each drop still in flight waits on while it waits (waitingOn), names the database and that
+// read, and returns the tests' exit code, since every test has reported by then and the wait is
+// another backend's. The process's exit only closes the drops' sockets, which the server does not
+// read while a drop waits, so the server finishes each drop once the backend it waits on accepts
+// the barrier (measured on both).
 func Run(run func() int) int {
 	processDatabases.mu.Lock()
 	processDatabases.main = true
