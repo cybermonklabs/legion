@@ -405,7 +405,7 @@ func specNode(kind, address, project string, who model.Actor, at time.Time) grap
 func nodeLosses(problems []specgraph.Problem) []specgraph.Problem {
 	var losses []specgraph.Problem
 	for _, problem := range problems {
-		if problem.Effect != specgraph.KeepsEachNode {
+		if problem.LosesNode() {
 			losses = append(losses, problem)
 		}
 	}

@@ -579,6 +579,12 @@ func proposalsOf(read *model.ChangeRequestRead, request specchange.Request, appr
 	}
 	for _, problem := range append(slices.Clone(request.Problems), problems...) {
 		read.Problems = append(read.Problems, model.ChangeRequestProblem{Block: problem.Pos.File, Rule: problem.Rule, Detail: problem.Detail})
+		// A problem of form that keeps the node (a claim of two sentences) is listed, but proposes
+		// nothing and changes no check: the approval write reads it so too (specstore's nodeLosses),
+		// and a node it touches that does change is a proposal or a changed check of its own.
+		if !problem.LosesNode() {
+			continue
+		}
 		if strings.HasPrefix(problem.Pos.File, verification+"#") {
 			read.ChangesChecks = true
 		} else {

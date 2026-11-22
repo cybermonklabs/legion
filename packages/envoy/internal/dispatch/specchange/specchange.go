@@ -323,11 +323,13 @@ func Classify(request Request, approved specgraph.Approved) (changes []Change, s
 	return changes, stale, problems, nil
 }
 
-// VersionNode is the node one approved version of id holds, read from its printed block.
+// VersionNode is the node one approved version of id holds, read from its printed block. A problem
+// of form that keeps the node (a claim of two sentences) is no fault here: an approval writes such
+// a node as it stands (specstore's nodeLosses), so its version reads back as that node.
 func VersionNode(id string, version specgraph.ApprovedVersion) (any, error) {
 	tree, problems := specgraph.Parse(map[string][]byte{"approved": []byte(version.Block)})
 	nodes := NodesOf(tree)
-	if len(nodes) != 1 || len(problems) > 0 {
+	if len(nodes) != 1 || slices.ContainsFunc(problems, specgraph.Problem.LosesNode) {
 		return nil, fmt.Errorf("specchange: version %d of the approved node %s holds no one node: %v", version.Version, id, problems)
 	}
 	return nodes[0], nil

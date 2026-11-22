@@ -138,6 +138,13 @@ const (
 	KeepsEachNode
 )
 
+// LosesNode is whether p is a problem after which the tree may miss a node, or hold one in another
+// text than the files write: every problem but one whose Effect is KeepsEachNode, the zero Effect
+// included. A comparison with the approved spec reads only such a problem as a fault of the text.
+func (p Problem) LosesNode() bool {
+	return p.Effect != KeepsEachNode
+}
+
 // StatementByID is the first statement the tree holds with id, and whether it holds one.
 func (t Tree) StatementByID(id string) (Statement, bool) {
 	i := slices.IndexFunc(t.Statements, func(s Statement) bool { return s.ID == id })
