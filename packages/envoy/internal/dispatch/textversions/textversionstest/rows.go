@@ -101,6 +101,26 @@ func AwaitRows(t testing.TB, database *store.Store, ids []int64, within time.Dur
 	}
 }
 
+// AwaitRowsUntil waits until every event of ids has its one row, running each between reads when
+// it is set, bounded by the test binary's deadline alone (testwait.UntilPolling), whose failure
+// names the events and the count of rows it read last. The fill writes an event's row only once
+// the event horizon has passed the event, and the horizon waits on every transaction that holds
+// a transaction id on the whole Postgres instance (events.Horizon, "Costs"): a fixed span would
+// measure how long another package's test on the same server held one, not the fill.
+func AwaitRowsUntil(t *testing.T, database *store.Store, ids []int64, each func()) {
+	t.Helper()
+	testwait.UntilPolling(t, 50*time.Millisecond, fmt.Sprintf("one row of each of the events %v, the rows counted", ids), func() (int, bool) {
+		rows := RowsOf(t, database, ids...)
+		if rows == len(ids) {
+			return rows, true
+		}
+		if each != nil {
+			each()
+		}
+		return rows, false
+	})
+}
+
 // Cursor is the fill's cursor, the event its cursor row names, and 0 before the fill wrote the
 // row.
 func Cursor(t testing.TB, database *store.Store) int64 {
