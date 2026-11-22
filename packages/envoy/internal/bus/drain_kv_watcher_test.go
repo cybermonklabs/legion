@@ -90,6 +90,13 @@ func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
 			if got := strings.Join(warnOrErrorRecords(t, logs, name), ", "); got != want {
 				t.Fatalf("the drain logged %q, want %q", got, want)
 			}
+			// The end's own record that it ended the watcher, in every row: without it, a drain whose
+			// hook never ran the end, or whose end sent no delete, passes wherever nothing logs a WARN
+			// or an ERROR, which is every row once nats.go has replaced the held consumer. The record
+			// names no client, and no other test runs beside this one, so it is this watcher's.
+			if got := logs.count("", "drain-test watcher ended"); got != 1 {
+				t.Fatalf("the drain logged %d %q records, want 1: the drain hook did not end the watcher", got, "drain-test watcher ended")
+			}
 			if consumers := consumerNames(t, admin, "KV_drain_kv_watcher"); len(consumers) != 0 && !replaced {
 				t.Fatalf("consumers after the drain = %v, want none", consumers)
 			}
