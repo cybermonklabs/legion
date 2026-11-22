@@ -13,6 +13,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"net/url"
 	"os"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // DatabaseURLEnv names the Postgres server the broker's tests run against.
@@ -180,27 +182,24 @@ type Querier interface {
 }
 
 // AwaitLockWaiters waits until n backends wait on a lock behind holder's backend and answers their
-// pids, failing t after ten seconds. A backend counts when it waits on a lock (wait_event_type
-// 'Lock') that holder's backend holds, or that a backend already counted holds or is ahead of it
-// in the queue for: a second waiter for one row waits on the first waiter's tuple lock, and
-// pg_blocking_pids names only that first waiter, never the holder. Waiters behind other holders,
-// in other tests on the same server, never count.
-func AwaitLockWaiters(t testing.TB, q Querier, holder pgx.Tx, n int) []uint32 {
+// pids. It waits through testwait.Until, so its one bound is the test binary's deadline less
+// testwait's margin, and a wait that gives up prints the waiters it read last. A backend counts
+// when it waits on a lock (wait_event_type 'Lock') that holder's backend holds, or that a backend
+// already counted holds or is ahead of it in the queue for: a second waiter for one row waits on
+// the first waiter's tuple lock, and pg_blocking_pids names only that first waiter, never the
+// holder. Waiters behind other holders, in other tests on the same server, never count.
+func AwaitLockWaiters(t *testing.T, q Querier, holder pgx.Tx, n int) []uint32 {
 	t.Helper()
 	pid := holder.Conn().PgConn().PID()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	waiting := testwait.Until(t, fmt.Sprintf("%d backends to wait on a lock behind %d", n, pid), func() ([]int32, bool) {
 		waiting := LockWaitersBehind(t, q, pid)
-		if len(waiting) >= n {
-			pids := make([]uint32, len(waiting))
-			for i, w := range waiting {
-				pids[i] = uint32(w)
-			}
-			return pids
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d backends waited on a lock behind %d, want %d", len(waiting), pid, n)
-		}
+		return waiting, len(waiting) >= n
+	})
+	pids := make([]uint32, len(waiting))
+	for i, w := range waiting {
+		pids[i] = uint32(w)
 	}
+	return pids
 }
 
 // LockWaitersBehind is every backend that waits on a lock behind pid's backend, read once and in

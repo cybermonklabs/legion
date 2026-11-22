@@ -1229,12 +1229,25 @@ approve_watch() { # <the file the CLI's stderr goes to>
 # login.microsoftonline.com whether this cloud's authority is a Microsoft one, and the answer
 # for a stand-in authority is and must be no. It is the one call of az's a stand cannot answer,
 # since it is made to Microsoft's own host and about the stand rather than to it.
+#
+# It records the az it wraps, REAL_AZ, as `command -v az` names it, and the PATH it was found on,
+# K6_AZ_PATH, which k6_azure puts the wrapper's directory in front of. Every call the wrapper makes
+# to REAL_AZ runs on K6_AZ_PATH again, not on the PATH the wrapper was handed. On a box whose az
+# on PATH is a shim (a version manager's, which looks az up on PATH again once its own directory
+# is out of the way), REAL_AZ is that shim, and on the wrapper's PATH the next az the shim finds
+# is this wrapper: the two would hand each call to each other for good, and the cloud register
+# below would start a new pair at each turn. On K6_AZ_PATH the shim finds the az it stands for.
 k6_azure_wrapper() {
+	REAL_AZ="$(command -v az)"
+	K6_AZ_PATH="$PATH"
+	local real_path
+	printf -v real_path %q "$K6_AZ_PATH"
 	mkdir -p "$WORK_DIR/k6/bin"
 	cat >"$WORK_DIR/k6/bin/az" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 export AZURE_CORE_INSTANCE_DISCOVERY=false
+export PATH=$real_path
 if [ -n "\${AZURE_CONFIG_DIR:-}" ] && [ ! -f "\$AZURE_CONFIG_DIR/clouds.config" ]; then
   "$REAL_AZ" cloud register -n airlock --skip-endpoint-discovery \\
     --endpoint-active-directory "$AIRLOCK_MICROSOFT_URL" \\
@@ -1261,7 +1274,6 @@ k6_azure() {
 		return 1
 	}
 	chmod +x "$d/az-broker"
-	REAL_AZ="$(command -v az)"
 	k6_azure_wrapper
 
 	local microsoft_before
@@ -1289,7 +1301,7 @@ EOF
 	: >"$d/runs.log"
 	for run in 1 2 3 4 5; do
 		echo "=== run $run ===" >>"$d/runs.log"
-		PATH="$d/bin:$PATH" agent-secrets AIRLOCK_AZURE_LOGIN --ttl 1h --wait 5m \
+		PATH="$d/bin:$K6_AZ_PATH" agent-secrets AIRLOCK_AZURE_LOGIN --ttl 1h --wait 5m \
 			--reason "airlock check k6 run $run: az-broker logs az in and calls the Resource Manager" -- sh -c '
 			export AZURE_ADMIN="$AIRLOCK_AZURE_LOGIN" AZ_BROKER_INNER=1
 			exec bash '"$d"'/az-broker -- bash '"$d"'/az-steps.sh' >>"$d/runs.log" 2>>"$d/cli.err"

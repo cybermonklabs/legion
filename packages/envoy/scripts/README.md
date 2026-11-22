@@ -252,7 +252,9 @@ broker reads its input's name by (lower-cased, each underscore a hyphen). These 
 identify the consumer's existing broker names and account; they do not rename the
 operator's logins. `bash packages/envoy/scripts/airlock-check.test.sh` calls the k7
 fixture and Google consumer boundary directly under fakes. It checks required inputs,
-fake broker rules, store names and consumer results without starting a stack.
+fake broker rules, store names and consumer results without starting a stack, k8a's
+broker start on its own, and k6's az wrapper with an az shim first on PATH (a shim that
+looks az up on PATH again must reach the real az, not the wrapper).
 
 The programs the checks drive are files, not text a run writes out. The three Go
 clients are subcommands of `cmd/dev-proxy-stands`, the binary `dev-broker.sh`

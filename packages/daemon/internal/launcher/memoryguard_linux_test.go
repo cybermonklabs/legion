@@ -97,8 +97,7 @@ func TestMemoryGuardOnRealRoleNamespaces(t *testing.T) {
 			_ = initProcess.Wait()
 		}
 	})
-	bound := testwait.Bounded(t, time.Minute, time.Second)
-	if err := readyRead.SetReadDeadline(time.Now().Add(bound)); err != nil {
+	if err := readyRead.SetReadDeadline(time.Now().Add(testwait.Remaining(t))); err != nil {
 		t.Fatal(err)
 	}
 	if line, err := bufio.NewReader(readyRead).ReadString('\n'); err != nil || line != "ready\n" {
@@ -156,7 +155,7 @@ func TestMemoryGuardOnRealRoleNamespaces(t *testing.T) {
 	var kill memoryguard.Kill
 	select {
 	case kill = <-kills:
-	case <-time.After(bound):
+	case <-time.After(testwait.Remaining(t)):
 		t.Fatalf("the guard ended nothing; its log:\n%s", lines.String())
 	}
 	if kill.PID != holder || kill.Role != "tester" || kill.SizeBytes < memoryGuardHeld {
@@ -177,7 +176,7 @@ func TestMemoryGuardOnRealRoleNamespaces(t *testing.T) {
 		t.Fatalf("the classifier says %+v of the role-init, want the tester's, protected, a process of its session", initClass)
 	}
 
-	if err := statusRead.SetReadDeadline(time.Now().Add(bound)); err != nil {
+	if err := statusRead.SetReadDeadline(time.Now().Add(testwait.Remaining(t))); err != nil {
 		t.Fatal(err)
 	}
 	line, err := bufio.NewReader(statusRead).ReadString('\n')
