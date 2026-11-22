@@ -2146,7 +2146,9 @@ nothing early: the queue takes its pull request out only once the groups in fron
 ended, and a failing ci-ok makes the queue count the group as no longer building and build
 another on it, which built 41 groups in 28 minutes behind one broken entry on 2026-11-22
 (.github/scripts/ci-ok-report.sh's header). Its run's ci-ok job posts its verdict at the end of
-the run.
+the run. The cost: when the groups in front end before that run does, the entry leaves at the
+run's end, or when a later job of the run fails once the group is the front, rather than the
+moment the groups in front end.
 
 The job follows these rules:
   * it runs only on `merge_group` and only on attempt 1

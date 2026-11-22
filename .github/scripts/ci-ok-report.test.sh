@@ -239,6 +239,15 @@ check "posts nothing" "$(is "$(posted)" 0)"
 check "says the group stands behind the front" \
   "$(contains "$out" '^typecheck ended success (changes ended failure) on a merge-group run whose group stands behind the front')"
 
+echo "case: a changes its time limit cancelled, in a group behind the front of the queue"
+jobs typecheck=in_progress lint=in_progress
+behind
+run_report '{"result": "cancelled", "outputs": {}}' merge_group success
+check "exits 0" "$(is "$status" 0)"
+check "posts nothing" "$(is "$(posted)" 0)"
+check "says the group stands behind the front" \
+  "$(contains "$out" '^typecheck ended success (changes ended cancelled) on a merge-group run whose group stands behind the front')"
+
 echo "case: a failure whose group's place in the queue GitHub will not tell"
 # The tip is read three times, then the group is treated as the front and the post goes up, as
 # every other refusal here prefers the failing verdict: a front group with no early post would
