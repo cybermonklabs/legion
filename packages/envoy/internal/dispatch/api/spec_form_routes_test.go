@@ -397,7 +397,15 @@ func TestTheNearestNamedRootDecides(t *testing.T) {
 		createFormIssue(t, tree.handler, "", filler, "# Filler\n\n"+filler+".\n")
 	}
 	inner := createFormIssue(t, tree.handler, tree.root, "The inner root", formFaults[0].document(formFaults[0].broken))
+	// An issue born under a parent that holds requirements and is not done is a view on that
+	// parent's spec and holds no requirement of its own (REQUIREMENT_BELONGS_TO_ANCESTOR), so the
+	// inner root is done while its child, whose spec holds a requirement, is created under it. It
+	// is reopened after, since the approval request below is opened on its spec.
+	closeIssue(t, tree.handler, inner.Key)
 	leaf := createFormIssue(t, tree.handler, inner.Key, "Under the inner root", formFaults[0].document(formFaults[0].clean))
+	if response := dispatchRequest(t, tree.handler, http.MethodPatch, "/api/v1/issues/"+inner.Key, map[string]string{"status": "todo"}, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("reopen %s: status=%d body=%s", inner.Key, response.Code, response.Body.String())
+	}
 	if inner.Key != "ACME-5" || leaf.Key != "ACME-6" {
 		t.Fatalf("the inner root and its child are %s and %s, want ACME-5 and ACME-6", inner.Key, leaf.Key)
 	}
