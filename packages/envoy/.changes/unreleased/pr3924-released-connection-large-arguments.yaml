@@ -1,0 +1,5 @@
+kind: Fixed
+body: |-
+  `envoy-dispatch` no longer keeps a statement's large arguments (over 64 KiB) on a pooled
+  connection after the connection is released. Before, each of up to 64 connections could hold its
+  last large write in memory for up to 30 minutes while it was idle.
