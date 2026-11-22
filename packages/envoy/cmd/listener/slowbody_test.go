@@ -27,11 +27,11 @@ type slowBodyPublisher struct {
 	published []contracts.Envelope
 }
 
-func (p *slowBodyPublisher) PublishWithin(_ context.Context, e contracts.Envelope) error {
+func (p *slowBodyPublisher) PublishReportingDuplicateWithin(_ context.Context, e contracts.Envelope) (bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.published = append(p.published, e)
-	return nil
+	return false, nil
 }
 
 type noCI struct{}

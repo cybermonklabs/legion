@@ -741,7 +741,8 @@ func TestAGitHubDeliveryTheFullStreamRefusedIsStoredOnARedeliveryOnceTheStreamHa
 	}
 
 	// Another delivery the full stream refused, asked for again once the stream has room: the
-	// redelivery is stored, so the listener answers 200 and logs nothing.
+	// redelivery is stored, so the listener answers 200 and logs no failure, only the line naming
+	// the stored publish.
 	stored := envelope("d-room", "stored")
 	if status, lines = post("d-room", "stored"); status != http.StatusServiceUnavailable || len(lines) != 1 {
 		t.Fatalf("the delivery into the full stream answered %d and logged %v, want 503 and one counted line", status, lines)
@@ -749,8 +750,9 @@ func TestAGitHubDeliveryTheFullStreamRefusedIsStoredOnARedeliveryOnceTheStreamHa
 	if err := js.PurgeStream(bus.Stream); err != nil {
 		t.Fatalf("purge the stream: %v", err)
 	}
-	if status, lines = post("d-room", "stored"); status != http.StatusOK || len(lines) != 0 {
-		t.Fatalf("after the purge, the redelivery answered %d and logged %v, want 200 and no line", status, lines)
+	if status, lines = post("d-room", "stored"); status != http.StatusOK || len(lines) != 1 ||
+		!strings.HasPrefix(lines[0], "github published delivery=d-room ") || !strings.HasSuffix(lines[0], " result=stored") {
+		t.Fatalf("after the purge, the redelivery answered %d and logged %v, want 200 and its one github published line, stored", status, lines)
 	}
 	info, err := js.StreamInfo(bus.Stream)
 	if err != nil {

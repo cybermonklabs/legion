@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -35,8 +36,8 @@ func (b *recordingBus) publish(item contracts.Envelope) error {
 
 func (b *recordingBus) Publish(item contracts.Envelope) error { return b.publish(item) }
 
-func (b *recordingBus) PublishWithin(_ context.Context, item contracts.Envelope) error {
-	return b.publish(item)
+func (b *recordingBus) PublishReportingDuplicateWithin(_ context.Context, item contracts.Envelope) (bool, error) {
+	return false, b.publish(item)
 }
 
 // topics are the topics the bus was handed, in order, which is what a fan-out case states.
@@ -49,15 +50,16 @@ func (b *recordingBus) topics() []string {
 }
 
 // publishMethods are the two one-method interfaces a *Publisher satisfies, so every case runs
-// through both: the webhook handlers hold PublishWithin and the CI summary loop holds Publish, and
-// the two must fan out alike.
+// through both: the webhook handlers hold PublishReportingDuplicateWithin and the CI summary loop
+// holds Publish, and the two must fan out alike.
 var publishMethods = []struct {
 	name    string
 	publish func(*Publisher, contracts.Envelope) error
 }{
 	{"Publish", func(p *Publisher, item contracts.Envelope) error { return p.Publish(item) }},
-	{"PublishWithin", func(p *Publisher, item contracts.Envelope) error {
-		return p.PublishWithin(context.Background(), item)
+	{"PublishReportingDuplicateWithin", func(p *Publisher, item contracts.Envelope) error {
+		_, err := p.PublishReportingDuplicateWithin(context.Background(), item)
+		return err
 	}},
 }
 
@@ -95,6 +97,49 @@ func mustParse(t *testing.T, value string) Renames {
 		t.Fatalf("Parse(%q) refused the value: %v, want the pairs it holds", value, err)
 	}
 	return renames
+}
+
+// duplicateBus answers every publish to the topics in held as a duplicate, as a stream that holds
+// their message id already does.
+type duplicateBus struct {
+	recordingBus
+	held []string
+}
+
+func (b *duplicateBus) PublishReportingDuplicateWithin(ctx context.Context, item contracts.Envelope) (bool, error) {
+	_, err := b.recordingBus.PublishReportingDuplicateWithin(ctx, item)
+	return slices.Contains(b.held, item.Topic), err
+}
+
+// The webhook logs, for each envelope it hands over, whether the stream already held it, so the
+// publisher answers the envelope's own publish and not its copy's: a copy under the former name
+// the stream held already does not make a new envelope a duplicate, nor the other way round.
+func TestPublisherAnswersWhetherTheStreamHeldTheEnvelopeItself(t *testing.T) {
+	const (
+		current = "notifications.github.cybermonklabs.legion.pr.7706"
+		former  = "notifications.github.sjawhar.legion.pr.7706"
+	)
+	for _, c := range []struct {
+		name string
+		held []string
+		want bool
+	}{
+		{"neither held", nil, false},
+		{"the envelope held", []string{current}, true},
+		{"only the copy held", []string{former}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			bus := &duplicateBus{held: c.held}
+			p := Publishing(bus, mustParse(t, "sjawhar/legion=cybermonklabs/legion"), nil)
+			duplicate, err := p.PublishReportingDuplicateWithin(context.Background(), testEnvelope(current))
+			if err != nil || duplicate != c.want {
+				t.Fatalf("PublishReportingDuplicateWithin = %v, %v; want %v", duplicate, err, c.want)
+			}
+			if got := bus.topics(); !slices.Equal(got, []string{current, former}) {
+				t.Fatalf("published %v, want the envelope and its copy", got)
+			}
+		})
+	}
 }
 
 // TestPublisherFansOutToTheFormerName covers which topics a publish puts on the bus and in which

@@ -15,11 +15,11 @@ type mockPublisher struct {
 	err       error
 }
 
-func (m *mockPublisher) PublishWithin(_ context.Context, item contracts.Envelope) error {
+func (m *mockPublisher) PublishReportingDuplicateWithin(_ context.Context, item contracts.Envelope) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.published = append(m.published, item)
-	return m.err
+	return false, m.err
 }
 
 // mockRecorder records CIRecorder calls for test assertions.

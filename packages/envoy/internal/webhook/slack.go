@@ -63,7 +63,7 @@ func SlackHandler(secret string, publisher Publisher) http.HandlerFunc {
 				if err := item.Validate(); err != nil {
 					continue
 				}
-				if err := publisher.PublishWithin(ctx, item); err != nil {
+				if _, err := publisher.PublishReportingDuplicateWithin(ctx, item); err != nil {
 					deliveryFailed(w, "slack publish", err)
 					return
 				}

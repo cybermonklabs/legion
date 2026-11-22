@@ -138,10 +138,15 @@ func githubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publi
 			http.Error(w, "invalid json", http.StatusBadRequest)
 			return
 		}
+		// The hook target is the resource whose webhook sent the delivery: for an App's webhook,
+		// integration and the App's id, so a line that names it says which App delivered.
+		targetType := r.Header.Get("X-GitHub-Hook-Installation-Target-Type")
+		targetID := r.Header.Get("X-GitHub-Hook-Installation-Target-ID")
 		if githubEvent(event) {
-			log.Printf("github sender login=%s type=%s delivery=%s event=%s",
+			log.Printf("github sender login=%s type=%s target_type=%s target_id=%s delivery=%s event=%s",
 				githubSenderField(payload, "login"),
 				githubSenderField(payload, "type"),
+				targetType, targetID,
 				delivery, event)
 		}
 		// Records and publishes end with the request and at its write deadline (extendDeadlines).
@@ -188,15 +193,22 @@ func githubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publi
 			EventID:  id.New(),
 			TraceID:  id.New(),
 		}, trigger)
+		action, _ := payload["action"].(string)
 		for _, item := range items {
 			if err := item.Validate(); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			if err := publisher.PublishWithin(answer, item); err != nil {
+			duplicate, err := publisher.PublishReportingDuplicateWithin(answer, item)
+			if err != nil {
 				failures.deliveryFailed(w, delivery, "github publish", err)
 				return
 			}
+			// One line for each topic: which App's webhook delivered which event under which key,
+			// and whether the stream stored it or already held that key, so the copies two Apps
+			// deliver of one event can be told apart and counted.
+			log.Printf("github published delivery=%s event=%s action=%s topic=%s key=%s target_id=%s result=%s",
+				delivery, event, action, item.Topic, item.DedupeKey, targetID, publishResult(duplicate))
 		}
 		if len(items) > 1 {
 			log.Printf("github mention detected delivery=%s trigger=%s", delivery, strings.TrimSpace(trigger))
@@ -204,6 +216,14 @@ func githubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publi
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	}
+}
+
+// publishResult is how a `github published` line names the stream's answer to one publish.
+func publishResult(duplicate bool) string {
+	if duplicate {
+		return "duplicate"
+	}
+	return "stored"
 }
 
 // extendDeadlines moves this request's connection deadlines from the server's to the route's own,

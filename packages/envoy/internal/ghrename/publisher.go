@@ -12,11 +12,11 @@ import (
 // not imported from internal/bus, so that this package stays free of the bus and of everything the
 // bus pulls in: a rename is a fact about subjects, and the one thing it needs of a bus is that it
 // takes an envelope. The two methods are the two one-method publisher interfaces this package's
-// callers hold — webhook.Publisher (PublishWithin, the webhook handlers) and cistore.Publisher
-// (Publish, the CI summary loop) — so one *Publisher satisfies both.
+// callers hold — webhook.Publisher (PublishReportingDuplicateWithin, the webhook handlers) and
+// cistore.Publisher (Publish, the CI summary loop) — so one *Publisher satisfies both.
 type Bus interface {
 	Publish(contracts.Envelope) error
-	PublishWithin(context.Context, contracts.Envelope) error
+	PublishReportingDuplicateWithin(context.Context, contracts.Envelope) (bool, error)
 }
 
 // Publisher is a Bus that publishes each GitHub envelope a second time under the former name of the
@@ -72,21 +72,27 @@ func (p *Publisher) Publish(item contracts.Envelope) error {
 	return p.bus.Publish(item)
 }
 
-// PublishWithin publishes item, then its copy under the former name, each within ctx. It is
+// PublishReportingDuplicateWithin publishes item, then its copy under the former name, each within
+// ctx, and answers whether the stream already held item itself: the copy's answer is the same
+// event's under another name, and the webhook logs the envelope it handed over. It is
 // webhook.Publisher.
 //
 // A copy that fails to publish fails the publish, and its error is the one returned: see Publish
 // for why that failure is not swallowed.
-func (p *Publisher) PublishWithin(ctx context.Context, item contracts.Envelope) error {
-	if err := p.bus.PublishWithin(ctx, item); err != nil {
-		return err
+func (p *Publisher) PublishReportingDuplicateWithin(ctx context.Context, item contracts.Envelope) (bool, error) {
+	duplicate, err := p.bus.PublishReportingDuplicateWithin(ctx, item)
+	if err != nil {
+		return false, err
 	}
 	former, ok := p.formerTopic(item.Topic)
 	if !ok {
-		return nil
+		return duplicate, nil
 	}
 	item.Topic = former
-	return p.bus.PublishWithin(ctx, item)
+	if _, err := p.bus.PublishReportingDuplicateWithin(ctx, item); err != nil {
+		return false, err
+	}
+	return duplicate, nil
 }
 
 // formerTopic is topic under the former name of the repository it names, and whether there is such

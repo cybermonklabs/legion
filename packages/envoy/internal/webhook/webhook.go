@@ -12,10 +12,12 @@ import (
 )
 
 // Publisher publishes a webhook's envelopes, each within the context its handler gives it, which
-// carries the request's own end and the route's budget for its caller (*bus.Client.PublishWithin,
-// which also keeps the bus's own five-second bound).
+// carries the request's own end and the route's budget for its caller
+// (*bus.Client.PublishReportingDuplicateWithin, which also keeps the bus's own five-second bound),
+// and answers whether the stream already held the envelope under its Nats-Msg-Id, so stored
+// nothing new. The GitHub route logs that answer for each topic (`github published`).
 type Publisher interface {
-	PublishWithin(context.Context, contracts.Envelope) error
+	PublishReportingDuplicateWithin(context.Context, contracts.Envelope) (bool, error)
 }
 
 // deliveryFailed answers a delivery whose envelope the listener did not publish, and logs
