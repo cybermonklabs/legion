@@ -503,9 +503,14 @@ func TestRuleTwoReadsTheStatementsTheCodeMade(t *testing.T) {
 // A statement of a window that the rig could not read whole is a rig problem: rule 2 would weigh
 // the gaps against its time on the clock, where its clocks were not read at both ends, or with the
 // runtime's wait inside it, where the trace does not show its goroutine by its start - each of
-// which a loaded machine stretches. Here the write's thread ran 1 ms of its 10 ms and slept the
-// rest, and the 3 ms gap after it is the code's CPU. Read either way, the write holds 10 ms, so the
-// window keeps rule 2 and breaks no rule; the problem is all that stops the run passing on it.
+// which a loaded machine stretches. A gap's own check covers the start of every statement but the
+// first and the end of every statement but the last, so the first statement's start and the last
+// one's end are this check's alone. In the first two cases the write's thread ran 1 ms of its
+// 10 ms and slept the rest; in the third the write ran 1 ms and the COMMIT took 9 ms whose end was
+// not read. The 3 ms gap between them is the code's CPU. Read so, the statements hold at least
+// 10 ms, so the window keeps rule 2 and breaks no rule; the problem is all that stops the run
+// passing on it. A tester's plant at 65c9bcb34f that left the last statement out of the check
+// passed every xid row.
 func TestAStatementTheRigCouldNotReadIsUnknown(t *testing.T) {
 	RequireXidGapJudgment(t)
 	base := time.Now()
@@ -514,22 +519,26 @@ func TestAStatementTheRigCouldNotReadIsUnknown(t *testing.T) {
 		return xidThreadClock{thread: 7, at: base.Add(ms(at)), ran: ms(ran)}
 	}
 	for _, test := range []struct {
-		name    string
-		started xidThreadClock
-		reading *xidTraceReading
-		want    string
+		name                             string
+		started                          xidThreadClock
+		writeEnd, commitStart, commitEnd float64
+		ended                            xidThreadClock
+		reading                          *xidTraceReading
+		want                             string
 	}{
-		{"its clocks unread at its start", xidThreadClock{}, xidLockedRunsFrom(base, 0),
+		{"its clocks unread at its start", xidThreadClock{}, 10.2, 13.2, 13.3, clock(13.3, 4.2), xidLockedRunsFrom(base, 0),
 			"statement 0 of backend 7's window (insert into projects values (1)) was not read off one thread's clocks at its start and end"},
-		{"its goroutine first traced after its start", clock(0.2, 0.1), xidLockedRunsFrom(base, 5),
+		{"its goroutine first traced after its start", clock(0.2, 0.1), 10.2, 13.2, 13.3, clock(13.3, 4.2), xidLockedRunsFrom(base, 5),
 			"statement 0 of backend 7's window (insert into projects values (1)) was not read off the execution trace"},
+		{"the COMMIT's clocks unread at its end", clock(0.2, 0.1), 1.2, 4.2, 13.2, xidThreadClock{}, xidLockedRunsFrom(base, 0),
+			"statement 1 of backend 7's window (commit) was not read off one thread's clocks at its start and end"},
 	} {
 		statements := []XidStatement{
 			{PID: 7, SQL: "begin", Marked: true, locked: 7, Start: base, End: base.Add(ms(0.1)), started: clock(0, 0), ended: clock(0.1, 0.1)},
 			{PID: 7, SQL: "insert into projects values (1)", Marked: true, Wrote: true, locked: 7,
-				Start: base.Add(ms(0.2)), End: base.Add(ms(10.2)), started: test.started, ended: clock(10.2, 1.1)},
+				Start: base.Add(ms(0.2)), End: base.Add(ms(test.writeEnd)), started: test.started, ended: clock(test.writeEnd, 1.1)},
 			{PID: 7, SQL: "commit", Marked: true, locked: 7,
-				Start: base.Add(ms(13.2)), End: base.Add(ms(13.3)), started: clock(13.2, 4.1), ended: clock(13.3, 4.2)},
+				Start: base.Add(ms(test.commitStart)), End: base.Add(ms(test.commitEnd)), started: clock(test.commitStart, 4.1), ended: test.ended},
 		}
 		report := analyzeXidWindows(statements, nil, 0, test.reading)
 		if len(report.Windows) != 1 || len(report.Windows[0].Violations()) != 0 {
