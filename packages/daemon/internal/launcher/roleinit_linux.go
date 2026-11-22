@@ -473,7 +473,7 @@ func carryOver(cfg RoleInitConfig, dir, stage string, place func() error) error 
 		return err
 	}
 	// mountsUnder lists a mount above another first.
-	var carried []string
+	carried := mounts[:0]
 	for _, mount := range mounts {
 		if !slices.ContainsFunc(carried, func(outer string) bool { return strings.HasPrefix(mount, outer+"/") }) {
 			carried = append(carried, mount)
