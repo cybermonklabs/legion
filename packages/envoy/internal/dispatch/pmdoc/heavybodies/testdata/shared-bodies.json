@@ -75,6 +75,11 @@
       "why": "Go's Shape \"49 list markers on one line then blank lines\" was heavy-bodies.ts's nested49ThenBlankLines, which only the deleted heavy-document-writes.e2e.ts drew (INFRA-1404). heavy-bodies.e2e.ts's own 49-marker row builds its body inline, 49 markers padded to one character under the parse worker's threshold rather than to the 32,000-character body cap, so that is a different body and not this one respelled. What gates this one is pmdoc's TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinTheirStepsAndBytesPerCharacter and the API's TestHeavyDocumentWriteVerdicts."
     },
     {
+      "id": "footnote-references-then-definitions",
+      "side": "go",
+      "why": "Go's Shape \"1,523 footnote references and then their definitions\" froze no browser tab: it is held for the server's parse, whose footnote references goldmark resolves by walking the definitions before each one's (INFRA-3904), so no browser row draws it. What gates it is pmdoc's TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinTheirStepsAndBytesPerCharacter and the API's TestHeavyDocumentWriteVerdicts."
+    },
+    {
       "id": "nested-100-items-then-text-lines",
       "side": "typescript",
       "why": "heavy-bodies.ts's nestedThenTextLines - 100 items nested by indentation, then lines of text rather than blank lines - is drawn in the browser only (heavy-bodies.e2e.ts). No Shape spells it, and none of the document-write rows this change moved into Go wrote it, so Go would be gating a body no writer here sends."

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/reearth/ygo/crdt"
 
@@ -24,20 +25,24 @@ import (
 // lines that carry no marker of their own; a run of brackets; 49 items nested by indentation and
 // then blank lines, and 100 items nested the same way; 49 markers on one line and then blank
 // lines; a chain of list markers on one line; and a typed fence whose label opens a run of
-// brackets. Each is stored or refused here as it is written to be, and six
-// of the nine are the very same bytes the browser suite draws in a page (e2e/heavy-bodies.ts,
-// held to these by heavybodies/testdata/shared-bodies.json), so the two read one body, not two.
+// brackets. A tenth, footnote references and then their definitions, is the body whose
+// references goldmark resolves by walking the definitions (heavybodies.Shapes has why). Each is
+// stored or refused here as it is written to be, and six of the ten are the very same bytes the
+// browser suite draws in a page (e2e/heavy-bodies.ts, held to these by
+// heavybodies/testdata/shared-bodies.json), so the two read one body, not two.
 //
 // The shapes themselves are heavybodies.Shapes (pmdoc/heavybodies), not this file: the API's own
 // test of the verdict each write gets reads the same bodies from there, and a _test.go file of
 // this package cannot be imported (INFRA-1404).
 //
-// Each shape is asserted four ways: the verdict a write of it gets; the work the parse does on it,
+// Each shape is asserted five ways: the verdict a write of it gets; the work the parse does on it,
 // no more than a bound for each of its characters (parseStatementsPerCharacter,
-// parseBytesPerCharacter); and, for every stored shape, growth of that work in proportion to its
+// parseBytesPerCharacter); for every stored shape, growth of that work in proportion to its
 // length, counted at an eighth of what it grows to and then at the whole of it
 // (workGrowsLinearly, below) - of the parse alone, and of the parse, the write of the document a
-// write makes of the body and its encode together.
+// write makes of the body and its encode together; and the CPU time of each of those calls, and
+// of a stored shape's parse at cpuCheckLength times its length, under a ceiling for each
+// character (cpuCeilingPerCharacter).
 //
 // The work is two counts, which no load on the machine, no race detector and no collection moves:
 //
@@ -51,39 +56,48 @@ import (
 //   - The bytes the call allocates on the heap (workOf), which reach allocation anywhere in the
 //     call, the packages no counter is built into among them.
 //
-// The Playwright spec that wrote eight of these nine shapes through the API held each write to a
-// second and to nothing about its growth: a ratio between two wall times a shared CI runner took,
-// a doubling of the body apart, cannot separate a regression from the runner's own noise, which
-// is what made that bound fail at random (INFRA-985). This file then held each shape to a second
-// of this process's CPU time and each growth to a ratio of two CPU times with the collector
-// stopped, and those failed at random too (INFRA-3904): a race-detector run of every envoy
-// package at a load of about 200 spent 1.179 s of CPU time on the plain list, and in a pod whose
-// parse ran faster than another's a timed window held more runs, whose allocations reached the
-// window's memory limit and ran a collection inside it, which the window refuses. The verdict each
-// write gets is gated in internal/dispatch/api (TestHeavyDocumentWriteVerdicts), and six of the
-// nine bodies keep the browser's own second in the browser suite - the longest a card's draw may
+// The counts do not see work inside a call into a package no counter is built into, which counts
+// as the one statement that calls it: the standard library (a bytes.IndexByte over the whole
+// source is one statement), and goldmark's extension package, whose counters change what it reads
+// (with them, the census probe's 254 texts lose 22 more to refusals, and one read panics in
+// lazyTableRows, table.go:457, at main too). The one scan of the whole source a parse makes,
+// whether it holds a tab, reads in runs of 64 bytes so the counts see it (holdsTab, lines.go).
+// That work is held by its CPU time instead: CPU time grows with the work the process does and not
+// with the time it waits for a core, so a ceiling ten times the most measured under load holds a
+// cost that has grown with a body's square by that much, where a load cannot reach it.
+//
+// The Playwright spec that wrote eight of these shapes through the API held each write to a second
+// and to nothing about its growth: a ratio between two wall times a shared CI runner took, a
+// doubling of the body apart, cannot separate a regression from the runner's own noise, which is
+// what made that bound fail at random (INFRA-985). This file then held each shape to a second of
+// this process's CPU time and each growth to a ratio of two CPU times with the collector stopped,
+// and those failed at random too (INFRA-3904): a race-detector run of every envoy package at a
+// load of about 200 spent 1.179 s of CPU time on the plain list, past its second, and in a pod
+// whose parse ran faster than another's a timed window held more runs, whose allocations reached
+// the window's memory limit and ran a collection inside it, which the window refuses. The verdict
+// each write gets is gated in internal/dispatch/api (TestHeavyDocumentWriteVerdicts), and six of
+// the bodies keep the browser's own second in the browser suite - the longest a card's draw may
 // hold the page's main thread (longestHoldMs, packages/dispatch/e2e/main-thread-hold.ts).
 //
-// What the counts do not hold:
-//
-//   - Work inside a call into a package no counter is built into, which counts as the one
-//     statement that calls it: the standard library (a bytes.IndexByte over the whole source is
-//     one statement), and goldmark's extension package, whose counters change what it reads (with
-//     them, 22 more of the fixture texts are refused and one read panics in lazyTableRows). The
-//     one scan of the whole source a parse makes, whether it holds a tab, is read in runs of 64
-//     bytes for that reason (holdsTab, lines.go).
-//   - Bytes that grow with the square of a body while they are still few beside the parse's own:
-//     the parse allocates hundreds to thousands of bytes a character, so a growth past linearSlack
-//     shows only once such bytes at an eighth of the cap pass about two fifths of the parse's own
-//     there (countGrowthVerdict's bound), and past parseBytesPerCharacter only once they pass it.
+// Bytes that grow with the square of a body while they are still few beside the parse's own pass
+// the counts: the parse allocates hundreds to thousands of bytes a character, so a growth past
+// linearSlack shows only once such bytes at an eighth of the cap pass about two fifths of the
+// parse's own there (countGrowthVerdict's bound), and past parseBytesPerCharacter only once they
+// pass it.
 //
 // The counted build reads the packages it counts from their files on disk: a coverage build does
 // not apply -overlay to the packages it puts counters in (go 1.27.3), so a change made through an
-// overlay reaches the verdicts and the bytes here and not the statements. Make it in the tree.
+// overlay reaches the verdicts, the bytes and the CPU time here and not the statements. Make it in
+// the tree.
 
 // Every shape at the block bound is stored or refused as it is, and the parse of it executes no
 // more than parseStatementsPerCharacter statements and allocates no more than
-// parseBytesPerCharacter bytes for each of its characters: counts linear in the body.
+// parseBytesPerCharacter bytes for each of its characters: counts linear in the body. Its CPU time
+// is held under cpuCeilingPerCharacter there (counted.work), and a stored shape's again at
+// cpuCheckLength times its length, read back as a rendering is (ParseRendering), which no element
+// limit stops where a write that long is refused for the elements it makes: there work that grows
+// with the square of the body costs that many times more for each character than at the cap, and
+// linear work no more.
 func TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinTheirStepsAndBytesPerCharacter(t *testing.T) {
 	// The shapes spell their refusals with heavybodies.MaxNesting, which is this package's own
 	// maxNesting copied: heavybodies may not import pmdoc, since this test is in-package, so the
@@ -118,6 +132,20 @@ func TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinTheirStepsAndBytesPerCh
 				t.Errorf("%s: the parse allocated %d bytes for a body of %d characters, past the %d allowed (%d a character) to a parse linear in its body",
 					shape.Name, work.bytes, outcome.characters, bytes, parseBytesPerCharacter)
 			}
+			if shape.Refusal != "" {
+				return
+			}
+			large := heavyOp{mode: "read", shape: shape.Name, size: cpuCheckLength * shape.Grown}
+			call, err := large.prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var parsed heavyOutcome
+			work = workOf(t, large.String(), func() { parsed = call() })
+			if parsed.err != nil {
+				t.Fatalf("%s at %d characters: %v, want it stored", shape.Name, parsed.characters, parsed.err)
+			}
+			holdsCPUCeiling(t, large, work, parsed.characters)
 		})
 	}
 }
@@ -196,8 +224,9 @@ func TestHeavyBodiesAtTheBodyCapParseAndEncodeInWorkProportionalToTheirLength(t 
 }
 
 // heavyOp is one call the rows count: the parse a write makes of a shape at a size ("parse"), that
-// parse and the write of its tree into a fresh document, encoded ("write"), or nothing ("none"),
-// the count of which is what a run of the counted build costs before any call.
+// parse and the write of its tree into a fresh document, encoded ("write"), the read of the shape
+// as a rendering is read back ("read"), or nothing ("none"), the count of which is what a run of
+// the counted build costs before any call.
 type heavyOp struct {
 	mode, shape string
 	size        int
@@ -242,6 +271,11 @@ func (op heavyOp) prepare() (call func() heavyOutcome, err error) {
 		return nil, fmt.Errorf("no shape %q", op.shape)
 	}
 	switch op.mode {
+	case "read":
+		return func() heavyOutcome {
+			_, err := ParseRendering(body)
+			return heavyOutcome{err: err, characters: len(body)}
+		}, nil
 	case "parse":
 		return func() heavyOutcome {
 			_, err := ParseForWrite(body, nil)
@@ -375,8 +409,9 @@ func profileStatements(path string) (uint64, error) {
 	return total, lines.Err()
 }
 
-// work is op's two counts: its statements in the counted build, and the bytes it allocates here,
-// run here once more for its outcome.
+// work is op's counts: its statements in the counted build, and the bytes it allocates and the CPU
+// time it spends here, where it runs once more for its outcome. It fails t where that CPU time is
+// past cpuCeilingPerCharacter (holdsCPUCeiling).
 func (r *countedRun) work(t *testing.T, op heavyOp) (callWork, heavyOutcome) {
 	t.Helper()
 	call, err := op.prepare()
@@ -385,9 +420,53 @@ func (r *countedRun) work(t *testing.T, op heavyOp) (callWork, heavyOutcome) {
 	}
 	var outcome heavyOutcome
 	work := workOf(t, op.String(), func() { outcome = call() })
+	holdsCPUCeiling(t, op, work, outcome.characters)
 	work.steps = r.statements(t, op)
 	return work, outcome
 }
+
+// holdsCPUCeiling fails t, naming op, where the CPU time work spent is past cpuCeilingPerCharacter
+// for each of the characters it read, and logs it otherwise.
+func holdsCPUCeiling(t *testing.T, op heavyOp, work callWork, characters int) {
+	t.Helper()
+	ceiling := cpuCeilingPerCharacter() * time.Duration(characters)
+	perCharacter := float64(work.cpu.Nanoseconds()) / float64(max(characters, 1))
+	if work.cpu > ceiling {
+		t.Errorf("%s spent %s of CPU time on %d characters, %.0f ns a character, past the %s allowed (%s a character, ten times the most measured under load)",
+			op, work.cpu.Round(time.Millisecond), characters, perCharacter, ceiling.Round(time.Millisecond), cpuCeilingPerCharacter())
+		return
+	}
+	t.Logf("%s: %s of CPU time on %d characters, %.0f ns a character (at most %s)", op, work.cpu.Round(time.Millisecond), characters, perCharacter, ceiling.Round(time.Millisecond))
+}
+
+// cpuCeilingPerCharacter is the most CPU time a call here may spend for each character it reads:
+// ten times the most any call of these rows spent, measured on 2026-11-22 on one pair of CPUs of
+// a 288-CPU machine at a load of 740 to 830, with GOMAXPROCS=2, once with the pair otherwise idle
+// and once beside 8 busy loops on it. CPU time grows with the work the process does and not with
+// the time it waits for a core, so the load moves it only through shared caches and clock
+// frequency: call for call, the loaded run spent 0.39 to 2.25 times the idle run's CPU time (1.00
+// on average) in a plain build and 0.81 to 2.58 (1.08) in a race build, the spread falling on
+// calls of a few milliseconds, and the most for a character moved from 18,118 ns idle to 16,285
+// loaded in a plain build (the 49 items nested by indentation, read at eight times the cap and
+// parsed at an eighth of it) and from 99,121 to 100,639 ns in a race build (the 49 markers on one
+// line, written at an eighth of the cap). The race detector multiplies CPU time some five times, so
+// a race build has a ceiling of its own.
+func cpuCeilingPerCharacter() time.Duration {
+	if raceBuild {
+		return cpuCeilingPerCharacterRace
+	}
+	return cpuCeilingPerCharacterPlain
+}
+
+const (
+	cpuCeilingPerCharacterPlain = 182 * time.Microsecond
+	cpuCeilingPerCharacterRace  = 1007 * time.Microsecond
+)
+
+// cpuCheckLength is how many times its cap test 1 also reads each stored shape at, for its CPU time
+// alone: work quadratic in a body's length costs cpuCheckLength times more a character there than
+// at the cap, where linear work costs no more.
+const cpuCheckLength = 8
 
 // TestHeavyBodiesCountedHelper is the run of the counted build the rows count: it prepares the op
 // countedHelperEnv names, runs it once, and logs countedHelperRan with it.
@@ -408,20 +487,25 @@ func TestHeavyBodiesCountedHelper(t *testing.T) {
 	t.Log(countedHelperRan + op.String())
 }
 
-// callWork is what one call costs in the two counts this file holds a parse and a write to: the
-// statements it executes in countedPackages and the bytes it allocates on the heap.
+// callWork is what one call costs in the counts this file holds a parse and a write to: the
+// statements it executes in countedPackages, the bytes it allocates on the heap, and the CPU time
+// it spends.
 type callWork struct {
 	steps, bytes uint64
+	cpu          time.Duration
 }
 
-// workOf is the bytes op allocates, labelled what: runtime.MemStats.TotalAlloc between a reading
-// before op and one after it. ReadMemStats stops the world and flushes every processor's cache of
-// spans before it reads, so the bytes are every allocation made between the two readings, whether
-// or not a collection ran between them. They are the same in every run of a call but for what
-// sync.Pool hands back: a collection empties it, and a race build drops a quarter of what is put
-// back, so a pooled object is made again (parseBytesPerCharacter has the measure).
+// workOf is the bytes op allocates and the CPU time it spends, labelled what. The bytes are
+// runtime.MemStats.TotalAlloc between a reading before op and one after it. ReadMemStats stops the
+// world and flushes every processor's cache of spans before it reads, so the bytes are every
+// allocation made between the two readings, whether or not a collection ran between them. They
+// are the same in every run of a call but for what sync.Pool hands back: a collection empties it,
+// and a race build drops a quarter of what is put back, so a pooled object is made again
+// (parseBytesPerCharacter has the measure). The CPU time is this process's, user and system,
+// between two readings inside those (processCPUTime, linear_test.go): op's own and the
+// collector's while it runs.
 //
-// The bytes are the process's, so nothing else may run beside op: no test in this package calls
+// Both are the process's, so nothing else may run beside op: no test in this package calls
 // t.Parallel, and a timed call of linear_test.go still running past its deadline (leakedCallGuard)
 // fails t before op runs.
 func workOf(t *testing.T, what string, op func()) callWork {
@@ -431,9 +515,11 @@ func workOf(t *testing.T, what string, op func()) callWork {
 	}
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
+	started := processCPUTime()
 	op()
+	cpu := processCPUTime() - started
 	runtime.ReadMemStats(&after)
-	return callWork{bytes: after.TotalAlloc - before.TotalAlloc}
+	return callWork{bytes: after.TotalAlloc - before.TotalAlloc, cpu: cpu}
 }
 
 // workGrowsLinearly counts the work measure does at each of sizes in turn, once each, since a

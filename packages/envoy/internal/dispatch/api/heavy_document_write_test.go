@@ -33,7 +33,7 @@ func heavyWrites() []heavyWrite {
 	return writes
 }
 
-// A document write of each heavy body gets the verdict the reader gives it: the nine shapes of
+// A document write of each heavy body gets the verdict the reader gives it: the ten shapes of
 // heavybodies.Shapes are stored or refused 400 INVALID_MARKDOWN, and both deeply nested
 // bare-directive bodies are refused the same way. The mapping from the reader's refusal to that
 // code lives in one place (writeHandlerError, server.go), and until this test no API test
