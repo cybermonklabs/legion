@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,31 +38,17 @@ func (kv stalledRoleKV) Get(key string) (nats.KeyValueEntry, error) {
 	return kv.KeyValue.Get(key)
 }
 
-// soleRecord is the one log line a request wrote, parsed, as serveRecorded reads it for a request
-// this file drives on a goroutine instead.
-func soleRecord(t *testing.T, logs string) map[string]any {
-	t.Helper()
-	written := strings.TrimSpace(logs)
-	lines := strings.Split(written, "\n")
-	if written == "" || len(lines) != 1 {
-		t.Fatalf("one request wrote %d record lines, want exactly one:\n%s", len(lines), logs)
-	}
-	var record map[string]any
-	if err := json.Unmarshal([]byte(lines[0]), &record); err != nil {
-		t.Fatalf("the record line is not JSON: %v\n%s", err, lines[0])
-	}
-	return record
-}
-
 // A role send through the publish route resolves its role's holder within sendRequestBudget of the
 // request's own context, so a role-bucket call that does not answer - the claim read, which takes
 // no context in nats.go - is reported inside the caller's attempt (the client gives each 5 s,
 // packages/envoy-client/src/transport.ts) rather than after it: the bus-unavailable 503 with
 // Retry-After: 1, naming the call that did not answer. The read never answers (stalledRoleKV), so
 // an answer at all is the budget ending the request, and one before the budget was spent would mean
-// something other than the stalled call ended it. How late after the budget a loaded machine
-// schedules the answer is no verdict: the order of the budget, the send window and the caller's
-// attempt is what holds the answer inside the attempt. A lookup's same case is
+// something other than the stalled call ended it. The request carries the caller's attempt as its
+// context (contracts.ListenerCallTimeout, envoy-client's own), and the answer must come while that
+// attempt is still live: a route budgeted at the attempt or past it answers after its caller gave
+// up. That is the one bound on time here, and it is the caller's, 1.5 s past the route's budget, not
+// a margin of the test's. A lookup's same case is
 // TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering's.
 func TestARoleResolutionWhoseStoreCallDoesNotAnswerAnswersInsideTheBudget(t *testing.T) {
 	const (
@@ -112,15 +99,24 @@ func TestARoleResolutionWhoseStoreCallDoesNotAnswerAnswersInsideTheBudget(t *tes
 				"source_session": "ses_unanswered_publisher",
 				"message":        "is the holder there?",
 			}))
+			attempt, endAttempt := context.WithTimeout(context.Background(), contracts.ListenerCallTimeout)
+			defer endAttempt()
+			request = request.WithContext(attempt)
 			answered := make(chan struct{})
+			var attemptEnded bool
 			started := time.Now()
 			go func() {
 				publishHandler(state, logging.NewWithWriter("test", logs)).ServeHTTP(recorder, request)
+				attemptEnded = attempt.Err() != nil
 				close(answered)
 			}()
 			testwait.Receive(t, "the publish route's answer once its budget was spent", answered)
-			if elapsed := time.Since(started); elapsed < sendRequestBudget {
+			elapsed := time.Since(started)
+			if elapsed < sendRequestBudget {
 				t.Fatalf("the route answered %s after the request, before its budget (%s) was spent: something other than the stalled read ended it", elapsed, sendRequestBudget)
+			}
+			if attemptEnded {
+				t.Fatalf("the route answered %s after the request, after the caller's attempt (contracts.ListenerCallTimeout, %s) had ended: the caller gave up before the 503 came", elapsed, contracts.ListenerCallTimeout)
 			}
 			if recorder.Code != http.StatusServiceUnavailable {
 				t.Fatalf("publish whose role bucket did not answer: status %d, body %s; want 503", recorder.Code, recorder.Body.String())
@@ -154,7 +150,8 @@ func TestARoleResolutionWhoseStoreCallDoesNotAnswerAnswersInsideTheBudget(t *tes
 // publish route already answers the same stalled store this way, in the test above. The bus is
 // connected throughout, so nothing but the stalled role-bucket call can end the lookup. A lookup
 // releases nothing, so the claim read is the only role-bucket call it makes. The read never
-// answers, so the answer is the budget ending the lookup, whenever a loaded machine schedules it.
+// answers, so the answer is the budget ending the lookup, and it must come while the caller's
+// attempt, the request's context, is still live, as in the test above.
 func TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering(t *testing.T) {
 	const (
 		role   = "reviewer"
@@ -189,16 +186,24 @@ func TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering(t *test
 			state := &listenerDeps{client: client, registry: registry, sessions: sessions}
 
 			recorder := httptest.NewRecorder()
-			request := httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil)
+			attempt, endAttempt := context.WithTimeout(context.Background(), contracts.ListenerCallTimeout)
+			defer endAttempt()
+			request := httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil).WithContext(attempt)
 			answered := make(chan struct{})
+			var attemptEnded bool
 			started := time.Now()
 			go func() {
 				roleGetHandler(state, logging.New("test")).ServeHTTP(recorder, request)
+				attemptEnded = attempt.Err() != nil
 				close(answered)
 			}()
 			testwait.Receive(t, "the lookup's answer once its budget was spent", answered)
-			if elapsed := time.Since(started); elapsed < sendRequestBudget {
+			elapsed := time.Since(started)
+			if elapsed < sendRequestBudget {
 				t.Fatalf("the lookup answered %s after the request, before its budget (%s) was spent: something other than the stalled read ended it", elapsed, sendRequestBudget)
+			}
+			if attemptEnded {
+				t.Fatalf("the lookup answered %s after the request, after the caller's attempt (contracts.ListenerCallTimeout, %s) had ended: the caller gave up before the 503 came", elapsed, contracts.ListenerCallTimeout)
 			}
 			if recorder.Code != http.StatusServiceUnavailable {
 				t.Fatalf("lookup whose role store did not answer: status %d, body %s; want 503 - the bus did not answer, the listener did not fail", recorder.Code, recorder.Body.String())

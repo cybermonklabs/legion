@@ -217,10 +217,11 @@ func startBurstStandIn(t *testing.T, url string, capacity int) *burstStandIn {
 
 // registerBurst registers every session with the listener on port in consumer mode, a few at a
 // time, with no resume point, and fails the test unless each answer says consumer. A session the
-// listener refuses with a 503 is registered again until it is answered: the listener refuses a
-// registration while it cannot write the session's record (its bus or its store does not
-// answer), and that 503 asks the client to try the same route again, so the refusal is no
-// verdict, and only the test's deadline limits the retries. Any other answer is the verdict.
+// listener refuses with its bus-unavailable 503 (the error begins busUnansweredPrefix) is
+// registered again until it is answered: the listener refuses a registration so while it cannot
+// write the session's record (its bus or its store does not answer), and that 503 asks the client
+// to try the same route again, so the refusal is no verdict, and only the test's deadline limits
+// the retries. Any other answer, another 503 included, is the verdict.
 func registerBurst(t *testing.T, port int, sessionIDs []string) {
 	t.Helper()
 	work := make(chan string)
@@ -264,8 +265,9 @@ func registerBurst(t *testing.T, port int, sessionIDs []string) {
 }
 
 // registerConsumerSession registers sessionID with the listener on port in consumer mode. It
-// reports a 503, the listener's refusal while it cannot write the session's record, as refused
-// with that answer, and any other answer that is not 200 with consumer delivery as an error.
+// reports the listener's bus-unavailable 503 (an error beginning busUnansweredPrefix), its refusal
+// while it cannot write the session's record, as refused with that answer, and any other answer
+// that is not 200 with consumer delivery, another 503 included, as an error.
 func registerConsumerSession(port int, sessionID string) (refused bool, err error) {
 	request, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:"+strconv.Itoa(port)+"/v1/interests/subscribe", strings.NewReader(consumerRegistration(sessionID, "epoch-1")))
 	if err != nil {
@@ -283,7 +285,13 @@ func registerConsumerSession(port int, sessionID string) (refused bool, err erro
 		return false, fmt.Errorf("register %s: status %d, answer unreadable: %w", sessionID, response.StatusCode, err)
 	}
 	if response.StatusCode == http.StatusServiceUnavailable {
-		return true, fmt.Errorf("register %s: status 503: %s", sessionID, strings.TrimSpace(string(body)))
+		var refusal struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(body, &refusal) == nil && strings.HasPrefix(refusal.Error, busUnansweredPrefix) {
+			return true, fmt.Errorf("register %s: status 503: %s", sessionID, strings.TrimSpace(string(body)))
+		}
+		return false, fmt.Errorf("register %s: status 503 that is not the bus-unavailable refusal: %s", sessionID, strings.TrimSpace(string(body)))
 	}
 	var answer subscribeAnswer
 	if err := json.Unmarshal(body, &answer); err != nil {
@@ -311,16 +319,20 @@ func awaitPulled(t *testing.T, consumers *bus.SessionConsumers, sessionIDs []str
 // at once when it starts again, from its watched session cache, with no new registration: each
 // session, none of which ever sent a resume point, receives the messages stored while the listener
 // was down once its restart has restarted the consumers, each in stream order. The restarts wait
-// their turn (relayRestartLimit) and their calls' timeout starts only once they hold it, so none
-// times out waiting, and none leaves its consumer missing.
+// their turn (relayRestartLimit); this row does not show that none of their calls timed out while
+// waiting, since a bus held as the forced run holds it makes restart calls time out and retry
+// ("session relay could not restart the session's consumer; retrying"), and the backlog still
+// arrives.
 //
 // Delivery here is at least once: a relay whose session answered no frame within relayReceiptWait
 // pauses, then "restarts at the ack floor and sends the session its unanswered messages again"
 // (relayPauseFirst, session_relay.go), and every agent host is told "Delivery is at-least-once,
 // possibly out of order across topics; use id for dedupe" (packages/envoy-client/src/
-// tool-contract.ts). A bus that holds the session's answers past the receipt wait makes that
-// copy, so a second frame of an event already received counts as that event's copy, deduped by
-// its event id as a session's ledger dedupes it, and must be the same stored message.
+// tool-contract.ts). So a second frame of an event already received counts as that event's copy,
+// deduped by its event id as a session's ledger dedupes it, only where the relay says why it sent
+// one: it must be the same stored message, and the restarted listener must have logged, for that
+// session, a pause or a restart at the ack floor (relayCopyCauses). A copy with no such line is
+// a duplicate the contract does not allow.
 func TestSessionConsumerBurstOfRestartsDeliversEveryBacklog(t *testing.T) {
 	binary := cmdtest.Build(t, "envoy-listener")
 	uri := testnats.URL(t)
@@ -362,24 +374,60 @@ func TestSessionConsumerBurstOfRestartsDeliversEveryBacklog(t *testing.T) {
 	})
 	got := map[string][]burstFrame{}
 	seen := map[string]map[string]burstFrame{}
-	missing := burstSessions * perSession
-	for missing > 0 {
-		frame := testwait.Receive(t, "a backlog frame after the listener's restart", standIn.frames)
+	copies := map[string][]burstFrame{}
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		for _, sessionID := range sessionIDs {
+			if len(got[sessionID]) < perSession {
+				t.Logf("%s received %d of its %d backlog frames: %+v", sessionID, len(got[sessionID]), perSession, got[sessionID])
+			}
+		}
+	})
+	take := func(frame burstFrame) (copied bool) {
 		if seen[frame.sessionID] == nil {
 			seen[frame.sessionID] = map[string]burstFrame{}
 		}
-		if first, copied := seen[frame.sessionID][frame.eventID]; copied {
-			if first != frame {
-				t.Fatalf("%s received event %s again as %+v, not as the message it first received, %+v", frame.sessionID, frame.eventID, frame, first)
-			}
-			t.Logf("%s received a copy of %s (stream sequence %d), at least once", frame.sessionID, frame.eventID, frame.seq)
-			continue
+		first, copied := seen[frame.sessionID][frame.eventID]
+		if !copied {
+			seen[frame.sessionID][frame.eventID] = frame
+			got[frame.sessionID] = append(got[frame.sessionID], frame)
+			return false
 		}
-		seen[frame.sessionID][frame.eventID] = frame
-		got[frame.sessionID] = append(got[frame.sessionID], frame)
-		missing--
+		if first != frame {
+			t.Fatalf("%s received event %s again as %+v, not as the message it first received, %+v", frame.sessionID, frame.eventID, frame, first)
+		}
+		copies[frame.sessionID] = append(copies[frame.sessionID], frame)
+		return true
+	}
+	for missing := burstSessions * perSession; missing > 0; {
+		if !take(testwait.Receive(t, "a backlog frame after the listener's restart", standIn.frames)) {
+			missing--
+		}
 	}
 	t.Logf("every session had its backlog after the listener's restart")
+	// A copy that came after the last first frame is still in the channel: each one buffered is
+	// read and judged as the others are, and named as late.
+	for late := true; late; {
+		select {
+		case frame := <-standIn.frames:
+			if !take(frame) {
+				t.Fatalf("%s received %s, an event it was never sent, after its whole backlog", frame.sessionID, frame.eventID)
+			}
+			t.Logf("%s received a late copy of %s (stream sequence %d)", frame.sessionID, frame.eventID, frame.seq)
+		default:
+			late = false
+		}
+	}
+	output := restarted.Output.String()
+	for sessionID, sent := range copies {
+		cause := relayCopyCause(output, sessionID)
+		if cause == "" {
+			t.Fatalf("%s received %d copies (%+v) and the restarted listener logged no pause or restart at the ack floor for it: a copy with no cause is a duplicate", sessionID, len(sent), sent)
+		}
+		t.Logf("%s received %d copies, at least once: the relay logged %q", sessionID, len(sent), cause)
+	}
 	for _, sessionID := range sessionIDs {
 		frames := got[sessionID]
 		events := make([]string, len(frames))
@@ -393,4 +441,29 @@ func TestSessionConsumerBurstOfRestartsDeliversEveryBacklog(t *testing.T) {
 			t.Fatalf("%s received %v, want each of %v, in order", sessionID, events, want[sessionID])
 		}
 	}
+}
+
+// relayCopyCauses are the relay's lines that send a session its unanswered messages again: a pause
+// after the receipt wait (relayPauseFirst) and a restart at the ack floor after a pull or a publish
+// failed (session_relay.go).
+var relayCopyCauses = []string{"session relay paused: the session answered no frame within the receipt wait", "restarting at the ack floor"}
+
+// relayCopyCause is the first of a listener's log lines in output that names sessionID and is one
+// of relayCopyCauses, as its msg, or "" when there is none.
+func relayCopyCause(output, sessionID string) string {
+	for line := range strings.SplitSeq(output, "\n") {
+		var record struct {
+			Msg       string `json:"msg"`
+			SessionID string `json:"session_id"`
+		}
+		if json.Unmarshal([]byte(line), &record) != nil || record.SessionID != sessionID {
+			continue
+		}
+		for _, cause := range relayCopyCauses {
+			if strings.Contains(record.Msg, cause) {
+				return record.Msg
+			}
+		}
+	}
+	return ""
 }
