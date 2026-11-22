@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -774,6 +775,49 @@ func TestEveryFieldTheCallerWroteIsCutToItsFirst256Bytes(t *testing.T) {
 	}
 	if driven != 10 {
 		t.Fatalf("the table drove %d fields, want 10", driven)
+	}
+}
+
+// A port that hands a refusal's line many fields of its own, before correlation_id and after it,
+// gets every one of them back from answer.RefusalLine.Fields, in order, each text value cut to its
+// first 256 bytes: the line's own fields, the names, then the extras, then correlation_id, then
+// the trailing fields. Fields builds the list by append from a fixed capacity, not from one summed
+// from the lengths of what it is handed, whose sum could overflow. The caller's own slices are not
+// cut in place: the line is a copy.
+//
+// The named reverts: drop the extras or the trailing fields, put correlation_id after the
+// trailing fields, or skip ClipFields, and this fails.
+func TestARefusalsLineKeepsEveryFieldAPortAddsInOrder(t *testing.T) {
+	const pairs = 5000
+	long := strings.Repeat("abcdefghij", 100)
+	var extras, trailing, wantExtras, wantTrailing []any
+	for i := range pairs {
+		extra, tail := fmt.Sprintf("%d before %s", i, long), fmt.Sprintf("%d after %s", i, long)
+		extras = append(extras, fmt.Sprintf("extra_%d", i), extra)
+		trailing = append(trailing, fmt.Sprintf("trailing_%d", i), tail)
+		wantExtras = append(wantExtras, fmt.Sprintf("extra_%d", i), extra[:answer.FieldBytes])
+		wantTrailing = append(wantTrailing, fmt.Sprintf("trailing_%d", i), tail[:answer.FieldBytes])
+	}
+	line := answer.RefusalLine{ID: "0123456789abcdef0123456789abcdef", Status: http.StatusForbidden, Code: "REQUEST_NOT_ALLOWED",
+		Method: http.MethodGet, CallerClass: answer.CallerAirlock, Caller: "grant@enrollment", Correlation: "the-caller's-id"}
+	line.Secrets.Note("A_SECRET")
+	want := []any{
+		"answer_id", line.ID, "status", line.Status, "code", line.Code, "method", line.Method, "route", "",
+		"caller_class", line.CallerClass, "caller", line.Caller, "secrets", []string{"A_SECRET"}, "secrets_count", 1,
+	}
+	want = append(append(append(want, wantExtras...), "correlation_id", line.Correlation), wantTrailing...)
+
+	got := line.Fields(extras, trailing...)
+	if len(got) != len(want) {
+		t.Fatalf("Fields answered %d values, want %d: the line's 18, %d extras, correlation_id's 2 and %d trailing", len(got), len(want), 2*pairs, 2*pairs)
+	}
+	for i := range want {
+		if !reflect.DeepEqual(got[i], want[i]) {
+			t.Fatalf("Fields' value %d is %.80q, %d bytes as text, want %.80q, %d bytes", i, got[i], len(fmt.Sprint(got[i])), want[i], len(fmt.Sprint(want[i])))
+		}
+	}
+	if extras[1] != fmt.Sprintf("0 before %s", long) || trailing[1] != fmt.Sprintf("0 after %s", long) {
+		t.Fatalf("Fields cut the caller's own extras or trailing fields in place: %.80q, %.80q", extras[1], trailing[1])
 	}
 }
 

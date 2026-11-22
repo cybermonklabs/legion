@@ -443,6 +443,13 @@ type RefusalLine struct {
 	Correlation string
 }
 
+// refusalLineFields is the room Fields makes for a line's attributes, keys and values counted
+// alike, before it appends them: the line's own at most, 22 (its seven pairs, the names' three
+// pairs and correlation_id's pair), and the most a port adds, the airlock's proxy port's 10 (host,
+// reason and path before correlation_id, issue and slot after it), so no port's line grows its
+// list. A port that adds more is appended past it.
+const refusalLineFields = 32
+
 // Fields is the line's attributes as slog takes them, in the one order every port writes:
 // answer_id, status, code, method, route, caller_class, caller, the names
 // (SecretNames.AppendFields), then extras, a port's own fields that come before correlation_id,
@@ -455,8 +462,11 @@ type RefusalLine struct {
 // where it enters the line, rather than by each writer: the method, the host and the path are
 // the caller's own text, and a reason may quote the host, so a field a writer adds later is cut
 // with them. The secret names are a list, which SecretNames bounds.
+//
+// The list starts at refusalLineFields and grows by append past it, never at a capacity summed
+// from the lengths of extras and trailing, whose sum a caller's slices could overflow.
 func (l RefusalLine) Fields(extras []any, trailing ...any) []any {
-	fields := make([]any, 0, 22+len(extras)+len(trailing))
+	fields := make([]any, 0, refusalLineFields)
 	fields = append(fields,
 		"answer_id", l.ID,
 		"status", l.Status,
