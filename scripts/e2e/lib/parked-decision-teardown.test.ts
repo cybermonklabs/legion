@@ -36,6 +36,12 @@ const started: number[] = [];
 // writes its own pid file for. Each is registered the moment the test starts it, before the waits
 // that can time out, so an unfinished test body still leaves nothing of the run alive.
 const teardowns: (() => void)[] = [];
+// The bound of the teardown hook: a hang guard, not a verdict. A teardown that ends a broker's
+// session walks every process of the host, and how long that takes is the machine's (two seconds
+// over 17,000 processes at load ~830, past Bun's 5 s hook default on a busier box). #4318 adds this
+// constant to @legion/test-fixtures as hang-guard.ts; once it merges, this local copy gives way to
+// that import.
+const HANG_GUARD_MS = 120_000;
 afterAll(() => {
   for (const teardown of teardowns.reverse()) {
     try {
@@ -47,7 +53,7 @@ afterAll(() => {
       process.kill(pid, "SIGKILL");
     } catch {}
   }
-});
+}, HANG_GUARD_MS);
 // The row's tmux server binds its socket at $TMUX_TMPDIR/tmux-<uid>/<label>, and the kernel refuses
 // a unix socket path past 107 bytes (sun_path's 108 with its NUL): under the run's own scratch
 // directory inside a caller's deep TMPDIR it passed that and tmux refused the server ("error
@@ -212,7 +218,12 @@ wait
     // out before the test has read the pid still leaves no member of the broker's session running.
     // Before the file is there the broker's command line, which names the run's runtime directory,
     // is the only hold on it, `setsid -f` having already taken it out of the pane's session.
+    // Each teardown does nothing once the body has seen the thing it ends gone, so a passing row's
+    // hook walks no process and spawns no tmux: the walk is for a body that stopped short of it.
+    let brokerEnded = false;
+    let serverKilled = false;
     teardowns.push(() => {
+      if (brokerEnded) return;
       const leaders = existsSync(pidFile)
         ? [Number(JSON.parse(readFileSync(pidFile, "utf8")).pid)]
         : namingPids(runtime);
@@ -229,7 +240,7 @@ wait
     // The server this started holds the pane; it outlives a test body that never reaches its own
     // kill-server, so the kill is registered here, where the server exists.
     teardowns.push(() => {
-      Bun.spawnSync(["tmux", "-L", "teardown", "kill-server"], { env });
+      if (!serverKilled) Bun.spawnSync(["tmux", "-L", "teardown", "kill-server"], { env });
     });
     expect(made.stderr.toString()).toBe("");
     const panePid = Number(
@@ -245,6 +256,7 @@ wait
     // The pane goes, as cleanup-is-complete's kill-server takes it.
     Bun.spawnSync(["tmux", "-L", "teardown", "kill-server"], { env });
     await until("the pane to end", () => !alive(panePid));
+    serverKilled = true;
     // The red half: the broker's whole session outlives the pane, and run_processes, the check's own
     // reading, still names the members, which carry the run's mark.
     expect(members.every(alive)).toBe(true);
@@ -257,6 +269,7 @@ wait
     const stopped = harness(work, "stop_agent_daemons");
     expect({ code: stopped.code, stderr: stopped.stderr }).toEqual({ code: 0, stderr: "" });
     await until("every member of the broker's session to end", () => !members.some(alive));
+    brokerEnded = true;
     // What no broker of the run ties to the run is left alone, and the check still names the one that
     // carries the run's mark.
     expect(alive(bystander.pid)).toBe(true);
