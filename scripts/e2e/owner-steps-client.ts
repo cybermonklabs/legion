@@ -85,6 +85,14 @@ async function call(): Promise<unknown> {
         {
           daemon: client,
           claim,
+          // The pane's environment, which the phase op reads its step's working copy and branch
+          // from: the claim's issue and that issue's working copy as the daemon lays one out.
+          // Nothing reads the copy, since `report` stands in for the pane's own report; a tree of
+          // an earlier contract takes no environment and ignores it.
+          env: {
+            LEGION_ISSUE: String(claim.issue),
+            LEGION_WORKSPACE: `/state/workspaces/acme/widgets/${String(claim.issue).toLowerCase()}`,
+          },
           handoffReport: async () => request.report ?? {},
           branchHead: async () => "",
         },

@@ -6,7 +6,6 @@ import {
   LEGION_PLAN_REASON_MAX,
   LegionInstant,
   type LegionIssue,
-  type LegionPhase,
   legionPlanRatingLoneField,
   legionPlanRatingScale,
   legionPlanReasonRules,
@@ -18,7 +17,7 @@ import {
   type LegionDaemonClient,
   retryWhileDaemonRestarts,
 } from "./daemon-client";
-import type { HandoffReport } from "./handoff-record";
+import { type HandoffReport, type StepCopy, stepCopy } from "./handoff-record";
 
 /** The claim a session registered, as the phase ops need it, and as the claim boot
  * (`legion-claim-core`) records it: its own id, the daemon's answer for tree, issue and role, the
@@ -455,19 +454,22 @@ export interface PhaseOpRuntime {
   readonly claim: ClaimCapability;
   /** The build this process loaded, which `read_build` answers with (`pluginBuildOf`). */
   readonly build: PluginBuild;
-  /** What a completion by `role` reports beside its summary while the issue stands at `phase`
-   * (`findHandoffReport` with the pane's environment and Dispatch): the newest record of the
-   * phase the role works or, once the issue has moved on, of the phase it left, or `@-` alone where
-   * that left phase has none or the implementer's left record names no head. Throws naming the remedy when the phase the role works has no
-   * handoff record, Dispatch does not answer, or, while the issue stands in implementing, the
-   * implementer's record names no head, the commit its workspace stands on is not pushed, or its
-   * record's head is not that pushed commit. */
-  readonly handoffReport: (phase: LegionPhase, role: LegionStepRole) => Promise<HandoffReport>;
-  /** The head of `legion/<issue>@origin` the `ready_for_update` signal reports
-   * (`findPushedBranchHead` with the pane's environment): `""` when the branch is not there. A
-   * throw leaves the head out of the signal, which is still sent, and the throw's message goes
-   * to the agent in the answer's `note`. */
-  readonly branchHead: () => Promise<string>;
+  /** The pane's environment: LEGION_WORKSPACE and LEGION_ISSUE, from which the working copy and
+   * the branch of the step this session's agent runs are read (`stepCopy`). */
+  readonly env: NodeJS.ProcessEnv;
+  /** What a completion by `role` of `step` reports beside its summary (`findHandoffReport` with
+   * the pane's environment and Dispatch): the newest record of the phase the role works or, once
+   * the step has moved on, of the phase it left, or `@-` alone where that left phase has none or
+   * the implementer's left record names no head. Throws naming the remedy when the phase the role
+   * works has no handoff record, Dispatch does not answer, or, while the step stands in
+   * implementing, the implementer's record names no head, the commit its working copy stands on
+   * is not pushed, or its record's head is not that pushed commit. */
+  readonly handoffReport: (step: StepCopy, role: LegionStepRole) => Promise<HandoffReport>;
+  /** The head of `step`'s branch at origin the `ready_for_update` signal reports
+   * (`findPushedBranchHead`): `""` when the branch is not there. A throw leaves the head out of
+   * the signal, which is still sent, and the throw's message goes to the agent in the answer's
+   * `note`. */
+  readonly branchHead: (step: StepCopy) => Promise<string>;
   /** How `handoff_complete` waits out a daemon restart (`retryWhileDaemonRestarts`): the host's
    * sentence to the agent, and a test's clock. */
   readonly restart?: DaemonRestartRetry;
@@ -499,6 +501,18 @@ async function recordFrom(daemon: LegionDaemonClient, issue: string): Promise<Le
   const record = await daemon.record(issue);
   if (record === undefined) throw new Error(`The daemon has no record for ${issue}`);
   return record;
+}
+
+/** The agent a claim's token names: everything after the issue's part, `legion-<project>-<issue
+ * project>-<number>-`, which the daemon's `claim.Token.Cut` reads by the same fields and which
+ * equals the `agent` of the task whose step that agent runs. `""` for a token that names no agent,
+ * the controller's among them. */
+const CLAIM_AGENT = /^legion-[^-]+-[^-]+-[^-]+-([a-z][a-z0-9-]{0,31})$/;
+
+/** The step `claim`'s agent runs in `record` (`stepCopy`), read from the pane's environment. */
+function claimStep(runtime: PhaseOpRuntime, record: LegionIssue): StepCopy {
+  const agent = CLAIM_AGENT.exec(runtime.claim.claimToken)?.[1] ?? "";
+  return stepCopy(runtime.env, record, agent === "controller" ? "" : agent);
 }
 
 const ROOT_COMPLETION_REFUSAL =
@@ -686,16 +700,18 @@ export async function executePhaseOp(
       // The claim authenticates the signal, as it does `claims/ready`: no grant is minted. The
       // round is the agent's own word, read from the update message it answers, and the daemon
       // takes the answer for that round alone — an answer for a round its claim has left is
-      // refused naming both. The head is the plugin's to resolve, and a branch not yet on the
-      // remote is left out. A workspace whose jj cannot answer leaves it out too, and is told so:
-      // the round ends before its bound only once every claim of the pod has answered, no turn
-      // runs and no claim's activity report holds it (the daemon's `roundEnd.holding`), so a
-      // worker whose lookup fails must still be able to answer. The daemon verifies no head, so
-      // the missing one costs the record a line and the round nothing.
+      // refused naming both. The head is the plugin's to resolve: that of the branch of the step
+      // the claim's agent runs, read from the issue's record (`claimStep`), and a branch not yet
+      // on the remote is left out. A record the daemon does not answer, or a working copy whose
+      // jj cannot answer, leaves it out too, and is told so: the round ends before its bound only
+      // once every claim of the pod has answered, no turn runs and no claim's activity report
+      // holds it (the daemon's `roundEnd.holding`), so a worker whose lookup fails must still be
+      // able to answer. The daemon verifies no head, so the missing one costs the record a line
+      // and the round nothing.
       let head = "";
       let failure: string | undefined;
       try {
-        head = await runtime.branchHead();
+        head = await runtime.branchHead(claimStep(runtime, await recordFrom(daemon, claim.issue)));
       } catch (error) {
         failure = error instanceof Error ? error.message : String(error);
       }
@@ -965,9 +981,10 @@ async function completeHandoff(
       "handoff_complete's wake_at is a production check's pending report alone; a phase completion carries none"
     );
   }
-  // The record and the commit are found before the grant is minted. The phase is the issue
-  // record's, the role the claim's.
-  const report = await runtime.handoffReport(record.phase, claim.role);
+  // The record and the commit are found before the grant is minted. The step is the one the
+  // claim's agent runs in the issue's record (`claimStep`), whose phase the completion is of, and
+  // the role is the claim's.
+  const report = await runtime.handoffReport(claimStep(runtime, record), claim.role);
   return daemon.handoffComplete({
     grantId: await mintClaimGrant(daemon, claim),
     summary: args.summary,

@@ -1,7 +1,6 @@
 import type { LegionStepRole } from "@legion/contracts"
-import type { LegionPhase } from "@legion/contracts/legion-api"
 import type { LegionDaemonClient } from "@legion/pi-shared/daemon-client"
-import type { HandoffReport } from "@legion/pi-shared/handoff-record"
+import type { HandoffReport, StepCopy } from "@legion/pi-shared/handoff-record"
 import {
   type ClaimCapability,
   executePhaseOp,
@@ -43,18 +42,21 @@ export interface LegionToolRuntime {
   readonly daemon: LegionDaemonClient
   /** The pane's registered claim, or undefined while its boot is still registering. */
   readonly claim: () => ClaimCapability | undefined
-  /** What a completion by `role` (one of Legion's six or a role of the deployment) reports beside
-   * its summary while the issue stands at `phase`
-   * (`findHandoffReport` with the pane's environment and Dispatch): the newest record of the
-   * phase the role works or, once the issue has moved on, of the phase it left, or `@-` alone where
-   * that left phase has none or the implementer's left record names no head. Throws naming the remedy when the phase the role works has no
-   * handoff record, Dispatch does not answer, or, while the issue stands in implementing, the
-   * implementer's record names no head, the commit its workspace stands on is not pushed, or its
-   * record's head is not that pushed commit. */
-  readonly handoffReport: (phase: LegionPhase, role: LegionStepRole) => Promise<HandoffReport>
-  /** The head of `legion/<issue>@origin` a `ready_for_update` signal reports
-   * (`findPushedBranchHead` with the pane's environment): `""` when the branch is not there. */
-  readonly branchHead: () => Promise<string>
+  /** The pane's environment: LEGION_WORKSPACE and LEGION_ISSUE, from which a completion and an
+   * update signal read the working copy and the branch of the step the claim's agent runs. */
+  readonly env: NodeJS.ProcessEnv
+  /** What a completion by `role` (one of Legion's six or a role of the deployment) of `step`
+   * reports beside its summary (`findHandoffReport` with the pane's environment and Dispatch): the
+   * newest record of the phase the role works or, once the step has moved on, of the phase it
+   * left, or `@-` alone where that left phase has none or the implementer's left record names no
+   * head. Throws naming the remedy when the phase the role works has no handoff record, Dispatch
+   * does not answer, or, while the step stands in implementing, the implementer's record names no
+   * head, the commit its working copy stands on is not pushed, or its record's head is not that
+   * pushed commit. */
+  readonly handoffReport: (step: StepCopy, role: LegionStepRole) => Promise<HandoffReport>
+  /** The head of `step`'s branch at origin a `ready_for_update` signal reports
+   * (`findPushedBranchHead`): `""` when the branch is not there. */
+  readonly branchHead: (step: StepCopy) => Promise<string>
 }
 
 /** Runs one call of the `legion` tool and answers its JSON result; a refusal throws its reason.
@@ -76,6 +78,7 @@ export async function executeLegionTool(
       daemon: runtime.daemon,
       claim,
       build: BUILD,
+      env: runtime.env,
       handoffReport: runtime.handoffReport,
       branchHead: runtime.branchHead,
       ...(signal === undefined ? {} : { restart: { signal } }),

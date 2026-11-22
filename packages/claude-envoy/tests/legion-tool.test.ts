@@ -2,8 +2,8 @@ import { expect, test } from "bun:test"
 import { readFile } from "node:fs/promises"
 import { resolve } from "node:path"
 import type { LegionStepRole } from "@legion/contracts"
-import type { LegionPhase } from "@legion/contracts/legion-api"
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client"
+import type { StepCopy } from "@legion/pi-shared/handoff-record"
 import { type ClaimCapability, PHASE_OP_SENTENCES } from "@legion/pi-shared/legion-phase-ops"
 import { stateAtPhase } from "@legion/pi-shared/test/daemon-state"
 import { withImageManifest } from "@legion/pi-shared/test/image-manifest"
@@ -14,6 +14,13 @@ import { executeLegionTool, legionToolDefinition } from "../src/legion-tool"
 async function daemonFixture(name: string): Promise<unknown> {
   const file = resolve(import.meta.dir, "../../contracts/fixtures/daemon-api", name)
   return JSON.parse(await readFile(file, "utf8"))
+}
+
+/** The pane's environment (`LegionToolRuntime.env`): LEGION-208's own working copy, laid out as
+ * the daemon lays one out, and its key. */
+const PANE_ENV = {
+  LEGION_WORKSPACE: "/state/workspaces/acme/widgets/legion-208",
+  LEGION_ISSUE: "LEGION-208",
 }
 
 /** A window of release records as the daemon serves it: two releases, the first woken five
@@ -210,8 +217,9 @@ test("handoff_complete finds the record and commit for the issue's phase and the
     {
       daemon: client,
       claim: () => implementer,
-      handoffReport: async (phase: LegionPhase, role: LegionStepRole) => {
-        lookups.push(`${phase} ${role}`)
+      env: PANE_ENV,
+      handoffReport: async (step: StepCopy, role: LegionStepRole) => {
+        lookups.push(`${step.phase} ${role}`)
         return {
           commit: "a".repeat(40),
           handoffId: "5b1f0c2e-9d7a-4c3b-8e61-2f4a9d0c7b13",
@@ -253,8 +261,9 @@ test("the retro's handoff_complete sends its rating of the plan as planRating an
     {
       daemon: client,
       claim: () => implementer,
-      handoffReport: async (phase: LegionPhase, role: LegionStepRole) => {
-        lookups.push(`${phase} ${role}`)
+      env: PANE_ENV,
+      handoffReport: async (step: StepCopy, role: LegionStepRole) => {
+        lookups.push(`${step.phase} ${role}`)
         return { commit: standing }
       },
       branchHead: noBranchHead,
@@ -285,6 +294,7 @@ test("a tester's fail sends return_to as returnTo", async () => {
     {
       daemon: client,
       claim: () => ({ ...implementer, role: "tester" }),
+      env: PANE_ENV,
       handoffReport: async () => ({ commit: tested }),
       branchHead: noBranchHead,
     },
@@ -320,8 +330,9 @@ test("a role of the deployment's handoff_complete sends its verdict and commit",
         role: "checker",
         claimToken: "legion-legion-legion-208-checker",
       }),
-      handoffReport: async (phase: LegionPhase, role: LegionStepRole) => {
-        lookups.push(`${phase} ${role}`)
+      env: PANE_ENV,
+      handoffReport: async (step: StepCopy, role: LegionStepRole) => {
+        lookups.push(`${step.phase} ${role}`)
         return { commit: standing }
       },
       branchHead: noBranchHead,
@@ -348,6 +359,7 @@ test("a handoff report the pane refuses posts nothing and mints nothing", async 
       {
         daemon: client,
         claim: () => implementer,
+        env: PANE_ENV,
         handoffReport: async () => {
           throw new Error(
             "LEGION-208 has no implement handoff in Dispatch: write it with `dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>`, then complete again",
@@ -384,6 +396,7 @@ test("the MCP request's cancellation ends a handoff_complete waiting out a daemo
           fetch: refusing,
         }),
         claim: () => implementer,
+        env: PANE_ENV,
         handoffReport: async () => ({ commit: "a".repeat(40) }),
         branchHead: noBranchHead,
       },
@@ -401,6 +414,7 @@ test("read_record answers the issue's record, and request_backward_move posts wi
   const runtime = {
     daemon: client,
     claim: () => implementer,
+    env: PANE_ENV,
     handoffReport: async (): Promise<never> => {
       throw new Error("no handoff report expected")
     },
@@ -437,6 +451,7 @@ test("read_release_records posts the claim's own credential and counts the windo
   const runtime = {
     daemon: client,
     claim: () => implementer,
+    env: PANE_ENV,
     handoffReport: async (): Promise<never> => {
       throw new Error("no handoff report expected")
     },
@@ -502,13 +517,20 @@ test("refuses before the claim registered, an operation a phase worker has not, 
   const handoffReport = async () => ({ commit: "c" })
   await expect(
     executeLegionTool(
-      { daemon: client, claim: () => undefined, handoffReport, branchHead: noBranchHead },
+      {
+        daemon: client,
+        claim: () => undefined,
+        env: PANE_ENV,
+        handoffReport,
+        branchHead: noBranchHead,
+      },
       { op: "read_record", issue: "LEGION-208" },
     ),
   ).rejects.toThrow("this session has no Legion claim yet")
   const runtime = {
     daemon: client,
     claim: () => implementer,
+    env: PANE_ENV,
     handoffReport,
     branchHead: noBranchHead,
   }
@@ -547,6 +569,7 @@ test("read_build answers the package and version this process loaded, both contr
     const runtime = {
       daemon: client,
       claim: () => implementer,
+      env: PANE_ENV,
       handoffReport: async (): Promise<never> => {
         throw new Error("no handoff report expected")
       },
@@ -570,6 +593,7 @@ test("read_build says so where the daemon states no contract, and takes no field
   const runtime = {
     daemon: client,
     claim: () => implementer,
+    env: PANE_ENV,
     handoffReport: async (): Promise<never> => {
       throw new Error("no handoff report expected")
     },

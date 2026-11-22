@@ -22,7 +22,7 @@
 import type { LegionPhase } from "../../packages/contracts/src/legion-api";
 import type { LegionRole } from "../../packages/contracts/src/legion-roles";
 import { sessionConfigFile } from "../../packages/envoy-client/src/session-settings";
-import { paneHandoffReport } from "../../packages/pi-shared/src/handoff-record";
+import { paneHandoffReport, stepCopy } from "../../packages/pi-shared/src/handoff-record";
 
 function refuse(why: string): never {
   console.error(`completion-head: ${why}`);
@@ -43,7 +43,9 @@ if (process.env.LEGION_ISSUE === undefined || process.env.LEGION_ISSUE === "") {
 
 // The pane's own call: the envoy.json this session reads, and the Dispatch behind it. The run
 // writes no such file, so `DISPATCH_URL` and `DISPATCH_TOKEN` are the whole of this pane's
-// Dispatch settings, as they are for its `dispatch` command.
+// Dispatch settings, as they are for its `dispatch` command. The step is the issue's own at
+// `phase`, as `stepCopy` reads it from a record that serves no tasks: LEGION_WORKSPACE as it stands
+// (none, in the run, since a record's report reads no working copy) and `legion/<issue>`.
 const report = paneHandoffReport(
   sessionConfigFile("omp", process.env),
   process.env,
@@ -52,7 +54,8 @@ const report = paneHandoffReport(
 );
 
 try {
-  console.log(JSON.stringify(await report(phase as LegionPhase, role as LegionRole)));
+  const step = stepCopy(process.env, { phase: phase as LegionPhase }, "");
+  console.log(JSON.stringify(await report(step, role as LegionRole)));
 } catch (error) {
   console.error(`completion-head: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);

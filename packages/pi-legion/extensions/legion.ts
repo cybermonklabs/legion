@@ -949,17 +949,19 @@ export default function legionExtension(pi: PiApi): void {
         controllerGrant: (sessionId) => controllerSession.mintGrant(sessionId),
         onPhaseCompleted,
         onUpdateAnswered,
-        // The pane's own environment: its workspace and issue; PATH's jj, the one its shell runs;
-        // and the Dispatch pi-envoy's session reads (Oh My Pi's rule, in the same process), which
-        // the pane's `dispatch handoff-write` wrote the record to.
-        handoffReport: (phase, role) =>
+        // The pane's own environment: its workspace and issue, from which the working copy and the
+        // branch of the claim's step are read; PATH's jj, the one its shell runs; and the Dispatch
+        // pi-envoy's session reads (Oh My Pi's rule, in the same process), which the pane's
+        // `dispatch handoff-write` wrote the record to.
+        env: process.env,
+        handoffReport: (step, role) =>
           paneHandoffReport(
             sessionConfigFile("omp", process.env),
             process.env,
             process.cwd(),
             currentSessionID()
-          )(phase, role),
-        branchHead: () => findPushedBranchHead({ env: process.env }),
+          )(step, role),
+        branchHead: (step) => findPushedBranchHead({ step }),
         resolveDocument: async (issue, reference) => {
           // The file pi-envoy's session reads: Oh My Pi's rule, in the same process.
           const config = activeDispatchSettings(

@@ -164,6 +164,11 @@ function toolFor(
     },
     onPhaseCompleted: (ctx) => completed.push(ctx.sessionManager.getSessionId()),
     onUpdateAnswered: () => undefined,
+    // LEGION-208's own working copy, laid out as the daemon lays one out, and its key.
+    env: {
+      LEGION_WORKSPACE: "/state/workspaces/acme/widgets/legion-208",
+      LEGION_ISSUE: "LEGION-208",
+    },
     handoffReport: async () => ({ handoffId: HANDOFF_ID, handoffVersion: 1, commit: COMMIT }),
     branchHead: async () => "",
     resolveDocument: async () => {

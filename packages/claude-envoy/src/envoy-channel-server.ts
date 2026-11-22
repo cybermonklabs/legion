@@ -2613,10 +2613,12 @@ export async function runEnvoyChannelServer(): Promise<void> {
       const legionRuntime: LegionToolRuntime = {
         daemon,
         claim: () => claim?.capability(),
-        // The pane's own environment and PATH's jj, and the Dispatch this session's envoy.json
-        // names, which the pane's `dispatch handoff-write` wrote the record to.
+        // The pane's own environment, from which the working copy and the branch of the claim's
+        // step are read, PATH's jj, and the Dispatch this session's envoy.json names, which the
+        // pane's `dispatch handoff-write` wrote the record to.
+        env: process.env,
         handoffReport: paneHandoffReport(configFile, process.env, directory, identity.id),
-        branchHead: () => findPushedBranchHead({ env: process.env }),
+        branchHead: (step) => findPushedBranchHead({ step }),
       }
       // The request's signal aborts on the client's notifications/cancelled, which ends a wait
       // for a restarting daemon.

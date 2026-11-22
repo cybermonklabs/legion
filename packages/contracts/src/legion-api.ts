@@ -496,8 +496,10 @@ const legionAgentStepView = z.object({
  * built as the issue's are, and the issue's own are its merge's; they reuse the issue's views
  * with each enumeration read as a plain string. Every word of a task is a plain string, so a value
  * a later daemon adds is read rather than refused and no field here is one the daemon's table of
- * enumerated fields must declare. The daemon always writes `id`, `state`, `needs` and `counts`;
- * no plugin code reads any field (LEGION_ANSWER_READS), so every field is optional. */
+ * enumerated fields must declare. The daemon always writes `id`, `state`, `needs` and `counts`.
+ * The plugin reads `state`, `phase`, `branch`, `agent` and `wait`, to find the step its
+ * session's agent runs (`stepCopy`, `packages/pi-shared/src/handoff-record.ts`), and names them in
+ * LEGION_ANSWER_READS. Every field stays optional, so a task served without one is still read. */
 const legionTaskView = z.object({
   id: nonEmptyString.optional(),
   state: nonEmptyString.optional(),
@@ -2268,7 +2270,9 @@ export const LegionTaskStopRequest = z.strictObject({
   task: nonEmptyString,
 });
 /** What plugin code takes the value of in one issue's record: `legion-phase-ops.ts` reads the
- * issue's phase and its open check for `handoff_complete`, `phase-reminder.ts` reads the phase
+ * issue's phase and its open check for `handoff_complete`, and `handoff-record.ts` reads each
+ * task's state, phase, branch, agent and wait for the step a completion or an update signal is
+ * of (`stepCopy`), `phase-reminder.ts` reads the phase
  * and, at `step`, the issue's `stepRole`, `phase-reminder.ts` and
  * `pi-legion/src/stall-evidence.ts` read the architect's claim state, and the controller's
  * `read_state` summary (`pi-legion/src/tools.ts`) reads each issue's status, hold reason, slot,
@@ -2306,6 +2310,12 @@ const ISSUE_RECORD_READS = [
   "slot.index",
   "slot.admittedAt",
   "slot.lentTo",
+  "tasks",
+  "tasks[].state",
+  "tasks[].phase",
+  "tasks[].branch",
+  "tasks[].agent",
+  "tasks[].wait",
 ] as const;
 
 /**

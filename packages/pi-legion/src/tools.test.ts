@@ -15,6 +15,7 @@ import {
   findHandoffReport,
   type JjRunner,
   type LatestHandoff,
+  type StepCopy,
 } from "@legion/pi-shared/handoff-record";
 import { PHASE_OP_SENTENCES, phaseOpParameters } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext } from "@legion/pi-shared/pi-types";
@@ -62,9 +63,16 @@ const noControllerGrant = async (sessionId: string): Promise<never> => {
   throw new Error(`no controller grant expected for ${sessionId}`);
 };
 
+/** The pane's environment of a tool that reads no step: LEGION-208's own working copy, laid out as
+ * the daemon lays one out, and its key. */
+const PANE_ENV = {
+  LEGION_WORKSPACE: "/state/workspaces/acme/widgets/legion-208",
+  LEGION_ISSUE: "LEGION-208",
+};
+
 /** The handoff report of a tool that must never complete a phase. */
-const noHandoffReport = async (phase: LegionPhase, role: LegionStepRole): Promise<never> => {
-  throw new Error(`no handoff report expected for the ${role} at ${phase}`);
+const noHandoffReport = async (step: StepCopy, role: LegionStepRole): Promise<never> => {
+  throw new Error(`no handoff report expected for the ${role} at ${step.phase}`);
 };
 
 /** The branch-head lookup of a tool that must never read a branch head. */
@@ -404,6 +412,7 @@ const toolFor = (active: LegionToolSession) =>
     controllerGrant: noControllerGrant,
     onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
+    env: PANE_ENV,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
@@ -599,6 +608,7 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
       controllerGrant: noControllerGrant,
       onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
+      env: PANE_ENV,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       resolveDocument: noDocumentLookup,
@@ -612,6 +622,7 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
     controllerGrant: noControllerGrant,
     onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
+    env: PANE_ENV,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
@@ -779,6 +790,7 @@ test("retry_or_escalate takes a reason", async () => {
       controllerGrant: noControllerGrant,
       onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
+      env: PANE_ENV,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       resolveDocument: noDocumentLookup,
@@ -839,6 +851,7 @@ test("sign_off and retry_or_escalate send the task they name", async () => {
       controllerGrant: noControllerGrant,
       onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
+      env: PANE_ENV,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       resolveDocument: noDocumentLookup,
@@ -894,6 +907,7 @@ test("rerun_child refuses a reason before any grant, naming issue and the dispat
     controllerGrant: noControllerGrant,
     onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
+    env: PANE_ENV,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
@@ -973,6 +987,7 @@ test("read_release_records reads the window with this session's claim, and repor
       controllerGrant: noControllerGrant,
       onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
+      env: PANE_ENV,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       resolveDocument: noDocumentLookup,
@@ -1052,6 +1067,7 @@ test("the legion tool's description gives a verdict to the tester or a role of t
     controllerGrant: noControllerGrant,
     onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
+    env: PANE_ENV,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
@@ -1082,6 +1098,7 @@ test("a workflow refusal tells the agent both its code and message", async () =>
     controllerGrant: noControllerGrant,
     onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
+    env: PANE_ENV,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
@@ -1116,6 +1133,7 @@ test("register_gate takes the document reference the Dispatch tools take, and re
       controllerGrant: noControllerGrant,
       onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
+      env: PANE_ENV,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       resolveDocument: async (issue: string, reference: string) => {
@@ -1175,6 +1193,7 @@ test("register_plan takes the document reference the Dispatch tools take and ans
       controllerGrant: noControllerGrant,
       onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
+      env: PANE_ENV,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       resolveDocument: async (issue: string, reference: string) => {
@@ -1241,6 +1260,7 @@ test("register_plan passes on the daemon's refusal of a plan with its code and e
     controllerGrant: noControllerGrant,
     onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
+    env: PANE_ENV,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
@@ -1271,6 +1291,7 @@ test("stop_task stops the task its block names, and is the architect's alone", a
       controllerGrant: noControllerGrant,
       onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
+      env: PANE_ENV,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       resolveDocument: noDocumentLookup,
@@ -1371,8 +1392,9 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
       controllerGrant: noControllerGrant,
       onPhaseCompleted: (ctx) => completed.push(ctx.sessionManager.getSessionId()),
       onUpdateAnswered: () => undefined,
-      handoffReport: (phase, role) =>
-        findHandoffReport({ phase, role, env: paneEnv, jj, latestHandoff }),
+      env: paneEnv,
+      handoffReport: (step, role) =>
+        findHandoffReport({ step, role, env: paneEnv, jj, latestHandoff }),
       branchHead: noBranchHead,
       resolveDocument: noDocumentLookup,
       session: () => session,
@@ -1546,9 +1568,10 @@ test("the planner, the tester and the reviewer post their phase's handoff record
       controllerGrant: noControllerGrant,
       onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
-      handoffReport: (issuePhase, claimRole) =>
+      env: paneEnv,
+      handoffReport: (step, claimRole) =>
         findHandoffReport({
-          phase: issuePhase,
+          step,
           role: claimRole,
           env: paneEnv,
           jj: async (args) => {
@@ -1599,9 +1622,10 @@ test("the retro's handoff_complete posts its rating of the plan as planRating an
     controllerGrant: noControllerGrant,
     onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
-    handoffReport: (phase, role) =>
+    env: paneEnv,
+    handoffReport: (step, role) =>
       findHandoffReport({
-        phase,
+        step,
         role,
         env: paneEnv,
         jj: paneJj(),
@@ -1656,9 +1680,10 @@ test("a completion once the issue moved on posts the role's own newest record of
       controllerGrant: noControllerGrant,
       onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
-      handoffReport: (issuePhase, claimRole) =>
+      env: paneEnv,
+      handoffReport: (step, claimRole) =>
         findHandoffReport({
-          phase: issuePhase,
+          step,
           role: claimRole,
           env: paneEnv,
           jj: paneJj(),
@@ -1709,9 +1734,10 @@ test("an implementer whose issue is in testing posts its implement record, thoug
     controllerGrant: noControllerGrant,
     onPhaseCompleted: (ctx) => completed.push(ctx.sessionManager.getSessionId()),
     onUpdateAnswered: () => undefined,
-    handoffReport: (phase, role) =>
+    env: paneEnv,
+    handoffReport: (step, role) =>
       findHandoffReport({
-        phase,
+        step,
         role,
         env: paneEnv,
         jj: (args, cwd) => {
@@ -1763,9 +1789,10 @@ test("a tester with no record on a held issue posts @-, and the daemon's answer 
     controllerGrant: noControllerGrant,
     onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
-    handoffReport: (phase, role) =>
+    env: paneEnv,
+    handoffReport: (step, role) =>
       findHandoffReport({
-        phase,
+        step,
         role,
         env: paneEnv,
         jj: paneJj(),
@@ -1832,6 +1859,7 @@ test("a report on its closed issue's production check carries a verdict and no c
       controllerGrant: noControllerGrant,
       onPhaseCompleted: (ctx) => completed.push(ctx.sessionManager.getSessionId()),
       onUpdateAnswered: () => undefined,
+      env: PANE_ENV,
       // A check report resolves no record and no commit: the report is never asked.
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
@@ -1906,6 +1934,7 @@ test("a report on its closed issue's production check carries a verdict and no c
     controllerGrant: noControllerGrant,
     onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
+    env: PANE_ENV,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
@@ -1941,6 +1970,7 @@ test("a report on its closed issue's production check carries a verdict and no c
     controllerGrant: noControllerGrant,
     onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
+    env: PANE_ENV,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
@@ -1971,9 +2001,10 @@ test("a refused completion surfaces the daemon's code and leaves the phase open"
     controllerGrant: noControllerGrant,
     onPhaseCompleted: (ctx) => completed.push(ctx.sessionManager.getSessionId()),
     onUpdateAnswered: () => undefined,
-    handoffReport: (phase, role) =>
+    env: paneEnv,
+    handoffReport: (step, role) =>
       findHandoffReport({
-        phase,
+        step,
         role,
         env: paneEnv,
         jj: paneJj(TIP),
@@ -2134,6 +2165,7 @@ function controllerTool(daemon: () => LegionDaemonClient, minted: string[]): Reg
     onUpdateAnswered: () => {
       throw new Error("a controller answers no update message");
     },
+    env: PANE_ENV,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
@@ -2345,6 +2377,7 @@ test("read_build answers the package and version this process loaded, both contr
       controllerGrant: noControllerGrant,
       onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
+      env: PANE_ENV,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       resolveDocument: noDocumentLookup,
@@ -2376,6 +2409,7 @@ test("read_build says the daemon stated no contract, and belongs to the controll
       controllerGrant: noControllerGrant,
       onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
+      env: PANE_ENV,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       resolveDocument: noDocumentLookup,
@@ -2534,6 +2568,7 @@ test("pause and resume are offered to no architect and no phase worker", async (
       controllerGrant: noControllerGrant,
       onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
+      env: PANE_ENV,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       resolveDocument: noDocumentLookup,

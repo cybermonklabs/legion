@@ -10,7 +10,6 @@ import {
   LegionGateRegisterRequest,
   type LegionGrant,
   type LegionIssue,
-  type LegionPhase,
   LegionPlanRegisterRequest,
   type LegionState,
 } from "@legion/contracts/legion-api";
@@ -19,7 +18,7 @@ import {
   type LegionDaemonClient,
   retryWhileDaemonRestarts,
 } from "@legion/pi-shared/daemon-client";
-import type { HandoffReport } from "@legion/pi-shared/handoff-record";
+import type { HandoffReport, StepCopy } from "@legion/pi-shared/handoff-record";
 import {
   type ClaimCapability,
   executePhaseOp,
@@ -467,20 +466,23 @@ export function createLegionTool(deps: {
   /** Told of each `ready_for_update` that succeeded: the session has answered the daemon's
    * update message on its pod, and its phase stays open. */
   readonly onUpdateAnswered: (context: SessionContext) => void;
-  /** What a completion by `role` reports beside its summary while the issue stands at `phase`
-   * (`findHandoffReport`): for a file-backed phase the role works or, once the issue has moved
-   * on, the one it left, the newest Dispatch handoff record of that phase and the head its body
-   * names under `head`, which for the implementer's round, while the issue stands in
-   * implementing, must be the commit its workspace stands on, pushed to `legion/<issue>@origin`;
-   * otherwise, and for a left phase with no record or an implementer's left record naming no head,
-   * the commit the workspace stands on, alone. Throws
-   * naming the remedy when the phase the role works has no record, Dispatch does not answer, or,
-   * in implementing, the implementer's record names no head, the commit its workspace stands on
-   * is not pushed, or its record's head is not that pushed commit. */
-  readonly handoffReport: (phase: LegionPhase, role: LegionStepRole) => Promise<HandoffReport>;
-  /** The head of `legion/<issue>@origin` an update signal reports, read with the pane's jj
+  /** The pane's environment: LEGION_WORKSPACE and LEGION_ISSUE, from which a completion and an
+   * update signal read the working copy and the branch of the step the claim's agent runs. */
+  readonly env: NodeJS.ProcessEnv;
+  /** What a completion by `role` of `step` reports beside its summary (`findHandoffReport`): for
+   * a file-backed phase the role works or, once the step has moved on, the one it left, the
+   * newest Dispatch handoff record of that phase and the head its body names under `head`, which
+   * for the implementer's round, while its step stands in implementing, must be the commit its
+   * working copy stands on, pushed to the step's branch at origin; otherwise, and for a left
+   * phase with no record or an implementer's left record naming no head, the commit the working
+   * copy stands on, alone. Throws naming the remedy when the phase the role works has no record,
+   * Dispatch does not answer, or, in implementing, the implementer's record names no head, the
+   * commit its working copy stands on is not pushed, or its record's head is not that pushed
+   * commit. */
+  readonly handoffReport: (step: StepCopy, role: LegionStepRole) => Promise<HandoffReport>;
+  /** The head of `step`'s branch at origin an update signal reports, read with the pane's jj
    * (`findPushedBranchHead`), and `""` when the branch is not on the remote. */
-  readonly branchHead: () => Promise<string>;
+  readonly branchHead: (step: StepCopy) => Promise<string>;
   /** The id of the document `issue` carries under `reference` (`spec`, a slug, or a filename),
    * looked up in Dispatch as a `dispatch` command's `--artifact` is; throws naming the reference
    * when none matches, or when it names two documents. */
@@ -495,6 +497,7 @@ export function createLegionTool(deps: {
     controllerGrant,
     onPhaseCompleted,
     onUpdateAnswered,
+    env,
     handoffReport,
     branchHead,
     resolveDocument,
@@ -670,7 +673,15 @@ export function createLegionTool(deps: {
         }
         if (active.kind !== "controller" && isPhaseOp(operation)) {
           const answer = await executePhaseOp(
-            { daemon: daemon(), claim: active, build: BUILD, handoffReport, branchHead, restart },
+            {
+              daemon: daemon(),
+              claim: active,
+              build: BUILD,
+              env,
+              handoffReport,
+              branchHead,
+              restart,
+            },
             parameters
           );
           // A call that returned without throwing: a completion, and a backward move, which hands
