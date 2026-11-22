@@ -309,83 +309,117 @@ test("a connection closed for good between a /clear's deregistration and its reg
 // connection is closed for good"): a heartbeat queued in the registry chain while the connection
 // is closed for good runs after the replacement has connected and before the replacement's own step
 // in the chain, which clears the loss. Here a held registry write (an unfollow's DELETE of a topic)
-// keeps the chain busy while a heartbeat queues behind it and the replacement connects; then the
-// write is answered. Before the fix that heartbeat adopted the `/clear` on the new connection,
-// moved the identity and deregistered the old id, had the new id's registration refused for want
-// of a relay, and the `/clear` was never reported: the server's report line never came.
-test("a /clear read by a heartbeat held behind a registry write as the new connection opens waits for that connection's set-up, then completes and is reported", async () => {
-  const SESSION = "ses_clear_window"
-  const NEXT = "ses_clear_window_next"
-  const TOPIC = "notifications.dispatch.issue.DSP-1"
-  const directory = scratchState()
-  const handoff = sessionHandoffFile(directory, 781)
-  await writeSessionHandoff(handoff, SESSION)
-  const first = new FakeNats()
-  const second = new FakeNats()
-  const reopened = Promise.withResolvers<void>()
-  const reopenAsked = Promise.withResolvers<void>()
-  let held: PromiseWithResolvers<void> | undefined
-  const heldAsked = Promise.withResolvers<void>()
-  const registered: string[] = []
-  const written: string[] = []
-  const stderr = spyOn(process.stderr, "write").mockImplementation((chunk) => {
-    written.push(String(chunk))
-    return true
-  })
-  const report = `envoy: session id changed ${SESSION} -> ${NEXT}; re-registered`
-  const session = await startChannelSession(
-    sessionOptions(new SessionIdentity(SESSION, "/tmp"), directory, {
-      connection: first,
-      notifier: new FakeNotifier(),
-      heartbeatMs: 25,
-      handoffPid: 781,
-      reopen: async () => {
-        reopenAsked.resolve()
-        await reopened.promise
-        return { connection: second }
-      },
-      client: recordingClient([], {
-        subscribe: async (input) => {
-          registered.push(input.sessionID)
-          return noInterest(input.sessionID)
+// keeps the chain busy; the row then starts a heartbeat itself, through the retry the server armed
+// when its heartbeat failed in the outage (`scheduleRetry`), so that heartbeat sits in the chain
+// behind the held write whatever the machine's speed; then the replacement connects, and then the
+// write is answered. Every wait is on a fact, none on time passing. Before the fix that heartbeat
+// adopted the `/clear` on the new connection, moved the identity and deregistered the old id, had
+// the new id's registration refused for want of a relay, and the `/clear` was never reported.
+const WINDOW_ROW_MS = 30_000
+test(
+  "a /clear read by a heartbeat held behind a registry write as the new connection opens waits for that connection's set-up, then completes and is reported",
+  async () => {
+    // Each wait below runs until 5 s before the row's own timeout, counted from its start, not to
+    // the harness's 5 s: a slow machine slows the row and does not decide it, and a fact that never
+    // comes still fails by name, before Bun's timeout line.
+    const rowEnds = performance.now() + WINDOW_ROW_MS - 5_000
+    const untilRowEnds = (): number => Math.max(0, rowEnds - performance.now())
+    const SESSION = "ses_clear_window"
+    const NEXT = "ses_clear_window_next"
+    const TOPIC = "notifications.dispatch.issue.DSP-1"
+    const directory = scratchState()
+    const handoff = sessionHandoffFile(directory, 781)
+    await writeSessionHandoff(handoff, SESSION)
+    const first = new FakeNats()
+    const second = new FakeNats()
+    const reopened = Promise.withResolvers<void>()
+    const reopenAsked = Promise.withResolvers<void>()
+    let held: PromiseWithResolvers<void> | undefined
+    const heldAsked = Promise.withResolvers<void>()
+    /** Each extra heartbeat a failed heartbeat armed, for the row to run when it chooses. */
+    const retries: (() => void)[] = []
+    const registered: string[] = []
+    const written: string[] = []
+    const stderr = spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      written.push(String(chunk))
+      return true
+    })
+    const report = `envoy: session id changed ${SESSION} -> ${NEXT}; re-registered`
+    const session = await startChannelSession(
+      sessionOptions(new SessionIdentity(SESSION, "/tmp"), directory, {
+        connection: first,
+        notifier: new FakeNotifier(),
+        heartbeatMs: 25,
+        handoffPid: 781,
+        scheduleRetry: (run) => {
+          retries.push(run)
+          return () => undefined
         },
-        unsubscribe: async () => {
-          if (held === undefined) return
-          heldAsked.resolve()
-          await held.promise
+        reopen: async () => {
+          reopenAsked.resolve()
+          await reopened.promise
+          return { connection: second }
         },
+        client: recordingClient([], {
+          subscribe: async (input) => {
+            registered.push(input.sessionID)
+            return noInterest(input.sessionID)
+          },
+          unsubscribe: async () => {
+            if (held === undefined) return
+            heldAsked.resolve()
+            await held.promise
+          },
+        }),
       }),
-    }),
-  )
-  try {
-    expect(await session.follow([TOPIC])).toEqual([TOPIC])
-    await first.closeForGood(serverRefusal("AUTHORIZATION_VIOLATION", "'Authorization Violation'"))
-    await reopenAsked.promise
-    await writeSessionHandoff(handoff, NEXT)
-    held = Promise.withResolvers<void>()
-    const unfollowed = session.unfollow([TOPIC])
-    await heldAsked.promise
-    // A heartbeat queues behind the held write: eight 25 ms heartbeats pass, and an absence needs
-    // the time to pass, since nothing outside the chain says that one has queued.
-    await Bun.sleep(200)
-    reopened.resolve()
-    // The replacement connects and queues its own set-up behind that heartbeat.
-    await Bun.sleep(50)
-    expect(registered).not.toContain(NEXT)
-    held.resolve()
-    expect(await unfollowed).toEqual([TOPIC])
-    await waitFor(
-      async () => written.some((line) => line.includes(report)),
-      "the /clear's report",
-      () => JSON.stringify({ registered, stderr: written.join("") }),
     )
-    expect(registered.at(-1)).toBe(NEXT)
-    expect(second.subscriptions.has(deliverSubject(NEXT))).toBe(true)
-  } finally {
-    stderr.mockRestore()
-    await session.shutdown()
-  }
-}, 30_000)
+    try {
+      expect(await session.follow([TOPIC])).toEqual([TOPIC])
+      await first.closeForGood(
+        serverRefusal("AUTHORIZATION_VIOLATION", "'Authorization Violation'"),
+      )
+      await reopenAsked.promise
+      await writeSessionHandoff(handoff, NEXT)
+      // A heartbeat in the outage fails, as the registration has no relay, and arms its one retry.
+      await waitFor(
+        async () => retries.length > 0,
+        "a retry armed by a failed heartbeat",
+        () => JSON.stringify({ registered }),
+        untilRowEnds(),
+      )
+      held = Promise.withResolvers<void>()
+      const unfollowed = session.unfollow([TOPIC])
+      await heldAsked.promise
+      // The retry's heartbeat enters the chain behind the held write at once, as the call returns;
+      // a heartbeat already in flight now can only be waiting behind that write too.
+      retries.at(-1)?.()
+      reopened.resolve()
+      // The replacement has connected once it takes the relay subject on it, which `reopenFor` does
+      // as it takes the connection, before it queues its own set-up behind that heartbeat.
+      await waitFor(
+        async () => second.subscriptions.has(deliverSubject(SESSION)),
+        "the replacement connection taken",
+        () => JSON.stringify({ registered }),
+        untilRowEnds(),
+      )
+      expect(registered).not.toContain(NEXT)
+      held.resolve()
+      expect(await unfollowed).toEqual([TOPIC])
+      await waitFor(
+        async () => written.some((line) => line.includes(report)),
+        "the /clear's report",
+        () => JSON.stringify({ registered, stderr: written.join("") }),
+        untilRowEnds(),
+      )
+      expect(registered.at(-1)).toBe(NEXT)
+      expect(second.subscriptions.has(deliverSubject(NEXT))).toBe(true)
+    } finally {
+      stderr.mockRestore()
+      await session.shutdown()
+    }
+  },
+  WINDOW_ROW_MS,
+)
 
 // A relay subscription that ends while a heartbeat's registration is still on the wire queues a
 // registration behind it, which names the outage. Shutdown then closes the relay and sends the
