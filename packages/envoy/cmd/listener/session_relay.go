@@ -250,7 +250,8 @@ type sessionRelays struct {
 	repositoryGaps   map[string]string
 	// givenBack counts, for each session whose entry could not record the gap mark of a withheld
 	// GitHub event, the events given back since (giveBackWithheld), until a mark write of the
-	// session lands (noteRepositoryGap) or the session is no longer this listener's to relay
+	// session lands (noteRepositoryGap), a GitHub event of the session is decided by a fresh
+	// repository answer (endGiveBacks), or the session is no longer this listener's to relay
 	// (apply): a run of give-backs is logged when it starts and when it ends, however often the
 	// server delivers an event again meanwhile. repositoryGapsMu guards it too.
 	givenBack map[string]int
@@ -1223,6 +1224,7 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			m.acknowledgeWithheld(sessionID, msg, verdict.reason)
 			continue
 		case frameDrop:
+			m.endGiveBacks(sessionID, msg.Subject)
 			m.acknowledgeWithheld(sessionID, msg, verdict.reason)
 			continue
 		}
@@ -1240,6 +1242,7 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 				}
 			}
 		}
+		m.endGiveBacks(sessionID, msg.Subject)
 		if err := m.publishFrame(ctx, run, msg, streamID, gap, gapReason, owed); err != nil {
 			if ctx.Err() != nil {
 				return relayEnded
@@ -1384,9 +1387,11 @@ func (m *sessionRelays) acknowledgeWithheld(sessionID string, msg bus.SessionMes
 // repository answer stands, back to the server with the delay its deliveries earn
 // (relayNakDelayFor), neither acknowledged nor counted: the session's entry could not be given
 // the gap mark the event owes (err, noteRepositoryGap), so the event stays the consumer's until a
-// redelivery marks the entry. Only the first give-back of a run is logged (givenBack): the server
+// redelivery marks the entry. Only the first give-back of a run logs err (givenBack): the server
 // delivers the event again within seconds, and each delivery is given back while the entry takes
-// no mark, so a line at each would fill the log for as long as the bucket refuses the write.
+// no mark, so a line at each would fill the log for as long as the bucket refuses the write. A nak
+// that fails is logged at every give-back: the server then holds the event for the consumer's ack
+// wait rather than the nak's delay, which is no repeat of the mark's failure.
 func (m *sessionRelays) giveBackWithheld(sessionID string, msg bus.SessionMessage, err error) {
 	nakErr := msg.NakWithDelay(relayNakDelayFor(msg.Delivered))
 	m.repositoryGapsMu.Lock()
@@ -1396,14 +1401,40 @@ func (m *sessionRelays) giveBackWithheld(sessionID string, msg bus.SessionMessag
 	m.givenBack[sessionID]++
 	first := m.givenBack[sessionID] == 1
 	m.repositoryGapsMu.Unlock()
-	if !first {
+	if first {
+		m.logger.Warn("edge listener gave a withheld GitHub event back to the server: the session's entry could not record its gap mark; the server delivers it again, and each withheld event of the session is given back unlogged until a mark write of the session lands or a fresh repository answer decides its GitHub events, which is logged",
+			slog.String("session_id", sessionID),
+			slog.String("subject", msg.Subject),
+			slog.Uint64("stream_seq", msg.StreamSeq),
+			slog.String("error", err.Error()))
+	}
+	if nakErr != nil {
+		m.logger.Warn("edge listener could not give a withheld GitHub event back to the server: its nak failed, so the consumer delivers it again once its ack wait has passed",
+			slog.String("session_id", sessionID),
+			slog.String("subject", msg.Subject),
+			slog.Uint64("stream_seq", msg.StreamSeq),
+			slog.String("error", nakErr.Error()))
+	}
+}
+
+// endGiveBacks ends sessionID's run of give-backs (givenBack) once a GitHub event of the session,
+// subject being the subject its message was stored on, is decided otherwise than by a give-back: a
+// fresh repository answer relays it or drops it, so the session's GitHub events are no longer
+// withheld for want of an answer, and a give-back in a later outage starts a run of its own and
+// logs it. Any other frame says nothing of the session's GitHub events and ends no run, and a
+// listener that is no edge gives nothing back.
+func (m *sessionRelays) endGiveBacks(sessionID, subject string) {
+	if m.repositories == nil || !strings.HasPrefix(subject, contracts.GithubTopicPrefix) {
 		return
 	}
-	m.logger.Warn("edge listener gave a withheld GitHub event back to the server: the session's entry could not record its gap mark; the server delivers it again, and each withheld event of the session is given back unlogged until a mark write of the session lands, which is logged",
-		slog.String("session_id", sessionID),
-		slog.String("subject", msg.Subject),
-		slog.Uint64("stream_seq", msg.StreamSeq),
-		slog.String("error", errors.Join(err, nakErr).Error()))
+	m.repositoryGapsMu.Lock()
+	given := m.givenBack[sessionID]
+	delete(m.givenBack, sessionID)
+	m.repositoryGapsMu.Unlock()
+	if given > 0 {
+		m.logger.Info("edge listener decides the session's GitHub events by a fresh repository answer again, after giving back the events it withheld while the session's entry could not record a gap mark",
+			slog.String("session_id", sessionID), slog.Int("given_back", given))
+	}
 }
 
 // publishFrame publishes msg as a frame on the session's relay subject, its reply subject one of

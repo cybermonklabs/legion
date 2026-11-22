@@ -690,6 +690,86 @@ func TestAGivenBackEventIsLoggedOnceUntilItsSessionsEntryTakesAMark(t *testing.T
 	}
 }
 
+// A run of give-backs also ends when a fresh repository answer decides the session's GitHub events
+// again while its entry still takes no mark: the given-back event comes back, a fresh answer that
+// names its repository relays it, and that ends the run with its INFO line. A later outage in which
+// the entry still takes no mark starts a new run, logged with its own WARN. Control: with the run
+// ended only by a mark write that lands or the session leaving, as at 3031034d82, the count of the
+// first run stands, the second run's give-back logs nothing, and the row fails.
+func TestARunOfGiveBacksEndsWhenAFreshAnswerRelaysTheEvent(t *testing.T) {
+	const gaveBack, decided = "edge listener gave a withheld GitHub event back to the server", "edge listener decides the session's GitHub events by a fresh repository answer again"
+	const sessionID = "ses_edge_gap_answer_back"
+	rig := newEdgeRigServing(t, []string{"PRIV"})
+	event := giveBackWithheldEvent(t, rig, sessionID, func(bucket natsgo.KeyValue, sessionID string) error {
+		_, err := bucket.Put(sessionID, []byte(`{"machine_id":7}`))
+		return err
+	})
+	if lines := edgeLogLines(rig.harness.logs.String(), "WARN", gaveBack); len(lines) != 1 {
+		t.Fatalf("UNKNOWN: the first give-back logged %d WARN lines, want 1:\n%s", len(lines), rig.harness.logs.String())
+	}
+
+	// The broker answers again, and the refresh reads a fresh answer naming acme/pub, so the
+	// given-back event is relayed when it comes back, while the entry still takes no mark.
+	rig.repositories.failWith(0)
+	rig.tick(t)
+	testwait.Eventually(t, "the given-back event to be relayed and acknowledged", func() bool {
+		return event.consumer().AckFloor.Stream >= event.seq
+	})
+	ends := edgeLogLines(rig.harness.logs.String(), "INFO", decided)
+	if len(ends) != 1 || ends[0]["session_id"] != sessionID {
+		t.Errorf("the relay of the given-back event by a fresh answer logged %d lines ending the run, want 1 naming %s", len(ends), sessionID)
+	} else if given, _ := ends[0]["given_back"].(float64); given < 1 {
+		t.Errorf("the line that ends the run counts %v give-backs, want at least 1", ends[0]["given_back"])
+	}
+
+	// A second outage, the entry still taking no mark: its first give-back starts a new run. The
+	// event is delivered again only after its give-back, which logs at once.
+	rig.repositories.failWith(http.StatusServiceUnavailable)
+	rig.clock.advance(edgeRepositoryAnswerLife + time.Second)
+	rig.storeGithubEvent(t, "acme/pub", "pr.2")
+	testwait.Eventually(t, "the second outage's event to be given back and delivered again", func() bool {
+		info := event.consumer()
+		return info.Delivered.Stream > event.seq && info.NumRedelivered >= 1
+	})
+	if lines := edgeLogLines(rig.harness.logs.String(), "WARN", gaveBack); len(lines) != 2 {
+		t.Fatalf("a give-back of a second outage, after a fresh answer ended the first, logged %d WARN lines in all, want 2:\n%s", len(lines), rig.harness.logs.String())
+	}
+}
+
+// nakAcker is a pulled message's answers whose NakWithDelay ends with err.
+type nakAcker struct{ err error }
+
+func (nakAcker) Ack() error                         { return nil }
+func (nakAcker) InProgress() error                  { return nil }
+func (a nakAcker) NakWithDelay(time.Duration) error { return a.err }
+
+// A give-back whose nak the server does not take is logged at every give-back, the first of a run
+// or not: the event then waits out the consumer's ack wait rather than the nak's delay, which is not
+// the repeated "the entry takes no mark" a run logs once. The repeated mark error is still logged
+// once a run. Control: with the nak's error logged only at a run's first give-back, as at
+// 3031034d82, the second give-back's failed nak is logged nowhere and the row fails.
+func TestAGiveBackWhoseNakFailsIsLoggedEveryTime(t *testing.T) {
+	const gaveBack, unNaked = "edge listener gave a withheld GitHub event back to the server", "edge listener could not give a withheld GitHub event back to the server"
+	logs := &cmdtest.LockedBuffer{}
+	m := &sessionRelays{logger: logging.NewWithWriter("test", logs)}
+	marking := errors.New("mark session ses_nak's repository gap: the bucket holds no entry of it")
+	refused := errors.New("nats: connection closed")
+	const subject = "notifications.github.acme.pub.pr.1"
+	m.giveBackWithheld("ses_nak", bus.SessionMessage{Subject: subject, StreamSeq: 7, Delivered: 1, SessionAcker: nakAcker{}}, marking)
+	m.giveBackWithheld("ses_nak", bus.SessionMessage{Subject: subject, StreamSeq: 7, Delivered: 2, SessionAcker: nakAcker{err: refused}}, marking)
+	m.giveBackWithheld("ses_nak", bus.SessionMessage{Subject: subject, StreamSeq: 7, Delivered: 3, SessionAcker: nakAcker{}}, marking)
+	if lines := edgeLogLines(logs.String(), "WARN", gaveBack); len(lines) != 1 {
+		t.Fatalf("three give-backs of one run logged %d WARN lines starting the run, want 1:\n%s", len(lines), logs.String())
+	}
+	lines := edgeLogLines(logs.String(), "WARN", unNaked)
+	if len(lines) != 1 {
+		t.Fatalf("the second give-back, whose nak failed, logged %d lines naming the failed nak, want 1:\n%s", len(lines), logs.String())
+	}
+	if text, _ := lines[0]["error"].(string); lines[0]["session_id"] != "ses_nak" || lines[0]["stream_seq"] != float64(7) || !strings.Contains(text, refused.Error()) {
+		t.Errorf("the failed nak's line names session %v, stream_seq %v, error %q; want ses_nak, 7 and %q", lines[0]["session_id"], lines[0]["stream_seq"], text, refused)
+	}
+}
+
 // Dispatch answers a repository in lower case and the intake keeps GitHub's case, so the
 // edge compares owner and name ignoring case: an interest in Acme/Pub is admitted through an
 // answer of acme/pub, and the event the intake publishes for Acme/Pub reaches the session.
