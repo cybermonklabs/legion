@@ -437,6 +437,114 @@ func TestASleepAfterARuntimeHandoffIsNotErasedByIt(t *testing.T) {
 	}
 }
 
+// xidLockedRunsFrom is a trace in which goroutine 1, locked to thread 7, is first seen running at
+// from ms, and is runnable on the runtime, its thread asleep, over each of runnable's [start, end]
+// stretches; it runs again after each, until it waits at 14 ms.
+func xidLockedRunsFrom(base time.Time, from float64, runnable ...[2]float64) *xidTraceReading {
+	at := func(ms float64) exptrace.Time { return exptrace.Time(ms * float64(time.Millisecond)) }
+	reading := &xidTraceReading{
+		baseTime: base,
+		snapshot: exptrace.ClockSnapshot{Trace: 0, Mono: 0},
+		changes:  map[exptrace.GoID][]xidGoStateChange{},
+		runs:     map[int][]xidThreadRun{},
+	}
+	reading.transition(exptrace.MakeProcStateTransition(0, exptrace.ProcUndetermined, exptrace.ProcRunning), at(from), 7)
+	reading.transition(exptrace.MakeGoStateTransition(1, exptrace.GoUndetermined, exptrace.GoRunning), at(from), 7)
+	for _, stretch := range runnable {
+		reading.transition(exptrace.MakeGoStateTransition(1, exptrace.GoRunning, exptrace.GoRunnable), at(stretch[0]), 7)
+		reading.transition(exptrace.MakeProcStateTransition(0, exptrace.ProcRunning, exptrace.ProcIdle), at(stretch[0]), 7)
+		reading.transition(exptrace.MakeProcStateTransition(0, exptrace.ProcIdle, exptrace.ProcRunning), at(stretch[1]), 7)
+		reading.transition(exptrace.MakeGoStateTransition(1, exptrace.GoRunnable, exptrace.GoRunning), at(stretch[1]), 7)
+	}
+	reading.transition(exptrace.MakeGoStateTransition(1, exptrace.GoRunning, exptrace.GoWaiting), at(14), 7)
+	return reading
+}
+
+// Rule 2 weighs the time the code made in a window's gaps against the time it made in its
+// statements (XidWindow.StatementTime), never against the statements' time on the clock. Here one
+// window, the same code three times: its write's thread ran 1 ms, the gap after it 3 ms of the
+// code's CPU and the COMMIT 0.1 ms, so rule 2 breaks, 3 ms of gaps against 1.1 ms of statements.
+// In the second copy the write's thread also waited 9 ms for a CPU inside the statement, which its
+// run_delay counts; in the third the runtime kept its goroutine runnable 9 ms inside it while its
+// locked thread slept, which the trace shows. Both waits are the machine's, and rule 2 still
+// breaks. With the statements read off the clock, as a tester planted at 15d679ca57, the loaded
+// copies kept rule 2 on 10.1 ms of statements and every other xid row passed (2026-11-22); with the
+// statements read without the trace, the third copy keeps it.
+func TestRuleTwoReadsTheStatementsTheCodeMade(t *testing.T) {
+	RequireXidGapJudgment(t)
+	base := time.Now()
+	ms := func(v float64) time.Duration { return time.Duration(v * float64(time.Millisecond)) }
+	clock := func(at, ran, waited float64) xidThreadClock {
+		return xidThreadClock{thread: 7, at: base.Add(ms(at)), ran: ms(ran), waited: ms(waited)}
+	}
+	for _, test := range []struct {
+		name        string
+		end, queued float64
+		reading     *xidTraceReading
+	}{
+		{"the write ran 1 ms", 1, 0, nil},
+		{"the write ran 1 ms and its thread waited 9 ms for a CPU", 10, 9, nil},
+		{"the write ran 1 ms and the runtime kept its goroutine runnable 9 ms", 10, 0, xidLockedRunsFrom(base, 0, [2]float64{0.5, 9.5})},
+	} {
+		write := XidStatement{PID: 7, SQL: "insert into projects values (1)", Marked: true, Wrote: true, locked: 7,
+			Start: base, End: base.Add(ms(test.end)), started: clock(0, 0, 0), ended: clock(test.end, 1, test.queued)}
+		commit := XidStatement{PID: 7, SQL: "commit", Marked: true, locked: 7,
+			Start: base.Add(ms(test.end + 3)), End: base.Add(ms(test.end + 3.1)),
+			started: clock(test.end+3, 4, test.queued), ended: clock(test.end+3.1, 4.1, test.queued)}
+		window := xidWindowOf(XidTransaction{PID: 7, Statements: []XidStatement{write, commit}, Committed: true}, test.reading)
+		broken := strings.Join(window.Violations(), "; ")
+		t.Logf("%s: statements %s, gaps %s; violations: %s", test.name, XidMillis(window.StatementTime), XidMillis(window.GapTime), broken)
+		if !strings.Contains(broken, "its gaps take 3.000 ms, more than its statements' 1.100 ms") {
+			t.Errorf("%s: violations %q, want rule 2 broken, 3 ms of the code's gaps against 1.1 ms of its statements", test.name, broken)
+		}
+	}
+}
+
+// A statement of a window that the rig could not read whole is a rig problem: rule 2 would weigh
+// the gaps against its time on the clock, where its clocks were not read at both ends, or with the
+// runtime's wait inside it, where the trace does not show its goroutine by its start - each of
+// which a loaded machine stretches. Here the write's thread ran 1 ms of its 10 ms and slept the
+// rest, and the 3 ms gap after it is the code's CPU. Read either way, the write holds 10 ms, so the
+// window keeps rule 2 and breaks no rule; the problem is all that stops the run passing on it.
+func TestAStatementTheRigCouldNotReadIsUnknown(t *testing.T) {
+	RequireXidGapJudgment(t)
+	base := time.Now()
+	ms := func(v float64) time.Duration { return time.Duration(v * float64(time.Millisecond)) }
+	clock := func(at, ran float64) xidThreadClock {
+		return xidThreadClock{thread: 7, at: base.Add(ms(at)), ran: ms(ran)}
+	}
+	for _, test := range []struct {
+		name    string
+		started xidThreadClock
+		reading *xidTraceReading
+		want    string
+	}{
+		{"its clocks unread at its start", xidThreadClock{}, xidLockedRunsFrom(base, 0),
+			"statement 0 of backend 7's window (insert into projects values (1)) was not read off one thread's clocks at its start and end"},
+		{"its goroutine first traced after its start", clock(0.2, 0.1), xidLockedRunsFrom(base, 5),
+			"statement 0 of backend 7's window (insert into projects values (1)) was not read off the execution trace"},
+	} {
+		statements := []XidStatement{
+			{PID: 7, SQL: "begin", Marked: true, locked: 7, Start: base, End: base.Add(ms(0.1)), started: clock(0, 0), ended: clock(0.1, 0.1)},
+			{PID: 7, SQL: "insert into projects values (1)", Marked: true, Wrote: true, locked: 7,
+				Start: base.Add(ms(0.2)), End: base.Add(ms(10.2)), started: test.started, ended: clock(10.2, 1.1)},
+			{PID: 7, SQL: "commit", Marked: true, locked: 7,
+				Start: base.Add(ms(13.2)), End: base.Add(ms(13.3)), started: clock(13.2, 4.1), ended: clock(13.3, 4.2)},
+		}
+		report := analyzeXidWindows(statements, nil, 0, test.reading)
+		if len(report.Windows) != 1 || len(report.Windows[0].Violations()) != 0 {
+			t.Fatalf("%s: windows %d, want one that breaks no rule, or this row proves nothing", test.name, len(report.Windows))
+		}
+		t.Logf("%s: %s; problems: %q", test.name, report.Windows[0].Summary(), report.Problems)
+		if len(report.Problems) != 1 || !strings.Contains(report.Problems[0], test.want) {
+			t.Errorf("%s: problems %q, want only %q", test.name, report.Problems, test.want)
+		}
+		if err := report.Err(); err == nil || !strings.Contains(err.Error(), "XID RIG PROBLEM") {
+			t.Errorf("%s: verdict %v, want a rig problem", test.name, err)
+		}
+	}
+}
+
 // A COMMIT that begins before the capture ends and ends after it is inside the trace the rig judges
 // its window by: Measure copies the statements done by the capture's end before it stops the
 // tracer, and marks the trace after the copy. Here a goroutine of the operation sends a marked

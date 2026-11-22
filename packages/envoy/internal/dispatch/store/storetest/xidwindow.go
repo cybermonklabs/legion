@@ -435,16 +435,19 @@ type XidTransaction struct {
 // XidWindow is the part of a transaction during which it held its xid, as D6 judges it.
 type XidWindow struct {
 	Transaction XidTransaction
-	// Statements are the transaction's statements from the window's first through COMMIT.
+	// Statements are the transaction's statements from the window's first through COMMIT, and
+	// Spans their own stretches, Spans[i] of Statements[i], read as a gap is (XidStatement.span).
 	Statements []XidStatement
+	Spans      []XidGap
 	Start, End time.Time
-	// StatementTime is the time the window's statements took less the part of it the rig reads as
-	// the machine's off a stretch's clocks (XidStatement.span): the thread's wait for a CPU and the
-	// runtime's wait to run its goroutine. It still holds the rig's own work on each statement -
-	// classifying its text, reading whether it wrote, joining a batch's SQL - beyond the softirq
-	// reads it takes out, and the time the client waited on the server for the answer, which a
-	// loaded server stretches. Both lengthen the statements' side, so they can only make rule 2
-	// pass a window it would fail, never fail one it would pass.
+	// StatementTime is the time the code made in the window's statements (XidGap.Made of each of
+	// Spans): their time less the part the rig reads as the machine's off a stretch's clocks, the
+	// thread's wait for a CPU and the runtime's wait to run its goroutine, never their time on the
+	// clock. It still holds the rig's own work on each statement - classifying its text, reading
+	// whether it wrote, joining a batch's SQL - beyond the softirq reads it takes out, and the time
+	// the client waited on the server for the answer, which a loaded server stretches. Both
+	// lengthen the statements' side, so they can only make rule 2 pass a window it would fail,
+	// never fail one it would pass.
 	StatementTime time.Duration
 	// Gaps are the gaps between Statements, Gaps[i] following Statements[i]. GapTime and MaxGap
 	// are of the time the code made in them (XidGap.Made).
@@ -676,8 +679,10 @@ func xidAssigned(sql string, tag pgconn.CommandTag) bool {
 }
 
 // analyzeXidWindows splits statements into the operation's transactions and judges their windows.
-// A window gap not read off its transaction's locked thread (XidGap.Read) is a rig problem where
-// the build judges gaps.
+// Where the build judges gaps, a window gap not read off its transaction's locked thread
+// (XidGap.Read) or off the execution trace (XidGap.Traced) is a rig problem, and so is such a
+// statement of a window that has a gap: rule 2 would weigh the gaps against that statement's time
+// on the clock, or with the runtime's wait inside it, both of which a loaded machine stretches.
 func analyzeXidWindows(statements []XidStatement, polls []xidPoll, duration time.Duration, reading *xidTraceReading) *XidReport {
 	report := &XidReport{Duration: duration, Polls: len(polls)}
 	for i := 1; i < len(polls); i++ {
@@ -762,6 +767,19 @@ func analyzeXidWindows(statements []XidStatement, polls []xidPoll, duration time
 						i, transaction.PID, xidSQL(window.Statements[i].SQL)))
 				}
 			}
+			for i, span := range window.Spans {
+				switch {
+				case len(window.Gaps) == 0:
+				case !span.Read:
+					report.Problems = append(report.Problems, fmt.Sprintf(
+						"statement %d of backend %d's window (%s) was not read off one thread's clocks at its start and end, for one of the causes an unread gap has (readXidThreadClock, xidClockTries), so rule 2 would weigh the window's gaps against its time on the clock, which a loaded machine stretches",
+						i, transaction.PID, xidSQL(window.Statements[i].SQL)))
+				case !span.Traced:
+					report.Problems = append(report.Problems, fmt.Sprintf(
+						"statement %d of backend %d's window (%s) was not read off the execution trace: the trace shows no goroutine running on the transaction's thread by its start, so rule 2 would count the runtime's wait inside it as the code's",
+						i, transaction.PID, xidSQL(window.Statements[i].SQL)))
+				}
+			}
 			if problem := xidPastTraceProblem(window, reading); problem != "" {
 				report.Problems = append(report.Problems, problem)
 			} else if problem := xidRuntimeWaitProblem(window); problem != "" {
@@ -818,7 +836,9 @@ func xidWindowOf(transaction XidTransaction, reading *xidTraceReading) XidWindow
 		// The rig's own reads of the softirq counts run inside the statement, as its other work
 		// does; their CPU time is the rig's, and rule 2 sets the code's gaps against the code's
 		// statements.
-		window.StatementTime += max(statement.span(reading).Made()-statement.startedIRQ.cost-statement.endedIRQ.cost, 0)
+		span := statement.span(reading)
+		window.Spans = append(window.Spans, span)
+		window.StatementTime += max(span.Made()-statement.startedIRQ.cost-statement.endedIRQ.cost, 0)
 		if i == 0 {
 			continue
 		}
