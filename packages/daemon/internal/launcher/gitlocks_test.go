@@ -248,6 +248,24 @@ func newGatedProc(t *testing.T, pids ...int) *gatedProc {
 	return g
 }
 
+// beforeDeadline is how long a wait that begins now may last: until 30 s before the test binary's
+// deadline, which leaves a failing row's cleanups and its failure time to run (cleanupBeforeDeadline
+// gives the cleanups their part of it), and about 36 years under -timeout 0 (testwait.Bounded of
+// 1<<60 ns). Each wait for something the sweep or the launcher will do is bounded by it rather than
+// by a fixed span, so a pass or a goroutine that is merely slow on a loaded machine still passes its
+// row, and one that never comes still fails it, naming what it waited for. One that never comes
+// thus costs the rest of the binary's -timeout.
+func beforeDeadline(t *testing.T) time.Duration {
+	return testwait.Bounded(t, 1<<60, 30*time.Second)
+}
+
+// cleanupBeforeDeadline is beforeDeadline for a wait in a cleanup: it ends 10 s before the test
+// binary's deadline, so a cleanup that runs after its row gave up at beforeDeadline still has 20 s
+// to see its own wait out before the binary's alarm.
+func cleanupBeforeDeadline(t *testing.T) time.Duration {
+	return testwait.Bounded(t, 1<<60, 10*time.Second)
+}
+
 // through lets one of the sweep's holder reads past both gates and answers once it has read every
 // process between them. The row calls it from its own goroutine, with the pass running in
 // another; which names the read in the failure of a pass that never reached a gate.
