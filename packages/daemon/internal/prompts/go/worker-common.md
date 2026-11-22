@@ -31,9 +31,7 @@ Before your turn's first commit, run `jj -R "$LEGION_WORKSPACE" log -r @ --no-gr
 it prints `true`, run `jj -R "$LEGION_WORKSPACE" new @-`. If it prints `false`, `@` can hold another
 role's edits, since a role whose phase ends leaves them there: read its change id with
 `jj -R "$LEGION_WORKSPACE" log -r @ --no-graph -T 'change_id.short()'`, run
-`jj -R "$LEGION_WORKSPACE" new @-` too, which sets that change aside, and point a bookmark at it,
-`jj -R "$LEGION_WORKSPACE" bookmark set aside/<change id> -r <change id>`, since a pod update's read
-of unpushed work counts the change only while a bookmark points at it. Take back a path whose every
+`jj -R "$LEGION_WORKSPACE" new @-` too, which sets that change aside. Take back a path whose every
 edit in that change is yours with
 `jj -R "$LEGION_WORKSPACE" squash --from <change id> --into @ <path>`, and tell the architect the
 change id and every path you leave in it. Never `jj describe` or `jj split` the working-copy commit
