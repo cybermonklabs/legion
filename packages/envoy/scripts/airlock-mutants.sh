@@ -3,20 +3,20 @@
 #
 # Proves that the airlock's tests and the Lean proofs catch a defect, which is the whole claim
 # behind a model that is only as good as the test tying it to the Go functions, and behind a
-# proxy whose wire handling no model covers. Each file of internal/broker/airlock/testdata/mutants
-# and of internal/broker/airlockproxy/testdata/mutants is one defect as a unified diff. For each,
+# proxy whose wire handling no model covers. Each file of internal/cipher/proxyrules/testdata/mutants
+# and of internal/cipher/proxy/testdata/mutants is one defect as a unified diff. For each,
 # this script copies packages/envoy to a fresh directory under $TMPDIR, applies that one patch
 # there with patch -p1, and requires the copy to fail:
 #
 #   - a Go mutant (go-*.patch) must fail the comparison fuzz test over the committed seed
-#     corpus, run as `go test -run FuzzAirlock ./internal/broker/airlock/` with AIRLOCK_MODEL
+#     corpus, run as `go test -run FuzzAirlock ./internal/cipher/proxyrules/` with AIRLOCK_MODEL
 #     naming the model this checkout already built;
 #   - a model mutant (lean-*.patch) must fail `lake build` in the copy, because a proof no
 #     longer holds, or, when it still builds, fail that same comparison against the mutated
 #     model. The line says which of the two caught it;
-#   - a proxy mutant (proxy-*.patch, internal/broker/airlockproxy/testdata/mutants) must fail the
+#   - a proxy mutant (proxy-*.patch, internal/cipher/proxy/testdata/mutants) must fail the
 #     tests its own header names, one `# must fail: <Test>` line each, run as
-#     `go test -run '^(<Test>|...)$' ./internal/broker/airlockproxy/`, which runs each once with
+#     `go test -run '^(<Test>|...)$' ./internal/cipher/proxy/`, which runs each once with
 #     an HTTP/1.1 client and once with an h2-only one. It is caught only when every named test ran
 #     and failed: a failure of any other test is not counted, a named test that passed is a hole,
 #     a named test that did not run (a misspelt or removed name) is refused, and a patch that names
@@ -42,21 +42,21 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_DIR="$(cd "$ENVOY_DIR/../.." && pwd)"
-AIRLOCK_PKG_DIR="$ENVOY_DIR/internal/broker/airlock"
+AIRLOCK_PKG_DIR="$ENVOY_DIR/internal/cipher/proxyrules"
 MUTANT_DIR="$AIRLOCK_PKG_DIR/testdata/mutants"
-PROXY_MUTANT_DIR="$ENVOY_DIR/internal/broker/airlockproxy/testdata/mutants"
+PROXY_MUTANT_DIR="$ENVOY_DIR/internal/cipher/proxy/testdata/mutants"
 MODEL="$AIRLOCK_PKG_DIR/lean/.lake/build/bin/airlock-model"
 
 usage() {
 	cat <<'EOF'
 usage: airlock-mutants.sh [<name>...]
 
-Applies each mutant of internal/broker/airlock/testdata/mutants and of
-internal/broker/airlockproxy/testdata/mutants to a copy of packages/envoy under $TMPDIR and
+Applies each mutant of internal/cipher/proxyrules/testdata/mutants and of
+internal/cipher/proxy/testdata/mutants to a copy of packages/envoy under $TMPDIR and
 requires that copy to fail: a go-*.patch must fail the comparison fuzz test over the committed
 seed corpus, a lean-*.patch must fail `lake build`, because a proof no longer holds, or that
 same comparison against the mutated model, and a proxy-*.patch must fail every test of
-./internal/broker/airlockproxy/ its own `# must fail: <Test>` lines name, and is counted by
+./internal/cipher/proxy/ its own `# must fail: <Test>` lines name, and is counted by
 those tests alone.
 
   <name>   a patch's file name, with or without the .patch suffix (for example
@@ -157,7 +157,7 @@ copy_envoy() {
 	if [[ "$with_lake" == true ]]; then
 		tar -C "$ENVOY_DIR" -cf - . | tar -C "$dest/packages" -xf - --one-top-level=envoy
 	else
-		tar -C "$ENVOY_DIR" -cf - --exclude=./internal/broker/airlock/lean/.lake . |
+		tar -C "$ENVOY_DIR" -cf - --exclude=./internal/cipher/proxyrules/lean/.lake . |
 			tar -C "$dest/packages" -xf - --one-top-level=envoy
 	fi
 }
@@ -167,7 +167,7 @@ copy_envoy() {
 compare() {
 	local copy="$1" model="$2" log="$3"
 	if (cd "$copy/packages/envoy" && GOWORK=off AIRLOCK_MODEL="$model" \
-		go test -count=1 -run FuzzAirlock ./internal/broker/airlock/) >"$log" 2>&1; then
+		go test -count=1 -run FuzzAirlock ./internal/cipher/proxyrules/) >"$log" 2>&1; then
 		return 1
 	fi
 	# A non-zero exit is the mutant caught only when the comparison itself failed; a copy
@@ -195,7 +195,7 @@ must_fail() {
 # did not run.
 proxy_tests() {
 	local copy="$1" log="$2" tests="$3" test verdict=0
-	(cd "$copy/packages/envoy" && GOWORK=off go test -count=1 -v -run "^($(paste -sd '|' <<<"$tests"))\$" ./internal/broker/airlockproxy/) >"$log" 2>&1
+	(cd "$copy/packages/envoy" && GOWORK=off go test -count=1 -v -run "^($(paste -sd '|' <<<"$tests"))\$" ./internal/cipher/proxy/) >"$log" 2>&1
 	MISSED=""
 	while read -r test; do
 		if ! grep -q "^=== RUN   $test\$" "$log"; then
@@ -250,12 +250,12 @@ for name in "${mutants[@]}"; do
 	fi
 
 	if [[ "$name" == lean-* ]]; then
-		if ! (cd "$copy/packages/envoy/internal/broker/airlock/lean" && lake build) >"$log" 2>&1; then
+		if ! (cd "$copy/packages/envoy/internal/cipher/proxyrules/lean" && lake build) >"$log" 2>&1; then
 			reason="$(grep -m1 -E 'error:' "$log" | cut -c1-120)"
 			echo "PASS: $name — caught by lake build, a proof no longer holds: ${reason:-see the build log} ($((SECONDS - started))s)"
 			continue
 		fi
-		model="$copy/packages/envoy/internal/broker/airlock/lean/.lake/build/bin/airlock-model"
+		model="$copy/packages/envoy/internal/cipher/proxyrules/lean/.lake/build/bin/airlock-model"
 	else
 		model="$MODEL"
 	fi

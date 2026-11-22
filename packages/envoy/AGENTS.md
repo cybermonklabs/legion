@@ -12,8 +12,8 @@ Start with `docs/architecture.md`; `.dispatch/architecture/` at the repository r
 
 - `cmd/dispatch` with `internal/dispatch`: the Dispatch server, on Postgres with pgvector; read `cmd/dispatch/README.md` and `cmd/dispatch/AGENTS.md` first.
 
-- `cmd/broker` and `internal/broker`: the secrets broker, with its clients `cmd/agent-secrets` and `cmd/agent-secrets-helper`;
-  `cmd/broker/README.md`, `cmd/agent-secrets/README.md` and `docs/site/src/content/docs/broker/` at the repository root describe them.
+- `cmd/cipherd` and `internal/cipher`: the secrets broker, with its clients `cmd/cipher` and `cmd/cipher-helper`;
+  `cmd/cipherd/README.md`, `cmd/cipher/README.md` and `docs/site/src/content/docs/broker/` at the repository root describe them.
 
 - `internal/contracts`: envelopes and NATS subject names, whose topics and payloads for subscribers are in `docs/site/src/content/docs/dispatch/envoy.md` at the repository root;
   `listenerwire` holds the bodies of the listener's `/v1` API, which every Go client of the listener uses.
@@ -22,7 +22,7 @@ Start with `docs/architecture.md`; `.dispatch/architecture/` at the repository r
 
 - `cmd/natstail` prints the envelopes on a NATS subject;
   `cmd/mcp` is the MCP bridge; `cmd/spec-check` and `cmd/architecture-check` judge a checkout's `.dispatch/` as Dispatch's importer does;
-  `cmd/broker-refgen` writes the broker's reference pages from doc comments.
+  `cmd/cipher-refgen` writes the broker's reference pages from doc comments.
 
 - `deploy/`, `loadtest/` and `scripts/` each have a README; `docker/Dockerfile` builds the one image; `infra/` is a Go module of its own, with its own guide.
 

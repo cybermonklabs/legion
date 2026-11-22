@@ -79,14 +79,41 @@ type TransientError struct{ Err error }
 func (e *TransientError) Error() string { return e.Err.Error() }
 func (e *TransientError) Unwrap() error { return e.Err }
 
+// AnswerError is the failure of a GitHub call that GitHub answered with a status other than 2xx,
+// with GitHub's answer beside it (githubrest.AnswerOf): the request's method and its path under the
+// Manager's base URL, the status, the body, and the rate-limit headers as GitHub sent them. Its
+// message is Err's, and it unwraps to Err alone: the answer is a field and no link of the chain, so
+// errors.As finds no *githubrest.Answer in an error of this package, and every caller that reads
+// one in the errors of its own GitHub reads (internal/daemon's defaultBranchLimit and
+// githubrest.RetryAfter among them) reads a mint's error as it did before. Only a caller that asks
+// for an *AnswerError reads the answer: the daemon's start, which waits out GitHub's rate limit on
+// its App calls, the App logins read and the key proof (internal/daemon's bootLimit). Every answer
+// other than 2xx this package reads carries one, inside the TransientError where one is made.
+type AnswerError struct {
+	Err    error
+	Answer *githubrest.Answer
+}
+
+func (e *AnswerError) Error() string { return e.Err.Error() }
+func (e *AnswerError) Unwrap() error { return e.Err }
+
+// answered is err, the failure of a call GitHub answered with response, whose body is body,
+// carrying that answer (AnswerError), its path the request's under the Manager's base URL
+// (githubrest.PathUnder).
+func (m *Manager) answered(response *http.Response, body []byte, err error) *AnswerError {
+	path := githubrest.PathUnder(m.baseURL, response.Request.URL)
+	return &AnswerError{Err: err, Answer: githubrest.AnswerOf(response.Request.Method, path, response, body)}
+}
+
 // transient marks a response, whose body is body, as GitHub's trouble rather than an answer: a
-// 5xx, or a rate limit (githubrest.RateLimited, which reads the body for a secondary limit GitHub
-// names there alone).
-func transient(response *http.Response, body []byte, err error) error {
-	if response.StatusCode >= http.StatusInternalServerError || githubrest.RateLimited(response, body) {
-		return &TransientError{Err: err}
+// 5xx, or a rate limit (the answer's RateLimited, githubrest.RateLimited, which reads the body for
+// a secondary limit GitHub names there alone). Either way err carries GitHub's answer (answered).
+func (m *Manager) transient(response *http.Response, body []byte, err error) error {
+	refused := m.answered(response, body, err)
+	if response.StatusCode >= http.StatusInternalServerError || refused.Answer.RateLimited {
+		return &TransientError{Err: refused}
 	}
-	return err
+	return refused
 }
 
 // refusalBody is the body GitHub sent with a refusal, read whole, and the response closed. One
@@ -112,7 +139,7 @@ const responseBound = 1 << 20
 // whatever the request named, and the request names none at all (accessTokensBody), so the list
 // is the installation's whole breadth. Those objects measure 4.9 to 5.3 KB each, which is what
 // the secrets broker bounds one of them at 64 KB on
-// (packages/envoy/internal/broker/secrets/githubapp.go, githubRepositoryAnswerBound), and this
+// (packages/envoy/internal/cipher/secrets/githubapp.go, githubRepositoryAnswerBound), and this
 // deployment's example-org installation held 216 repositories at 15:45Z on 2026-11-10, about
 // 1.1 MB of answer. 16 MiB holds about 3,000 repositories at the measured size, far above any
 // installation a Legion deployment mints on, and an answer past it is refused rather than read
@@ -184,9 +211,12 @@ type Manager struct {
 	apps    config.GitHubApps
 	baseURL string
 	client  *http.Client
-	now     func() time.Time
-	stderr  io.Writer
-	log     *slog.Logger
+	// noRedirect is client following no redirect, so a 3xx is the answer the caller reads
+	// (InstalledUnder).
+	noRedirect *http.Client
+	now        func() time.Time
+	stderr     io.Writer
+	log        *slog.Logger
 
 	mu                sync.Mutex
 	leases            map[scope]Lease
@@ -194,10 +224,11 @@ type Manager struct {
 	installations     map[AppRole]map[string]string
 	identities        map[string]GitIdentity
 	pendingIdentities map[string]*pendingIdentity
-	// pendingInstallations holds, per App role, the installation read running for that App now,
-	// so overlapping reads share one (InstalledOwners). The entry is dropped the moment the
-	// read ends: nothing of the answer is kept, since the answer is a bundle's whole reach and
-	// must be GitHub's own at the build (credential.go's GitHubCredential).
+	// pendingInstallations holds, per App role under its JWT, the installation read running for
+	// that App now, so overlapping reads share one (InstalledOwners). The entry is dropped the
+	// moment the read ends: nothing of the answer is kept, since the answer is a bundle's whole
+	// reach and must be GitHub's own at the build (credential.go's GitHubCredential). An App in
+	// token mode has no entry: its read is the token_command's run, which runTokenCommand shares.
 	pendingInstallations map[AppRole]*pendingInstallations
 	commands             map[scope]*commandRun
 	// keys holds each App private key parsed, by its PEM text (generateJWT).
@@ -242,8 +273,9 @@ type pendingIdentity struct {
 	err      error
 }
 
-// pendingInstallations is one App's installation read in flight, and what it answered, for
-// every caller that joined it rather than reading GitHub beside it (InstalledOwners).
+// pendingInstallations is one App's installation read in flight under its JWT, and what it
+// answered, for every caller that joined it rather than reading GitHub beside it
+// (InstalledOwners).
 type pendingInstallations struct {
 	done   chan struct{}
 	owners []string
@@ -271,6 +303,8 @@ func New(apps config.GitHubApps, options Options) *Manager {
 	if client == nil {
 		client = http.DefaultClient
 	}
+	noRedirect := *client
+	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	now := options.Now
 	if now == nil {
 		now = time.Now
@@ -290,6 +324,7 @@ func New(apps config.GitHubApps, options Options) *Manager {
 		apps:                 apps,
 		baseURL:              baseURL,
 		client:               client,
+		noRedirect:           &noRedirect,
 		now:                  now,
 		stderr:               stderr,
 		log:                  log,
@@ -355,11 +390,11 @@ func (m *Manager) Forget(role AppRole, owner string) {
 
 // forgetNarrowingRefusal drops the narrowing refusal remembered for role's read lease on owner
 // (lease, narrowingRefusalWindow), and nothing else: no lease, and no other scope's refusal. It
-// is for the caller that knows that one memory is stale — the token-mode mapping check, which
-// asks whether the App's installation holds a repository and must have GitHub's answer rather
-// than the memory of a refusal met before an operator fixed the grant (listInstallation) —
-// where Forget, which drops every lease and every refusal of the owner, would throw away a
-// token that is good and make the owner's other scope mint again.
+// is for the caller that knows that one memory is stale — the token-mode installation check of a
+// repository's preparation, which asks whether the App's installation holds a repository and must
+// have GitHub's answer rather than the memory of a refusal met before an operator fixed the grant
+// (listInstallation) — where Forget, which drops every lease and every refusal of the owner, would
+// throw away a token that is good and make the owner's other scope mint again.
 func (m *Manager) forgetNarrowingRefusal(role AppRole, owner string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -411,23 +446,25 @@ func (r mintRequest) scope() scope { return leaseScope(r.read, r.role, r.owner) 
 // scope that succeeds drops what was remembered of it.
 //
 // The memory answers the ask that would repeat a refusal, never one that already knows better.
-// A caller holding what the window cannot know — the token-mode mapping check, which asks
-// whether an installation holds a repository after an operator may have changed the grant
-// (listInstallation) — drops that one scope's memory before it asks (forgetNarrowingRefusal),
-// so what it is served is GitHub's answer now.
+// A caller holding what the window cannot know — the token-mode installation check of a
+// repository's preparation, which asks whether an installation holds a repository after an
+// operator may have changed the grant (listInstallation) — drops that one scope's memory before it
+// asks (forgetNarrowingRefusal), so what it is served is GitHub's answer now.
 //
 // What a cached answer is worth is worth saying, since a caller may read such an ask as what
 // its installation does: a lease served from here says a token of that scope was minted within
 // the hour, not that GitHub mints one now. An App an account uninstalls leaves every lease of
 // that owner cached and good-looking until its expiry nears (refreshWindow), so a bundle built
 // in that hour may hold a directory whose token GitHub would no longer mint; what the bundle
-// does not do is guess, since the owners it holds a directory for at all are read from GitHub
-// at every build (InstalledOwners, credential.go).
+// does not do is guess, since the owners it holds a directory for at all are read at every build
+// (InstalledOwners, credential.go): from GitHub each time under the App's JWT, and in token mode
+// from the command's release of every installation, which may be that of a run that finished,
+// with no caller waiting for it, up to finishedRunKeep before the build (runTokenCommand).
 //
 // A mint that succeeds also drops every lease the cache holds that has expired. The cache is
-// keyed by the owner a lease is minted on, so a mapping that changes over a long-lived daemon's
-// life leaves entries no caller asks for again, and an expired one can never be served: a lease
-// is served only while more than refreshWindow remains.
+// keyed by the owner a lease is minted on, so the owners a long-lived daemon works under change
+// over its life and leave entries no caller asks for again, and an expired one can never be
+// served: a lease is served only while more than refreshWindow remains.
 func (m *Manager) lease(ctx context.Context, request mintRequest) (Lease, error) {
 	request.owner = strings.TrimSpace(request.owner)
 	if request.owner == "" {
@@ -667,37 +704,71 @@ type Source interface {
 }
 
 // InstalledOwners is the owner accounts role's App is installed on, lowercased and sorted, read
-// from GitHub at the moment of the call: GET /app/installations under the App's own JWT, every
-// page of it (discoverInstallations), or, in token mode, the accounts the command's release of
-// every installation names (runTokenCommand with no owner, which records them as this role's
+// for the call: GET /app/installations under the App's own JWT, every page of it
+// (discoverInstallations), or, in token mode, the accounts the command's release of every
+// installation names (runTokenCommand with no owner, which records them as this role's
 // installations itself). An installation GitHub lists as suspended is none of them: GitHub
 // refuses every token of a suspended installation, so it is its own statement that the
 // installation serves nothing (discoverInstallations), and the secrets broker leaves one out of
 // every release for the same reason (its GitHubApp.Mint), which is why a release names none.
 //
-// It asks GitHub every time rather than answering from the installations the Manager has found
-// before, because its caller builds a bundle from the answer: an owner the account removed the
-// App from must stop minting at the next bundle, and one that installed it must mint at that
-// same bundle, with no cached set and no timer between the account's change and the role's
-// reach. What it read replaces the installation ids the Manager holds for the role, so a mint
-// that follows reaches the installation GitHub names now and an owner no longer listed is
-// looked for again rather than minted on a stale id.
+// It answers from no installations the Manager has found before, because its caller builds a
+// bundle from the answer: an owner the account removed the App from must stop minting at the
+// next bundle, and one that installed it must mint at that same bundle, with no cached set
+// between the account's change and the role's reach. Under the App's JWT it asks GitHub every
+// time. In token mode the one answer that outlives a call is a finished run of the command no
+// caller took, which runTokenCommand keeps for finishedRunKeep for a caller that comes back
+// (below), so a call within that time may be answered with that run's release. What it read
+// replaces the installation ids the Manager holds for the role, so a mint that follows reaches
+// the installation the read names and an owner no longer listed is looked for again rather than
+// minted on a stale id.
 //
 // Reads of one App that overlap in time share one read, as concurrent reads of an App's
-// identity do (identity, pendingInstallations): the answer is a fact about the App and the
-// moment, so the second caller is given what the first is reading rather than asking GitHub
-// the same question beside it. That is no cached set — nothing is held once the read ends, and
-// the next caller reads GitHub afresh — and it is what keeps the token-mode cost of a bundle
-// bearable: there the read is runTokenCommand with no owner, the release of every installation
-// the App has, which is a subprocess, a request to the secrets broker and a whole set of
-// tokens thrown away but for the owner names.
+// identity do (identity): the answer is a fact about the App and the moment, so the second
+// caller is given what the first is reading rather than asking GitHub the same question beside
+// it. Under the App's JWT that is the shared read (pendingInstallations), and nothing of it is
+// held once it ends, so the next caller reads GitHub afresh. In token mode it is the command's
+// run, which runTokenCommand shares among every caller of the scope, and it is what keeps the
+// token-mode cost of a bundle bearable: the read is the release of every installation the App
+// has, which is a subprocess, a request to the secrets broker and a whole set of tokens thrown
+// away but for the owner names.
 //
-// The shared read belongs to no caller (readSharedInstallations): it runs on a context detached
-// from the one that started it, bounded by installationReadLimit, and every caller, the first
-// among them, waits for it under its own context. Run under the first caller's context, an API
-// request that a client cancelled would end the read and hand `context canceled` to a launch
-// that joined it, failing a bundle over nothing that happened to the launch or to GitHub.
+// Under the App's JWT the shared read belongs to no caller (readSharedInstallations): it runs on
+// a context detached from the one that started it, bounded by installationReadLimit, and every
+// caller, the first among them, waits for it under its own context. Run under the first caller's
+// context, an API request that a client cancelled would end the read and hand `context canceled`
+// to a launch that joined it, failing a bundle over nothing that happened to the launch or to
+// GitHub. A caller whose own context ends before the read does gets the context's error alone:
+// GitHub has not answered yet, and no person is waited on.
+//
+// In token mode the call reads under the caller's own context (readInstalledOwners), and every
+// rule of the command's run is runTokenCommand's alone. The run belongs to no caller either: it
+// runs on the Manager's own context, bounded by tokenCommandLimit, so a caller that leaves ends
+// neither the run nor the wait of a caller that joined it. A caller waits for the run at most
+// installationReadLimit, as long as it waited for the shared read before reads in token mode
+// went to runTokenCommand directly. A caller whose context ends, or whose wait reaches that
+// bound, before the run ends is answered ErrCommandPending in a TransientError, which wraps the
+// context's error too, while the command goes on; the boot's key proof reads that answer as
+// pending and spends no attempt on it (internal/daemon's appAttempt), so a grant that waits on a
+// person's approval holds the boot without ending it. A run that finishes with no caller waiting
+// is kept for finishedRunKeep, and the first caller of the scope to come takes it and forgets it
+// (runTokenCommand, forgetRun): the key proof's next attempt gets the release of the run its
+// earlier attempt started, and a grant a person approved is not asked for again.
+//
+// AppLogin in token mode reads the same scope (anyInstallation, mintRequest{role: role}), so a
+// login read joins a run in flight that this call started, or takes a finished run kept for
+// finishedRunKeep and forgets it, and the next call of the role does not get that release but
+// joins another run in flight or runs the command again; a call here does the same to a run a
+// login read started. At the boot the logins read runs before the key proof (internal/daemon's
+// openWorkflow) and passes only once it has taken a run's release for each role, so the key
+// proof never takes a release the logins read was answered with: its first read of each role
+// joins a run in flight or runs the command again.
 func (m *Manager) InstalledOwners(ctx context.Context, role AppRole) ([]string, error) {
+	if app, err := m.app(role); err == nil && app.TokenCommand != "" {
+		bounded, cancel := context.WithTimeout(ctx, installationReadLimit)
+		defer cancel()
+		return m.readInstalledOwners(bounded, role)
+	}
 	m.mu.Lock()
 	read, joined := m.pendingInstallations[role]
 	if !joined {
@@ -715,15 +786,16 @@ func (m *Manager) InstalledOwners(ctx context.Context, role AppRole) ([]string, 
 }
 
 // installationReadLimit bounds the one installation read every overlapping caller of an App
-// shares (InstalledOwners), which no caller's own deadline bounds: longer than the thirty
-// seconds a runtime gives a call (sandbox's apiTimeout), so a caller that joins late is still
-// answered, and short enough that a read GitHub never answers is dropped and the next caller
-// asks afresh rather than joining it for ever.
+// shares under its JWT (InstalledOwners), which no caller's own deadline bounds: longer than the
+// thirty seconds a runtime gives a call (sandbox's apiTimeout), so a caller that joins late is
+// still answered, and short enough that a read GitHub never answers is dropped and the next
+// caller asks afresh rather than joining it for ever. In token mode it bounds each caller's wait
+// for the command's run, which goes on past it (runTokenCommand).
 const installationReadLimit = time.Minute
 
-// readSharedInstallations makes the read the callers of InstalledOwners share and hands its
-// answer to every one of them through read. detached carries the values of the context that
-// started it and none of its cancellation.
+// readSharedInstallations makes the read the callers of InstalledOwners share under the App's
+// JWT and hands its answer to every one of them through read. detached carries the values of the
+// context that started it and none of its cancellation.
 func (m *Manager) readSharedInstallations(detached context.Context, role AppRole, read *pendingInstallations) {
 	bounded, cancel := context.WithTimeout(detached, installationReadLimit)
 	defer cancel()
@@ -735,8 +807,9 @@ func (m *Manager) readSharedInstallations(detached context.Context, role AppRole
 	m.mu.Unlock()
 }
 
-// readInstalledOwners is the read itself, made once for every caller of role's App whose call
-// overlaps it (InstalledOwners, readSharedInstallations).
+// readInstalledOwners is the read itself: under the App's JWT made once for every caller whose
+// call overlaps it (readSharedInstallations), and in token mode made by each caller under its
+// own context, runTokenCommand sharing the command's run among them (InstalledOwners).
 func (m *Manager) readInstalledOwners(ctx context.Context, role AppRole) ([]string, error) {
 	app, err := m.app(role)
 	if err != nil {
@@ -794,7 +867,7 @@ func (m *Manager) discoverInstallations(ctx context.Context, app config.GitHubAp
 			return nil, &TransientError{Err: fmt.Errorf("GitHub App installation discovery: %w", err)}
 		}
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-			return nil, transient(response, refusalBody(response), fmt.Errorf("GitHub App installation discovery failed (%d)", response.StatusCode))
+			return nil, m.transient(response, refusalBody(response), fmt.Errorf("GitHub App installation discovery failed (%d)", response.StatusCode))
 		}
 		body, err := readBody(response, "GitHub App installation discovery", responseBound)
 		if err != nil {
@@ -898,7 +971,7 @@ func (m *Manager) botIdentity(ctx context.Context, login, installationToken stri
 		return GitIdentity{}, &TransientError{Err: fmt.Errorf("GitHub App bot identity lookup: %w", err)}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return GitIdentity{}, transient(response, refusalBody(response), fmt.Errorf("GitHub App bot identity lookup failed (%d)", response.StatusCode))
+		return GitIdentity{}, m.transient(response, refusalBody(response), fmt.Errorf("GitHub App bot identity lookup failed (%d)", response.StatusCode))
 	}
 	body, err := readBody(response, "GitHub App bot identity lookup", responseBound)
 	if err != nil {
@@ -933,7 +1006,7 @@ func (m *Manager) appSlug(ctx context.Context, jwt string) (string, error) {
 		return "", &TransientError{Err: fmt.Errorf("GitHub App identity lookup: %w", err)}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return "", transient(response, refusalBody(response), fmt.Errorf("GitHub App identity lookup failed (%d)", response.StatusCode))
+		return "", m.transient(response, refusalBody(response), fmt.Errorf("GitHub App identity lookup failed (%d)", response.StatusCode))
 	}
 	body, err := readBody(response, "GitHub App identity lookup", responseBound)
 	if err != nil {

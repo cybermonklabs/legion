@@ -61,8 +61,8 @@ cd "$(dirname "$0")/.."
 # as DATABASE_SKIPS_PATTERN and refuses this script when DEFAULT_EXCEPT says otherwise): the auth
 # service's natscallout, the one today, opens no database, and envoy-go-race runs it under the
 # detector, so a run here would be its second in the same CI run.
-DEFAULT_PACKAGES=(./internal/broker/... ./cmd/broker/)
-DEFAULT_EXCEPT='/internal/broker/natscallout$'
+DEFAULT_PACKAGES=(./internal/cipher/... ./cmd/cipherd/)
+DEFAULT_EXCEPT='/internal/cipher/natscallout$'
 
 # EXPECTED_SKIPS: PACKAGE TEST REASON, one per line: a test that skips in every run that sets the
 # database variables, and why. A skip of a test it names is not counted; a line whose package is
@@ -70,9 +70,9 @@ DEFAULT_EXCEPT='/internal/broker/natscallout$'
 # when the script starts. A test that skips on some servers only is not here: its skip is counted
 # where CI's server runs it (TestAdvancesListEachPriorityOnceHoweverTheDatabaseCollatesTheIDs
 # needs a PostgreSQL built with ICU, which CI's image is).
-EXPECTED_SKIPS='github.com/sjawhar/envoy/internal/broker/airlock FuzzAirlock needs AIRLOCK_MODEL, a built Lean model of the airlock, which the airlock-lean job builds and runs it with
-github.com/sjawhar/envoy/internal/broker/airlock TestModelAgreesOnHostShapes needs AIRLOCK_MODEL, as FuzzAirlock does
-github.com/sjawhar/envoy/internal/broker/airlock TestTheModelReadsAHostlessEntryWithGuidance needs AIRLOCK_MODEL, as FuzzAirlock does
+EXPECTED_SKIPS='github.com/sjawhar/envoy/internal/cipher/proxyrules FuzzAirlock needs AIRLOCK_MODEL, a built Lean model of the airlock, which the airlock-lean job builds and runs it with
+github.com/sjawhar/envoy/internal/cipher/proxyrules TestModelAgreesOnHostShapes needs AIRLOCK_MODEL, as FuzzAirlock does
+github.com/sjawhar/envoy/internal/cipher/proxyrules TestTheModelReadsAHostlessEntryWithGuidance needs AIRLOCK_MODEL, as FuzzAirlock does
 github.com/sjawhar/envoy/internal/dispatch/api TestDismissedScaleHoldsTheInboxsReads is a measurement, run only with LEGION_SCALE_TEST=1
 github.com/sjawhar/envoy/internal/dispatch/api TestNearCopyRefusalReplay needs DISPATCH_NEARCOPY_CORPUS, a corpus scripts/near-copy-replay.sh writes
 github.com/sjawhar/envoy/internal/dispatch/api TestRelatedRecallOnDuplicates needs DISPATCH_RECALL_CORPUS, a corpus scripts/related-recall.sh writes
@@ -90,7 +90,7 @@ go_test_exit=""
 
 # by_run is the report's events in order, each event of a test given `_run`: its package, its name
 # and which run of it this is. A test binary can run a test more than once under one name (-count,
-# or a TestMain that calls m.Run twice, as internal/broker/airlockproxy's does, once per protocol),
+# or a TestMain that calls m.Run twice, as internal/cipher/proxy's does, once per protocol),
 # and test2json reports every run under that one name, so what a run did is read by that key and
 # not by the name: read by the name, a test that failed in one run and passed in the other counted
 # as passed, and the failure's own lines were left out.

@@ -750,6 +750,108 @@ func TestProbeImageRetriesAPodTheKubeletFailed(t *testing.T) {
 	}
 }
 
+// A probe pod whose `legion probe-image` exited 75 with its no-verdict line ran checks its limits
+// or its deadline stopped short of an answer, and none that failed: that says nothing of the
+// image, so the attempt is transient, logged naming what had no verdict, and the next attempt's
+// pod, which passes, passes the probe. The exit code and the line are written out, not read from
+// bootprobe, so the test also runs on a daemon that predates them, which refuses the first pod.
+func TestProbeImageRunsAnotherAttemptAfterAProbeThatExits75(t *testing.T) {
+	const run = "its 40s limit ended it after 40.0s: signal: killed"
+	logged := &lockedLog{}
+	g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }))
+	var pods atomic.Int32
+	g.finishes(func(p *corev1.Pod) {
+		if pods.Add(1) == 1 {
+			g.with(func() {
+				g.log = "probe-image: TLS client aws emSign: no verdict (" + run + ")\n" +
+					"legion probe-image: worker probe has no verdict: aws emSign: " + run + "\n"
+			})
+			p.Status = corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{{
+				Name: probeContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 75, Reason: "Error"}},
+			}}}
+			return
+		}
+		g.with(func() { g.log = okLine(3) + "\n" })
+		p.Status = corev1.PodStatus{Phase: corev1.PodSucceeded, ContainerStatuses: []corev1.ContainerStatus{{
+			Name: probeContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"}},
+		}}}
+	})
+
+	err := g.probe(probeOptions(t))
+
+	if err != nil {
+		t.Fatalf("ProbeImage = %v, want the pass of the attempt after the one with no verdict", err)
+	}
+	if n := g.creates.Load(); n != 2 {
+		t.Errorf("ran the probe %d times, want the attempt with no verdict and the one that passed", n)
+	}
+	want := "pod " + probeSandboxName + " exited 75 with no verdict: aws emSign: " + run
+	if !strings.Contains(logged.String(), "boot probe failed transiently") || !strings.Contains(logged.String(), want) {
+		t.Errorf("the attempt with no verdict was not logged as a transient failure saying %q:\n%s", want, logged.String())
+	}
+	g.eventually("the probe Sandbox to be deleted", func() bool { return g.sandbox(probeSandboxName) == nil })
+}
+
+// Attempts that each exit 75 (bootprobe.NoVerdictExit) spend the daemon's six (bootprobe.Image),
+// and the probe then ends naming the last attempt's pod and every TLS run and step its no-verdict
+// line names, with the log after them: what the operator reads of a probe that never reached a
+// verdict.
+func TestProbeImageEndsAfterSixAttemptsThatEachExit75NamingEachRunWithNoVerdict(t *testing.T) {
+	const noVerdict = "aws emSign: its 40s limit ended it after 40.0s: signal: killed; " +
+		"chromium AAA: the probe's deadline ended it after 12.3s: signal: terminated; " +
+		"role overlays: implementer: signal: terminated"
+	g := newProbeRig(t, nil)
+	g.with(func() {
+		g.log = "probe-image: TLS client aws emSign: no verdict (its 20s limit ended it after 20.0s: signal: killed)\n" +
+			"probe-image: TLS client aws emSign: no verdict (its 40s limit ended it after 40.0s: signal: killed)\n" +
+			bootprobe.NoVerdictPrefix + noVerdict + "\n"
+	})
+	g.finishes(func(p *corev1.Pod) {
+		p.Status = corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{{
+			Name: probeContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: bootprobe.NoVerdictExit, Reason: "Error"}},
+		}}}
+	})
+	p := probeOptions(t)
+	p.Retry.Attempts = bootprobe.Image.Attempts
+
+	err := g.probe(p)
+
+	wantContains(t, err, "the worker image probe never completed within its retry budget (6 attempts): pod "+probeSandboxName+
+		" exited 75 with no verdict: "+noVerdict+" — log tail: probe-image: TLS client aws emSign: no verdict")
+	if n := g.creates.Load(); n != 6 {
+		t.Errorf("ran the probe %d times, want the retry's 6", n)
+	}
+	g.eventually("the probe Sandbox to be deleted", func() bool { return g.sandbox(probeSandboxName) == nil })
+}
+
+// A probe pod whose `legion probe-image` exited 1 found a failure: the image's refusal, after one
+// attempt. The exit code decides, not the log: a no-verdict line beside the failure leaves it a
+// refusal.
+func TestProbeImageRefusesAProbeThatExits1AfterOneAttempt(t *testing.T) {
+	const failed = "legion probe-image: worker TLS probe failed: aws accepts the emSign chain: exit 0"
+	for _, testCase := range []struct {
+		name string
+		log  string
+	}{
+		{"a failure", failed},
+		{"a failure beside a no-verdict line", bootprobe.NoVerdictPrefix + "chromium AAA: the probe's deadline ended it after 12.3s: signal: terminated\n" + failed},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			g := newProbeRig(t, nil)
+			g.fails(testCase.log)
+
+			err := g.probe(probeOptions(t))
+
+			wantContains(t, err, "worker image sha256:"+testDigestHex+" failed its probe: pod "+probeSandboxName+
+				" Failed (container probe terminated: Error, exit code 1) — log tail: ", failed)
+			if n := g.creates.Load(); n != 1 {
+				t.Errorf("ran the probe %d times for a refusal, want once", n)
+			}
+			g.eventually("the probe Sandbox to be deleted", func() bool { return g.sandbox(probeSandboxName) == nil })
+		})
+	}
+}
+
 // The API refusing what the probe sent — RBAC, credentials, a manifest it rejects, a namespace
 // that does not exist — refuses it again, so the probe stops naming it; anything else is the
 // cluster's moment, retried.

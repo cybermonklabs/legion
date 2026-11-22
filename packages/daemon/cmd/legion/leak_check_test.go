@@ -35,15 +35,37 @@ const noSHA = "0000000000000000000000000000000000000000"
 
 // noSharedCheck leaves the command no check to resolve at all: nothing in PUBLIC_LEAK_CHECK, no
 // public-leak-check.sh on any PATH entry, and no pointer file under a configuration home of its
-// own. Every fixture a case needs is built before this, since it empties the PATH a child of the
-// test would be found on.
-func noSharedCheck(t *testing.T) {
+// own. checker is the deployment's checker the command's environment names
+// (leakguard.CheckerVar), as the runtime tells a role of a deployment that runs a shared check,
+// and "" names none, a role of a deployment that runs no shared check. The PATH it leaves holds
+// git alone, which the guard reads a push's commits with where no check refuses the push first.
+// Every fixture a case needs is built before this, since it replaces the PATH a child of the test
+// would be found on.
+func noSharedCheck(t *testing.T, checker string) {
 	t.Helper()
 	fixtureenv.Unset(t, "PUBLIC_LEAK_CHECK")
-	t.Setenv("PATH", t.TempDir())
+	if checker == "" {
+		fixtureenv.Unset(t, leakguard.CheckerVar)
+	} else {
+		t.Setenv(leakguard.CheckerVar, checker)
+	}
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.Symlink(git, filepath.Join(bin, "git")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 }
+
+// theChecker is the deployment's checker these tests name where a case runs under a deployment
+// that names a shared check: a stand-in sha256, since no case here runs the check whose program
+// it would name.
+var theChecker = strings.Repeat("5e", 32)
 
 // aPushFixture is a repository holding one commit whose message is message, and the line git
 // hands a pre-push hook for a push of it to a remote that holds the ref yet.
@@ -95,15 +117,18 @@ func says(t *testing.T, printed string, wants []string) {
 // `legion leak-check pre-push` is what the image's hook runs: git's update lines on standard
 // input, the repository it ran the hook in as the working directory, and the remote and its URL
 // as its arguments. Either check refuses the push, and the statuses are the shared check's own —
-// 0 clean, 3 refused, 2 a check that could not be made to run.
+// 0 clean, 3 refused, 2 a check that could not be made to run. Under a deployment that names no
+// shared check (no leakguard.CheckerVar) a push with no check is not refused for its absence, and
+// this repository's own rules still read it.
 func TestLeakCheckPrePushRunsTheGuardOverGitsUpdateLines(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		message string
-		// standIn is the stand-in shared check's body, and "" is a call with no check at all.
-		standIn string
-		code    int
-		says    []string
+		// standIn is the stand-in shared check's body, and "" is a call with no check at all,
+		// under checker, the deployment's checker the call is told ("" for none).
+		standIn, checker string
+		code             int
+		says             []string
 	}{
 		{
 			name:    "the shared check refuses the push",
@@ -126,11 +151,22 @@ func TestLeakCheckPrePushRunsTheGuardOverGitsUpdateLines(t *testing.T) {
 			code:    0,
 		},
 		{
-			name:    "no shared check resolves",
+			name:    "no shared check resolves under a deployment that names one",
 			message: "a commit of nothing in particular",
-			standIn: "",
+			checker: theChecker,
 			code:    2,
 			says:    []string{"LEAK CHECK SETUP ERROR: the push to origin: the shared public leak check could not be found"},
+		},
+		{
+			name:    "no shared check under a deployment that names none",
+			message: "a commit of nothing in particular",
+			code:    0,
+		},
+		{
+			name:    "this repository's own rules refuse the push under a deployment that names no check",
+			message: "a commit that names " + theLeakCheckHost,
+			code:    3,
+			says:    []string{"LEAK CHECK: refusing the push to origin: this repository's own private-name rules match it", theLeakCheckClass},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -139,7 +175,7 @@ func TestLeakCheckPrePushRunsTheGuardOverGitsUpdateLines(t *testing.T) {
 			// directory is where the command reads the push's commits from.
 			t.Chdir(dir)
 			if tc.standIn == "" {
-				noSharedCheck(t)
+				noSharedCheck(t, tc.checker)
 			} else {
 				t.Setenv("PUBLIC_LEAK_CHECK", leakguardtest.Write(t, t.TempDir(), tc.standIn))
 			}
@@ -267,15 +303,18 @@ func TestASignalToLeakChecksGroupStopsTheSharedCheck(t *testing.T) {
 
 // `legion leak-check text` is the shape anything about to publish a piece of text runs: the text
 // on standard input, and the kind it is called by in the refusal, which is the one thing the
-// caller knows better than the guard does.
+// caller knows better than the guard does. Under a deployment that names no shared check (no
+// leakguard.CheckerVar) a text with no check is not refused for its absence, and this
+// repository's own rules still read it.
 func TestLeakCheckTextRunsTheGuardOverWhatItIsPiped(t *testing.T) {
 	const kind = "the pull request body"
 	for _, tc := range []struct {
-		name    string
-		text    string
-		standIn string
-		code    int
-		says    []string
+		name, text string
+		// standIn is the stand-in shared check's body, and "" is a call with no check at all,
+		// under checker, the deployment's checker the call is told ("" for none).
+		standIn, checker string
+		code             int
+		says             []string
 	}{
 		{
 			name:    "the shared check refuses the text",
@@ -298,16 +337,27 @@ func TestLeakCheckTextRunsTheGuardOverWhatItIsPiped(t *testing.T) {
 			code:    0,
 		},
 		{
-			name:    "no shared check resolves",
+			name:    "no shared check resolves under a deployment that names one",
 			text:    "a title\na body of nothing in particular\n",
-			standIn: "",
+			checker: theChecker,
 			code:    2,
 			says:    []string{"LEAK CHECK SETUP ERROR: " + kind + ": the shared public leak check could not be found"},
+		},
+		{
+			name: "no shared check under a deployment that names none",
+			text: "a title\na body of nothing in particular\n",
+			code: 0,
+		},
+		{
+			name: "this repository's own rules refuse the text under a deployment that names no check",
+			text: "a title\na body that names " + theLeakCheckHost + "\n",
+			code: 3,
+			says: []string{"LEAK CHECK: refusing " + kind + ": this repository's own private-name rules match it", theLeakCheckClass},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.standIn == "" {
-				noSharedCheck(t)
+				noSharedCheck(t, tc.checker)
 			} else {
 				t.Setenv("PUBLIC_LEAK_CHECK", leakguardtest.Write(t, t.TempDir(), tc.standIn))
 			}

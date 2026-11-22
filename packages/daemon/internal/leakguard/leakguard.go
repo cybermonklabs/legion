@@ -2,7 +2,9 @@
 // it writes. Two checks run, in this order, and either one refuses the write:
 //
 //   - The shared public leak check, a script this repository does not hold, found at each call
-//     (Resolve) and run in the shape the write has: a push, a gh call, or a piece of text.
+//     (Resolve) and run in the shape the write has: a push, a gh call, or a piece of text. The
+//     deployment names it (Setting); under a deployment that names none, a write where no check
+//     is named skips it rather than being refused for its absence (Guard.sharedCheck).
 //   - This repository's own private-name rules, the embedded private-names.toml, run in process
 //     over the records the write is made of, and only when the destination repository is one
 //     GitHub reports public.
@@ -19,7 +21,7 @@
 // component of a path that matched, and never anything the detection engine itself printed. The
 // classes are the descriptions of the rules in private-names.toml, and a path in a report has
 // every component the repository and company rules match replaced by "<name>", the masking
-// .github/scripts/check-private-names.sh does (its lines 145-154).
+// .github/scripts/check-private-names.sh does (its named_parts function, which its mask applies).
 //
 // The guard sets neither PUBLIC_LEAK_CHECK_REPO_NAMES nor PUBLIC_LEAK_CHECK_INTERNAL for the
 // shared check. That is a decision of this issue's approved spec, not an omission: with those two
@@ -209,18 +211,22 @@ type TextRequest struct {
 
 // Text checks a piece of text a write would publish: a pull request's title and body, an issue
 // comment, a release note. The shared check reads it on standard input in its check-public-text
-// shape, and the rule pass then reads the title and the body as two records of their own.
+// shape, and the rule pass then reads the title and the body as two records of their own. Under a
+// deployment that runs no shared check (sharedCheck) the rule pass is the whole of it.
 func (g *Guard) Text(ctx context.Context, req TextRequest) error {
 	const what = "the text"
-	check, err := g.Resolve()
+	check, err := g.sharedCheck(what)
 	if err != nil {
-		return &SetupFailure{What: what, Why: whyNoCheck, Err: err}
-	}
-	if err := g.shared(ctx, what, child{
-		argv:  []string{check, "check-public-text", "-"},
-		stdin: strings.NewReader(req.Text),
-	}); err != nil {
 		return err
+	}
+	defer check.remove()
+	if check.path != "" {
+		if err := g.shared(ctx, what, child{
+			argv:  []string{check.path, "check-public-text", "-"},
+			stdin: strings.NewReader(req.Text),
+		}); err != nil {
+			return err
+		}
 	}
 	public, err := g.scanThrough(ctx, what, req.Repo)
 	if err != nil {

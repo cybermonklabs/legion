@@ -10,12 +10,12 @@
 #     token issuer with a pod's, a registrar's and two listed callers' tokens, the broker's own
 #     sign-in client, and the Postgres server - so this script builds and starts none of it a
 #     second time. What that costs is two processes of dev-broker.sh's that this script never
-#     points at: its broker, on a database of its own, and the cmd/dev-airlock-stands it starts
+#     points at: its broker, on a database of its own, and the cmd/dev-proxy-stands it starts
 #     for its own github-app secrets. What it buys is that the identities, the token files and
 #     the issuer are the ones dev-broker.sh documents, and that a change there reaches both
 #     scripts. The airlock's own brokers get a database of their own (below), so they never
 #     share a policy or a secret store with that broker.
-#   - cmd/dev-airlock-stands: the two HTTPS services S and T, which record every request they
+#   - cmd/dev-proxy-stands: the two HTTPS services S and T, which record every request they
 #     get; the stand-in GitHub and Google endpoints a github-app and a google-login secret mint
 #     at; the stand-in Microsoft token endpoint the azure kind exchanges at, which also plays
 #     the resource host an access token is spent at; a stand-in AWS service that verifies
@@ -39,7 +39,7 @@
 #   - TWO broker processes, each with the whole BROKER_AIRLOCK_* block, both on one database and
 #     each on three ports of its own, its API, proxy and metrics ports (--one-broker starts one).
 #   - One TCP front over both brokers' API ports and one over both proxy ports
-#     (cmd/dev-airlock-stands front), so a client reaches either process. Each new connection
+#     (cmd/dev-proxy-stands front), so a client reaches either process. Each new connection
 #     goes to the next broker in turn; round-robin per connection is all the checks ask for,
 #     since the two brokers share one database and either answers any call. The front is Go
 #     because a Legion issue pod has neither socat nor nginx, and nginx passes no CONNECT.
@@ -94,6 +94,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# psql is given a database URL without its password, and the password in PGPASSWORD.
+# shellcheck source-path=SCRIPTDIR source=lib/pg-url.sh
+. "$SCRIPT_DIR/lib/pg-url.sh"
 
 usage() {
   cat <<'EOF'
@@ -289,7 +292,7 @@ POSTGRES_CONTAINER="dispatch-pg"
 if [ -n "${DEV_BROKER_POSTGRES_URL:-}" ]; then
   POSTGRES_URL="${POSTGRES_SERVER}/${DB_NAME}${POSTGRES_QUERY}"
   POSTGRES_WHERE="the server DEV_BROKER_POSTGRES_URL names"
-  admin_psql() { psql "$DEV_BROKER_POSTGRES_URL" -v ON_ERROR_STOP=1 -q "$@"; }
+  admin_psql() { pg_url_run "$DEV_BROKER_POSTGRES_URL" psql -v ON_ERROR_STOP=1 -q "$@"; }
 else
   POSTGRES_URL="postgres://postgres:dispatch@127.0.0.1:55432/${DB_NAME}?sslmode=disable"
   POSTGRES_WHERE="the shared $POSTGRES_CONTAINER container dev-broker.sh started"
@@ -429,7 +432,8 @@ POD_UID="$(issuer_field "$POD_TOKEN_FILE" uid)"
 admin_psql -c "create database ${DB_NAME};"
 CREATED_DB=true
 echo "dev-airlock: created isolated database $DB_NAME" >&2
-DISPLAY_URL="$(printf '%s' "$POSTGRES_URL" | sed -E 's#^(postgres(ql)?://[^:/@?]+):[^@/?]*@#\1:***@#')"
+# The banner names the database without any password the URL carries.
+DISPLAY_URL="$(pg_url_without_password "$POSTGRES_URL")"
 
 # --- The stand-ins. Each HTTPS stand's certificate carries the name the rules bind it to, since
 # the proxy verifies the name it dialled against the certificate the stand presents. The

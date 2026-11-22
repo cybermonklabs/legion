@@ -1,0 +1,48 @@
+{
+  "id": 106812,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 3,
+  "type": "ask.opened",
+  "actor": {
+    "kind": "session",
+    "id": "lorem ipsum dolor sit amet",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum dolor sit ",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum dolo"
+    }
+  },
+  "notify": false,
+  "created_at": "2026-10-29T08:32:06.43635Z",
+  "payload": {
+    "anchor": null,
+    "answer": null,
+    "artifact_id": null,
+    "author": {
+      "id": "lorem ipsum dolor sit amet",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum dolo",
+        "host": "lor",
+        "machine": "lorem ipsum dolor sit "
+      }
+    },
+    "block_id": null,
+    "created_at": "2026-10-29T08:32:06.43635Z",
+    "edited_at": null,
+    "id": "7f846e7f-70c6-4666-bc62-fad7fe16fa64",
+    "issue_key": "ACME-1",
+    "kind": "question",
+    "multiple": false,
+    "opened_event_id": 106812,
+    "options": [],
+    "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum do",
+    "referenced_by_count": 0,
+    "revision": 1,
+    "state": "open",
+    "thread_logins": [],
+    "urgency": "med"
+  }
+}

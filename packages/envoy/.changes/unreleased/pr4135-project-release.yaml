@@ -1,0 +1,27 @@
+kind: Added
+body: |-
+  The broker releases a private Dispatch project's secret only to a credential that names the
+  project: a session whose enrollment lists it, a pod whose `BROKER_EXCHANGE_ACCOUNTS` entry maps
+  its account to it, or a machine's own session whose `BROKER_VM_EXCHANGE_ACCOUNTS` entry does, in
+  each case for a person who may see the project. Every other request is denied
+  `project-not-named`. The broker reads what Dispatch holds of a requested secret's project, and
+  whether the credential's person still sees it, before any database transaction begins, and
+  decides on no answer older than 30 seconds: when later reads age an earlier answer past that, it
+  asks every question again, and refuses as though Dispatch could not be reached if they age past
+  it twice. A live grant of a tagged secret is checked again on every release, so a project turning
+  private, or its person leaving the access list, ends the grant for good. The airlock does the
+  same: a connection of such a grant is refused, and a pod holding its values checks again within
+  ten minutes. While Dispatch cannot be reached, or answers a project's visibility as neither
+  `public` nor `private`, a tagged secret is neither granted nor released and its grant stays
+  live; an untagged one is served as before. A request of a private project,
+  by its secrets, the projects its credential names (a pod's included) or an issue key its reason
+  names, is left off the pending and grant lists of everyone outside the project, who may neither
+  read nor decide it. To tell, the broker reads from Dispatch, for the person reading, the project
+  of each issue key a request's reason names, kept 30 seconds, even in a deployment that tags
+  nothing: `INFRA-12: rotate the deploy key` costs one read of `INFRA`. While Dispatch cannot
+  answer, that request alone is left off the lists and logged, its page answers 503, and an
+  approval of it decides nothing; every other request is listed and decided as before. A broker
+  with no `BROKER_PROJECT_ACCESS_URL` asks Dispatch nothing about projects.
+time: 2026-11-16T02:49:27Z
+custom:
+    Issue: pr4135

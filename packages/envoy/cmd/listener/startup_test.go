@@ -453,7 +453,6 @@ func ciSettled(t *testing.T, client *bus.Client) bool {
 // it creates no consumer on the CI bucket's stream, publishes no settlement, and reports healthy.
 func TestAListenerWithoutAGitHubRouteLeavesTheCIBucketAlone(t *testing.T) {
 	client := setupTestNATS(t)
-	t.Cleanup(client.Close)
 	kv, key := seedDueCIRecord(t, client, "acme", "widgets", "7", strings.Repeat("d", 40))
 
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), client.Conn.ConnectedUrl(), "no-github-route")
@@ -494,7 +493,6 @@ func TestAListenerWithoutAGitHubRouteLeavesTheCIBucketAlone(t *testing.T) {
 // marked settled. It is the positive control for the test above.
 func TestAListenerWithAGitHubRouteSettlesTheCIBucket(t *testing.T) {
 	client := setupTestNATS(t)
-	t.Cleanup(client.Close)
 	kv, key := seedDueCIRecord(t, client, "acme", "widgets", "7", strings.Repeat("d", 40))
 
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), client.Conn.ConnectedUrl(), "github-route", githubWebhookEnv...)
@@ -570,6 +568,7 @@ func TestListenerLogsFromOtherPackagesKeepTheirHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect bus: %v", err)
 	}
+	t.Cleanup(client.Close)
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry: %v", err)
@@ -661,10 +660,12 @@ func bucketGrant(bucket string) []string {
 }
 
 // grantBeforeKnownSessions is the grant of a listener whose hub's grant does not carry the
-// known-session bucket: every bucket the listener opens (the legion_agents bucket included, whose
-// denied open would cost the start its own 10-second JetStream wait) except the known-session one.
+// known-session bucket: every bucket the listener opens (the legion_agents bucket, whose denied
+// open would cost the start its own 10-second JetStream wait, and the spent-proof bucket every
+// listener opens at start, included) except the known-session one.
 func grantBeforeKnownSessions() []string {
-	return append(listenerGrantBeforeSessionConsumers(), bucketGrant(bus.LegionAgentBucket)...)
+	grant := append(listenerGrantBeforeSessionConsumers(), bucketGrant(bus.LegionAgentBucket)...)
+	return append(grant, bucketGrant(bus.DPoPProofBucket)...)
 }
 
 // v1OpenWithoutTheBucket is how long after it began listening a listener whose NATS user may not

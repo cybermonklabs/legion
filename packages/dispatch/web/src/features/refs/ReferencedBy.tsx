@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import type { ButtonHTMLAttributes, Ref, RefObject } from "react";
 import { type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -13,7 +14,7 @@ import {
 import { compiledBlockSchema } from "../doc/schema";
 import { blockFragment, isBlockItemKind } from "./block-reference";
 import { referenceTriggerProps } from "./RefPreview";
-import { referencesQuery } from "./reference-target";
+import { referencesQuery, standsFailed, useNewIssuePageFreshness } from "./reference-target";
 import type { DispatchReferenceRoute } from "./routes";
 import { buildReferencePath, parseNodeReference } from "./routes";
 import { Timestamp } from "./Timestamp";
@@ -241,17 +242,34 @@ export function ReferencedByToggle({
 export function ReferencedBy({
   className,
   reference,
+  retried,
+  retryRef,
   toggle,
 }: {
   className?: string;
   reference: string;
+  /** Notes the reader's press of Retry for the hand-off of its host (`useFocusHandOff`'s
+   *  `pressed`): set as Retry is pressed, and forgotten where the list still reads as failed once
+   *  the read the press sent, or joined, has ended, since that press then took nothing away. Where
+   *  it is passed, the failure line stands while the list holds no answer and a read of it has
+   *  failed (`standsFailed`), in place of the loading line, as Details' own lines do, so the line
+   *  stays while the read Retry sent is out, and Retry keeps its focus then: it is drawn
+   *  `aria-disabled`, in place of `disabled`, since Chromium moves the focus of a control that
+   *  turns disabled to the page's body, and a press while the read is out joins it
+   *  (`cancelRefetch: false`) and sends nothing new. The new issue page's Details passes it.
+   *  Elsewhere the line stands while the last read failed, and Retry is `disabled` while its read
+   *  is out. */
+  retried?: RefObject<boolean>;
+  /** Takes Retry, so the host can hand the focus it holds on as it goes (`useFocusHandOff`). */
+  retryRef?: Ref<HTMLButtonElement>;
   /** The control that discloses this panel: its `id` (which the control names in
    *  `aria-controls`) and the fact that it already reads `Referenced by (N)`, so the panel
    *  carries no heading of its own under it. Absent where the page shows the list outright,
    *  and then the panel is its own heading. */
   toggle?: { id: string };
 }): ReactNode {
-  const query = useQuery(referencesQuery(reference));
+  const freshness = useNewIssuePageFreshness();
+  const query = useQuery({ ...referencesQuery(reference), ...freshness });
   // During a release a newer Dispatch can answer with an edge kind, or a node kind at the other
   // end, that this page does not know; the page leaves such an edge out rather than draw it under
   // another edge's label.
@@ -261,6 +279,31 @@ export function ReferencedBy({
       Object.hasOwn(NODE_LABELS, edge.node.kind)
   );
   const groups = groupBySource(edges ?? []);
+  // Retry's attributes where the host notes its press (`retried`), spread over the ones it has on
+  // every page.
+  const retryInDetails:
+    | Pick<ButtonHTMLAttributes<HTMLButtonElement>, "aria-disabled" | "disabled" | "onClick">
+    | undefined =
+    retried === undefined
+      ? undefined
+      : {
+          "aria-disabled": query.isFetching || undefined,
+          disabled: false,
+          onClick: () => {
+            retried.current = true;
+            void query.refetch({ cancelRefetch: false }).then((answer) => {
+              if (answer.isError) retried.current = false;
+            });
+          },
+        };
+  // Where the host notes Retry's press - Details - the line stands while the read stands failed
+  // (`standsFailed`), as Details says each of its own reads failed: a refresh that fails over the
+  // list keeps the list and draws no line over it, and the line stays while Retry's read is out,
+  // so Retry keeps its focus. While the line stands in Details it takes the place of the loading
+  // line, as Details' own lines do while their Retry's read is out. Every other page draws the
+  // line while the last read failed, which is never while the read is pending, so the loading line
+  // there is as before.
+  const failed = retried === undefined ? query.isError : standsFailed(query);
 
   return (
     <section aria-label="Referenced by" className={`space-y-2 ${className ?? ""}`} id={toggle?.id}>
@@ -269,16 +312,18 @@ export function ReferencedBy({
           Referenced by{edges === undefined ? "" : ` (${edges.length})`}
         </h3>
       ) : null}
-      {query.isPending ? (
+      {query.isPending && !failed ? (
         <p className={`text-sm ${textMutedOnSurface}`}>Loading references…</p>
       ) : null}
-      {query.isError ? (
+      {failed ? (
         <p className={`flex flex-wrap items-center gap-2 text-sm ${textMutedOnSurface}`}>
           <span>Referenced by unavailable.</span>
           <button
             className={`font-medium underline ${linkText} ${linkHoverText}`}
             disabled={query.isFetching}
             onClick={() => void query.refetch()}
+            {...retryInDetails}
+            ref={retryRef}
             type="button"
           >
             Retry

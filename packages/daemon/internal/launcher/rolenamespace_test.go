@@ -7,18 +7,25 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testtmp"
 )
 
 // The helpers every test of a role's namespaces shares: roleInitEnv carries role-init's flags to
-// the test binary re-entered as role-init (TestRoleInitHelper), and roleProbeEnv names the
-// directory requireRoleNamespaces' probe mounts over (TestRoleNamespaceProbeHelper).
+// the test binary re-entered as role-init (TestRoleInitHelper), roleProbeEnv names the
+// directory requireRoleNamespaces' probe mounts over (TestRoleNamespaceProbeHelper), and
+// roleDrainBoundEnv, where a row sets it, the bound of role-init's wait over the role's
+// namespace in place of roleNamespaceDrain (roleDrainBound).
 const (
-	roleInitEnv  = "LEGION_ROLE_INIT_TEST_INIT"
-	roleProbeEnv = "LEGION_ROLE_INIT_TEST_PROBE"
+	roleInitEnv       = "LEGION_ROLE_INIT_TEST_INIT"
+	roleProbeEnv      = "LEGION_ROLE_INIT_TEST_PROBE"
+	roleDrainBoundEnv = "LEGION_ROLE_INIT_TEST_DRAIN_BOUND"
 )
 
 // requireRoleNamespaces skips a test that cannot create the namespaces a role generation runs
@@ -63,21 +70,34 @@ func skipOutsideCI(t *testing.T, format string, args ...any) {
 
 // namespaceScratch is a directory for a test whose role mounts its own /tmp over the container's:
 // a layout kept under /tmp would be hidden from role-init the moment it binds the role's own
-// temporary directory there, so the scratch sits outside it.
-func namespaceScratch(t *testing.T) string {
+// temporary directory there, so the scratch sits outside it. A non-empty socket is the path,
+// relative to the directory, of a socket a generation binds or a role connects to under it. The
+// directory then comes from testtmp.Dir, with room for that path, and one made under HOME instead
+// takes testtmp's two-byte prefix and is held to the length a unix socket path holds
+// (testtmp.MaxSocketPath).
+func namespaceScratch(t *testing.T, socket string) string {
 	t.Helper()
-	if dir := t.TempDir(); !strings.HasPrefix(dir, "/tmp/") {
+	dir, prefix := "", "legion-launcher-"
+	if socket == "" {
+		dir = t.TempDir()
+	} else {
+		dir, prefix = testtmp.Dir(t, socket), "lg"
+	}
+	if !strings.HasPrefix(dir, "/tmp/") {
 		return dir
 	}
 	home := os.Getenv("HOME")
 	if home == "" {
 		skipOutsideCI(t, "no directory outside /tmp for the role's layout: TMPDIR is under /tmp and HOME is unset")
 	}
-	dir, err := os.MkdirTemp(home, "legion-launcher-")
+	dir, err := os.MkdirTemp(home, prefix)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if path := filepath.Join(dir, socket); socket != "" && len(path) > testtmp.MaxSocketPath {
+		skipOutsideCI(t, "the socket path %s is longer than a unix socket path holds", path)
+	}
 	return dir
 }
 
@@ -130,6 +150,14 @@ func TestRoleInitHelper(t *testing.T) {
 		os.Exit(2)
 	}
 	cfg.Stdout, cfg.Stderr = os.Stdout, os.Stderr
+	if spelled := os.Getenv(roleDrainBoundEnv); spelled != "" {
+		bound, err := time.ParseDuration(spelled)
+		if err != nil || bound <= 0 {
+			fmt.Fprintf(os.Stderr, "role-init: the drain bound %q: %v\n", spelled, err)
+			os.Exit(2)
+		}
+		roleDrainBound = bound
+	}
 	stop, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 	if err := RoleInit(stop, cfg); err != nil {

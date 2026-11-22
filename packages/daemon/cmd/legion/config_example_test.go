@@ -157,6 +157,28 @@ func TestShippedLegionYAMLExamplesCommitIssueTrailerReposPassesCheckConfig(t *te
 	}
 }
 
+// The example's commented leak_check block, uncommented with a digest in place of its placeholder,
+// passes the same check and settles on the repository and the manifest digest it names. It needs
+// no volume and no mount: the block names a repository and a digest, not files.
+func TestShippedLegionYAMLExamplesLeakCheckPassesCheckConfig(t *testing.T) {
+	checker := strings.Repeat("5e", 32)
+	config := checkShippedExample(t, func(example string) string {
+		example = uncommentExample(t, example,
+			"# leak_check:",
+			"#   repository: example-org/deployment",
+			"#   manifest_sha256: <64 hex digits>",
+		)
+		return strings.Replace(example, "manifest_sha256: <64 hex digits>", "manifest_sha256: "+checker, 1)
+	})
+	cfg, err := configpkg.LoadForValidation(config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.LeakCheck; got.Repository.String() != "example-org/deployment" || got.ManifestSHA256 != checker {
+		t.Errorf("the leak_check block uncommented settles on %+v, want example-org/deployment and %s", got, checker)
+	}
+}
+
 // The example's first commented hook is the hook a file that names no `hooks:` key runs, its
 // words included, so an operator reads the shipped default in the file it edits. Uncommented, it
 // loads as exactly that hook: a default changed in one place and not the other would have the
@@ -282,14 +304,15 @@ func TestMemoryGuardTheShippedExampleRefusesAnActShareAboveItsRange(t *testing.T
 	}
 }
 
-// The example's commented session_database block, uncommented under `session_store: cloudsql-iam`
-// with session_dsn_secret taken out, passes the same check as shipped, with the same stdout. Its
-// impersonate_service_account set to the account's login form rather than its email is refused,
-// naming the member and the value, and a user that is not the account's login is refused, naming
-// the login the account has. The block is where an operator reads what each member takes, so a
-// member it showed wrongly would be an operator's file refused on their first check; here it is
-// this test that fails instead. The block stays commented in the file itself: the shipped store is
-// postgres, and the stdout TestShippedLegionYAMLExamplePassesCheckConfig holds is that store's.
+// The example's commented session_database block, its writer_audience included, uncommented under
+// `session_store: cloudsql-iam` with session_dsn_secret taken out, passes the same check as
+// shipped, with the same stdout. Its impersonate_service_account set to the account's login form
+// rather than its email is refused, naming the member and the value, and a user that is not the
+// account's login is refused, naming the login the account has. The block is where an operator
+// reads what each member takes, so a member it showed wrongly would be an operator's file refused
+// on their first check; here it is this test that fails instead. The block stays commented in the
+// file itself: the shipped store is postgres, and the stdout
+// TestShippedLegionYAMLExamplePassesCheckConfig holds is that store's.
 func TestShippedLegionYAMLExamplesSessionDatabasePassesCheckConfigOnlyWithTheAccountsEmailAndLogin(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
@@ -317,6 +340,7 @@ func TestShippedLegionYAMLExamplesSessionDatabasePassesCheckConfigOnlyWithTheAcc
 					"    #   name: legion_sessions",
 					"    #   user: legion-sessions@example-project.iam",
 					"    #   impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com",
+					"    #   writer_audience: //iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/legion-session-writer/providers/example-cluster",
 				)
 				for _, edit := range append([][2]string{
 					{"\n    session_store: postgres ", "\n    session_store: cloudsql-iam "},

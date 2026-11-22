@@ -159,7 +159,7 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 		},
 	}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 // runs and the issues that hold it (heldRow).
 func wordFor(t *testing.T, store projectionStore, key string) api.HeldIssue {
 	t.Helper()
-	state, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, nil, projectedAt)
+	state, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}

@@ -78,7 +78,7 @@ export interface RequestCredential {
    * does: where the token client's last trade failed in a way its retry loop trades again on and
    * nothing live is in hand, it throws `TradeRetryingError` at once. While the broker holds no
    * registration for this pod's session yet, it waits until `signal` ends and then throws
-   * `RegistrationPendingError` (both `@legion/broker-client/token-errors`), naming the session;
+   * `RegistrationPendingError` (both `@legion/cipher-client/token-errors`), naming the session;
    * the loop goes on trading in the background, so a later call takes the token once the
    * registration lands. A caller that passes none waits as long as that takes. A bearer ignores it.
    */

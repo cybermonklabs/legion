@@ -218,7 +218,13 @@ export const BUNDLE_DIRECTORIES = ["scripts/approval-eval", "skills/approval-rev
 /** What under those directories is outside the bundle: the registration itself, and the tests. */
 const OUTSIDE_BUNDLE = ["scripts/approval-eval/claim.ts", "scripts/approval-eval/__tests__"];
 
-/** Options whose value names a directory a run reads or writes: the digest takes it as a path. */
+/**
+ * Options whose value names a directory a run reads or writes: the digest takes it as a path.
+ * `--draw` is the draw directory `s10-inputs.ts` and the claim's analysis read, `--inputs` the
+ * inputs directory `s10_judge.py` reads, and `--claim-s10` the judged directory the claim's
+ * analysis (`analyze.ts --claim-s10`) reads, whose files the claim run's stage records pin by
+ * their sha256 instead.
+ */
 const PATH_OPTIONS: readonly string[] = [
   "--corpus",
   "--out",
@@ -226,6 +232,9 @@ const PATH_OPTIONS: readonly string[] = [
   "--run",
   "--slices",
   "--cache",
+  "--draw",
+  "--inputs",
+  "--claim-s10",
 ];
 
 /**
@@ -241,6 +250,7 @@ const FILE_OPTIONS: Readonly<Record<string, readonly string[]>> = {
   "fresh-agent.ts": ["--omp"],
   "refusals.ts": ["--fixtures", "--distillation"],
   "run-round.ts": ["--arms", "--distillation"],
+  "s10_judge.py": ["--code", "--skill", "--never-decide"],
 };
 
 /**

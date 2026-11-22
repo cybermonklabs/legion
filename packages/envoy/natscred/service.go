@@ -10,7 +10,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
-	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/cipherclient"
 )
 
 // ServiceUser is the CONNECT user a service presents beside its platform identity token as the
@@ -220,13 +220,13 @@ func (f serviceFile) Read() (string, error) {
 const googleReadTimeout = 10 * time.Second
 
 // ServiceGoogle is this VM's Google identity token for audience, minted by its metadata server at
-// every Read (brokerclient.MetadataIdentity).
+// every Read (cipherclient.MetadataIdentity).
 func ServiceGoogle(audience string) TokenReader {
-	return serviceGoogle{identity: brokerclient.NewMetadataIdentity(audience)}
+	return serviceGoogle{identity: cipherclient.NewMetadataIdentity(audience)}
 }
 
 type serviceGoogle struct {
-	identity *brokerclient.MetadataIdentity
+	identity *cipherclient.MetadataIdentity
 }
 
 func (g serviceGoogle) Read() (string, error) {

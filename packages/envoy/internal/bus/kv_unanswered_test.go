@@ -16,6 +16,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // unansweredBucket is the bucket the handle-open rows below open a jetstream handle on, created
@@ -82,7 +83,7 @@ func startUnansweredRelayOn(t *testing.T, target, subject string) *unansweredRel
 		t.Fatalf("read the NATS URL %q the relay relays to: %v", target, err)
 		return nil
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen for the relay: %v", err)
 		return nil

@@ -1,9 +1,13 @@
 package api
 
 import (
+	"os"
+	"regexp"
 	"slices"
+	"strconv"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -35,6 +39,32 @@ func TestFailureCausesGolden(t *testing.T) {
 	golden(t, "failure-causes.json", map[string][]supervise.FailureCause{"causes": supervise.FailureCauses})
 }
 
+// The role rows of EnumeratedFields record each role at the contract it arrived at: claimRoles,
+// wakeRoles and pauseStopRoles (answers.go), each read from floorRoles, the six roles named one
+// by one at ServingFloor. A role added to claim.Roles and to none of those lists would be on no
+// row: nothing would record when it arrived, no value strip would hold it back, and a reader of
+// an older contract, whose role enum is strict, would be served it and refuse the whole state. So
+// every role claim.Roles holds must have a value in each of the three lists, at whatever contract
+// it arrived at. A role claim.Roles drops stays in the lists, which are the history of what was
+// served.
+func TestEveryRoleAClaimCanHoldHasARecordedArrival(t *testing.T) {
+	lists := []struct {
+		name   string
+		values []EnumeratedValue
+	}{{"claimRoles", claimRoles}, {"wakeRoles", wakeRoles}, {"pauseStopRoles", pauseStopRoles}}
+	for _, role := range claim.Roles {
+		for _, list := range lists {
+			holds := func(v EnumeratedValue) bool { return v.Value == string(role) }
+			if !slices.ContainsFunc(list.values, holds) {
+				t.Errorf("claim.Roles holds the role %q, which answers.go's %s records at no contract: a reader of an "+
+					"older contract would be served it and refuse the whole state. Record it in %s at the contract it "+
+					"arrives at (valuesFrom(<that contract>, role)), not in floorRoles, which is the floor's, and hold "+
+					"it back below that contract with a value strip (shaping.go's valueStrips)", role, list.name, list.name)
+			}
+		}
+	}
+}
+
 // supervise.PodUpdateContract is the contract that introduced ready_for_update, and supervise
 // cannot read DaemonAPIVersion: internal/api imports supervise, not the other way round. This is
 // the one place the two meet, so it pins the number rather than bounding it.
@@ -57,5 +87,58 @@ func TestPodUpdateContractIsTheContractThatIntroducedTheOp(t *testing.T) {
 	if supervise.PodUpdateContract > DaemonAPIVersion {
 		t.Fatalf("supervise.PodUpdateContract = %d, above DaemonAPIVersion %d: no claim could answer an update round",
 			supervise.PodUpdateContract, DaemonAPIVersion)
+	}
+}
+
+// entryHeader matches the head of one numbered entry of version.go's doc comment: `// <n>: `.
+var entryHeader = regexp.MustCompile(`(?m)^// (\d+): `)
+
+// numberedEntries is every contract version.go carries an entry for, read out of the file
+// itself. The test below runs in the package directory, so the file is beside it.
+func numberedEntries(t *testing.T) map[int]bool {
+	t.Helper()
+	source, err := os.ReadFile("version.go")
+	if err != nil {
+		t.Fatalf("read version.go: %v", err)
+	}
+	entries := map[int]bool{}
+	for _, match := range entryHeader.FindAllStringSubmatch(string(source), -1) {
+		number, err := strconv.Atoi(match[1])
+		if err != nil {
+			t.Fatalf("entry header %q: %v", match[0], err)
+		}
+		entries[number] = true
+	}
+	if len(entries) == 0 {
+		t.Fatal("version.go carries no numbered entry: the pattern this test reads them with no longer matches")
+	}
+	return entries
+}
+
+// SupportedContracts (answers.go) is the list of contracts this daemon describes a shape for,
+// and version.go's numbered entries are what say which contracts exist. The two are held
+// together in both directions: an entry between the floor and this daemon's own contract that
+// the list omits is a contract no answer is shaped for, and a number in the list that no entry
+// names is a contract nothing ever shipped under. A number with no entry would be the second
+// case, which is why none is in the list.
+func TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp(t *testing.T) {
+	entries := numberedEntries(t)
+	listed := map[int]bool{}
+	for _, contract := range SupportedContracts {
+		listed[contract] = true
+	}
+	for contract := ServingFloor; contract <= DaemonAPIVersion; contract++ {
+		if entries[contract] && !listed[contract] {
+			t.Errorf("version.go has an entry for %d and SupportedContracts leaves it out", contract)
+		}
+	}
+	for _, contract := range SupportedContracts {
+		if contract < ServingFloor || contract > DaemonAPIVersion {
+			t.Errorf("SupportedContracts names %d, outside the floor %d and this daemon's own contract %d",
+				contract, ServingFloor, DaemonAPIVersion)
+		}
+		if !entries[contract] {
+			t.Errorf("SupportedContracts names %d and version.go has no entry for it", contract)
+		}
 	}
 }

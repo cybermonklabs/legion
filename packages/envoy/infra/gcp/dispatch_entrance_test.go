@@ -100,66 +100,66 @@ func TestDispatchRefusesAnEntranceItHasNoOriginFor(t *testing.T) {
 			"and a Dispatch reached through the tailnet front door or inside its cluster has none; set publicOrigin, or unset " + input
 	}
 	for _, row := range []struct {
-		name string
-		args func() *gcp.DispatchArgs
-		want string
+		name, input string
+		args        func() *gcp.DispatchArgs
+		want        string
 	}{
-		{"ranges on the tailnet", func() *gcp.DispatchArgs {
+		{"ranges on the tailnet", "loadBalancerSourceRanges", func() *gcp.DispatchArgs {
 			a := dispatchArgs()
 			a.LoadBalancerSourceRanges = dispatchLoadBalancerRanges
 			return a
 		}, needs("loadBalancerSourceRanges")},
-		{"a group on the tailnet", func() *gcp.DispatchArgs {
+		{"a group on the tailnet", "networkEndpointGroupName", func() *gcp.DispatchArgs {
 			a := dispatchArgs()
 			a.NetworkEndpointGroupName = dispatchNEGName
 			return a
 		}, needs("networkEndpointGroupName")},
-		{"ranges in the sandbox", func() *gcp.DispatchArgs {
+		{"ranges in the sandbox", "loadBalancerSourceRanges", func() *gcp.DispatchArgs {
 			a := dispatchSandboxArgs()
 			a.LoadBalancerSourceRanges = dispatchLoadBalancerRanges
 			return a
 		}, needs("loadBalancerSourceRanges")},
-		{"a group in the sandbox", func() *gcp.DispatchArgs {
+		{"a group in the sandbox", "networkEndpointGroupName", func() *gcp.DispatchArgs {
 			a := dispatchSandboxArgs()
 			a.NetworkEndpointGroupName = dispatchNEGName
 			return a
 		}, needs("networkEndpointGroupName")},
-		{"a range that is no CIDR", func() *gcp.DispatchArgs {
+		{"a range that is no CIDR", "loadBalancerSourceRanges", func() *gcp.DispatchArgs {
 			a := dispatchEntranceArgs()
 			a.LoadBalancerSourceRanges = []string{"35.191.0.0"}
 			return a
 		}, `loadBalancerSourceRanges[0] "35.191.0.0" must be a CIDR, such as 130.211.0.0/22`},
-		{"a range written as a host in it", func() *gcp.DispatchArgs {
+		{"a range written as a host in it", "loadBalancerSourceRanges", func() *gcp.DispatchArgs {
 			a := dispatchEntranceArgs()
 			a.LoadBalancerSourceRanges = []string{"35.191.0.0/16", "130.211.1.2/22"}
 			return a
 		}, `loadBalancerSourceRanges[1] "130.211.1.2/22" must be written as the network it names, 130.211.0.0/22`},
-		{"the whole IPv4 space", func() *gcp.DispatchArgs {
+		{"the whole IPv4 space", "loadBalancerSourceRanges", func() *gcp.DispatchArgs {
 			a := dispatchEntranceArgs()
 			a.LoadBalancerSourceRanges = []string{"35.191.0.0/16", "0.0.0.0/0"}
 			return a
 		}, `loadBalancerSourceRanges[1] "0.0.0.0/0" admits every address to 8766, past the load balancer and IAP alike`},
-		{"the whole IPv6 space", func() *gcp.DispatchArgs {
+		{"the whole IPv6 space", "loadBalancerSourceRanges", func() *gcp.DispatchArgs {
 			a := dispatchEntranceArgs()
 			a.LoadBalancerSourceRanges = []string{"::/0"}
 			return a
 		}, `loadBalancerSourceRanges[0] "::/0" admits every address to 8766, past the load balancer and IAP alike`},
-		{"an issuer with an empty query", func() *gcp.DispatchArgs {
+		{"an issuer with an empty query", "oidcIssuer", func() *gcp.DispatchArgs {
 			a := dispatchEntranceArgs()
 			a.OidcAudience, a.OidcIssuer = dispatchOidcAudience, dispatchOidcIssuer+"?"
 			return a
 		}, `oidcIssuer "` + dispatchOidcIssuer + `?" must be an https URL with a host and no user, query or fragment`},
-		{"an issuer with an empty fragment", func() *gcp.DispatchArgs {
+		{"an issuer with an empty fragment", "oidcIssuer", func() *gcp.DispatchArgs {
 			a := dispatchEntranceArgs()
 			a.OidcAudience, a.OidcIssuer = dispatchOidcAudience, dispatchOidcIssuer+"#"
 			return a
 		}, `oidcIssuer "` + dispatchOidcIssuer + `#" must be an https URL with a host and no user, query or fragment`},
-		{"a group name with an uppercase letter", func() *gcp.DispatchArgs {
+		{"a group name with an uppercase letter", "networkEndpointGroupName", func() *gcp.DispatchArgs {
 			a := dispatchEntranceArgs()
 			a.NetworkEndpointGroupName = "Example-neg"
 			return a
 		}, `networkEndpointGroupName "Example-neg" must match`},
-		{"a group name ending in a hyphen", func() *gcp.DispatchArgs {
+		{"a group name ending in a hyphen", "networkEndpointGroupName", func() *gcp.DispatchArgs {
 			a := dispatchEntranceArgs()
 			a.NetworkEndpointGroupName = "example-neg-"
 			return a
@@ -168,6 +168,7 @@ func TestDispatchRefusesAnEntranceItHasNoOriginFor(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			_, err := gcp.ResolveDispatch(row.args())
 			require.ErrorContains(t, err, row.want)
+			requireInputError(t, err, row.input)
 		})
 	}
 	withIssuer := dispatchEntranceArgs()

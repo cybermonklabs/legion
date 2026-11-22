@@ -21,9 +21,10 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sjawhar/envoy/internal/broker/natscallout"
-	"github.com/sjawhar/envoy/internal/broker/oauthwire"
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/natscallout"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -62,7 +63,7 @@ func newRig(t *testing.T, introspect func(context.Context, string) (oauthwire.In
 		require.NoError(t, os.WriteFile(path, []byte(seed), 0o600))
 		return path
 	}
-	services, err := natscallout.ParseServices("daemon/-/*=" + daemonAccount)
+	services, err := config.ParseNATSServices("daemon/-/*=" + daemonAccount)
 	require.NoError(t, err)
 	log := &logtest.Buffer{}
 	registry := metrics.New()
@@ -134,8 +135,8 @@ func liveFor(jkt string, tokens func(string) bool) func(context.Context, string)
 			return oauthwire.Introspection{}, nil
 		}
 		return oauthwire.Introspection{
-			Active: true, Session: "ses_a", Person: "person@example.com", ClientID: brokertoken.ExchangeClientID,
-			ProjectScope: brokertoken.ProjectScopePerson, Thumbprint: jkt, ExpiresAt: time.Now().Add(15 * time.Minute).Unix(),
+			Active: true, Session: "ses_a", Person: "person@example.com", ClientID: ciphertoken.ExchangeClientID,
+			ProjectScope: ciphertoken.ProjectScopePerson, Thumbprint: jkt, ExpiresAt: time.Now().Add(15 * time.Minute).Unix(),
 		}, nil
 	}
 }

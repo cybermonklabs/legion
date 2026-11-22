@@ -111,26 +111,30 @@ func PushName(remote string) string {
 // lines on its standard input, the repository as its working directory — and then, for a
 // destination GitHub reports public, this repository's own rules read the push's records: each
 // ref name, and for each commit the destination does not already hold, the author, the
-// committer, the message, each added or renamed path, and each added line.
+// committer, the message, each added or renamed path, and each added line. Under a deployment
+// that runs no shared check (sharedCheck) the rules are the whole of it.
 func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	what := PushName(req.Remote)
-	check, err := g.Resolve()
+	check, err := g.sharedCheck(what)
 	if err != nil {
-		return &SetupFailure{What: what, Why: whyNoCheck, Err: err}
-	}
-	var lines strings.Builder
-	for _, update := range req.Updates {
-		lines.WriteString(update.Line())
-		lines.WriteString("\n")
-	}
-	// bash runs the check rather than the check running itself: that is the shape git's own
-	// pre-push hook calls it in, and the one the check documents for a push.
-	if err := g.shared(ctx, what, child{
-		argv:  []string{"bash", check, req.Remote, req.URL},
-		dir:   req.Dir,
-		stdin: strings.NewReader(lines.String()),
-	}); err != nil {
 		return err
+	}
+	defer check.remove()
+	if check.path != "" {
+		var lines strings.Builder
+		for _, update := range req.Updates {
+			lines.WriteString(update.Line())
+			lines.WriteString("\n")
+		}
+		// bash runs the check rather than the check running itself: that is the shape git's own
+		// pre-push hook calls it in, and the one the check documents for a push.
+		if err := g.shared(ctx, what, child{
+			argv:  []string{"bash", check.path, req.Remote, req.URL},
+			dir:   req.Dir,
+			stdin: strings.NewReader(lines.String()),
+		}); err != nil {
+			return err
+		}
 	}
 	public, err := g.scanThrough(ctx, what, RepoFromURL(req.URL))
 	if err != nil {

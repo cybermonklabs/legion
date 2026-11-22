@@ -37,9 +37,10 @@ const (
 
 // The pod's volumes. ghVolume is the prefix of each launcher role's gh volume (roleVolume), the
 // projection of its role Secret's gh files, which only that role's namespace sees at GHConfigDir.
-// roleHomesVolume is an issue pod's disk emptyDir of every role's home overlay, temporary
-// directories and own config home (issuePod.mainVolumes), and roleProbeVolume the image probe's
-// disk emptyDir its role-namespace check runs a role generation over (probeManifest).
+// roleHomesVolume is the disk emptyDir of every role's home overlay, temporary directories and own
+// config home of a pod whose launcher runs the roles-dir form: an issue pod, and the controller's
+// pod under a writer audience (roleHomesVolumes). roleProbeVolume is the image probe's disk
+// emptyDir its role-namespace check runs a role generation over (probeManifest).
 const (
 	provisionVolume = "provision"
 	stateVolume     = "state"
@@ -57,6 +58,11 @@ const (
 	// (WorkloadIdentityDir, workloadIdentityVolumes), when the deployment names that endpoint
 	// (runtime.kubernetes.sandbox.microvm.metadata).
 	workloadIdentityTokenVolume = "workload-identity-token"
+	// sessionWriterTokenVolume is the projected ServiceAccount token a pod's launcher gives its
+	// session proxy, which exchanges it to impersonate the session database's service account
+	// (SessionWriterDir, sessionWriterVolumes), when the session database names a writer audience
+	// (runtime.kubernetes.session_database.writer_audience).
+	sessionWriterTokenVolume = "session-writer-token"
 )
 
 // The agent-secrets volumes: agentSecretsTokenVolume alone carries the projected token for the
@@ -128,7 +134,7 @@ var runtimeOwned = func() map[string]bool {
 		"LEGION_STATE_DIR": true, "LEGION_WORKSPACE": true, "ENVOY_NATS_URL": true, "ENVOY_URL": true,
 		"DISPATCH_URL": true, "GH_CONFIG_DIR": true, "GH_TOKEN": true, "GITHUB_TOKEN": true, "GH_HOST": true,
 		"LEGION_GH_OWNERS_DIR": true, "LEGION_GH_PATH": true,
-		"PATH": true, "PI_SHELL_PREFIX": true, "GIT_TERMINAL_PROMPT": true, leakguard.CheckVar: true,
+		"PATH": true, "PI_SHELL_PREFIX": true, "GIT_TERMINAL_PROMPT": true, leakguard.CheckVar: true, leakguard.CheckerVar: true,
 		"XDG_CONFIG_HOME": true, "XDG_CACHE_HOME": true, "XDG_DATA_HOME": true, "XDG_STATE_HOME": true,
 		"TMPDIR": true, "GOCACHE": true, "GOMODCACHE": true, "BUN_INSTALL_CACHE_DIR": true,
 		"POD_UID": true, bootTokenKey + "_FILE": true, dispatchTokenKey + "_FILE": true,
@@ -204,8 +210,8 @@ const slackChannelsVariable = "LEGION_SLACK_CHANNELS"
 
 // machineIdentityVariable and machineTokenFileVariable are the two variables a pod's broker
 // clients read to decide which identity the machine proves and where its token is
-// (packages/broker-client/src/environment.ts's IDENTITY_VAR and MACHINE_TOKEN_FILE_VAR, and
-// packages/envoy/internal/brokerclient's IdentityVar and MachineTokenFileVar), and
+// (packages/cipher-client/src/environment.ts's IDENTITY_VAR and MACHINE_TOKEN_FILE_VAR, and
+// packages/envoy/internal/cipherclient's IdentityVar and MachineTokenFileVar), and
 // kubernetesIdentity the value naming a projected Kubernetes ServiceAccount token. A role is told
 // them where its pod trades (launch.trades), and they are Legion's only where the deployment names
 // an exchange audience (exchangeOwned).
@@ -252,11 +258,21 @@ var sessionProxyFlagNames = [3]string{"--session-instance", "--session-database"
 // command its pods were created with before the flag existed, and none of them drifts for it.
 const sessionProxyAccountFlag = "--session-impersonate-service-account"
 
+// sessionWriterAudienceFlag names the audience of the session writer token a pod's `legion
+// launcher` reads at <roles-dir>/session-writer/token and exchanges, in place of the pod's own
+// credentials, to impersonate the service account sessionProxyAccountFlag names
+// (Database.WriterAudience, SessionWriterDir). It follows that flag, and only where the store
+// names a writer audience, which the store names only with an account: a pod without one carries
+// no such flag at all, so a deployment that names none keeps the very command its pods were
+// created with before the flag existed, and none of them drifts for it.
+const sessionWriterAudienceFlag = "--session-writer-audience"
+
 // legionVolumeNames are the volumes Legion puts in a pod, an issue pod's, the controller's or the
 // probe's, whose names the operator's volumes may not take: the shared ones, the role homes, the
 // test database's, and each launcher role's private ones. The agent-secrets volumes are reserved
 // whether or not this deployment enrolls, the workload identity token whether or not an issue pod
-// of it serves the metadata endpoint, and the test database's whether or not it sets
+// of it serves the metadata endpoint, the session writer token whether or not its session
+// database names a writer audience, and the test database's whether or not it sets
 // `runtime.kubernetes.test_postgres`: an operator's pod may never claim them. The exchange
 // identity's (agentSecretsExchangeVolume) is Legion's only where exchange says the deployment names
 // an exchange audience: one that names none keeps that name the operator's, as it was before the
@@ -265,7 +281,7 @@ const sessionProxyAccountFlag = "--session-impersonate-service-account"
 func legionVolumeNames(exchange bool) []string {
 	names := []string{
 		issueVolume, provisionVolume, tempVolume, configVolume, providersVolume, agentSecretsTokenVolume, workloadIdentityTokenVolume,
-		roleHomesVolume, roleProbeVolume, testPGVolume,
+		sessionWriterTokenVolume, roleHomesVolume, roleProbeVolume, testPGVolume,
 	}
 	if exchange {
 		names = append(names, agentSecretsExchangeVolume)
@@ -415,6 +431,37 @@ type keptPod struct {
 	// none, and its role is told neither of Oh My Pi's two session variables rather than a URL
 	// file it cannot read.
 	store ompsessions.StoreKind
+	// checker is the manifest digest of the deployment's leak check this pod's install holds, as
+	// the pod records it (recordedLeakChecker): the digest its template was built under
+	// (leakCheckerAnnotation), the install made at the image's own pin, or else the digest of the
+	// tarball the daemon served into it (leakCheckPushedAnnotation); and so the one its role is
+	// told (launch.leakChecker). recorded is whether the pod records one at all. A pod that records
+	// none was built under no setting, or by a daemon before the record: its role is told none where
+	// its launcher holds an install from before, which a daemon of a release before the setting
+	// pushed and hashed nothing of. Where it holds none, serveLeakCheck records the manifest of the
+	// served tarball for the reconnected session, then tells that digest to the role.
+	checker  string
+	recorded bool
+}
+
+// leakCheckerAnnotation records on a pod template's metadata the manifest digest of the
+// deployment's leak check (Options.LeakCheckSetting's ManifestSHA256) the pod was built under,
+// written where the template is built (podTemplate) and only under a configured setting. A pod's
+// install is made once, at its own image's pin, so a pod kept after the deployment moved its pin
+// and its digest together holds the install of the old pin, whose digest is the old one. A role
+// started in such a pod is told the digest its pod was built under (keptPod.checker), so its shim
+// starts against the install its pod holds, and it can push its work and answer the update round
+// that replaces the pod (leakCheckDrift), where told the digest now it would start no agent at all.
+const leakCheckerAnnotation = "legion.dev/leak-checker-manifest-sha256"
+
+// leakChecker is the manifest digest this launch's generation is told (leakguard.CheckerVar): the
+// one the live pod it keeps records (keptPod.checker), and the deployment's own for a launch that
+// builds the pod itself. "" tells none.
+func (l launch) leakChecker(r *Runtime) string {
+	if l.kept != nil {
+		return l.kept.checker
+	}
+	return r.leakCheck.ManifestSHA256
 }
 
 // enrollsIn is the one decision whether a generation of role started now in a pod holds the
@@ -603,7 +650,11 @@ func (l launch) runsClaude() bool { return runtime.Of(l.spec.Backend) == runtime
 // issue's (SandboxConfig.Of), and the controller's pod runs in gVisor whatever the configuration
 // names. The system prompt is composed here (runtime.ComposePrompt), and a prompt whose start
 // frame no launcher would read is refused here too (runtime.PromptTooLarge, wrapped so the
-// supervisor can tell it from a launch that failed).
+// supervisor can tell it from a launch that failed). So is a Claude Code spec that names its
+// session by its id alone (ResumeSession), whoever was to resolve that id: a Claude Code claim's
+// recorded session is its transcript's path, which the id is read from (claudelaunch.ResumeSession),
+// and supervise forgets a Claude Code session recorded with no file rather than look it up, so no
+// Claude Code command is started on an id it would find no transcript of.
 func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 	if err := runtime.ValidateSpawnSpec(spec, r.specOwned()); err != nil {
 		return launch{}, err
@@ -622,6 +673,9 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 		l.microVM = r.sandboxConfig.MicroVM
 	}
 	if l.runsClaude() {
+		if spec.ResumeSession != "" {
+			return launch{}, refuse("a Claude Code claim resumes its session from its recorded transcript, never by the session id %s alone", spec.ResumeSession)
+		}
 		mcp, err := claudelaunch.MCPConfig(claudeBun, claudePluginDir, claudeConfigDir(spec.Role))
 		if err != nil {
 			return launch{}, refuse("its Claude Code MCP configuration: %v", err)
@@ -704,7 +758,10 @@ func SessionFromVolume(file, root string) (string, error) {
 // agentArgv is the command the shim runs, the launch's own harness: the Claude Code command for a
 // Claude role (claudeArgv), and otherwise the image's Oh My Pi with its two explicit extensions,
 // the Envoy plugin first, `--model @default` so the session runs the model the pod's overlay puts
-// on the `default` role, `--resume` on the recorded session when resuming, then RPC mode and
+// on the `default` role, `--resume` on the session being resumed — the recorded file, or for a
+// claim that records no file the session's id (ResumeSession), which the launcher replaces with the
+// file it looks up where it was told the id (launcherCommand) and which Oh My Pi resolves itself
+// where the launch has the agent resolve it (ResumeByAgent) — then RPC mode and
 // `--append-system-prompt` naming the file the launcher writes the launch's system prompt to
 // (systemPromptPath), never the text: Oh My Pi 18.16.0 reads a value with no newline as a path
 // and appends that file's contents, so the prompt meets no argv bound however long the
@@ -742,8 +799,11 @@ func (l launch) agentArgv(agent []string) []string {
 		envoy, legion = pluginRoots(pluginGenDir(roleStateHome(l.spec.Role), l.spec.Generation))
 	}
 	argv := append(slices.Clone(agent), "--extension", envoy, "--extension", legion, "--model", "@default")
-	if l.spec.ResumeSessionFile != "" {
+	switch {
+	case l.spec.ResumeSessionFile != "":
 		argv = append(argv, "--resume="+l.spec.ResumeSessionFile)
+	case l.spec.ResumeSession != "":
+		argv = append(argv, "--resume="+l.spec.ResumeSession)
 	}
 	return append(argv, "--mode", "rpc", "--append-system-prompt", systemPromptPath(l.spec.Generation))
 }
@@ -877,15 +937,16 @@ func (r *Runtime) podTemplate(l launch) podTemplate {
 	if l.microVM != nil {
 		labels[labelSandbox] = string(SandboxMicroVM)
 	}
+	annotations := map[string]string{
+		doNotDisruptAnnotation: "true", safeToEvictAnnotation: "false",
+		podShapeAnnotation: r.podShapes[l.shapeKey()],
+	}
+	if r.leakCheck.Configured() {
+		annotations[leakCheckerAnnotation] = r.leakCheck.ManifestSHA256
+	}
 	return podTemplate{
-		Metadata: podMetadata{
-			Labels: labels,
-			Annotations: map[string]string{
-				doNotDisruptAnnotation: "true", safeToEvictAnnotation: "false",
-				podShapeAnnotation: r.podShapes[l.shapeKey()],
-			},
-		},
-		Spec: spec,
+		Metadata: podMetadata{Labels: labels, Annotations: annotations},
+		Spec:     spec,
 	}
 }
 
@@ -940,8 +1001,8 @@ func kubeletEscape(text string) string {
 // included: a Secret
 // projection with no items would project every key of the Secret, the launcher token among them.
 // Then the volumes its kind's one container alone mounts (podKind.mainVolumes), the agent-secrets
-// volumes, a microVM pod's workload identity token (workloadIdentityVolumes), the providers and
-// the operator's.
+// volumes, a microVM pod's workload identity token (workloadIdentityVolumes), the session writer
+// token (sessionWriterVolumes), the providers and the operator's.
 func (r *Runtime) volumes(l launch) []corev1.Volume {
 	providers, _ := r.providers()
 	memory := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}
@@ -979,7 +1040,7 @@ func (r *Runtime) volumes(l launch) []corev1.Volume {
 	volume := corev1.Volume{Name: issueVolume, VolumeSource: disk}
 	config := corev1.Volume{Name: configVolume, VolumeSource: memory}
 	return slices.Concat([]corev1.Volume{volume}, l.kind.initVolumes(l), []corev1.Volume{config}, roleVolumes,
-		l.kind.mainVolumes(r), r.agentSecretsVolumes(l.roles), workloadIdentityVolumes(l), providers, r.pod.Volumes)
+		l.kind.mainVolumes(r), r.agentSecretsVolumes(l.roles), workloadIdentityVolumes(l), r.sessionWriterVolumes(), providers, r.pod.Volumes)
 }
 
 // agentSecretsVolumes are, for a pod the runtime enrolls with the secrets broker
@@ -1023,10 +1084,10 @@ func brokerTokenProjection(broker *AgentSecrets) *corev1.ServiceAccountTokenProj
 	return &corev1.ServiceAccountTokenProjection{Audience: broker.Audience, ExpirationSeconds: &expiry, Path: AgentSecretsTokenFile}
 }
 
-// workloadIdentityTokenSeconds is the lifetime of the token workloadIdentityVolumes projects: an
-// hour, the cluster admission policy's cap on a projected token (the agent-secrets token's bound,
-// configureProber). The kubelet writes a fresh one before it expires, and the launcher reads the
-// file at every exchange.
+// workloadIdentityTokenSeconds is the lifetime of the tokens workloadIdentityVolumes and
+// sessionWriterVolumes project: an hour, the cluster admission policy's cap on a projected token
+// (the agent-secrets token's bound, configureProber). The kubelet writes a fresh one before it
+// expires, and the launcher and its session proxy read the file at every exchange.
 const workloadIdentityTokenSeconds = 3600
 
 // workloadIdentityVolumes are, for a microVM launch whose block names the metadata endpoint
@@ -1040,13 +1101,52 @@ func workloadIdentityVolumes(l launch) []corev1.Volume {
 	if l.microVM == nil || l.microVM.Metadata == nil {
 		return nil
 	}
+	return []corev1.Volume{projectedTokenVolume(workloadIdentityTokenVolume, l.microVM.Metadata.WorkloadPool, launcher.WorkloadIdentityTokenFile)}
+}
+
+// projectedTokenVolume is a volume of one projected ServiceAccount token for audience, at path in
+// the volume, for workloadIdentityTokenSeconds and readable by the pod's group, which is the
+// fsGroup every file of the pod's volumes carries (podTemplate): the shape of each token the
+// pod's launcher reads and no role does (workloadIdentityVolumes, sessionWriterVolumes).
+func projectedTokenVolume(name, audience, path string) corev1.Volume {
 	expiry := int64(workloadIdentityTokenSeconds)
-	return []corev1.Volume{{Name: workloadIdentityTokenVolume, VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
+	return corev1.Volume{Name: name, VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
 		DefaultMode: new(int32(0o440)),
 		Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
-			Audience: l.microVM.Metadata.WorkloadPool, ExpirationSeconds: &expiry, Path: launcher.WorkloadIdentityTokenFile,
+			Audience: audience, ExpirationSeconds: &expiry, Path: path,
 		}}},
-	}}}}
+	}}}
+}
+
+// sessionWriterAudience is the audience of the session writer token the pods of r carry
+// (Database.WriterAudience): the session database's under cloudsql-iam, and empty under any other
+// store and where that database names none. It is the one reading of whether a pod carries the
+// token (sessionWriterVolumes, podTokenMounts), whether its launcher is told the audience
+// (sessionProxyFlags), and whether the controller's pod runs the roles-dir form
+// (controllerPod.launcherContainer), so the four never disagree.
+func (r *Runtime) sessionWriterAudience() string {
+	if r.sessionStore.Kind != ompsessions.StoreCloudSQLIAM {
+		return ""
+	}
+	return r.sessionStore.Database.WriterAudience
+}
+
+// sessionWriterVolumes are, where the session database names a writer audience
+// (sessionWriterAudience), the one projected ServiceAccount token the pod's launcher gives its
+// session proxy. The proxy exchanges it at Google's security token service and impersonates the
+// session database's service account with the federated token, never with the pod's own
+// credentials. The token is for the writer audience, which is also the audience that exchange
+// names, at launcher.SessionWriterTokenFile, readable by the pod's group, which is the fsGroup
+// every file of the pod's volumes carries (podTemplate). Its one mount is the launcher
+// container's, under RolesDir (podTokenMounts): an issue pod's, and the controller's, whose
+// launcher then runs the roles-dir form (controllerPod.launcherContainer). None where the
+// database names no writer audience, and none in the image probe's pod, which proxies no session.
+func (r *Runtime) sessionWriterVolumes() []corev1.Volume {
+	audience := r.sessionWriterAudience()
+	if audience == "" {
+		return nil
+	}
+	return []corev1.Volume{projectedTokenVolume(sessionWriterTokenVolume, audience, launcher.SessionWriterTokenFile)}
 }
 
 // exchangeTokenExpirySeconds is how long the kubelet mints a pod's exchange token for: an hour,
@@ -1070,10 +1170,11 @@ func exchangeTokenMounts(broker *AgentSecrets) []corev1.VolumeMount {
 }
 
 // agentSecretsMounts are the controller's container's mounts of the agent-secrets volumes when it
-// enrolls with broker, none when broker is nil: the one configured audience projection, the
-// role's own key directory, and the exchange token where the deployment names its audience. An
-// issue pod's container mounts each role's key directory under the role's directory of RolesDir
-// instead (issuePod.launcherContainer).
+// enrolls with broker and runs the single-role form, none when broker is nil: the one configured
+// audience projection, the role's own key directory, and the exchange token where the deployment
+// names its audience. A container that runs the roles-dir form mounts each role's key directory
+// under the role's directory of RolesDir instead (rolesDirLayout), and the two tokens once for the
+// pod (podTokenMounts).
 func agentSecretsMounts(broker *AgentSecrets, role claim.Role) []corev1.VolumeMount {
 	if broker == nil {
 		return nil
@@ -1082,6 +1183,25 @@ func agentSecretsMounts(broker *AgentSecrets, role claim.Role) []corev1.VolumeMo
 		{Name: agentSecretsTokenVolume, MountPath: AgentSecretsTokenDir, ReadOnly: true},
 		{Name: roleVolume(agentSecretsKeyVolume, role), MountPath: AgentSecretsKeyDir},
 	}, exchangeTokenMounts(broker)...)
+}
+
+// podTokenMounts are the projected tokens a container that runs the launcher's roles-dir form
+// mounts once for every role it runs, each read-only: the session writer token at
+// SessionWriterDir where the session database names a writer audience (sessionWriterVolumes),
+// under RolesDir, which no role's namespace shows; then, where the pod enrolls with the secrets
+// broker, the broker's token at AgentSecretsTokenDir and the exchange's where the deployment names
+// its audience (exchangeTokenMounts), which every role of the pod reads at those paths. No init
+// container mounts any of them.
+func (r *Runtime) podTokenMounts() []corev1.VolumeMount {
+	var mounts []corev1.VolumeMount
+	if r.sessionWriterAudience() != "" {
+		mounts = append(mounts, corev1.VolumeMount{Name: sessionWriterTokenVolume, MountPath: SessionWriterDir, ReadOnly: true})
+	}
+	if r.agentSecrets != nil {
+		mounts = append(mounts, corev1.VolumeMount{Name: agentSecretsTokenVolume, MountPath: AgentSecretsTokenDir, ReadOnly: true})
+		mounts = append(mounts, exchangeTokenMounts(r.agentSecrets)...)
+	}
+	return mounts
 }
 
 // providers are the providers Secret's volume and its read-only mount at ProvidersDir: the
@@ -1155,22 +1275,27 @@ func (r *Runtime) sessionDSNFile(l launch) string {
 // sessionProxyFlags are what a pod's `legion launcher` is told of the Cloud SQL session database
 // it proxies its generations' sessions to, none under any other store: the three of
 // sessionProxyFlagNames, then sessionProxyAccountFlag only where the store names a service account
-// to impersonate, so the login the pod signs in as is its own identity's, or that account's. There
-// is no address among them: the launcher binds the socket in the generation's own private
-// directory, which it knows from --roles-dir and the role in an issue pod's one container, and
-// from --private-dir in the controller's.
+// to impersonate, so the login the pod signs in as is its own identity's, or that account's, and
+// then sessionWriterAudienceFlag only where the store names a writer audience, so the launcher
+// impersonates that account with the writer token rather than with the pod's own credentials.
+// There is no address among them: the launcher binds the socket in the generation's own private
+// directory, which it knows from --roles-dir and the role in a container that runs the roles-dir
+// form, and from --private-dir in the controller's single-role form.
 func (r *Runtime) sessionProxyFlags() []string {
 	if r.sessionStore.Kind != ompsessions.StoreCloudSQLIAM {
 		return nil
 	}
 	database := r.sessionStore.Database
 	values := [len(sessionProxyFlagNames)]string{database.Instance, database.Name, database.User}
-	flags := make([]string, 0, 2*len(values)+2)
+	flags := make([]string, 0, 2*len(values)+4)
 	for i, value := range values {
 		flags = append(flags, sessionProxyFlagNames[i], value)
 	}
 	if database.ImpersonateServiceAccount != "" {
 		flags = append(flags, sessionProxyAccountFlag, database.ImpersonateServiceAccount)
+	}
+	if audience := r.sessionWriterAudience(); audience != "" {
+		flags = append(flags, sessionWriterAudienceFlag, audience)
 	}
 	return flags
 }
@@ -1569,15 +1694,30 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	add("GIT_TERMINAL_PROMPT", "0")
 	env = append(env, gitConfigEnv()...)
 	// The shared public leak check every write of this role runs first: its `legion gh` and its
-	// pushes each resolve PUBLIC_LEAK_CHECK before anything else
-	// (leakguard's Resolve) and refuse the write when they find no check. The check is not in the
-	// image — it is published by tag, the image carries the pin, and the daemon reads the check at
-	// that pin and pushes it to the pod's launcher, which installs it once for the pod before any
-	// role starts (launchers.serveLeakCheck; each role's shim only reads that install) — so what
-	// is named here is the installed copy, under the scratch the roles of this pod share. The path
-	// is the installer's own constant, so the path a role is told and the path the install writes
-	// are one string and cannot drift (TestEveryRoleIsToldTheLeakCheckItsPodInstalls).
-	add(leakguard.CheckVar, leakguard.InstalledCheck)
+	// pushes each resolve PUBLIC_LEAK_CHECK before anything else (leakguard's Resolve) and, told
+	// the deployment's checker (leakguard.CheckerVar), refuse the write when they find no check.
+	// The check is not in the image — it is published by tag from the repository the deployment
+	// names, the image carries the pin, and the daemon reads the check at that pin and pushes it
+	// to the pod's launcher, which installs it once for the pod before any role starts
+	// (launchers.serveLeakCheck; each role's shim only reads that install) — so what is named here
+	// is the installed copy, under the scratch the roles of this pod share. The path is the
+	// installer's own constant, so the path a role is told and the path the install writes are
+	// one string and cannot drift (TestEveryRoleIsToldTheLeakCheckItsPodInstalls). The digest is
+	// the manifest digest of the check the deployment names (leakguard.Manifest), as the pod the
+	// role starts in was built under (launch.leakChecker): a kept pod holds the install of its own
+	// image's pin, so its role is told the digest that install has; a pod recording none is told
+	// the setting's where its launcher holds no install, since the check pushed into it then is the
+	// setting's, and none where it holds one from before (relaunch). It is the sign, to the shim
+	// and the guard, that the deployment runs a check at all; `legion gh` trusts its read rule
+	// under the program that rule was proven against, whose digest it compiles in, and not under
+	// this digest. A deployment that names none (Options.LeakCheckSetting) tells neither: its pods
+	// are pushed no check, and its roles start without one and refuse no write for its absence.
+	if r.leakCheck.Configured() {
+		add(leakguard.CheckVar, leakguard.InstalledCheck)
+		if checker := l.leakChecker(r); checker != "" {
+			add(leakguard.CheckerVar, checker)
+		}
+	}
 	// The two variables an agent reads to decide it holds a broker at all, gated on the same one
 	// decision as the shim's agent-secrets flags (enrollsIn, launcherCommand): a generation in a
 	// kept pod that carries no enrollment is started with neither the flags nor these, so its
@@ -1588,7 +1728,7 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	}
 	// The identity the broker's exchange trades, gated on the one exchange decision (tradesIn) as
 	// the two above are on the enrollment: the pod's projected token for the exchange's audience,
-	// which the broker clients of every session in the role (packages/broker-client's
+	// which the broker clients of every session in the role (packages/cipher-client's
 	// environment.ts, machineIdentity) trade for a broker token of the session's own.
 	if l.trades(r) {
 		add(machineIdentityVariable, kubernetesIdentity)
@@ -1663,11 +1803,13 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	// A launch that resumes a recorded Oh My Pi session holds its Oh My Pi to that session
 	// (runtime.SessionExclusiveVariable): a resume of a session another live process still holds
 	// exits non-zero after the lease wait rather than moving the role onto a session id the daemon
-	// never recorded. A fresh launch is told nothing of it, and neither is a Claude role, whose
-	// resume is Claude Code's. The name is the runtime's (runtimeOwned), so neither a spec nor an
-	// operator's pod env may set it, and it comes after both. It is plain, so it travels in the
-	// start command alone (launchEnvironment) and changes nothing of the pod.
-	if !l.runsClaude() && spec.ResumeSessionFile != "" {
+	// never recorded. A resume of a session named by its id alone (spec.ResumeSession, the file the
+	// launcher finds or Oh My Pi's own lookup) resumes a recorded session too, so it is held the
+	// same way. A fresh launch is told nothing of it, and neither is a Claude role, whose resume is
+	// Claude Code's. The name is the runtime's (runtimeOwned), so neither a spec nor an operator's
+	// pod env may set it, and it comes after both. It is plain, so it travels in the start command
+	// alone (launchEnvironment) and changes nothing of the pod.
+	if !l.runsClaude() && (spec.ResumeSessionFile != "" || spec.ResumeSession != "") {
 		add(runtime.SessionExclusiveVariable, runtime.SessionExclusiveValue)
 	}
 	return env

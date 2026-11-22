@@ -1,5 +1,5 @@
 // Package pgmigrate holds what Envoy's two Postgres migration runners share: Dispatch's
-// (internal/dispatch/store) and the secrets broker's (internal/broker/store). Both record an
+// (internal/dispatch/store) and the secrets broker's (internal/cipher/store). Both record an
 // applied migration by its version and its file's identity, its name and the sha256 of its text
 // (Identity), and apply every version they have not recorded, so both trust the set they embed to
 // give each version one file, and both run a migration's statements under locks that production's

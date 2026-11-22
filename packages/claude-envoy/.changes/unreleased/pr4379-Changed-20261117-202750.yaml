@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+    The bundled `dispatch` command and a person's keyed accept send a write whose answer was lost
+    again under its key whatever Dispatch's `/healthz` answers, and ask nothing first: every
+    Dispatch that carries `b1c42d1d7d` runs the keyed layer, and the Dispatch client no longer reads
+    `/healthz` before it resends a keyed write.
+time: 2026-11-17T20:27:50.206250540Z
+custom:
+    Issue: pr4379

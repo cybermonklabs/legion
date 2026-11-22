@@ -2,7 +2,7 @@ package main
 
 // brokerauth.go is the listener's third credential: an access token the secrets broker issued,
 // presented under RFC 9449's DPoP scheme (Authorization: DPoP <token> with a DPoP: proof header).
-// internal/brokertoken decides it; what is here is the settings a deployment configures it with,
+// internal/ciphertoken decides it; what is here is the settings a deployment configures it with,
 // the spent-proof store it needs, how a decided caller reaches the handlers, and which requests
 // are held to the session that caller names.
 //
@@ -25,8 +25,8 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
@@ -70,11 +70,11 @@ func (c listenerBrokerConfig) configured() bool { return c.BrokerURL != "" }
 // account is the platform identity each introspection presents: the projected token file, or
 // this machine's Google identity token for the audience named. resolveListenerBrokerConfig has
 // already refused a configuration naming neither or both.
-func (c listenerBrokerConfig) account() brokertoken.Account {
+func (c listenerBrokerConfig) account() ciphertoken.Account {
 	if c.AccountTokenFile != "" {
-		return brokertoken.NewAccountToken(c.AccountTokenFile)
+		return ciphertoken.NewAccountToken(c.AccountTokenFile)
 	}
-	return brokertoken.NewGoogleAccount(c.GoogleAudience)
+	return ciphertoken.NewGoogleAccount(c.GoogleAudience)
 }
 
 // resolveListenerBrokerConfig binds the listener's four variable names to one all-or-nothing
@@ -127,7 +127,7 @@ var errBrokerTokensStarting = errors.New("the listener is still opening the stor
 // in does.
 type brokerTokens struct {
 	config   listenerBrokerConfig
-	verifier atomic.Pointer[brokertoken.Verifier]
+	verifier atomic.Pointer[ciphertoken.Verifier]
 }
 
 // newBrokerTokens is the credential config names, or nil when it names none.
@@ -138,29 +138,33 @@ func newBrokerTokens(config listenerBrokerConfig) *brokerTokens {
 	return &brokerTokens{config: config}
 }
 
-// open builds the verifier over the spent-proof bucket on conn's JetStream, and is the listener's
-// refusal to serve this credential any other way: a listener configured to take broker tokens on
-// a bus with no JetStream fails here, naming EnvBrokerURL, rather than falling back to a store in
-// its own memory, which would let one replica accept a proof another replica had already spent.
-// ctx is the start's (bus.EnsureKeyValue).
+// open opens the spent-proof bucket on conn's JetStream (ensureSpentProofBucket) and, on a listener
+// that takes broker tokens, builds the verifier over it. Every listener opens the bucket at its
+// start, whether or not it takes broker tokens: an edge listener's grant creates no bucket
+// (natsgrant.Edge), so it finds the one a full listener of this build made. A listener that takes
+// none and cannot open it refuses to start as every listener refuses a bucket of its own; one
+// that takes broker tokens on a bus with no JetStream fails here, naming EnvBrokerURL, rather than
+// falling back to a store in its own memory, which would let one replica accept a proof another
+// replica had already spent. ctx is the start's (bus.EnsureKeyValue).
 func (b *brokerTokens) open(ctx context.Context, conn *nats.Conn, replicas int) error {
-	if b == nil {
-		return nil
-	}
 	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
 	if err != nil {
+		if b == nil {
+			return fmt.Errorf("JetStream for the spent-proof bucket %s: %w", bus.DPoPProofBucket, err)
+		}
 		return fmt.Errorf("%s needs JetStream for the spent-proof bucket %s: %w", EnvBrokerURL, bus.DPoPProofBucket, err)
 	}
-	kv, err := bus.EnsureKeyValue(ctx, conn, js, &nats.KeyValueConfig{
-		Bucket:   bus.DPoPProofBucket,
-		TTL:      spentProofRetention,
-		Storage:  nats.FileStorage,
-		Replicas: replicas,
-	})
+	kv, err := ensureSpentProofBucket(ctx, conn, js, replicas)
+	if b == nil {
+		if err != nil {
+			return fmt.Errorf("the spent-proof bucket %s, which every listener opens so an edge listener finds it, did not open: %w", bus.DPoPProofBucket, err)
+		}
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("%s needs the spent-proof bucket %s, which this bus did not open: %w", EnvBrokerURL, bus.DPoPProofBucket, err)
 	}
-	verifier, err := brokertoken.New(brokertoken.Options{
+	verifier, err := ciphertoken.New(ciphertoken.Options{
 		BrokerURL: b.config.BrokerURL,
 		Account:   b.config.account(),
 		Origin:    strings.TrimSuffix(b.config.Origin, "/"),
@@ -178,14 +182,28 @@ func (b *brokerTokens) open(ctx context.Context, conn *nats.Conn, replicas int) 
 	return nil
 }
 
+// ensureSpentProofBucket opens the spent-proof bucket, creating it when the server holds none and
+// raising it to replicas when it holds fewer copies (bus.EnsureKeyValue): bus.DPoPProofBucket, file
+// storage, replicas copies (ENVOY_NATS_REPLICAS), and spentProofRetention as each key's age. Its
+// other settings are nats.go's defaults for a bucket: one value per key and no size limit. A bucket
+// found with another age, history or storage is opened as it is.
+func ensureSpentProofBucket(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, replicas int) (bus.KeyValue, error) {
+	return bus.EnsureKeyValue(ctx, conn, js, &nats.KeyValueConfig{
+		Bucket:   bus.DPoPProofBucket,
+		TTL:      spentProofRetention,
+		Storage:  nats.FileStorage,
+		Replicas: replicas,
+	})
+}
+
 // verify decides the caller of r, and is the whole of what apiAuth asks of this credential. It is
 // reached only on a listener that takes broker tokens (apiAuth checks that before it reads the
 // scheme), so the one state it still answers for itself is a holder whose spent-proof bucket is
 // not open yet.
-func (b *brokerTokens) verify(r *http.Request) (brokertoken.Caller, error) {
+func (b *brokerTokens) verify(r *http.Request) (ciphertoken.Caller, error) {
 	verifier := b.verifier.Load()
 	if verifier == nil {
-		return brokertoken.Caller{}, errBrokerTokensStarting
+		return ciphertoken.Caller{}, errBrokerTokensStarting
 	}
 	return verifier.Verify(r.Context(), r)
 }
@@ -223,8 +241,8 @@ func listenerSourceAddress(r *http.Request) string {
 // spentProofRetention is how long one spent proof's record is kept: the whole window the proof it
 // records can still be presented in, and a minute more.
 //
-// A proof is accepted while now is between its 'iat' less brokertoken.ProofClockSkew and its
-// 'iat' plus brokertoken.ProofLifespan plus that skew, so a proof recorded now can be presented
+// A proof is accepted while now is between its 'iat' less ciphertoken.ProofClockSkew and its
+// 'iat' plus ciphertoken.ProofLifespan plus that skew, so a proof recorded now can be presented
 // again for at most two skews and a lifespan from this moment, whatever its 'iat'. The extra
 // minute covers the skew between the listener that recorded it and the one that reads it, as the
 // margin on Dispatch's own record of the same thing does (store.jtiRetentionMargin).
@@ -232,7 +250,7 @@ func listenerSourceAddress(r *http.Request) string {
 // It is the bucket's TTL rather than a per-key one because every key means the same thing and
 // lives the same span: nothing reads a record back, so a key whose window has passed says
 // nothing, and letting it expire costs no delete.
-const spentProofRetention = 2*brokertoken.ProofClockSkew + brokertoken.ProofLifespan + time.Minute
+const spentProofRetention = 2*ciphertoken.ProofClockSkew + ciphertoken.ProofLifespan + time.Minute
 
 // spentProofs is the listener's rfc9449.DPoPReplayStorage: one key per proof already spent, in
 // the KV bucket every listener of a deployment shares (bus.DPoPProofBucket), so a proof captured
@@ -271,7 +289,7 @@ func (s spentProofs) CheckAndSetDPoPProofUsed(ctx context.Context, jti, _, _, _,
 	}
 	if err != nil {
 		// Nothing is known about this proof, so it is neither spent nor sound: the library turns
-		// this into its server_error, which brokertoken reports as a failure of the check rather
+		// this into its server_error, which ciphertoken reports as a failure of the check rather
 		// than as a refusal of the caller.
 		return false, fmt.Errorf("record the spent DPoP proof in %s: %w", bus.DPoPProofBucket, err)
 	}
@@ -291,15 +309,15 @@ type brokerCallerKey struct{}
 // spent proof makes impossible anyway. It is set exactly once, by the one place that verifies a
 // presentation (apiAuth), so no handler can be reached with a caller nothing checked, and no
 // handler presents the proof a second time.
-func withBrokerCaller(ctx context.Context, caller brokertoken.Caller) context.Context {
+func withBrokerCaller(ctx context.Context, caller ciphertoken.Caller) context.Context {
 	return context.WithValue(ctx, brokerCallerKey{}, caller)
 }
 
 // brokerCaller is the caller r's credential proved, and whether it proved one at all. A request
 // under the shared token, under a service-account token, or under no credential proves none, and
 // every route serves it as it always has.
-func brokerCaller(r *http.Request) (brokertoken.Caller, bool) {
-	caller, ok := r.Context().Value(brokerCallerKey{}).(brokertoken.Caller)
+func brokerCaller(r *http.Request) (ciphertoken.Caller, bool) {
+	caller, ok := r.Context().Value(brokerCallerKey{}).(ciphertoken.Caller)
 	return caller, ok
 }
 

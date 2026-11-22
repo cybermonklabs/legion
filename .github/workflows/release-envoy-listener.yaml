@@ -22,7 +22,7 @@ on:
       - "bun.lock"
       - "patches/**"
       - "packages/envoy-client/package.json"
-      - "packages/broker-client/package.json"
+      - "packages/cipher-client/package.json"
       - "packages/pi-envoy/package.json"
       - "packages/pi-legion/package.json"
       - "packages/pi-shared/package.json"
@@ -72,7 +72,7 @@ concurrency:
   group: release-envoy-listener-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
   cancel-in-progress: false
 
-# Every job declares its own permissions (targets, build, docker, image_index, attest,
+# Every job declares its own permissions (ref, targets, build, docker, image_index, attest,
 # release_build, release_names, release_publish below); nothing runs under this workflow-level
 # default, so it stays empty rather than becoming an unreviewed grant to a job added later with no
 # block of its own.
@@ -115,6 +115,21 @@ env:
   GOPROXY: https://proxy.golang.org|direct
 
 jobs:
+  # Says whether the run is on main, for release_build's and release_publish's `if:`, which cannot
+  # test that themselves: .github/ci-notes/release.md#why-the-ref-job-and-not-githubref-decides-main
+  # says why. A job of its own, not a step of targets: a job's outputs are read when it ends, after
+  # every step of it has run, and targets runs code of the checkout.
+  ref:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      main: ${{ steps.ref.outputs.main }}
+    steps:
+      - id: ref
+        run: |
+          if [ "$GITHUB_REF" = refs/heads/main ]; then main=true; else main=false; fi
+          echo "main=$main" >> "$GITHUB_OUTPUT"
 
   # The architectures the archives are built for: .github/go-release-targets.json, the list the
   # pull request's notices check reads too. A full checkout to read one tracked file is more than
@@ -458,8 +473,8 @@ jobs:
           subject-name: ${{ needs.targets.outputs.envoy_image }}
           subject-digest: ${{ needs.image_index.outputs.digest }}
 
-  # agent-secrets (packages/envoy/cmd/agent-secrets) and the host helper
-  # (packages/envoy/cmd/agent-secrets-helper): the same legion-envoy-v* release also ships these
+  # agent-secrets (packages/envoy/cmd/cipher) and the host helper
+  # (packages/envoy/cmd/cipher-helper): the same legion-envoy-v* release also ships these
   # for a host to install with mise's github backend, in the layout its installer expects —
   # bin/agent-secrets, bin/agent-secrets-helper. A linux archive, agent-secrets-<arch>.tar.gz for
   # each architecture the envoy key of .github/go-release-targets.json names, holds both; a darwin
@@ -479,7 +494,8 @@ jobs:
   # Only main releases: a workflow_dispatch from any other branch publishes its `envoy:<sha>` image
   # above and stops there.
   release_build:
-    if: github.ref == 'refs/heads/main'
+    needs: ref
+    if: needs.ref.outputs.main == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -555,13 +571,13 @@ jobs:
           mkdir -p ../../agent-secrets-assets
           for arch in $(jq -r '.envoy[]' ../../.github/go-release-targets.json); do
             mkdir -p "out/$arch/agent-secrets/bin"
-            for cmd in agent-secrets agent-secrets-helper; do
+            for entry in agent-secrets=cipher agent-secrets-helper=cipher-helper; do
               CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -buildvcs=false \
                 -ldflags "-X github.com/sjawhar/envoy/internal/buildversion.tag=$TAG" \
-                -o "out/$arch/agent-secrets/bin/$cmd" "./cmd/$cmd"
+                -o "out/$arch/agent-secrets/bin/${entry%%=*}" "./cmd/${entry#*=}"
             done
             CGO_ENABLED=0 GOOS=linux GOARCH="$arch" ../../scripts/go-third-party-notices.sh \
-              "out/$arch/agent-secrets/THIRD_PARTY_NOTICES" ./cmd/agent-secrets ./cmd/agent-secrets-helper
+              "out/$arch/agent-secrets/THIRD_PARTY_NOTICES" ./cmd/cipher ./cmd/cipher-helper
             tar czf "../../agent-secrets-assets/agent-secrets-$arch.tar.gz" -C "out/$arch" agent-secrets
           done
           for target in $(jq -r '.["agent-secrets-client"][]' ../../.github/agent-secrets-client-targets.json); do
@@ -571,9 +587,9 @@ jobs:
             mkdir -p "$dir/agent-secrets/bin"
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -buildvcs=false \
               -ldflags "-X github.com/sjawhar/envoy/internal/buildversion.tag=$TAG" \
-              -o "$dir/agent-secrets/bin/agent-secrets" ./cmd/agent-secrets
+              -o "$dir/agent-secrets/bin/agent-secrets" ./cmd/cipher
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" ../../scripts/go-third-party-notices.sh \
-              "$dir/agent-secrets/THIRD_PARTY_NOTICES" ./cmd/agent-secrets
+              "$dir/agent-secrets/THIRD_PARTY_NOTICES" ./cmd/cipher
             tar czf "../../agent-secrets-assets/agent-secrets-$os-$arch.tar.gz" -C "$dir" agent-secrets
           done
         working-directory: packages/envoy
@@ -637,11 +653,11 @@ jobs:
     # targets too: this job holds contents: write, the deploy key and the rest, so it runs no
     # script to derive the image it tags and reads back, and takes it from targets' output, which
     # `needs` carries only to a job naming targets directly.
-    needs: [build, image_index, release_build, release_names, targets]
+    needs: [build, image_index, ref, release_build, release_names, targets]
     # On `always()`, so a skipped release_build does not skip this job; every job whose outputs
-    # the steps below read has its result tested, targets' among them.
+    # the `if:` or the steps below read has its result tested, targets' and ref's among them.
     if: >-
-      always() && github.ref == 'refs/heads/main' &&
+      always() && needs.ref.result == 'success' && needs.ref.outputs.main == 'true' &&
       needs.build.result == 'success' && needs.image_index.result == 'success' &&
       needs.targets.result == 'success'
     concurrency:

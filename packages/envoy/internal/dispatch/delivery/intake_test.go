@@ -145,9 +145,10 @@ func seedDeliveryProject(t *testing.T, ctx context.Context, pool *store.Pool) {
 }
 
 // publishPullRequestEnvelope publishes one notifications.github.<owner>.<repo>.pr.<number>
-// envelope (the shape intake.go's handlePullRequestEnvelope reads) and waits for the publish to
-// be acknowledged by JetStream before returning.
-func publishPullRequestEnvelope(t *testing.T, natsClient *bus.Client, owner, repo string, number int, fields map[string]string) {
+// envelope (the shape intake.go's handlePullRequestEnvelope reads), waits for the publish to be
+// acknowledged by JetStream, and answers the stream sequence the stream stored it at. The publish
+// has the 5 s bound Client.Publish gives one.
+func publishPullRequestEnvelope(t *testing.T, natsClient *bus.Client, owner, repo string, number int, fields map[string]string) uint64 {
 	t.Helper()
 	payload, err := json.Marshal(fields)
 	if err != nil {
@@ -162,9 +163,13 @@ func publishPullRequestEnvelope(t *testing.T, natsClient *bus.Client, owner, rep
 		TraceID:       "test-trace",
 		IssuedAt:      time.Now().Unix(),
 	}
-	if err := natsClient.Publish(envelope); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stored, err := natsClient.PublishAckWithin(ctx, envelope)
+	if err != nil {
 		t.Fatalf("publish envelope: %v", err)
 	}
+	return stored.Sequence
 }
 
 // publishGitHubEnvelope publishes one envelope on topic carrying payload as it stands, for a payload
@@ -330,18 +335,30 @@ func intakeTestClient(t *testing.T) *bus.Client {
 }
 
 // awaitBoundDurable waits for the intake to have created its durable and subscribed to it, so a
-// test that means to publish into a bound consumer does not race the bind.
+// test that means to publish into a bound consumer does not race the bind. Its one bound is what
+// the test binary's deadline leaves less boundDurableSpare (testwait.Remaining): a bind that is
+// merely slow on a loaded machine still passes, and one that never comes fails the row with time
+// left for its cleanups.
 func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
 	t.Helper()
-	var err error
-	waitFor(t, 20*time.Second, func() bool {
-		var info *natsgo.ConsumerInfo
-		info, err = natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
-		return err == nil && info.PushBound && info.Config.MaxAckPending == intakeMaxAckPending
+	var state string
+	waitFor(t, testwait.Remaining(t, boundDurableSpare), func() bool {
+		info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
+		if err != nil {
+			state = err.Error()
+			return false
+		}
+		state = fmt.Sprintf("push_bound=%t max_ack_pending=%d", info.PushBound, info.Config.MaxAckPending)
+		return info.PushBound && info.Config.MaxAckPending == intakeMaxAckPending
 	}, func() string {
-		return fmt.Sprintf("intake never bound its durable: %v", err)
+		return fmt.Sprintf("intake never bound its durable with max_ack_pending=%d: %s", intakeMaxAckPending, state)
 	})
 }
+
+// boundDurableSpare is what awaitBoundDurable leaves of the test binary's deadline for a failed
+// row's cleanups: stopping its intakes, which wait out their stop's deadline, and dropping its
+// database.
+const boundDurableSpare = time.Minute
 
 // awaitRuns waits for the intake to have stored want delivery_runs rows, and fails with the
 // stream's message count and the consumer's whole state when it does not -- the numbers that say

@@ -64,6 +64,13 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	"postgres_dsn is required (or set LEGION_POSTGRES_DSN)": func(t *testing.T) string {
 		return refusalFile{drop: []string{"postgres_dsn:"}}.refuse(t)
 	},
+	"<LEGION_LEAK_CHECK_REPOSITORY or leak_check.repository> is set and the manifest sha256 is not: …": func(t *testing.T) string {
+		// A daemon whose environment names the leak check's repository and not its manifest
+		// digest, as a deployment that set one of its two variables starts it.
+		t.Setenv("LEGION_LEAK_CHECK_REPOSITORY", "example-org/deployment")
+		t.Setenv("LEGION_LEAK_CHECK_MANIFEST_SHA256", "")
+		return refusalFile{}.refuse(t)
+	},
 	"connect to Postgres at …: default_query_exec_mode=<mode> is refused: the store's text rule needs the type of each parameter, which pgx learns from the server only in cache_statement, cache_describe and describe_exec": func(t *testing.T) string {
 		// The store's refusal, made from the DSN alone (store.PoolConfig, which daemon.CheckStart
 		// runs as store.Open does): it names the DSN's address and never its password. The same

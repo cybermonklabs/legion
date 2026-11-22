@@ -45,7 +45,8 @@ const (
 	// read from the smaller of the two backends' sets. An Oh My Pi launch's start environment
 	// writes ten values under the volume — roleEnvironment's eight less XDG_CONFIG_HOME, which is
 	// under the pod's in-memory home and off the volume, plus the issue pod's two uv paths and
-	// PUBLIC_LEAK_CHECK, with LEGION_WORKSPACE dropped and the six gh variables left out because
+	// PUBLIC_LEAK_CHECK (rendered under a configured leak check setting, which the test options
+	// carry: testLeakCheck), with LEGION_WORKSPACE dropped and the six gh variables left out because
 	// none is on the volume: GH_CONFIG_DIR and LEGION_GH_OWNERS_DIR point at /var/run/legion/gh,
 	// LEGION_GH_PATH at /usr/local/bin/gh, and GH_TOKEN, GITHUB_TOKEN and GH_HOST are empty. A
 	// Claude Code launch's writes those ten and CLAUDE_CONFIG_DIR, eleven. Beside either are the
@@ -69,7 +70,8 @@ const (
 // renderedVolumeVariables is, for each backend the role runs on, the start-environment variables
 // whose values put a path on the issue's volume, which the comment on renderedIssueVolumePaths
 // counts: the ten of an Oh My Pi launch — roleEnvironment's eight less XDG_CONFIG_HOME, uv's two
-// and PUBLIC_LEAK_CHECK — and those ten and CLAUDE_CONFIG_DIR for a Claude Code launch.
+// and PUBLIC_LEAK_CHECK, rendered under the test options' leak check setting — and those ten and
+// CLAUDE_CONFIG_DIR for a Claude Code launch.
 // renderedIssueVolumePathsOf is each set with the three mounts and constants beside it
 // (issueVolumePaths), thirteen and fourteen. Each set is still read out of the renderer
 // (issueVolumePaths); these are what the read must find, written out so that a path the renderer

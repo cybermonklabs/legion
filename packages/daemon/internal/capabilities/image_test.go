@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -509,16 +510,133 @@ func TestEveryImageRowHasACheck(t *testing.T) {
 	}
 }
 
-// A context that ends ends the check with its error rather than a table of missing rows.
-func TestCheckImageStopsWithItsContext(t *testing.T) {
+// A context that has ended before the check leaves every image row unanswered, and runs no row's
+// command: the probe judges no row on a run it did not finish, and the next attempt checks them.
+// Such rows are no missing capability, so the error is nil; every other row renders as it always
+// does.
+func TestCheckImageMarksEveryImageRowUnansweredUnderAnEndedContext(t *testing.T) {
 	s := newStubs(t)
+	ran := filepath.Join(t.TempDir(), "ran")
+	record := "#!/bin/sh\n: >'" + ran + "'\n"
+	for _, name := range []string{"chromium", "go"} {
+		s.install(name, record)
+	}
+	img := s.image()
+	img.Launch = "sh -c ': >\"$0\"' " + ran
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := CheckImage(ctx, s.image())
+	states, err := CheckImage(ctx, img)
 
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("CheckImage under an ended context = %v, want it to wrap context.Canceled", err)
+	if err != nil {
+		t.Errorf("CheckImage under an ended context = %v, want no error: no row was found missing", err)
+	}
+	if len(states) != len(Table) {
+		t.Fatalf("CheckImage rendered %d rows, want every row of the table (%d)", len(states), len(Table))
+	}
+	for i, row := range Table {
+		want := map[Site]string{SiteImage: StatusUnanswered, SiteLive: StatusReported, SiteDeployment: StatusReported, SiteWithheld: StatusWithheld}[row.Site]
+		if states[i].Name != row.Name || states[i].Status != want {
+			t.Errorf("row %d = %+v, want %s %s", i, states[i], row.Name, want)
+		}
+		if row.Site == SiteImage && states[i].Detail != "not checked: context canceled" {
+			t.Errorf("%s detail = %q, want %q", row.Name, states[i].Detail, "not checked: context canceled")
+		}
+	}
+	if _, statErr := os.Stat(ran); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("a check ran a command under the ended context (%s: %v)", ran, statErr)
+	}
+}
+
+// A row whose check returned while the context was alive keeps what it found, a missing one in the
+// error as ever, and a row whose command the context's deadline stopped, or kept from starting
+// (ran.cut), is unanswered and left out of the error, as is every image row after it, which is not
+// run: eval-python, missing at once, stands, and the browser, whose Chromium sleeps past the
+// deadline, and the rows after it are unanswered.
+func TestCheckImageKeepsARowMissingBeforeTheDeadlineAndMarksTheRestUnanswered(t *testing.T) {
+	s := newStubs(t)
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(sleep, filepath.Join(s.bin, "sleep")); err != nil {
+		t.Fatal(err)
+	}
+	s.install("chromium", "#!/bin/sh\nexec sleep 30\n")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	states, err := CheckImage(ctx, s.image("LEGION_TEST_NO_PYTHON=1"))
+
+	if want := "capability eval-python is missing: omp setup python --check reports available=false"; err == nil || err.Error() != want {
+		t.Errorf("CheckImage = %v, want the error %q alone", err, want)
+	}
+	got := byName(states)
+	if got[EvalJS].Status != StatusPresent || got[EvalPython].Status != StatusMissing {
+		t.Errorf("eval-js = %+v, eval-python = %+v; want present and missing, each checked before the deadline", got[EvalJS], got[EvalPython])
+	}
+	for _, name := range []Name{Browser, LSP, CodeGraph, Skills, Toolchain, ClaudeCode} {
+		if got[name].Status != StatusUnanswered || got[name].Detail != "not checked: context deadline exceeded" {
+			t.Errorf("%s = %+v, want unanswered (not checked: context deadline exceeded)", name, got[name])
+		}
+	}
+}
+
+// A row whose command its own timeout (commandTimeout) ended while the context was alive stays
+// missing, its detail saying it timed out, also where the timeout's stop outlasts the context: the
+// browser's Chromium answers the timeout's SIGTERM with an exit of its own 0.9 s later, inside
+// procgroup.StopGrace, and the caller's context ends 0.4 s into that stop. Which end fired is the
+// cause the run recorded when it fired, so the row is a hanging command's, missing and in the
+// error, never unanswered; the rows after it, which the ended context leaves unrun, are unanswered.
+// The context ends a set time after Chromium started, read from the marker it writes first, so the
+// window does not hang on how long the rows before the browser's took.
+func TestCheckImageKeepsARowItsOwnTimeoutEndedMissingThoughItsStopOutlastsTheDeadline(t *testing.T) {
+	was := commandTimeout
+	commandTimeout = time.Second
+	t.Cleanup(func() { commandTimeout = was })
+	limit := commandTimeout
+	s := newStubs(t)
+	marker := filepath.Join(t.TempDir(), "started")
+	s.install("chromium", "#!/bin/sh\n: >'"+marker+"'\ntrap '/bin/sleep 0.9; exit 1' TERM\n/bin/sleep 30 & wait\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// seen says whether the marker appeared; once it has, the context ends 0.4 s after the timeout
+	// fires and 0.5 s before Chromium's exit.
+	seen := make(chan bool, 1)
+	go func() {
+		for bound := time.Now().Add(10 * time.Second); time.Now().Before(bound); time.Sleep(10 * time.Millisecond) {
+			if _, err := os.Stat(marker); err == nil {
+				time.Sleep(limit + 400*time.Millisecond)
+				cancel()
+				seen <- true
+				return
+			}
+		}
+		t.Error("the browser's Chromium never wrote its marker within 10s")
+		seen <- false
+	}()
+
+	states, err := CheckImage(ctx, s.image())
+	ended := ctx.Err() != nil
+
+	if !<-seen {
+		t.Fatal("the browser's Chromium never started, so the row covers no window")
+	}
+	if !ended {
+		t.Fatal("CheckImage returned before the context ended; the row needs the context to end while the timeout's stop is under way")
+	}
+	got := byName(states)
+	if browser := got[Browser]; browser.Status != StatusMissing || !strings.HasSuffix(browser.Detail, " --version: timed out after 1s") {
+		t.Fatalf("browser = %+v, want missing, its Chromium timed out after 1s", browser)
+	}
+	if want := "capability browser is missing: " + got[Browser].Detail; err == nil || err.Error() != want {
+		t.Errorf("CheckImage = %v, want the error %q alone", err, want)
+	}
+	notChecked := "not checked: " + ctx.Err().Error()
+	for _, name := range []Name{LSP, CodeGraph, Skills, Toolchain, ClaudeCode} {
+		if got[name].Status != StatusUnanswered || got[name].Detail != notChecked {
+			t.Errorf("%s = %+v, want unanswered (%s)", name, got[name], notChecked)
+		}
 	}
 }
 
@@ -548,7 +666,7 @@ func TestRunReportsTheCommandsOwnExitWhenAChildHoldsItsOutputPastTheBudget(t *te
 }
 
 // A command its budget cuts off is a run that timed out, named with that budget, never an exit of
-// its own.
+// its own, and no run the caller's context cut.
 func TestRunReportsACommandItsBudgetCutOffAsTimedOut(t *testing.T) {
 	img := Image{Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
 
@@ -557,12 +675,16 @@ func TestRunReportsACommandItsBudgetCutOffAsTimedOut(t *testing.T) {
 	if r.err == nil || r.err.Error() != "timed out after 1s" {
 		t.Errorf("run = exit %d, error %v; want the error \"timed out after 1s\": the budget cut the command off", r.exit, r.err)
 	}
+	if r.cut {
+		t.Error("run is cut, want a run its own budget ended, which the caller's context did not cut")
+	}
 }
 
 // A command its caller's context ended was not cut off by its budget: the run is no timeout but
-// the signal the stop sent (procgroup.Err), since the command has no exit of its own, and the
-// check reports the caller's stop (TestCheckImageStopsWithItsContext) rather than a hanging
-// command. The cancel lands once the command runs, never on one not yet started.
+// the signal the stop sent (procgroup.Err), since the command has no exit of its own, and it is cut
+// (ran.cut), so the check's row is unanswered rather than a hanging command's
+// (TestCheckImageKeepsARowMissingBeforeTheDeadlineAndMarksTheRestUnanswered). The cancel lands
+// once the command runs, never on one not yet started.
 func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 	started := filepath.Join(t.TempDir(), "started")
 	img := Image{Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
@@ -582,6 +704,31 @@ func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 
 	if r.err == nil || r.err.Error() != "signal: terminated" {
 		t.Errorf("run = exit %d, error %v; want the error \"signal: terminated\": the caller's context ended the command inside its minute, which is no timeout and leaves no exit", r.exit, r.err)
+	}
+	if !r.cut {
+		t.Error("run is not cut, want a run the caller's context cut")
+	}
+}
+
+// A command whose caller's context had ended before it could start is cut too (ran.cut), though
+// no stop reached it, since the context's end kept it from starting, and it is no timeout: its run
+// is the context's error, and the command never ran.
+func TestRunReportsACommandItsCallerKeptFromStartingAsCut(t *testing.T) {
+	ran := filepath.Join(t.TempDir(), "ran")
+	img := Image{Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	r := img.runWithin(ctx, time.Minute, "sh", "-c", `: >"$1"`, "sh", ran)
+
+	if !r.cut {
+		t.Error("run is not cut, want a run the caller's ended context kept from starting")
+	}
+	if !errors.Is(r.err, context.Canceled) {
+		t.Errorf("run = exit %d, error %v; want the context's own error, context.Canceled, and no timeout", r.exit, r.err)
+	}
+	if _, err := os.Stat(ran); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the command ran under the ended context (%s: %v)", ran, err)
 	}
 }
 

@@ -27,7 +27,7 @@ def at(job: str, step: str) -> str:
 PROGRAMS = [
     ("contracts", "packages/contracts", at("contracts", "Typecheck contracts (bun run typecheck: bunx tsc --noEmit)")),
     ("envoy_client", "packages/envoy-client", at("envoy-client", "Typecheck Envoy client")),
-    ("broker_client", "packages/broker-client", at("broker-client", "Typecheck the broker client")),
+    ("broker_client", "packages/cipher-client", at("broker-client", "Typecheck the broker client")),
     ("pi_shared", "packages/pi-shared", at("pi-shared", "Typecheck pi-shared")),
     ("pi_envoy", "packages/pi-envoy", at("pi-envoy", "Typecheck pi-envoy")),
     ("pi_legion", "packages/pi-legion", at("pi-legion", "Typecheck pi-legion")),

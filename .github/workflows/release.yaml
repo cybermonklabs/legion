@@ -9,7 +9,7 @@ on:
       - "patches/**"
       - "packages/contracts/package.json"
       - "packages/envoy-client/package.json"
-      - "packages/broker-client/package.json"
+      - "packages/cipher-client/package.json"
       - "packages/pi-envoy/package.json"
       - "packages/pi-legion/package.json"
       - "packages/pi-shared/package.json"
@@ -25,7 +25,7 @@ on:
       - "go.work.sum"
       - "packages/envoy/**"
       - "packages/envoy-client/**"
-      - "packages/broker-client/**"
+      - "packages/cipher-client/**"
       - "packages/contracts/**"
       - "packages/pi-envoy/**"
       - "packages/pi-legion/**"
@@ -67,7 +67,7 @@ env:
     --patch-path scripts/third-party-notices.ts --patch-path scripts/pi-plugin-prepack.sh
     --patch-path patches/
     -- packages/pi-envoy/ packages/pi-shared/ packages/envoy-client/ packages/contracts/
-    packages/broker-client/
+    packages/cipher-client/
     skills/agent-secrets/ skills/approval-review/ skills/asd-ste100/ skills/dispatch/
     skills/dispatch-first/ skills/dispatch-writing-specs/ skills/envoy/
     skills/outside-message/ skills/plain-words/
@@ -82,7 +82,7 @@ env:
     --patch-path scripts/third-party-notices.ts --patch-path scripts/pi-plugin-prepack.sh
     --patch-path patches/
     -- packages/pi-legion/ packages/pi-shared/ packages/envoy-client/ packages/contracts/
-    packages/broker-client/
+    packages/cipher-client/
     skills/legion-architect/ skills/legion-controller/ skills/legion-oracle/ skills/legion-retro/
     skills/legion-worker/ skills/simplify-settled-diff/
     scripts/third-party-notices.ts scripts/pi-plugin-prepack.sh patches/
@@ -90,12 +90,12 @@ env:
   CLAUDE_ENVOY_VERSION_ARGS: >-
     --first-npm @sjawhar/claude-envoy
     --patch-path packages/pi-shared/ --patch-path packages/envoy-client/
-    --patch-path packages/contracts/ --patch-path packages/broker-client/
+    --patch-path packages/contracts/ --patch-path packages/cipher-client/
     --patch-path packages/pi-legion/agents/ --patch-path skills/
     --patch-path scripts/third-party-notices.ts --patch-path scripts/pi-plugin-prepack.sh
     --patch-path patches/
     -- packages/claude-envoy/ packages/pi-shared/ packages/envoy-client/ packages/contracts/
-    packages/broker-client/ packages/pi-legion/agents/ skills/
+    packages/cipher-client/ packages/pi-legion/agents/ skills/
     scripts/third-party-notices.ts scripts/pi-plugin-prepack.sh patches/
   # why: .github/ci-notes/release.md#the-go-legions-version-arguments-and-the-command-that-prints-its-envoy-packages
   LEGION_VERSION_ARGS: >-
@@ -103,14 +103,15 @@ env:
     --patch-path scripts/go-third-party-notices.sh --patch-path scripts/assemble-third-party-notices.sh
     --patch-path .github/go-release-targets.json
     -- packages/daemon/ packages/daemon/internal/prompts/roles/ packages/daemon/internal/prompts/go/
-    packages/envoy/brokeraddr/ packages/envoy/brokerclient/ packages/envoy/dispatchbody/
-    packages/envoy/internal/broker/oauthwire/ packages/envoy/internal/brokerclient/
+    packages/envoy/cipheraddr/ packages/envoy/cipherclient/ packages/envoy/dispatchbody/
+    packages/envoy/internal/cipher/oauthwire/ packages/envoy/internal/cipherclient/
     packages/envoy/internal/contracts/ packages/envoy/internal/ctxlock/
     packages/envoy/internal/dispatch/bytelru/ packages/envoy/internal/dispatch/itemblocks/
     packages/envoy/internal/dispatch/model/ packages/envoy/internal/dispatch/pmdoc/
     packages/envoy/internal/dispatch/text/ packages/envoy/internal/fold/
     packages/envoy/internal/googleidentity/ packages/envoy/internal/id/ packages/envoy/internal/redact/
-    packages/envoy/internal/redirects/ packages/envoy/listenerwire/ packages/envoy/listenfd/
+    packages/envoy/internal/redirects/ packages/envoy/internal/tlsalert/ packages/envoy/listenerwire/
+    packages/envoy/listenfd/
     packages/envoy/migrationid/ packages/envoy/natsversion/ packages/envoy/roleholder/
     packages/envoy/sessiontiming/ packages/envoy/steprecord/ packages/envoy/subjectforms/
     packages/envoy/go.mod packages/envoy/go.sum
@@ -120,11 +121,25 @@ env:
   GOPROXY: https://proxy.golang.org|direct
 
 jobs:
+  # why: .github/ci-notes/release.md#why-the-ref-job-and-not-githubref-decides-main
+  ref:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      main: ${{ steps.ref.outputs.main }}
+    steps:
+      - id: ref
+        run: |
+          if [ "$GITHUB_REF" = refs/heads/main ]; then main=true; else main=false; fi
+          echo "main=$main" >> "$GITHUB_OUTPUT"
+
   # why: .github/ci-notes/release.md#what-legion_build-releases-and-why-it-holds-no-credential
   legion_build:
     # Only main releases, as .github/ci-notes/release.md#what-legion_build-releases-and-why-it-holds-no-credential
     # says; a workflow_dispatch on main runs it as a push does.
-    if: github.ref == 'refs/heads/main'
+    needs: ref
+    if: needs.ref.outputs.main == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     # contents: read is for the checkout; nothing here writes to the repository, a registry or a
@@ -240,7 +255,8 @@ jobs:
   # why: .github/ci-notes/release.md#what-pi_envoy_build-hands-to-publish
   pi_envoy_build:
     # why: .github/ci-notes/release.md#why-only-main-publishes-a-plugin
-    if: github.ref == 'refs/heads/main'
+    needs: ref
+    if: needs.ref.outputs.main == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # contents: read is for the checkout; nothing here writes to the repository, a registry or a
@@ -363,7 +379,8 @@ jobs:
   # The Legion Oh My Pi plugin, @sjawhar/pi-legion, built and published as @sjawhar/pi-envoy is.
   pi_legion_build:
     # Only main publishes, as .github/ci-notes/release.md#why-only-main-publishes-a-plugin says.
-    if: github.ref == 'refs/heads/main'
+    needs: ref
+    if: needs.ref.outputs.main == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # contents: read is for the checkout; nothing here writes to the repository, a registry or a
@@ -485,7 +502,8 @@ jobs:
   # why: .github/ci-notes/release.md#what-claude_envoy_build-packs-and-why-it-builds-the-plugin-first
   claude_envoy_build:
     # Only main publishes, as .github/ci-notes/release.md#why-only-main-publishes-a-plugin says.
-    if: github.ref == 'refs/heads/main'
+    needs: ref
+    if: needs.ref.outputs.main == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     # contents: read is for the checkout; nothing here writes to the repository, a registry or a
@@ -632,8 +650,8 @@ jobs:
 
   # why: .github/ci-notes/release.md#what-the-publish-job-runs-and-why-one-job-publishes-all-four-packages
   publish:
-    needs: [pi_envoy_build, pi_envoy_names, pi_legion_build, pi_legion_names, claude_envoy_build, claude_envoy_names, legion_build, legion_names]
-    if: always() && github.ref == 'refs/heads/main'
+    needs: [ref, pi_envoy_build, pi_envoy_names, pi_legion_build, pi_legion_names, claude_envoy_build, claude_envoy_names, legion_build, legion_names]
+    if: always() && needs.ref.result == 'success' && needs.ref.outputs.main == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # why: .github/ci-notes/release.md#why-the-publish-job-holds-each-of-its-scopes

@@ -56,11 +56,11 @@ var resumeLookupTimeout = 30 * time.Second
 // the database, doubling up to its last value until resumeLookupTimeout; a test shortens it.
 var resumeLookupBackoff = []time.Duration{500 * time.Millisecond, time.Second, 2 * time.Second, 4 * time.Second}
 
-// sessionDial is how the launcher reaches a generation's session database, for a resume's lookup
-// (sessionWritten) and for the keeper alike: through clientURL, the generation's own database
-// through the socket its proxy has already bound, or with none through the URL file the child's
-// environment names (DSNFileVariable), read afresh at each connection, since that file is a
-// projection something else may replace.
+// sessionDial is how the launcher reaches a generation's session database, for a resume's lookups
+// (sessionWritten, and sessionByID for a session named by its id alone) and for the keeper alike:
+// through clientURL, the generation's own database through the socket its proxy has already bound,
+// or with none through the URL file the child's environment names (DSNFileVariable), read afresh
+// at each connection, since that file is a projection something else may replace.
 type sessionDial struct{ clientURL, dsnFile string }
 
 // newSessionDial is the session database a generation's environment names, refused when it has no

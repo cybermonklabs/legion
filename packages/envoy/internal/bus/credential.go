@@ -14,7 +14,7 @@ import (
 
 // The variables a process names its NATS credential with: its user's nkey seed, as a file holding
 // the seed or as the seed itself, or a service's platform identity token for a hub whose
-// connections the auth service admits (internal/broker/natscallout), as a file holding the token
+// connections the auth service admits (internal/cipher/natscallout), as a file holding the token
 // (a projected Kubernetes ServiceAccount token) or as the audience this VM's Google identity token
 // is minted for. NkeySeedEnvVar and the two service variables are exported for what writes a
 // process's environment.

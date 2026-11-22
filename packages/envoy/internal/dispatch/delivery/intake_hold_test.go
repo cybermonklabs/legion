@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // errCutOff is every statement of a process the test has cut off from Postgres.
@@ -98,7 +99,7 @@ func startNATSCut(t *testing.T, natsURL string, latency time.Duration) (*natsCut
 	if err != nil {
 		t.Fatalf("parse the NATS URL: %v", err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen for the NATS relay: %v", err)
 	}
@@ -321,10 +322,11 @@ func startIntakeProcess(t *testing.T, pool *store.Pool, natsURL string, block fu
 }
 
 // publishMergedPullRequest publishes the merge of acme/widgets pull request number by a population
-// author, which the intake fetches from GitHub.
-func publishMergedPullRequest(t *testing.T, publisher *bus.Client, number int) {
+// author, which the intake fetches from GitHub, and answers the stream sequence the stream stored
+// it at.
+func publishMergedPullRequest(t *testing.T, publisher *bus.Client, number int) uint64 {
 	t.Helper()
-	publishPullRequestEnvelope(t, publisher, "acme", "widgets", number, map[string]string{
+	return publishPullRequestEnvelope(t, publisher, "acme", "widgets", number, map[string]string{
 		"kind": "pr", "action": "closed", "merged": "true", "repo": "acme/widgets",
 		"number": strconv.Itoa(number), "author": "octocat",
 	})

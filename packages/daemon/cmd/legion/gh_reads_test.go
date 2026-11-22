@@ -403,8 +403,9 @@ func TestGhCallModeDecidesTheUncheckedCallsBeforeTheReadGrammar(t *testing.T) {
 // The read rule is proven against the check the worker image pins: the tag ghReadsProvenCheck
 // names is worker.Dockerfile's `ARG LEAK_CHECK_TAG`, its sha256 is one of a public_leak_check.py,
 // and it is the sha256 of the public_leak_check.py the tests' port of the check was written
-// against (ghPinnedCheckPortSHA256, gh_pinned_check_test.go). A bump of the pin fails here until
-// the tag, the sha256 and that port all move.
+// against (ghPinnedCheckPortSHA256, gh_pinned_check_test.go). That sha256 is the gate `legion gh`
+// hands the guard for every call, whatever checker a role is told. A bump of the pin
+// fails here until the tag, the sha256 and that port all move.
 func TestGhReadsAreProvenAgainstThePinnedCheck(t *testing.T) {
 	const prove = "follow the steps in ghReadsProvenCheck's comment (gh_reads.go): read the definitions it lists and every definition they reach in the new check, port each change to what they read as a read into ghPinnedCheckReads and the new sha256 into ghPinnedCheckPortSHA256 (gh_pinned_check_test.go), run INFRA-3562's xcheck4069 harness (xcheck4069.tar.gz) against the check with 0 mismatching rows, then name its tag and the sha256 of its public_leak_check.py in ghReadsProvenCheck"
 	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "docker", "worker.Dockerfile"))
@@ -535,8 +536,35 @@ const (
 // ghGuardRig answers a run of `legion gh args…` with stdin against the shared check at the path
 // check (ghCheckAt), a stand-in gh that answers the visibility read `public` and every call with
 // exit 7 after recording it, and a state directory of the run's own, so no visibility is kept
-// from another run. The caller's environment names a pager, two browsers and three editors.
+// from another run. The caller's environment names a pager, two browsers and three editors, and
+// the deployment's manifest digest as the runtime tells a role it (leakguard.CheckerVar), which is
+// the stand-in check's own (ghOwnManifest), and the binary's proven digest (testProvenCheckEnv),
+// which is the stand-in program's (ghProvenProgramSHA256).
 func ghGuardRig(t *testing.T) func(t *testing.T, check, stdin string, args ...string) ghGuardRecord {
+	t.Helper()
+	return ghGuardRigWith(t, ghOwnManifest)
+}
+
+// ghOwnManifest stands, as a rig's checker, for the manifest digest of the check each call names
+// (ghManifestOf): a role of a deployment that runs that very check.
+const ghOwnManifest = "the check's own manifest digest"
+
+// ghManifestOf is the manifest digest (leakguard.Manifest) of the stand-in check at check.
+func ghManifestOf(t *testing.T, check string) string {
+	t.Helper()
+	digest, err := leakguard.Manifest(func(name string) ([]byte, error) {
+		return os.ReadFile(filepath.Join(filepath.Dir(check), name))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return digest
+}
+
+// ghGuardRigWith is ghGuardRig with checker as the deployment's manifest digest the caller's
+// environment names (ghOwnManifest for each call's check's own), and none at all where checker is
+// empty: a role of a deployment that names no check.
+func ghGuardRigWith(t *testing.T, checker string) func(t *testing.T, check, stdin string, args ...string) ghGuardRecord {
 	t.Helper()
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
@@ -556,13 +584,26 @@ func ghGuardRig(t *testing.T) func(t *testing.T, check, stdin string, args ...st
 		t.Helper()
 		records := t.TempDir()
 		ghRecord, checkRecord, state := filepath.Join(records, "gh"), filepath.Join(records, "check"), filepath.Join(records, "state")
+		told := checker
+		if told == ghOwnManifest {
+			// A check that is not there has no manifest: its role is one of a deployment that
+			// names some digest, which a stand-in stands for; the call is refused for the
+			// missing check whatever the digest.
+			told = strings.Repeat("5e", 32)
+			if _, err := os.Stat(check); err == nil {
+				told = ghManifestOf(t, check)
+			}
+		}
 		env := map[string]string{
 			"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
-			"PUBLIC_LEAK_CHECK": check, testProvenCheckEnv: ghProvenProgramSHA256,
+			"PUBLIC_LEAK_CHECK": check, leakguard.CheckerVar: told, testProvenCheckEnv: ghProvenProgramSHA256,
 			"GH_STANDIN_RECORD": ghRecord, "LEAK_CHECK_RECORD": checkRecord, "XDG_STATE_HOME": state,
 			"LEGION_ROLE": "merger", "LEGION_ISSUE": "issue-9", "LEAK_CHECK_STANDIN_TARGET": "acme/widgets",
 			"GH_PAGER": "rig-pager", "GH_BROWSER": "rig-gh-browser", "BROWSER": "rig-browser",
 			"GH_EDITOR": "rig-gh-editor", "EDITOR": "rig-editor", "VISUAL": "rig-visual",
+		}
+		if told == "" {
+			delete(env, leakguard.CheckerVar)
 		}
 		code, _, stderr := legionGhIn(t, t.TempDir(), env, stdin, args...)
 		return ghGuardRecord{
@@ -579,7 +620,8 @@ const testProvenCheckEnv = "LEGION_TEST_PROVEN_CHECK_SHA256"
 
 // ghProvenProgram is the public_leak_check.py of the stand-in checks these tests count as the one
 // the read rule was proven against, and ghProvenProgramSHA256 is its sha256, which the rig names
-// to `legion gh` under testProvenCheckEnv.
+// to `legion gh` as the binary's proven digest (testProvenCheckEnv). The deployment's manifest
+// digest is another thing, over every file of the check (ghManifestOf).
 const ghProvenProgram = "# stands for the shared check the read rule was proven against\n"
 
 var ghProvenProgramSHA256 = func() string {
@@ -588,7 +630,8 @@ var ghProvenProgramSHA256 = func() string {
 }()
 
 // ghCheckAt is the path of a stand-in shared check whose body is script, in a directory of the
-// test's own, with ghProvenProgram beside it as its public_leak_check.py.
+// test's own, with ghProvenProgram beside it as its public_leak_check.py and the other files of
+// its manifest.
 func ghCheckAt(t *testing.T, script string) string {
 	t.Helper()
 	return ghCheckWithProgram(t, script, ghProvenProgram)
@@ -599,11 +642,7 @@ func ghCheckAt(t *testing.T, script string) string {
 func ghCheckWithProgram(t *testing.T, script, program string) string {
 	t.Helper()
 	check := leakguardtest.Write(t, t.TempDir(), script)
-	if program != "" {
-		if err := os.WriteFile(filepath.Join(filepath.Dir(check), "public_leak_check.py"), []byte(program), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
+	leakguardtest.Companions(t, filepath.Dir(check), program)
 	return check
 }
 
@@ -728,9 +767,10 @@ func TestLegionGhRefusesAReadWhoseGuardIsStopped(t *testing.T) {
 	// The check records its run and then waits in ticks for thirty seconds before it clears the
 	// call, so a stop that never reaches it is a gh run this test reads, not a test that hangs.
 	hangs := leakguardtest.Recording("cat >/dev/null 2>&1\nticks=0\nwhile [ \"$ticks\" -lt 600 ]; do sleep 0.05; ticks=$((ticks+1)); done\nexit 0\n")
+	check := ghCheckAt(t, hangs)
 	command := legionGhCommand(t, t.TempDir(), map[string]string{
 		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
-		"PUBLIC_LEAK_CHECK": ghCheckAt(t, hangs), testProvenCheckEnv: ghProvenProgramSHA256,
+		"PUBLIC_LEAK_CHECK": check, leakguard.CheckerVar: ghManifestOf(t, check), testProvenCheckEnv: ghProvenProgramSHA256,
 		"GH_STANDIN_RECORD": ghRecord, "LEAK_CHECK_RECORD": checkRecord,
 	}, "pr", "view", "1", "-R", "acme/widgets")
 	printed, err := os.Create(filepath.Join(records, "printed"))
@@ -766,9 +806,11 @@ func TestLegionGhRefusesAReadWhoseGuardIsStopped(t *testing.T) {
 // A listed read under a shared check that is not the one the read rule was proven against — its
 // public_leak_check.py another file, or no such file, as a tmux pane's check of another version
 // may be — gets the whole guard, the visibility read included, and its log line is no
-// checked-only one.
+// checked-only one. The role is told no checker, as a pane of a daemon with no leak check setting
+// is: told one, a check whose program is not that checker is refused before the read
+// (TestGhReadsUnderTheDeploymentsChecker).
 func TestLegionGhGuardsAReadWholeUnderAnUnprovenCheck(t *testing.T) {
-	run := ghGuardRig(t)
+	run := ghGuardRigWith(t, "")
 	for _, program := range []struct{ name, text string }{
 		{"another program", ghProvenProgram + "# an edit under the same tag\n"},
 		{"no program", ""},
@@ -781,6 +823,58 @@ func TestLegionGhGuardsAReadWholeUnderAnUnprovenCheck(t *testing.T) {
 				guardedWhole(t, run(t, ghCheckWithProgram(t, ghCheckPasses, program.text), "", args...), args)
 			})
 		}
+	}
+}
+
+// The manifest digest a role is told (leakguard.CheckerVar) widens no read: whether `legion gh`
+// reads a call by the check alone is the check's program's, compared with the digest `legion gh`
+// holds for every call, as main does. Under the proven stand-in check, a read is read by the check
+// alone where the role is told that check's own manifest digest or none at all, as a pane of a
+// tmux daemon that names no setting is. A role told another digest has a check that is not its
+// deployment's, so the guard refuses the call before gh runs, naming the digest it was told and
+// the check's own.
+func TestGhReadsUnderTheDeploymentsChecker(t *testing.T) {
+	args := []string{"pr", "view", "1", "-R", "acme/widgets"}
+	for _, tc := range []struct{ name, checker string }{
+		{name: "the check's own manifest digest", checker: ghOwnManifest},
+		{name: "no digest", checker: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ghGuardRigWith(t, tc.checker)(t, ghCheckAt(t, ghCheckPasses), "", args...)
+			if got.code != 7 || strings.Contains(got.gh, "visibility ") || !strings.Contains(got.log, `visibility="checked-only"`) {
+				t.Errorf("legion gh %q = exit %d, gh %q, log %q; want gh's own 7, no visibility read and a checked-only line", args, got.code, got.gh, got.log)
+			}
+		})
+	}
+	t.Run("another digest", func(t *testing.T) {
+		another := strings.Repeat("0", 64)
+		check := ghCheckAt(t, ghCheckPasses)
+		got := ghGuardRigWith(t, another)(t, check, "", args...)
+		const refused = "LEAK CHECK SETUP ERROR: the gh call: the shared public leak check found is not the one the deployment names: LEGION_LEAK_CHECKER_MANIFEST_SHA256=" + "0000"
+		if got.code != 2 || got.gh != "" || !strings.Contains(got.stderr, refused) || !strings.Contains(got.stderr, "has the manifest digest "+ghManifestOf(t, check)) {
+			t.Errorf("legion gh %q = exit %d, gh %q, stderr %q; want exit 2, gh never run, and the setup error naming the digest told and the check's own", args, got.code, got.gh, got.stderr)
+		}
+	})
+}
+
+// A deployment whose own check's program is not the one the read rule was proven against gets the
+// whole guard for a read, though that check is its deployment's (the role is told its own manifest
+// digest): the read rule was never compared with that check, whose program is not the one the
+// digest `legion gh` holds names, so the guard reads the call's visibility and runs the
+// private-name pass as for a write.
+func TestARoleCheckerNamingAnotherDigestGetsTheWholeGuard(t *testing.T) {
+	const another = "# another shared check, which the read rule was never compared with\n"
+	sum := sha256.Sum256([]byte(another))
+	if hex.EncodeToString(sum[:]) == ghProvenProgramSHA256 {
+		t.Fatal("the other check's program hashes to the proven one's")
+	}
+	for _, args := range [][]string{
+		{"pr", "view", "1", "-R", "acme/widgets"},
+		{"api", "repos/acme/widgets/pulls"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			guardedWhole(t, ghGuardRigWith(t, ghOwnManifest)(t, ghCheckWithProgram(t, ghCheckPasses, another), "", args...), args)
+		})
 	}
 }
 

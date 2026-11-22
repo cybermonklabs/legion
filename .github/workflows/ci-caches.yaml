@@ -162,9 +162,9 @@ jobs:
         run: go vet -tags e2e ./...
         working-directory: packages/daemon
 
-      # What daemon-go builds: the test binary of every package, and the race build of the three
+      # What daemon-go builds: the test binary of every package, and the race build of the five
       # packages daemon-go runs under the detector, whose
-      # objects are cache entries of their own. Those three are the list
+      # objects are cache entries of their own. Those five are the list
       # .github/scripts/ci_job_reads.py's DAEMON_RACE_PACKAGES holds, which check-ci-filters.sh
       # holds ci.yaml's two steps to, so a package that joins or leaves the detector there is the
       # side this command follows. The test binaries are compiled and never run (`go test -c -o
@@ -176,7 +176,7 @@ jobs:
         if: steps.go-daemon.outputs.cache-hit != 'true' && runner.arch == 'X64'
         run: |
           go test -c -o /dev/null ./...
-          go test -c -o /dev/null -race ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
+          go test -c -o /dev/null -race ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/ ./internal/intake/ ./internal/shimwire/
         working-directory: packages/daemon
 
       - if: steps.go-daemon.outputs.cache-hit != 'true'
@@ -540,7 +540,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/elan
-          key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/internal/broker/airlock/lean/lean-toolchain') }}
+          key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/internal/cipher/proxyrules/lean/lean-toolchain') }}
           lookup-only: true
 
       - if: steps.elan-cache.outputs.cache-hit != 'true'
@@ -551,10 +551,10 @@ jobs:
       - name: Build what airlock-lean builds
         if: steps.elan-cache.outputs.cache-hit != 'true'
         run: lake build
-        working-directory: packages/envoy/internal/broker/airlock/lean
+        working-directory: packages/envoy/internal/cipher/proxyrules/lean
 
       - if: steps.elan-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/elan
-          key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/internal/broker/airlock/lean/lean-toolchain') }}
+          key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/internal/cipher/proxyrules/lean/lean-toolchain') }}

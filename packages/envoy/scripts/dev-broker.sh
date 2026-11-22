@@ -10,11 +10,11 @@
 # DEMO_API_KEY, tagged tier=human, which APPROVER_LOGIN approves, DEMO_SERVICE_TOKEN, tagged
 # owner=SERVICE tier=agent, which every pod session of that registered service gets without
 # asking and no person's session sees, and the three github-app secrets below), then starts
-# cmd/broker against
+# cmd/cipherd against
 # it. Prints the exports a second shell needs to drive the clients against it.
 #
 # The GitHub a github-app secret is minted against is a stand-in this script starts:
-# cmd/dev-airlock-stands, of whose nine stands this stack uses the GitHub one
+# cmd/dev-proxy-stands, of whose nine stands this stack uses the GitHub one
 # (BROKER_AIRLOCK_TEST_GITHUB_API_BASE names it). It records every call it was sent, at the
 # recording route the banner names, and the answer it gives a token request is set while it runs,
 # at the answer route the banner names too: the ordinary mint, the HTTP 422 that mints nothing,
@@ -29,7 +29,7 @@
 # the one account acme-org. DEMO_GITHUB_APP_CASE_PAIR's names ada, on which the App has two
 # installations whose logins differ only in case (ada and Ada): GitHubApp.Mint keys the released
 # object by the login GitHub answered with and compares a narrowing's owner without regard to
-# case (internal/broker/secrets/githubapp.go), so a narrowing to ada mints for both and the
+# case (internal/cipher/secrets/githubapp.go), so a narrowing to ada mints for both and the
 # released object holds two installations, which is the release a client that hands one token
 # over must refuse. GitHub itself allows no two accounts whose logins differ only in case: this
 # pair exists to drive that refusal and stands for nothing real.
@@ -91,7 +91,7 @@
 # dev-postgres.sh creates, starts or reuses, and refuses when it runs an image other than that
 # script's pinned pgvector one, or, with DEV_BROKER_POSTGRES_URL set
 # (postgres://<user>@<host>:<port>/<database>, a role that may create databases), on that server
-# through psql, with no Docker at all. cmd/broker binds before it reports anything and
+# through psql, with no Docker at all. cmd/cipherd binds before it reports anything and
 # logs the address it actually bound; this script waits for that line and reads the real port from
 # it, so a curl success can only ever mean this instance's own broker answered. It reads the
 # metrics port from the broker's "broker metrics listening" line the same way, and prints it in
@@ -117,7 +117,8 @@
 # the stack is the AWS-shaped one above. One set without the other is a usage error (exit 2).
 #
 # Needs bash, go, curl and jq, and a Postgres server. With DEV_BROKER_POSTGRES_URL it reaches
-# that server through psql, and without it, it starts the dispatch-pg container through
+# that server through psql, which is given the URL without its password and the password in
+# PGPASSWORD (scripts/lib/pg-url.sh), and without it, it starts the dispatch-pg container through
 # dev-postgres.sh, which needs Docker. It builds the fake secrets file with jq -n and reads the
 # stand's report and the broker's JSON log with jq, so a box without jq fails once Postgres is up
 # and the six builds have run.
@@ -125,12 +126,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source-path=SCRIPTDIR source=lib/pg-url.sh
+. "$SCRIPT_DIR/lib/pg-url.sh"
 
 POSTGRES_CONTAINER="dispatch-pg"
 
 # The kernel never hands out a port a live listener already holds, so binding 127.0.0.1:0 (an
 # OS-assigned ephemeral port) makes a same-port collision between two dev instances impossible.
-# BROKER_PUBLIC_URL mirrors it (also port 0): cmd/broker/main.go treats a BROKER_PUBLIC_URL whose
+# BROKER_PUBLIC_URL mirrors it (also port 0): cmd/cipherd/main.go treats a BROKER_PUBLIC_URL whose
 # port is 0 as "derive my public URL from whatever address I actually bind," since
 # BROKER_PUBLIC_URL must be set before boot but the real port is only known once Listen succeeds.
 # Both roles' real, reachable value is read from the broker's own "broker listening" log line
@@ -196,7 +199,7 @@ GITHUB_SECRET="DEMO_GITHUB_APP"
 GITHUB_CASE_SECRET="DEMO_GITHUB_APP_CASE_PAIR"
 GITHUB_HUMAN_SECRET="DEMO_GITHUB_APP_HUMAN"
 # The local issuer and what it mints for (above): the audience every enrolment and listed caller's
-# token carries, the exchange's own audience, and the four accounts, as internal/broker/brokertest's
+# token carries, the exchange's own audience, and the four accounts, as internal/cipher/ciphertest's
 # rig names them, beside the read entry's account below. The exchange entry fixes no session, so
 # a pod names its own — and a pod of such an entry exchanges only under a name its deployment
 # registered for it, which here is the registrar account's one call below. The pod's two token
@@ -221,7 +224,7 @@ EXCHANGE_PROJECT="EXAMPLE"
 # The session name this stack's pod is registered for, the one it exchanges under.
 EXCHANGE_SESSION="example-worker-session"
 # The read entry (see the header), named as BROKER_EXCHANGE_READ_ACCOUNTS' own example in
-# internal/broker/config names it. Its account is a pod account of its own, so dev-oidc-issuer
+# internal/cipher/config names it. Its account is a pod account of its own, so dev-oidc-issuer
 # binds its token to a pod of its own, and it is listed in no other setting: the broker refuses an
 # account that both exchange settings name, since one account mints one kind of token.
 READ_ACCOUNT="system:serviceaccount:example-ns:example-reader"
@@ -247,7 +250,7 @@ DB_NAME="dev_broker_$(printf '%s' "${WORK_DIR##*.}" | tr '[:upper:]' '[:lower:]'
 if [ -n "${DEV_BROKER_POSTGRES_URL:-}" ]; then
   POSTGRES_URL="${POSTGRES_SERVER}/${DB_NAME}${POSTGRES_QUERY}"
   POSTGRES_WHERE="the server DEV_BROKER_POSTGRES_URL names"
-  admin_psql() { psql "$DEV_BROKER_POSTGRES_URL" -v ON_ERROR_STOP=1 -q "$@"; }
+  admin_psql() { pg_url_run "$DEV_BROKER_POSTGRES_URL" psql -v ON_ERROR_STOP=1 -q "$@"; }
 else
   POSTGRES_URL="postgres://postgres:dispatch@127.0.0.1:55432/${DB_NAME}?sslmode=disable"
   POSTGRES_WHERE="the shared $POSTGRES_CONTAINER container, left running ('docker stop $POSTGRES_CONTAINER' tears it down)"
@@ -306,21 +309,22 @@ echo "dev-broker: created isolated database $DB_NAME" >&2
 # A dbname= in DEV_BROKER_POSTGRES_URL's query string overrides the URL's own database, which
 # would point the broker, and its migrations, at a database this run neither created nor drops.
 if [ -n "${DEV_BROKER_POSTGRES_URL:-}" ]; then
-  connected="$(psql "$POSTGRES_URL" -v ON_ERROR_STOP=1 -Atqc 'select current_database()')"
+  connected="$(pg_url_run "$POSTGRES_URL" psql -v ON_ERROR_STOP=1 -Atqc 'select current_database()')"
   if [ "$connected" != "$DB_NAME" ]; then
     echo "dev-broker: refused: the broker's database URL connects to '$connected', not this run's $DB_NAME; drop any dbname= from DEV_BROKER_POSTGRES_URL's query string" >&2
     exit 1
   fi
 fi
 # The banner names the database without any password the URL carries.
-DISPLAY_URL="$(printf '%s' "$POSTGRES_URL" | sed -E 's#^(postgres(ql)?://[^:/@?]+):[^@/?]*@#\1:***@#')"
+DISPLAY_URL="$(pg_url_without_password "$POSTGRES_URL")"
 
 # --- Build the broker, the local issuer, the stand-ins, and the clients a second shell drives it
-# with. ---
+# with. Each entry is <binary>=<command directory under cmd/>. ---
 echo "dev-broker: building broker, dev-oidc-issuer, dev-airlock-stands, agent-secrets, agent-secrets-helper and agent-secrets-devrelay..." >&2
 mkdir -p "$BIN_DIR"
-for cmd in broker dev-oidc-issuer dev-airlock-stands agent-secrets agent-secrets-helper agent-secrets-devrelay; do
-  ( cd "$ENVOY_DIR" && GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/$cmd" "./cmd/$cmd" )
+for entry in broker=cipherd dev-oidc-issuer=dev-oidc-issuer dev-airlock-stands=dev-proxy-stands \
+  agent-secrets=cipher agent-secrets-helper=cipher-helper agent-secrets-devrelay=cipher-devrelay; do
+  ( cd "$ENVOY_DIR" && GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/${entry%%=*}" "./cmd/${entry#*=}" )
 done
 # The end of the build, which github-narrowing-check.sh waits for under a bound of its own: on a
 # cold build cache the six builds take far longer than the start of what they built.

@@ -17,7 +17,7 @@ import (
 const testExchangeAudience = "legion-broker-exchange"
 
 // The two variables a pod's broker clients read to decide which identity the machine proves and
-// where its token is (packages/broker-client/src/environment.ts, IDENTITY_VAR and
+// where its token is (packages/cipher-client/src/environment.ts, IDENTITY_VAR and
 // MACHINE_TOKEN_FILE_VAR).
 const (
 	identityVariable  = "AGENT_SECRETS_MACHINE_IDENTITY"
@@ -179,7 +179,7 @@ func TestAKeptPodWithoutTheExchangeTokenIsToldNoIdentity(t *testing.T) {
 	if env["AGENT_SECRETS_URL"] != keptBrokerURL {
 		t.Errorf("the role's generation is told AGENT_SECRETS_URL=%q, want the enrollment its pod carries, %s", env["AGENT_SECRETS_URL"], keptBrokerURL)
 	}
-	if drifted := driftOf(t, g.ctx, r2, loc); !slices.ContainsFunc(drifted, func(d string) bool { return strings.HasPrefix(d, agentSecretsExchangeVolume+" ") }) {
+	if drifted := driftOf(t, g, r2, loc); !slices.ContainsFunc(drifted, func(d string) bool { return strings.HasPrefix(d, agentSecretsExchangeVolume+" ") }) {
 		t.Errorf("PodDrift = %q, want the missing exchange token among it, so the update round replaces the pod", drifted)
 	}
 }

@@ -180,7 +180,7 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 		kube: newIssueSandboxAPI(), agents: newIdleRigAgents(t, pool), listener: listener,
 		records: record.NewStore(), project: project, logs: &syncBuffer{}, built: &built{}}
 	rig.pods = newIdleRigPods(t, rig.address, cfg.Runtime.Kubernetes.SessionStore.Database,
-		func(context.Context, string) (sessionproxy.Dialer, error) {
+		func(context.Context, sessionproxy.Signer) (sessionproxy.Dialer, error) {
 			return idleRigDialer{address: idleRigHostPort(t, pool)}, nil
 		})
 	rig.kube.serve(t)
@@ -601,7 +601,7 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	opts.GitHubDirs = func(ghrepo.Repository, []appauth.AppRole) []string {
 		return []string{strings.Split(liveRepo, "/")[0]}
 	}
-	opts.Mapped = func() []ghrepo.Repository { return nil }
+	opts.CacheRepositories = func() []ghrepo.Repository { return nil }
 	opts.Tools.Legion = idleRigLegionTool(r.t, tools)
 	opts.Agent = idleRigAgentTool(r.t, tools)
 	opts.DaemonURL = r.cfg.DaemonURL
@@ -652,11 +652,12 @@ func (idleRigTokens) Token(context.Context, ghrepo.Repository) (string, error) {
 	return "idle-rig-provision", nil
 }
 
-// launch waits until the issue's pod runs its role, registered, ready and having told the daemon
-// it runs no background work: the state the idle rule releases. The daemon starts the implementer
-// of an admitted issue whose phase is its own, so nothing here asks for the launch; a claim still
-// suspended is nudged with the operator's resume, which is what a boot that left it suspended
-// needs.
+// launch waits until the issue's pod runs its role: its process registered, and its claim ready,
+// working or idle. The session's first activity report comes just after the ready and is not
+// waited for (quiet says what that leaves for a stop made at once). The daemon starts the
+// implementer of an admitted issue whose phase is its own, so nothing here asks for the launch; a
+// claim still suspended is nudged with the operator's resume, which is what a boot that left it
+// suspended needs.
 func (r *idleWakeRig) launch(issue idleRigIssue) {
 	r.t.Helper()
 	defer func() {
@@ -757,15 +758,24 @@ func (r *idleWakeRig) newAdoptions(issue idleRigIssue) []idleRigAdoption {
 }
 
 // quiet back-dates when every claim of the project was last written, so the next pass of the
-// daemon's idle tick reads a pod that has done nothing for longer than the idle period. The
-// session's own report is left as the session wrote it, because the rule reads it against that
-// session's last turn and not against the clock. The rule reads the claim rows and nothing else
-// (pods.IdleView), so the rows are the clock it is measured against.
+// daemon's idle tick reads a pod that has done nothing for longer than the idle period. Every row
+// is moved, a row whose session has reported nothing (activity_at null) among them: an operator's
+// stop that lands before the session's first report (launch does not wait for it) leaves such a
+// row on a retired claim, and the release of a pod no claim owns measures the period against that
+// row as against any other (pods.IdleView.QuietSince). Left out, the row kept the moment of the
+// stop, so that release waited the idle period out on the wall clock, which is longer than the
+// rig's wait for it (CI run 44911423665). The idle rule's decision is not moved by it: it keeps a
+// live claim whose session has reported nothing since its last turn whatever the row's time
+// (workflow.IdleRelease, IdleHoldUnreported). What such a pod can gain is a hold row, which the
+// daemon records only for a pod past the quiet period (recordKeptPod); no row of this rig reads
+// that hold. The session's own report is left as the session wrote it, because the rule reads it
+// against that session's last turn and not against the clock. The rule reads the claim rows and
+// nothing else (pods.IdleView), so the rows are the clock it is measured against.
 func (r *idleWakeRig) quiet() {
 	r.t.Helper()
 	if _, err := r.pool.Exec(context.Background(),
 		`update claims set updated_at = now() - interval '30 minutes'
-		 where project = $1 and activity_at is not null`, r.project); err != nil {
+		 where project = $1`, r.project); err != nil {
 		r.t.Fatalf("back-date the project's claims: %v", err)
 	}
 }
@@ -1084,9 +1094,9 @@ const (
 	// two of those starts.
 	idleRigListenerReportWait = 90 * time.Second
 	// idleRigPodWait bounds a pod up and running its role: the Sandbox, its launcher, the role
-	// process, its registration and its first report. It bounds a pod coming back for a wake
-	// too, which is the same work again, and a send that is retried until a live session takes
-	// it, which waits on that same pod.
+	// process and its registration. It bounds a pod coming back for a wake too, which is the same
+	// work again, and a send that is retried until a live session takes it, which waits on that
+	// same pod.
 	idleRigPodWait = 150 * time.Second
 	// idleRigReleaseWait bounds the release of every pod of the rig by one pass of the idle
 	// tick: a launch undone for every pod of the rig at once, and so the longest span here.

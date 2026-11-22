@@ -11,8 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -26,20 +24,20 @@ import (
 // transferredLegion is the pair a deployment configures over sjawhar/legion's transfer to
 // cybermonklabs: the records of a tree opened before it keep sjawhar/legion, while GitHub holds
 // the repository under cybermonklabs/legion, on cybermonklabs' installation.
-var transferredLegion = ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
+var transferredLegion = ghrepo.MustRenames(ghrepo.MustRename(renameFrom, renameTo))
 
 // transferStates are the states a transferred repository's calls are driven in: the configured
-// pair with the project serving the repository GitHub holds it under, that same pair with one
-// more repository of the owner the transfer moved it away from served beside it, and no pair at
-// all. The second is the state of the production failure of 2026-11-06 — sjawhar/oh-my-pi added
-// to the project's mapping made sjawhar an owner of the project, which switched the live pair
-// off under the owner rule this replaced, and 47 trees could not push for 42 minutes — and it
-// must address exactly what the first does. The third is the control: with no pair configured
-// every call is addressed at the recorded repository, as it always was.
+// pair with both role Apps answered installed on the name GitHub holds the repository under, that
+// same pair with one more repository of the owner the transfer moved it away from served beside
+// it, and no pair at all. The second is the state of the production failure of 2026-11-06 —
+// sjawhar/oh-my-pi served beside the pair made sjawhar an owner of the project, which switched the
+// live pair off under the owner rule this replaced, and 47 trees could not push for 42 minutes —
+// and it must address exactly what the first does. The third is the control: with no pair
+// configured every call is addressed at the recorded repository, as it always was.
 var transferStates = []struct {
 	name    string
 	renames ghrepo.Renames
-	// served is the project's mapping, as GitHub names each repository it serves.
+	// served is the names both role Apps answered installed on, as GitHub names each.
 	served []string
 	// want is the repository every GitHub call for a tree recorded on sjawhar/legion addresses,
 	// and whose owner its token is minted for.
@@ -52,43 +50,24 @@ var transferStates = []struct {
 	{name: "no pair configured", served: []string{"sjawhar/legion"}, want: "sjawhar/legion"},
 }
 
-// renamedRepositories is the project's mapping as the boot builds it: the repositories Dispatch
-// maps, the first of them the project's default, under the configured pairs.
+// renamedRepositories is the repository state the refresher's preparation leaves (prepareLive):
+// both role Apps answered installed on each of served (repositories.fill), under the configured
+// pairs.
 func renamedRepositories(served []string, renames ghrepo.Renames) *repositories {
 	repos := newRepositories("LEGION", renames)
-	mapped := make([]mappedRepository, 0, len(served))
-	for i, repo := range served {
-		mapped = append(mapped, mappedRepository{Repo: ghrepo.MustParse(repo), Default: i == 0})
+	for _, repo := range served {
+		repos.fill(ghrepo.MustParse(repo))
 	}
-	repos.set(mapped, nil)
 	return repos
 }
 
 // renameOutbox is the outbox a transfer's rows run on: the implement App (roleTokens, whose token
-// names the owner it was minted for), GitHub at api, and the project's mapping — served, the
-// repositories Dispatch maps, and the configured pairs — as the boot builds it.
+// names the owner it was minted for), GitHub at api, and the repository state — served, the names
+// both role Apps answered installed on, and the configured pairs — as the refresher leaves it.
 func renameOutbox(t *testing.T, pool *store.Pool, records record.Store, api string, served []string, renames ghrepo.Renames) *outbox {
 	t.Helper()
 	return &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, tokens: roleTokens{},
 		project: "legion", githubAPI: api, repositories: renamedRepositories(served, renames), now: time.Now}
-}
-
-// seedTransferredREADY records LEGION-208 on sjawhar/legion awaiting the merge of its READY head,
-// its pull request #42 open there: a tree whose records were written before the transfer.
-func seedTransferredREADY(t *testing.T, pool *store.Pool, records record.Store) {
-	t.Helper()
-	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-		Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "U"})
-	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleMerger, Claim: "merge-claim", HandoffCommit: "ready-head"}); err != nil {
-			return err
-		}
-		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
-			Number: 42, Branch: "legion/LEGION-208", HeadSHA: "ready-head", Failing: []string{}})
-	}); err != nil {
-		t.Fatalf("seed LEGION-208's READY: %v", err)
-	}
 }
 
 // renameGitHub is GitHub as a transferred repository's calls reach it: every REST path and every
@@ -246,8 +225,7 @@ func TestTheBranchOfATreeRecordedBeforeItsTransferIsCreatedOnTheRepositoryGitHub
 			})
 			// The create reads no record of its own: the issue it is given carries the
 			// repository, so this outbox needs no database.
-			runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", records: record.NewStore(), tokens: roleTokens{},
-				project: "legion", githubAPI: github.url, repositories: renamedRepositories(tc.served, tc.renames), now: time.Now}
+			runner := renameOutbox(t, nil, record.NewStore(), github.url, tc.served, tc.renames)
 
 			if err := runner.createBranch(context.Background(), issue); err != nil {
 				t.Fatalf("create the branch of %s: %v", issue.Key, err)

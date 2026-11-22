@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -291,19 +292,25 @@ func daemonPATH(o *Options) string {
 }
 
 // A pane is told the shared public leak check the daemon resolved on its own machine, by each of
-// the three routes the check documents, and is told no such variable where the daemon resolves
-// none. A pane can resolve none of the three itself — PUBLIC_LEAK_CHECK is off the allow list,
-// its XDG_CONFIG_HOME is the daemon's rather than the operator's, and the check's installer puts
-// its files on no PATH a pane has — so a pane told nothing would have every `legion gh`
-// refused. A machine that carries no check is told nothing, which refuses
-// every public write of that pane with the setup error naming the check: the honest answer, and
-// no launch failure, since Legion installs no check on a tmux machine.
+// the three routes the check documents, and is told no such variable where no place names one. A
+// pane can resolve none of the three itself — PUBLIC_LEAK_CHECK is off the allow list, its
+// XDG_CONFIG_HOME is the daemon's rather than the operator's, and the check's installer puts its
+// files on no PATH a pane has — so a pane told nothing resolves no check at all. A broken setup on
+// the machine (a stale PUBLIC_LEAK_CHECK, a pointer file naming a moved check, a pointer file that
+// names nothing or is a directory, a dangling link or a file with no execute bit of the check's
+// name on PATH) is told to the pane all the same, as the path it is broken at, and a guard in the
+// pane's environment with no checker then refuses a write for it, rather than taking it for no
+// check named and running the rules alone. None is a launch failure, since Legion installs no
+// check on a tmux machine.
 func TestAPaneIsToldTheCheckTheDaemonResolvedOnItsOwnMachine(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		// environ adds the route's names to the daemon's own environment and answers the check
 		// the pane must then be told, "" where the machine carries none.
 		environ func(t *testing.T, o *Options) string
+		// broken is a setup that names or holds a check that does not run, which a guard in the
+		// pane's environment must refuse a write for.
+		broken bool
 	}{
 		{
 			name: "PUBLIC_LEAK_CHECK in the daemon's own environment",
@@ -345,6 +352,80 @@ func TestAPaneIsToldTheCheckTheDaemonResolvedOnItsOwnMachine(t *testing.T) {
 				return ""
 			},
 		},
+		{
+			name: "PUBLIC_LEAK_CHECK naming a check that is not there", broken: true,
+			environ: func(t *testing.T, o *Options) string {
+				gone := filepath.Join(t.TempDir(), "moved", "public-leak-check.sh")
+				o.Environ = append(slices.Clone(o.Environ), "PUBLIC_LEAK_CHECK="+gone)
+				return gone
+			},
+		},
+		{
+			name: "a pointer file naming a check that is not there", broken: true,
+			environ: func(t *testing.T, o *Options) string {
+				gone := filepath.Join(t.TempDir(), "moved", "public-leak-check.sh")
+				config := t.TempDir()
+				if err := os.MkdirAll(filepath.Join(config, "public-leak-check"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(config, "public-leak-check", "path"), []byte(gone+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				o.Environ = append(slices.Clone(o.Environ), "XDG_CONFIG_HOME="+config)
+				return gone
+			},
+		},
+		{
+			name: "a pointer file that names nothing", broken: true,
+			environ: func(t *testing.T, o *Options) string {
+				config := t.TempDir()
+				pointer := filepath.Join(config, "public-leak-check", "path")
+				if err := os.MkdirAll(filepath.Dir(pointer), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(pointer, []byte("\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				o.Environ = append(slices.Clone(o.Environ), "XDG_CONFIG_HOME="+config)
+				return pointer
+			},
+		},
+		{
+			name: "a pointer file that is a directory", broken: true,
+			environ: func(t *testing.T, o *Options) string {
+				config := t.TempDir()
+				pointer := filepath.Join(config, "public-leak-check", "path")
+				if err := os.MkdirAll(pointer, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				o.Environ = append(slices.Clone(o.Environ), "XDG_CONFIG_HOME="+config)
+				return pointer
+			},
+		},
+		{
+			name: "a dangling link of the check's name on the daemon's PATH", broken: true,
+			environ: func(t *testing.T, o *Options) string {
+				dir := t.TempDir()
+				link := filepath.Join(dir, "public-leak-check.sh")
+				if err := os.Symlink(filepath.Join(t.TempDir(), "moved"), link); err != nil {
+					t.Fatal(err)
+				}
+				o.Environ = append(slices.Clone(o.Environ), "PATH="+dir+":"+daemonPATH(o))
+				return link
+			},
+		},
+		{
+			name: "a file of the check's name with no execute bit on the daemon's PATH", broken: true,
+			environ: func(t *testing.T, o *Options) string {
+				dir := t.TempDir()
+				file := filepath.Join(dir, "public-leak-check.sh")
+				if err := os.WriteFile(file, []byte("#!/bin/sh\nexit 0\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				o.Environ = append(slices.Clone(o.Environ), "PATH="+dir+":"+daemonPATH(o))
+				return file
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var want string
@@ -364,6 +445,19 @@ func TestAPaneIsToldTheCheckTheDaemonResolvedOnItsOwnMachine(t *testing.T) {
 				t.Errorf("the pane was told PUBLIC_LEAK_CHECK=%q, want no such pair: the daemon resolved no check", told)
 			case want != "" && (n != 1 || told != want):
 				t.Errorf("the pane was told %d PUBLIC_LEAK_CHECK pairs, the last %q; want one naming the check the daemon resolved, %q", n, told, want)
+			}
+			if !tc.broken {
+				return
+			}
+			// A broken setup the pane was told: a guard in the pane's own environment — told this
+			// check, no checker, its PATH and configuration home holding nothing of the check —
+			// refuses a clean write for it.
+			guard := leakguard.New(leakguard.Options{
+				Visibility: func(context.Context, string) (leakguard.Visibility, error) { return leakguard.Public, nil },
+				Env:        []string{"PATH=" + t.TempDir(), "HOME=" + t.TempDir(), "XDG_CONFIG_HOME=" + t.TempDir(), "PUBLIC_LEAK_CHECK=" + told},
+			})
+			if err := guard.Text(context.Background(), leakguard.TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"}); err == nil {
+				t.Errorf("a pane guard told PUBLIC_LEAK_CHECK=%s and no checker cleared a write; want it refused for the broken setup", told)
 			}
 		})
 	}

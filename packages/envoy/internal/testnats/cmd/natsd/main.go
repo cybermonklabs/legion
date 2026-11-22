@@ -37,10 +37,6 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// readyTimeout bounds the wait for the server to accept connections, so a port another process
-// holds ends this command instead of leaving its caller waiting.
-const readyTimeout = 10 * time.Second
-
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "natsd: %v\n", err)
@@ -81,10 +77,12 @@ func run(args []string) error {
 	}
 	srv.ConfigureLogger()
 	go srv.Start()
-	if !srv.ReadyForConnections(readyTimeout) {
-		srv.Shutdown()
-		srv.WaitForShutdown()
-		return fmt.Errorf("no connections accepted on %s:%d within %s; is the port taken?", opts.Host, opts.Port, readyTimeout)
+	// The server's own readiness, asked every 100 ms, for as long as it takes: a JetStream start
+	// on a loaded machine can take longer than any fixed wait allows, and the script that started
+	// natsd waits for its readiness line under a deadline of its own. A listener the server cannot
+	// open, a port another process holds among them, is logged as fatal, and nats-server's logger
+	// (ConfigureLogger's) exits on a fatal line, so that ends this command at once, naming the port.
+	for !srv.ReadyForConnections(100 * time.Millisecond) {
 	}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)

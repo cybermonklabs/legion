@@ -58,7 +58,7 @@ func TestASessionThatStopsAndResumesTakesItsMessageExactlyOnce(t *testing.T) {
 	// connection holding its relay subject, goes away.
 	clock = clock.Add(time.Minute)
 	stopSession(t, rig.mux, sessionID, "")
-	first.conn.Close()
+	first.close()
 	if _, err := rig.harness.sessions.Get(sessionID); err == nil {
 		t.Fatalf("%s still holds a session entry, so it did not stop", sessionID)
 	}

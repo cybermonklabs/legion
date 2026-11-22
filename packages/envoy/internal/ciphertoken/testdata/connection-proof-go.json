@@ -1,0 +1,13 @@
+{
+  "nonce": "example-server-nonce",
+  "note": "the compact JWS is the three segments joined by dots; kept apart because it is a proof of a throwaway key over an example token, and a joined JWS reads as a credential to the push leak check",
+  "now": 1794796065,
+  "proof_segments": [
+    "eyJhbGciOiJFUzI1NiIsImp3ayI6eyJrdHkiOiJFQyIsImNydiI6IlAtMjU2IiwieCI6IlhKbk0wc3JVWFJsdnVCbkY2dEMxRnZCX2JUVEc3MUxBb3RCbzJHU3BLd28iLCJ5IjoiM25rRU5aY3B0YlBXbmNfOXVsanlpcDQteldjaWVNTkVnNm1qTEI1eUpqbyJ9LCJ0eXAiOiJkcG9wK2p3dCJ9",
+    "eyJhdGgiOiJXSERqSEZyLV9udnpjc2YwRXVSWjRQTDVJd2lERmZ1MTdIaGhBeGRQb1ZnIiwiaHRtIjoiQ09OTkVDVCIsImh0dSI6Im5hdHM6Y29ubmVjdCIsImlhdCI6MTc5NDc5NjA2NSwianRpIjoiZTBlMWU0NmItNTU2ZS00ZDY1LTkxYjUtNjE1M2FjOTQ1MTkwIiwibm9uY2UiOiJleGFtcGxlLXNlcnZlci1ub25jZSJ9",
+    "Go_VbDaJRRgVxO_Xpy84VuFGl1rpYQIQg5ehGjQoqU0neaCPE-XyPp-m4OA2voxGsBm3y5oIBW-SB8aSJham-A"
+  ],
+  "signer": "packages/envoy/internal/cipherclient ConnectionProof",
+  "thumbprint": "wGWLLAHpBK_ycxmDnnwiiP0UvUlukSi2Gjyj4czr4es",
+  "token": "example-access-token-of-ses_a"
+}

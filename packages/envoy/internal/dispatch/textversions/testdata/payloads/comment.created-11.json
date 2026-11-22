@@ -1,0 +1,66 @@
+{
+  "id": 78700,
+  "issue_key": null,
+  "artifact_id": "b51b6235-1b20-48bc-a6a8-cfe286c88538",
+  "project": "ACME",
+  "seq": 3,
+  "type": "comment.created",
+  "actor": {
+    "kind": "session",
+    "id": "01a1795b-20f4-746f-9c8c-d09a97dad328",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum dolor sit ",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum dolo",
+      "session_title": "lorem ipsum dolor sit amet lor"
+    }
+  },
+  "notify": false,
+  "created_at": "2026-10-26T23:37:04.990482Z",
+  "payload": {
+    "id": "0396c0e7-756b-42a3-bf4d-ddc6a0d22a34",
+    "body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit",
+    "turn": null,
+    "anchor": {
+      "quote": "lorem ipsum dolor sit amet lorem ipsum dolor sit",
+      "mark_id": "0396c0e7-756b-42a3-bf4d-ddc6a0d22a34",
+      "version": 2,
+      "block_id": "b9cc9266-3577-415a-8bac-3bd9f37ec3f4",
+      "orphaned": false,
+      "artifact_id": "b51b6235-1b20-48bc-a6a8-cfe286c88538"
+    },
+    "ask_id": null,
+    "author": {
+      "id": "01a1795b-20f4-746f-9c8c-d09a97dad328",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum dolo",
+        "host": "lor",
+        "machine": "lorem ipsum dolor sit ",
+        "session_title": "lorem ipsum dolor sit amet lor"
+      }
+    },
+    "mentions": [],
+    "reply_to": null,
+    "resolved": false,
+    "edited_at": null,
+    "issue_key": null,
+    "created_at": "2026-10-26T23:37:05.092471Z",
+    "deliveries": [],
+    "suggestion": null,
+    "artifact_id": "b51b6235-1b20-48bc-a6a8-cfe286c88538",
+    "project_key": "ACME",
+    "resolved_at": null,
+    "resolved_by": null,
+    "artifact_name": "lorem ipsum dolor sit ame",
+    "artifact_slug": "lorem ipsum dolor sit ame",
+    "suppress_route": false,
+    "references_changed": [
+      {
+        "id": "ACME-1",
+        "kind": "issue"
+      }
+    ],
+    "suppressed_authors": null
+  }
+}

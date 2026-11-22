@@ -73,13 +73,23 @@ const readings = new Map<string, Map<number, Reading>>();
 
 /** The id of each list of issue keys a caller has passed, by the list itself, and by its keys
  *  for a new list of the same keys. `0` is no list. */
-const listIds = new WeakMap<readonly string[], number>();
+let listIds = new WeakMap<readonly string[], number>();
 const keySetIds = new Map<string, number>();
 let lastKeySetId = 0;
 
 /** How many distinct sets of keys are kept an id before they are forgotten: a set the batched
  *  read has moved on from is asked no more, and a new one takes a new id. */
 const KEY_SETS_KEPT = 64;
+
+/** Forgets every reading and every id of a list of keys: the unit-test preload, around each test.
+ *  No caller passes one array in two tests: the page makes its list of keys anew for each draw,
+ *  and each test makes its own. `listIds` starts afresh for a caller that would: its array would
+ *  keep the id of a set the reset forgot, while a new array of the same keys took another. */
+export function resetRowReferenceReadings(): void {
+  readings.clear();
+  listIds = new WeakMap();
+  keySetIds.clear();
+}
 
 /** The small id of the list of keys `issues` holds: the same id for the same keys. */
 function keyListId(issues: readonly string[] | undefined): number {

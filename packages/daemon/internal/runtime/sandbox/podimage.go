@@ -93,7 +93,8 @@ func (r *Runtime) IssueSandbox(issue string) (string, bool) {
 // IssueKeepsVolume satisfies runtime.IssueVolumeReader: whether the issue's next launch keeps the
 // kept volume of the Sandbox of issue that the runtime's store holds, and that volume is older than
 // since. The daemon asks it with the time an update round opened, when the round's pod went before
-// the round was over. It is true where the Sandbox owns the issue's kept volume
+// the round was over, and with the present time in the rename pass's live-pod rules, at each boot
+// and each pod end. It is true where the Sandbox owns the issue's kept volume
 // (storedOwnsKeptVolume), was made before since, carries no reset mark (volumeResetAnnotation), and
 // has the disk shape that the configuration now renders for its issue (diskShapeChange over
 // IssueDisks.templates, as the boot census compares it). A Sandbox made at or after since, by a
@@ -103,10 +104,10 @@ func (r *Runtime) IssueSandbox(issue string) (string, bool) {
 // keep_volume, the issue's sandbox, the microVM block's storage class or issue_volume moves the
 // shape, and each of them is also a reason for the round itself. It reads the object as the
 // informer holds it, without a decode, as IssueSandbox does, and it decodes only the claim
-// templates, at the end, for the shape. The daemon asks it only when a round's pod goes, so that
-// decode is rare. Anything that leaves the Sandbox unread answers false, and the issue is then
-// told what the issue of a pod on an ephemeral disk is told: the work its roles did not push is
-// lost.
+// templates, at the end, for the shape. The daemon asks it only at those three moments, never at
+// the idle pass's tick, so that decode is rare. Anything that leaves the Sandbox unread answers
+// false, and the issue of a round is then told what the issue of a pod on an ephemeral disk is
+// told: the work its roles did not push is lost.
 //
 // The API server records a creation time to the second, and since has a finer resolution. So the
 // comparison cuts since to the second too, and a Sandbox made in the second the round opened

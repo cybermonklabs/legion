@@ -31,10 +31,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -80,7 +83,7 @@ func defaultRepositoryCache(t *testing.T) sandbox.RepositoryCache {
 	return cache
 }
 
-// noRepositories is a mapping that names none, for a test whose runtime makes no cache.
+// noRepositories is a cache set that names none, for a test whose runtime makes no cache.
 func noRepositories() []ghrepo.Repository { return nil }
 
 // writeKubeconfig is a kubeconfig of one cluster at server and one context, its current context
@@ -196,6 +199,105 @@ func TestAKubernetesDaemonRefusesALegacyPerClaimSandboxBeforeItOpensItsStore(t *
 	}
 }
 
+// The store opens outside the start budget the cluster check spends, and the steps after the open
+// get a budget of their own (c-boot-db-retry case 7). Here the real cluster check uses 22 s of the
+// 30 s budget, and the database accepts the first connection and never answers it: the first
+// attempt ends at its own limit, the second opens the store, and the fresh database is migrated
+// to the binary's newest migration more than 30 s into the start. That is the start LINUX's
+// daemon could not make on 2026-10-26, which opened its store on what the cluster check had left
+// of the budget and exited with `context deadline exceeded`.
+func TestAKubernetesDaemonOpensItsStoreAfterAClusterCheckThatUsedMostOfItsBudget(t *testing.T) {
+	const censusTakes = 22 * time.Second
+	var census sync.Once
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var body map[string]any
+		switch r.URL.Path {
+		case "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/sandboxes.agents.x-k8s.io":
+			body = map[string]any{"apiVersion": "apiextensions.k8s.io/v1", "kind": "CustomResourceDefinition",
+				"metadata": map[string]any{"name": "sandboxes.agents.x-k8s.io"},
+				"spec":     map[string]any{"versions": []any{map[string]any{"name": "v1beta1", "served": true}}}}
+		case "/apis/apps/v1/namespaces/agent-sandbox-system/deployments/agent-sandbox-controller":
+			body = map[string]any{"apiVersion": "apps/v1", "kind": "Deployment",
+				"metadata": map[string]any{"name": "agent-sandbox-controller", "namespace": "agent-sandbox-system"},
+				"status":   map[string]any{"availableReplicas": 1}}
+		case "/apis/agents.x-k8s.io/v1beta1/namespaces/legion/sandboxes":
+			// The census is the first read of the project's Sandboxes, and the only slow one.
+			census.Do(func() {
+				select {
+				case <-time.After(censusTakes):
+				case <-r.Context().Done():
+				}
+			})
+			body = map[string]any{"apiVersion": "agents.x-k8s.io/v1beta1", "kind": "SandboxList", "metadata": map[string]any{}, "items": []any{}}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			body = map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "NotFound", "code": 404}
+		}
+		_ = json.NewEncoder(w).Encode(body)
+	}))
+	defer apiServer.Close()
+	cfg := kubernetesConfig(t, apiServer.URL)
+	database := testdb.Database(t, "legion_daemon_late_open")
+	cfg.PostgresDSN = pgProxy(t, database, silentConnection)
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	newest := all[len(all)-1].Version
+	reader, err := store.Open(context.Background(), database)
+	if err != nil {
+		t.Fatalf("open the fresh database to read its schema version: %v", err)
+	}
+	t.Cleanup(reader.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	started := time.Now()
+	go func() { done <- run(ctx, cfg, quietLogger(), overrides{clock: stillClock{}, listen: heldListen}) }()
+	// What follows the migration is not this test's: the runtime this configuration builds may
+	// refuse it (it names no session store), and the test stops the start once it reads the
+	// migration, so run may return before or after the stop, with anything but a refusal of the
+	// store it opened.
+	var version int
+	var ended error
+	returned := false
+	testwait.Holds(2*time.Minute, 250*time.Millisecond, func() bool {
+		if version, _ = reader.SchemaVersion(context.Background()); version == newest {
+			return true
+		}
+		select {
+		case ended = <-done:
+			returned = true
+			return true
+		default:
+			return false
+		}
+	})
+	took := time.Since(started)
+	if returned {
+		// run may have returned between the migration's end and the read before it.
+		version, _ = reader.SchemaVersion(context.Background())
+	} else {
+		cancel()
+		select {
+		case ended = <-done:
+		case <-time.After(time.Minute):
+			t.Fatal("run did not return within a minute of its stop")
+		}
+	}
+	if version != newest {
+		t.Fatalf("run returned %v %s into the start, and its database's schema version is %d, want %d", ended, took.Round(time.Second), version, newest)
+	}
+	if ended != nil && strings.Contains(ended.Error(), "connect to Postgres") {
+		t.Errorf("run = %v, want no refusal of the store it opened", ended)
+	}
+	if took <= bootTimeout {
+		t.Errorf("the database was migrated %s into the start, inside its first %s budget: the cluster check and the first attempt did not spend what this test is for", took, bootTimeout)
+	}
+}
+
 // The worker image is proven after the runtime is built and before the boot is recorded; a refusal
 // refuses the boot.
 func TestAKubernetesDaemonRefusesTheBootItsWorkerImageProbeRefuses(t *testing.T) {
@@ -224,12 +326,35 @@ func TestAKubernetesDaemonRefusesTheBootItsWorkerImageProbeRefuses(t *testing.T)
 
 // Under kubernetes the worker stream is TCP on the daemon's bind, at a port the listener resolves
 // itself, the one address the runtime hands every pod's shim, and the runtime is given the
-// workflow's App tokens, its repository of an issue, already set when the runtime is built, and the
-// repositories Dispatch's mapping names, which its repository caches follow. The host's own agent
-// machinery never runs: no pane launcher is installed, no Dispatch token file is written, and the
-// workflow's boot has no worker-bin stage.
+// workflow's App tokens, its repository of an issue, already set when the runtime is built — for
+// an issue no record names, the repository Dispatch resolves the issue to, at GitHub's default
+// branch (unrecordedRepository) — and the cache set, the repositories the project's live records
+// name, which its repository caches follow: none for a project with no record. The host's own
+// agent machinery never runs: no pane launcher is installed, no Dispatch token file is written,
+// and the workflow's boot has no worker-bin stage.
 func TestAKubernetesDaemonServesItsWorkerStreamOnTCPAndRunsNoHostPaneMachinery(t *testing.T) {
-	cfg := workflowConfig(t, workflowNATS(t))
+	cfg := workflowConfigOn(t, workflowNATS(t), func(t *testing.T, project string) string {
+		return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
+			var body any
+			switch {
+			case servedBootCall(t, w, r, project):
+				return
+			case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues":
+				body = []any{}
+			case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues/LEGSMOKE-9":
+				body = map[string]any{"key": "LEGSMOKE-9", "title": "an operator's claim", "status": "in_progress", "labels": []string{},
+					"last_seq": 1, "project": project, "resolved_repo": "acme/widgets"}
+			default:
+				t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(body); err != nil {
+				t.Errorf("write %s: %v", r.URL.Path, err)
+			}
+		})
+	})
 	cfg.Runtime = kubernetesConfig(t, "https://127.0.0.1:1").Runtime
 	tokens := &workflowTokenRecorder{}
 	record := &built{}
@@ -249,13 +374,13 @@ func TestAKubernetesDaemonServesItsWorkerStreamOnTCPAndRunsNoHostPaneMachinery(t
 	awaitHealthz(t, cfg, done)
 
 	record.mu.Lock()
-	address, apps, repository, mapped := record.address, record.apps, record.repository, record.mapped
+	address, apps, repository, cached := record.address, record.apps, record.repository, record.cached
 	record.mu.Unlock()
-	if mapped == nil {
-		t.Fatal("the runtime was handed no mapping")
+	if cached == nil {
+		t.Fatal("the runtime was handed no cache set")
 	}
-	if got := mapped(); !slices.Equal(got, []ghrepo.Repository{ghrepo.MustParse("acme/widgets")}) {
-		t.Errorf("the runtime's repository caches follow %v, want the workflow's mapping, acme/widgets", got)
+	if got := cached(); len(got) != 0 {
+		t.Errorf("the runtime's repository caches follow %v, want none: no live record of the project names a repository", got)
 	}
 	prefix := "tcp://" + cfg.Bind + ":"
 	if !strings.HasPrefix(address, prefix) || strings.HasSuffix(address, ":0") {
@@ -281,7 +406,7 @@ func TestAKubernetesDaemonServesItsWorkerStreamOnTCPAndRunsNoHostPaneMachinery(t
 		t.Fatal("the runtime was handed no repository rule, want the workflow's")
 	}
 	if repo, branch, err := repository(ctx, "LEGSMOKE-9"); err != nil || repo.String() != "acme/widgets" || branch != "main" {
-		t.Errorf("the runtime's repository of an unrecorded issue = %s@%s, %v; want the project's default acme/widgets@main", repo, branch, err)
+		t.Errorf("the runtime's repository of an unrecorded issue = %s@%s, %v; want the one Dispatch resolves it to, acme/widgets@main", repo, branch, err)
 	}
 	for _, path := range []string{filepath.Join(cfg.StateDir, "bin"), filepath.Join(cfg.StateDir, "secrets", "dispatch-token")} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -1008,7 +1133,7 @@ func TestSandboxOptionsCarryTheProjectsSlackChannels(t *testing.T) {
 
 // No credential material — no key, no launcher credential, no bearer, no ServiceAccount token —
 // ever reaches a pod or a launch secret: the daemon's login reads its own token from token_file and
-// holds the key it wins only in the *agentsecrets.Client's process memory, which sandbox.Options
+// holds the key it wins only in the *cipher.Client's process memory, which sandbox.Options
 // carry no field for at all. newSecretsLogin hands the runtime only the broker URL, audience and
 // pod token lifetime, and no launch's secrets ever name an AGENT_SECRETS_* variable.
 func TestNoCredentialMaterialReachesAPod(t *testing.T) {

@@ -5,7 +5,7 @@
 // Dispatch and the Envoy listener read that token back at the broker's introspection route.
 //
 // Which identity is traded is the factory's to decide (`brokerTokenClient`,
-// `@legion/broker-client/environment`). Where a person ran `agent-secrets login` on this machine,
+// `@legion/cipher-client/environment`). Where a person ran `agent-secrets login` on this machine,
 // it is that person: their Google identity token is the subject, this machine's identity is the
 // actor, and the sign-in's box key signs every proof, so the token names the person. Where nobody
 // did, it is the machine itself — a pod's projected service-account token, a Compute Engine
@@ -18,7 +18,7 @@
 // token — is resolved first and unchanged, so a session that has a token by any of those routes
 // behaves exactly as it did before this module existed.
 
-import type { DpopKey } from "@legion/broker-client/dpop";
+import type { DpopKey } from "@legion/cipher-client/dpop";
 import {
   BROKER_URL_VAR,
   BROKER_VARIABLES,
@@ -26,10 +26,10 @@ import {
   brokerTokenClient,
   IDENTITY_VAR,
   machineIdentity,
-} from "@legion/broker-client/environment";
-import { chooseSignIn, type SignInRecord } from "@legion/broker-client/signins";
-import type { BrokerToken, BrokerTokenClient } from "@legion/broker-client/token-client";
-import { isFinalRefusal } from "@legion/broker-client/token-errors";
+} from "@legion/cipher-client/environment";
+import { chooseSignIn, type SignInRecord } from "@legion/cipher-client/signins";
+import type { BrokerToken, BrokerTokenClient } from "@legion/cipher-client/token-client";
+import { isFinalRefusal } from "@legion/cipher-client/token-errors";
 import type { RequestCredential } from "./bearer";
 import { LoggableError } from "./errors";
 
@@ -41,7 +41,7 @@ import { LoggableError } from "./errors";
  * between sessions — passes a function, which is read at every trade rather than fixed when the
  * configuration resolved. A caller that acts as no session at all passes nothing, and the factory
  * names the trade: the machine's own under whatever `AGENT_SECRETS_SESSION` names, which is how a
- * daemon names its own (`tradeSession`, `@legion/broker-client/environment`, the one rule both
+ * daemon names its own (`tradeSession`, `@legion/cipher-client/environment`, the one rule both
  * clients read), and a person's under their sign-in's own name (`signInSessionName`), never that
  * variable's. Such a caller is never answered the client of one that names the very session
  * `AGENT_SECRETS_SESSION` names, nor the reverse (`CLIENTS`): a person's trade names the two apart.
@@ -97,7 +97,7 @@ interface Held {
    * The sign-ins this entry's clients were refused for good ({@link isFinalRefusal}), by
    * {@link signInName}, each with the error it was refused with, as Go's
    * `SignInAuthority.refused` remembers them
-   * (`packages/envoy/internal/brokerclient/signinauthority.go`).
+   * (`packages/envoy/internal/cipherclient/signinauthority.go`).
    * Once it holds one, every call reads the store again (`chooseSignIn`): a sign-in it names is
    * refused again at once, with no request to the issuer or the broker, and a sign-in it does not
    * — a new `agent-secrets login` made a new box key — gets a client of its own. Go then enrols
@@ -385,10 +385,10 @@ export function dropTradedToken(env: BrokerEnvironment, traded: TradedToken): vo
  *
  * The trade happens at the first request that needs it and at every renewal after, both inside
  * `headers`, so nothing of the caller's restarts when a token lapses. Dispatch and the listener
- * mint no DPoP nonce (`packages/envoy/internal/brokertoken/brokertoken.go`, `withoutNonces`), so
+ * mint no DPoP nonce (`packages/envoy/internal/ciphertoken/brokertoken.go`, `withoutNonces`), so
  * a request to either carries the proof it was signed with and no nonce round trip; the broker's
  * own token endpoint, which may ask for one, is where that retry lives
- * (`@legion/broker-client/token-client`).
+ * (`@legion/cipher-client/token-client`).
  *
  * A server that says the token presented for a session is not live (`stale`, as Dispatch's
  * `401 BROKER_TOKEN_NOT_ACTIVE` says of a token a revoke ended before it lapsed) has the client

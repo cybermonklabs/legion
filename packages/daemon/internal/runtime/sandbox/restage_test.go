@@ -268,7 +268,7 @@ func TestEnrollingWithTheSecretsBrokerDriftsAnIssuePodMadeWithoutIt(t *testing.T
 			obs.Kind, obs.Detail)
 	}
 	want := (movedAddress{agentSecretsTokenVolume, "(unset)", enrollmentName(brokerTokenProjection(broker))}).String()
-	if drifted := driftOf(t, g.ctx, r2, testerLoc); !slices.Contains(drifted, want) {
+	if drifted := driftOf(t, g, r2, testerLoc); !slices.Contains(drifted, want) {
 		t.Errorf("PodDrift = %q, want %q among it", drifted, want)
 	}
 
@@ -296,7 +296,7 @@ func TestEnrollingWithTheSecretsBrokerDriftsAnIssuePodMadeWithoutIt(t *testing.T
 	if held := heldInPod(r2, pod, claim.Roles); len(held) > 0 {
 		t.Fatalf("the replaced pod holds %+v, which a pod created now is not handed", held)
 	}
-	if drifted := driftOf(t, g.ctx, r2, newTester); len(drifted) > 0 {
+	if drifted := driftOf(t, g, r2, newTester); len(drifted) > 0 {
 		t.Fatalf("the replaced pod has drifted: %q", drifted)
 	}
 	mounted := slices.ContainsFunc(containerNamed(t, pod.Spec, workerContainer).VolumeMounts, func(m corev1.VolumeMount) bool {
@@ -355,9 +355,9 @@ func ghItemsFor(owners ...string) []corev1.KeyToPath {
 	return items
 }
 
-// A project that gains a GitHub owner — a repository of a new owner in its mapping, which the
-// restarted daemon serves (appauth.GitHubDirs) and renders a directory for in every role's
-// bundle — leaves every issue pod created before it projecting the owners of its own creation:
+// A project that gains a GitHub owner — both Apps installed on a new owner, which the restarted
+// daemon serves (appauth.GitHubDirs) and renders a directory for in every role's bundle — leaves
+// every issue pod created before it projecting the owners of its own creation:
 // the refresher adds the new owner's two keys to the live role Secret, but a pod's projection
 // names the keys it was built with, so /var/run/legion/gh holds no directory of that owner and
 // every gh call of its roles against that owner's repositories runs as nobody. The pod has
@@ -386,7 +386,7 @@ func TestAddingAGitHubOwnerDriftsAnIssuePodWhoseGhVolumeLacksIt(t *testing.T) {
 		t.Fatalf("%s at %+v, want the tester alive at its recorded locator until its round ends: %s", obs.Kind, obs.Locator, obs.Detail)
 	}
 	want := (movedAddress{ghVolumeName, ghDirsName(staticDirs), ghDirsName(servedDirs)}).String()
-	drifted := driftOf(t, g.ctx, r2, testerLoc)
+	drifted := driftOf(t, g, r2, testerLoc)
 	if !slices.Contains(drifted, want) {
 		t.Errorf("PodDrift = %q, want %q among it", drifted, want)
 	}
@@ -433,7 +433,7 @@ func TestAddingAGitHubOwnerDriftsAnIssuePodWhoseGhVolumeLacksIt(t *testing.T) {
 	if held := heldInPod(r2, pod, claim.Roles); len(held) > 0 {
 		t.Fatalf("the replaced pod holds %+v, which a pod created now is not handed", held)
 	}
-	if drifted := driftOf(t, g.ctx, r2, newTester); len(drifted) > 0 {
+	if drifted := driftOf(t, g, r2, newTester); len(drifted) > 0 {
 		t.Fatalf("the replaced pod has drifted: %q", drifted)
 	}
 }
@@ -539,7 +539,7 @@ func TestAPodProjectingARepositoryDirectoryHasDrifted(t *testing.T) {
 		return connected && state.Child != nil
 	})
 	want := (movedAddress{ghVolumeName + " holds a repository directory", repositoryDirectory, "the owner directories alone"}).String()
-	if drifted := driftOf(t, g.ctx, r2, testerLoc); !slices.Contains(drifted, want) {
+	if drifted := driftOf(t, g, r2, testerLoc); !slices.Contains(drifted, want) {
 		t.Fatalf("PodDrift = %q, want %q among it", drifted, want)
 	}
 	obs := readopt(t, g.ctx, r2, testerLoc)[0]
@@ -569,7 +569,7 @@ func TestAPodProjectingARepositoryDirectoryHasDrifted(t *testing.T) {
 	if held := ghItems(t, g.pod(testerLoc.Sandbox.Name), claim.RoleTester); !slices.Equal(held, ghItemsFor(staticDirs...)) {
 		t.Errorf("the replaced pod's gh volume projects %+v, want the two files of each of %q and no repository directory", held, staticDirs)
 	}
-	if drifted := driftOf(t, g.ctx, r2, newTester); len(drifted) > 0 {
+	if drifted := driftOf(t, g, r2, newTester); len(drifted) > 0 {
 		t.Fatalf("the replaced pod has drifted: %q", drifted)
 	}
 }
@@ -601,13 +601,14 @@ func ownerRuleOwners(repos []ghrepo.Repository, pair ghrepo.Rename) []string {
 // answers for the issue recorded on recordedSmoke (appauth.GitHubDirs), over both Apps as an
 // issue pod's projection is read. GitHubDirs answers from the record each App's last bundle
 // build wrote and calls GitHub itself not at all, so a bundle of each App is built first, over
-// an App installed on every owner the mapping names, which is this deployment's.
+// an App installed on every owner of repos, which is this deployment's.
 func servedOwnerDirs(t *testing.T, repos []ghrepo.Repository) []string {
 	t.Helper()
-	served := func() []ghrepo.Repository { return repos }
+	listed := func() []ghrepo.Repository { return repos }
+	served := servesOneOf(listed)
 	renames := ghrepo.MustRenames(smokeRename)
 	installed := appauth.NewInstalled()
-	credential := appauth.GitHubCredential(sourceOf(&namedLeases{}, installedOnMapped{served: served}), served, renames, installed, nil, nil)
+	credential := appauth.GitHubCredential(sourceOf(&namedLeases{}, installedOnServed{repos: listed}), served, renames, installed, nil, nil)
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleReviewer} {
 		if _, err := credential(context.Background(), role, recordedSmoke); err != nil {
 			t.Fatalf("the %s's bundle: %v", role, err)
@@ -704,7 +705,7 @@ func TestARenamedIssuesPodIsUnmovedInEitherOwnerSetState(t *testing.T) {
 	if obs := readopt(t, g.ctx, r2, loc)[0]; obs.Kind != runtime.Alive || obs.Locator != loc {
 		t.Fatalf("%s at %+v, want the tester alive at its recorded locator in state B: %s", obs.Kind, obs.Locator, obs.Detail)
 	}
-	for _, reason := range driftOf(t, g.ctx, r2, loc) {
+	for _, reason := range driftOf(t, g, r2, loc) {
 		if strings.Contains(reason, ghVolumeName) {
 			t.Errorf("PodDrift names %q in state B, so the daemon opens an update round over the pod's gh directory", reason)
 		}
@@ -794,7 +795,7 @@ func TestChangingTheBrokersAudienceDriftsEveryRoleOfThePodTogether(t *testing.T)
 		if obs.Kind != runtime.Alive || obs.Locator != loc {
 			t.Fatalf("%s: %s at %+v (%s), want it alive at its recorded locator until its round ends", loc.Claim, obs.Kind, obs.Locator, obs.Detail)
 		}
-		if drifted := driftOf(t, g.ctx, r2, loc); !slices.Contains(drifted, drift) {
+		if drifted := driftOf(t, g, r2, loc); !slices.Contains(drifted, drift) {
 			t.Fatalf("%s: PodDrift = %q, want %q among it", loc.Claim, drifted, drift)
 		}
 	}
@@ -868,7 +869,7 @@ func TestChangingTheBrokersAudienceDriftsEveryRoleOfThePodTogether(t *testing.T)
 		t.Fatalf("the new pod holds %+v, which a pod created now is not handed", held)
 	}
 	for _, loc := range moved {
-		if drifted := driftOf(t, g.ctx, r2, loc); len(drifted) > 0 {
+		if drifted := driftOf(t, g, r2, loc); len(drifted) > 0 {
 			t.Fatalf("the new pod has drifted for %s: %q", loc.Claim, drifted)
 		}
 	}
@@ -925,7 +926,7 @@ func TestAPodEnrolledOtherwiseThanTheRuntimeIsNowHasDrifted(t *testing.T) {
 				return connected && state.Child != nil
 			})
 			want := (movedAddress{agentSecretsTokenVolume, enrollmentName(brokerTokenProjection(&before)), enrollmentName(brokerTokenProjection(&now))}).String()
-			drifted := driftOf(t, g.ctx, r2, loc)
+			drifted := driftOf(t, g, r2, loc)
 			if slices.Contains(drifted, want) != tc.drifted {
 				t.Fatalf("PodDrift = %q, want the enrollment drifted %t (%q)", drifted, tc.drifted, want)
 			}
@@ -1021,7 +1022,7 @@ func TestEvaluateReadsAPodStaleExactlyWhenRelaunchReplacesIt(t *testing.T) {
 				case tc.where != "" && (obs.Kind != runtime.StaleAddress || !strings.Contains(obs.Detail, tc.where+" ")):
 					t.Fatalf("%s: %s (%s), want StaleAddress naming %s", loc.Claim, obs.Kind, obs.Detail, tc.where)
 				}
-				drifted := strings.Join(driftOf(t, g.ctx, r2, loc), "; ")
+				drifted := strings.Join(driftOf(t, g, r2, loc), "; ")
 				if (tc.drifts == "") != (drifted == "") || (tc.drifts != "" && !strings.Contains(drifted, tc.drifts+" ")) {
 					t.Fatalf("%s: PodDrift = %q, want %q", loc.Claim, drifted, tc.drifts)
 				}

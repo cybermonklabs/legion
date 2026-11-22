@@ -1,0 +1,99 @@
+{
+  "id": 191025,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 54,
+  "type": "issue.updated",
+  "actor": {
+    "kind": "session",
+    "id": "01a1a6d4-ec1d-74d8-a476-2c608406eeb3",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum",
+      "cwd": "lorem ipsum dolor sit amet lorem ",
+      "tmux": "lorem ip",
+      "pane": "lor",
+      "session_title": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor "
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-11-04T23:06:10.574481Z",
+  "payload": {
+    "key": "ACME-1",
+    "rank": "lorem ipsum dolor sit amet lorem ipsum dol",
+    "repo": null,
+    "claim": {
+      "at": "2026-11-04T13:54:13.605973Z",
+      "actor": {
+        "id": "01a1a6d4-ec1d-74d8-a476-2c608406eeb3",
+        "kind": "session",
+        "owner": "alice@example.com",
+        "origin": {
+          "cwd": "lorem ipsum dolor sit amet lorem ",
+          "host": "lor",
+          "pane": "lore",
+          "tmux": "lorem i",
+          "machine": "lorem ipsum",
+          "session_title": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor "
+        }
+      }
+    },
+    "route": null,
+    "title": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor ",
+    "labels": [],
+    "number": 1314,
+    "parent": "ACME-2",
+    "status": "backlog",
+    "changed": [
+      "status",
+      "blocked_by"
+    ],
+    "project": "ACME",
+    "assignee": "bob@example.com",
+    "last_seq": 54,
+    "priority": null,
+    "ancestors": [
+      "ACME-2"
+    ],
+    "closed_at": null,
+    "blocked_by": [
+      "ACME-3"
+    ],
+    "components": {
+      "ids": [],
+      "mode": "inherit",
+      "reason": null,
+      "unknown": [],
+      "inherited_from": null
+    },
+    "created_at": "2026-11-04T05:43:24.116339Z",
+    "created_by": {
+      "id": "4eb5649d-22f2-4cc8-86e2-a664bb2462c1",
+      "kind": "session",
+      "owner": "bob@example.com",
+      "origin": {
+        "cwd": "lorem ipsum d",
+        "host": "lorem ",
+        "pane": "lor",
+        "tmux": "lorem",
+        "machine": "lorem ipsum dolor sit amet lorem ipsum dolor sit ame",
+        "session_title": "lorem ipsum d"
+      }
+    },
+    "updated_at": "2026-11-04T23:06:10.590822Z",
+    "resolved_repo": "lorem ipsum dolor sit amet lorem ipsum ",
+    "thread_logins": [],
+    "external_links": [],
+    "plan_artifact_id": "",
+    "references_changed": [
+      {
+        "id": "ACME-3",
+        "kind": "issue"
+      }
+    ],
+    "primary_artifact_id": "e6a8b2be-2cc8-42e1-a487-55e68568e9e5",
+    "verification_artifact_id": ""
+  }
+}

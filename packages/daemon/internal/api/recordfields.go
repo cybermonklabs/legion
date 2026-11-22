@@ -125,6 +125,7 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "PluginContract", Column: ColumnAgents, Keys: []string{"pluginContract"},
 		Reason: "the contract the claim's registration declared, which says what shape its seat parses this body with"},
 	{Field: "PluginRelaunchFor", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "AgentResumeGeneration", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "UpdateRound", Column: ColumnAgents, Keys: []string{"updateRound"},
 		Reason: "the round the claim is in, which says the process holding it is waiting to be replaced"},
 	{Field: "UpdateReasons", Column: ColumnAgents, Keys: []string{"updateReasons"},

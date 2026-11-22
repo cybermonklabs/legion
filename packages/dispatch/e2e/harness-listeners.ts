@@ -177,7 +177,7 @@ function signInIssuerListeners(): HarnessListener[] {
 // server, which keeps relaying the fake broker.
 // Each half reports on stderr, and each report is the line that follows its own bind: the issuer
 // writes `dev-oidc-issuer: issuer listening url=http://127.0.0.1:<port>`, as it does for
-// run-signin-issuer.sh, and cmd/broker writes its log as one JSON object per line
+// run-signin-issuer.sh, and cmd/cipherd writes its log as one JSON object per line
 // (packages/envoy/internal/logging's NewCloudHandler), so its report is
 // `{"time":…,"severity":"INFO","message":"broker listening","addr":"127.0.0.1:<port>"}`, the
 // message followed by its one field.

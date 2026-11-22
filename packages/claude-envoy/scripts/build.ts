@@ -19,7 +19,7 @@
 // buildBundles and buildLegionPlugin report reading; a file this script reads by path or
 // imports from outside the listed packages (.bun-version, scripts/third-party-notices.ts, the
 // scripts it runs) is listed by hand.
-import { cp, mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises"
+import { chmod, cp, lstat, mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { thirdPartyNotices } from "../../../scripts/third-party-notices"
 import { PHASE_HOOK_TOOL_NAME } from "../src/legion-phase-hook"
@@ -489,6 +489,21 @@ export async function buildCodexPlugin(out: string, dist?: string): Promise<void
   }
   if (dist === undefined) await buildBundles(join(out, "dist"))
   else await cp(dist, join(out, "dist"), { recursive: true })
+  // The pack keeps each file's mode as the disk has it, and the copies and writes above take the
+  // source's mode and the builder's umask: a build under umask 0002, which a systemd user unit
+  // runs with, ships group-writable files. Every entry of `out` is shipped, so each loses group and
+  // other write; every user keeps read, and search on each directory and execute on each file the
+  // owner can run. The published modes are then the same whoever builds.
+  for (const path of [
+    out,
+    ...(await readdir(out, { recursive: true })).map((entry) => join(out, entry)),
+  ]) {
+    const entry = await lstat(path)
+    if (entry.isSymbolicLink()) continue
+    const mode = entry.mode & 0o7777
+    const runnable = entry.isDirectory() || (mode & 0o100) !== 0
+    await chmod(path, (mode & ~0o022) | 0o444 | (runnable ? 0o111 : 0))
+  }
 }
 
 const USAGE =
