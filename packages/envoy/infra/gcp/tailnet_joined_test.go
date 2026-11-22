@@ -37,9 +37,10 @@ type joinedHarness struct {
 	marker, key       string
 }
 
-// newJoinedHarness fails the test at once without jq on this machine (tool): the script reads
-// each state with it, and without it reads none, so it would ask again every 5 seconds forever,
-// its sleep stubbed to return at once, until the shell's deadline (gcp.ShellCommand).
+// newJoinedHarness fails the test at once without jq, or the wc or sed its docker stub runs, on
+// this machine (tool): the script reads each state with jq, and without one of them reads none, so
+// it would ask again every 5 seconds forever, its sleep stubbed to return at once, until the
+// shell's deadline (gcp.ShellCommand).
 func newJoinedHarness(t *testing.T) *joinedHarness {
 	t.Helper()
 	for _, name := range []string{"jq", "wc", "sed"} {

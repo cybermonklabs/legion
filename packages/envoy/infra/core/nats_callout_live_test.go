@@ -216,7 +216,7 @@ func (r *calloutRig) requireRequests(t *testing.T, want int64, why string) {
 }
 
 // TestTheRigCountsARequestOnlyAfterItsAnswer: calloutRig.answer, the handler of the rig's auth
-// service (restart) and of the hung-replica tests' replicas (hangAReplica), counts a request only
+// service (serve) and of the hung-replica tests' replicas (hangAReplica), counts a request only
 // after its answer is sent, so its last report comes before a test that waits for the count can
 // read it. Each row gives it a well-formed sealed request whose answer cannot be sent
 // (unboundAuthorizationRequest), from a client it admits and from one it refuses: the handler
