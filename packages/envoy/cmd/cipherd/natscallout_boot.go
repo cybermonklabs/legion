@@ -14,9 +14,9 @@ import (
 // natsCalloutBoot is the verifiers of the platform tokens the NATS auth service's services present,
 // for a deployment that runs it (cfg.NATS): one verifier per NATS audience set, on the key set the
 // broker already reads for that issuer. First, RequireAudiences refuses the start when
-// cfg.NATS.Services (which config.Load parsed) names a service whose kind of token has no
-// audience; an edge listener's entry needs none. A deployment that runs no auth service needs no
-// NATS audience and no key set, and reads none.
+// cfg.NATS.Services (which config.Load parsed) names a service, an edge listener among them, whose
+// kind of token has no audience. A deployment that runs no auth service needs no NATS audience and
+// no key set, and reads none.
 func natsCalloutBoot(ctx context.Context, cfg config.Config, discovered verifiers, keysFor keysFunc) (natscallout.PlatformTokens, error) {
 	if !cfg.NATS.Enabled() {
 		return natscallout.PlatformTokens{}, nil

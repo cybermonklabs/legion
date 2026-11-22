@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -149,7 +150,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if status == "done" {
 		kind = "child-closed"
 	}
-	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: kind, Role: claim.RoleArchitect, Reason: fmt.Sprintf("%s is %s", issue.Key, status)}); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: kind, Role: claim.RoleArchitect, Reason: leftNotice(issue, status, pr, members)}); err != nil {
 		return err
 	}
 	// This departure may be the last one any merged ancestor of the issue waited for, and not
@@ -189,6 +190,36 @@ func (e *Engine) releaseParkedClaim(ctx context.Context, tx pgx.Tx, issue record
 		return nil
 	}
 	return e.enqueue(ctx, tx, issue.Key, record.ClaimRelease{})
+}
+
+// leftNotice is the reason of the child-closed or child-status notice that tells the architect
+// above child that it left the workflow at status (leave). It starts with "<KEY> is <status>",
+// and it names after that what the move leaves for that architect to act on
+// (dispatch://INFRA-3178/spec R4). The first is the child's pull request while it is open: the
+// daemon closes no pull request, and a merge of it later closes nothing (merged). The second is
+// each recorded issue under the child that is not done, with its status, in key order: the move
+// ends the child alone, so an issue under it in the workflow runs on, and one out of the workflow
+// stays out (record.Beneath, over members, the tree's records). A child with nothing to name gets
+// the first sentence alone, so every reader of that bare reason stays valid. The record holds no
+// state that says a pull request is in the merge queue (the daemon hears only GitHub's removal
+// from it, intake.PullRequestDequeued), so the notice cannot say so.
+func leftNotice(child record.Issue, status string, pr *record.PullRequest, members []record.Issue) string {
+	reason := fmt.Sprintf("%s is %s", child.Key, status)
+	if pr != nil && pr.State == record.PullRequestOpen {
+		reason += fmt.Sprintf(". Its pull request #%d is open", pr.Number)
+	}
+	under := record.Beneath(child, members)
+	slices.SortFunc(under, func(a, b record.Issue) int { return strings.Compare(a.Key, b.Key) })
+	var open []string
+	for _, member := range under {
+		if member.Status != record.DoneStatus {
+			open = append(open, fmt.Sprintf("%s (%s)", member.Key, member.Status))
+		}
+	}
+	if len(open) > 0 {
+		reason += ". Under it, not done: " + strings.Join(open, ", ")
+	}
+	return reason
 }
 
 // leaveUnderOperator takes a waiting root out of the workflow while the operator runs a tree under

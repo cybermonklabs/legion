@@ -100,7 +100,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     outputs:
-      # Each output reads the one dorny/paths-filter step below. Rule 19 of
+      # Each output but ref_is_main reads the one dorny/paths-filter step below. Rule 19 of
       # .github/scripts/check-ci-filters.sh refuses an output naming a filter .github/ci-filters.yaml does not hold.
       typecheck: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.typecheck }}
       test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.test }}
@@ -153,6 +153,7 @@ jobs:
       edited_migrations_base_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.edited_migrations_base_test }}
       dispatch_browser_latest_blobs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_latest_blobs_test }}
       dispatch_browser_run_reads_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_run_reads_test }}
+      gh_read_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.gh_read_test }}
       dispatch_browser_samples_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_samples_test }}
       race_memory_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.race_memory_test }}
       disk_watch_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.disk_watch_test }}
@@ -216,6 +217,8 @@ jobs:
       proof_sdk_offline: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.proof_sdk_offline }}
       # why: .github/ci-notes/ci.md#the-paths-filters-own-verdict-for-every-filter-before-the-full-ci-term
       filter_verdicts: ${{ github.event_name == 'workflow_dispatch' && '{}' || toJSON(steps.filter.outputs) }}
+      # why: .github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own
+      ref_is_main: ${{ steps.ref.outputs.is_main }}
     steps:
       # why: .github/ci-notes/ci.md#on-pull_request-dornypaths-filter-reads-the-file-list-from-the-api-and-reads
       - if: github.event_name != 'pull_request'
@@ -236,6 +239,10 @@ jobs:
         with:
           predicate-quantifier: some-with-excludes
           filters: .github/ci-filters.yaml
+      # why: .github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own
+      - name: Read whether this run's ref is exactly refs/heads/main
+        id: ref
+        run: if [ "$GITHUB_REF" = refs/heads/main ]; then echo is_main=true; else echo is_main=false; fi >> "$GITHUB_OUTPUT"
 
   # Reads the whole tree, so it runs on every non-draft run, also when `changes` failed.
   lint:
@@ -358,6 +365,7 @@ jobs:
       edited_migrations_base_test: ${{ needs.changes.outputs.edited_migrations_base_test }}
       dispatch_browser_latest_blobs_test: ${{ needs.changes.outputs.dispatch_browser_latest_blobs_test }}
       dispatch_browser_run_reads_test: ${{ needs.changes.outputs.dispatch_browser_run_reads_test }}
+      gh_read_test: ${{ needs.changes.outputs.gh_read_test }}
       dispatch_browser_samples_test: ${{ needs.changes.outputs.dispatch_browser_samples_test }}
       race_memory_test: ${{ needs.changes.outputs.race_memory_test }}
       disk_watch_test: ${{ needs.changes.outputs.disk_watch_test }}
@@ -839,10 +847,14 @@ jobs:
 
   # why: .github/ci-notes/ci.md#the-pr-title-job-what-it-checks-and-why-it-posts-nothing
   pr-title:
+    # why: .github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own
+    name: ${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' || 'pr-title' }}
     if: ${{ !github.event.pull_request.draft && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
     # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # why: .github/ci-notes/ci.md#what-the-pr-title-jobs-scopes-are-for
     permissions:
       contents: read
@@ -880,6 +892,8 @@ jobs:
     # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     permissions:
       actions: write
     steps:
@@ -897,6 +911,8 @@ jobs:
 
   # why: .github/ci-notes/ci.md#the-verdict-and-one-of-the-two-checks-mains-ruleset-requires-of
   ci-ok:
+    # why: .github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own
+    name: ${{ github.event_name == 'workflow_dispatch' && needs.changes.outputs.ref_is_main != 'true' && 'ci-ok (dispatch)' || 'ci-ok' }}
     needs:
       - changes
       - lint
@@ -947,6 +963,8 @@ jobs:
     # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     permissions:
       checks: write
     steps:
@@ -982,11 +1000,14 @@ jobs:
           ALWAYS_RUN: ${{ env.CI_OK_ALWAYS_RUN }}
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          # The jobs that run only part of themselves without the label: dispatch-browser, whose
+          # `lane:` input above reads this same term. ci-ok.sh names it as run in part.
+          PARTIAL: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && '[]' || '["dispatch-browser"]' }}
         run: .github/scripts/ci-ok.sh
 
       # why: .github/ci-notes/ci.md#why-every-other-ci-ok-on-this-head-is-set-to-this-jobs-conclusion
       - name: Set every other ci-ok on this head to this job's conclusion
-        if: always()
+        if: ${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') }}
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
