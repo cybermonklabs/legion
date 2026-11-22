@@ -29,7 +29,7 @@ func familyMember(family, logical string) (member, error) {
 // operation's candidate a fresh name of logical, and an open operation's old name one of those or
 // logical's fixed name. Its refusal is selection.ErrMalformedRecord naming the field and the name,
 // or the library's refusal of a family or a durable key no store keeps. A nil is no leave to
-// delete: a name t-7 deletes also passes deleteOwned.
+// delete: a name this package deletes also passes deleteOwned.
 //
 // A record restore --finish left selects the key's fixed name, which the creators refuse as a
 // current; the readers take it, and that shape alone (restoredRecord): its current is its restore

@@ -21,10 +21,10 @@ const (
 	replayFinalCommand = "replay --final"
 )
 
-// replayWrites bounds how many times replay reads K's record again after a write the store refused
-// because the record moved (selection.ErrConflict). Under the hold no other writer is connected, so
-// a refusal comes only from a write this command could not see; a bound keeps one that repeats
-// from running forever.
+// replayWrites bounds how many times replay reads K's record again, and repair-sentinel the
+// sentinel key's last message, after a write the store refused because the key moved
+// (selection.ErrConflict). Under the hold no other writer is connected, so a refusal comes only
+// from a write this command could not see; a bound keeps one that repeats from running forever.
 const replayWrites = 8
 
 // replay is `consumer-names replay --key K --from SEQ [--final] --hold ID`: it writes K's record
@@ -229,9 +229,7 @@ func replayRevision(ctx context.Context, nc *nats.Conn, store familyStore, m mem
 	if !ok {
 		return 0, unknownf(nil, "the revision of %s's row in %s's store: the store is no Postgres store", m.Logical, m.Family)
 	}
-	var revision int64
-	err := pg.db.QueryRow(ctx, `select revision from `+selection.IntakeConsumersTable+` where logical = $1`, selection.PGKey(m.Family, m.Logical)).
-		Scan(&revision)
+	revision, err := pgRevision(ctx, pg.db, selection.PGKey(m.Family, m.Logical))
 	if err != nil {
 		return 0, unknownf(err, "the revision of %s's row in %s's store", m.Logical, m.Family)
 	}

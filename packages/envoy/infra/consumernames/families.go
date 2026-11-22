@@ -64,8 +64,10 @@ const (
 	daemonFixedPrefix   = "legion-go-"
 )
 
-// daemonKinds are the kinds of consumer a Legion daemon opens per project: legion-go-<project>-<kind>
-// (packages/daemon/internal/intake, dispatchConsumerName, githubConsumerName, wakeConsumerName).
+// daemonKinds are the kinds of consumer a Legion daemon's grant names per project,
+// legion-go-<project>-<kind> (natsgrant newHeldScope: dispatch, wake, ready, github); the daemon
+// itself opens dispatch, github and wake (packages/daemon/internal/intake, dispatchConsumerName,
+// githubConsumerName, wakeConsumerName).
 var daemonKinds = []string{"dispatch", "github", "wake", "ready"}
 
 // member is one logical name of a family as the operator's commands meet it on the stream.
@@ -160,6 +162,16 @@ func (r *run) store(ctx context.Context, family string) (familyStore, error) {
 		return nil, err
 	}
 	return store, nil
+}
+
+// pgStoreOf is family's Postgres store (pgStore) on the run's database of it, a failed open of
+// the database naming the family's store.
+func (r *run) pgStoreOf(ctx context.Context, family string) (*selection.PGStore, error) {
+	db, err := r.database(ctx, family)
+	if err != nil {
+		return nil, fmt.Errorf("%s's store: %w", family, err)
+	}
+	return pgStore(family, db)
 }
 
 // pgStore is family's Postgres store on db (selection.NewPGStore), its refusal of a family no
@@ -261,9 +273,7 @@ func readPGSentinel(ctx context.Context, db Database, family string) (state sele
 	if err != nil {
 		return selection.StoreState{}, 0, false, err
 	}
-	var stored int64
-	err = db.QueryRow(ctx, `select revision from `+selection.IntakeConsumersTable+` where logical = $1`, selection.PGSentinelKey(family)).
-		Scan(&stored)
+	stored, err := pgRevision(ctx, db, selection.PGSentinelKey(family))
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return selection.StoreState{}, 0, false, nil
@@ -278,6 +288,14 @@ func readPGSentinel(ctx context.Context, db Database, family string) (state sele
 		return selection.StoreState{}, 0, false, err
 	}
 	return state, uint64(stored), true, nil
+}
+
+// pgRevision is the revision of the intake_consumers row keyed key on db, its query's error as it
+// is: readPGSentinel reads pgx.ErrNoRows as no sentinel, and replayRevision any error as UNKNOWN.
+func pgRevision(ctx context.Context, db Database, key string) (int64, error) {
+	var revision int64
+	err := db.QueryRow(ctx, `select revision from `+selection.IntakeConsumersTable+` where logical = $1`, key).Scan(&revision)
+	return revision, err
 }
 
 // behindBarrier runs read behind the hold's bucket barrier on the selection bucket, the one path

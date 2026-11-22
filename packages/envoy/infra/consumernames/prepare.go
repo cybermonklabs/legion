@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -62,13 +63,7 @@ type prepareCohortMember struct {
 // member is the cohort's member of fixed name, or nil.
 func (c prepareCohort) member(fixed string) *prepareCohortMember {
 	i, found := slices.BinarySearchFunc(c.Members, fixed, func(m prepareCohortMember, fixed string) int {
-		switch {
-		case m.Fixed < fixed:
-			return -1
-		case m.Fixed > fixed:
-			return 1
-		}
-		return 0
+		return strings.Compare(m.Fixed, fixed)
 	})
 	if !found {
 		return nil
@@ -167,15 +162,7 @@ func (r *run) writePrepareCohort(ctx context.Context, read prepareCohort) (prepa
 		if found {
 			cohort = mergePrepareCohort(earlier, read)
 		}
-		slices.SortFunc(cohort.Members, func(a, b prepareCohortMember) int {
-			switch {
-			case a.Fixed < b.Fixed:
-				return -1
-			case a.Fixed > b.Fixed:
-				return 1
-			}
-			return 0
-		})
+		slices.SortFunc(cohort.Members, func(a, b prepareCohortMember) int { return strings.Compare(a.Fixed, b.Fixed) })
 		value, err := json.Marshal(cohort)
 		if err != nil {
 			return prepareCohort{}, err

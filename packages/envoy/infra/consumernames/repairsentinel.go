@@ -22,9 +22,10 @@ const repairCommand = "consumer-names repair-sentinel"
 // sentinel (selection.SentinelKey) from the broker's records in Postgres, never from what NATS
 // holds. Any principal whose grant holds a JetStream API request can store the server's answer
 // under the sentinel's key, by naming the key's subject as the request's reply subject
-// (strictdecode.go); the library's decode then reads an empty store state, so every session
-// consumer call fails closed (selection.Admit: ErrCutoverNotRun), and no other command writes the
-// sentinel again after the cutover.
+// (strictdecode.go); the library's decode refuses that value as selection.ErrMalformedSentinel, so
+// every session consumer call fails closed, and no other command rewrites a sentinel it cannot
+// read: restore --finish, the one other writer after the cutover, reads it first and is UNKNOWN on
+// it (restoreMark, convertSentinel).
 //
 // Before its intent it reads the sentinel the records give (repairWant), and refuses, or is
 // UNKNOWN, writing nothing, when they give none. After its intent, behind the bucket's barrier, it
@@ -34,7 +35,8 @@ const repairCommand = "consumer-names repair-sentinel"
 // reads again after a write the store refused because the key moved (selection.ErrConflict). A
 // refusal after its intent is its stop (createBucketStopped), naming what the run left.
 func (r *run) repairSentinel(ctx context.Context) error {
-	return connRefusal(r.nc, r.repairSentinelRun(ctx))
+	err := r.repairSentinelRun(ctx)
+	return connRefusal(r.nc, err)
 }
 
 func (r *run) repairSentinelRun(ctx context.Context) error {

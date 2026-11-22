@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -405,11 +406,7 @@ func (r *run) cleanupSessionTargets(ctx context.Context, a *admission, nc *nats.
 // holds none; a row that is not its key's record of the family is UNKNOWN (selection.PGStore.List,
 // selection.ErrMalformedRecord).
 func (r *run) cleanupPGTargets(ctx context.Context, family string) ([]cleanupTarget, error) {
-	db, err := r.database(ctx, family)
-	if err != nil {
-		return nil, fmt.Errorf("%s's store: %w", family, err)
-	}
-	store, err := pgStore(family, db)
+	store, err := r.pgStoreOf(ctx, family)
 	if err != nil {
 		return nil, err
 	}
@@ -421,12 +418,11 @@ func (r *run) cleanupPGTargets(ctx context.Context, family string) ([]cleanupTar
 		return nil, unknownf(err, "%s's records", family)
 	}
 	var targets []cleanupTarget
-	for logical, record := range records {
-		if len(record.Retired) > 0 {
+	for _, logical := range slices.Sorted(maps.Keys(records)) {
+		if len(records[logical].Retired) > 0 {
 			targets = append(targets, cleanupTarget{family: family, logical: logical, store: store})
 		}
 	}
-	slices.SortFunc(targets, func(a, b cleanupTarget) int { return strings.Compare(a.logical, b.logical) })
 	return targets, nil
 }
 

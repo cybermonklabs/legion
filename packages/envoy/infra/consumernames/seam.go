@@ -30,7 +30,8 @@ type Deps struct {
 	// Operator is the operator's reach of the clustered hub: its Kubernetes objects and each
 	// declared server's monitoring port, which the held re-read, convert's meta barrier and restore
 	// --finish read. Nil is a run with no such reach, which refuses every held command, since each
-	// runs the held re-read (run.operatorHub).
+	// runs the held re-read (run.operatorHub), and leaves status UNKNOWN on a daemon store that
+	// answers SQLSTATE 3D000.
 	Operator func(ctx context.Context) (*writerhold.Operator, error)
 	// Now is the clock; time.Now when nil (run.now).
 	Now func() time.Time

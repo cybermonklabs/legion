@@ -80,11 +80,12 @@ func (r *run) createBucketReplicas() (int, error) {
 // createBucketCutover creates the selection bucket and its sentinel with B, the cohort's boundary,
 // in the cutover hold, before any creator runs in the fresh mode (plan §3 step 2). A rerun after a
 // crash may find the bucket: it adopts it only when the bucket's stream has the configuration
-// create-bucket sends (createBucketConfigDiff), and the bucket holds no key but the hold's
-// barrier, or only its sentinel with this hold's B. With no key the crash fell between the create
-// and the sentinel, so it writes the sentinel and goes on; with the sentinel it changes nothing.
-// Anything else is UNKNOWN, naming the bucket: a bucket that is not this hold's is one no command
-// deletes. A refusal after its intent is its stop (createBucketStopped), naming what the run left.
+// create-bucket sends (createBucketConfigDiff), and the bucket holds no key but holds' barrier
+// keys (createBucketBarrierKey), or only its sentinel with this hold's B. With no key the crash
+// fell between the create and the sentinel, so it writes the sentinel and goes on; with the
+// sentinel it changes nothing. Anything else is UNKNOWN, naming the bucket: a bucket that is not
+// this hold's is one no command deletes. A refusal after its intent is its stop
+// (createBucketStopped), naming what the run left.
 func (r *run) createBucketCutover(ctx context.Context) error {
 	if _, err := r.requirePhase(ctx, natsgrant.OperatorPhaseHeld); err != nil {
 		return err
@@ -141,12 +142,7 @@ func (r *run) createBucketCutoverHeld(ctx context.Context, boundary uint64, repl
 		// The create, then the sentinel once the new stream serves its subjects: on three servers
 		// a put right after the create finds no responder yet (selection.CreateSessionBucket writes
 		// it at once). A crash between the two is the rerun rule's empty bucket.
-		left.unsure = "the bucket, if its unanswered create landed"
-		if _, err := js.CreateKeyValue(ctx, selection.SessionBucketConfig(replicas)); err != nil {
-			return nil, fmt.Errorf("create %s: %w", selection.SessionBucket, err)
-		}
-		left.unsure, left.created = "", true
-		if err := createBucketAwaitLeader(ctx, nc); err != nil {
+		if err := createBucketCreate(ctx, nc, js, replicas, left); err != nil {
 			return nil, err
 		}
 		left.unsure = "the sentinel, if its unanswered write landed"
@@ -297,13 +293,17 @@ func createBucketStopped(ctx context.Context, a *admission, err error, left *cre
 	return fmt.Errorf("%w; it left %s", err, left)
 }
 
+// selectionKeyPrefix begins the subject of every key of the selection bucket, $KV.<bucket>.<key>,
+// as nats.go's KV API names a key's subject.
+const selectionKeyPrefix = "$KV." + selection.SessionBucket + "."
+
 // createBucketStream reads the selection bucket's stream, with each key's subject when subjects is
 // set, and false for a stream the server does not hold (jetstream.JSErrCodeStreamNotFound). Any
 // other failure is UNKNOWN: a configuration that cannot be read is never a match.
 func createBucketStream(ctx context.Context, nc *nats.Conn, subjects bool) (*jetstream.StreamInfo, bool, error) {
 	var body any
 	if subjects {
-		body = map[string]string{"subjects_filter": "$KV." + selection.SessionBucket + ".>"}
+		body = map[string]string{"subjects_filter": selectionKeyPrefix + ">"}
 	}
 	raw, err := apiRequest(ctx, nc, "$JS.API.STREAM.INFO."+selectionStreamName, body)
 	if apiErrorIs(err, jetstream.JSErrCodeStreamNotFound) {
@@ -382,10 +382,9 @@ func createBucketConfigDiff(got jetstream.StreamConfig, replicas int) []string {
 // reader ignores. A stream whose subjects the answer does not hold in full (num_subjects past the
 // subjects listed) answers one key more than it lists, so it is never read as empty.
 func createBucketKeys(info *jetstream.StreamInfo, holdID string) []string {
-	prefix := "$KV." + selection.SessionBucket + "."
 	var keys []string
 	for subject := range info.State.Subjects {
-		if key := strings.TrimPrefix(subject, prefix); !createBucketBarrierKey(key, holdID) {
+		if key := strings.TrimPrefix(subject, selectionKeyPrefix); !createBucketBarrierKey(key, holdID) {
 			keys = append(keys, key)
 		}
 	}
@@ -658,7 +657,7 @@ func (r *run) createBucketPostcheck(ctx context.Context, nc *nats.Conn, step1 []
 	if bound := uint64(len(made.own)) + createBucketArchiveMaxGap; last < from || last-from > bound {
 		return fmt.Errorf("the postcheck: %s's last_seq is %d, and this command's writes counted from %d are at most %d", selectionStreamName, last, from, bound)
 	}
-	barrier := "$KV." + selection.SessionBucket + ".hold.barrier." + r.o.holdID
+	barrier := selectionKeyPrefix + strictBarrierPrefix + r.o.holdID
 	for seq := from + 1; seq <= last; seq++ {
 		m, held, err := replayStreamMessage(ctx, nc, selection.SessionBucket, map[string]any{"seq": seq})
 		if err != nil {
@@ -906,10 +905,11 @@ type createBucketAdoption struct {
 //     its orphan list and every record replay wrote kept;
 //   - for a walk, whose load publishes each key's last value again and so starts the sequences
 //     over, a bucket with no sentinel is told by each key's last value and the count of its keys,
-//     never by its last_seq (plan v66, createBucketWalkHolds): when each of its keys is one of the
-//     walk's holding the walk's value (or this hold's barrier), it is this recovery's load, adopted
-//     with its sentinel written when it holds every key of the walk, and otherwise, its keys a
-//     subset of the walk's, the leftover of its cut load, deleted and loaded again;
+//     never by its last_seq (plan §2, createBucketWalkHolds): when each of its keys is one of the
+//     walk's holding the walk's value (or a hold's barrier key, createBucketBarrierKey), it is this
+//     recovery's load, adopted with its sentinel written when it holds every key of the walk, and
+//     otherwise, its keys a subset of the walk's, the leftover of its cut load, deleted and loaded
+//     again;
 //   - for a snapshot, a bucket whose stream holds exactly the archive, and since then only this
 //     hold's barrier, is this recovery's restore: adopted, and its sentinel written;
 //   - an empty bucket (no key but the barrier) with no sentinel is, after a non-empty archive, the
@@ -986,7 +986,7 @@ func createBucketArchiveIntact(ctx context.Context, nc *nats.Conn, info *jetstre
 	if s.FirstSeq != archive.FirstSeq || s.Msgs != archive.Msgs+1 || s.LastSeq <= archive.LastSeq || s.LastSeq-archive.LastSeq > createBucketArchiveMaxGap {
 		return false, nil
 	}
-	barrier, found, err := replayLeaderRead(ctx, nc, selection.SessionBucket, "hold.barrier."+holdID)
+	barrier, found, err := replayLeaderRead(ctx, nc, selection.SessionBucket, strictBarrierPrefix+holdID)
 	if err != nil {
 		return false, err
 	}
@@ -1111,12 +1111,7 @@ func (r *run) createBucketMake(ctx context.Context, nc *nats.Conn, js jetstream.
 		made.base, err = createBucketReading(ctx, nc)
 		return made, err
 	}
-	left.unsure = "the bucket, if its unanswered create landed"
-	if _, err := js.CreateKeyValue(ctx, selection.SessionBucketConfig(replicas)); err != nil {
-		return made, fmt.Errorf("create %s: %w", selection.SessionBucket, err)
-	}
-	left.unsure, left.created = "", true
-	if err := createBucketAwaitLeader(ctx, nc); err != nil {
+	if err := createBucketCreate(ctx, nc, js, replicas, left); err != nil {
 		return made, err
 	}
 	if in.format() == createBucketFormatWalk {
@@ -1130,8 +1125,9 @@ func (r *run) createBucketMake(ctx context.Context, nc *nats.Conn, js jetstream.
 // The bounds of a restore's start and of its leftover's wait (plan §3a, "One rerun"): a restore
 // start's transients, 10049 and "no responders", are tried createBucketStartTries times
 // createBucketStartPause apart; a cut restore's leftover is waited for createBucketLeftoverWait on
-// a clustered hub, three times the measured 10 s; a forced reconnect, for createBucketReconnectWait.
-// They are vars so a test may shorten them.
+// a clustered hub, three times the measured 10 s; a forced reconnect, for
+// createBucketReconnectWait; each jsm.go request of a restore, for createBucketRestoreTimeout,
+// which tests shorten. They are vars so a test may shorten them.
 var (
 	createBucketStartTries     = 3
 	createBucketStartPause     = time.Second
@@ -1149,7 +1145,7 @@ var (
 // restored stream whose state is not the archive's stops it too.
 func createBucketRestore(ctx context.Context, nc *nats.Conn, backup *createBucketBackup) error {
 	var runs []error
-	for run := 1; run <= 2; run++ {
+	for attempt := 1; attempt <= 2; attempt++ {
 		if err := createBucketReconnect(ctx, nc); err != nil {
 			return err
 		}
@@ -1160,7 +1156,7 @@ func createBucketRestore(ctx context.Context, nc *nats.Conn, backup *createBucke
 			}
 			return nil
 		}
-		runs = append(runs, fmt.Errorf("run %d: %w", run, err))
+		runs = append(runs, fmt.Errorf("run %d: %w", attempt, err))
 		if !started {
 			// The server refused the start, so it made no stream to leave behind.
 			break
@@ -1316,7 +1312,7 @@ func createBucketAwaitGone(ctx context.Context, read func(context.Context) (bool
 		case err == nil && time.Now().After(deadline):
 			return unknownf(nil, "%s's leftover is still present after its delete", selection.SessionBucket)
 		case err == nil: // still present before deadline: read again
-		case !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, nats.ErrTimeout) && !errors.Is(err, nats.ErrNoResponders):
+		case !noAnswer(err):
 			return err
 		case time.Now().After(deadline):
 			return unknownf(err, "read %s after the delete of its leftover", selection.SessionBucket)
@@ -1325,6 +1321,19 @@ func createBucketAwaitGone(ctx context.Context, read func(context.Context) (bool
 			return err
 		}
 	}
+}
+
+// createBucketCreate creates the absent selection bucket at replicas copies, then waits for its
+// stream's leader (createBucketAwaitLeader), counting the create in left: unsure until the create
+// is answered, created once it is. createBucketCutoverHeld and createBucketMake both create the
+// bucket through it.
+func createBucketCreate(ctx context.Context, nc *nats.Conn, js jetstream.JetStream, replicas int, left *createBucketLeft) error {
+	left.unsure = "the bucket, if its unanswered create landed"
+	if _, err := js.CreateKeyValue(ctx, selection.SessionBucketConfig(replicas)); err != nil {
+		return fmt.Errorf("create %s: %w", selection.SessionBucket, err)
+	}
+	left.unsure, left.created = "", true
+	return createBucketAwaitLeader(ctx, nc)
 }
 
 // createBucketLeaderWait bounds createBucketAwaitLeader.
@@ -1356,8 +1365,8 @@ func createBucketAwaitLeader(ctx context.Context, nc *nats.Conn) error {
 // createBucketFreshWrite runs write, a write to the selection bucket just created, again while it
 // is answered "no responders", within createBucketLeaderWait: on the stack's three servers a put
 // right after the create is answered so, even with the stream's leader named, until the server the
-// connection is on serves the new stream's subjects (a run of 10:28Z, grants5.log:91). A request no
-// stream received wrote nothing, so writing again is safe. Any other answer is write's own.
+// connection is on serves the new stream's subjects. A request no stream received wrote nothing,
+// so writing again is safe. Any other answer is write's own.
 func createBucketFreshWrite(ctx context.Context, write func() error) error {
 	deadline := time.Now().Add(createBucketLeaderWait)
 	for {
