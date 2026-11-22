@@ -73,18 +73,20 @@ that only sometimes reproduces:
 ```go
 edit, _ := database.Pool.Begin(ctx)
 edit.QueryRow(ctx, `select key from issues where key = $1 for update`, issue.Key).Scan(&lockedKey)
-go func() { responses <- dispatchRequest(t, handler, http.MethodPost, ".../answer", ...) }()
-waitForDatabaseLocks(t, database, 1) // poll pg_stat_activity for wait_event_type = 'Lock'
+answerHandler, answerPID := oneConnectionHandler(t, deps) // the answer runs on one backend of its own
+go func() { responses <- dispatchRequest(t, answerHandler, http.MethodPost, ".../answer", ...) }()
+storetest.WaitForQueuedBehind(t, edit, answerPID, responses) // the answer's own backend waits behind edit
 edit.Exec(ctx, `update asks set anchor = anchor where id = $1`, ask.ID) // proves edit tx still owns other rows
 edit.Commit(ctx)
 response := awaitResponse(t, responses) // must now complete 200, not deadlock
 ```
 
-`waitForDatabaseLocks` (`server_test.go:112-129`) polls
-`select count(*) from pg_stat_activity where wait_event_type = 'Lock'` until the concurrent
-request is actually blocked, which is what makes the test deterministic: it never proceeds
-until the handler is provably waiting on the issue lock the other transaction holds, so the
-test would hang and fail (not silently pass) if a future change reintroduced the wrong order.
+`storetest.WaitForQueuedBehind` reads `pg_locks` through the edit's own transaction until the
+answer's backend is queued behind it, directly or behind another waiter, which is what makes the
+test deterministic: it never proceeds until the handler is provably waiting on the issue lock the
+other transaction holds, so the test would hang and fail (not silently pass) if a future change
+reintroduced the wrong order. It watches the answer's backend alone: a count of every waiting
+backend would also count the issue's document settlement, which locks the issue's row too.
 
 ## Why This Works
 

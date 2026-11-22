@@ -1,5 +1,6 @@
 // Package storetest gives each Postgres-backed Dispatch test its own fully migrated database, and
-// waits for backends to queue behind a lock a test holds (WaitForLockWaiters). It is an ordinary
+// waits for the call under test's own backend to queue behind a lock a test holds (QueuedBehind,
+// WaitForQueuedBehind, LockWaitersFrom). It is an ordinary
 // package rather than a _test.go file so every package whose tests need a Dispatch database can
 // import it; Go cannot share test-only code across packages.
 //

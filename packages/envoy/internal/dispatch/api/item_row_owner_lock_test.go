@@ -218,8 +218,8 @@ var itemRowLockTable = []itemRowLockCase{
 // way out. Every route of this module writes its owner's event, and appending an event takes
 // that owner's lock (events.Broker.Append), so a route whose own read went to the pool still
 // stops at the lock - after its insert or update has run, with a transaction id already open.
-// A writer takes its owner's lock in its read phase, before its first write
-// (storetest.OwnerLockWaiters), so a waiter holding a transaction id wrote the row it writes
+// A writer takes its owner's lock in its read phase, before its first write, so a waiter holding a
+// transaction id (storetest.HoldsTransactionID, on the writer's own backend) wrote the row it writes
 // before it locked it, which is the writer the advisory lock does not exclude.
 //
 // A row with a meanwhile gets a third question. The holder, which is the other writer of this

@@ -39,7 +39,8 @@ test, never the fixture that sets the test up.
   create therefore gets a waiter that is not the code under test. If a count is enough for the
   test, keep settlement out of the window with a long `settle` (`api/server_test.go:61-64`), or
   wait until no settlement is owed before taking the lock (`cmd/dispatch/shutdown_test.go:129-130`).
-  `storetest.WaitForLockWaiters` counts every backend behind the holder, so it has this weakness.
+  storetest no longer has a helper that counts every backend behind a holder (see the note of
+  2026-11-22 below).
 - **Fire the early-answer mutant only on the probe call.** Key it on a value that only the call
   under test carries, here the `askID`s `locked-probe` and `locked-project-probe`. A mutant that
   also slows the fixture's own calls changes the fixture's timing, and can hide the weakness it is
@@ -108,3 +109,14 @@ than on its count; a foreign backend queued behind the first write's row, with t
 held past a poll tick, fails the old guard with the main run's own message and passes the new
 one 20 of 20. A counted waiter is right only where the test owns every backend that can wait;
 where the call under test has a connection of its own, watch its pid.
+
+**Note 2026-11-22 (INFRA-3904):** every counted lock wait in `packages/envoy` now names the call
+under test's own backend, and the counting helpers (`storetest.WaitForLockWaiters`, `LockWaiters`,
+`CountLockWaits`, `OwnerLockWaiters`, `AwaitOwnerLockWaiter`, api's `waitForDatabaseLocks`) are
+gone. A call runs on `storetest.OneConnection` and the wait watches its pid (`QueuedBehind`,
+`WaitForQueuedBehind`, `WaitForEachQueuedBehind`; `QueuedBehindBackend` when the holder is a call
+too; `WaitsOnLock` when the holder cannot be named); a call whose pid cannot be known in advance
+is named by its pool's `application_name` (`LockWaitersFrom`, `WaitForLockWaitersFrom`; another
+process by the name on its database URL); a "holding a transaction id" check reads the call's own
+backend (`HoldsTransactionID`). The inbox race rows had failed 2 to 3 in 600 round-0 runs on the
+settlement counted as a third waiter.
