@@ -262,6 +262,17 @@ func (r *Registry) roles() bus.KeyValue {
 	return r.roleKV
 }
 
+// WrapRoleBucket has the registry read and write the role bucket through wrap's handle from here
+// on, until a Rewatch reopens the bucket: the fault seam a test of another package injects a fault
+// into the role bucket's calls with, as bus.NewKeyValue takes one for a handle (wrap is given the
+// handle's own nats.KeyValue, bus.KeyValue.Legacy). Reads from the stream's leader do not go
+// through it. Production never calls it.
+func (r *Registry) WrapRoleBucket(wrap func(nats.KeyValue) nats.KeyValue) {
+	r.kvMu.Lock()
+	defer r.kvMu.Unlock()
+	r.roleKV = bus.NewKeyValue(wrap(r.roleKV.Legacy()), r.roleKV.WatchHandle(), r.roleKV.Streams())
+}
+
 // Rewatch reopens both buckets on conn and replaces the cache's watcher with one there
 // (kvwatch.Watcher.Rewatch). A NATS server restart loses the watcher's ordered consumer, and
 // nats.go replaces it only once it notices the missed heartbeats, up to twenty seconds later;
