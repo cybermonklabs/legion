@@ -35,7 +35,8 @@
 #     it. The command may be named by a path (`/usr/bin/apt-get`) and take options before its
 #     verb, with or without a value (`-y`, `-o Acquire::Retries=3`, `--option=...`, `-c <file>`),
 #     and may be split over lines a backslash continues, which the shell runs as one command: each
-#     `run:` is read with its continued lines joined, for the script calls too;
+#     `run:` is read as bash reads it, with every backslash-newline pair deleted (not replaced by a
+#     space, so `apt-\` then `get update` is `apt-get update`), for the script calls too;
 #   * a composite action under .github/actions that runs either script or apt: an action's step
 #     has no job timeout of its own to hold a budget to;
 #   * no call of either script found at all, which would make every rule above pass over nothing.
@@ -65,13 +66,14 @@ APT = re.compile(
     r"(?:(?:-[oct]|--option|--config-file|--target-release)\s+\S+\s+|-\S+\s+)*"
     r"(?:update|install|upgrade|dist-upgrade|full-upgrade|build-dep|source|download)\b"
 )
-# A backslash at the end of a line, which the shell reads as no break at all.
+# A backslash at the end of a line: bash deletes it and the newline, joining the two lines with
+# nothing between them.
 CONTINUED = re.compile(r"\\\r?\n")
 
 
 def command_text(run):
-    """A `run:` as the shell reads its commands: each line a backslash continues joined to the next."""
-    return CONTINUED.sub(" ", run)
+    """A `run:` as bash reads its commands: each backslash-newline pair deleted."""
+    return CONTINUED.sub("", run)
 
 
 MATRIX = re.compile(r"^\$\{\{\s*matrix\.([A-Za-z0-9_-]+)\s*\}\}$")

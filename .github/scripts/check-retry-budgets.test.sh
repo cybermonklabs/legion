@@ -234,6 +234,30 @@ check "it passes" "$(is "$status" 0)"
 check "reading its 300 s budget" \
   "$(contains "$out" 'ci-job-pi-envoy.yaml job pi-envoy, step Install tmux: apt-install.sh --budget 300, at most half')"
 
+# bash deletes a backslash-newline pair outright, so a line can be continued in the middle of a
+# word. Read with the pair replaced by a space, the first passed and the second was refused (found
+# by the tester of #4584, who also tested the fix).
+echo "case: apt-get split in the middle of its name"
+root=$(fixture raw-apt-midword)
+replace "$root/.github/workflows/ci-job-pi-envoy.yaml" 'run: bun run test' "run: |
+          sudo apt-\\
+          get update
+          bun run test"
+run_check "$root"
+check "it fails" "$(is "$status" 1)"
+check "naming the step, which bash runs as apt-get update" \
+  "$(contains "$out" '^::error file=.github/workflows/ci-job-pi-envoy.yaml::job pi-envoy, step Test: runs apt itself, which no budget bounds')"
+
+echo "control: a budgeted call whose --budget is split in the middle of the word"
+root=$(fixture call-midword)
+replace "$root/.github/workflows/ci-job-pi-envoy.yaml" 'run: .github/scripts/apt-install.sh --budget 300 tmux' "run: |
+          .github/scripts/apt-install.sh --bud\\
+          get 300 tmux"
+run_check "$root"
+check "it passes, as bash reads --budget 300" "$(is "$status" 0)"
+check "reading its 300 s budget" \
+  "$(contains "$out" 'ci-job-pi-envoy.yaml job pi-envoy, step Install tmux: apt-install.sh --budget 300, at most half')"
+
 echo "control: words that name apt but run no apt verb pass, joined or not"
 root=$(fixture apt-words)
 replace "$root/.github/workflows/ci-job-pi-envoy.yaml" 'run: bun run test' "run: |
