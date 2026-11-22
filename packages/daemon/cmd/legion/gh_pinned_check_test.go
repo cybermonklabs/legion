@@ -12,9 +12,9 @@ import (
 )
 
 // ghPinnedCheckPortSHA256 is the sha256 of the public_leak_check.py ghPinnedCheckReads was ported
-// from, leak-check-v31's. TestGhReadsAreProvenAgainstThePinnedCheck fails while it is not
+// from, leak-check-v33's. TestGhReadsAreProvenAgainstThePinnedCheck fails while it is not
 // ghReadsProvenCheck's sha256, so a bump of the pin fails until this port moves with it.
-const ghPinnedCheckPortSHA256 = "b1dc67a3bfc1bebf6347f06c9197a27a72b7c8e593bd370ce571c2eafde3fe7c"
+const ghPinnedCheckPortSHA256 = "2e9049bfe5969e039878ae88d72dbc844a843f2d7a4819124456f3dd6c2dd1c3"
 
 // ghPinnedCheckReads says whether the pinned check, the public_leak_check.py whose sha256 is
 // ghPinnedCheckPortSHA256, reads argv, a gh call's arguments, as a read in its gh_guard: whether
@@ -47,6 +47,19 @@ const ghPinnedCheckPortSHA256 = "b1dc67a3bfc1bebf6347f06c9197a27a72b7c8e593bd370
 // missing or unreadable file an argument names (file_ok), which this never looks for, so
 // `api --input f --input= repos/acme/widgets/pulls` with no file f is a read here. No call these
 // tests count as a read meets any of the five.
+//
+// From leak-check-v33 the check's main() reads the call before gh_guard does. A call of exactly
+// two arguments whose first is a mode word exits 2, as a pre-push hook's call (a remote's name and
+// its URL), and a `--` right after the mode word is taken out. The guard calls `gh-guard --
+// <argv>`, and `gh-guard` alone for a call of no words (leakguard's ghGuard), so neither changes
+// what is read: main() takes out the one `--` it wrote, and gh_guard reads argv exactly, a first
+// word `--` of argv's own among it; a call of no words returns 0 in main() before gh_guard, as
+// leak-check-v31's did, and this reads it as is_read reads an empty first word. The old shapes,
+// `gh-guard WORD` and `gh-guard --`, now exit 2 before gh_guard, a refusal and no lookup. And from
+// leak-check-v31 to leak-check-v33 no definition the read reaches changed: of the ones gh_guard,
+// is_read, READ_ALL, READ_TWO, collect and api_read reach, by name, only LEAK_CODE changed in
+// source, written as two parts whose join is the same pattern, and scan_records and optin_scan,
+// which the scan after the read is decided runs, changed to read a Rocq source file's comments.
 func ghPinnedCheckReads(argv []string) bool {
 	first := ""
 	if len(argv) > 0 {
@@ -412,7 +425,7 @@ func TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead(t *testing.T) {
 			if got.code != 7 {
 				t.Errorf("legion gh %q = exit %d, stderr %q; want gh's own 7", tc.args, got.code, got.stderr)
 			}
-			if want := "checked gh-guard " + strings.Join(tc.args, " ") + "\n"; !strings.HasPrefix(got.checked, want) {
+			if want := ghGuardRun(tc.args); !strings.HasPrefix(got.checked, want) {
 				t.Errorf("the shared check recorded %q, want its run of the call first, %q", got.checked, want)
 			}
 			looked := strings.Contains(got.checked, "lookup acme/widgets\n")

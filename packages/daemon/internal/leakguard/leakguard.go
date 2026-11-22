@@ -211,8 +211,10 @@ type TextRequest struct {
 
 // Text checks a piece of text a write would publish: a pull request's title and body, an issue
 // comment, a release note. The shared check reads it on standard input in its check-public-text
-// shape, and the rule pass then reads the title and the body as two records of their own. Under a
-// deployment that runs no shared check (sharedCheck) the rule pass is the whole of it.
+// shape, `check-public-text -- -`: from leak-check-v33 the check refuses `check-public-text -`,
+// a call of two arguments whose first is a mode word, as a pre-push hook's call (ghGuard), and
+// takes out the `--`. The rule pass then reads the title and the body as two records of their
+// own. Under a deployment that runs no shared check (sharedCheck) the rule pass is the whole of it.
 func (g *Guard) Text(ctx context.Context, req TextRequest) error {
 	const what = "the text"
 	check, err := g.sharedCheck(what)
@@ -222,7 +224,7 @@ func (g *Guard) Text(ctx context.Context, req TextRequest) error {
 	defer check.remove()
 	if check.path != "" {
 		if err := g.shared(ctx, what, child{
-			argv:  []string{check.path, "check-public-text", "-"},
+			argv:  []string{check.path, "check-public-text", "--", "-"},
 			stdin: strings.NewReader(req.Text),
 		}); err != nil {
 			return err

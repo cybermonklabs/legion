@@ -193,6 +193,82 @@ func TestEachEntryPointRefusesWhatTheCheckRefusesAndWhatTheRulesMatch(t *testing
 	}
 }
 
+// takesV33CallForms is a stand-in shared check that takes a call as leak-check-v33's main() does
+// (its README.md, "Modes"): a call of exactly two arguments whose first is a mode word is refused
+// with exit 2, since that is how a pre-push hook calls the check, with a remote's name and its URL.
+// Every other call it clears. Under Recording it records each call first.
+const takesV33CallForms = `case "$1" in
+check-public-text | --commits | --tree | gh-guard | --help | -h)
+	if [ "$#" -eq 2 ]; then
+		echo 'LEAK CHECK ERROR: a call of two arguments is how a pre-push hook calls this check'
+		exit 2
+	fi
+	;;
+esac
+` + passes
+
+// Each entry point calls the shared check in a form leak-check-v33 takes, and no other: a gh call
+// runs `gh-guard -- <its words>`, one of a single word and one whose own first word is `--` among
+// them, a gh call of no words runs `gh-guard` alone, the text runs `check-public-text -- -`, and a
+// push runs the hook's two arguments, the remote and its URL, as git hands them. The stand-in
+// refuses a call of two arguments whose first is a mode word, as that check does, so a form it
+// would refuse fails here as a setup failure, and each call it records is the whole of what the
+// guard handed it.
+func TestEachEntryPointCallsTheSharedCheckInAFormItTakes(t *testing.T) {
+	const url = "https://github.com/invented-org/invented-repo.git"
+	gh := func(args ...string) func(context.Context, *Guard) error {
+		return func(ctx context.Context, guard *Guard) error {
+			_, err := guard.GhCall(ctx, GhRequest{Args: args, Repo: "invented-org/invented-repo"})
+			return err
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		call func(context.Context, *Guard) error
+		want string
+	}{
+		{name: "a gh call", call: gh("pr", "view", "1"), want: "checked gh-guard -- pr view 1\n"},
+		{name: "a gh call of one word", call: gh("status"), want: "checked gh-guard -- status\n"},
+		{name: "a gh call whose first word is --", call: gh("--", "pr"), want: "checked gh-guard -- -- pr\n"},
+		{name: "a gh call of no words", call: gh(), want: "checked gh-guard\n"},
+		{
+			name: "the text",
+			call: func(ctx context.Context, guard *Guard) error {
+				return guard.Text(ctx, TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n\na clean body\n"})
+			},
+			want: "checked check-public-text -- -\n",
+		},
+		{
+			name: "a push",
+			call: func(ctx context.Context, guard *Guard) error {
+				return guard.Push(ctx, PushRequest{
+					Dir:     t.TempDir(),
+					Remote:  "origin",
+					URL:     url,
+					Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: noSHA, RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
+				})
+			},
+			want: "checked origin " + url + "\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			record := filepath.Join(t.TempDir(), "record")
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), leakguardtest.Recording(takesV33CallForms)), Public,
+				"LEAK_CHECK_RECORD="+record)
+			if err := tc.call(bound(t), guard); err != nil {
+				t.Fatalf("a clean write under a check that takes leak-check-v33's call forms: %v", err)
+			}
+			got, err := os.ReadFile(record)
+			if err != nil {
+				t.Fatalf("the shared check did not run: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("the shared check recorded %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // The gh shape's second ask: the stand-in exits 4 to say the call reads standard input, the guard
 // buffers that input to a regular file it hands over as a descriptor, the stand-in reads the file
 // twice over, and the caller gets the bytes back to hand gh in its place.
