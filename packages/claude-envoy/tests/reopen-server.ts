@@ -303,8 +303,14 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
       PROCESS_WAIT_MS,
     )
     if (options.awaitRegistration !== false) {
+      // A server that printed its first line and then ended is named with its end at once too.
       await waitFor(
-        async () => deliveries.length > 0 && relaySubscriptions() === 1,
+        async () => {
+          if (deliveries.length > 0 && relaySubscriptions() === 1) return true
+          if (server.exitCode === null && server.signalCode === null) return false
+          await stderrEnded
+          throw new Error(`the server ended before its first registration: ${state()}`)
+        },
         "the session's first registration and its relay subscription",
         state,
         PROCESS_WAIT_MS,

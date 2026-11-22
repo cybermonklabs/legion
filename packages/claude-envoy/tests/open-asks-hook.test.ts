@@ -2,6 +2,7 @@ import { beforeEach, expect, test } from "bun:test"
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { COMMAND_TIMEOUT_MS } from "@legion/envoy-client/envoy-config"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { JJ_BASE_CHAIN_TIMEOUT_MS, OPEN_ASKS_TIMEOUT_MS } from "../hooks/open-asks-bounds"
 import { collected, exitBeforeTheGuard, rowStarted } from "./row-deadline"
@@ -889,15 +890,20 @@ test("single-quotes the chain, so a shell sourcing the file reads a state direct
 
 // Attribution is worth nothing the session's own start: a jj that never answers costs the pane the
 // export, and neither the two lines the `dispatch` command needs nor the summary. This jj answers,
-// but only 30 s on, ten times the hook's wait for it (`JJ_BASE_CHAIN_TIMEOUT_MS`): a hook that
-// waited for it would write its chain into the overlay and the env file, and what the files hold
-// decides the row, not how long the hook took.
+// but only at four times the hook's wait for it (`JJ_BASE_CHAIN_TIMEOUT_MS`, 12 s), inside the
+// row's guard: a hook that waits on jj past its bound, by any path, writes its chain into the
+// overlay and the env file, and what the files hold decides the row, not how long the hook took.
+// How long that bound may be is the row below's.
 test("gives up on a jj that never answers, keeping the other exports and the summary", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-jj-hangs-"))
   const stateDir = join(scratch, "state")
   await mkdir(stateDir)
   const late = join(scratch, "jj-user.toml")
-  const bin = await jjDirectory(scratch, `sleep 30; printf '%s\\n' ${JSON.stringify(late)}`)
+  const answersAfter = (4 * JJ_BASE_CHAIN_TIMEOUT_MS) / 1000
+  const bin = await jjDirectory(
+    scratch,
+    `sleep ${answersAfter}; printf '%s\\n' ${JSON.stringify(late)}`,
+  )
   const envFile = join(scratch, "session-env.sh")
   const server = openAsksServer()
   try {
@@ -979,12 +985,19 @@ test("keeps the session's own export when a later run of the same id has no jj t
   }
 }, 60_000)
 
+/** What the row below leaves for Bun to start the hook before its first wait. A start of
+ *  hooks/session-hook.ts in an empty HOME took 186 to 450 ms (median 293 ms) with the cache
+ *  written, and 141 to 274 ms without it, in 9 runs each at a load of about 600 (2026-11-22): this
+ *  is four times the slowest, rounded up. */
+const HOOK_START_ALLOWANCE_MS = 2_000
+
 // Claude Code kills the open-asks hook at the timeout hooks.json gives it, and the session then
-// loses its exports and its summary. The hook runs its jj wait and its Dispatch read one after the
-// other, so their bounds must end inside that timeout together: a fact of the two constants and
-// the file, which no clock of this machine's could show. The jj rows above hold only that the
-// hook gives up; this row holds when.
-test("the hook's jj and Dispatch bounds end inside the timeout hooks.json gives open-asks", async () => {
+// loses its exports and its summary. After Bun's start-up the hook runs three waits one after the
+// other: jj's config chain, the resolution of Dispatch (a `!` dispatch.token command runs for up
+// to `COMMAND_TIMEOUT_MS`), and the Dispatch read. Their bounds and the start-up must end inside
+// that timeout together: a fact of the constants and the file, which no clock of this machine's
+// could show. The jj rows above hold only that the hook gives up; this row holds when.
+test("the hook's start-up and its jj, token command and Dispatch bounds end inside the timeout hooks.json gives open-asks", async () => {
   const config = JSON.parse(
     await readFile(resolve(import.meta.dir, "..", "hooks", "hooks.json"), "utf8"),
   ) as { hooks: Record<string, { hooks: { args?: string[]; timeout?: number }[] }[]> }
@@ -994,5 +1007,12 @@ test("the hook's jj and Dispatch bounds end inside the timeout hooks.json gives 
     .filter((hook) => hook.args?.at(-1) === "open-asks")
     .map((hook) => hook.timeout)
   expect(timeouts).toHaveLength(1)
-  expect(JJ_BASE_CHAIN_TIMEOUT_MS + OPEN_ASKS_TIMEOUT_MS).toBeLessThan((timeouts[0] ?? 0) * 1000)
+  const spent = {
+    startUp: HOOK_START_ALLOWANCE_MS,
+    jj: JJ_BASE_CHAIN_TIMEOUT_MS,
+    tokenCommand: COMMAND_TIMEOUT_MS,
+    dispatchRead: OPEN_ASKS_TIMEOUT_MS,
+  }
+  const total = Object.values(spent).reduce((sum, ms) => sum + ms, 0)
+  expect(total, JSON.stringify(spent)).toBeLessThan((timeouts[0] ?? 0) * 1000)
 })

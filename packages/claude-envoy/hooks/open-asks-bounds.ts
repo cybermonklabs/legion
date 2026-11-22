@@ -1,10 +1,12 @@
 /**
- * The open-asks hook's two waits, which it runs one after the other: jj's own user config chain
- * for the pane's attribution overlay, then the Dispatch read of the session's open asks. Claude
- * Code kills the hook at the `timeout` hooks.json gives `open-asks`, and the session then loses its
- * exports and its summary, so the two must end inside it: tests/open-asks-hook.test.ts holds their
- * sum below that timeout. A module of its own so that the test can import them: session-hook.ts
- * runs the hook when it is loaded.
+ * Two of the open-asks hook's three waits, which it runs one after the other: jj's own user config
+ * chain for the pane's attribution overlay; then the resolution of Dispatch, which may run a `!`
+ * dispatch.token command for up to envoy-client's `COMMAND_TIMEOUT_MS` (10 s); then the Dispatch
+ * read of the session's open asks. Claude Code kills the hook at the `timeout` hooks.json gives
+ * `open-asks`, and the session then loses its exports and its summary, so the three, after Bun's
+ * start-up, must end inside it: tests/open-asks-hook.test.ts holds their sum and a start-up
+ * allowance below that timeout. A module of its own so that the test can import them:
+ * session-hook.ts runs the hook when it is loaded.
  */
 
 /** The bound on resolving jj's own user config chain for the overlay. Not

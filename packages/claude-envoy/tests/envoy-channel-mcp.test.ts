@@ -11,6 +11,7 @@ import { modSocketPath } from "../hooks/mod-protocol"
 import { waitFor } from "./channel-session-harness"
 import { startFakeMod } from "./fake-mod"
 import { FakeNatsServer } from "./fake-nats-server"
+import { connectedToServer } from "./mcp-connect"
 import { natsGate } from "./nats-gate"
 import { PROCESS_WAIT_MS, ROW_TIMEOUT_MS } from "./reopen-server"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
@@ -50,11 +51,12 @@ test("a session home's mod socket fits however deep TMPDIR is", async () => {
 })
 
 // Each row below starts a channel server of its own, with Bun's transpiler cache off
-// (`./transpiler-cache.ts`), and waits for what that server does, each wait with
-// `PROCESS_WAIT_MS` as its last resort, so a step that never comes fails naming itself before the
-// row's `ROW_TIMEOUT_MS` does. The first two rows had 5 s waits and a 20 s limit, and at loads of
-// 720 to 1,150 the first row's server, writing that cache into its empty HOME, had not started
-// within them.
+// (`./transpiler-cache.ts`), and waits for what that server does: its answer to `initialize`
+// (`connectedToServer`) and each later step with `PROCESS_WAIT_MS` as the wait's last resort, so a
+// step that never comes fails naming itself before the row's `ROW_TIMEOUT_MS` does (the later rows'
+// own connects are still bounded by the MCP SDK's 60 s). The first two rows had 5 s waits and a
+// 20 s limit, and at loads of 720 to 1,150 the first row's server, writing that cache into its
+// empty HOME, had not started within them.
 
 // What Claude Code sees over MCP, with Dispatch configured: the Envoy tools and nothing else, since
 // agents reach Dispatch through the `dispatch` command the plugin's bin/ puts on the Bash tool's
@@ -127,7 +129,7 @@ test(
     })
 
     try {
-      await client.connect(transport)
+      await connectedToServer(client, transport, () => stderr)
       // The server answers tool calls only once its channel session has started.
       await waitFor(
         () =>
@@ -239,7 +241,7 @@ test(
     })
 
     try {
-      await client.connect(transport)
+      await connectedToServer(client, transport, () => stderr)
       await waitFor(
         () =>
           client.callTool({ name: "envoy_whoami", arguments: {} }).then(
