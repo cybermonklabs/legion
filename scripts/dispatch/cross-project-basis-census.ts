@@ -603,7 +603,8 @@ async function lastEventId(config: DispatchConfig): Promise<number> {
  * through its last when the read began, with each event filtered by its time. Dispatch stamps an
  * event with its transaction's start, and a transaction that started earlier can append later
  * (`events.Broker.Append`), so ids and times are not in one order: no event's time says where the
- * window's other events lie.
+ * window's other events lie. A page that comes back empty before that last event leaves events of
+ * the log unread, so the read is refused rather than answered as the whole log.
  */
 async function readWindow(config: DispatchConfig, from: string, to: string): Promise<LogEvent[]> {
   const fromTime = date(from, "--from");
@@ -616,8 +617,11 @@ async function readWindow(config: DispatchConfig, from: string, to: string): Pro
       `/api/v1/events/log?after=${after}&limit=${EVENT_LOG_PAGE}`
     );
     const last = page.at(-1);
-    // No event lies after `after` any longer: nothing the read began with is left.
-    if (last === undefined) break;
+    if (last === undefined) {
+      throw new Error(
+        `GET /api/v1/events/log returned no event after ${after}, though the log reached event ${end} when the read began`
+      );
+    }
     if (last.id <= after) throw new Error(`GET /api/v1/events/log returned no id after ${after}`);
     events.push(...page.filter((event) => event.id <= end && inWindow(event, fromTime, toTime)));
     after = last.id;

@@ -450,6 +450,32 @@ describe("the census command", () => {
     ]);
   });
 
+  test("a page that comes back empty before the log's last event refuses the read rather than answering part of the log", async () => {
+    // The log reaches event 8 when the read begins, and its page reads answer nothing past 3: the
+    // events after it, the opening among them, are not read, so the census has no whole log.
+    const log = [...[1, 2, 3].map((id) => filler(id, 1)), openingAt(4), ...[5, 6, 7, 8].map((id) => filler(id, 5))];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        const url = new URL(request.url);
+        const after = Number(url.searchParams.get("after") ?? "0");
+        const limit = Number(url.searchParams.get("limit") ?? "1000");
+        if (url.pathname !== "/api/v1/events/log") return new Response("not found", { status: 404 });
+        const page = log.filter((each) => each.id > after);
+        return Response.json(limit === 1 ? page.slice(0, 1) : page.filter((each) => each.id <= 3).slice(0, 2));
+      },
+    });
+    servers.push(server);
+    const run = await spawnCensus(
+      ["--project", "LEGION", "--from", minute(4), "--to", minute(10), "--json"],
+      { DISPATCH_URL: `http://127.0.0.1:${server.port}`, DISPATCH_TOKEN: "token" }
+    );
+    expect(run.stderr).toContain("GET /api/v1/events/log returned no event after 3, though the log reached event 8 when the read began");
+    expect(run.exitCode).toBe(1);
+    expect(run.stdout).toBe("");
+  });
+
   test("prints a table of each list without --json", async () => {
     const run = await spawnCensus([
       "--events-file",
