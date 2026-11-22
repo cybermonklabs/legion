@@ -106,13 +106,14 @@ func Main(m *testing.M) int { return Run(m.Run) }
 // The drops are bounded (teardownDeadline), as internal/dispatch/store/storetest's teardown is,
 // because a drop can wait for a reason outside this process: DROP DATABASE waits until every
 // backend of the server, in any database, has accepted the barrier it raises (wait event
-// IPC/ProcSignalBarrier), and neither a statement timeout nor a cancel request ends that wait, so
-// a backend that cannot run holds every drop on the server for as long as it cannot. The binary's
-// own -timeout alarm stops when run returns, and cmd/go kills the binary a minute past it. A drop
-// still waiting at the bound is left to the server: Run stops waiting, names the database and
-// what its drop waits on (waitingOn), so a database the server keeps can be dropped by hand, and
-// keeps the tests' exit code, since every test has reported by then and the wait is another
-// backend's.
+// IPC/ProcSignalBarrier), and a statement timeout does not end that wait (storetest measured it on
+// PostgreSQL 18.6), so a backend that cannot run holds every drop on the server for as long as it
+// cannot. The binary's own -timeout alarm stops when run returns, and cmd/go kills the binary a
+// minute past it. A drop still waiting at the bound is left to the server, which finishes it once
+// the backend it waits on accepts the barrier: Run reads what the drop waits on while it still
+// waits (waitingOn), names the database and that read, so a database the server keeps can be
+// dropped by hand, stops waiting, and keeps the tests' exit code, since every test has reported by
+// then and the wait is another backend's.
 func Run(run func() int) int {
 	processDatabases.mu.Lock()
 	processDatabases.main = true
@@ -130,28 +131,23 @@ func Run(run func() int) int {
 	if len(made) == 0 {
 		return code
 	}
-	ctx, cancel := context.WithDeadline(context.Background(), teardownDeadline(started))
-	defer cancel()
 	type drop struct {
 		database *processDatabase
 		err      error
 	}
 	done := make(chan drop, len(made))
-	for _, database := range made {
-		go func() {
-			done <- drop{database, execOnContext(ctx, database.adminURL, database.host, database.dropStatement())}
-		}()
-	}
 	pending := make(map[*processDatabase]bool, len(made))
 	for _, database := range made {
 		pending[database] = true
+		go func() {
+			done <- drop{database, execOn(database.adminURL, database.host, database.dropStatement())}
+		}()
 	}
+	bound := time.NewTimer(time.Until(teardownDeadline(started)))
+	defer bound.Stop()
 	for len(pending) > 0 {
 		select {
 		case result := <-done:
-			if result.err != nil && ctx.Err() != nil {
-				continue // the bound came first; the case below names it
-			}
 			delete(pending, result.database)
 			if result.err != nil {
 				fmt.Fprintf(os.Stderr, "testdb: %v\n", result.err)
@@ -159,7 +155,9 @@ func Run(run func() int) int {
 					code = 1
 				}
 			}
-		case <-ctx.Done():
+		case <-bound.C:
+			// The drops still in flight keep their connections; the process ends with them, and
+			// the server goes on with each drop.
 			for database := range pending {
 				fmt.Fprintf(os.Stderr, "testdb: drop database %s on %s: still waiting at the teardown's bound, %s after the tests began, so the drop is left to the server: %s\n",
 					database.name, database.host, time.Since(started).Round(time.Second), waitingOn(database.adminURL, database.dropStatement()))
