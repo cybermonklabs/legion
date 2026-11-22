@@ -562,11 +562,12 @@ func (r *specGateRig) ending(key, head string) specGateEnding {
 
 // specGateChangeRequest is Dispatch's read of an issue's change request.
 type specGateChangeRequest struct {
-	Version       int  `json:"version"`
-	SpecSource    bool `json:"spec_source"`
-	Proposes      bool `json:"proposes"`
-	ChangesChecks bool `json:"changes_checks"`
-	Conclusion    *struct {
+	Version             int  `json:"version"`
+	VerificationVersion int  `json:"verification_version"`
+	SpecSource          bool `json:"spec_source"`
+	Proposes            bool `json:"proposes"`
+	ChangesChecks       bool `json:"changes_checks"`
+	Conclusion          *struct {
 		Block   string `json:"block"`
 		Answers []struct {
 			Body string `json:"body"`
@@ -1073,11 +1074,16 @@ func TestGateScope(t *testing.T) {
 
 // TestNoStatementLandsWithNoPerson is R23's operational change: an issue that proposes nothing
 // ends in a conclusion that says no statement applies, the reviewer's final list is recorded empty
-// for its head, and it lands with no person at any step.
+// for its head, and it lands with no person at any step. A second such issue holds an ordinary
+// acceptance check, one that names no statement: a check of the issue's own, no part of its change
+// request, so it too starts with no person.
 func TestNoStatementLandsWithNoPerson(t *testing.T) {
 	cache := specGateFixture{title: "Cache the dashboard query", repo: liveRepo, legion: true,
 		spec: "The dashboard query is cached for one minute.\n"}
-	r := newSpecGateRig(t, cache)
+	export := specGateFixture{title: "Export names its file", repo: liveRepo, legion: true,
+		spec:   "The export writes one file and names it in its log.\n",
+		checks: ":::check{#c-export-names surface=\"cli\" run=\"go test ./...\"}\nThe export's log names the file it wrote.\n:::\n"}
+	r := newSpecGateRig(t, cache, export)
 	key := r.issues[cache.title].key
 	if status, body := r.register(key, 1); status != http.StatusOK {
 		t.Fatalf("the registration of %s = %d %s, want 200", key, status, body)
@@ -1098,6 +1104,18 @@ func TestNoStatementLandsWithNoPerson(t *testing.T) {
 	if gate, _ := r.gate(key); gate.ApprovedVersion != nil {
 		t.Fatalf("the gate of %s records a person's approval %+v; the change landed with no person", key, gate)
 	}
+
+	exportKey := r.issues[export.title].key
+	if read := r.changeRequest(exportKey); read.VerificationVersion < 1 || read.Proposes || read.ChangesChecks {
+		t.Fatalf("the change request of %s, which holds only an acceptance check that names no statement, reads %+v; "+
+			"want its Verification document read and no proposal and no changed check", exportKey, read)
+	}
+	if status, body := r.register(exportKey, 1); status != http.StatusOK {
+		t.Fatalf("the registration of %s = %d %s, want 200", exportKey, status, body)
+	}
+	r.requireExempt(exportKey, "an operational change that holds its own acceptance check")
+	r.on(exportKey)
+	r.waitPhase(phase.Planning)
 }
 
 // TestUncoveredBehaviorWaits is R26 before the first version is complete: an outcome that no
