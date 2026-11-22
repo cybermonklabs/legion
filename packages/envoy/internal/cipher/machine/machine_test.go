@@ -433,11 +433,18 @@ func TestAServiceDeviceCodeLoginIsRefused(t *testing.T) {
 // opened one, naming approver, and returns its id, its code and the machine's key.
 func insertServiceRecord(t *testing.T, svc *Service, approver string) (recordID, code string, machineKey *ecdsa.PrivateKey) {
 	t.Helper()
+	return insertServiceRecordFor(t, svc, approver, testAudience)
+}
+
+// insertServiceRecordFor is insertServiceRecord for a request object whose aud is audience: the
+// broker's address, or another spelling of its origin, such as one with a trailing slash.
+func insertServiceRecordFor(t *testing.T, svc *Service, approver, audience string) (recordID, code string, machineKey *ecdsa.PrivateKey) {
+	t.Helper()
 	machineKey, err := proof.NewKey()
 	if err != nil {
 		t.Fatal(err)
 	}
-	compact, err := record.Sign(machineKey, testAudience, []record.AuthorizationDetail{
+	compact, err := record.Sign(machineKey, audience, []record.AuthorizationDetail{
 		{Type: "launcher_credential", Identifier: "cluster", Service: "legion-daemon"},
 	}, "", "", nil, time.Now())
 	if err != nil {
