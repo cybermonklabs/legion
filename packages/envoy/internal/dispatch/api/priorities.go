@@ -124,6 +124,18 @@ func priorityFrom(node prioritystore.Node) model.Priority {
 	}
 }
 
+// priorityAnswer is a write's own answer: the priority it wrote, with the tree of its description
+// for a caller that sent `Dispatch-Trees: 1`, read where it stands (shapeBuilt) as a comment's
+// write answers the tree of its body. The handler builds it before it stores the description's
+// tree, so the store finds that reading in the process's cache rather than reading the
+// description again.
+func priorityAnswer(priority model.Priority, trees bool) model.Priority {
+	shapeBuilt(trees, func(reader *displayTreeReader) {
+		reader.text(&priority.DescriptionTree, priority.Description)
+	})
+	return priority
+}
+
 // listPriorities is GET /api/v1/priorities: every live priority in rank order, the work that
 // advances each, and the two faults — work in flight under no priority, and priority work parked
 // in `backlog` or `icebox`. The reads are priority_queries.go's, which says what each one costs.
@@ -137,6 +149,9 @@ func priorityFrom(node prioritystore.Node) model.Priority {
 // A store holding no live priority is answered 200 with the empty list and the sentence saying
 // why (priorityNoneWritten): a deployment that has written no priority yet has nothing to list
 // and nothing has gone wrong.
+//
+// Every description carries its display tree for a caller that sent `Dispatch-Trees: 1`, read
+// as a comment list reads its bodies' (displayTreeReader), so the page parses no description.
 func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -153,6 +168,13 @@ func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The list is final here, so every field registered stands where resolve fills it.
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	for index := range body.Priorities {
+		row := &body.Priorities[index]
+		reader.text(&row.DescriptionTree, row.Description)
+	}
+	reader.resolve()
 	WriteJSON(w, http.StatusOK, body)
 }
 
@@ -167,7 +189,9 @@ type createPriorityInput struct {
 	// contracts.IssueTitleMax UTF-16 units, as an issue title is (refusePriorityTitle).
 	Title string `json:"title" required:"true"`
 	// Description is markdown of any length: nothing bounds it, as nothing bounds the text of
-	// any other node, and a reader who wants a sentence reads its first line.
+	// any other node, and a reader who wants a sentence reads its first line. A reader is shown
+	// the tree the server reads it into (model.Priority.DescriptionTree), which holds marks
+	// nested past pmdoc's bound as text, so no reader's browser parses the markdown itself.
 	Description string `json:"description"`
 	// Owner is who holds the priority, written as the person who wrote it wrote it.
 	Owner string       `json:"owner"`
@@ -249,7 +273,7 @@ func (s *server) createPriority(w http.ResponseWriter, r *http.Request) {
 	// The row the create wrote, built from what it wrote rather than read back: Create writes
 	// the state live, the time and the writer this handler handed it, and nothing else touches
 	// the row inside that transaction.
-	WriteJSON(w, http.StatusCreated, model.Priority{
+	answer := priorityAnswer(model.Priority{
 		ID:          id,
 		Title:       input.Title,
 		Description: input.Description,
@@ -258,7 +282,9 @@ func (s *server) createPriority(w http.ResponseWriter, r *http.Request) {
 		State:       prioritystore.StateLive,
 		MadeAt:      at,
 		MadeBy:      actor,
-	})
+	}, wantsDisplayTrees(r))
+	s.storeDisplayTrees(r.Context(), id, input.Description)
+	WriteJSON(w, http.StatusCreated, answer)
 }
 
 // patchPriorityInput is the body of PATCH /api/v1/priorities/{id}. Each field is a pointer, so a
@@ -367,7 +393,11 @@ func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.publish(r.Context(), event)
-	WriteJSON(w, http.StatusOK, priorityFrom(node))
+	answer := priorityAnswer(priorityFrom(node), wantsDisplayTrees(r))
+	if input.Description != nil {
+		s.storeDisplayTrees(r.Context(), id, *input.Description)
+	}
+	WriteJSON(w, http.StatusOK, answer)
 }
 
 // deletePriority is DELETE /api/v1/priorities/{id}: the state `gone`, and no row removed. The

@@ -261,6 +261,14 @@ const publishDeniedPrefix = "envoy: the message bus denied the publish under thi
 // room.
 const streamFullPrefix = "envoy: the message bus refused the message because its stream is full"
 
+// earlierAttemptInProcessPrefix opens the body of the 503 a send or publish gets when its request
+// ended while the stream was still storing an earlier publish under the same message id
+// (errEarlierAttemptInProcess): an earlier attempt of the same message, this sender's or another
+// listener's. It is deliberately not busUnansweredPrefix: the bus answered, that the earlier
+// attempt is in process, and the stream may store it yet, so the answer carries
+// listenerwire.CodeMaybeStored and the sender reads it as a send that may have landed.
+const earlierAttemptInProcessPrefix = "envoy: an earlier attempt of this message is still being stored"
+
 // grantGuardPrefix opens the error of the answer POST /v1/roles/set gives a soft claim the grant
 // guard refused (roleGrantGuarded): a role held under the claimant's own session id whose renewal
 // is older than the live window, while the role claim copy's last whole read is past its repair
@@ -306,18 +314,24 @@ const grantGuardPrefix = "envoy: the role grant guard refused the claim because 
 // A publish that may have stored its message (mayHaveStored) is the 503 with
 // listenerwire.CodeMaybeStored, whichever answer ended it - a full stream's, or a refusal of the
 // resend after a send nothing answered - so a sender treats it as a send that may have landed
-// rather than one that stored nothing.
+// rather than one that stored nothing. So is a publish whose request ended while an earlier
+// publish under its message id was still in process (earlierAttemptInProcess), under
+// earlierAttemptInProcessPrefix unless the stream also said it is full: the stream may still store
+// that earlier attempt.
 func writeBusUnavailable(w http.ResponseWriter, err error) int {
 	if errors.Is(err, bus.ErrPublishDenied) {
 		writeJSONError(w, http.StatusForbidden, fmt.Sprintf("%s: %s", publishDeniedPrefix, err))
 		return http.StatusForbidden
 	}
-	stored, full := mayHaveStored(err), errors.Is(err, bus.ErrStreamFull)
+	stored, full, inProcess := mayHaveStored(err), errors.Is(err, bus.ErrStreamFull), earlierAttemptInProcess(err)
 	prefix := busUnansweredPrefix
-	if full {
+	switch {
+	case full:
 		prefix = streamFullPrefix
+	case inProcess:
+		prefix = earlierAttemptInProcessPrefix
 	}
-	if !stored && !full {
+	if !stored && !full && !inProcess {
 		if !errors.Is(err, bus.ErrRefused) {
 			w.Header().Set("Retry-After", "1")
 		}
@@ -325,7 +339,7 @@ func writeBusUnavailable(w http.ResponseWriter, err error) int {
 	}
 	w.Header().Set("Retry-After", "1")
 	answer := listenerwire.APIError{Error: fmt.Sprintf("%s: %s", prefix, err)}
-	if stored {
+	if stored || inProcess {
 		answer.Code = listenerwire.CodeMaybeStored
 	}
 	writeJSON(w, http.StatusServiceUnavailable, answer)
@@ -849,7 +863,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusConflict, outcomeSessionStopped, "the session is stopped")
 			return
 		}
-		ack, err := d.client.PublishAckWithin(ctx, item)
+		ack, err := publishPastInProcess(ctx, func() (bus.StoredAck, error) { return d.client.PublishAckWithin(ctx, item) })
 		charge.published(ack, err)
 		if err != nil {
 			record.refuseBusUnavailable(w, err)
@@ -1212,15 +1226,22 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			// The lane names its role in either form while every reader takes both: its project
 			// and then the role, or the role alone. A claim is keyed by the bare role name
 			// whichever form claimed it (store.Registry.ClaimedRole), so the role this send
-			// resolves is the name CanonicalRole reads, never the lane's tokens as they stand.
-			_, role, _ := contracts.CanonicalRole(lane)
+			// resolves is the name CanonicalRole reads, never the lane's tokens as they stand. A
+			// lane naming a valid role in the old form is counted and named back in the answer's
+			// warnings with its new form (store.Registry.ReadRole): this publisher is one the old
+			// form's refusal would stop.
+			role, roleWarning := d.registry.ReadRole(lane, roles.Valid)
+			var warnings []string
+			if roleWarning != "" {
+				warnings = []string{roleWarning}
+			}
 			ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(publishDeliveryWindow))
 			defer cancel()
 			// The request's keep flag is read here and nowhere else: it belongs to this route's
 			// give-up (roleSend.noHolder) rather than to the envelope, which travels on to the
 			// holder and back in this route's own answer. No flag at all means keep, so every
 			// publisher that sets none is unchanged.
-			sendToRole(ctx, w, record, d, item, expectsReply, role, request.Keep == nil || *request.Keep, arrived)
+			sendToRole(ctx, w, record, d, item, expectsReply, role, request.Keep == nil || *request.Keep, arrived, warnings)
 			return
 		}
 		// The counts are of the moment the message is published, and are read from memory alone
@@ -1234,7 +1255,7 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(sendRequestBudget))
 		defer cancel()
 		item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
-		ack, err := d.client.PublishAckWithin(ctx, item)
+		ack, err := publishPastInProcess(ctx, func() (bus.StoredAck, error) { return d.client.PublishAckWithin(ctx, item) })
 		charge.published(ack, err)
 		if err != nil {
 			record.refuseBusUnavailable(w, err)
@@ -2275,8 +2296,10 @@ func roleGetHandler(d *listenerDeps) http.HandlerFunc {
 		}
 		// The path names the role in either form, its project first or its name alone, and a
 		// claim is keyed by the bare name either way (store.Registry.ClaimedRole), so the holder
-		// is read under that name.
-		_, role, _ := contracts.CanonicalRole(name)
+		// is read under that name. A path naming a valid role in the old form is counted
+		// (store.Registry.ReadRole): a caller that looks a role up by its name alone is still on
+		// the old form, though this answer, a holder's record, carries no warning of it.
+		role, _ := d.registry.ReadRole(name, roles.Valid)
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
 		result, err := roles.ResolveHolder(ctx, d.registry, roleHolderSessions{d.sessions}, role)

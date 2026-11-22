@@ -11,6 +11,7 @@ import { join, resolve } from "node:path"
 import { natsConnectionOptions } from "@legion/envoy-client/nats-connection"
 import type { Subprocess } from "bun"
 import { resolveModSocketPath } from "../hooks/mod-protocol"
+import { fakeHost } from "./fake-nats-server"
 
 const require = createRequire(import.meta.url)
 const NATS_PROTOCOL = require.resolve("nats/lib/nats-base-client/protocol.js")
@@ -64,8 +65,9 @@ afterEach(async () => {
 /** A NATS server that refuses every client: the INFO asking for a credential, then nats-server's
  * own refusal of the CONNECT, which is what a hub's auth service answers a token it does not admit. */
 function refusingHub(): string {
+  const host = fakeHost("127.86.1.1")
   const server = Bun.listen({
-    hostname: "127.0.0.1",
+    hostname: host,
     port: 0,
     socket: {
       open(socket) {
@@ -74,7 +76,7 @@ function refusingHub(): string {
           server_name: "refusing-hub",
           version: "2.10.22",
           proto: 1,
-          host: "127.0.0.1",
+          host,
           port: 0,
           headers: true,
           auth_required: true,
@@ -92,7 +94,7 @@ function refusingHub(): string {
     },
   })
   cleanups.push(() => server.stop(true))
-  return `nats://127.0.0.1:${server.port}`
+  return `nats://${host}:${server.port}`
 }
 
 /** A NATS server that admits a client with no credential, answers the first PING (which a client's
@@ -100,8 +102,9 @@ function refusingHub(): string {
  * a path to the hub that dropped after admitting the session. `pings()` counts the PINGs seen. */
 function silentHub(): { url: string; pings(): number } {
   let pings = 0
+  const host = fakeHost("127.86.1.2")
   const server = Bun.listen({
-    hostname: "127.0.0.1",
+    hostname: host,
     port: 0,
     socket: {
       open(socket) {
@@ -110,7 +113,7 @@ function silentHub(): { url: string; pings(): number } {
           server_name: "silent-hub",
           version: "2.10.22",
           proto: 1,
-          host: "127.0.0.1",
+          host,
           port: 0,
           headers: true,
           max_payload: 1_048_576,
@@ -127,15 +130,16 @@ function silentHub(): { url: string; pings(): number } {
     },
   })
   cleanups.push(() => server.stop(true))
-  return { url: `nats://127.0.0.1:${server.port}`, pings: () => pings }
+  return { url: `nats://${host}:${server.port}`, pings: () => pings }
 }
 
 /** A NATS server that takes the connection and never sends its INFO, so a client's dial waits on
  *  it until the dial's timeout. `connections()` counts the clients that reached it. */
 function muteHub(): { url: string; connections(): number } {
   let connections = 0
+  const host = fakeHost("127.86.1.3")
   const server = Bun.listen({
-    hostname: "127.0.0.1",
+    hostname: host,
     port: 0,
     socket: {
       open() {
@@ -145,7 +149,7 @@ function muteHub(): { url: string; connections(): number } {
     },
   })
   cleanups.push(() => server.stop(true))
-  return { url: `nats://127.0.0.1:${server.port}`, connections: () => connections }
+  return { url: `nats://${host}:${server.port}`, connections: () => connections }
 }
 
 /** The timeout of a dial this test's server starts: the `timeout` its own connection options set,
