@@ -25,11 +25,13 @@ import (
 // The server's pool prepares every statement it sends (pgx's QueryExecModeCacheStatement), so a
 // connection runs a statement's first speedCustomPlans runs under plans made for their arguments
 // and may run every later one under the one generic plan Postgres then makes and keeps. The
-// statements of the priorities read take the relations' seed as two arrays, whose length a generic
-// plan cannot know: under it the four statements over the seed touched 6.8 to 44.6 times the shared
-// buffers of the plans made for their arguments on this corpus (PostgreSQL 18.6, 2026-11-22), and
-// a connection picked it from its sixth run. The test reads the plans a connection really ran,
-// where the speed tests (priority_speed_test.go) count each statement under a plan they force.
+// statements of the priorities read take the relations' seed as two arrays. While the seed was
+// read through unnest, whose rows a generic plan sizes at 10 whatever the arrays hold, the four
+// statements over it touched 6.7 to 45.8 times the shared buffers of the plans made for their
+// arguments under the generic plan, which the held connection ran from its sixth run on
+// (PostgreSQL 18.6, 2026-11-22); priorityMemberTerms says how the seed is read now. The test reads
+// the plans a connection really ran, where the speed tests (priority_speed_test.go) count each
+// statement under a plan they force.
 
 // planRuns is how many times the test runs each priorities read on the held connection: the
 // speedCustomPlans runs Postgres plans for their own arguments, then the runs it may answer with
@@ -38,9 +40,10 @@ const planRuns = 10
 
 // planBuffersRatio is the most shared buffers a statement of the read may touch on the held
 // connection, against the same statement on the same data under plan_cache_mode =
-// force_custom_plan (INFRA-5362's R1). The plans made for the statements' arguments touch the same
-// count on every run on this corpus, and the generic plans touched 6.8 to 44.6 times as many, so
-// twice stands between a run of the plan made for its arguments and a run of the generic plan.
+// force_custom_plan (INFRA-5362's R1). On this corpus the plans made for the statements'
+// arguments touch the same count on every run but a connection's first, which touches up to
+// three buffers more, and the generic plans of the seed read through unnest touched 6.7 to 45.8
+// times as many, so twice stands well between the two.
 const planBuffersRatio = 2
 
 // TestPrioritiesReadKeepsItsPlans runs the priorities read, the whole body and the summary, ten
