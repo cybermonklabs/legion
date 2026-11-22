@@ -292,9 +292,10 @@ test("at a phone width the ring keeps the right edge of the box while the facts 
     // of them sits inside their own box.
     expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth + 1);
     expect(layout.inside).toBe(true);
+    // One line would be as tall as its tallest part, the delivery picker; the facts are taller.
     const [deliveryBox, factsBox] = [await delivery.boundingBox(), await facts.boundingBox()];
-    expect(factsBox?.height ?? 0, "the facts wrapped onto a second line").toBeGreaterThanOrEqual(
-      2 * (deliveryBox?.height ?? Number.POSITIVE_INFINITY)
+    expect(factsBox?.height ?? 0, "the facts wrapped onto a second line").toBeGreaterThan(
+      (deliveryBox?.height ?? Number.POSITIVE_INFINITY) + 1
     );
     // The directory is cut to its line with an ellipsis, and its whole path is one hover away.
     const dirText = dir.locator("span").first();
