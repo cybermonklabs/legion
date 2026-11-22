@@ -76,6 +76,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Measurement for INFRA-1075, not for merge: CPU use every 5 s and the running test binaries.
+      - name: Sample CPU use (measurement)
+        run: |
+          nproc
+          # shellcheck disable=SC2016 # the loop's $(...) run in the inner bash, every 5 s
+          nohup bash -c 'while :; do echo "$(date -u +%H:%M:%S) $(head -1 /proc/stat) $(cut -d" " -f1 /proc/loadavg) $(pgrep -fc "\.test -test\." || true)"; sleep 5; done' >"$RUNNER_TEMP/cpu.log" 2>&1 &
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - id: setup-go
@@ -177,7 +183,10 @@ jobs:
       # which the count step below runs in this same job and env (BACKEND_COUNT_TESTS).
       - name: Unit test envoy Go package
         run: |
-          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/cipher($|/)|/cmd/cipherd$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$'
+          status=0
+          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/cipher($|/)|/cmd/cipherd$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -json -count=1 -timeout 20m -skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$' >"$RUNNER_TEMP/unit.json" || status=$?
+          jq -r 'select(.Test == null and (.Action == "pass" or .Action == "fail")) | "\(.Action) \(.Package) \(.Elapsed)s"' "$RUNNER_TEMP/unit.json"
+          exit "$status"
         working-directory: packages/envoy
       # Each named test runs once on each store backend as its `aws` and `gcp` subtests, and each
       # backend's rows run that backend's own code: the store forms against the GCP fake and the
@@ -224,7 +233,12 @@ jobs:
       # out the backend count's test of ./internal/cipher/api/, which the count step above runs.
       - name: Count the database broker suites' skips
         timeout-minutes: 30
-        run: packages/envoy/scripts/database-skips.sh --timeout 20m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$'
+        run: |
+          status=0
+          go list ./internal/cipher/... ./cmd/cipherd/ | grep -Ev '/internal/cipher/natscallout$' | xargs go test -json -count=1 -timeout 20m -skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' >"$RUNNER_TEMP/broker.json" || status=$?
+          jq -r 'select(.Test == null and (.Action == "pass" or .Action == "fail")) | "\(.Action) \(.Package) \(.Elapsed)s"' "$RUNNER_TEMP/broker.json"
+          exit "$status"
+        working-directory: packages/envoy
       # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
       # never runs it. Vetting it keeps it compiling as the package changes.
       - name: Vet agentloop's live proof (no model call)
@@ -294,6 +308,21 @@ jobs:
         env:
           LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
         working-directory: packages/envoy
+      - name: Report CPU use (measurement)
+        if: always()
+        run: |
+          awk '{ t = $3+$4+$5+$6+$7+$8+$9+$10; idle = $6+$7 }
+               NR > 1 && t > pt { printf "%s busy=%.0f%% iowait=%.0f%% load1=%s tests=%s\n", $1, 100*((t-pt)-(idle-pidle))/(t-pt), 100*($7-pw)/(t-pt), $13, $14 }
+               { pt = t; pidle = idle; pw = $7 }' "$RUNNER_TEMP/cpu.log"
+      - name: Upload the profile (measurement)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: envoy-go-profile-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/unit.json
+            ${{ runner.temp }}/broker.json
+            ${{ runner.temp }}/cpu.log
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report
