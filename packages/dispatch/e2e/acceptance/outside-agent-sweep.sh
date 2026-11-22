@@ -13,9 +13,13 @@
 # every 15 s comments on the write issue and sends a direct message to the fills' session, prints
 # `write <began> <ended> <comment id> <message id> delivered` for each the full member's own feed
 # was sent (`began` read before the comment's POST, `ended` after the message's POST answered),
-# and so is the live socket's control. Fills mode writes the full member's half of the GitHub proxy
-# rows (a `can_fail` line for each read that can fail) only with the full member's browser session,
-# since the proxy reads no token, so the sweep needs OUTSIDE_FULL_COOKIE_FILE.
+# and so is the live socket's control. Both make their reads and writes with the full member's
+# token (OUTSIDE_SWEEP_FULL_TOKEN_FILE, a personal token of the person scope), which reaches the
+# sweep as SWEEP_FULL_TOKEN. Fills mode writes the full member's half of the GitHub proxy rows (a
+# `can_fail` line for each read that can fail) only with the full member's browser session
+# (OUTSIDE_FULL_COOKIE_FILE, as SWEEP_FULL_COOKIE), since the proxy reads no token. Without that
+# session the sweep still runs, its fills hold no `can_fail` line, the proxy control reads UNKNOWN,
+# and so the sweep row reads UNKNOWN, never PASS.
 #
 # The contract this file reads is #4608's at ca10a682ba, fills version 4: `routes`, the SHA-256 of
 # the routes.txt the fills were made from, `deployment`, of the member's own projects' keys and
@@ -25,26 +29,26 @@
 # the workflow's checkout must hold this checkout's routes.txt, and this box sends the fills only
 # when they are version 4.
 
-# sweep_setup: sets sweep_script and sweep_problem, from the inputs and the browser's reading.
+# sweep_setup: sets sweep_script and sweep_problem, from the inputs.
 sweep_setup() {
   sweep_script="$here/restricted-sweep.sh"
   sweep_fills=''
   writer_pid=''
-  sweep_problem=$(lacking OUTSIDE_SWEEP_PROJECT OUTSIDE_SWEEP_FULL_TOKEN_FILE OUTSIDE_SWEEP_CONVERSATION_FILE OUTSIDE_SWEEP_WRITE_ISSUE OUTSIDE_FULL_COOKIE_FILE)
+  sweep_problem=$(lacking OUTSIDE_SWEEP_PROJECT OUTSIDE_SWEEP_FULL_TOKEN_FILE OUTSIDE_SWEEP_CONVERSATION_FILE OUTSIDE_SWEEP_WRITE_ISSUE)
   [ -n "$sweep_problem" ] || [ -f "$sweep_script" ] || sweep_problem="restricted-sweep.sh is not beside this file in $here"
   [ -n "$sweep_problem" ] || [ -r "${OUTSIDE_SWEEP_FULL_TOKEN_FILE:-}" ] ||
     sweep_problem="OUTSIDE_SWEEP_FULL_TOKEN_FILE names $OUTSIDE_SWEEP_FULL_TOKEN_FILE, which cannot be read"
-  [ -n "$sweep_problem" ] || [ -z "$browser_problem" ] ||
-    sweep_problem="the sweep's fills mode writes its GitHub proxy rows only with the full member's browser session, which was not read: $browser_problem"
 }
 
 # sweep_exec MODE OUT: becomes the sweep in MODE with the box's full member, its output in OUT.
 # Its last word is `exec`, so a call started with `&` leaves `$!` naming the sweep itself, and a
 # call that must return runs in a subshell: `( sweep_exec fills OUT )`. The token and the cookie
-# reach the sweep through its environment alone, never its command line.
+# reach the sweep through its environment alone, never its command line; the cookie only where the
+# full member's browser session was read, and SWEEP_FULL_COOKIE is empty otherwise.
 sweep_exec() {
   SWEEP_FULL_TOKEN=$(tr -d '\r\n' <"$OUTSIDE_SWEEP_FULL_TOKEN_FILE")
-  SWEEP_FULL_COOKIE=$(tr -d '\r\n' <"$OUTSIDE_FULL_COOKIE_FILE")
+  SWEEP_FULL_COOKIE=''
+  [ -n "$browser_problem" ] || SWEEP_FULL_COOKIE=$(tr -d '\r\n' <"$OUTSIDE_FULL_COOKIE_FILE")
   export SWEEP_FULL_TOKEN SWEEP_FULL_COOKIE
   SWEEP_MODE=$1 SWEEP_ORIGIN=$OUTSIDE_TAILNET_DISPATCH_URL SWEEP_PROJECT=$OUTSIDE_SWEEP_PROJECT \
     SWEEP_MEMBER=$person SWEEP_CONVERSATION_FILE=$OUTSIDE_SWEEP_CONVERSATION_FILE \
@@ -97,7 +101,9 @@ GET /api/github/rest/repos/{owner}/{repo}/commits/{sha}/check-runs
 GET /api/github/rest/repos/{owner}/{repo}/actions/runs?head_sha={sha}
 GET /api/v1/github/app-installation/{owner}/{repo}'
   proxy_control=''
-  proxy_control_problem=$browser_problem
+  proxy_control_problem=''
+  [ -z "$browser_problem" ] ||
+    proxy_control_problem="no full member's browser session, the one credential the GitHub proxy reads as, so the fills hold no can_fail line: $browser_problem"
   [ -n "$proxy_control_problem" ] || [ -z "$sweep_problem" ] ||
     proxy_control_problem="the sweep's fills, which name the repository, were not made: $sweep_problem"
   [ -z "$proxy_control_problem" ] || return 0
@@ -211,6 +217,6 @@ sweep_row() {
         row sweep "$want" "the sweep passed; the writer's write $inside was delivered inside its live window $window; $proxy_control" PASS
       fi
       ;;
-    *) row sweep "$want" "the sweep exited ${sweep_exit:-with no code read}: $verdict_line" UNKNOWN ;;
+    *) row sweep "$want" "the sweep exited ${sweep_exit:-with no code read}: $verdict_line${proxy_control_problem:+; its GitHub proxy rows have no positive control: $proxy_control_problem}" UNKNOWN ;;
   esac
 }

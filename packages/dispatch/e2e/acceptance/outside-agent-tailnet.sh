@@ -77,7 +77,9 @@
 #   OUTSIDE_SWEEP_WRITE_ISSUE    the read sweep's full-member half (restricted-sweep.sh, row
 #                                sweep): the project the test person must not see, which the leg
 #                                also passes to the workflow as `sweep_project`, a file holding a
-#                                full member's bearer for Dispatch's private origin, the
+#                                full member's personal token of the person scope for Dispatch's
+#                                private origin (the sweep's reads, its writer's comment and direct
+#                                message, and the agent view), the
 #                                conversation file of a session that worked in that project alone,
 #                                and a scratch issue of it the writer comments on every 15 s while
 #                                the public leg runs.

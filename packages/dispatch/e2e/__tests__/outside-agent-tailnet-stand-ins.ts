@@ -715,16 +715,26 @@ export async function prepareStandIn(
   }
   // The writer is stopped by the leg when the public leg ends: on a TERM it leaves a mark and
   // ends. A writer the leg failed to stop is killed later by the bounded child's own stop, with
-  // a SIGKILL, which leaves no mark.
+  // a SIGKILL, which leaves no mark. Fills mode and the writer need the full member's token; fills
+  // mode writes the `can_fail` lines of the proxy reads only with the full member's cookie, and
+  // without it writes the fills less those lines and leaves state/fills-without-cookie, as the
+  // sweep makes its other reads with the token alone.
   script(
     join(legDir, "restricted-sweep.sh"),
     `#!/usr/bin/env bash
+[ -n "\${SWEEP_FULL_TOKEN:-}" ] || { echo 'UNKNOWN: SWEEP_FULL_TOKEN is required'; exit 2; }
 case $SWEEP_MODE in
   fills)
-    [ -n "\${SWEEP_FULL_COOKIE:-}" ] || { echo 'UNKNOWN: SWEEP_FULL_COOKIE is required'; exit 2; }
-    : >'${state}/fills-read-the-cookie'
     ${standIns.sweep?.fillsRefused === true ? "echo 'UNKNOWN: fills mode writes no file that lacks a fill: dm_session'; exit 2" : ""}
-    cat '${state}/fills' >"$SWEEP_FILLS_FILE"
+    if [ -n "\${SWEEP_FULL_COOKIE:-}" ]; then
+      : >'${state}/fills-read-the-cookie'
+      cat '${state}/fills' >"$SWEEP_FILLS_FILE"
+    else
+      : >'${state}/fills-without-cookie'
+      while IFS= read -r line; do
+        case $line in can_fail$'\\t'*) ;; *) printf '%s\\n' "$line" ;; esac
+      done <'${state}/fills' >"$SWEEP_FILLS_FILE"
+    fi
     ;;
   writer)
     cat '${state}/writer-line'

@@ -800,7 +800,7 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
-      "the sweep reads UNKNOWN without the full member's cookie, and with fills that lack a proxy read's line",
+      "the sweep runs without the full member's cookie and reads UNKNOWN, and reads UNKNOWN with fills that lack a proxy read's line",
       async () => {
         const [noCookie, gap] = await runStandIns(
           { ...passingControls, cookie: "absent" },
@@ -810,14 +810,21 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           }
         );
         if (noCookie === undefined || gap === undefined) throw new Error("two runs, want two");
-        // Without the cookie the sweep does not run, and P7 has no positive control either.
+        // Without the cookie the sweep still runs on the full member's token: fills mode writes
+        // fills with no proxy read's line and the writer writes. Its proxy rows have no positive
+        // control, so the row reads UNKNOWN; P7 has no positive control either.
         expect({ verdicts: verdictsOf(noCookie.stdout), stdout: noCookie.stdout }).toMatchObject({
           verdicts: { sweep: "UNKNOWN", P7: "UNKNOWN" },
         });
         expect(rowsOf(noCookie.stdout).get("sweep")?.got).toContain(
+          "its GitHub proxy rows have no positive control: no full member's browser session"
+        );
+        expect(rowsOf(noCookie.stdout).get("sweep")?.got).toContain(
           "OUTSIDE_FULL_COOKIE_FILE is unset"
         );
         expect(existsSync(join(noCookie.state, "fills-read-the-cookie"))).toBe(false);
+        expect(existsSync(join(noCookie.state, "fills-without-cookie"))).toBe(true);
+        expect(existsSync(join(noCookie.state, "writer-stopped"))).toBe(true);
         // Fills that lack a proxy read's full-member answer hold the sweep, and only the sweep.
         expect({ verdicts: verdictsOf(gap.stdout), stdout: gap.stdout }).toMatchObject({
           verdicts: { sweep: "UNKNOWN", P7: "PASS" },
@@ -1425,23 +1432,21 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
-      "the owner rows: a token refused 403 BROWSER_SESSION_REQUIRED starts no run, an address already listed gets a link and fails unlisted, a remove that removes nobody holds T5, OUTSIDE_PUBLIC_COMMAND is refused, and no full member's cookie holds the gate at the sweep",
+      "the owner rows: a token refused 403 BROWSER_SESSION_REQUIRED starts no run, an address already listed gets a link and fails unlisted, a remove that removes nobody holds T5, and OUTSIDE_PUBLIC_COMMAND is refused",
       async () => {
-        const [session, listed, kept, local, noCookie] = await runStandIns(
+        const [session, listed, kept, local] = await runStandIns(
           browserRun({ invite: "browser-session" }),
           browserRun({ unlistedListed: true }),
           browserRun({ removeNothing: true }),
-          browserRun({ publicCommand: true }),
-          { ...browserRun({}), cookie: "absent" }
+          browserRun({ publicCommand: true })
         );
         if (
           session === undefined ||
           listed === undefined ||
           kept === undefined ||
-          local === undefined ||
-          noCookie === undefined
+          local === undefined
         ) {
-          throw new Error("five runs, want five");
+          throw new Error("four runs, want four");
         }
         // Today's Dispatch answers an owner's token on the invite route 403
         // BROWSER_SESSION_REQUIRED: no link, so no run, and nothing reads PASS from it.
@@ -1485,17 +1490,43 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         });
         expect(rowsOf(local.stdout).get("public")?.got).toContain("OUTSIDE_PUBLIC_COMMAND");
         expect(existsSync(join(local.state, "workflow-args"))).toBe(false);
+      },
+      // The four runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short", "short"] })
+    );
+
+    test(
+      "with no full member's cookie the sweep runs on the full member's token, and its row and the gate read UNKNOWN while the owner's rows pass",
+      async () => {
+        const [noCookie] = await runStandIns({ ...browserRun({}), cookie: "absent" });
+        if (noCookie === undefined) throw new Error("one run, want one");
         // The sweep's one input that is a person's: a full member's browser session, which
-        // Dispatch's GitHub proxy reads as and no token. Without it the sweep row, and so the
-        // gate, reads UNKNOWN, never PASS, while the owner's rows still pass on their commands.
+        // Dispatch's GitHub proxy reads as and no token. Without it the sweep still runs on the
+        // full member's token, its fills going to the workflow with no proxy read's line, and its
+        // proxy rows have no positive control: the sweep row, and so the gate, reads UNKNOWN,
+        // never PASS, while the owner's rows still pass on their commands.
         expect({ verdicts: verdictsOf(noCookie.stdout), stdout: noCookie.stdout }).toMatchObject({
           verdicts: { sweep: "UNKNOWN", unlisted: "PASS", T5: "PASS", gate: "UNKNOWN" },
         });
-        expect(rowsOf(noCookie.stdout).get("sweep")?.got).toContain("OUTSIDE_FULL_COOKIE_FILE");
+        expect(rowsOf(noCookie.stdout).get("sweep")?.got).toContain(
+          "its GitHub proxy rows have no positive control: no full member's browser session"
+        );
+        expect(existsSync(join(noCookie.state, "fills-without-cookie"))).toBe(true);
+        expect(existsSync(join(noCookie.state, "writer-stopped"))).toBe(true);
+        const fills = (
+          JSON.parse(readFileSync(join(noCookie.state, "workflow-inputs.json"), "utf8")) as Record<
+            string,
+            string
+          >
+        ).sweep_fills;
+        expect(Buffer.from(fills ?? "", "base64").toString()).toContain(
+          `proxy_repo\t${proxyRepository}`
+        );
+        expect(Buffer.from(fills ?? "", "base64").toString()).not.toContain("can_fail");
         expect(noCookie.code).toBe(2);
       },
-      // The five runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short", "short", "short"] })
+      // The one run, a bounded child under the short bound.
+      rowLimit("short")
     );
 
     test(

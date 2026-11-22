@@ -135,10 +135,13 @@ The tailnet leg does these steps, in this order:
 5. It runs the read sweep's full-member half: `restricted-sweep.sh` (beside this file, added by
    #4608; until #4608 merges the file is absent, the sweep row reads UNKNOWN, and so the gate cannot
    pass) in its fills mode with the box's full member (`OUTSIDE_SWEEP_PROJECT`,
-   `OUTSIDE_SWEEP_FULL_TOKEN_FILE`, `OUTSIDE_SWEEP_CONVERSATION_FILE`, the test person as
-   `SWEEP_MEMBER`, and the full member's cookie as `SWEEP_FULL_COOKIE`, with which it reads the
-   GitHub proxy; without `OUTSIDE_FULL_COOKIE_FILE` the sweep does not run and its row reads
-   UNKNOWN), and starts its writer. Every 15 s until the public leg ends, when the leg stops it, the
+   `OUTSIDE_SWEEP_FULL_TOKEN_FILE`, a personal token of the person scope given to the sweep as
+   `SWEEP_FULL_TOKEN`, with which it makes its reads, its writer's comment and direct message and
+   the agent view, `OUTSIDE_SWEEP_CONVERSATION_FILE`, the test person as `SWEEP_MEMBER`, and the
+   full member's cookie as `SWEEP_FULL_COOKIE`, with which alone it reads the GitHub proxy; without
+   `OUTSIDE_FULL_COOKIE_FILE` the sweep still runs, its fills hold no `can_fail` line, its proxy
+   control and so its row read UNKNOWN), and starts its writer. Every 15 s until the public leg
+   ends, when the leg stops it, the
    writer comments on the scratch issue `OUTSIDE_SWEEP_WRITE_ISSUE` and sends a direct message to
    the fills' session of that project, and prints `write <began> <ended> <comment id> <message id>
    delivered` (`began` read before the comment's POST, `ended` after the message's POST answered),
@@ -162,13 +165,14 @@ The tailnet leg does these steps, in this order:
    this checkout's `routes.txt`, the workflow sets no shorter window, and the leg starts the public
    leg right after the fills.
    Each refusal is the runner's UNKNOWN, and the sweep row's. The runner's own control of the
-   member's feed is exactly one of two. In both legs' gate it is the member's direct message to
-   `SWEEP_MEMBER_SESSION`, their own session in the scratch project: the runner is the workflow's
-   sweep step, not a leg, so the workflow sets it, to the session its driver registered at the edge
-   as the test person, and it needs no input from this leg. In the browser gate it is the member's
-   own comment and issue message on `SWEEP_MEMBER_ISSUE`, an issue of the scratch project the person
-   can see: the workflow sets it from this leg's `sweep_member_issue`, the issue row's key.
-   Without its control the runner reads UNKNOWN, and so does the sweep row. A runner's
+   member's feed takes one of two forms, and the workflow gives exactly one: with
+   `SWEEP_MEMBER_SESSION`, the member's direct message to their own session in the scratch project,
+   which the workflow sets to the session its driver registered at the edge as the test person (the
+   agents leg); with `SWEEP_MEMBER_ISSUE`, the member's own comment and message on the scratch
+   issue, which the workflow sets from its `sweep_member_issue` input (the browser leg, where the
+   person holds no session). The member's feed must be sent each write, and the message must read
+   200 by `GET /api/v1/messages/{id}`. It needs no input from this leg. Without either, or with
+   both, the runner reads UNKNOWN, and so does the sweep row. A runner's
    UNKNOWN, such as a GET route the deployment's own index lists and `routes.txt` lacks, keeps the
    sweep row UNKNOWN. Then the sweep's proxy control. The fills must hold a `can_fail` line, the
    full member's answer that can fail, for each GitHub proxy read the runner makes:
@@ -340,9 +344,10 @@ secret, and asks no terminal. In this gate it does these steps:
    helper, so it runs no T1-T4 and needs none of `OUTSIDE_TAILNET_BROKER_URL`,
    `OUTSIDE_LISTENER_URL`, `OUTSIDE_INTERNAL_LISTENER_URL`, `OUTSIDE_FOREIGN_PROJECT` and
    `OUTSIDE_CANARY`. It runs the sweep's full-member half, its writer and its proxy control, as
-   step 5 above says. That half is the gate's one input a person makes: `OUTSIDE_FULL_COOKIE_FILE`,
+   step 5 above says. Its proxy part is the gate's one input a person makes: `OUTSIDE_FULL_COOKIE_FILE`,
    a full member's browser session, since Dispatch's GitHub proxy reads as a browser's person and
-   never as a token. Without it the sweep row, and so the gate, reads UNKNOWN, never PASS.
+   never as a token. Without it the sweep runs on the full member's token, and its proxy rows, its
+   row and so the gate read UNKNOWN, never PASS.
 4. The owner puts the test person on the access list, the list command reads them on it (its
    control), and the owner's invite makes their link. Then row `unlisted`: the owner's invite for
    an address on no list, `OUTSIDE_UNLISTED_PERSON` (default
@@ -438,9 +443,10 @@ already listed gets a link, which fails row unlisted; a remove that takes nobody
 UNKNOWN; `OUTSIDE_PUBLIC_COMMAND` starts no run; a skipped window step makes no removal; a cookie's
 401 a minute after the removal fails T5; a check's exit 1 fails its row and the public row; a check
 with no `.code` reads UNKNOWN; a limit row's FAIL, or no limit row, holds limits; and with no
-`OUTSIDE_FULL_COOKIE_FILE` the sweep row and the gate read UNKNOWN while the owner's rows pass. With
-no input the browser gate reads each of its rows UNKNOWN, and `OUTSIDE_GATE` of another word every
-row.
+`OUTSIDE_FULL_COOKIE_FILE` the sweep runs on the full member's token, its fills going to the
+workflow with no `can_fail` line, and the sweep row and the gate read UNKNOWN while the owner's rows
+pass (the tailnet leg's own row holds the same in both legs' gate). With no input the browser gate
+reads each of its rows UNKNOWN, and `OUTSIDE_GATE` of another word every row.
 
 ## What the two legs do not prove
 
