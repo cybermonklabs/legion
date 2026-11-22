@@ -1167,36 +1167,115 @@ func TestARelaySocketLogsARunOfAnswerUnknownNaksOnceAndItsEnd(t *testing.T) {
 	}
 }
 
+// startFailedRemovalRun registers sessionID at an edge rig following acme/pub and acme/two, makes
+// PRIV's answer name acme/pub alone, and runs one prune whose removal of acme/two fails, its context
+// having ended: the session's run of failed removals has begun, with its one WARN.
+func startFailedRemovalRun(t *testing.T, sessionID string) *edgeRig {
+	t.Helper()
+	rig := newEdgeRigServing(t, []string{"PRIV"})
+	requireStatus(t, rig.subscribe(t, rig.personToken(sessionID, "PRIV"), sessionID, "notifications.github.acme.pub.>", edgeRowTwo), http.StatusOK, "the registration")
+	rig.repositories.answer("PRIV", "acme/pub")
+	rig.tick(t)
+	done, cancel := context.WithCancel(t.Context())
+	cancel()
+	pruneEdgeInterests(done, rig.deps, "test-machine")
+	if lines := edgeLogLines(rig.harness.logs.String(), "WARN", "edge listener could not remove the interests of a repository that left the session's projects"); len(lines) != 1 {
+		t.Fatalf("UNKNOWN: the failed removal logged %d WARN lines, want 1:\n%s", len(lines), rig.harness.logs.String())
+	}
+	return rig
+}
+
+// edgeRowTwo is the topic of acme/two the removal-run rows follow, the repository that leaves.
+const edgeRowTwo = "notifications.github.acme.two.>"
+
+// requireRemovalRunEnd fails the test unless the next prune of rig logs exactly one end of
+// sessionID's run of failed removals, with why, and no removal.
+func requireRemovalRunEnd(t *testing.T, rig *edgeRig, sessionID, why string) {
+	t.Helper()
+	pruneEdgeInterests(t.Context(), rig.deps, "test-machine")
+	logged := rig.harness.logs.String()
+	lines := edgeLogLines(logged, "INFO", "edge listener no longer removes the interests of a repository that left the session's projects")
+	if len(lines) != 1 || lines[0]["session_id"] != sessionID || lines[0]["why"] != why {
+		t.Fatalf("the pass after %s's run of failed removals ended logged %d end lines (%v), want 1 naming the session and why %q:\n%s", sessionID, len(lines), lines, why, logged)
+	}
+	if removals := edgeLogLines(logged, "INFO", "edge listener removed the interests of a repository that left the session's projects"); len(removals) != 0 {
+		t.Fatalf("UNKNOWN: a removal of %s's interests succeeded, which ends the run by its own line: %v", sessionID, removals)
+	}
+}
+
+// noneOutsideWhy is the why of a run of failed removals ended because no interest of the session
+// is outside its projects' repositories any more, whichever of the session and the answer changed.
+const noneOutsideWhy = "no interest of the session is outside its projects' repositories now"
+
 // A run of failed removals that ends with no removal is logged too: here the repository comes back
 // to the session's projects while its removals fail, so the next pass finds nothing leaving and
 // writes the run's end line, naming why it ended. The new answer is read by a refresh with no prune
 // before it, so no removal succeeds between. Control: with a run ended silently when nothing is left
 // to remove, as at e263b68294, the pass logs no end line and the row fails.
 func TestAnEdgePruneLogsTheEndOfARunWhenTheRepositoryComesBack(t *testing.T) {
-	const failed, ended = "edge listener could not remove the interests of a repository that left the session's projects", "edge listener no longer removes the interests of a repository that left the session's projects"
-	rig := newEdgeRigServing(t, []string{"PRIV"})
-	const sessionID, two = "ses_edge_prune_comes_back", "notifications.github.acme.two.>"
-	requireStatus(t, rig.subscribe(t, rig.personToken(sessionID, "PRIV"), sessionID, "notifications.github.acme.pub.>", two), http.StatusOK, "the registration")
-	rig.repositories.answer("PRIV", "acme/pub")
-	rig.tick(t)
-	done, cancel := context.WithCancel(t.Context())
-	cancel()
-	pruneEdgeInterests(done, rig.deps, "test-machine")
-	if lines := edgeLogLines(rig.harness.logs.String(), "WARN", failed); len(lines) != 1 {
-		t.Fatalf("UNKNOWN: the failed removal logged %d WARN lines, want 1:\n%s", len(lines), rig.harness.logs.String())
-	}
-
+	const sessionID = "ses_edge_prune_comes_back"
+	rig := startFailedRemovalRun(t, sessionID)
 	rig.repositories.answer("PRIV", "acme/pub", "acme/two")
 	rig.reader.refresh(t.Context())
-	pruneEdgeInterests(t.Context(), rig.deps, "test-machine")
-	lines := edgeLogLines(rig.harness.logs.String(), "INFO", ended)
-	if len(lines) != 1 || lines[0]["session_id"] != sessionID || lines[0]["why"] != "the repository is the session's again" {
-		t.Fatalf("a pass that found acme/two back in %s's projects after its removals failed logged %d lines ending the run (%v), want 1 naming the session and why:\n%s",
-			sessionID, len(lines), lines, rig.harness.logs.String())
+	requireRemovalRunEnd(t, rig, sessionID, noneOutsideWhy)
+	if row := bucketInterestRow(t, rig.harness.client, sessionID); !slices.Contains(row.Topics, edgeRowTwo) {
+		t.Fatalf("UNKNOWN: %s's row lost %s, which came back, so a removal happened: %v", sessionID, edgeRowTwo, row.Topics)
 	}
-	if row := bucketInterestRow(t, rig.harness.client, sessionID); !slices.Contains(row.Topics, two) {
-		t.Fatalf("UNKNOWN: %s's row lost %s, which came back, so a removal happened: %v", sessionID, two, row.Topics)
+}
+
+// A run of failed removals that the session ends itself, by unsubscribing from the topic that left,
+// is logged with a why that says what the pass found, nothing outside the answer any more, and not
+// that the repository came back: acme/two is still outside PRIV's answer. Control: with the why
+// "the repository is the session's again", as at 845bd3766e, the row fails on the why.
+func TestAnEdgePruneLogsTheEndOfARunTheSessionEndsByUnsubscribing(t *testing.T) {
+	const sessionID = "ses_edge_prune_unsubscribed"
+	rig := startFailedRemovalRun(t, sessionID)
+	requireStatus(t, rig.call(t, http.MethodPost, rig.personToken(sessionID, "PRIV"), "/v1/interests/unsubscribe",
+		fmt.Sprintf(`{"session_id":%q,"topics":[%q]}`, sessionID, edgeRowTwo)), http.StatusOK, "the session's unsubscribe from acme/two")
+	testwait.Eventually(t, "the listener's copy of the interests to lose acme/two", func() bool {
+		items, err := rig.deps.registry.List()
+		return err == nil && !slices.ContainsFunc(items, func(item store.Interest) bool {
+			return item.SessionID == sessionID && slices.Contains(item.Topics, edgeRowTwo)
+		})
+	})
+	if _, complete := rig.reader.standing([]string{"PRIV"}); !complete {
+		t.Fatalf("UNKNOWN: PRIV's answer is not fresh, so the pass would weigh nothing")
 	}
+	requireRemovalRunEnd(t, rig, sessionID, noneOutsideWhy)
+}
+
+// A run of failed removals ends, logged, when the session's interest record becomes another
+// listener's, as when the session registers again through it. Control: with that end's line removed
+// (the ended call for another listener's record), the pass logs no end line and the row fails.
+func TestAnEdgePruneLogsTheEndOfARunWhenTheSessionMovesToAnotherListener(t *testing.T) {
+	const sessionID = "ses_edge_prune_moved"
+	rig := startFailedRemovalRun(t, sessionID)
+	if _, err := rig.deps.registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "shared-listener"}, []string{edgeRowTwo}); err != nil {
+		t.Fatalf("write %s's interest row as another listener's: %v", sessionID, err)
+	}
+	testwait.Eventually(t, "the listener's copy of the interests to name the other listener", func() bool {
+		items, err := rig.deps.registry.List()
+		return err == nil && slices.ContainsFunc(items, func(item store.Interest) bool {
+			return item.SessionID == sessionID && item.MachineID == "shared-listener"
+		})
+	})
+	requireRemovalRunEnd(t, rig, sessionID, "the session's interests are another listener's")
+}
+
+// A run of failed removals ends, logged, when the session's interest record is gone, as after its
+// deregistration. Control: with that end's line removed (the ended call for a session the list no
+// longer names), the pass logs no end line and the row fails.
+func TestAnEdgePruneLogsTheEndOfARunWhenTheSessionsRecordIsGone(t *testing.T) {
+	const sessionID = "ses_edge_prune_gone"
+	rig := startFailedRemovalRun(t, sessionID)
+	if _, err := rig.deps.registry.Remove(t.Context(), sessionID, nil, store.RoleReleaseAuthority{Force: true}); err != nil {
+		t.Fatalf("deregister %s: %v", sessionID, err)
+	}
+	testwait.Eventually(t, "the listener's copy of the interests to lose the session", func() bool {
+		items, err := rig.deps.registry.List()
+		return err == nil && !slices.ContainsFunc(items, func(item store.Interest) bool { return item.SessionID == sessionID })
+	})
+	requireRemovalRunEnd(t, rig, sessionID, "the session's interest record is gone")
 }
 
 // A refresh pass that cannot list the interest records, because the listener's copy of the

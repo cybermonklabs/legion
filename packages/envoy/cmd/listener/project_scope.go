@@ -1033,8 +1033,11 @@ func pruneEdgeInterests(ctx context.Context, d *listenerDeps, machineID string) 
 			}
 		}
 		if len(leaving) == 0 {
+			// Nothing leaving: the answer names the repository again, or the session itself dropped
+			// the topic (an unsubscribe, or a registration after a refusal). The pass cannot tell
+			// which, so the why says what it found.
 			if failing[item.SessionID] {
-				ended(item.SessionID, "the repository is the session's again")
+				ended(item.SessionID, "no interest of the session is outside its projects' repositories now")
 			}
 			continue
 		}
