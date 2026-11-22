@@ -375,11 +375,47 @@ type Store struct {
 
 	// logger writes the store's JSON lines, which an alarm can count (write).
 	logger *logging.Logger
+
+	// verdictAppID is the verdict App's id (WithVerdictApp), "" for none: its check suites take no
+	// part in whether a head settles (settling).
+	verdictAppID string
+}
+
+// settling is st as the store judges whether it settles and names what holds it: without the
+// verdict App's check suites. The listener leaves those suites out of the record once
+// ENVOY_VERDICT_APP_ID names the App (contracts.VerdictAppsOwnSuite), but a record written while
+// the setting was unset can hold one queued, and its later deliveries are left out, so it would
+// hold the head for good. The record itself keeps the suite, and its Hash is unchanged, so a
+// claim of the record (ClaimSettlement) compares the same snapshot. A record that holds no such
+// suite is st itself, with nothing copied.
+func (s *Store) settling(st State) State {
+	if s.verdictAppID == "" || !s.holdsVerdictAppSuite(st) {
+		return st
+	}
+	suites := make(map[string]Suite, len(st.Suites))
+	for id, suite := range st.Suites {
+		if suite.AppID != s.verdictAppID {
+			suites[id] = suite
+		}
+	}
+	st.Suites = suites
+	return st
+}
+
+// holdsVerdictAppSuite reports whether st holds a check suite of the verdict App.
+func (s *Store) holdsVerdictAppSuite(st State) bool {
+	for _, suite := range st.Suites {
+		if suite.AppID == s.verdictAppID {
+			return true
+		}
+	}
+	return false
 }
 
 type openOpts struct {
-	replicas int
-	ttl      time.Duration
+	replicas     int
+	ttl          time.Duration
+	verdictAppID string
 }
 
 // Option configures Open.
@@ -406,6 +442,12 @@ func WithTTL(d time.Duration) Option {
 	}
 }
 
+// WithVerdictApp names the verdict App (ENVOY_VERDICT_APP_ID), whose check suites the store
+// disregards when it decides whether a head settles; "" names none.
+func WithVerdictApp(id string) Option {
+	return func(o *openOpts) { o.verdictAppID = id }
+}
+
 // Open connects (or creates) the CI-state KV bucket and starts the WatchAll
 // cache. Mirrors store.Open: the cache is populated asynchronously by watch()
 // so Open never blocks on per-key Gets. The store and its cache watcher log through logger.
@@ -429,10 +471,11 @@ func Open(ctx context.Context, nc *nats.Conn, logger *logging.Logger, opts ...Op
 		return nil, err
 	}
 	s := &Store{
-		combiners:   map[string]*keyCombiner{},
-		rewatched:   make(chan struct{}),
-		changedWake: make(chan struct{}, 1),
-		logger:      logger,
+		combiners:    map[string]*keyCombiner{},
+		rewatched:    make(chan struct{}),
+		changedWake:  make(chan struct{}, 1),
+		logger:       logger,
+		verdictAppID: o.verdictAppID,
 	}
 	s.cache = newCICopy(s)
 	s.watcher = kvwatch.New("cistore", kv, ciCache{s}, kvwatch.WithLogger(logger.Slog()))
@@ -1021,7 +1064,7 @@ func (s *Store) ClaimSettlement(key, expectedHash string, expectedGeneration uin
 		if state.Claim != nil ||
 			state.Generation != expectedGeneration ||
 			state.Hash() != expectedHash ||
-			!due(*state, now, debounce) {
+			!due(s.settling(*state), now, debounce) {
 			return false, nil
 		}
 		state.Claim = &SettlementClaim{

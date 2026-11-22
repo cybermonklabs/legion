@@ -32,9 +32,9 @@ const (
 	verdictHead   = "abcdef1234567890abcdef1234567890abcdef12"
 )
 
-// verdictListener is the listener's real webhook handler, configured with the verdict App, over
-// its real CI store and summary loop, with a subscription to acme/widgets#42's settlements and the
-// standard logger's lines.
+// verdictListener is the listener's real webhook handler over its real CI store and summary loop,
+// configured with a verdict App id (ENVOY_VERDICT_APP_ID) or none, with a subscription to
+// acme/widgets#42's settlements and the standard logger's lines.
 type verdictListener struct {
 	t       *testing.T
 	handler func(event, body string)
@@ -42,20 +42,36 @@ type verdictListener struct {
 	logged  *bytes.Buffer
 }
 
+// newVerdictListener is a listener configured with the verdict App, on a NATS server of its own.
 func newVerdictListener(t *testing.T) *verdictListener {
 	t.Helper()
-	var logged bytes.Buffer
-	previous, flags := log.Writer(), log.Flags()
-	log.SetOutput(&logged)
-	log.SetFlags(0)
-	t.Cleanup(func() { log.SetOutput(previous); log.SetFlags(flags) })
+	return verdictListenerOn(t, verdictBus(t), fmt.Sprint(verdictApp))
+}
+
+// verdictBus is a bus client of a NATS server of the test's own, which owns the stream.
+func verdictBus(t *testing.T) *bus.Client {
+	t.Helper()
 	_, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("bus connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	store, err := cistore.Open(t.Context(), client.Conn, logging.New("test"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
+	return client
+}
+
+// verdictListenerOn is a listener on client whose ENVOY_VERDICT_APP_ID is verdictAppID, "" for
+// unset, as cmd/listener builds one: the setting goes to the webhook handler and to the CI store.
+// Two of them on one client are one deployment before and after the setting changed.
+func verdictListenerOn(t *testing.T, client *bus.Client, verdictAppID string) *verdictListener {
+	t.Helper()
+	var logged bytes.Buffer
+	previous, flags := log.Writer(), log.Flags()
+	log.SetOutput(&logged)
+	log.SetFlags(0)
+	t.Cleanup(func() { log.SetOutput(previous); log.SetFlags(flags) })
+	store, err := cistore.Open(t.Context(), client.Conn, logging.New("test"),
+		cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithVerdictApp(verdictAppID))
 	if err != nil {
 		t.Fatalf("open cistore: %v", err)
 	}
@@ -72,13 +88,13 @@ func newVerdictListener(t *testing.T) *verdictListener {
 		t.Fatalf("subscribe: %v", err)
 	}
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
-	handler := webhook.GitHubHandler(verdictSecret, "@legion", "", fmt.Sprint(verdictApp), client, store)
+	handler := webhook.GitHubHandler(verdictSecret, "@legion", "", verdictAppID, client, store)
 	deliveries := 0
 	return &verdictListener{t: t, sub: sub, logged: &logged, handler: func(event, body string) {
 		t.Helper()
 		deliveries++
 		req := httptest.NewRequest("POST", "/webhook/github", strings.NewReader(body))
-		req.Header.Set("X-GitHub-Delivery", fmt.Sprintf("d-verdict-%d", deliveries))
+		req.Header.Set("X-GitHub-Delivery", fmt.Sprintf("d-verdict-%s-%d", verdictAppID, deliveries))
 		req.Header.Set("X-GitHub-Event", event)
 		req.Header.Set("X-Hub-Signature-256", sign(verdictSecret, []byte(body)))
 		rr := httptest.NewRecorder()
@@ -169,6 +185,50 @@ func TestAnotherAppsIncompleteSuiteHoldsSettlement(t *testing.T) {
 	}
 	l.suite(810, "completed", "completed", "success", otherApp)
 	if _, ok := l.settlement(3 * time.Second); !ok {
+		t.Fatal("no settlement was published once App 5341243's suite completed")
+	}
+}
+
+// A listener without ENVOY_VERDICT_APP_ID records the verdict App's queued suite like any other.
+// Once the setting names that App, the suite's later deliveries are left out, so the record keeps
+// it queued for good: the CI store disregards the verdict App's stored suites when it decides
+// whether a head settles, and the head settles on its CI.
+func TestAVerdictAppSuiteRecordedBeforeTheSettingDoesNotHoldTheHead(t *testing.T) {
+	client := verdictBus(t)
+	before := verdictListenerOn(t, client, "")
+	before.suite(800, "requested", "queued", "", verdictApp)
+
+	after := verdictListenerOn(t, client, fmt.Sprint(verdictApp))
+	after.suite(800, "completed", "completed", "success", verdictApp)
+	if !strings.Contains(after.logged.String(), "ci: left out the verdict App's own check suite suite=800") {
+		t.Fatalf("the listener with the setting logged\n%s\nwant the verdict App's completed suite left out", after.logged.String())
+	}
+	after.suite(900, "completed", "completed", "success", actionsApp)
+	after.run(1, "build", "success", actionsApp)
+	settled, ok := after.settlement(3 * time.Second)
+	if !ok {
+		t.Fatal("no settlement was published: the verdict App's suite recorded before the setting holds the head")
+	}
+	if settled.SHA != verdictHead || settled.Passed.Count != 1 || settled.Failed.Count != 0 {
+		t.Fatalf("settlement = %+v, want the head settled on its one passing check", settled)
+	}
+}
+
+// Another App's queued suite recorded before the setting still holds the head once the setting
+// names the verdict App, and the head settles once that suite completes.
+func TestAnotherAppsSuiteRecordedBeforeTheSettingStillHoldsTheHead(t *testing.T) {
+	client := verdictBus(t)
+	before := verdictListenerOn(t, client, "")
+	before.suite(810, "requested", "queued", "", otherApp)
+
+	after := verdictListenerOn(t, client, fmt.Sprint(verdictApp))
+	after.suite(900, "completed", "completed", "success", actionsApp)
+	after.run(1, "build", "success", actionsApp)
+	if settled, ok := after.settlement(2 * time.Second); ok {
+		t.Fatalf("the head settled as %+v while App %d's suite recorded before the setting was queued, want it held", settled, otherApp)
+	}
+	after.suite(810, "completed", "completed", "success", otherApp)
+	if _, ok := after.settlement(3 * time.Second); !ok {
 		t.Fatal("no settlement was published once App 5341243's suite completed")
 	}
 }
