@@ -717,11 +717,21 @@ func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, 
 	return LineFacts{Lifecycles: lifecycles, Gates: gates, Parents: parents, Roots: roots, Owed: owed, OwedRows: rows}, nil
 }
 
-// GateOpen is whether a person's approval stands on the gate's current document version: the one
-// statement of it, which classify.DesignGateOpen and Store.PutGate's own write both call.
-// internal/classify reads this package, so the rule lives here, where every reader can reach it.
+// GateOpen is whether the gate's current document version lets the tree's work past its step: a
+// person's approval stands on it, or it is the version that opened the gate with no person
+// (GateExempt). It is the one statement of it, which classify.DesignGateOpen and Store.PutGate's
+// own write both call. internal/classify reads this package, so the rule lives here, where every
+// reader can reach it.
 func GateOpen(gate DesignGate) bool {
-	return gate.ApprovedVersion != nil && *gate.ApprovedVersion == gate.LatestVersion
+	return gate.ApprovedVersion != nil && *gate.ApprovedVersion == gate.LatestVersion || GateExempt(gate)
+}
+
+// GateExempt is whether the gate stands open by exemption: it is under the rule of a change
+// request, and its current version is the version Dispatch read as proposing nothing (R23). A
+// person's approval of that version beside it changes nothing: the exemption that let the issue
+// start still asks for the ending condition before anything of its tree lands (D10).
+func GateExempt(gate DesignGate) bool {
+	return gate.Rule == GateRuleChangeRequest && gate.ExemptVersion != nil && *gate.ExemptVersion == gate.LatestVersion
 }
 
 // RequiredSteps is the steps a root must hold an open gate at before its tree works: the steps
@@ -755,10 +765,10 @@ type TreeGate struct {
 	Rows  map[DesignStep]DesignGate
 }
 
-// Open is whether the gate lets the tree's work run: a person's approval stands on the current
-// document version of every required step (GateOpen). A required step with no row holds the
-// work, as an unregistered gate always has, so a root with no row at all is held too. It is the
-// one rule for the question, which classify.DesignGatesOpen reads it through.
+// Open is whether the gate lets the tree's work run: the current document version of every
+// required step is open (GateOpen), by a person's approval or by its exemption. A required step
+// with no row holds the work, as an unregistered gate always has, so a root with no row at all is
+// held too. It is the one rule for the question, which classify.DesignGatesOpen reads it through.
 func (g TreeGate) Open() bool {
 	for _, step := range RequiredSteps(g.Steps) {
 		if row, registered := g.Rows[step]; !registered || !GateOpen(row) {

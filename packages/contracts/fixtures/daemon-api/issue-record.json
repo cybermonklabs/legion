@@ -143,7 +143,9 @@
   "designGate": {
     "artifactId": "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
     "currentVersion": 7,
-    "approvedVersion": 6
+    "approvedVersion": 6,
+    "exemptVersion": null,
+    "rule": "approval"
   },
   "gatedSteps": [
     {
@@ -151,6 +153,7 @@
       "artifactId": "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
       "currentVersion": 7,
       "approvedVersion": 6,
+      "exemptVersion": null,
       "status": "waiting"
     }
   ],

@@ -334,6 +334,13 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 			"Dispatch shows %s at version %d, not %d; register the version you requested approval of", artifactID, approval.LatestVersion, req.Version))
 		return
 	}
+	// The spec step of a deployment that gates it reads the issue's change request at the version
+	// the gate is registered at, the newer of the caller's and Dispatch's, so the workflow can fix
+	// the gate's rule and open a version that proposes nothing with no person (R23, R24).
+	read, ok := s.changeRequestOf(w, r, req.Issue, step, max(req.Version, approval.LatestVersion))
+	if !ok {
+		return
+	}
 	// What this read found of the person's review, and who gave it, travels with the registration,
 	// so a spec a person approved or asked changes of before the architect registered is applied at
 	// once: the gate opens, or closes with the architect told. The read's own start is its sequence
@@ -345,7 +352,7 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	fact := intake.GateRegistered{Issue: req.Issue, Step: step, ArtifactID: artifactID, Version: req.Version, ApprovedVersion: approval.ApprovedLatest(),
 		ChangesRequestedVersion: changes, ChangesReason: reason, ReviewedBy: approval.LatestReviewer(),
 		DispatchVersion: approval.LatestVersion, Since: record.EventMark{Seq: since},
-		RequestAsk: approval.AskID, RequestWaitsOnAgent: approval.AskID != "" && approval.WaitingOn == "agent"}
+		RequestAsk: approval.AskID, RequestWaitsOnAgent: approval.AskID != "" && approval.WaitingOn == "agent", ChangeRequest: read}
 	review := record.EventMark{Seq: approval.Seq, At: approval.At}
 	if changes != 0 {
 		fact.ChangesRequestedMark = review
@@ -359,6 +366,34 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	// retry of one read stays one fact while a new read — a review or a version since — is a new
 	// fact the handlers see.
 	s.applyFact(w, r, fmt.Sprintf("gate:%s:%d:%s:%s:%d:%d", req.Issue, recorded.Generation, step, artifactID, req.Version, since), fact, GateRegisterResponse{})
+}
+
+// changeRequestOf reads issue's change request at version for a registration of step, and answers
+// what the registration carries of it: nil for a step that holds none — every step but spec, and
+// spec under a deployment that gates no step, which asks nobody — and nil for a Dispatch older than
+// the route, which answers its router's 404 (dispatch.NoRoute), so the gate keeps the rule of a
+// person's approval. A read that failed records nothing, so the architect's register_gate retries,
+// as a failed read of the approval does; a read Dispatch refuses for good, such as a version whose
+// text does not parse (CHANGE_REQUEST_UNREADABLE), is refused under Dispatch's own code, since the
+// spec must change before any registration of that version can be read.
+func (s *server) changeRequestOf(w http.ResponseWriter, r *http.Request, issue string, step record.DesignStep, version int) (*intake.ChangeRequestRead, bool) {
+	if step != record.DesignStepSpec || !slices.Contains(s.steps, record.DesignStepSpec) {
+		return nil, true
+	}
+	read, err := s.dispatch.ChangeRequest(r.Context(), issue, version)
+	if dispatch.NoRoute(err) {
+		return nil, true
+	}
+	if refusal, permanent := dispatch.PermanentRefusal(err); permanent {
+		s.writeFailure(w, r, http.StatusConflict, refusal.Code, fmt.Sprintf(
+			"Dispatch refused the change request of %s at version %d: %s. Correct the spec, then register it again", issue, version, refusal.Message))
+		return nil, false
+	}
+	if err != nil {
+		s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("Dispatch read of the change request of %s failed; retry register_gate", issue))
+		return nil, false
+	}
+	return intake.ChangeRequestReadOf(read), true
 }
 
 // registeredStep is the design-gate step a registration records, from the step the call named and

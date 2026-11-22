@@ -48,7 +48,14 @@ func keptJSON(kept *record.KeptDecisions) ([]byte, error) {
 // not relayed (by no person, on a root that is no parked tree, on a tree that hears it, or on a
 // root with no record), or handled before under the same key, by an earlier run or another row
 // carrying the same notice, whose own line said what became of it.
+//
+// A spec-request-stale notice is no person's decision, but it is the other notice that must not
+// end with nobody told (D8): it goes to the controller in its place (staleRequestToController),
+// which names an owner to write the request again.
 func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice record.Notice, key string, row int64) error {
+	if notice.Kind == record.SpecRequestStaleNotice {
+		return r.staleRequestToController(ctx, issue, notice, key, row)
+	}
 	decision, ok := record.SpecDecision(notice.Kind)
 	if !ok {
 		return nil

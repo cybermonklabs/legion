@@ -68,6 +68,14 @@ type Client interface {
 	// WebhookAppInstalled is whether Dispatch's GitHub App, the one GitHub sends a repository's
 	// webhook events through, is installed on repo (owner/name).
 	WebhookAppInstalled(ctx context.Context, repo string) (bool, error)
+	// ChangeRequest reads the issue's change request at version of its spec: whether its
+	// repository is a spec source and whether that version proposes anything. A Dispatch older
+	// than the route answers its router's 404 (NoRoute), and the design gate then keeps the rule
+	// of a person's approval.
+	ChangeRequest(ctx context.Context, key string, version int) (ChangeRequest, error)
+	// SpecEnding reads whether the issue's change request may land at head, a pull request head:
+	// `ready`, or `waiting` with each reason. A Dispatch older than the route answers NoRoute.
+	SpecEnding(ctx context.Context, key, head string) (SpecEnding, error)
 }
 
 // DesignGateDocument is one entry of an issue's design-gate publication, as Dispatch's route
@@ -341,6 +349,63 @@ func (a Approval) LatestReviewer() Actor {
 		return Actor{}
 	}
 	return a.By
+}
+
+// ChangeRequest is what Dispatch reads of an issue's change request at one version of the issue's
+// spec (GET /api/v1/issues/{key}/change-request): the version it read, whether the issue's
+// repository is an enabled spec source of its project (SpecSource), the repository and the
+// version of the Verification document whose checks it compared, whether the version proposes a
+// statement, component or interface (Proposes, a problem of such a block included) and whether it
+// changes an approved check (ChangesChecks), and the judgment of its conclusion. The daemon's design
+// gate decides from SpecSource and ProposesNothing alone (R23); the proposals themselves are the
+// person's to read on Dispatch, so this type does not carry them.
+type ChangeRequest struct {
+	Issue               string
+	Version             int
+	SpecSource          bool
+	Repo                string
+	VerificationVersion int
+	Proposes            bool
+	ChangesChecks       bool
+	Judgment            string
+}
+
+// ProposesNothing says whether the version proposes no statement, component or interface and
+// changes no approved check: the version a spec-source issue starts on with no person (R23).
+func (c ChangeRequest) ProposesNothing() bool {
+	return !c.Proposes && !c.ChangesChecks
+}
+
+// SpecEnding is Dispatch's answer to whether an issue's change request may land at one pull
+// request head (GET /api/v1/issues/{key}/change-request/ending?head=): State is `ready` exactly
+// when Reasons is empty, and `waiting` with each reason in Dispatch's order otherwise. Version is
+// the version of the spec Dispatch read, its latest, and Judgment the judgment of its conclusion
+// there.
+type SpecEnding struct {
+	Issue    string
+	Head     string
+	Version  int
+	State    string
+	Reasons  []EndingReason
+	Judgment string
+}
+
+// Ready says whether the ending condition holds at the head: Dispatch answered `ready`.
+func (e SpecEnding) Ready() bool { return e.State == SpecEndingReady }
+
+// SpecEndingReady and SpecEndingWaiting are the two states Dispatch's ending route answers. No
+// mechanism shares a value between this module and Dispatch's, so the spellings change together.
+const (
+	SpecEndingReady   = "ready"
+	SpecEndingWaiting = "waiting"
+)
+
+// EndingReason is one reason the ending condition does not hold at a head: its code
+// (`no_final_list_for_head`, `final_list_of_another_head`, `no_conclusion`, `incomplete` or
+// `uncovered_without_approval`) and Dispatch's one sentence of it.
+type EndingReason struct {
+	Code   string
+	Detail string
 }
 
 // Handoff is one phase handoff record Dispatch keeps on an issue, as a phase completion names it:

@@ -558,6 +558,8 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "lowestPluginContract and the claim views' updateState and wake"},
 	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
+	{contract: specGateContract, issue: withoutGateExemption,
+		dropped: "the issues' designGate.exemptVersion and designGate.rule, and the gated steps' exemptVersion"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -586,6 +588,7 @@ var valueStrips = []valueStrip{
 	{state: withoutUnadmittedStrandedStates, dropped: droppedStrandedState},
 	{issue: withoutUnadmittedWaitAnswer, dropped: droppedWaitAnswer},
 	{issue: withoutWaitingOnIssue, dropped: droppedLineKind},
+	{issue: withoutExemptStatus, dropped: droppedGatedStepStatus},
 }
 
 // recordShaping writes the daemon's own record of what it left out of the state it answered: one
@@ -649,10 +652,17 @@ const followsRestore = "the contract the caller states, else its pod's lowest, w
 // shaped_answers_test.go). Each names what its row takes by the table's rule rather than by
 // today's value, so the line stays true of a value the table declares later.
 const (
-	droppedStrandedState = "the entries of strandedClaims in a state this caller does not admit"
-	droppedWaitAnswer    = "the answeredAt and answeredBy of each wait answered by a value this caller does not admit"
-	droppedLineKind      = "the waiting line's kind of every member of a kind this caller does not admit"
+	droppedStrandedState   = "the entries of strandedClaims in a state this caller does not admit"
+	droppedWaitAnswer      = "the answeredAt and answeredBy of each wait answered by a value this caller does not admit"
+	droppedLineKind        = "the waiting line's kind of every member of a kind this caller does not admit"
+	droppedGatedStepStatus = "the status of every gated step in a status this caller does not admit"
 )
+
+// specGateContract is the daemon contract that added the gate's exemption and rule to the state
+// (version.go's 222): `designGate.exemptVersion` and `designGate.rule`, each gated step's
+// `exemptVersion`, and the gated step status `exempt`. A plugin before it reads the gated step's
+// `status` with an enumeration that does not name `exempt`, and one before 49 refuses the keys.
+const specGateContract = 222
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
 // (version.go's 49): a plugin before it reads the state with a strict schema that knows none of
@@ -1396,6 +1406,49 @@ func withoutWaitingOnIssue(issue Issue, restore int) (Issue, bool) {
 	return issue, true
 }
 
+// withoutGateExemption is the issue with no `designGate.exemptVersion`, `designGate.rule` or
+// gated step `exemptVersion`, the keys specGateContract added. Each is written on every body
+// (null and `approval` included), so the band sets the flag that leaves them off, and reports a
+// move whenever the issue carries the gate or a gated step.
+func withoutGateExemption(issue Issue) (Issue, bool) {
+	moved := false
+	if issue.DesignGate != nil {
+		gate := *issue.DesignGate
+		gate.exemptionLeftOff = true
+		issue.DesignGate, moved = &gate, true
+	}
+	if len(issue.GatedSteps) > 0 {
+		steps := slices.Clone(issue.GatedSteps)
+		for i := range steps {
+			steps[i].exemptionLeftOff = true
+		}
+		issue.GatedSteps, moved = steps, true
+	}
+	return issue, moved
+}
+
+// withoutExemptStatus is the issue with no `status` on each gated step whose status restore's
+// reader does not admit: one the declared table holds back from restore (answers.go's
+// gatedStepStatuses; fieldArrivals.heldBack says which values and why). Today that is the
+// `exempt` of specGateContract, which an older reader's enumeration refuses, and its schema reads
+// `status` as optional, so the step is served without it rather than as a status it is not.
+func withoutExemptStatus(issue Issue, restore int) (Issue, bool) {
+	unadmitted := func(step GatedStepView) bool {
+		return step.Status != "" && gatedStepStatusArrivals.heldBack(string(step.Status), restore)
+	}
+	if !slices.ContainsFunc(issue.GatedSteps, unadmitted) {
+		return issue, false
+	}
+	steps := slices.Clone(issue.GatedSteps)
+	for i := range steps {
+		if unadmitted(steps[i]) {
+			steps[i].Status = ""
+		}
+	}
+	issue.GatedSteps = steps
+	return issue, true
+}
+
 // fieldArrivals is one enumerated field of the declared table as a value strip reads it: the
 // contract the field itself arrived at, and the contract each of its values did (arrivalsOf).
 type fieldArrivals struct {
@@ -1449,9 +1502,10 @@ func (f fieldArrivals) heldBack(value string, restore int) bool {
 // two key paths (answers.go's enumeratedFields), both rows take the one list, and shapeIssue
 // shapes the issue behind both answers.
 var (
-	strandedStateArrivals = arrivalsOf(strandedStates)
-	waitAnswerArrivals    = arrivalsOf(waitAnswers)
-	lineKindArrivals      = arrivalsOf(lineKinds)
+	strandedStateArrivals   = arrivalsOf(strandedStates)
+	waitAnswerArrivals      = arrivalsOf(waitAnswers)
+	lineKindArrivals        = arrivalsOf(lineKinds)
+	gatedStepStatusArrivals = arrivalsOf(gatedStepStatuses)
 )
 
 // arrivalsOf is one list of the declared table as the arrivals of its field: each value under

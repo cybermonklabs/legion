@@ -276,6 +276,12 @@ type DispatchArtifact struct {
 	// decide whether the approval queues the root: a nil view queues nothing and is never an
 	// error, since nothing but that decision reads it.
 	Issue *dispatch.Issue
+	// ChangeRequest is what the daemon read of the issue's change request at Version, for a version
+	// of the registered spec document of a gate under the rule of a change request, read before the
+	// fact is applied (the daemon's prepareArtifact, its gate seed and the reset above Dispatch),
+	// and nil for every other fact: under that rule a version that proposes nothing moves the gate's
+	// exemption with it, so the gate stays open (R23).
+	ChangeRequest *ChangeRequestRead
 }
 
 func (f DispatchArtifact) namedIssue() (string, bool) { return f.Key, true }
@@ -1108,9 +1114,94 @@ type GateRegistered struct {
 	RequestAsk              string
 	RequestWaitsOnAgent     bool
 	ReviewedBy              dispatch.Actor
+	// ChangeRequest is what register_gate read of the issue's change request at the registered
+	// version, for a registration of the spec step of a deployment that gates it, and nil for every
+	// other registration and for a Dispatch older than the route (dispatch.NoRoute): the first
+	// registration of a generation fixes the gate's rule from it, and under the rule of a change
+	// request a version that proposes nothing opens the gate with no person (R23, R24).
+	ChangeRequest *ChangeRequestRead
 }
 
 func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
+
+// ChangeRequestRead is what the daemon read of an issue's change request at one version of its
+// spec (dispatch.ChangeRequest), carried by the fact that applies that version, since the workflow
+// performs no I/O: the version read, whether the issue's repository is a spec source, and whether
+// that version proposes no statement, component or interface and changes no approved check.
+type ChangeRequestRead struct {
+	Version         int
+	SpecSource      bool
+	ProposesNothing bool
+}
+
+// ChangeRequestReadOf is read as a fact carries it.
+func ChangeRequestReadOf(read dispatch.ChangeRequest) *ChangeRequestRead {
+	return &ChangeRequestRead{Version: read.Version, SpecSource: read.SpecSource, ProposesNothing: read.ProposesNothing()}
+}
+
+// ExemptsVersion says whether the read opens version with no person: it is of that very version,
+// of a spec-source issue, and the version proposes nothing. A nil read exempts nothing.
+func (r *ChangeRequestRead) ExemptsVersion(version int) bool {
+	return r != nil && r.Version == version && r.SpecSource && r.ProposesNothing
+}
+
+// SpecRequestStale is Dispatch's spec.request_stale on Key, at Mark (D8): a person's approval of
+// the issue's change request (ApprovalRequest, "" when it named none) was refused because the
+// approved spec changed each of Statements after the owner wrote the request, for Reason. The
+// daemon tells the issue's owner, the architect of its tree root, in one durable notice, and the
+// controller where it holds no live owner. Actor is the person whose approval was refused.
+type SpecRequestStale struct {
+	Key             string
+	Seq             int64
+	ApprovalRequest string
+	Statements      []StaleNode
+	Reason          string
+	Mark            record.EventMark
+	Actor           dispatch.Actor
+}
+
+func (f SpecRequestStale) namedIssue() (string, bool) { return f.Key, true }
+
+// StaleNode is one node of a stale change request: its id, the approved version the request read
+// (Base, 0 for none), and the approved spec's current one (Current, 0 where it holds none or
+// removed it, which Removed says).
+type StaleNode struct {
+	ID      string
+	Base    int
+	Current int
+	Removed bool
+}
+
+// SpecOutcomesRecorded is Dispatch's spec.outcomes_recorded on Key: one list of outcomes (List:
+// author, reviewer or final) recorded as Record for pull request PullRequest at Head. It makes the
+// daemon read the ending condition of Key's tree again for every member in merging (D10); what the
+// list holds is Dispatch's to judge.
+type SpecOutcomesRecorded struct {
+	Key         string
+	Seq         int64
+	Record      int64
+	PullRequest string
+	Head        string
+	List        string
+}
+
+func (f SpecOutcomesRecorded) namedIssue() (string, bool) { return f.Key, true }
+
+// SpecEndingRead is the outbox's read of the ending condition of Issue's change request at Head
+// (record.SpecEndingRead), never decoded from an event: State is Dispatch's `ready` or `waiting`,
+// Reasons each reason in Dispatch's order, and Version the version of the tree root's spec Dispatch
+// read. The merger's start fence applies it as well, from its own read. Cause is what queued the
+// read, which the workflow logs.
+type SpecEndingRead struct {
+	Issue   string
+	Head    string
+	State   string
+	Reasons []dispatch.EndingReason
+	Version int
+	Cause   record.SpecEndingCause
+}
+
+func (f SpecEndingRead) namedIssue() (string, bool) { return f.Issue, true }
 
 // CloseRoot is a tree root's architect ending its tree before the tree's first phase starts, with
 // the reason it gives: a human decided no change at the design gate, or the issue is moot.

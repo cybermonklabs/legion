@@ -227,6 +227,12 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.gateAboveDispatch(ctx, tx, fact)
 	case intake.GateRequestFound:
 		return e.gateRequestFound(ctx, tx, fact)
+	case intake.SpecRequestStale:
+		return e.specRequestStale(ctx, tx, fact)
+	case intake.SpecOutcomesRecorded:
+		return e.specOutcomesRecorded(ctx, tx, fact)
+	case intake.SpecEndingRead:
+		return e.specEndingRead(ctx, tx, fact)
 	case intake.CatchUpApplied:
 		return e.catchUpApplied(ctx, tx, fact)
 	case intake.DispatchAskOpened:
@@ -1982,7 +1988,11 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			reason += ": " + r.reason
 		}
 	}
-	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), task(issue, record.PhaseRow{}, pr, reason), freshSession)
+	text, err := e.mergingTask(ctx, tx, issue, task(issue, record.PhaseRow{}, pr, reason))
+	if err != nil {
+		return "", err
+	}
+	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), text, freshSession)
 }
 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that
@@ -2216,7 +2226,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// merge could not say it, since the issue was elsewhere then.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 	if !mergedAlready {
-		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), movedBack); err != nil {
+		text, err := e.mergingTask(ctx, tx, issue, task(issue, handoff, pr, reason))
+		if err != nil {
+			return err
+		}
+		if err := e.start(ctx, tx, issue, starting, text, movedBack); err != nil {
 			return err
 		}
 	}

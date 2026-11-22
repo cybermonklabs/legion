@@ -275,6 +275,11 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 		if err := e.mergeForwardLanded(ctx, tx, *issue, pr); err != nil {
 			return intake.Result{}, err
 		}
+		// A merging member of a tree whose spec gate opened with no person lands nothing until
+		// the ending condition holds at its head, so the new head is read (D10).
+		if err := e.headMovedInMerging(ctx, tx, *issue, pr.HeadSHA); err != nil {
+			return intake.Result{}, err
+		}
 	}
 	switch issue.Phase {
 	case phase.Reviewing:

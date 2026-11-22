@@ -968,6 +968,8 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 		return r.conflictConfirm(ctx, row, value)
 	case record.MergeForwardMessage:
 		return r.mergeForwardMessage(ctx, row, value)
+	case record.SpecEndingRead:
+		return r.specEndingRead(ctx, row, value)
 	default:
 		return fmt.Errorf("outbox row %d: no executor for %T", row.ID, payload)
 	}
@@ -1884,6 +1886,11 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	}
 	if errors.Is(err, errNoticeUnroutable) {
 		r.log.Error("outbox notice finished undelivered: it has no architect", "row", row.ID, "kind", payload.Kind, "issue", row.Issue, "error", err)
+		// A stale change request nobody of its tree can hear goes to the controller (D8).
+		if payload.Kind == record.SpecRequestStaleNotice {
+			_, key := payload.Published(row.ID)
+			return r.staleRequestToController(ctx, row.Issue, payload, key, row.ID)
+		}
 		return nil
 	}
 	if err != nil {
@@ -2535,7 +2542,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return nil
 			}
 		}
-		if err := r.mergerWaitsForTheDesignGate(ctx, issue, payload.Role); err != nil {
+		if err := r.mergerWaitsForTheDesignGate(ctx, row, issue, payload.Role); err != nil {
 			return err
 		}
 		// A child carried into a tree of its own — a finished root's hand-over, or a person's label
@@ -3740,6 +3747,16 @@ func (r *outbox) seedGate(ctx context.Context, row record.OutboxRow, payload rec
 	case approval.LatestVersion == payload.Version:
 		return nil
 	}
+	// A version the seed applies to a gate under the rule of a change request carries what Dispatch
+	// reads of that version, so a version that proposes nothing keeps the gate open, or opens it,
+	// with no person (R23); the reset of a gate above Dispatch reads it the same way.
+	if fact.Kind == intake.DispatchArtifactVersion {
+		read, err := changeRequestOfGate(ctx, r.pool, r.records, r.dispatch, row.Issue, payload.ArtifactID, fact.Version)
+		if err != nil {
+			return err
+		}
+		fact.ChangeRequest = read
+	}
 	if approval.LatestVersion < payload.Version {
 		id := fmt.Sprintf("gate-above:%s:%d:%s:%s:%d:%s:%d:%d", row.Issue, payload.Generation, payload.Step, payload.ArtifactID, payload.Version, fact.Kind, fact.Version, fact.Mark.ID())
 		if _, err := intake.ApplyFact(ctx, r.pool, "outbox", id, intake.GateAboveDispatch{Generation: payload.Generation, Above: payload.Version, Read: fact}, r.handlers...); err != nil {
@@ -3797,16 +3814,21 @@ func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (bool
 // wait error for a merger start the gate holds, which leaves the start on the row's backoff as a
 // check start waits on its look (checkLookHolds), and nil for every other role and an open gate.
 // The gate opening releases the row's next try, and tells every phase worker of the tree and the
-// root's architect as well (workflow's tellGateMoved).
-func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.Issue, role claim.Role) error {
+// root's architect as well (workflow's tellGateMoved). A gate open by exemption holds the start
+// too while the ending condition of its change request waits at the merging issue's head
+// (mergerWaitsForTheEnding, D10).
+func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, row record.OutboxRow, issue record.Issue, role claim.Role) error {
 	if role != claim.RoleMerger {
 		return nil
 	}
 	closed, err := r.designGateClosed(ctx, issue)
-	if err != nil || !closed {
+	if err != nil {
 		return err
 	}
-	return wait.Errorf("the merger of %s waits for the design gate of %s to open", issue.Key, issue.Tree)
+	if closed {
+		return wait.Errorf("the merger of %s waits for the design gate of %s to open", issue.Key, issue.Tree)
+	}
+	return r.mergerWaitsForTheEnding(ctx, row, issue, role)
 }
 
 // checkLookHolds is the production check a check start row still has a look to start in, nil for

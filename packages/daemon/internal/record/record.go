@@ -1506,6 +1506,77 @@ type DesignGate struct {
 	// root's architect writes its spec again: the mark belongs to the generation whose approval it
 	// records.
 	EverOpened bool
+	// Rule is the rule the gate started under in this generation, which a later registration of
+	// the step keeps (R24: an approval recorded before a rule changes keeps that rule): the rule of
+	// a person's approval (GateRuleApproval, the zero value, which every row written before the
+	// rule existed reads as), or the rule of a change request (GateRuleChangeRequest), which the
+	// first registration of the spec step fixes when Dispatch answers that the issue's repository
+	// is a spec source.
+	Rule GateRule
+	// ExemptVersion is the version of the document that opened the gate with no person: under the
+	// rule of a change request, a version Dispatch read as proposing no statement, component or
+	// interface and changing no approved check (R23). It is never an approval in a person's name,
+	// and nil while no version has opened the gate that way. The gate is open by exemption while it
+	// equals LatestVersion (GateExempt).
+	ExemptVersion *int
+}
+
+// GateRule is the rule a design gate opens under: GateRuleApproval, a person approves the current
+// version, or GateRuleChangeRequest, a version of a spec-source issue's change request that proposes
+// nothing opens it with no person, and any other version waits for the person as the first does.
+type GateRule string
+
+const (
+	// GateRuleApproval is the rule of a person's approval, and the zero value: a gate built with
+	// no rule, and a row written before the rule existed, is under it.
+	GateRuleApproval GateRule = ""
+	// GateRuleChangeRequest is the rule of a change request (R23).
+	GateRuleChangeRequest GateRule = "change_request"
+)
+
+// Word is the rule as the store and the state write it: `approval` or `change_request`.
+func (r GateRule) Word() string {
+	if r == GateRuleApproval {
+		return "approval"
+	}
+	return string(r)
+}
+
+// gateRuleOfWord is the rule a stored word names; the store's check admits no other word.
+func gateRuleOfWord(word string) GateRule {
+	if word == GateRuleApproval.Word() {
+		return GateRuleApproval
+	}
+	return GateRule(word)
+}
+
+// SpecEnding is the daemon's last reading of the ending condition of a change request for one
+// issue in merging (D10): the pull request head it was read at, the state Dispatch answered
+// (SpecEndingReady or SpecEndingWaiting), each reason code the tree root's architect was told of at
+// that head, and when it was read. It is written only for a member of a tree whose spec gate is
+// open by exemption (GateExempt), by the merger's start fence and by the re-read of the condition
+// (SpecEndingRead), and the deliveries a released merger is woken for wait while it waits at the
+// pull request's current head.
+type SpecEnding struct {
+	Issue  string
+	Head   string
+	State  string
+	Told   []string
+	ReadAt time.Time
+}
+
+// SpecEndingReady and SpecEndingWaiting are the two states of a reading, Dispatch's own words.
+const (
+	SpecEndingReady   = "ready"
+	SpecEndingWaiting = "waiting"
+)
+
+// Waits says whether the reading holds the merge: Dispatch answered `waiting`.
+func (e SpecEnding) Waits() bool { return e.State == SpecEndingWaiting }
+
+// WaitsAt says whether the reading holds the merge of head: it waits, and it was read at head.
+func (e *SpecEnding) WaitsAt(head string) bool {
+	return e != nil && e.Waits() && e.Head == head
 }
 
 // SpecGate is the DesignStepSpec row of gates, nil when the issue holds none. Every reader that
@@ -2098,6 +2169,12 @@ type Store interface {
 	// PutGate writes one gate row, keyed by its issue and its step. A gate built with no step is
 	// written as DesignStepSpec (Postgres.PutGate).
 	PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) error
+	// SpecEnding is the daemon's last reading of the ending condition of issue's change request,
+	// nil when it holds none.
+	SpecEnding(ctx context.Context, tx pgx.Tx, issue string) (*SpecEnding, error)
+	// PutSpecEnding writes the reading of ending.Issue, replacing the one it holds. A state that
+	// is none of Dispatch's two is refused.
+	PutSpecEnding(ctx context.Context, tx pgx.Tx, ending SpecEnding) error
 	// RootAsk is the mirror row of ask on issue, nil when it has none.
 	RootAsk(ctx context.Context, tx pgx.Tx, issue, ask string) (*RootAsk, error)
 	// PutRootAsk writes ask's mirror row, unless any of the stored row's fences (Seq, WaitingOnSeq,

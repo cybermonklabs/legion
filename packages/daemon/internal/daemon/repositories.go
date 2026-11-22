@@ -2513,10 +2513,22 @@ func (w *workflowRuntime) labelSetter(ctx context.Context, key string) (string, 
 // parked labelled root's primary document queues that root (intake.DispatchArtifact.Issue), so for
 // an approval a person made that is not Dispatch's carry of an earlier one (CarriedApproval) the
 // issue is read from Dispatch's detail, one read per such event, a read that fails leaving the
-// event to be retried. Every other review or version event — a session's or Dispatch's own review,
-// a changes request, a carried approval, a version — asks Dispatch nothing and is applied as
-// decoded, with no view, which queues nothing.
+// event to be retried. A version of a document the root's spec gate holds under the rule of a
+// change request reads, instead, the change request at that version (changeRequestOfGate), which
+// the fact carries so the workflow can keep the gate open, or open it, for a version that proposes
+// nothing (R23); a read Dispatch fails leaves the event to be retried too. Every other review or
+// version event — a session's or Dispatch's own review, a changes request, a carried approval, a
+// version of any other document — asks Dispatch nothing and is applied as decoded, with no view,
+// which queues nothing.
 func (w *workflowRuntime) prepareArtifact(ctx context.Context, fact intake.DispatchArtifact) (intake.DispatchArtifact, error) {
+	if fact.Kind == intake.DispatchArtifactVersion {
+		read, err := changeRequestOfGate(ctx, w.pool, w.records, w.dispatch, fact.Key, fact.ArtifactID, fact.Version)
+		if err != nil {
+			return fact, fmt.Errorf("prepare version %d of %s's document %s: %w", fact.Version, fact.Key, fact.ArtifactID, err)
+		}
+		fact.ChangeRequest = read
+		return fact, nil
+	}
 	if !fact.PersonApproval() {
 		return fact, nil
 	}

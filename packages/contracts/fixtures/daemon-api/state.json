@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 216,
-    "caller": 216
+    "daemon": 222,
+    "caller": 222
   },
   "admission": {
     "cap": 5,
@@ -101,6 +101,7 @@
           "artifactId": "0c7e5a31-9d84-4b26-a0f3-5e81c2d47b90",
           "currentVersion": 4,
           "approvedVersion": 4,
+          "exemptVersion": null,
           "status": "approved"
         }
       ],
@@ -266,7 +267,9 @@
       "designGate": {
         "artifactId": "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
         "currentVersion": 7,
-        "approvedVersion": 6
+        "approvedVersion": 6,
+        "exemptVersion": null,
+        "rule": "approval"
       },
       "gatedSteps": [
         {
@@ -274,6 +277,7 @@
           "artifactId": "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
           "currentVersion": 7,
           "approvedVersion": 6,
+          "exemptVersion": null,
           "status": "waiting"
         }
       ],
@@ -374,6 +378,7 @@
         {
           "step": "spec",
           "approvedVersion": null,
+          "exemptVersion": null,
           "status": "unregistered"
         }
       ],
@@ -430,6 +435,7 @@
           "artifactId": "e5a2c1d7-3b46-4f82-9e07-2d4a6c8b1f53",
           "currentVersion": 3,
           "approvedVersion": 3,
+          "exemptVersion": null,
           "status": "approved"
         }
       ],
@@ -470,6 +476,7 @@
           "artifactId": "b71f0a94-6c3e-4d28-85af-19c7d0e3b462",
           "currentVersion": 2,
           "approvedVersion": null,
+          "exemptVersion": null,
           "status": "changes_requested",
           "changesReason": "name the rollback path for the schema change"
         }
@@ -555,6 +562,7 @@
           "artifactId": "f3b8d205-7c41-4e69-9a02-5d7e1c6b4f38",
           "currentVersion": 5,
           "approvedVersion": 5,
+          "exemptVersion": null,
           "status": "approved"
         }
       ],
@@ -614,6 +622,7 @@
           "artifactId": "a9142c7e-0b63-4d85-8f17-3e6a0d9b2c54",
           "currentVersion": 2,
           "approvedVersion": 2,
+          "exemptVersion": null,
           "status": "approved"
         }
       ],

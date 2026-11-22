@@ -51,10 +51,11 @@ const ServingFloor = 46
 // one of the two alone would describe a shape at a contract no entry declares. The next two are
 // repositoriesLiveContract and childRouteRemovedContract rather than their numbers for the same
 // reason: dispatch://INFRA-4401's change and dispatch://INFRA-3178's each name their constant, and
-// a renumber of either moves its constant and this list with it. 216, this daemon's own, is
-// dispatch://INFRA-1150's: the `decisions` design step is gone, which narrows a shape an older
-// reader parses wider and so needs no serving down.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, 216}
+// a renumber of either moves its constant and this list with it. 216 took the `decisions` design
+// step out, which narrows a shape an older reader parses wider and so needs no serving down.
+// specGateContract, this daemon's own, is the spec gate's exemption and rule, named by its
+// constant for the reason the three before it are.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, 216, specGateContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -590,8 +591,17 @@ var mergeWaitStates = valuesFrom(mergeWaitContract,
 // parses it (packages/contracts' legionGatedStepView reads GATED_STEPS).
 var designSteps = valuesFrom(gatedStepsContract,
 	record.DesignStep("decisions"), record.DesignStepCriteria, record.DesignStepSpec)
-var gatedStepStatuses = valuesFrom(gatedStepsContract,
-	GatedStepUnregistered, GatedStepWaiting, GatedStepApproved, GatedStepChangesRequested)
+
+// `exempt` arrived after the field, at specGateContract (record.GateExempt), and a step in it is
+// served without its `status` below that contract (shaping.go's withoutExemptStatus), so the list
+// is written value by value, sorted by value.
+var gatedStepStatuses = []EnumeratedValue{
+	{Value: string(GatedStepApproved), Since: gatedStepsContract},
+	{Value: string(GatedStepChangesRequested), Since: gatedStepsContract},
+	{Value: string(GatedStepExempt), Since: specGateContract},
+	{Value: string(GatedStepUnregistered), Since: gatedStepsContract},
+	{Value: string(GatedStepWaiting), Since: gatedStepsContract},
+}
 
 // memoryGroups is every group a tree's memory draw can give it, and memoryDrawModes every mode
 // it can be drawn under. Both are recorded at memoryContract, the contract the draw arrived at.

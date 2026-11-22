@@ -273,7 +273,9 @@ function stateSummary(state: LegionState): string {
     if (issue.holdReason !== undefined) lines.push(`  hold ${issue.holdReason}`);
     if (issue.designGate !== undefined) {
       const gate = issue.designGate;
-      lines.push(`  gate ${gate.currentVersion} approved ${gate.approvedVersion ?? "none"}`);
+      // A gate a version that proposes nothing opened names that version too (contract 222).
+      const exempt = typeof gate.exemptVersion === "number" ? ` exempt ${gate.exemptVersion}` : "";
+      lines.push(`  gate ${gate.currentVersion} approved ${gate.approvedVersion ?? "none"}${exempt}`);
     }
     const claims: Array<readonly [string, SummaryClaim]> = [];
     if (issue.architect !== undefined) claims.push(["architect", issue.architect]);

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -490,6 +491,38 @@ func (c *HTTPClient) Handoff(ctx context.Context, id string) (Handoff, error) {
 	return response.handoff(), nil
 }
 
+// ChangeRequest reads GET /api/v1/issues/{key}/change-request?version=<version>: the issue's change
+// request at that version of its spec, which Dispatch answers or refuses, never with an empty
+// answer (400 INVALID_VERSION, 404 VERSION_NOT_FOUND, 409 CHANGE_REQUEST_UNREADABLE). A Dispatch
+// older than the route answers its router's 404 (NoRoute).
+func (c *HTTPClient) ChangeRequest(ctx context.Context, key string, version int) (ChangeRequest, error) {
+	var response changeRequestResponse
+	query := url.Values{"version": {strconv.Itoa(version)}}
+	if err := c.request(ctx, http.MethodGet, "/api/v1/issues/"+url.PathEscape(key)+"/change-request?"+query.Encode(), nil, &response); err != nil {
+		return ChangeRequest{}, err
+	}
+	return ChangeRequest{Issue: response.Issue, Version: response.Version, SpecSource: response.SpecSource, Repo: response.Repo,
+		VerificationVersion: response.VerificationVersion, Proposes: response.Proposes, ChangesChecks: response.ChangesChecks,
+		Judgment: response.Judgment}, nil
+}
+
+// SpecEnding reads GET /api/v1/issues/{key}/change-request/ending?head=<head>: whether the issue's
+// change request may land at that pull request head, judged at the spec's latest version. Dispatch
+// refuses a head that is no commit 400 INVALID_HEAD. A Dispatch older than the route answers its
+// router's 404 (NoRoute).
+func (c *HTTPClient) SpecEnding(ctx context.Context, key, head string) (SpecEnding, error) {
+	var response specEndingResponse
+	query := url.Values{"head": {head}}
+	if err := c.request(ctx, http.MethodGet, "/api/v1/issues/"+url.PathEscape(key)+"/change-request/ending?"+query.Encode(), nil, &response); err != nil {
+		return SpecEnding{}, err
+	}
+	ending := SpecEnding{Issue: response.Issue, Head: response.Head, Version: response.Version, State: response.State, Judgment: response.Judgment}
+	for _, reason := range response.Reasons {
+		ending.Reasons = append(ending.Reasons, EndingReason(reason))
+	}
+	return ending, nil
+}
+
 func (c *HTTPClient) request(ctx context.Context, method, path string, body, into any) error {
 	bounded, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
@@ -727,6 +760,33 @@ func (r handoffResponse) handoff() Handoff {
 		Version:  r.Version,
 		Author:   HandoffAuthor{Kind: r.Author.Kind, ID: r.Author.ID},
 	}
+}
+
+// changeRequestResponse is the part of Dispatch's change-request answer the daemon reads: the
+// proposals, the changed checks, the problems and the conclusion are the person's to read on
+// Dispatch, so they are left undecoded.
+type changeRequestResponse struct {
+	Issue               string `json:"issue"`
+	Version             int    `json:"version"`
+	SpecSource          bool   `json:"spec_source"`
+	Repo                string `json:"repo"`
+	VerificationVersion int    `json:"verification_version"`
+	Proposes            bool   `json:"proposes"`
+	ChangesChecks       bool   `json:"changes_checks"`
+	Judgment            string `json:"judgment"`
+}
+
+// specEndingResponse is the part of Dispatch's ending answer the daemon reads.
+type specEndingResponse struct {
+	Issue   string `json:"issue"`
+	Head    string `json:"head"`
+	Version int    `json:"version"`
+	State   string `json:"state"`
+	Reasons []struct {
+		Code   string `json:"code"`
+		Detail string `json:"detail"`
+	} `json:"reasons"`
+	Judgment string `json:"judgment"`
 }
 
 type actor struct {

@@ -1,0 +1,366 @@
+package workflow
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strings"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
+)
+
+// registeredRule is the rule a registration of step writes its gate under (R24): the rule the
+// row of that step already holds in this generation, whatever document it names, since the first
+// registration of a generation fixes it and a re-admission's clear of the generation is what lets
+// the next one fix it again; and for the first registration, the rule of a change request where
+// the registration read the issue's change request and Dispatch answered that the issue's
+// repository is a spec source, and the rule of a person's approval otherwise — every other step, a
+// Dispatch older than the route, and a repository that is no spec source.
+func registeredRule(gates map[record.DesignStep]record.DesignGate, step record.DesignStep, read *intake.ChangeRequestRead) record.GateRule {
+	if held, found := gates[step]; found {
+		return held.Rule
+	}
+	if step == record.DesignStepSpec && read != nil && read.SpecSource {
+		return record.GateRuleChangeRequest
+	}
+	return record.GateRuleApproval
+}
+
+// exemptAt is gate with the version read opens with no person recorded as its exemption, when
+// gate is under the rule of a change request and read is of version and proposes nothing (R23);
+// gate as it is otherwise. The exemption is never an approval in a person's name: ApprovedVersion
+// is left as it stands.
+func exemptAt(gate record.DesignGate, version int, read *intake.ChangeRequestRead) record.DesignGate {
+	if gate.Rule != record.GateRuleChangeRequest || !read.ExemptsVersion(version) {
+		return gate
+	}
+	exempt := version
+	gate.ExemptVersion = &exempt
+	return gate
+}
+
+// openedNotice is the design-approved notice of gate's opening at version, the one notice every
+// opening the architect is told of sends: a person's approval names that person (reviewer), and
+// an opening by exemption alone names nobody and gives the reason no person approved it, since
+// version proposes nothing (R23). ref is the step's document (stepRef).
+func openedNotice(gate record.DesignGate, version int, reviewer, ref string) record.Notice {
+	approved := gate.ApprovedVersion != nil && *gate.ApprovedVersion == gate.LatestVersion
+	if record.GateExempt(gate) && !approved {
+		return record.Notice{Kind: "design-approved", Version: version, Ref: ref, Reason: exemptionReason(version)}
+	}
+	return record.Notice{Kind: "design-approved", Version: version, Actor: reviewer, Ref: ref}
+}
+
+// exemptionReason is the reason a design-approved notice of an opening by exemption gives.
+func exemptionReason(version int) string {
+	return fmt.Sprintf("no proposal: version %d of the change request proposes no statement, component or interface and changes no approved check, so no person approves it", version)
+}
+
+// exemptSpecGate is whether the spec gate of tree, its root's row of the spec step, stands open by
+// exemption (record.GateExempt): the gate whose tree lands nothing until the ending condition of
+// its change request holds at the head that would land (D10).
+func (e *Engine) exemptSpecGate(ctx context.Context, tx pgx.Tx, tree string) (bool, error) {
+	gates, err := e.store.GatesOf(ctx, tx, tree)
+	if err != nil {
+		return false, err
+	}
+	spec := record.SpecGate(gates)
+	return spec != nil && record.GateExempt(*spec), nil
+}
+
+// queueEndingReads queues the read of the ending condition for every member of tree in merging
+// whose pull request the record holds a head of, when tree's spec gate stands open by exemption
+// (record.SpecEndingRead): a version or an approval of the root's spec document, or a list of
+// outcomes recorded on an issue of the tree, can turn the condition either way for each of them.
+// A tree whose gate is open some other way, or closed, queues nothing: the gate itself holds or
+// releases its merger then.
+func (e *Engine) queueEndingReads(ctx context.Context, tx pgx.Tx, tree string, cause record.SpecEndingCause) error {
+	exempt, err := e.exemptSpecGate(ctx, tx, tree)
+	if err != nil || !exempt {
+		return err
+	}
+	members, err := e.store.TreeIssues(ctx, tx, tree)
+	if err != nil {
+		return err
+	}
+	for _, member := range members {
+		if member.Phase != phase.Merging {
+			continue
+		}
+		pr, err := e.store.PullRequest(ctx, tx, member.Key)
+		if err != nil {
+			return err
+		}
+		if pr == nil || pr.HeadSHA == "" {
+			continue
+		}
+		if err := e.enqueue(ctx, tx, member.Key, record.SpecEndingRead{Head: pr.HeadSHA, Cause: cause}); err != nil {
+			return err
+		}
+		e.logOnCommit(ctx, "workflow: the ending condition of a change request is read again for a merging member", "issue", member.Key,
+			"tree", tree, "head", pr.HeadSHA, "cause", cause)
+	}
+	return nil
+}
+
+// headMovedInMerging queues the read of the ending condition at issue's new head, for an issue in
+// merging whose tree's spec gate stands open by exemption: the reading the daemon holds is of the
+// head before, and a head with no final list of its own holds the merge (D10).
+func (e *Engine) headMovedInMerging(ctx context.Context, tx pgx.Tx, issue record.Issue, head string) error {
+	if issue.Phase != phase.Merging || head == "" {
+		return nil
+	}
+	exempt, err := e.exemptSpecGate(ctx, tx, issue.Tree)
+	if err != nil || !exempt {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a merging member's head moved; the ending condition of its tree's change request is read again", "issue", issue.Key,
+		"tree", issue.Tree, "head", head)
+	return e.enqueue(ctx, tx, issue.Key, record.SpecEndingRead{Head: head, Cause: record.SpecEndingCauseHead})
+}
+
+// specOutcomesRecorded applies Dispatch's spec.outcomes_recorded on an issue: a list of outcomes
+// is part of what the ending condition of its tree's change request judges, so every member of the
+// tree in merging is read again (queueEndingReads). An issue the record does not hold belongs to no
+// tree the daemon runs, and queues nothing.
+func (e *Engine) specOutcomesRecorded(ctx context.Context, tx pgx.Tx, fact intake.SpecOutcomesRecorded) (intake.Result, error) {
+	issue, err := e.store.Issue(ctx, tx, fact.Key)
+	if err != nil || issue == nil {
+		return intake.Result{}, err
+	}
+	e.logOnCommit(ctx, "workflow: a list of outcomes was recorded on an issue of a tree", "issue", issue.Key, "tree", issue.Tree,
+		"record", fact.Record, "list", fact.List, "head", fact.Head)
+	return intake.Result{}, e.queueEndingReads(ctx, tx, issue.Tree, record.SpecEndingCauseOutcomes)
+}
+
+// specEndingRead applies one read of the ending condition of a merging member's change request
+// at its pull request's head (D10): it records the reading (record.SpecEnding), tells the
+// member's running merger when the reading turns, and tells the tree root's architect each reason
+// it has not been told at that head.
+//
+// The read is held to the record as it stands now, since a read is made outside the fact's lock:
+// a member that left merging, a pull request whose head moved past the read, or a tree whose spec
+// gate stands open by exemption no more, takes nothing from it. The head that moved has a read of
+// its own queued (headMovedInMerging), and a gate that closed holds the merger itself.
+//
+// A reading that waits after one that was ready — or after none, since a merger may already run
+// under a gate that opened by exemption since — tells the merger the gate closed for that head,
+// and one that is ready after one that waited tells it the gate opened; a reading the same as the
+// one before tells it nothing. The message goes to the merger's own role topic (record.RoleMessage),
+// which a merger that holds no role is not told: its start is held by the same reading (the
+// outbox's merger fence), and a released merger's woken deliveries wait for it (deliverHeld).
+//
+// Each reason is told once per head, in a spec-ending-waits notice on the tree's root, so it reaches
+// the root's architect, the owner of the change request; the record keeps the codes told at the
+// head it read, and a new head tells each reason again.
+func (e *Engine) specEndingRead(ctx context.Context, tx pgx.Tx, fact intake.SpecEndingRead) (intake.Result, error) {
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil || issue == nil {
+		return intake.Result{}, err
+	}
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	exempt, err := e.exemptSpecGate(ctx, tx, issue.Tree)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	var stale string
+	switch {
+	case issue.Phase != phase.Merging:
+		stale = fmt.Sprintf("the issue stands in %s, not merging", issue.Phase)
+	case pr == nil || pr.HeadSHA != fact.Head:
+		stale = "the pull request's head moved past the read"
+	case !exempt:
+		stale = "the tree's spec gate stands open by exemption no more"
+	}
+	if stale != "" {
+		e.logOnCommit(ctx, "workflow: a read of the ending condition takes nothing: "+stale, "issue", issue.Key, "head", fact.Head, "state", fact.State)
+		return intake.Result{}, nil
+	}
+	before, err := e.store.SpecEnding(ctx, tx, issue.Key)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	var told []string
+	if before != nil && before.Head == fact.Head {
+		told = slices.Clone(before.Told)
+	}
+	waits := fact.State != record.SpecEndingReady
+	for _, reason := range fact.Reasons {
+		if slices.Contains(told, reason.Code) {
+			continue
+		}
+		told = append(told, reason.Code)
+		if err := e.notice(ctx, tx, issue.Tree, record.Notice{Kind: record.SpecEndingWaitsNotice, Role: claim.RoleArchitect,
+			Reason: reason.Code, Summary: endingWaitsSummary(issue.Tree, issue.Key, fact.Head, reason.Code, reason.Detail)}); err != nil {
+			return intake.Result{}, err
+		}
+	}
+	reading := record.SpecEnding{Issue: issue.Key, Head: fact.Head, State: record.SpecEndingReady, Told: told, ReadAt: e.now()}
+	if waits {
+		reading.State = record.SpecEndingWaiting
+	}
+	if err := e.store.PutSpecEnding(ctx, tx, reading); err != nil {
+		return intake.Result{}, err
+	}
+	wasWaiting := before != nil && before.Waits()
+	e.logOnCommit(ctx, "workflow: the ending condition of a change request was read", "issue", issue.Key, "tree", issue.Tree,
+		"head", fact.Head, "state", reading.State, "was_waiting", wasWaiting, "cause", fact.Cause, "told", told)
+	if waits == wasWaiting {
+		return intake.Result{}, nil
+	}
+	return intake.Result{}, e.tellMergerEnding(ctx, tx, *issue, fact, waits)
+}
+
+// tellMergerEnding tells issue's merger, on its own role topic, that the design gate of its tree
+// closed or opened for the head fact read: the closed-gate message of a reading that waits, which
+// names each reason, and the opened-gate message of one that is ready. Both end with the step the
+// merger takes before each merge and each enqueue (mergerEndingStep). A merger whose token cannot
+// be built is logged and not told, as tellGateMoved logs one.
+func (e *Engine) tellMergerEnding(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.SpecEndingRead, closed bool) error {
+	told, err := e.addressRoles(issue.Project, []roleRecipient{{issue: issue.Key, role: claim.RoleMerger, row: issue.Key}},
+		e.logUnnamable(ctx, "workflow: the ending condition turned and the merger could not be named, so it is not told", "tree", issue.Tree, "head", fact.Head))
+	if err != nil {
+		return err
+	}
+	var body string
+	if closed {
+		var reasons []string
+		for _, reason := range fact.Reasons {
+			reasons = append(reasons, reason.Code+": "+reason.Detail)
+		}
+		body = fmt.Sprintf("The design gate of %s closed: the ending condition of its change request does not hold for head %s (%s). "+
+			"Merge nothing. Enqueue nothing. Take a queued pull request out of the merge queue. %s",
+			issue.Tree, fact.Head, strings.Join(reasons, "; "), mergerEndingStep(issue.Tree))
+	} else {
+		body = fmt.Sprintf("The design gate of %s opened: the ending condition of its change request holds for head %s. %s",
+			issue.Tree, fact.Head, mergerEndingStep(issue.Tree))
+	}
+	for _, to := range told {
+		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
+			return err
+		}
+	}
+	e.logOnCommit(ctx, "workflow: the merger is told the ending condition turned", "issue", issue.Key, "tree", issue.Tree, "head", fact.Head,
+		"closed", closed, "told", len(told))
+	return nil
+}
+
+// mergerEndingStep is the step a merger of a tree whose spec gate opened with no person takes before
+// each merge and each enqueue, as its start task and every message of the ending condition say it.
+func mergerEndingStep(tree string) string {
+	return fmt.Sprintf("Before each merge and each enqueue, run `dispatch spec-ending --issue %s --head <head>`, "+
+		"and merge or enqueue only when its first line reads `ready`.", tree)
+}
+
+// mergerExemptionParagraph is the paragraph the merger's start task ends with when its tree's spec
+// gate stands open by exemption (D10): the gate opened with no person, so the merger reads the
+// ending condition itself before each merge and each enqueue.
+func mergerExemptionParagraph(tree string) string {
+	return fmt.Sprintf("The design gate of %s opened with no person's approval: its change request proposes nothing. %s", tree, mergerEndingStep(tree))
+}
+
+// mergingTask is task with the paragraph of an exempt gate (mergerExemptionParagraph) at its end,
+// for a merger's start of a member whose tree's spec gate stands open by exemption, and task as it
+// is for every other start.
+func (e *Engine) mergingTask(ctx context.Context, tx pgx.Tx, issue record.Issue, text string) (string, error) {
+	if issue.Phase != phase.Merging {
+		return text, nil
+	}
+	exempt, err := e.exemptSpecGate(ctx, tx, issue.Tree)
+	if err != nil || !exempt {
+		return text, err
+	}
+	return text + " " + mergerExemptionParagraph(issue.Tree), nil
+}
+
+// endingWaitsSummary is what a spec-ending-waits notice says: the member whose merge waits, the
+// head, the reason's code and Dispatch's detail of it, and what the owner of the change request
+// does about it.
+func endingWaitsSummary(tree, member, head, code, detail string) string {
+	return fmt.Sprintf("The change request of %s may not land at head %s of %s's pull request. Reason %s: %s %s",
+		tree, head, member, code, strings.TrimSpace(detail), endingReasonStep(tree, head, code))
+}
+
+// endingReasonStep is what the owner does about one reason the ending condition does not hold: the
+// owner writes or corrects the conclusion block, has the reviewer record its final list at the
+// head, or opens an approval request of the whole spec (R26). A code this daemon does not know
+// sends the owner to Dispatch's own answer.
+func endingReasonStep(tree, head, code string) string {
+	switch code {
+	case "no_conclusion", "incomplete":
+		return fmt.Sprintf("Write or correct the conclusion block in the spec of %s.", tree)
+	case "no_final_list_for_head", "final_list_of_another_head":
+		return fmt.Sprintf("Have the reviewer record its final list at head %s.", head)
+	case "uncovered_without_approval":
+		return fmt.Sprintf("Open an approval request of the whole spec of %s.", tree)
+	}
+	return fmt.Sprintf("Run `dispatch spec-ending --issue %s --head %s` and act on its reasons.", tree, head)
+}
+
+// specRequestStale tells the owner of a change request that Dispatch refused a person's approval
+// of it as stale (D8): one notice of kind spec-request-stale, on the tree root of the issue the
+// request is on, so it reaches the root's architect, who writes the request again against the
+// approved spec and opens a new approval request. The fact is applied once per event, so one event
+// is one notice however often it is delivered. Where the daemon holds no record of the issue, so no
+// tree and no owner, the controller is told in the notice's place (record.ControllerNotice), and
+// names an owner; a notice whose architect will not hold its role again goes to the controller from
+// the outbox (the daemon's staleRequestToController).
+func (e *Engine) specRequestStale(ctx context.Context, tx pgx.Tx, fact intake.SpecRequestStale) (intake.Result, error) {
+	issue, err := e.store.Issue(ctx, tx, fact.Key)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	notice := record.Notice{Kind: record.SpecRequestStaleNotice, Role: claim.RoleArchitect, Reason: fact.Reason, Summary: staleRequestSummary(fact)}
+	if issue == nil {
+		e.logOnCommit(ctx, "workflow: a stale change request of an issue the daemon does not record goes to the controller", "issue", fact.Key)
+		return intake.Result{}, e.enqueue(ctx, tx, fact.Key, StaleRequestForController(fact.Key, notice))
+	}
+	e.logOnCommit(ctx, "workflow: the owner of a stale change request is told", "issue", fact.Key, "tree", issue.Tree, "nodes", len(fact.Statements))
+	return intake.Result{}, e.notice(ctx, tx, issue.Tree, notice)
+}
+
+// staleRequestSummary is what a spec-request-stale notice says: the issue, each stale node with the
+// version the request read and the approved spec's current one, Dispatch's reason, and the step.
+func staleRequestSummary(fact intake.SpecRequestStale) string {
+	nodes := make([]string, 0, len(fact.Statements))
+	for _, node := range fact.Statements {
+		switch {
+		case node.Removed:
+			nodes = append(nodes, fmt.Sprintf("%s (base %d, removed from the approved spec)", node.ID, node.Base))
+		default:
+			nodes = append(nodes, fmt.Sprintf("%s (base %d, current %d)", node.ID, node.Base, node.Current))
+		}
+	}
+	reason := strings.TrimSpace(fact.Reason)
+	if reason != "" && !strings.HasSuffix(reason, ".") {
+		reason += "."
+	}
+	return fmt.Sprintf("Dispatch refused the approval of the change request of %s: the approved spec changed %s after the request was written. %s %s",
+		fact.Key, strings.Join(nodes, ", "), reason, staleRequestOwnerStep)
+}
+
+// staleRequestOwnerStep is the step a spec-request-stale notice gives its owner, the last
+// sentences of its Summary.
+const staleRequestOwnerStep = "Write the request again against the approved spec. Then open a new approval request."
+
+// StaleRequestForController is the controller's copy of a spec-request-stale notice of issue, for
+// a request nobody of its tree can be told of (D8): the issue is unrecorded, or its architect will
+// not hold its role again. The copy says what happened as the owner's does, and gives the
+// controller's own step in place of the owner's: name an owner, who writes the request again and
+// opens a new approval request. Notices carry their action in their own text (the child-not-
+// recorded and session-store-fault notices do), so the controller needs no other source for it.
+// The copy carries no re-send count of the row it copies.
+func StaleRequestForController(issue string, notice record.Notice) record.ControllerNotice {
+	notice.Resends, notice.ResendOf = 0, 0
+	notice.Summary = strings.TrimSuffix(notice.Summary, staleRequestOwnerStep) + fmt.Sprintf(
+		"Name an owner for %s. The owner writes the request again against the approved spec and opens a new approval request.", issue)
+	return record.ControllerNotice(notice)
+}

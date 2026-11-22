@@ -72,6 +72,9 @@ const (
 	// OutboxKindPlanRecord writes the plan one run of the issue carries out onto Dispatch
 	// (PlanRecord).
 	OutboxKindPlanRecord OutboxKind = "plan_record"
+	// OutboxKindSpecEndingRead reads the ending condition of a change request again for one issue
+	// in merging (SpecEndingRead).
+	OutboxKindSpecEndingRead OutboxKind = "spec_ending_read"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on five lanes side by
@@ -90,10 +93,12 @@ const (
 // the message that tells the merger its pull request left the merge queue (merge_queue_removal),
 // the messages of a merge forward, which go to the implementer and to the worker of the phase the
 // issue stays in (merge_forward), and an update round's ask, which goes to any role whose process
-// runs in the issue's pod, its architect included (update_ask). It also runs the two reads of
-// GitHub that come before a message: the read before a merge-queue removal's message
-// (merge_queue_read), and the second read of a head a first read found conflicting, whose
-// confirmation is what writes a merge forward's messages (conflict_confirm). It is a lane of its
+// runs in the issue's pod, its architect included (update_ask). It also runs the reads that come
+// before a message: the read of GitHub before a merge-queue removal's message (merge_queue_read),
+// the second read of a head a first read found conflicting, whose confirmation is what writes a
+// merge forward's messages (conflict_confirm), and the read of Dispatch's ending condition of a
+// change request, whose answer is what tells the merger its gate closed or opened
+// (spec_ending_read). It is a lane of its
 // own because the board lane's architect notices are ordered among themselves and one of them
 // waits for as long as its architect holds no role (the daemon's errNoticeWaits): a role given the
 // words a hook fired on a move back, told that its pull request left the merge queue, asked to
@@ -124,7 +129,7 @@ const (
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
-	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward},
+	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindSpecEndingRead},
 	LaneClaim:       {OutboxKindClaimRelease},
 	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},
 }
@@ -1751,6 +1756,33 @@ type ConflictConfirm struct {
 
 func (ConflictConfirm) OutboxKind() OutboxKind { return OutboxKindConflictConfirm }
 
+// SpecEndingRead is the daemon's read of the ending condition of its issue's change request at
+// Head, the head of the issue's pull request (D10): the issue stands in merging, and the spec gate
+// of its tree is open by exemption (GateExempt), so nothing of the tree lands until Dispatch answers
+// `ready` for that head. Cause is what queued it (the SpecEndingCause values): a head move of the
+// issue's pull request, a spec.outcomes_recorded event of an issue of the tree, or a version or an
+// approval of the root's spec document. Its executor reads Dispatch once and applies what it read
+// (intake.SpecEndingRead), whose transaction records the reading (SpecEnding), tells the running
+// merger the gate closed or opened, and tells the tree root's architect each reason not yet told
+// at that head. It finishes without a read once the issue has left merging at Head, or the gate is
+// open by exemption no more.
+type SpecEndingRead struct {
+	Head  string          `json:"head"`
+	Cause SpecEndingCause `json:"cause"`
+}
+
+func (SpecEndingRead) OutboxKind() OutboxKind { return OutboxKindSpecEndingRead }
+
+// SpecEndingCause is what queued a SpecEndingRead, which its executor logs.
+type SpecEndingCause string
+
+const (
+	SpecEndingCauseHead     SpecEndingCause = "head"
+	SpecEndingCauseOutcomes SpecEndingCause = "outcomes"
+	SpecEndingCauseVersion  SpecEndingCause = "version"
+	SpecEndingCauseApproval SpecEndingCause = "approval"
+)
+
 // MergeForwardStep is which message of a merge forward a MergeForwardMessage carries
 // (PullRequest.MergeForward): the two the act on a confirmed conflict writes, and the two the
 // landing of a new head writes.
@@ -2127,6 +2159,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindSpecEndingRead:
+		value := SpecEndingRead{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindStepRecord:
 		value := StepRecord{}
 		if err := decoder.Decode(&value); err != nil {
@@ -2447,6 +2485,15 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.FirstReadAt.IsZero() {
 			return fmt.Errorf("a conflict confirm names when the first read it reads again was made; its read of #%d at %q names no time", value.Number, value.Head)
 		}
+	case SpecEndingRead:
+		if value.Head == "" {
+			return fmt.Errorf("a spec ending read names the head it reads the ending condition at; it names none")
+		}
+		switch value.Cause {
+		case SpecEndingCauseHead, SpecEndingCauseOutcomes, SpecEndingCauseVersion, SpecEndingCauseApproval:
+		default:
+			return fmt.Errorf("a spec ending read names what queued it; it names %q", value.Cause)
+		}
 	case MergeForwardMessage:
 		if _, known := mergeForwardRoles[value.Step]; !known {
 			return fmt.Errorf("a merge-forward message is an ask, a hold, a landed or a review; %q is none of them", value.Step)
@@ -2547,14 +2594,31 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // not `session-lost` because the kind is published as the notice's one-line message, and that
 // session was not lost: nothing of it was deleted. No earlier release decodes it, so the way back
 // of migration 20261120042902 deletes its unsent rows.
+//
+// `spec-ending-waits` (SpecEndingWaitsNotice) and `spec-request-stale` (SpecRequestStaleNotice) are
+// the two notices of a change request the tree root's architect owns (D8, D10). No earlier release
+// decodes either, so the way back of migration 20261122104755 deletes their unsent rows.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
 	"design-approved", "design-changes-requested", "carried-gate-opened",
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
-	"session-lost", "session-forgotten", "session-store-fault",
+	"session-lost", "session-forgotten", "session-store-fault", SpecEndingWaitsNotice, SpecRequestStaleNotice,
 }
+
+// SpecEndingWaitsNotice is the tree root's architect's notice of one reason the ending condition
+// of the tree's change request does not hold at the head of a merging member's pull request (D10):
+// Reason is the reason's code, and Summary names the member, the head, the code with Dispatch's
+// detail of it and what the architect does. One is told per reason per head (SpecEnding.Told).
+const SpecEndingWaitsNotice NoticeKind = "spec-ending-waits"
+
+// SpecRequestStaleNotice is the notice of a change request whose approval Dispatch refused because
+// the approved spec changed a node after the request was written (D8, Dispatch's
+// spec.request_stale): Reason is Dispatch's reason, and Summary names the issue, each stale node
+// with its base and current version and the step the owner takes. It goes to the architect of the
+// issue's tree root, and to the controller where the daemon holds no live owner.
+const SpecRequestStaleNotice NoticeKind = "spec-request-stale"
 
 // VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left
 // that volume still above its low mark, or of the trimmer having switched itself off: the one

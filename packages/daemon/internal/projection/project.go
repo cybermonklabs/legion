@@ -317,14 +317,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		if err != nil {
 			return api.State{}, err
 		}
-		gate := record.SpecGate(gates)
-		if gate != nil {
-			view.DesignGate = &api.GateView{
-				ArtifactID:      gate.ArtifactID,
-				CurrentVersion:  gate.LatestVersion,
-				ApprovedVersion: gate.ApprovedVersion,
-			}
-		}
+		view.DesignGate = api.GateViewOf(record.SpecGate(gates))
 		// The deployment's gate as this root stands in it, one entry for each step it gates. Only
 		// a root holds gate rows — a child's work is held at its root's steps — so a child answers
 		// no entry at all rather than one unregistered step for each the deployment gates. The

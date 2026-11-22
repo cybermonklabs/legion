@@ -364,6 +364,10 @@
         "since": 55
       },
       {
+        "value": "exempt",
+        "since": 222
+      },
+      {
         "value": "unregistered",
         "since": 55
       },
@@ -1478,6 +1482,10 @@
       {
         "value": "changes_requested",
         "since": 55
+      },
+      {
+        "value": "exempt",
+        "since": 222
       },
       {
         "value": "unregistered",

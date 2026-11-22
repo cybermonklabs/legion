@@ -547,9 +547,76 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 			return nil, nil
 		}
 		return DispatchClaim{Key: event.IssueKey, Seq: event.Seq, ClaimedBy: holder}, nil
+	case "spec.request_stale":
+		return decodeSpecRequestStale(event)
+	case "spec.outcomes_recorded":
+		return decodeSpecOutcomesRecorded(event)
 	default:
 		return nil, nil
 	}
+}
+
+// decodeSpecRequestStale decodes Dispatch's spec.request_stale (D8): a person's approval of the
+// issue's change request refused because the approved spec changed a node after the request was
+// written. The event's own issue must be the one its payload names, and it names at least one
+// node: Dispatch writes it only for a refusal of stale nodes, so an event that names none is no
+// such refusal, and is poison rather than a notice that says nothing.
+func decodeSpecRequestStale(event dispatchEvent) (Fact, error) {
+	var stale struct {
+		Issue           string  `json:"issue"`
+		ApprovalRequest *string `json:"approval_request"`
+		Reason          string  `json:"reason"`
+		Statements      []struct {
+			ID      string `json:"id"`
+			Base    int    `json:"base"`
+			Current int    `json:"current"`
+			Removed bool   `json:"removed"`
+		} `json:"statements"`
+	}
+	if err := json.Unmarshal(event.Payload, &stale); err != nil {
+		return nil, fmt.Errorf("decode Dispatch spec.request_stale payload: %w", err)
+	}
+	if stale.Issue != event.IssueKey {
+		return nil, fmt.Errorf("Dispatch spec.request_stale payload names issue %q, not its event's %s", stale.Issue, event.IssueKey)
+	}
+	if len(stale.Statements) == 0 {
+		return nil, fmt.Errorf("Dispatch spec.request_stale payload names no stale node")
+	}
+	fact := SpecRequestStale{Key: event.IssueKey, Seq: event.Seq, ApprovalRequest: deref(stale.ApprovalRequest), Reason: stale.Reason,
+		Mark: event.mark(), Actor: dispatch.Actor(event.Actor)}
+	for _, node := range stale.Statements {
+		if node.ID == "" {
+			return nil, fmt.Errorf("Dispatch spec.request_stale payload names a node with no id")
+		}
+		fact.Statements = append(fact.Statements, StaleNode(node))
+	}
+	return fact, nil
+}
+
+// decodeSpecOutcomesRecorded decodes Dispatch's spec.outcomes_recorded (D10): one list of outcomes
+// recorded for a pull request head of the issue. The event's own issue must be the one its payload
+// names, and the record, the pull request, the head and the list must each be there: the daemon
+// reads the ending condition again at the heads its own record holds, but an event that says none
+// of what was recorded is no record.
+func decodeSpecOutcomesRecorded(event dispatchEvent) (Fact, error) {
+	var recorded struct {
+		Issue       string `json:"issue"`
+		Record      int64  `json:"record"`
+		PullRequest string `json:"pull_request"`
+		Head        string `json:"head"`
+		List        string `json:"list"`
+	}
+	if err := json.Unmarshal(event.Payload, &recorded); err != nil {
+		return nil, fmt.Errorf("decode Dispatch spec.outcomes_recorded payload: %w", err)
+	}
+	if recorded.Issue != event.IssueKey {
+		return nil, fmt.Errorf("Dispatch spec.outcomes_recorded payload names issue %q, not its event's %s", recorded.Issue, event.IssueKey)
+	}
+	if recorded.Record <= 0 || recorded.PullRequest == "" || recorded.Head == "" || recorded.List == "" {
+		return nil, fmt.Errorf("Dispatch spec.outcomes_recorded payload names no record, pull request, head or list")
+	}
+	return SpecOutcomesRecorded{Key: event.IssueKey, Seq: event.Seq, Record: recorded.Record, PullRequest: recorded.PullRequest,
+		Head: recorded.Head, List: recorded.List}, nil
 }
 
 // issueEventClaim reads an issue event's claim, `<kind>:<id>`, "" for null, and whether the event

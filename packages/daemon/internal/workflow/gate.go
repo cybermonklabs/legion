@@ -116,11 +116,24 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 			"artifact", fact.ArtifactID, "version", version, "open", classify.DesignGateOpen(*stored), "since_seq", fact.Since.Seq)
 		return intake.Result{}, e.enqueue(ctx, tx, fact.Issue, record.GateSeed{ArtifactID: fact.ArtifactID, Step: step, Version: version, Generation: issue.Generation})
 	}
-	gate := record.DesignGate{Issue: fact.Issue, Step: step, ArtifactID: fact.ArtifactID, LatestVersion: version}
+	// The rule the gate starts under is fixed by the first registration of the step in this
+	// generation and kept by every later one (registeredRule, R24).
+	gate := record.DesignGate{Issue: fact.Issue, Step: step, ArtifactID: fact.ArtifactID, LatestVersion: version,
+		Rule: registeredRule(gates, step, fact.ChangeRequest)}
 	// An approval of an older version the gate of this document holds is kept, as a version event
 	// keeps it (classify.ApplyDesignGateEvent): a late changes request it answered stays answered.
+	// So is the exemption of an older version or of this one, which a read that found no route
+	// cannot take back.
 	if sameDocument && stored.ApprovedVersion != nil && *stored.ApprovedVersion < version {
 		gate.ApprovedVersion, gate.ApprovedMark = stored.ApprovedVersion, stored.ApprovedMark
+	}
+	if sameDocument && stored.ExemptVersion != nil && *stored.ExemptVersion <= version {
+		gate.ExemptVersion = stored.ExemptVersion
+	}
+	// Under the rule of a change request, the version the registration read as proposing nothing
+	// opens the gate with no person (R23); a changes request on it, applied below, closes it again.
+	if !ungated {
+		gate = exemptAt(gate, version, fact.ChangeRequest)
 	}
 	changesRequested := false
 	// Who reviewed, named on the design-approved notice the registration sends: the person whose
@@ -210,7 +223,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	case issue.AwaitingPerson():
 		e.logOnCommit(ctx, "workflow: a root waiting on a person is told its open gate by its resume", "issue", issue.Key, "version", gate.LatestVersion)
 	case !sameDocument || !classify.DesignGateOpen(*stored) || stored.LatestVersion != gate.LatestVersion:
-		if err := e.notice(ctx, tx, fact.Issue, record.Notice{Kind: "design-approved", Version: gate.LatestVersion, Actor: reviewer, Ref: stepRef(fact.Issue, step)}); err != nil {
+		if err := e.notice(ctx, tx, fact.Issue, openedNotice(gate, gate.LatestVersion, reviewer, stepRef(fact.Issue, step))); err != nil {
 			return intake.Result{}, err
 		}
 	default:
@@ -524,7 +537,9 @@ func (e *Engine) mirrorRegisteredRequest(ctx context.Context, tx pgx.Tx, root re
 // gate above the seed's read is one no Dispatch version ever matched: a daemon that registered the
 // caller's version unchecked recorded it. Left there, every review of the document's real latest
 // version would be dropped as a review of an older one. The row it resets is the one the read's
-// document names. A step the deployment does not gate has its reset row approved, as its
+// document names, and it keeps the rule the gate started under (R24): under the rule of a change
+// request, the version it resets to opens with no person when the seed read it as proposing
+// nothing (R23). A step the deployment does not gate has its reset row approved, as its
 // registration would leave it.
 func (e *Engine) gateAboveDispatch(ctx context.Context, tx pgx.Tx, fact intake.GateAboveDispatch) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Read.Key)
@@ -541,10 +556,12 @@ func (e *Engine) gateAboveDispatch(ctx context.Context, tx pgx.Tx, fact intake.G
 	}
 	e.logOnCommit(ctx, "workflow: a gate above the version Dispatch holds is reset to it", "issue", issue.Key,
 		"artifact", gate.ArtifactID, "step", gate.Step, "gate_version", gate.LatestVersion, "dispatch_version", fact.Read.Version)
-	reset := record.DesignGate{Issue: issue.Key, Step: gate.Step, ArtifactID: gate.ArtifactID, LatestVersion: fact.Read.Version}
+	reset := record.DesignGate{Issue: issue.Key, Step: gate.Step, ArtifactID: gate.ArtifactID, LatestVersion: fact.Read.Version, Rule: gate.Rule}
 	ungated := !e.gatesStep(gate.Step)
 	if ungated {
 		reset = classify.ApplyDesignGateEvent(reset, classify.DesignGateApproved, fact.Read.Version, record.EventMark{})
+	} else {
+		reset = exemptAt(reset, fact.Read.Version, fact.Read.ChangeRequest)
 	}
 	if err := e.putGateTold(ctx, tx, reset, reset.LatestVersion); err != nil {
 		return intake.Result{}, err
@@ -856,6 +873,12 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 	wasOpen := classify.DesignGateOpen(gate)
 	kind := classify.DesignGateEventKind(fact.Kind)
 	updated := classify.ApplyDesignGateEvent(gate, kind, fact.Version, fact.Mark)
+	// A version of the root's own document under the rule of a change request, read before it was
+	// applied as proposing nothing, moves the exemption with it, so the gate stays open, or opens
+	// with no person (R23). A version below the gate's latest, delivered late, moves nothing.
+	if fact.Kind == intake.DispatchArtifactVersion && !carried && fact.Version == updated.LatestVersion {
+		updated = exemptAt(updated, fact.Version, fact.ChangeRequest)
+	}
 	isOpen := classify.DesignGateOpen(updated)
 	switch {
 	case isOpen != wasOpen:
@@ -893,6 +916,20 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 	if err := record.PublishChangedGates(ctx, e.store, tx, key, before, e.now()); err != nil {
 		return err
 	}
+	// A version or an approval of the root's spec document that leaves its gate open by exemption
+	// can turn the ending condition of its change request, which is judged at the latest version,
+	// so every member in merging is read again (D10).
+	if !carried && record.GateExempt(updated) {
+		switch fact.Kind {
+		case intake.DispatchArtifactVersion:
+			err = e.queueEndingReads(ctx, tx, key, record.SpecEndingCauseVersion)
+		case intake.DispatchArtifactApproved:
+			err = e.queueEndingReads(ctx, tx, key, record.SpecEndingCauseApproval)
+		}
+		if err != nil {
+			return err
+		}
+	}
 	// What the tree does next is the whole issue's question, not this row's, and nothing here
 	// asks it: every step the deployment gates must be open before a member starts
 	// (classify.DesignGatesOpen), and the members an opening releases take their first phase from
@@ -919,7 +956,8 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		// Who approved is named on the notice, since nobody in a parked tree hears it and the
 		// decision then goes to the controller instead (the outbox's parkDecision).
 		reviewer := fact.Actor.Name()
-		opened := &record.Notice{Kind: "design-approved", Version: fact.Version, Actor: reviewer, Ref: stepRef(key, gate.Step)}
+		notice := openedNotice(updated, fact.Version, reviewer, stepRef(key, gate.Step))
+		opened := &notice
 		switch {
 		case carried:
 			opened = &record.Notice{Kind: "carried-gate-opened", Version: fact.Version, Actor: reviewer, Ref: stepRef(fact.Key, gate.Step), Reason: fmt.Sprintf(
