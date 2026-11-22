@@ -57,9 +57,20 @@ jobs:
       - name: Check no command or self-starting test binary links testcontainers-go
         if: ${{ !cancelled() }}
         run: .github/scripts/testcontainers_links.py
+      # The filters ci.yaml's changes job computed and selected this run's jobs by, which no file
+      # of the repository holds: the workflow-file check's rule 8 holds each script it reads to the
+      # ci_filters filter among them, the filter that starts this job.
+      - name: Fetch the filters the changes job selected this run's jobs by
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ci-filters
+          path: ${{ runner.temp }}/ci-filters
 
       - name: Check every workflow file GitHub can read and its size
         if: ${{ !cancelled() }}
+        env:
+          CI_FILTERS_FILE: ${{ runner.temp }}/ci-filters/ci-filters.computed.yaml
         run: .github/scripts/check-workflow-files.sh
 
       # actionlint 1.7.12, the copy .github/ci-images.yaml's actionlint row names, with

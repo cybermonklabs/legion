@@ -173,14 +173,20 @@ jobs:
       # and env (BACKEND_COUNT_TESTS), and the rows whose bound is on time, which envoy-go-alone
       # runs on a runner nothing else loads (UNIT_ALONE_TESTS).
       - name: Unit test envoy Go package
+        id: unit
         timeout-minutes: 30
         run: |
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go ${{ matrix.leg }} ${{ strategy.job-total }} | xargs -r scripts/database-skips.sh --timeout 20m --skip '^(TestABatchCutOffInFlightKeepsItsOrder|TestABucketWaitWhoseLookupsAreHeldFailsByNameInTime|TestAClaimLeftByAnotherProcessIsTakenWhenItLapses|TestADeletedBucketFailsAWriteWithinTheBudget|TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal|TestAProcessReportsASilentNATSCutWithinSeconds|TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce|TestAStalledListingFailsWithinTheReadTimeout|TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites|TestAStandbyTakesAFreeHoldWithNoNotification|TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce|TestAWriteIsEmbeddedOnItsNotification|TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded|TestAnOutboxThatLosesNATSReleasesThePublisher|TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther|TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering|TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown|TestEverySecretFormNamesTheSourceItUses|TestExecLearnsOfAGrantAfterAFullHold|TestExecLearnsOfTheGrantWithinASecond|TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken|TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering|TestHealthzAnswersWhilePostgresStopsAnswering|TestHoldExpiryMatchesTheDatabaseClock|TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail|TestIdentity|TestNoSecretFormAsksTheBrokerForACredential|TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds|TestOnlyOneOutboxPublishesAtATime|TestReserveTokensSharesItsBudgetAcrossConnections|TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument|TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget|TestSamplerHeapReadDelaysNoSample|TestScanPassReturnsWhenThePendingRowsFallDue|TestSettingsNameTheGoogleExchangeAudienceOnEitherStore|TestSyncDeadlineIsRecordedOnTheRow|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheIdentityStepsRunOnceTheQueueFirstEmbeds|TestTheListenerReplacesAHalfOpenConnection|TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop|TestTheOutboxDoesNotScanWhileIdle|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$' --count-table
+          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go ${{ matrix.leg }} ${{ strategy.job-total }} | xargs -r ../../.github/scripts/go_test_events.py scripts/database-skips.sh --timeout 20m --skip '^(TestABatchCutOffInFlightKeepsItsOrder|TestABucketWaitWhoseLookupsAreHeldFailsByNameInTime|TestAClaimLeftByAnotherProcessIsTakenWhenItLapses|TestADeletedBucketFailsAWriteWithinTheBudget|TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal|TestAProcessReportsASilentNATSCutWithinSeconds|TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce|TestAStalledListingFailsWithinTheReadTimeout|TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites|TestAStandbyTakesAFreeHoldWithNoNotification|TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce|TestAWriteIsEmbeddedOnItsNotification|TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded|TestAnOutboxThatLosesNATSReleasesThePublisher|TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther|TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering|TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown|TestEverySecretFormNamesTheSourceItUses|TestExecLearnsOfAGrantAfterAFullHold|TestExecLearnsOfTheGrantWithinASecond|TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken|TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering|TestHealthzAnswersWhilePostgresStopsAnswering|TestHoldExpiryMatchesTheDatabaseClock|TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail|TestIdentity|TestNoSecretFormAsksTheBrokerForACredential|TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds|TestOnlyOneOutboxPublishesAtATime|TestReserveTokensSharesItsBudgetAcrossConnections|TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument|TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget|TestSamplerHeapReadDelaysNoSample|TestScanPassReturnsWhenThePendingRowsFallDue|TestSettingsNameTheGoogleExchangeAudienceOnEitherStore|TestSyncDeadlineIsRecordedOnTheRow|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheIdentityStepsRunOnceTheQueueFirstEmbeds|TestTheListenerReplacesAHalfOpenConnection|TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop|TestTheOutboxDoesNotScanWhileIdle|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$' --count-table
         working-directory: packages/envoy
         # The refs package's xid window test runs here, so this step judges gaps too.
         env:
           DISPATCH_XID_REQUIRE_GAP_JUDGMENT: "1"
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report
@@ -276,19 +282,20 @@ jobs:
       # built from that list, so a row added there and missing here fails the ci-filters job naming
       # this step.
       - name: Test the rows whose bound is on time, alone
+        id: alone-timed
         run: |
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown|TestExecLearnsOfAGrantAfterAFullHold|TestExecLearnsOfTheGrantWithinASecond|TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken|TestIdentity)$' ./cmd/cipher/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestAProcessReportsASilentNATSCutWithinSeconds|TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce|TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering|TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering|TestHealthzAnswersWhilePostgresStopsAnswering|TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument|TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget)$' ./cmd/dispatch/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestADeletedBucketFailsAWriteWithinTheBudget)$' ./internal/cistore/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestSyncDeadlineIsRecordedOnTheRow)$' ./internal/dispatch/architecture/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestHoldExpiryMatchesTheDatabaseClock|TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail)$' ./internal/dispatch/duty/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestAClaimLeftByAnotherProcessIsTakenWhenItLapses|TestAWriteIsEmbeddedOnItsNotification|TestReserveTokensSharesItsBudgetAcrossConnections|TestScanPassReturnsWhenThePendingRowsFallDue|TestTheIdentityStepsRunOnceTheQueueFirstEmbeds)$' ./internal/dispatch/embedqueue/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestABatchCutOffInFlightKeepsItsOrder|TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal|TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites|TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce|TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded|TestAnOutboxThatLosesNATSReleasesThePublisher|TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther|TestOnlyOneOutboxPublishesAtATime|TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop|TestTheOutboxDoesNotScanWhileIdle)$' ./internal/dispatch/outbox/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestAStandbyTakesAFreeHoldWithNoNotification|TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds)$' ./internal/dispatch/textversions/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestAStalledListingFailsWithinTheReadTimeout)$' ./internal/legionagents/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestTheListenerReplacesAHalfOpenConnection)$' ./internal/pglisten/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestABucketWaitWhoseLookupsAreHeldFailsByNameInTime)$' ./internal/testnats/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestSamplerHeapReadDelaysNoSample)$' ./loadtest/
+          ../../.github/scripts/go_test_events.py go test -count=1 -parallel 1 -timeout 10m -run '^(TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown|TestExecLearnsOfAGrantAfterAFullHold|TestExecLearnsOfTheGrantWithinASecond|TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken|TestIdentity)$' ./cmd/cipher/
+          ../../.github/scripts/go_test_events.py go test -count=1 -parallel 1 -timeout 10m -run '^(TestAProcessReportsASilentNATSCutWithinSeconds|TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce|TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering|TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering|TestHealthzAnswersWhilePostgresStopsAnswering|TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument|TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget)$' ./cmd/dispatch/
+          ../../.github/scripts/go_test_events.py go test -count=1 -parallel 1 -timeout 10m -run '^(TestADeletedBucketFailsAWriteWithinTheBudget)$' ./internal/cistore/
+          ../../.github/scripts/go_test_events.py go test -count=1 -parallel 1 -timeout 10m -run '^(TestSyncDeadlineIsRecordedOnTheRow)$' ./internal/dispatch/architecture/
+          ../../.github/scripts/go_test_events.py go test -count=1 -parallel 1 -timeout 10m -run '^(TestHoldExpiryMatchesTheDatabaseClock|TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail)$' ./internal/dispatch/duty/
+          ../../.github/scripts/go_test_events.py go test -count=1 -parallel 1 -timeout 10m -run '^(TestAClaimLeftByAnotherProcessIsTakenWhenItLapses|TestAWriteIsEmbeddedOnItsNotification|TestReserveTokensSharesItsBudgetAcrossConnections|TestScanPassReturnsWhenThePendingRowsFallDue|TestTheIdentityStepsRunOnceTheQueueFirstEmbeds)$' ./internal/dispatch/embedqueue/
+          ../../.github/scripts/go_test_events.py go test -count=1 -parallel 1 -timeout 10m -run '^(TestABatchCutOffInFlightKeepsItsOrder|TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal|TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites|TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce|TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded|TestAnOutboxThatLosesNATSReleasesThePublisher|TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther|TestOnlyOneOutboxPublishesAtATime|TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop|TestTheOutboxDoesNotScanWhileIdle)$' ./internal/dispatch/outbox/
+          ../../.github/scripts/go_test_events.py go test -count=1 -parallel 1 -timeout 10m -run '^(TestAStandbyTakesAFreeHoldWithNoNotification|TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds)$' ./internal/dispatch/textversions/
+          ../../.github/scripts/go_test_events.py go test -count=1 -parallel 1 -timeout 10m -run '^(TestAStalledListingFailsWithinTheReadTimeout)$' ./internal/legionagents/
+          ../../.github/scripts/go_test_events.py go test -count=1 -parallel 1 -timeout 10m -run '^(TestTheListenerReplacesAHalfOpenConnection)$' ./internal/pglisten/
+          ../../.github/scripts/go_test_events.py go test -count=1 -parallel 1 -timeout 10m -run '^(TestABucketWaitWhoseLookupsAreHeldFailsByNameInTime)$' ./internal/testnats/
+          ../../.github/scripts/go_test_events.py go test -count=1 -parallel 1 -timeout 10m -run '^(TestSamplerHeapReadDelaysNoSample)$' ./loadtest/
         working-directory: packages/envoy
       # The rows of the plain run the race build cannot make that measure time, alone for the same
       # reason (ci_job_reads.py's RACE_IMPOSSIBLE_ALONE_*): every xid window test, which judges the
@@ -299,12 +306,13 @@ jobs:
       # -v, as its line in envoy-go-race-impossible does. Each line's -run is derived from the race
       # lane's packages and their files' //go:build !race and raceEnabled, as that step's are.
       - name: Test the xid window rows, the API's issue-list bound and the auth service's storm, alone
+        id: alone-xid
         run: |
-          go test -count=1 -timeout 10m -run '^(TestXidWindowAttributionMoveRecorded|TestXidWindowDeployedEventRecorded)$' ./internal/dispatch/delivery
-          go test -count=1 -timeout 10m -run '^(TestABeginThatFindsNoTracerMemoryIsUnknown|TestACommitThatEndsAfterTheCaptureIsInsideTheTrace|TestAGapsDeviceSoftirqsHoldOnlyTheirMeasuredTime|TestAMeasureUnderGoTestTraceSaysSo|TestAQuotasReadingSeesASleepAsASleep|TestAQuotasThrottlingReadsAsAWaitForACPU|TestARigProblemHidesNoViolation|TestASleepAfterARuntimeHandoffIsNotErasedByIt|TestASoftirqCountIsReadAtItsCPUsColumn|TestASoftirqCountThatWrappedInAGapReadsItsRuns|TestAStallInTheTracesCalibrationShiftsNoMoment|TestAStalledCalibrationLeavesAGapOfTheCodesCPUMade|TestAStatementTheRigCouldNotReadIsUnknown|TestAStoppedMeasureLeavesTheNextItsOwnTrace|TestAWaitOnAPHandedToALockedThreadDecidesNothing|TestAWindowThatKeepsD6OnlyOnARuntimeWaitIsUnknown|TestRuleTwoReadsTheStatementsTheCodeMade|TestTheKernelsInterruptAccountingIsReadOffProcStat|TestTheRigCountsTheSoftirqsItsPinnedCPURuns|TestTheTracersEventsInAWindowTouchNoFreshPage|TestWithoutNamesTheTracersMemoryIsWhatWasMappedSinceTheTraceStarted|TestXidGapJudgmentNeedsReadableThreadClocks)$' ./internal/dispatch/store/storetest
-          go test -count=1 -timeout 10m -run '^(TestACalloutStormAfterAServerRestartAdmitsEveryConnection)$' ./internal/cipher/natscallout
-          go test -count=1 -timeout 10m -run '^(TestAPriorityListAnswersWithinItsBoundOnEveryPlan|TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec|TestXidWindowsUnderTheParentStatusRule)$' ./internal/dispatch/api
-          GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 10m -run '^(TestXidWindowAnchorBlockBackfill|TestXidWindowBlockIndexWindowArm|TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP|TestXidWindowCatchesADocumentCallInsideTheWindow|TestXidWindowClosedIssueSettlementVersionWrite|TestXidWindowEditNoticeSweep|TestXidWindowKeepsD6WhenTheLoadHoldsThePs|TestXidWindowReconcileTaskProgress|TestXidWindowRigCatchesAGapAfterTheFirstWrite|TestXidWindowRigHoldsAGapsSoftirqsToTheirCap|TestXidWindowRigJudgesAWriteThePollerNeverSaw|TestXidWindowRigKeepsItsOwnWorkOutOfTheGaps|TestXidWindowRigNeverExcusesASleepForSoftirqs|TestXidWindowRigPassesBackToBackStatementsAfterTheFirstWrite|TestXidWindowRigReadsASleepAfterAHandoffAsTheCodes|TestXidWindowRigReadsTheMachinesLoadAsTheMachines|TestXidWindowRigReadsTheRuntimesWaitAsTheRuntimes|TestXidWindowSettlementVersionWrite)$' ./internal/dispatch/docs
+          ../../.github/scripts/go_test_events.py go test -count=1 -timeout 10m -run '^(TestXidWindowAttributionMoveRecorded|TestXidWindowDeployedEventRecorded)$' ./internal/dispatch/delivery
+          ../../.github/scripts/go_test_events.py go test -count=1 -timeout 10m -run '^(TestABeginThatFindsNoTracerMemoryIsUnknown|TestACommitThatEndsAfterTheCaptureIsInsideTheTrace|TestAGapsDeviceSoftirqsHoldOnlyTheirMeasuredTime|TestAMeasureUnderGoTestTraceSaysSo|TestAQuotasReadingSeesASleepAsASleep|TestAQuotasThrottlingReadsAsAWaitForACPU|TestARigProblemHidesNoViolation|TestASleepAfterARuntimeHandoffIsNotErasedByIt|TestASoftirqCountIsReadAtItsCPUsColumn|TestASoftirqCountThatWrappedInAGapReadsItsRuns|TestAStallInTheTracesCalibrationShiftsNoMoment|TestAStalledCalibrationLeavesAGapOfTheCodesCPUMade|TestAStatementTheRigCouldNotReadIsUnknown|TestAStoppedMeasureLeavesTheNextItsOwnTrace|TestAWaitOnAPHandedToALockedThreadDecidesNothing|TestAWindowThatKeepsD6OnlyOnARuntimeWaitIsUnknown|TestRuleTwoReadsTheStatementsTheCodeMade|TestTheKernelsInterruptAccountingIsReadOffProcStat|TestTheRigCountsTheSoftirqsItsPinnedCPURuns|TestTheTracersEventsInAWindowTouchNoFreshPage|TestWithoutNamesTheTracersMemoryIsWhatWasMappedSinceTheTraceStarted|TestXidGapJudgmentNeedsReadableThreadClocks)$' ./internal/dispatch/store/storetest
+          ../../.github/scripts/go_test_events.py go test -count=1 -timeout 10m -run '^(TestACalloutStormAfterAServerRestartAdmitsEveryConnection)$' ./internal/cipher/natscallout
+          ../../.github/scripts/go_test_events.py go test -count=1 -timeout 10m -run '^(TestAPriorityListAnswersWithinItsBoundOnEveryPlan|TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec|TestXidWindowsUnderTheParentStatusRule)$' ./internal/dispatch/api
+          GODEBUG=checkfinalizers=1 ../../.github/scripts/go_test_events.py go test -v -count=1 -timeout 10m -run '^(TestXidWindowAnchorBlockBackfill|TestXidWindowBlockIndexWindowArm|TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP|TestXidWindowCatchesADocumentCallInsideTheWindow|TestXidWindowClosedIssueSettlementVersionWrite|TestXidWindowEditNoticeSweep|TestXidWindowKeepsD6WhenTheLoadHoldsThePs|TestXidWindowReconcileTaskProgress|TestXidWindowRigCatchesAGapAfterTheFirstWrite|TestXidWindowRigHoldsAGapsSoftirqsToTheirCap|TestXidWindowRigJudgesAWriteThePollerNeverSaw|TestXidWindowRigKeepsItsOwnWorkOutOfTheGaps|TestXidWindowRigNeverExcusesASleepForSoftirqs|TestXidWindowRigPassesBackToBackStatementsAfterTheFirstWrite|TestXidWindowRigReadsASleepAfterAHandoffAsTheCodes|TestXidWindowRigReadsTheMachinesLoadAsTheMachines|TestXidWindowRigReadsTheRuntimesWaitAsTheRuntimes|TestXidWindowSettlementVersionWrite)$' ./internal/dispatch/docs
         working-directory: packages/envoy
         # This step judges the xid window tests' statement-free gaps (storetest.XidJudgesGaps).
         # With this set, a runner whose kernel stops showing a thread's scheduler clocks, or
@@ -312,6 +320,11 @@ jobs:
         # passing them on the window's shape alone (storetest.XidRequireGapsEnv).
         env:
           DISPATCH_XID_REQUIRE_GAP_JUDGMENT: "1"
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report
@@ -403,10 +416,16 @@ jobs:
       # //go:build !race and raceEnabled, so a test added to either and missing here fails the
       # ci-filters job naming this step. 10 minutes each is ample.
       - name: Test what the race build cannot run at all or at full size
+        id: race-impossible
         run: |
-          go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
-          GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/dispatch/docs
+          ../../.github/scripts/go_test_events.py go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
+          GODEBUG=checkfinalizers=1 ../../.github/scripts/go_test_events.py go test -v -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/dispatch/docs
         working-directory: packages/envoy
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report
@@ -491,7 +510,8 @@ jobs:
       # neither package, reads aws=0 and fails, as the verification's check c8 requires. It is
       # their one run: the unit legs skip them by name.
       - name: Count the store-form rows on each backend
-        run: packages/envoy/scripts/backend-count.sh ./cmd/cipher/ ./internal/cipher/api/ -- TestEverySecretFormNamesTheSourceItUses TestNoSecretFormAsksTheBrokerForACredential TestUseCommandOutsideASessionReachesTheMachineSource TestTheChainSkipsAbsenceAndStopsOnABrokenSource TestSettingsNameTheGoogleExchangeAudienceOnEitherStore
+        id: backend-count
+        run: .github/scripts/go_test_events.py packages/envoy/scripts/backend-count.sh ./cmd/cipher/ ./internal/cipher/api/ -- TestEverySecretFormNamesTheSourceItUses TestNoSecretFormAsksTheBrokerForACredential TestUseCommandOutsideASessionReachesTheMachineSource TestTheChainSkipsAbsenceAndStopsOnABrokenSource TestSettingsNameTheGoogleExchangeAudienceOnEitherStore
       # The unit legs run their packages through the one skip counter of the module's
       # database-backed packages, which envoy-go-race-api runs the Dispatch API through too, so the
       # counter's own test runs here: packages/envoy/scripts/database-skips.test.sh plants a skipped
@@ -527,9 +547,15 @@ jobs:
       # fires before the step's limit.
       - uses: ./.github/actions/install-jj
       - name: Test the route adopter under git and jj
+        id: route-adopter
         timeout-minutes: 5
-        run: go test -count=1 -v -timeout 4m ./cmd/dispatch-route-adopt/
+        run: ../../.github/scripts/go_test_events.py go test -count=1 -v -timeout 4m ./cmd/dispatch-route-adopt/
         working-directory: packages/envoy
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report
@@ -651,21 +677,23 @@ jobs:
       # assignment is a line of its own: under bash -e it carries the script's exit status, so an
       # empty or refused list fails the step instead of running -run "", which matches every test.
       - name: Test the container-backed NATS matrix (natslive)
+        id: natslive
         run: |
           rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)
-          go test -count=1 -tags natslive -run "$rig" ./internal/testnats/
+          ../../.github/scripts/go_test_events.py go test -count=1 -tags natslive -run "$rig" ./internal/testnats/
           cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
-          go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/
+          ../../.github/scripts/go_test_events.py go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/
           callout=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/cipher/natscallout)
-          go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/cipher/natscallout/
+          ../../.github/scripts/go_test_events.py go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/cipher/natscallout/
           grant=$(../../.github/scripts/go-tagged-tests.sh natslive ./natsgrant)
-          go test -count=1 -timeout 5m -tags natslive -run "$grant" -v ./natsgrant/
+          ../../.github/scripts/go_test_events.py go test -count=1 -timeout 5m -tags natslive -run "$grant" -v ./natsgrant/
           edge=$(../../.github/scripts/go-tagged-tests.sh natslive ./cmd/listener)
-          go test -count=1 -timeout 10m -tags natslive -run "$edge" -v ./cmd/listener/
+          ../../.github/scripts/go_test_events.py go test -count=1 -timeout 10m -tags natslive -run "$edge" -v ./cmd/listener/
         working-directory: packages/envoy
 
       - name: Integration test envoy (a real NATS server, in the test process)
-        run: go test ./internal/integration/ -timeout 300s -count=1
+        id: integration
+        run: ../../.github/scripts/go_test_events.py go test ./internal/integration/ -timeout 300s -count=1
         working-directory: packages/envoy
       # check c-callout-live of the NATS auth service's verification: the real broker (twice, one
       # queue group), listener, Dispatch and nats-server behind the auth callout, built and started
@@ -677,6 +705,11 @@ jobs:
         env:
           LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
         working-directory: packages/envoy
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

@@ -149,7 +149,8 @@ jobs:
       # `elsewhere`, which ci_job_reads.py holds to this step's package list, built from
       # NOTE_AND_SPEC_PACKAGES in .github/scripts/ci_job_reads.py.
       - name: Test the architecture-note and spec-file rules and their commands
-        run: go test -count=1 ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ ./internal/dispatch/specgraph/ ./cmd/architecture-check/ ./cmd/spec-check/
+        id: note-and-spec-tests
+        run: ../../.github/scripts/go_test_events.py go test -count=1 ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ ./internal/dispatch/specgraph/ ./cmd/architecture-check/ ./cmd/spec-check/
         working-directory: packages/envoy
       # listenerwire's tests and wirecheck's need no database, and listenerwire's clients test
       # type-checks the daemon's listener clients, so they run here, their one run, and a change to
@@ -158,7 +159,8 @@ jobs:
       # ci_job_reads.py holds to this step's package list, built from LISTENERWIRE_PACKAGES in
       # .github/scripts/ci_job_reads.py.
       - name: Test the listener's wire package, its clients and wirecheck
-        run: go test -count=1 ./listenerwire/ ./internal/wirecheck/
+        id: wire-tests
+        run: ../../.github/scripts/go_test_events.py go test -count=1 ./listenerwire/ ./internal/wirecheck/
         working-directory: packages/envoy
       - name: Check Go contracts are generated from the shared schema
         run: bun run check:go
@@ -186,7 +188,8 @@ jobs:
       # envoy-go's unit step skips both by the same names, both texts built from
       # WEB_FIXTURE_TESTS in .github/scripts/ci_job_reads.py.
       - name: Check the web app's display-tree fixture is up to date
-        run: go test -count=1 -run '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$' ./internal/dispatch/pmdoc/ -args --check
+        id: display-fixture
+        run: ../../.github/scripts/go_test_events.py go test -count=1 -run '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$' ./internal/dispatch/pmdoc/ -args --check
         working-directory: packages/envoy
       # pmdoc's readers on tables in a build made without inlining, the mode of every debugger
       # build: the table tests read through the block reader, and the display fixture test reads
@@ -199,7 +202,8 @@ jobs:
       # table then failed to read in the first build and read in the second. No other step builds
       # pmdoc without inlining.
       - name: Test pmdoc's tables in a build without inlining
-        run: go test -count=1 -gcflags=all=-l -run '^(TestTable.*|TestReadForDisplayMatchesItsFixtures)$' ./internal/dispatch/pmdoc/
+        id: pmdoc-tables-no-inlining
+        run: ../../.github/scripts/go_test_events.py go test -count=1 -gcflags=all=-l -run '^(TestTable.*|TestReadForDisplayMatchesItsFixtures)$' ./internal/dispatch/pmdoc/
         working-directory: packages/envoy
       - name: Build envoy services
         run: go build ./cmd/dispatch ./cmd/listener
@@ -281,6 +285,11 @@ jobs:
           path: |
             out/pr-artifacts/legion-envoy-amd64.tar.gz
             out/pr-artifacts/legion-envoy-arm64.tar.gz
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

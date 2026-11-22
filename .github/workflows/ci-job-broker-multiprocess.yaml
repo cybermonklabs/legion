@@ -69,10 +69,17 @@ jobs:
         timeout-minutes: 2
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
       - name: Two-process tests of the secrets broker
+        id: two-process-tests
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh multiprocess ./cmd/cipherd)
-          go test -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/cipherd
+          ../../.github/scripts/go_test_events.py go test -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/cipherd
         working-directory: packages/envoy
+
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

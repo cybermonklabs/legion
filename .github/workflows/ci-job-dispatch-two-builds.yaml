@@ -242,13 +242,14 @@ jobs:
       # script's exit status, so an empty or refused list fails the step instead of running
       # -run "", which matches every test.
       - name: Two-build tests of the Dispatch server
+        id: two-build-tests
         if: inputs.dispatch_two_builds_go == 'true'
         env:
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
           DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh twobuild ./cmd/dispatch)
-          go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
+          ../../.github/scripts/go_test_events.py go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
       # dispatch-browser.yaml's shard job's step of this name, for the reason
       # .github/ci-notes/dispatch-browser.md#why-every-job-that-runs-the-suite-builds-contracts-first
@@ -327,6 +328,12 @@ jobs:
         with:
           name: dispatch-two-builds-browser-test-results-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
+      # The Go step's events, on the runs that run it.
+      - name: Upload the go test events
+        if: always() && inputs.dispatch_two_builds_go == 'true'
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
@@ -463,12 +470,19 @@ jobs:
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The job above's Go step, its -run read the same way, against this tree's own build.
       - name: Two-build tests of the Dispatch server against its own build
+        id: two-build-tests
         env:
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-same
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh twobuild ./cmd/dispatch)
-          go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
+          ../../.github/scripts/go_test_events.py go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
+
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

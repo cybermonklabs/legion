@@ -83,11 +83,19 @@ jobs:
       # a host-less entry, which both validations refuse and a proxy request for which both
       # refuse as a secret not behind the airlock.
       - name: Compare the Go airlock with the model over the seed corpus
-        run: go test -v -run '^(FuzzAirlock|TestModelAgreesOnHostShapes|TestTheModelRefusesAHostlessEntry)$' ./internal/cipher/proxyrules/
+        id: seed-corpus
+        run: ../../.github/scripts/go_test_events.py go test -v -run '^(FuzzAirlock|TestModelAgreesOnHostShapes|TestTheModelRefusesAHostlessEntry)$' ./internal/cipher/proxyrules/
         working-directory: packages/envoy
       - name: Fuzz the Go airlock against the model
-        run: go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/cipher/proxyrules/
+        id: fuzz
+        run: ../../.github/scripts/go_test_events.py go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/cipher/proxyrules/
         working-directory: packages/envoy
+
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

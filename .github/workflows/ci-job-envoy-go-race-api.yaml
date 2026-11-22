@@ -129,9 +129,10 @@ jobs:
       # go_legs.py refuses, and `xargs -r` runs nothing on the empty output that leaves, where a
       # plain xargs would run the counter once with no package, its whole default table.
       - name: Race-test the Dispatch API
+        id: race-api
         run: |
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race-api ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m
+          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race-api ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r ../../.github/scripts/go_test_events.py scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m
         working-directory: packages/envoy
       - name: Report the service's peak connections
         if: always()
@@ -142,6 +143,12 @@ jobs:
           else
             echo "pg connections: UNKNOWN, no sample was taken (max_connections ${allowed})"
           fi
+
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

@@ -3,7 +3,7 @@ GATE = harness("go_test_step_expansion_test", "Test the go test step expansion",
         f"{SCRIPTS}/go-test-step-expansion.test.sh", [
     (f"{SCRIPTS}/go-test-step-expansion.py", "the module under test, loaded by path (`.github/scripts/go-test-step-expansion.test.sh#spec_from_file_location`)"),
     (f"{SCRIPTS}/ci_filter_coverage.py", "the module imports it for step_workdir and called_workflows"),
-    (f"{SCRIPTS}/workflow_paths.py", "the path model that engine imports"),
+    (f"{SCRIPTS}/workflow_paths.py", "the path model that engine imports, and the module imports EVENTS_WRITER from it"),
     (f"{SCRIPTS}/go_build_tags.py", "the Go build-tag module that engine imports"),
     (".github/workflows/ci-job-envoy-go-race-docs.yaml", "its one-step case reads this file's own go test line, the wrapper one"),
     (".github/workflows/ci-job-envoy-go.yaml", "its audited-step case reads this file's step that runs database-skips.sh"),

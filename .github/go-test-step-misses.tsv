@@ -1,0 +1,27 @@
+# The forms .github/scripts/go_test_step_forms.py generates that rule 8 of
+# .github/scripts/check-workflow-files.sh (.github/scripts/go_test_steps.py) does not read, and the
+# forms it refuses where bash keeps the events or runs no go test: a pattern of form ids (fnmatch:
+# <indirection>/<context>/<spelling>, composed/<outer>/<context>/go, negative/<name>/<indirection>),
+# a tab, and why the form is a known limit. The generator fails on a miss or a refusal no row
+# matches and on a row that matches neither, so a fix that reads one of these forms removes its row.
+#
+# Each row's last sentence says what a reading of this repository found, which
+# .github/scripts/check-workflow-files.sh's own clean run (0 refusals over ci.yaml's run) holds
+# again at every change. That reading took every step's run: of ci.yaml and the workflows it calls
+# and every script rule 8 reaches from them (694 texts, 177 of them scripts), read as rule 8 reads
+# them (logical lines, so a comment or a heredoc of text is out), and looked for the form's own
+# words on a line that also runs a go test. The only lines holding these forms beside a go test are
+# this generator's own CONTEXTS and its module docstring, neither of which any step runs.
+*/eval/*	eval runs a string the shell builds when the step runs: rule 8 reads no string eval is handed. 35 lines of this repository run eval and none of them a go test.
+*/coproc/*	coproc runs its command beside the shell, which talks to it through a pipe: rule 8 reads no command behind coproc. 3 lines name coproc (one a harness's own reader, one this generator) and none of them runs a go test.
+*/flock/*	flock runs the command after its lock file and options: rule 8 reads no command behind flock. 10 lines name flock and none of them runs a go test.
+*/pipe-to-bash/*	a shell reading its script from a pipe (`| bash`) runs text another command writes when the step runs: rule 8 reads no such text. 2 lines pipe into a shell and neither runs a go test.
+*/here-string/*	a here-string a shell takes as its script (`bash <<<`) is a word the shell expands when the step runs: rule 8 reads no here-string. 427 lines hold `<<<`, every one of them feeding a `read` or a `done <<<`, and none runs a go test.
+*/python3-c/*	python3 -c runs a program in another language, here one that runs its arguments: rule 8 reads a Python script's go test argv, and no -c program or the words after it. 50 lines run python3 -c and none of them a go test.
+*/stdbuf/*	stdbuf runs the command after its options: rule 8 reads no command behind stdbuf. No line of this repository runs stdbuf.
+*/ionice/*	ionice runs the command after its options: rule 8 reads no command behind ionice. No line of this repository runs ionice.
+*/taskset/*	taskset runs the command after its mask or list: rule 8 reads no command behind taskset. No line of this repository runs taskset.
+negative/dead-*/*	rule 8 reads a go test in every branch and body, as it cannot tell when the step is checked which ones the step will run: a go test no run reaches (`if false`, `false &&`, an uncalled function, an unmatched case arm, after `exit`) is refused as one that runs, an over-refusal that costs a step only the writer before that go test. No step of ci.yaml's run is refused for it: the check passes.
+negative/literal-*/*	rule 8 reads a go word that is a variable (`"$TOOL" test`) as go whatever the step or script assigns it: which value the shell holds when the command runs is no static reading's to say, since an assignment can come after it, in another shell, a branch, a function or a sourced file, or under a name the shell builds, so `TOOL=true; "$TOOL" test` is refused, an over-refusal rather than a go test let through unrecorded. One go test of this repository has a variable go word, in packages/envoy/scripts/forced-order.sh, and the -list among its flags runs no test, so rule 8 holds it to nothing.
+*/background-wait-pid-or/*	a `pid=$!` after `||` or `&&` runs only when the command before it decided so, which no static reading can know: rule 8 trusts a pid variable only where the assignment runs whenever the `&` did, so `pid=0; false || pid=$!; wait "$pid"` is refused though bash waits, an over-refusal whose fix is to assign the pid unconditionally. No line of this repository assigns `$!` behind `||` or `&&`.
+*/background-wait-helper-called/*	a call of a function the shell declares may start a job of its own (`f() { sleep 0 & }`), which `$!` would then name, and rule 8 reads no function body from its call site: a call between the `&` and a `wait $!` clears `$!`, so a call of a function that starts none is refused, an over-refusal whose fix is to wait for the pid the step saved (`pid=$!`) rather than for `$!`. One line of this repository waits for `$!` and it runs no go test; no step of ci.yaml's run puts a go test in the background at all (98 lines end in `&` and none of them runs a go test).

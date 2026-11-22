@@ -3753,6 +3753,20 @@ check "passes" "$(is "$status" 0)"
 check "the report names the command, the name it sets and that the filter takes every Go file" \
   "$(contains "$out" "^report: app: [0-9]* files (filter app); every Go file and every file under a Go module's directory, since job app step \"Test the app\" runs \`GOOS=linux go test ./cmd/app ./lib\`, which this check does not reduce (it sets GOOS, which can change what go compiles)")"
 
+# The events writer runs the go test behind it with -json and the step's own flags and packages,
+# so the line reduces to that go test; a script of another name in that place is no such writer.
+echo "case: a claimed simple go test behind the events writer"
+root=$(fixture events-writer)
+replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" "run: ../.github/scripts/go_test_events.py go test ./cmd/app ./lib"
+run_check "$root"
+check "passes, the command reduced to the Run's closure" "$(is "$status" 0)"
+check "counts the job's files" "$(contains "$out" '^report: app: 8 files (filter app)$')"
+root=$(fixture events-writer-other)
+replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" "run: ../.github/scripts/other.py go test ./cmd/app ./lib"
+run_check "$root"
+check "a script of another name in its place is not reduced" \
+  "$(contains "$out" 'runs `../.github/scripts/other.py go test ./cmd/app ./lib`, which this check does not reduce (it starts with `../.github/scripts/other.py`, not go)')"
+
 echo "case: an earlier step writes GOFLAGS to GITHUB_ENV before a claimed simple go command"
 root=$(fixture github-env-goflags)
 cat > "$root/mod/cmd/app/probe_test.go" <<'GO'
@@ -5271,6 +5285,34 @@ PY
 check "no filter gates a job that compiles or reads files it does not select" \
   "$(is "$uncovered" "")"
 
+# Rule 8 of check-workflow-files.sh (.github/scripts/go_test_steps.py) refuses a step whose script
+# the ci_filters filter does not select, so a change to a script alone that a step of ci.yaml's run
+# reaches must start the ci-filters job under the repository's own filter, read as that job's
+# dorny/paths-filter step reads it. The control is that filter less the four patterns of
+# .github/ci-gates/ci-filters.py's reads that name the scripts' places, as it stood before rule 8
+# read them.
+echo "case: a change to a script alone that a step reaches starts the ci-filters job, under the repository's own filter"
+# script_selects <patterns dropped, or -> <path>...: yes or no for each path, under the computed
+# ci_filters filter less the dropped patterns.
+script_selects() {
+  (cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" python3 -c '
+import sys, yaml
+from workflow_paths import PathsFilter
+flat = lambda v: [v] if isinstance(v, str) else [p for i in v for p in flat(i)] if isinstance(v, list) else []
+drop = set(sys.argv[2].split()) if sys.argv[2] != "-" else set()
+chosen = PathsFilter([p for p in flat(yaml.safe_load(open(sys.argv[1]))["ci_filters"]) if p not in drop], "some-with-excludes")
+print(" ".join("yes" if chosen.covers(path) else "no" for path in sys.argv[3:]))
+' "$real_filters" "$@")
+}
+scripts_dirs=".github/scripts/** scripts/** packages/*/scripts/** packages/dispatch/e2e/visual-run.sh"
+reached="scripts/e2e/stage1-skeleton.sh .github/scripts/go-tagged-tests.sh packages/pi-envoy/scripts/local-stack.sh packages/dispatch/e2e/visual-run.sh"
+# shellcheck disable=SC2086 # the lists are words
+check "scripts/e2e/stage1-skeleton.sh, go-tagged-tests.sh, a package's script and visual-run.sh each start it" \
+  "$(is "$(script_selects - $reached)" "yes yes yes yes")"
+# shellcheck disable=SC2086
+check "control: without the scripts' four patterns, none of the four does" \
+  "$(is "$(script_selects "$scripts_dirs" $reached)" "no no no no")"
+
 # Rule 13 reads the root manifest as check-bun-workspace-manifests.sh reads it, at every shape:
 # a list it cannot read is named rather than taken for an empty one, which would hold WORKSPACES
 # to nothing, and the two spellings of a workspace are one workspace.
@@ -5564,17 +5606,17 @@ GO
 echo "case: the plain step's -run lists are what the lane's packages hold"
 root=$(race_tree)
 out=$(derived "$root" "lane/a/... lane/b")
-check "names every test of a !race file, sorted, TestMain aside, and the raceEnabled ones" \
+check "names every test of a !race file, sorted, TestMain aside, and the raceEnabled ones, each run under the events writer" \
   "$(is "$out" "$(printf '%s\n%s' \
-    "go test -count=1 -timeout 10m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a" \
-    "go test -count=1 -timeout 10m -run '^(TestTheta)\$' ./lane/a/sub")")"
+    "../../.github/scripts/go_test_events.py go test -count=1 -timeout 10m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a" \
+    "../../.github/scripts/go_test_events.py go test -count=1 -timeout 10m -run '^(TestTheta)\$' ./lane/a/sub")")"
 check "passes over the testdata package" "$(is "$(contains "$out" 'TestIgnored')" false)"
 check "and leaves out a package with no such test" "$(is "$(contains "$out" './lane/b')" false)"
 
 echo "case: a package the lane names alone does not reach the packages under it"
 out=$(derived "$root" "lane/a")
 check "names the package alone" \
-  "$(is "$out" "go test -count=1 -timeout 10m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a")"
+  "$(is "$out" "../../.github/scripts/go_test_events.py go test -count=1 -timeout 10m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a")"
 
 echo "case: a raceEnabled no top-level function encloses"
 root="$work/race-unattributable"

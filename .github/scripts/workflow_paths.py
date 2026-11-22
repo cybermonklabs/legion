@@ -2,7 +2,10 @@
 them: a walk of the repository's files, a path glob as a regex, an ordered pattern list where `!`
 negates, a dorny/paths-filter filter under its predicate quantifier, and a workflow's events; and
 the YAML those filters are written in, read as strictly as those readers read it: a mapping's
-repeated keys, and a loader that refuses a file holding one.
+repeated keys, a loader that refuses a file holding one, and the readers of a composed node
+(mapping_get, scalar) every rule of check-workflow-files.sh reads a workflow with. It also names
+the go test events writer (EVENTS_WRITER), the one path each reader of a go test step builds its
+match of that writer from.
 
 check-image-trigger-paths.sh and check-ci-filters.sh (through ci_filter_coverage.py) import it from
 the repository they check, running `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3`
@@ -18,6 +21,14 @@ import yaml
 
 # Directories a walk never enters: version control and installed dependencies.
 SKIP_DIRS = {".git", ".jj", "node_modules", ".venv", "vendor"}
+
+# The script every go test step of ci.yaml's run runs its go test under: it runs `go test -json`
+# with the step's own flags and packages, keeps every event in the step's file for the job's
+# upload, and prints the log go test prints without -json. A step names it from its own
+# directory (`../../` from packages/envoy or packages/daemon, nothing from the root), so each
+# reader matches it by this path's end: check-workflow-files.sh's rule 8 (go_test_steps.py), the
+# filter engine (ci_filter_coverage.py and ci_job_reads.py) and go-test-step-expansion.py.
+EVENTS_WRITER = ".github/scripts/go_test_events.py"
 
 
 def walk(root: Path = Path(".")) -> list[str]:
@@ -174,6 +185,22 @@ def written_key(name: yaml.ScalarNode) -> str | None:
     """A key as js-yaml compares it: its text exactly, and a merge key not at all, since js-yaml
     lets a mapping hold any number of `<<` keys (lib/loader.js, storeMappingPair)."""
     return None if name.tag == MERGE_TAG else name.value
+
+
+def mapping_get(node: object, key: str) -> object:
+    """The value of `key` in a composed mapping, or None."""
+    if not isinstance(node, yaml.MappingNode):
+        return None
+    for name, value in node.value:
+        if isinstance(name, yaml.ScalarNode) and name.value == key:
+            return value
+    return None
+
+
+def scalar(node: object) -> str | None:
+    """A composed scalar's text, its blanks at either end taken off, or None for any other node."""
+    return node.value.strip() if isinstance(node, yaml.ScalarNode) else None
+
 
 
 class UniqueKeyLoader(yaml.SafeLoader):

@@ -1,0 +1,27 @@
+name: Upload the go test events
+description: >-
+  The step after the last go test step of every job of ci.yaml's run that runs go test: it uploads
+  the events .github/scripts/go_test_events.py kept for each of the job's go test steps, the files
+  `$RUNNER_TEMP/go-test-events/<step id>.jsonl`, as the artifact `go-test-events-<the job's
+  check run id>`, the id the jobs API and the job's URL give, so a reader fetches one job's events
+  by that id (docs/testing.md, "Which tests a CI job ran"). Call it with `if: always()`, or
+  `always() && ` the one condition the job's go test steps share, so a failed, timed-out or
+  cancelled job's events are kept too; .github/scripts/check-workflow-files.sh's rule 8 holds every
+  such job to this one step. A job that kept no file fails here (if-no-files-found: error), as a go
+  test step that kept no event fails, so a run whose record cannot be kept never reads as green.
+
+inputs:
+  check-run-id:
+    description: "`job.check_run_id` of the calling job, which names the artifact."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Upload the go test events
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: go-test-events-${{ inputs.check-run-id }}
+        path: ${{ runner.temp }}/go-test-events/
+        if-no-files-found: error

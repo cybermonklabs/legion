@@ -133,9 +133,10 @@ jobs:
       # (.github/go-legs/packages/envoy/cmd/listener.yaml) to `go test -list . -race`, which is why
       # it is given -race, the step's own build.
       - name: Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow
+        id: race
         run: |
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r go test -count=1 -race -timeout 30m
+          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r ../../.github/scripts/go_test_events.py go test -count=1 -race -timeout 30m
         working-directory: packages/envoy
       - name: Report the service's peak connections
         if: always()
@@ -162,19 +163,28 @@ jobs:
       # (internal/testnats/hooks.go's missing), where the row would skip and leave the second step
       # with a package whose every forced-order test skipped. No
       # step sets an environment variable: check-ci-filters.sh reduces no go command of a job one
-      # of whose steps sets a GO* name.
+      # of whose steps sets a GO* name. Each forced-order step runs under the events writer, which
+      # forced-order.sh's test run goes through when it sets TEST_EVENTS_FILE.
       - name: Test forced-order.sh's refusals
         if: matrix.leg == 5
         run: scripts/forced-order.test.sh
         working-directory: packages/envoy
       - name: Forced-order tests on the hooked nats-server the module links
+        id: forced-order
         if: matrix.leg == 5
-        run: scripts/forced-order.sh ./internal/testnats/hooktest/ ./cmd/listener/
+        run: ../../.github/scripts/go_test_events.py scripts/forced-order.sh ./internal/testnats/hooktest/ ./cmd/listener/
         working-directory: packages/envoy
       - name: Forced-order tests on the hooked nats-server v2.10.29
+        id: forced-order-2-10-29
         if: matrix.leg == 5
-        run: scripts/forced-order.sh -server 2.10.29 ./internal/testnats/hooktest/
+        run: ../../.github/scripts/go_test_events.py scripts/forced-order.sh -server 2.10.29 ./internal/testnats/hooktest/
         working-directory: packages/envoy
+
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
