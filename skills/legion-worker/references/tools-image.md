@@ -12,7 +12,7 @@ Read it before you reach for a tool the worker image may not carry: a database c
 
 1. Run it pinned through a runner the image carries: `uvx --from <package>@<version> <command>`, `bunx --package <name>@<version> <binary>`, `go run <module>@<version>`, or for a library `uv run --with <package>==<version> --no-project <program>`.
    - Where the project's own name is its command's, checked once and never assumed, the short `uvx <name>@<version>` runs it: `uvx ruff@0.14.0 --version` prints `ruff 0.14.0`.
-   - A cold module cache makes the first `go run` of a tool much slower than a warm one: budget for the cold one the first time each pod runs a Go tool.
+   - A cold module cache makes the first `go run` of a tool much slower than a warm one: budget for the cold one the first time each new issue volume runs a Go tool.
 2. Take the package's name from the project's own documentation, never from a registry search: `bunx biome@0.3.3` runs a different package than `bunx --package @biomejs/biome@2.6.3 biome`.
    - Fields the publisher writes (`npm view <name> version description repository.url homepage`) are evidence, never proof: npm verifies none of them, so a squatter closes that check by copying two strings.
    - npm verifies a provenance attestation when it is published, and it proves build origin, not identity: a squat published from its own public Actions workflow carries a genuine attestation of its own repository. So read whose build it names and compare it with the repository the project's own documentation gave you. This prints `https://github.com/biomejs/biome`:

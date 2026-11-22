@@ -61,7 +61,7 @@ Without the grant line the status is the client's:
 - **2**: a usage error, such as no `AGENT_SECRETS_URL` or no `--`.
 - **75**: the request still waits for a person or the model judge when `--wait` runs out, and nothing ran. The message gives the `agent-secrets status <request_id>` that reads it.
   Read `skill://agent-secrets/references/waiting.md` when a run exits 75, and before you end a grant with `agent-secrets grant revoke`.
-- **77**: denied by the approver, the model judge or the broker (a service's secret, a requesters list without you, `project-not-named`, `project-channels-need-airlock`, `BROKER_SIGNIN=off`, no `--reason`). Final: ask for none of it again and try no name of your own, unless the message says `ask again with --reason` (do so) or names `AGENT_SECRETS_PROJECTS` (tell whoever starts your session).
+- **77**: denied by the approver, the judge or the broker (a service's secret, a requesters list without you, `project-not-named`, `project-channels-need-airlock`, `BROKER_SIGNIN=off`, no `--reason`). Final: ask for none of it again and try no name of your own, but on `ask again with --reason` do so, on `AGENT_SECRETS_PROJECTS` tell who starts your session, on `requester-group-unread` ask later.
 
 ## Where a name comes from
 

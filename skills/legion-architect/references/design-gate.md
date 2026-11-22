@@ -96,7 +96,8 @@ For each gated step, once every child is filed:
 ## After approval
 
 An approval is pinned to its version: any new version closes that step, with no wake. One step
-closing holds the tree's work whatever the other steps stand at. Three versions keep it: one whose
+closing holds every merge of the tree and every member not yet started, whatever the other steps
+stand at; the running phases go on. Three versions keep the approval: one whose
 only change is the approver's own answer to a decision block, given after the approval; one equal
 to the approved text with no decision block in it decided since; and, after the issue was closed
 and reopened, the approved text with the questions the close withdrew opened again. Undo an

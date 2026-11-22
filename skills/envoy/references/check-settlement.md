@@ -41,6 +41,6 @@ Compare the check-run ids of the names both attempt sets share; a name only the 
 ## Known gaps
 
 - A run whose conclusion changes in place, on the same run id: GitHub's view stands until the next successful, non-skipped read at that set.
-- A check whose highest run is deleted on GitHub: the fence keeps that run and its failure until a newer run of that name appears. The reference reads no rollup, so in it only a newer run of that name retires the failure. In a consumer that reads the rollup, a rollup that reports a lower run under that name is older, and only GitHub's read retires the failure.
+- A check whose highest run is deleted on GitHub: the fence keeps that run and its failure until a newer run of that name appears. The reference reads no rollup, so in it only a newer run of that name retires the failure. In a consumer that reads the rollup, a rollup that reports a lower run under that name is older or mixed and is ignored: the failure stands until a newer run of that name appears, or a terminal (green or red) GitHub read at an equal or newer set no longer reports it.
 - A legacy in-progress check whose completion is never seen holds the head unsettled: rerun that check.
 - A consumer that orders head changes by the pull request's `updated_at` (one-second resolution) accepts a stale read of the previous head made in the same second as its replacement, until its next accurate read.
