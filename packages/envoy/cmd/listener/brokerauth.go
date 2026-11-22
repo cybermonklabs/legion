@@ -264,7 +264,7 @@ func (s spentProofs) CheckAndSetDPoPProofUsed(ctx context.Context, jti, _, _, _,
 	// does; the abandoned create may still land, which is the right way round for a record whose
 	// whole purpose is to be there.
 	_, _, err := bus.Bounded(ctx, func() (uint64, error) {
-		return s.kv.Create(hex.EncodeToString(key[:]), nil)
+		return s.kv.Within(ctx).Create(hex.EncodeToString(key[:]), nil)
 	})
 	if errors.Is(err, nats.ErrKeyExists) {
 		return true, nil

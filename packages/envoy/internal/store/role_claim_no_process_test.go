@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -123,7 +122,7 @@ func assertClaimFreed(t *testing.T, reg *Registry, role string) {
 // alone, and wins's own writes are not hooked again).
 func raceFirstMarkWith(reg *Registry, wins func()) *racingUpdateKeyValue {
 	racing := &racingUpdateKeyValue{KeyValue: reg.roleKV.Legacy(), beforeFirstUpdate: wins}
-	reg.roleKV = bus.NewKeyValue(racing, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
+	reg.roleKV = withTwin(racing, reg.roleKV)
 	return racing
 }
 

@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	natsgo "github.com/nats-io/nats.go"
-	"github.com/sjawhar/envoy/internal/bus"
 )
 
 // afterGetKeyValue reads the real bucket, then runs after once before it returns the answer it
@@ -56,7 +55,7 @@ func TestAFailedClaimsRollbackKeepsTheTopicOfASameSessionClaimThatLandedMeanwhil
 				t.Fatal(err)
 			}
 			wrapped := &afterGetKeyValue{KeyValue: reg.roleKV.Legacy()}
-			reg.roleKV = bus.NewKeyValue(wrapped, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
+			reg.roleKV = withTwin(wrapped, reg.roleKV)
 			win := func() {
 				if _, err := reg.SetRoleWithPrevious(context.Background(), RoleClaimRequest{SessionID: b, MachineID: "machine", Role: role, ClientInstanceID: "winner"}); err != nil {
 					t.Fatalf("the same-session winner's claim: %v", err)
@@ -109,7 +108,7 @@ func TestAContendedClaimsRollbackKeepsTheTopicOfASameSessionClaimThatLandedMeanw
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	wrapped := &afterGetKeyValue{KeyValue: reg.roleKV.Legacy()}
-	reg.roleKV = bus.NewKeyValue(wrapped, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
+	reg.roleKV = withTwin(wrapped, reg.roleKV)
 	conflicts := 0
 	wrapped.update = func(key string, value []byte, revision uint64) (uint64, error) {
 		wrapped.update = nil

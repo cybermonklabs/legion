@@ -209,8 +209,8 @@ func (r *Registry) releaseReadRoleClaim(ctx context.Context, sessionID, role str
 		role:     role,
 		attempts: roleClaimReleaseAttempts,
 		writes:   func(claim RoleClaim) bool { return release.frees(claim, sessionID) },
-		send: func(claim RoleClaim) (uint64, error) {
-			return 0, r.roles().Delete(role, nats.LastRevision(claim.Revision))
+		send: func(ctx context.Context, claim RoleClaim) (uint64, error) {
+			return 0, r.roles().Within(ctx).DeleteAt(role, claim.Revision)
 		},
 		landed: func(claim RoleClaim, _, epoch uint64) { r.forgetRoleHolder(role, claim.Revision, epoch) },
 	})
@@ -281,14 +281,14 @@ func (r *Registry) markRoleClaimHandedBack(ctx context.Context, sessionID, role 
 			return claim.HolderSessionID == sessionID && !claim.HandedBack && claim.sameGrant(read) &&
 				(read.ClientInstanceID == "" || claim.ClientInstanceID == read.ClientInstanceID)
 		},
-		send: func(claim RoleClaim) (uint64, error) {
+		send: func(ctx context.Context, claim RoleClaim) (uint64, error) {
 			marked := claim
 			marked.HandedBack = true
 			data, err := json.Marshal(marked)
 			if err != nil {
 				return 0, err
 			}
-			return r.roles().Update(role, data, claim.Revision)
+			return r.roles().Within(ctx).Update(role, data, claim.Revision)
 		},
 		landed: func(_ RoleClaim, revision, epoch uint64) { r.setOwnRoleHolder(role, sessionID, revision, epoch) },
 	})
@@ -353,9 +353,9 @@ func (r *Registry) releaseReadExpiredRoleClaim(ctx context.Context, role string,
 		return ExpiredRoleClaimRetained, nil
 	}
 	epoch := r.roleViewEpoch()
-	roles := r.roles()
+	roles := r.roles().Within(ctx)
 	_, _, err := bus.Bounded(ctx, func() (struct{}, error) {
-		return struct{}{}, roles.Delete(role, nats.LastRevision(claim.Revision))
+		return struct{}{}, roles.DeleteAt(role, claim.Revision)
 	})
 	switch {
 	case err == nil:

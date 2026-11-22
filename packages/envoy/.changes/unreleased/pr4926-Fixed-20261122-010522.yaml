@@ -1,0 +1,21 @@
+kind: Fixed
+body: |-
+  A write to a JetStream stream that the server answers `nats: no response from stream` is now
+  sent again while the stream exists. Before, a write sent the moment a stream got its leader could
+  fail this way after half a second, because the server names a leader before the leader takes
+  writes. This covers every key-value bucket write (put, create, update, delete, purge) and every
+  stored publish to the notification stream, including the listener's send route and Dispatch's
+  publishes. A write to a stream that has been deleted still fails at once. A write that keeps
+  getting this answer fails when its bound ends: the caller's own context, at most 10 seconds for a
+  bucket write, or the publish's bound for a stored publish. No send again starts within 100 ms of
+  that bound. It fails with `no response from stream`, or, for a bucket write whose caller gave the
+  handle its own context, with a timeout or a cancel when the bound ends inside one of nats.go's own
+  pauses; every caller reads those as a write that was not answered, as before. A stored publish
+  that failed this way is not reported as one that may have stored the message; a send already in
+  flight when the bound ends is still reported that way, as before. A bucket write whose caller
+  gives up on it, such as a session registration whose HTTP request ended, sends nothing after the
+  caller cancels, nor after the caller's deadline while a deadline's timer runs less than 100 ms
+  late. The pause between two sends grows from about 50 ms up to 2 seconds.
+time: 2026-11-22T01:05:22Z
+custom:
+    Issue: pr4926

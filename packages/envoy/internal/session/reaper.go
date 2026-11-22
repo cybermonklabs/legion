@@ -238,7 +238,7 @@ func (r *SessionRegistry) deleteGone(ctx context.Context, candidate goneCandidat
 		revision = judged
 	}
 	_, answered, err := bus.Bounded(ctx, func() (struct{}, error) {
-		return struct{}{}, kv.Delete(candidate.sessionID, nats.LastRevision(revision))
+		return struct{}{}, kv.Within(ctx).DeleteAt(candidate.sessionID, revision)
 	})
 	if !answered {
 		return false, fmt.Errorf("delete session %s's record at revision %d: %w", candidate.sessionID, revision, err)

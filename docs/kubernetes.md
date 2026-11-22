@@ -1415,6 +1415,7 @@ How long the proxy outlives the moment the generation is told to end, in a pod, 
 - **A child that exits on its own** and leaves processes behind:
   in the controller's pod, where the launcher is not namespaced, the leftovers get up to `--stop-grace` more, SIGTERM then SIGKILL (`cleanExitedGeneration`, `internal/launcher/process.go`), with the proxy still serving them, so at most one grace after the child's exit.
   In an issue pod the role's own init is what signals them: SIGTERM over the role's namespace, then `roleNamespaceDrain`, two seconds, for them to go before the SIGKILL that ends the namespace (`runRoleShim`, `internal/launcher/roleinit_linux.go`), so at most two seconds after the child's exit.
+  The role's output then says how that wait ended, with its span by role-init's own clock: `role-init: the role's namespace emptied <span> after its SIGTERM` when the processes left, or `role-init: the role's processes still ran <span> after its SIGTERM, the drain's bound of 2s: killing them` when the bound came first, which is where a git or a jj the role left can leave its lock in the issue's clone.
 
 When the proxy is closed, it lets connections still open finish for up to one second (`sessionDrain`, `launcher.go`;
 `Config.Drain`, `sessionproxy.go`), then closes both ends of those left.

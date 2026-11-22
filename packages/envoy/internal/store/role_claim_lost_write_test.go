@@ -10,7 +10,6 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -55,7 +54,7 @@ func TestAClaimWhoseWriteFailedIsSuccessOnlyForTheClaimantsOwnProcess(t *testing
 			racing.beforeFirstCreate = func() {
 				claimRoleAs(t, reg, holder, "example-host", role, tc.standing)
 			}
-			reg.roleKV = bus.NewKeyValue(racing, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
+			reg.roleKV = withTwin(racing, reg.roleKV)
 
 			_, err := reg.SetRoleWithPrevious(context.Background(), RoleClaimRequest{
 				SessionID:        holder,

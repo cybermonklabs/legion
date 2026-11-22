@@ -1102,7 +1102,8 @@ func swapSessionBucket(t *testing.T, sessions *session.SessionRegistry, wrap fun
 	field := registry.FieldByName("watcher")
 	watcher := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
 	old := watcher.Interface().(*kvwatch.Watcher).KV()
-	swapped := bus.NewKeyValue(wrap(old.Legacy()), old.WatchHandle(), old.Streams())
+	wrapped := wrap(old.Legacy())
+	swapped := bus.NewKeyValue(wrapped, watchHandleFor(wrapped, old.WatchHandle()), old.Streams())
 	replacement := reflect.ValueOf(kvwatch.New("session registry", swapped, discardingCache{}))
 	// The cast below trusts the field's type, so the type is checked first: a sync.Mutex there
 	// would compile, and RWMutex.Lock would write past it into the next field.

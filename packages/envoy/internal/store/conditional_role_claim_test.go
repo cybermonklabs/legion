@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	natsgo "github.com/nats-io/nats.go"
-	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -65,7 +64,7 @@ func raceConditionalClaim(t *testing.T, role, seed, winner, claimant string) (*R
 			t.Errorf("the claim that wins the race: %v", err)
 		}
 	}
-	reg.roleKV = bus.NewKeyValue(racing, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
+	reg.roleKV = withTwin(racing, reg.roleKV)
 
 	required := read.Revision
 	_, err = reg.SetRoleWithPrevious(context.Background(), RoleClaimRequest{

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
-	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -251,7 +250,7 @@ func (kv *racingEachDeleteKeyValue) Delete(key string, opts ...natsgo.DeleteOpt)
 func raceReleaseWith(t *testing.T, reg *Registry, role string, races int, wins func()) *racingEachDeleteKeyValue {
 	t.Helper()
 	racing := &racingEachDeleteKeyValue{KeyValue: reg.roleKV.Legacy(), racedDeletes: races, beforeDelete: wins}
-	reg.roleKV = bus.NewKeyValue(racing, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
+	reg.roleKV = withTwin(racing, reg.roleKV)
 	return racing
 }
 
@@ -452,7 +451,7 @@ func TestAMarkThatRacesItsOwnHoldersRenewalLandsOnTheClaimThatStands(t *testing.
 			t.Errorf("the holder's renewal that wins the race: %v", err)
 		}
 	}
-	reg.roleKV = bus.NewKeyValue(racing, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
+	reg.roleKV = withTwin(racing, reg.roleKV)
 
 	if _, err := reg.Remove(context.Background(), holder, []string{contracts.RoleTopicPrefix + role}, RoleReleaseAuthority{}); err != nil {
 		t.Fatalf("hand %s's role back under its own renewal: %v", role, err)
@@ -481,7 +480,7 @@ func TestAMarkThatRacesAnotherProcessMarksNothing(t *testing.T) {
 	racing.beforeFirstUpdate = func() {
 		claimRoleAs(t, reg, holder, "example-host", role, roleClaimSecondInstance)
 	}
-	reg.roleKV = bus.NewKeyValue(racing, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
+	reg.roleKV = withTwin(racing, reg.roleKV)
 
 	if _, err := reg.Remove(context.Background(), holder, []string{contracts.RoleTopicPrefix + role}, RoleReleaseAuthority{}); err != nil {
 		t.Fatalf("hand %s's role back under another process's claim: %v", role, err)
@@ -529,7 +528,7 @@ func TestAMarkThatRacesAFreshGrantByItsOwnProcessMarksNothing(t *testing.T) {
 				claimRoleAs(t, reg, holder, "example-host", role, roleClaimInstance)
 				granted = storedRoleClaim(t, reg, role)
 			}
-			reg.roleKV = bus.NewKeyValue(racing, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
+			reg.roleKV = withTwin(racing, reg.roleKV)
 
 			if _, err := reg.Remove(context.Background(), holder, []string{contracts.RoleTopicPrefix + role}, RoleReleaseAuthority{}); err != nil {
 				t.Fatalf("hand %s's role back under its own process's fresh grant: %v", role, err)
@@ -594,7 +593,7 @@ func TestAHandBackLeavesAClaimRenewedUnderEveryWriteUnmarked(t *testing.T) {
 			}
 		},
 	}
-	reg.roleKV = bus.NewKeyValue(racing, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
+	reg.roleKV = withTwin(racing, reg.roleKV)
 
 	_, err := reg.Remove(context.Background(), holder, []string{contracts.RoleTopicPrefix + role}, RoleReleaseAuthority{})
 

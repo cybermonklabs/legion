@@ -766,12 +766,15 @@ func (r *SessionRegistry) Put(sessionID string, entry SessionEntry) error {
 }
 
 // PutWithin writes sessionID's entry, its bucket write waiting no longer than ctx (bus.Bounded): an
-// HTTP route passes its request's own context. A write ctx abandoned may still land after this
-// answer. That is safe: it writes the entry the caller's retry writes again, it rides the
-// connection ahead of any write this listener sends on it later, so it cannot undo one, and
-// against another listener's write it is last-writer-wins, as every Put already is. The write
-// reaches the cache through the handle's epoch (kvwatch.Copy.Put), so a write made through a
-// handle on a bucket since recreated is dropped rather than fencing out the new bucket's rows.
+// HTTP route passes its request's own context. The handle is given ctx (bus.KeyValue.Within), so
+// no request of the write is sent after ctx is canceled, nor after ctx's deadline while the lag of
+// a deadline's timer stays under 100 ms, sends again included. What may still land after this
+// answer is a request already on the wire then: it was sent on the connection before any write
+// this listener sends on it after this answer, so it cannot undo one; it writes the entry the
+// caller's retry writes again; and against another listener's write it is last-writer-wins, as
+// every Put already is. The write reaches the cache through the handle's epoch
+// (kvwatch.Copy.Put), so a write made through a handle on a bucket since recreated is dropped
+// rather than fencing out the new bucket's rows.
 func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry SessionEntry) error {
 	// Several live processes can hold the same session (shared on-disk state) - a harness can
 	// keep a session's state on shared disk - and each heartbeats a claim of its own. The route
@@ -783,7 +786,7 @@ func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry
 		return err
 	}
 	kv, epoch := r.watcher.Handle()
-	revision, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.Put(sessionID, buf) })
+	revision, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.Within(ctx).Put(sessionID, buf) })
 	if !answered {
 		return fmt.Errorf("write session %s to the bucket: %w", sessionID, err)
 	}

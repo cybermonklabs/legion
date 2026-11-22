@@ -246,7 +246,7 @@ func (r *Registry) renewRoleClaim(ctx context.Context, role, sessionID, clientIn
 			}
 			return claim.HeldByProcess(clientInstanceID)
 		},
-		send: func(claim RoleClaim) (uint64, error) {
+		send: func(ctx context.Context, claim RoleClaim) (uint64, error) {
 			renewed := claim
 			renewed.ClientInstanceID = clientInstanceID
 			renewed.RenewedWithoutProcess = clientInstanceID == ""
@@ -255,7 +255,7 @@ func (r *Registry) renewRoleClaim(ctx context.Context, role, sessionID, clientIn
 			if err != nil {
 				return 0, err
 			}
-			return r.roles().Update(role, data, claim.Revision)
+			return r.roles().Within(ctx).Update(role, data, claim.Revision)
 		},
 		landed: func(_ RoleClaim, revision, epoch uint64) { r.setOwnRoleHolder(role, sessionID, revision, epoch) },
 	})

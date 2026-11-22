@@ -202,7 +202,7 @@ func swapRoleBucketHandle[H natsgo.KeyValue](t *testing.T, reg *Registry, build 
 	reg.kvMu.Lock()
 	previous := reg.roleKV
 	handle := build(previous.Legacy())
-	watch := previous.WatchHandle()
+	watch := watchHandleFor(handle, previous.WatchHandle())
 	if wrapWatch != nil {
 		watch = wrapWatch(watch, handle)
 	}
