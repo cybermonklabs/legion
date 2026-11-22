@@ -328,16 +328,16 @@ func TestStreamsCommandOnRunsAHeldWordOnTheCallersStack(t *testing.T) {
 	require.Equal(t, natsgrant.OperatorPhaseReleased, h.row().Phase, "control: a hold was set with no hub")
 }
 
-// The census reads the recorded fresh consumer names (consumernames.RecordedFreshNames, passed
-// in) through streams.Census's RecordedFreshNames, after its checks and its barrier and before it
-// removes anything. It gives
-// the reader its --family values, --dispatch-database-file, each --daemon-database entry, and the
-// daemons' Deployments as the hold's own Kubernetes client lists them (KubeDaemonDeployments of
-// namespace legion), which hold the Deployment the row renders there. With no reader, or a reader
-// that cannot read a store, the census is UNKNOWN (exit 2) and writes no done entry. The control is
-// the same census with a reader, which is done. That an unrecorded fresh-form consumer is removed
-// and a recorded one kept is streams.Census's own rule, which #4687 tests, and t-7's rows test
-// with the real reader, a gone daemon store's consumers too.
+// The census reads the recorded fresh consumer names (consumernames.RecordedFreshNames, passed in)
+// through streams.Census's RecordedFreshNames, after its checks and its barrier and before it
+// removes anything. It gives the reader its --family values, --dispatch-database-file, each
+// --daemon-database entry, and the daemons' Deployments as the hold's own Kubernetes client lists
+// them (KubeDaemonDeployments of namespace legion), which hold the Deployment the row renders there.
+// With no reader, or a reader that cannot read a store, the census is UNKNOWN (exit 2) and writes no
+// done entry. The control is the same census with a reader, which is done. That an unrecorded
+// fresh-form consumer is removed and a recorded one kept is streams.Census's own rule, which #4687
+// tests, and consumer-names' census rows (packages/envoy/infra/consumernames) test with the real
+// reader, a gone daemon store's consumers too.
 func TestHoldTheCensusReadsTheRecordedFreshNames(t *testing.T) {
 	h := newHeldStack(t)
 	h.seedProtectedStreams()

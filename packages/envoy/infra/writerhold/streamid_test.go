@@ -73,7 +73,7 @@ func (f *fakeStores) reconcile(ctx context.Context, nc *nats.Conn, deployments D
 	}
 	var projects []string
 	for _, family := range families {
-		if project, ok := strings.CutPrefix(family, "daemon/"); ok {
+		if project, ok := strings.CutPrefix(family, daemonFamilyPrefix); ok {
 			projects = append(projects, project)
 		}
 	}

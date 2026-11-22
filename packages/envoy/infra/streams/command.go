@@ -37,17 +37,6 @@ settings: --replicas (ENVOY_NATS_REPLICAS, default 1), --stream-max-bytes (ENVOY
 // own workflow and write its journal's intent, done and stop entries; this command does not take
 // them.
 func Command(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	return CommandWith(ctx, args, stdout, stderr, nil)
-}
-
-// RecordsReader reads, on conn, the consumers the selection bucket's records name, each in its
-// family's shape (CensusInput.RecordedSessionConsumers). envoy-infra consumer-names builds it on
-// the records' own format; this package reads no record.
-type RecordsReader func(ctx context.Context, conn *nats.Conn) ([]ConsumerShape, error)
-
-// CommandWith is Command whose census reads the recorded consumers with recorded, on the
-// census's own connection; a nil recorded reads none, and the census is UNKNOWN.
-func CommandWith(ctx context.Context, args []string, stdout, stderr io.Writer, recorded RecordsReader) int {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "-help" {
 		fmt.Fprintln(stderr, commandUsage)
 		if len(args) == 0 {
