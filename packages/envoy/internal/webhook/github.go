@@ -201,16 +201,19 @@ func githubHandler(secret, mentionTrigger, reviewerAppID, verdictAppID string, p
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			duplicate, err := publisher.PublishReportingDuplicateWithin(answer, item)
+			// One line for each topic the publisher put the envelope on, its copy under a renamed
+			// repository's former name included: which App's webhook delivered which event under
+			// which key, and whether the stream stored it or already held that key, so the copies
+			// two Apps deliver of one event can be told apart and counted. A topic published before
+			// a later one failed is logged too.
+			err := publisher.PublishEachWithin(answer, item, func(topic string, duplicate bool) {
+				log.Printf("github published delivery=%s event=%s action=%s topic=%s key=%s target_id=%s result=%s",
+					delivery, event, action, topic, item.DedupeKey, targetID, publishResult(duplicate))
+			})
 			if err != nil {
 				failures.deliveryFailed(w, delivery, "github publish", err)
 				return
 			}
-			// One line for each topic: which App's webhook delivered which event under which key,
-			// and whether the stream stored it or already held that key, so the copies two Apps
-			// deliver of one event can be told apart and counted.
-			log.Printf("github published delivery=%s event=%s action=%s topic=%s key=%s target_id=%s result=%s",
-				delivery, event, action, item.Topic, item.DedupeKey, targetID, publishResult(duplicate))
 		}
 		if len(items) > 1 {
 			log.Printf("github mention detected delivery=%s trigger=%s", delivery, strings.TrimSpace(trigger))

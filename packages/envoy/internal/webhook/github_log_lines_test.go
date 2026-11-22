@@ -9,7 +9,70 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/ghrename"
+	"github.com/sjawhar/envoy/internal/logging"
 )
+
+// publishedLine is the github published line of a push of sharedDelivery on topic, from the App
+// targetID, with the stream's answer result.
+func publishedLine(topic, targetID, result string) string {
+	return fmt.Sprintf("github published delivery=%s event=push action= topic=%s key=github.%s target_id=%s result=%s",
+		sharedDelivery, topic, sharedDelivery, targetID, result)
+}
+
+// A repository GitHub renamed is published a second time under its former name, through the
+// rename publisher the listener publishes every webhook through (ghrename.Publishing), and each of
+// the two topics logs its own github published line with its own answer. Here the push was first
+// delivered before the rename was configured, so the current name's copy is a duplicate and the
+// former name's is stored (a real NATS server).
+func TestGitHubPublishedLineNamesEachTopicTheRenamePublisherPublishes(t *testing.T) {
+	logged := captureLog(t)
+	client := githubStream(t)
+	body := withInstallation(t, githubFixture(t, "push"), 1001)
+	const (
+		current = "notifications.github.example-org.example-repo.push.branch.main"
+		former  = "notifications.github.example-org.former-repo.push.branch.main"
+	)
+
+	plain := GitHubHandler("s", "@legion", "", "", ghrename.Publishing(client, ghrename.Renames{}, logging.New("test")), &mockRecorder{})
+	postDelivery(t, plain, "push", sharedDelivery, body, appDelivery("5341240"))
+	if got, want := linesStarting(logged.String(), "github published "), []string{publishedLine(current, "5341240", "stored")}; !slices.Equal(got, want) {
+		t.Fatalf("the delivery before the rename logged\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+
+	renames, err := ghrename.Parse("example-org/former-repo=example-org/example-repo")
+	if err != nil {
+		t.Fatalf("parse the rename: %v", err)
+	}
+	renamed := GitHubHandler("s", "@legion", "", "", ghrename.Publishing(client, renames, logging.New("test")), &mockRecorder{})
+	logged.Reset()
+	postDelivery(t, renamed, "push", sharedDelivery, body, appDelivery("5341240"))
+	want := []string{publishedLine(current, "5341240", "duplicate"), publishedLine(former, "5341240", "stored")}
+	if got := linesStarting(logged.String(), "github published "); !slices.Equal(got, want) {
+		t.Fatalf("the delivery after the rename logged\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if got := envelopeTopics(githubStreamEnvelopes(t, client)); !slices.Equal(got, []string{current, former}) {
+		t.Fatalf("the stream holds %v, want one message on each name", got)
+	}
+}
+
+// A delivery that carries no X-GitHub-Hook-Installation-Target-ID header (a repository webhook's,
+// or one sent by hand) is published as any other, and its github published line names an empty
+// target.
+func TestAGitHubDeliveryWithNoHookTargetIsPublishedWithAnEmptyTarget(t *testing.T) {
+	logged := captureLog(t)
+	client := githubStream(t)
+	handler := GitHubHandler("s", "@legion", "", "", client, &mockRecorder{})
+	postDelivery(t, handler, "push", sharedDelivery, withInstallation(t, githubFixture(t, "push"), 1001), nil)
+	const topic = "notifications.github.example-org.example-repo.push.branch.main"
+	if got, want := linesStarting(logged.String(), "github published "), []string{publishedLine(topic, "", "stored")}; !slices.Equal(got, want) {
+		t.Fatalf("the delivery logged\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if got := envelopeTopics(githubStreamEnvelopes(t, client)); !slices.Equal(got, []string{topic}) {
+		t.Fatalf("the stream holds %v, want the push on %s", got, topic)
+	}
+}
 
 // captureLog sends the standard logger to a buffer with no date or time until the test ends, and
 // answers the buffer.

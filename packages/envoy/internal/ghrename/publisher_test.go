@@ -50,16 +50,15 @@ func (b *recordingBus) topics() []string {
 }
 
 // publishMethods are the two one-method interfaces a *Publisher satisfies, so every case runs
-// through both: the webhook handlers hold PublishReportingDuplicateWithin and the CI summary loop
-// holds Publish, and the two must fan out alike.
+// through both: the webhook handlers hold PublishEachWithin and the CI summary loop holds Publish,
+// and the two must fan out alike.
 var publishMethods = []struct {
 	name    string
 	publish func(*Publisher, contracts.Envelope) error
 }{
 	{"Publish", func(p *Publisher, item contracts.Envelope) error { return p.Publish(item) }},
-	{"PublishReportingDuplicateWithin", func(p *Publisher, item contracts.Envelope) error {
-		_, err := p.PublishReportingDuplicateWithin(context.Background(), item)
-		return err
+	{"PublishEachWithin", func(p *Publisher, item contracts.Envelope) error {
+		return p.PublishEachWithin(context.Background(), item, nil)
 	}},
 }
 
@@ -107,36 +106,50 @@ type duplicateBus struct {
 }
 
 func (b *duplicateBus) PublishReportingDuplicateWithin(ctx context.Context, item contracts.Envelope) (bool, error) {
-	_, err := b.recordingBus.PublishReportingDuplicateWithin(ctx, item)
-	return slices.Contains(b.held, item.Topic), err
+	if _, err := b.recordingBus.PublishReportingDuplicateWithin(ctx, item); err != nil {
+		return false, err
+	}
+	return slices.Contains(b.held, item.Topic), nil
 }
 
-// The webhook logs, for each envelope it hands over, whether the stream already held it, so the
-// publisher answers the envelope's own publish and not its copy's: a copy under the former name
-// the stream held already does not make a new envelope a duplicate, nor the other way round.
-func TestPublisherAnswersWhetherTheStreamHeldTheEnvelopeItself(t *testing.T) {
+// The webhook logs one line for each topic a delivery is published on, so the publisher reports
+// each topic it published, the copy under the former name included, with the stream's own answer
+// for that topic: the copy is a message of its own, which the stream can hold while it stores the
+// envelope, or the other way round. A copy that fails is not reported, and the envelope before it
+// is.
+func TestPublisherReportsEachTopicWithItsOwnAnswer(t *testing.T) {
 	const (
 		current = "notifications.github.cybermonklabs.legion.pr.7706"
 		former  = "notifications.github.sjawhar.legion.pr.7706"
 	)
 	for _, c := range []struct {
-		name string
-		held []string
-		want bool
+		name   string
+		held   []string
+		failOn int
+		want   []string
 	}{
-		{"neither held", nil, false},
-		{"the envelope held", []string{current}, true},
-		{"only the copy held", []string{former}, false},
+		{name: "neither held", want: []string{current + " stored", former + " stored"}},
+		{name: "the envelope held", held: []string{current}, want: []string{current + " duplicate", former + " stored"}},
+		{name: "only the copy held", held: []string{former}, want: []string{current + " stored", former + " duplicate"}},
+		{name: "the copy fails", failOn: 2, want: []string{current + " stored"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			bus := &duplicateBus{held: c.held}
+			bus.failOn, bus.failWith = c.failOn, errors.New("refused")
 			p := Publishing(bus, mustParse(t, "sjawhar/legion=cybermonklabs/legion"), nil)
-			duplicate, err := p.PublishReportingDuplicateWithin(context.Background(), testEnvelope(current))
-			if err != nil || duplicate != c.want {
-				t.Fatalf("PublishReportingDuplicateWithin = %v, %v; want %v", duplicate, err, c.want)
+			var reported []string
+			err := p.PublishEachWithin(context.Background(), testEnvelope(current), func(topic string, duplicate bool) {
+				result := "stored"
+				if duplicate {
+					result = "duplicate"
+				}
+				reported = append(reported, topic+" "+result)
+			})
+			if (err != nil) != (c.failOn != 0) {
+				t.Fatalf("PublishEachWithin = %v, want an error only when the copy fails", err)
 			}
-			if got := bus.topics(); !slices.Equal(got, []string{current, former}) {
-				t.Fatalf("published %v, want the envelope and its copy", got)
+			if !slices.Equal(reported, c.want) {
+				t.Fatalf("reported %q, want %q", reported, c.want)
 			}
 		})
 	}

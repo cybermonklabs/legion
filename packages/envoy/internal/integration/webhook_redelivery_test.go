@@ -308,14 +308,13 @@ type failAfter struct {
 	published int
 }
 
-func (p *failAfter) PublishReportingDuplicateWithin(ctx context.Context, item contracts.Envelope) (bool, error) {
+func (p *failAfter) PublishEachWithin(ctx context.Context, item contracts.Envelope, published func(topic string, duplicate bool)) error {
 	if p.published >= p.after {
-		return false, fmt.Errorf("publish refused after %d envelopes", p.after)
+		return fmt.Errorf("publish refused after %d envelopes", p.after)
 	}
-	duplicate, err := p.inner.PublishReportingDuplicateWithin(ctx, item)
-	if err != nil {
-		return false, err
+	if err := p.inner.PublishEachWithin(ctx, item, published); err != nil {
+		return err
 	}
 	p.published++
-	return duplicate, nil
+	return nil
 }
