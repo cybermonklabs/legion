@@ -86,8 +86,6 @@ jobs:
       packages: read
       actions: read
       contents: read
-    env:
-      SARIF_DIR: ${{ runner.temp }}/codeql-sarif
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -119,9 +117,9 @@ jobs:
         uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         env:
           NODE_OPTIONS: --require ${{ github.workspace }}/.github/scripts/api-request-ledger.cjs
+        # It writes one SARIF file a language to its default output, ../results, and sends none.
         with:
           upload: never
-          output: ${{ env.SARIF_DIR }}
       # One upload a language, each with the category and the matrix value its own job sent
       # (upload-sarif sends `matrix` as the analysis's environment), so each lands in the
       # configuration main already holds for it. The file names are CodeQL's language names.
@@ -133,7 +131,7 @@ jobs:
         env:
           NODE_OPTIONS: --require ${{ github.workspace }}/.github/scripts/api-request-ledger.cjs
         with:
-          sarif_file: ${{ env.SARIF_DIR }}/actions.sarif
+          sarif_file: ../results/actions.sarif
           category: /language:actions
           matrix: ${{ toJSON(fromJSON('{"language":"actions","build-mode":"none"}')) }}
           wait-for-processing: false
@@ -142,7 +140,7 @@ jobs:
         env:
           NODE_OPTIONS: --require ${{ github.workspace }}/.github/scripts/api-request-ledger.cjs
         with:
-          sarif_file: ${{ env.SARIF_DIR }}/go.sarif
+          sarif_file: ../results/go.sarif
           category: /language:go
           matrix: ${{ toJSON(fromJSON('{"language":"go","build-mode":"autobuild"}')) }}
           wait-for-processing: false
@@ -151,7 +149,7 @@ jobs:
         env:
           NODE_OPTIONS: --require ${{ github.workspace }}/.github/scripts/api-request-ledger.cjs
         with:
-          sarif_file: ${{ env.SARIF_DIR }}/javascript.sarif
+          sarif_file: ../results/javascript.sarif
           category: /language:javascript-typescript
           matrix: ${{ toJSON(fromJSON('{"language":"javascript-typescript","build-mode":"none"}')) }}
           wait-for-processing: false
@@ -160,7 +158,7 @@ jobs:
         env:
           NODE_OPTIONS: --require ${{ github.workspace }}/.github/scripts/api-request-ledger.cjs
         with:
-          sarif_file: ${{ env.SARIF_DIR }}/python.sarif
+          sarif_file: ../results/python.sarif
           category: /language:python
           matrix: ${{ toJSON(fromJSON('{"language":"python","build-mode":"none"}')) }}
           wait-for-processing: false
