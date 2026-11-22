@@ -36,14 +36,15 @@ jobs:
     # copied from another job: the job's set-up with the NATS service started and the checkout
     # (15 s), setup-bun (2), install-jj (3), install-omp (6), setup-go and the go-daemon cache
     # restore (26), the workspace install and contracts' build (14), the lint and the typecheck
-    # (16), the test step (245), the pack, the upload and the ci-ok report (4), the post steps
+    # (16), the test step (285), the pack, the upload and the ci-ok report (4), the post steps
     # with the containers stopped (5), and the seconds the job's own clock holds over the sum of
-    # its steps (5). That is 341 s, 5 m 41 s, the floor a ceiling here has to clear.
+    # its steps (5). That is 381 s, 6 m 21 s, the floor a ceiling here has to clear.
     # The test step runs the package's files in one worker per CPU (`bun test --parallel`,
-    # package.json), so it lasts as long as its slowest worker: legion-stall-watchdog-omp.test.ts
-    # alone, whose eight cases took 241.3 s of the step's 241.4 s in job 137348443705
-    # (2026-11-22), while the other three workers ended by 192 s. Run one after another, the files
-    # took a median 774 s that day.
+    # package.json), so it lasts as long as its slowest worker, which runs
+    # legion-stall-watchdog-omp.test.ts alone: its eight cases took 241.3 s of the step's 241.4 s
+    # in job 137348443705 and 281.5 s of 281.8 s in job 137353258170 (2026-11-22), the 285 above
+    # being the slower one rounded up; the other three workers ended by 192 s and 261 s. Two runs
+    # are no worst case. Run one after another, the files took a median 774 s that day.
     # A job its own limit cuts off reports `cancelled`, which ci-ok fails, and 10 did that to
     # the merge groups of 2026-11-08T23:22Z and 2026-11-09T00:53Z with every step of the job
     # concluded `success`, when the files still ran one after another under a 10-minute limit.
