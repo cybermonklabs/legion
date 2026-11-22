@@ -487,8 +487,8 @@ func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record
 // The words that do not silence are each a tree's own work or a person's: a tree closed or
 // parked waits for a re-admission (tree_closed, tree_parked), a root whose label is off waits
 // for a person to hand it over (label_off), a root a live tree has not released waits for its
-// architect (ancestry), an issue under an accepted ancestor waits for that ancestor to close
-// (accepted_ancestor), and an issue past its review is at work on no slot, whose stillness is
+// architect (ancestry), an issue under an accepted ancestor waits while that ancestor stands
+// in retro or merging (accepted_ancestor), and an issue past its review is at work on no slot, whose stillness is
 // the stall itself (at_work). None of them is the daemon holding work it means to start, which
 // is what a wait by design is.
 //

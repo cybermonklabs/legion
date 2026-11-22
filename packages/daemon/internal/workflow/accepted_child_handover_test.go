@@ -15,7 +15,7 @@ import (
 )
 
 // The child the accepted-parent hold stopped runs once the ancestor that held it has closed,
-// which is what the architect's notice promises it ("it starts once <root> has closed").
+// which is what the architect's notice promises it ("it starts once <root> stands in neither").
 //
 // A person moves a new issue under a tree whose root is already accepted. The daemon records it
 // at admitted and holds it there, and that same hold is what lets the root close at all:
@@ -68,7 +68,7 @@ func TestTheChildHeldUnderAnAcceptedRootIsHandedOverWhenTheRootCloses(t *testing
 // request at all: an architect's tree is signed off, and a person marks the root done on the
 // Dispatch dashboard while it stands in retro. The linger read the merge, so the held child was
 // skipped and stood todo at admitted in a closed tree for ever, though its architect had been
-// told it starts once the root has closed. The expiry reads the child's own state instead — in
+// told it starts once the root stands in neither retro nor merging. The expiry reads the child's own state instead — in
 // the workflow and never started — which is the same answer whatever phase its root was closed
 // from and whatever the close wrote over (unfinishedHandOvers).
 //
