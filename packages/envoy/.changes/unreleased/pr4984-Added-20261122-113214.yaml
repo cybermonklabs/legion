@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  A person's approval of the spec of an issue whose repository is a spec source of its project
+  writes the change request that the issue's requirement, check and component blocks hold into the
+  approved spec of that repository. Dispatch refuses the approval with 409 SPEC_REQUEST_STALE,
+  SPEC_NODE_INVALID, SPEC_CHECKS_NOT_INCLUDED, SPEC_PARENT_MISSING, SPEC_LOOP or
+  APPROVAL_REQUEST_REQUIRED, and a stale refusal appends `spec.request_stale` on the issue.
+time: 2026-11-22T11:32:14Z
+custom:
+    Issue: pr4984

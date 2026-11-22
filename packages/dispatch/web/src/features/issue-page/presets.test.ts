@@ -154,6 +154,33 @@ test("Spec draws the requirements as rows, the issue as none, and the ask above 
   });
 });
 
+// R2: Spec draws the Spec query's own nodes, and block schema version 7 adds one to them: a
+// `component` holds a part of the software, or an interface between two parts, that statements
+// of The Spec are about, and the server's Spec query takes it beside the criteria and the
+// requirements. So Spec draws each component as a row of its own, in its place among the
+// statements and filtered by words as a statement is, and counts the statements alone: a
+// component is no statement, as its row's tone says (`NodeRow.tsx`'s `toneOf`), and R2's count
+// is of "its main kind alone". A `conclusion` records what a change found, and no Spec query
+// takes it, so Spec draws none.
+test("Spec draws each component as a row, counts the statements alone and draws no conclusion", () => {
+  const read = node("spec#b-read", "component", [], { text: "The tree read." });
+  const root = node(issue().id, "issue", [
+    statement("spec#b-names", [], { text: "The page names each component." }),
+    node("spec#b-page", "component", [], { text: "The issue page." }),
+    node("comment-parts", "comment", [read], { text: "Which parts does this change touch?" }),
+    node("notes#b-found", "conclusion", [], { text: "The files differ from the approved spec." }),
+  ]);
+  const view = presetView(root, "spec", "");
+  expect(drawn(root, "spec")).toEqual(["spec#b-names", "spec#b-page", "spec#b-read"]);
+  // The comment above a component is one line on its row, as it is above a statement.
+  expect(parentLines(view.root)).toEqual({
+    "spec#b-read": "comment: Which parts does this change touch?",
+  });
+  expect(view.matches).toBe(1);
+  expect(filterSignals(root, "").spec).toEqual({ count: 1 });
+  expect(drawn(root, "spec", "tree read")).toEqual(["spec#b-read"]);
+});
+
 test("Verification draws each requirement as context with its checks under it and their results", () => {
   const root = issue();
   const view = presetView(root, "verification", "");

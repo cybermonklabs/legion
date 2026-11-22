@@ -314,7 +314,8 @@ func specDocumentRead(document *specstore.Document) *model.SpecDocumentRead {
 	if document == nil {
 		return nil
 	}
-	return &model.SpecDocumentRead{ArtifactID: document.ArtifactID, Name: document.Name, Version: document.Version, Digest: document.Digest}
+	return &model.SpecDocumentRead{ArtifactID: document.ArtifactID, Name: document.Name, Version: document.Version, Digest: document.Digest,
+		Ask: document.Ask, Review: document.Review}
 }
 
 // GET /api/v1/projects/{key}/spec/{owner}/{repo}/nodes/{id}

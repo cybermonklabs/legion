@@ -22,7 +22,7 @@ func TestFromBlocksReadsEachNodeOfTheSpec(t *testing.T) {
 	request := FromBlocks(testIssue, []Block{
 		{Address: testIssue + "/spec#a-refund-returns-the-payment", Text: ":::requirement{#a-refund-returns-the-payment kind=\"behavior\" " +
 			"under=\"payments-are-kept\" supports=\"orders-are-billed orders-are-billed\" about=\"billing bank\" base=\"3\" " +
-			"serves=\"b-k1\" parent=\"b-1\"}\nA refund returns the payment.\n:::\n"},
+			"serves=\"b-k1\" parent=\"b-ask\"}\nA refund returns the payment.\n:::\n"},
 		{Address: testIssue + "/verification#a-refund-is-paid-back", Text: ":::check{#a-refund-is-paid-back statement=\"a-refund-returns-the-payment\" " +
 			"subject=\"code\" procedure=\"program\" runner=\"go\" selector=\"example.com/billing TestARefundIsPaidBack\" job=\"go-test\" " +
 			"time_limit=\"24h\" surface=\"cli\" run=\"go test ./...\"}\n" +

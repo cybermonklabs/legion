@@ -87,7 +87,10 @@ func ParseLevel(level, notes string) (Level, error) {
 			component := specgraph.Component{ID: cells[0], Interface: cells[1] == "interface", Name: cells[2], Purpose: cells[3]}
 			if related := cells[4]; related != "none" && related != "" {
 				if component.Interface {
-					component.Joins = splitIDs(related)
+					// specgraph.Component holds the components an interface joins sorted and unique, as
+					// a change request's parse writes them, so an approved interface compares equal to
+					// the same interface a later request names as context.
+					component.Joins = sortedUnique(splitIDs(related))
 				} else {
 					component.Parent = related
 				}
@@ -273,8 +276,9 @@ type Imported struct {
 // resolve, as a node's first version, with in's provenance; and each statement that does not as a
 // hold. A node the approved spec already holds or held is left as it stands, and a statement with
 // an open or a cleared hold is not held again, so an import run again writes only what the one
-// before could not. A level whose nodes the approved spec could not hold - a loop, a node of no
-// kind - is refused (*Refusal), writing nothing.
+// before could not; a statement it writes whose hold is open clears that hold. A level whose nodes
+// the approved spec could not hold - a loop, a node of no kind - is refused (*Refusal), writing
+// nothing.
 func Import(ctx context.Context, tx pgx.Tx, in ImportInput) (Imported, error) {
 	if err := Lock(ctx, tx, in.Project, in.Repo); err != nil {
 		return Imported{}, err
@@ -386,6 +390,15 @@ func Import(ctx context.Context, tx pgx.Tx, in ImportInput) (Imported, error) {
 	nodes, tuples, written, err := writesOf(state, plan, in.Provenance, in.Who, at)
 	if err != nil {
 		return Imported{}, err
+	}
+	// A statement an import before this one held, whose fields resolve now - the person approved
+	// the notes since - is written, and its hold cleared, as an approval of its change request does.
+	cleared, err := openHolds(ctx, tx, in.Project, in.Repo, written)
+	if err != nil {
+		return Imported{}, err
+	}
+	for _, hold := range cleared {
+		nodes = append(nodes, clearedHold(hold, in.Project, in.Repo, in.Who, at))
 	}
 	for _, hold := range holds {
 		address := Address(in.Project, in.Repo, hold.ID)

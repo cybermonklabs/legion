@@ -571,7 +571,7 @@ func TestTypedBlockDirectiveErrorsNameTheProblem(t *testing.T) {
 		},
 		{
 			name:     "a conclusion naming a difference that is none of the four",
-			markdown: ":::conclusion{#block-1 difference=\"looks_wrong\"}\nEvidence: E.\n\nOutcomes: O.\n:::\n",
+			markdown: ":::conclusion{#a-conclusion difference=\"looks_wrong\"}\nEvidence: E.\n\nOutcomes: O.\n:::\n",
 			want:     `attribute "difference": must be one of files_differ, code_breaks, check_wrong, statement_wrong, got "looks_wrong"`,
 		},
 		{

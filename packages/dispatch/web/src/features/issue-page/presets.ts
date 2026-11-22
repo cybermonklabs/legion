@@ -23,13 +23,16 @@ import {
  * what is typed together with the chain above each, which is drawn faint and marked as context
  * (`data-node-context`), so a match is read where it stands in the conversation.
  *
- * A filter draws as rows its own kinds and no other (R2): Spec the requirements; Verification
- * each requirement as context with the checks under it and their results; Plan the plan tasks;
- * Decisions the asks and the decisions. The issue itself is no row of a filter. A requirement
- * is one only where it is a statement of the spec (`isStatement`), and a check only where it is
- * a check of the Verification document (`isCheck`): a `requirement` or `check` block of any
- * other document is a block and nothing more, which no filter draws or counts as its kind
- * (`kindOf`). Every other parent of a drawn node - an ask,
+ * A filter draws as rows its own kinds and no other (R2): Spec the requirements and the
+ * components, each a part of the software or an interface between two parts that statements
+ * are about, which the server's Spec query takes beside them (`graphstore/objects.go`'s
+ * `queryTakes`); Verification each requirement as context with the checks under it and their
+ * results; Plan the plan tasks; Decisions the asks and the decisions. A conclusion, what a change
+ * found, is a row of no filter, since no query takes it. The issue itself is no row of a filter.
+ * A requirement is one only where it is a statement of the spec (`isStatement`), and a check
+ * only where it is a check of the Verification document (`isCheck`): a `requirement` or `check`
+ * block of any other document is a block and nothing more, which no filter draws or counts as
+ * its kind (`kindOf`). Every other parent of a drawn node - an ask,
  * a comment, a message, a requirement under Plan - is one line on its child's row
  * (`TreeNode.parentLine`), never a row: a drawn node whose parent is no row is drawn where that
  * parent stood, under the nearest drawn node above it, or at the top. A check serves several
@@ -61,7 +64,7 @@ export function isFilter(preset: Preset): preset is Filter {
 const ROW_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
   decisions: ["ask", "decision"],
   plan: ["plan_task"],
-  spec: ["requirement"],
+  spec: ["requirement", "component"],
   verification: ["check", "result"],
 };
 
@@ -76,7 +79,8 @@ const CONTEXT_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
 };
 
 /** The main kind each filter counts (R2): the criteria and requirements for Spec, the checks
- *  for Verification, the plan tasks for Plan, the asks and decisions for Decisions. */
+ *  for Verification, the plan tasks for Plan, the asks and decisions for Decisions. A component,
+ *  which Spec draws, is no statement and none of Spec's count (R2's "its main kind alone"). */
 const COUNTED_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
   decisions: ["ask", "decision"],
   plan: ["plan_task"],

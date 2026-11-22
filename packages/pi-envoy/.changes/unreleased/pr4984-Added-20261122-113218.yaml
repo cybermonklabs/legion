@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  The bundled `dispatch` command gets `dispatch spec-source --action add|list|remove`, which names
+  the repositories whose issues hold a change request of a project's approved spec, and
+  `dispatch spec-import-level`, which imports an approved level into it.
+time: 2026-11-22T11:32:18Z
+custom:
+    Issue: pr4984

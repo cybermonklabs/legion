@@ -84,20 +84,29 @@ type createIssueInput struct {
 	Actor      *model.Actor    `json:"actor"`
 }
 
-// issueCreateHook is a write a caller of createIssueWith makes in the create's own transaction,
-// with the new issue's key, after every write the create queued and while it holds the project's
-// owner lock, which every create of the project takes: the create and the hook's write commit
-// together or not at all, and no other create of the project runs between the hook's reads and
-// that commit. An error refuses the create, which then writes nothing.
-type issueCreateHook func(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, key string) error
+// issueCreateHook is what a caller of createIssueWith does in the create's own transaction, in two
+// steps, so the create and the hook's write commit together or not at all. An error from either
+// step refuses the create, which then writes nothing.
+type issueCreateHook struct {
+	// locked runs in the create's read phase, right after the project's owner lock, which every
+	// create of the project takes, and before the create reads the node and tuple store: a lock it
+	// takes comes after that owner lock and before every row the create takes, and both hold until
+	// the create commits, so no other create of the project, and no writer that takes the hook's
+	// lock, runs between locked's reads and that commit.
+	locked func(ctx context.Context, tx pgx.Tx) error
+	// beforeCommit runs with the new issue's key after every write the create queued, just before
+	// the create commits.
+	beforeCommit func(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, key string) error
+}
 
 func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	s.createIssueWith(w, r, nil)
 }
 
-// createIssueWith is POST /api/v1/issues, running beforeCommit, where it is not nil, just before
-// the create commits (issueCreateHook).
-func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, beforeCommit issueCreateHook) {
+// createIssueWith is POST /api/v1/issues, running hook's steps in the create's transaction where
+// hook is not nil (issueCreateHook): locked right after the project's owner lock, and beforeCommit
+// just before the create commits.
+func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, hook *issueCreateHook) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
@@ -394,6 +403,14 @@ func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, beforeC
 	`, []any{input.Project}, &number, &artifactID); err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	// A caller's hook takes its own locks and makes its reads here, right after the project's
+	// owner lock and before the create reads the node and tuple store (issueCreateHook).
+	if hook != nil {
+		if err := hook.locked(r.Context(), tx); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	key := fmt.Sprintf("%s-%d", input.Project, number)
 	actorJSON, err := encodeJSON(actor)
@@ -747,8 +764,8 @@ func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, beforeC
 			return
 		}
 	}
-	if beforeCommit != nil {
-		if err := beforeCommit(documentCtx, tx, ledger, key); err != nil {
+	if hook != nil {
+		if err := hook.beforeCommit(documentCtx, tx, ledger, key); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

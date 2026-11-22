@@ -17,12 +17,16 @@ type SpecSource struct {
 }
 
 // SpecDocumentRead is one version of a document an act of the approved spec read, with the digest
-// a person's approval of it covers.
+// a person's approval of it covers, and the approval request and review row of the person's own
+// approval of that version where the act read it from an approval of that document alone (the
+// notes of an imported level).
 type SpecDocumentRead struct {
-	ArtifactID string `json:"artifact_id"`
-	Name       string `json:"name,omitempty"`
-	Version    int    `json:"version"`
-	Digest     string `json:"digest"`
+	ArtifactID string  `json:"artifact_id"`
+	Name       string  `json:"name,omitempty"`
+	Version    int     `json:"version"`
+	Digest     string  `json:"digest"`
+	Ask        *string `json:"ask,omitempty"`
+	Review     *string `json:"review,omitempty"`
 }
 
 // SpecProvenance is what wrote one version or removal of a node of the approved spec: the act

@@ -15,7 +15,7 @@ import (
 // are the ones of store.TypeMigrations it names. The type migrations of the change before it,
 // <timestamp>_issue_tree_<what>.up.sql, which moved the block schema to version 6, are the ones
 // before this branch's.
-var specChangeMigration = regexp.MustCompile(`^[0-9]{14}_spec_change_[a-z0-9_]+\.up\.sql$`)
+var specChangeMigration = regexp.MustCompile(`^[0-9]{14}_spec_change_[0-9a-z_]+\.up\.sql$`)
 
 // The branch moves the block schema one version, once (dispatch://INFRA-1253/spec R21): its
 // elements stand at the version after the one the type migrations before it carry, however many

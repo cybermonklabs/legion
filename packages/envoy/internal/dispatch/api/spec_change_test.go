@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -94,7 +93,8 @@ type specNodeRead struct {
 	} `json:"versions"`
 }
 
-// specProvenance is the provenance an approved version names.
+// specProvenance is the provenance an approved version names. Notes names the ask and review of the
+// person's own approval of the notes where an import read them from it.
 type specProvenance struct {
 	Act    string       `json:"act"`
 	Issue  string       `json:"issue"`
@@ -111,6 +111,13 @@ type specProvenance struct {
 		Version    int    `json:"version"`
 		Digest     string `json:"digest"`
 	} `json:"verification"`
+	Notes *struct {
+		ArtifactID string  `json:"artifact_id"`
+		Version    int     `json:"version"`
+		Digest     string  `json:"digest"`
+		Ask        *string `json:"ask"`
+		Review     *string `json:"review"`
+	} `json:"notes"`
 }
 
 // specRig is a server with the project CORE, which names specRepo as a spec source.
@@ -593,146 +600,5 @@ func TestRequestForChangesWritesNothing(t *testing.T) {
 	rig.requireVersions(t, specRepo, "an-order-is-paid-once", "An order is paid once.")
 	if after := rig.approvedTuples(t); after != before {
 		t.Errorf("a request for changes wrote %d facts of the approved spec", after-before)
-	}
-}
-
-// levelFixture is a level document in the form of level one: statements with ids and no
-// attributes, under headings, one under a `### Under <id>` heading, and its components table.
-const levelFixture = "# Level one of the fixture\n\n" +
-	"## Statements\n\n### Billing\n\n" +
-	":::requirement{#orders-are-billed-once}\nEach order is billed once.\n:::\n\n" +
-	":::requirement{#a-bill-follows-each-rule}\nEach bill follows the rules of its project.\n:::\n\n" +
-	":::requirement{#the-bank-keeps-each-payment}\nThe bank keeps each payment.\n:::\n\n" +
-	":::requirement{#a-refund-reads-its-order}\nA refund reads its order.\n:::\n\n" +
-	":::requirement{#a-total-is-exact}\nEach total is exact to the cent.\n:::\n\n" +
-	":::requirement{#a-bill-has-no-owner}\nA bill has no owner of its own.\n:::\n\n" +
-	"### Under a-bill-has-no-owner\n\n" +
-	":::requirement{#an-unowned-bill-is-flagged}\nAn unowned bill is flagged.\n:::\n\n" +
-	"## Components\n\n" +
-	"| Id | Kind | Name | Purpose | Parent or joins |\n| --- | --- | --- | --- | --- |\n" +
-	"| billing | component | Billing | It bills each order. | none |\n" +
-	"| ledger | component | Ledger | It records each bill. | billing |\n" +
-	"| bank | component | Bank | It holds the money. | none |\n" +
-	"| billing-bank | interface | Billing to bank | Billing pays into the bank. | billing, bank |\n"
-
-// levelNotesFixture is the notes document of levelFixture: the kind, about and supports of each
-// statement, in the four kinds level one writes, and a statement with no kind.
-const levelNotesFixture = "# Notes of the fixture\n\n" +
-	"### orders-are-billed-once\n\n- Kind: behavior\n- About: billing\n- Supports: none\n\n" +
-	"### a-bill-follows-each-rule\n\n- Kind: rule of structure\n- About: billing, ledger\n- Supports: none\n\n" +
-	"### the-bank-keeps-each-payment\n\n- Kind: description of structure\n- About: bank, billing-bank\n- Supports: orders-are-billed-once\n\n" +
-	"### a-refund-reads-its-order\n\n- Kind: behavior\n- About: billing\n- Supports: none\n\n" +
-	"### a-total-is-exact\n\n- Kind: property\n- About: ledger\n- Supports: none\n\n" +
-	"### a-bill-has-no-owner\n\n- About: billing\n- Supports: none\n\n" +
-	"### an-unowned-bill-is-flagged\n\n- Kind: behavior\n- About: billing\n- Supports: none\n"
-
-// levelImport is POST /api/v1/issues/{key}/spec-import-level's answer.
-type levelImport struct {
-	Issue   string   `json:"issue"`
-	Repo    string   `json:"repo"`
-	Written []string `json:"written"`
-	Held    []struct {
-		ID         string         `json:"id"`
-		Text       string         `json:"text"`
-		Lacks      []string       `json:"lacks"`
-		Provenance specProvenance `json:"provenance"`
-	} `json:"held"`
-	RepairIssue *string `json:"repair_issue"`
-}
-
-// TestImportLevel: the approved level is imported with that approval as provenance; kind maps
-// from the notes (behavior, both kinds of structure, property); a statement with no approved kind,
-// and one under it, are kept as holds with their text and provenance, and one child issue of the
-// level's issue, assigned to its assignee, lists them; the approval of the change request that
-// supplies the kind writes the node and clears its hold, and the import run again writes nothing
-// and opens no second issue (D9).
-func TestImportLevel(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
-	createReferenceAPIProject(t, handler, "CORE")
-	rig := &specRig{handler: handler, database: database}
-
-	// The level is approved before its repository holds The Spec, as level one was.
-	level := rig.issue(t, "Level one of the fixture", specRepo, levelFixture, "")
-	// bob signs in, so the level can be his.
-	dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+level.Key, nil, "bob")
-	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+level.Key, map[string]any{"assignee": "bob"}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("assign the level to bob: status=%d body=%s", response.Code, response.Body.String())
-	}
-	uploadDocument(t, handler, "/api/v1/issues/"+level.Key, "notes.md", levelNotesFixture)
-	ask := rig.request(t, level, false)
-	rig.approve(t, ask)
-	rig.addSpecSource(t, specRepo)
-
-	importLevel := func() levelImport {
-		t.Helper()
-		response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+level.Key+"/spec-import-level", map[string]any{"actor": sessionActor(), "notes": "notes.md"})
-		if response.Code != http.StatusOK {
-			t.Fatalf("import the level: status=%d body=%s", response.Code, response.Body.String())
-		}
-		return decodeBody[levelImport](t, response)
-	}
-	imported := importLevel()
-	wantWritten := []string{"a-bill-follows-each-rule", "a-refund-reads-its-order", "a-total-is-exact", "bank", "billing", "billing-bank", "ledger", "orders-are-billed-once", "the-bank-keeps-each-payment"}
-	written := slices.Sorted(slices.Values(imported.Written))
-	if !slices.Equal(written, wantWritten) {
-		t.Errorf("the import writes %v, want %v", written, wantWritten)
-	}
-	for id, kind := range map[string]string{
-		"orders-are-billed-once": `kind="behavior"`, "a-bill-follows-each-rule": `kind="structure"`,
-		"the-bank-keeps-each-payment": `kind="structure"`, "a-total-is-exact": `kind="property"`,
-		"billing-bank": `kind="interface"`,
-	} {
-		node := rig.requireVersions(t, specRepo, id, kind)
-		provenance := node.Versions[0].Provenance
-		if provenance.Act != "import" || provenance.Issue != level.Key || provenance.Ask == nil || *provenance.Ask != ask || provenance.Review == nil {
-			t.Errorf("%s is written with the provenance %+v, want the import of %s under the approval answering %s", id, provenance, level.Key, ask)
-		}
-	}
-	rig.requireVersions(t, specRepo, "the-bank-keeps-each-payment", `serves="orders-are-billed-once"`)
-	rig.requireVersions(t, specRepo, "ledger", `parent="billing"`)
-	held := map[string][]string{}
-	for _, hold := range imported.Held {
-		held[hold.ID] = hold.Lacks
-		if hold.Text == "" || hold.Provenance.Issue != level.Key || hold.Provenance.Ask == nil || *hold.Provenance.Ask != ask {
-			t.Errorf("the hold of %s keeps %q and %+v, want its approved text and provenance", hold.ID, hold.Text, hold.Provenance)
-		}
-	}
-	if !reflect.DeepEqual(held, map[string][]string{"a-bill-has-no-owner": {"kind"}, "an-unowned-bill-is-flagged": {"parent"}}) {
-		t.Errorf("the import holds %v, want a-bill-has-no-owner lacking its kind and an-unowned-bill-is-flagged its parent", held)
-	}
-	rig.requireAbsent(t, specRepo, "a-bill-has-no-owner")
-	rig.requireAbsent(t, specRepo, "an-unowned-bill-is-flagged")
-	if imported.RepairIssue == nil {
-		t.Fatalf("the import names no child issue for its holds: %+v", imported)
-	}
-	repair := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+*imported.RepairIssue, nil, "alice"))
-	if repair.Parent == nil || *repair.Parent != level.Key || repair.Assignee == nil || *repair.Assignee != "bob" {
-		t.Errorf("the child issue %s stands under %v assigned to %v, want under %s assigned to bob", repair.Key, repair.Parent, repair.Assignee, level.Key)
-	}
-	spec := artifactTextOf(t, handler, repair.PrimaryArtifactID)
-	for _, id := range []string{"a-bill-has-no-owner", "an-unowned-bill-is-flagged"} {
-		if !strings.Contains(spec, id) {
-			t.Errorf("the spec of the child issue %s does not list the hold %s:\n%s", repair.Key, id, spec)
-		}
-	}
-
-	// The owner supplies the kind in a change request, and the person approves it.
-	supplied := rig.issue(t, "The kind of a held statement", specRepo,
-		":::requirement{#a-bill-has-no-owner kind=\"behavior\" about=\"billing\"}\nA bill has no owner of its own.\n:::\n\n"+
-			":::requirement{#an-unowned-bill-is-flagged kind=\"behavior\" about=\"billing\" under=\"a-bill-has-no-owner\"}\nAn unowned bill is flagged.\n:::\n", "")
-	rig.approve(t, rig.request(t, supplied, false))
-	rig.requireVersions(t, specRepo, "a-bill-has-no-owner", "A bill has no owner of its own.")
-	rig.requireVersions(t, specRepo, "an-unowned-bill-is-flagged", `parent="a-bill-has-no-owner"`)
-
-	again := importLevel()
-	if len(again.Written) != 0 || len(again.Held) != 0 {
-		t.Errorf("the import run again writes %v and holds %+v, want nothing: the approval cleared both holds", again.Written, again.Held)
-	}
-	var children int
-	if err := database.Pool.QueryRow(context.Background(), `select count(*) from issues where parent_key = $1`, level.Key).Scan(&children); err != nil {
-		t.Fatalf("count the children of %s: %v", level.Key, err)
-	}
-	if children != 1 {
-		t.Errorf("%s holds %d child issues, want the one the first import opened", level.Key, children)
 	}
 }

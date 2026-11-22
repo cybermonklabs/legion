@@ -66,11 +66,12 @@ var drivenAuthor = model.Actor{Kind: "user", ID: "alice"}
 
 // internalDrives are the drives of the register's sites the drives before them leave: the
 // backfill's passes over what a build before the store wrote (passDrives), a retarget of a lens's
-// has_kind and the rebuild of a document's references, over a database of their own, and the
-// architecture import and a source's removal over another (archDrives).
+// has_kind and the rebuild of a document's references, over a database of their own, the
+// architecture import and a source's removal over another (archDrives), and the import of an
+// approved level and an approval of a change request over a third (specDrives).
 func internalDrives(t *testing.T) []StoreDrive {
 	t.Helper()
-	return slices.Concat(passDrives(t), archDrives(t))
+	return slices.Concat(passDrives(t), archDrives(t), specDrives(t))
 }
 
 // drivenPass runs one pass of the backfill over database, as Backfill runs it, and fails unless

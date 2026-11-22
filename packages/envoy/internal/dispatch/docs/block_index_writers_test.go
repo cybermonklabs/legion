@@ -651,6 +651,18 @@ var indexPasses = map[string]string{
 	// Neither reads one side of a projection to mend the other.
 	"architecture/importer.go#stateComponents":  "the model the import fetched and the source's components before it",
 	"architecture/importer.go#RetireComponents": "the components the source's removal deletes",
+	// The approved spec of each spec source (the work-units plan's D3 and D9), whose nodes have no
+	// projection row. An approval of a change request writes each node the request adds, changes or
+	// removes from the versions its approval names, reading the approved spec and the open holds
+	// under the repository's lock only to number each version and to name the holds it clears; the
+	// import of an approved level writes the level's statements and components, and holds what it
+	// cannot resolve, from the versions the person's approval names, reading the same spec and holds
+	// only to leave alone what they hold already; and the repair issue's hook names the child a
+	// create makes on each hold the import kept, read again under that create's owner lock and the
+	// repository's lock. None reads one side of a projection to mend the other.
+	"specstore/apply.go#Apply":           "the change request the approval covers, and the approved spec and the open holds it reads under the repository's lock",
+	"specstore/import.go#Import":         "the level and its notes the person's approval names, and the approved spec and the holds it reads under the repository's lock",
+	"api/spec_import.go#repairIssueHook": "the holds the level's import kept, read again under the create's owner lock and the repository's lock, and the issue the create makes",
 	// A run of the command bar: its interaction node, its author's node and their tuples, written
 	// from the POST alone before the going_requests row that projects them, and each frame's value,
 	// written from the frame its writer hands it before the going_events row that projects it.
@@ -705,7 +717,7 @@ var indexPasses = map[string]string{
 	// projection and mends nothing.
 	"api/artifacts.go#storeArtifact":                "the facts the upload's index pass stated, the uploaded document and the event the upload appended",
 	"api/artifacts.go#commitArtifactVersionEvent":   "the facts the version's index pass stated and the event that recorded the version",
-	"api/issue_create.go#createIssue":               "the facts the spec's index pass stated, the issue the request creates and the issue's own event",
+	"api/issue_create.go#createIssueWith":           "the facts the spec's index pass stated, the issue the request creates and the issue's own event",
 	"cmd/dispatch-seed/write_docs.go#writeDocument": "the facts the seeded version's index pass stated and the seed's own plan",
 	"docs/block_index.go#indexOwedDocument":         "the facts the tick's index pass stated and the event that recorded the version",
 	// An issue room's one pass, by a settlement of the room or its reconciliation: what it stated

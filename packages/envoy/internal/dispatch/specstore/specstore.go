@@ -56,12 +56,17 @@ const (
 func Address(project, repo, id string) string { return project + "/" + repo + "/" + id }
 
 // Document is one version of a document an act read: its artifact, its name, its version and the
-// digest an approval of it covers (artifact_version_text_sha256).
+// digest an approval of it covers (artifact_version_text_sha256). Ask and Review are the approval
+// request and the review row of the person's own approval of that version where the act read it
+// from an approval of that document alone - the notes of a level whose approval request named the
+// spec alone (Import) - and empty where the act's own approval named the version.
 type Document struct {
-	ArtifactID string `json:"artifact_id"`
-	Name       string `json:"name,omitempty"`
-	Version    int    `json:"version"`
-	Digest     string `json:"digest"`
+	ArtifactID string  `json:"artifact_id"`
+	Name       string  `json:"name,omitempty"`
+	Version    int     `json:"version"`
+	Digest     string  `json:"digest"`
+	Ask        *string `json:"ask,omitempty"`
+	Review     *string `json:"review,omitempty"`
 }
 
 // Provenance is what wrote one fact of the approved spec: the act, the issue whose change request

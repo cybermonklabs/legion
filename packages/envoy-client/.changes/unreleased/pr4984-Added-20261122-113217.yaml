@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  `dispatch spec-source --action add|list|remove` names the repositories whose issues hold a change
+  request of a project's approved spec, and `dispatch spec-import-level` imports an approved level
+  into it.
+time: 2026-11-22T11:32:17Z
+custom:
+    Issue: pr4984

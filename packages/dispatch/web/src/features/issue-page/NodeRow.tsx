@@ -601,15 +601,11 @@ function toneOf(node: Pick<TreeNode, "statement" | "type">, author: AuthorKind):
       // Only the spec's own requirement is a statement (`isStatement`); one of any other
       // document is a block and nothing more, in a block's colour (decision 246).
       return isStatement(node) ? "statement" : "issue";
-    // A component is a node of The Spec, beside the statements that are about it: it takes the
-    // statements' colour.
-    case "component":
-      return "statement";
-    // A conclusion is what a change found against the approved spec, which the person may answer:
-    // it takes the decisions' colour.
-    case "conclusion":
-      return "decision";
+    // A component and a conclusion are blocks and nothing more: neither is a statement, which
+    // only the spec's own requirement is (`isStatement`), so each is drawn in a block's colour.
     case "callout":
+    case "component":
+    case "conclusion":
     case "document":
     case "handoff":
     case "image":

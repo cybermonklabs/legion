@@ -27,6 +27,11 @@ const (
 	movedWithBlocks = "blocks-child"
 )
 
+// movedWithSpecs is the change that holds the approved spec of each spec source of a project in
+// the store (the work-units plan's D3 and D9). It is no child of the parent change, and its writes
+// land in the same two tables, so the sizing sums them beside the children's.
+const movedWithSpecs = "spec-store"
+
 // StoreKind is one term of the projection: one kind of write the five children of
 // the parent change move, the child that moves it, how many nodes and how many tuples one such
 // write appends, and how many such writes the database's own history holds inside the window.
@@ -46,7 +51,10 @@ const (
 // the asks child, a criterion of the blocks child and every kind of the lenses child - has no
 // history to read, so its term carries an assumed rate (Assumed),
 // which its Driver states with the reason for it and the report marks as assumed, rather than
-// reading zero and leaving the kind out of the sum. A decision, a reading and a criterion are
+// reading zero and leaving the kind out of the sum. So does each kind of the approved spec that
+// only a level's import writes or follows - a hold, its clearing and its repair issue, and a
+// component or an interface - since no table before this release records an import or tells a
+// level from any other issue's spec. A decision, a reading and a criterion are
 // blocks of a document, whose node and placement the block terms count already, so each of their
 // terms counts only the tuples it states beyond a block's.
 type StoreKind struct {
@@ -135,7 +143,14 @@ const (
 //   - the lenses child's interaction, its frames and its node stated gone once the release before
 //     deletes its row, a lens and its finding blocks, a lens kind, a constraint, a risk, a node's
 //     state and a pointer's retarget (#b-r-interaction, #b-r-lens, #b-r-lens-catalogue,
-//     #b-r-constraint-risk), every one of them assumed.
+//     #b-r-constraint-risk), every one of them assumed;
+//   - the spec store's nodes of the approved spec of a spec source (specstore): a statement's or a
+//     check's first version, with its node's base attributes, and each version and each removal an
+//     approval of a change request or a level's import appends to one, counted over the requirement
+//     and check blocks of each issue's spec and Verification document a person approved; and,
+//     assumed, a component's or an interface's node with its first version, a hold a level's import
+//     keeps with its base attributes and its hold value, the hold stated gone once its statement is
+//     written, and the repair_issue the import's child issue names on it.
 //
 // Every node of an issue, a document, an ask, a message, a comment and a block states its project
 // or its parties beside its visibility and state, written by the create that makes it: each of
@@ -656,6 +671,81 @@ func storeKinds() []StoreKind {
 		Driver: "assumed at 1 a day, since production writes no pointer before the lenses child ships: a retarget of" +
 			" a lens's, a risk's or a requirement's pointer, the retraction of the far end it held and the assertion" +
 			" of the new one",
+	}, {
+		// Counted off specstore's writesOf, which an approval of a change request (specstore.Apply)
+		// and the import of an approved level (specstore.Import) write each node of the approved
+		// spec through: the node specstore's specNode makes, project-visible, live and in its
+		// project, which graphstore.Write states
+		// as those three tuples on the node's first write and a later write restates, moving
+		// nothing. A level is an issue's spec, so its approval counts the statements its import
+		// writes, and the import's component and interface nodes are spec_component's.
+		Name: "spec_node", MovedBy: movedWithSpecs, Nodes: 1, Tuples: 3,
+		Driver: "artifact_reviews.created_at of a person's approval of an issue's spec or Verification document, each" +
+			" requirement block of the spec and check block of the Verification document the approved version holds" +
+			" and no version up to the one the document's approval before it named held: the node of the statement" +
+			" or check an approval writes it as, and its visibility, state and project, which over-states an approval" +
+			" of an issue whose repository no project names a spec source, every approval until an administrator" +
+			" names one",
+		count: `(select count(*) from sized_spec_blocks where holds and held is null)`,
+	}, {
+		// Counted off the one value tuple writesOf appends of each node it writes: the
+		// specstore.AttributeVersion value, the node's fields as the act holds them with the
+		// version's number, its time and the act's provenance.
+		Name: "spec_version", MovedBy: movedWithSpecs, Tuples: 1,
+		Driver: "artifact_reviews.created_at of a person's approval of an issue's spec or Verification document, each" +
+			" requirement or check block spec_node reads whose text the approved version holds and the version the" +
+			" document's approval before it named held otherwise or not at all: the version value an approval" +
+			" appends to the statement or check it adds or changes, which over-states as spec_node does",
+		count: `(select count(*) from sized_spec_blocks where holds and moved)`,
+	}, {
+		// Counted off the value tuple writesOf appends of a node a change request removes: the
+		// specstore.AttributeRemoved value, which names the version it retires.
+		Name: "spec_removal", MovedBy: movedWithSpecs, Tuples: 1,
+		Driver: "artifact_reviews.created_at of a person's approval of an issue's spec or Verification document, each" +
+			" requirement or check block spec_node reads that the version the document's approval before it named" +
+			" held and the approved version dropped, the one way a release before this one took a statement or a" +
+			" check out of an issue's spec: the removed value an approval appends to a node its change request" +
+			" removes, which over-states as spec_node does, and over-states a block dropped with no removal meant," +
+			" since this release removes a node only where its block asks for it (removes)",
+		count: `(select count(*) from sized_spec_blocks where not holds and held)`,
+	}, {
+		// Counted off Import's plan of each component and interface of the level that the approved
+		// spec does not hold, which writesOf writes as a node's first version: specNode's node with
+		// its visibility, state and project, and its
+		// version value. Level one is api's fixture testdata/level-one, which api's readLevelOne
+		// holds to 59 statements and 43 components, 12 of them interfaces, and whose import
+		// TestImportLevelOne holds to writing every component.
+		Name: "spec_component", MovedBy: movedWithSpecs, Nodes: 1, Tuples: 4, Assumed: 43,
+		Driver: "assumed at the 43 components and interfaces of level one, every one of which its import writes," +
+			" taken as landing inside the window, which over-states a write made once, since no table before this" +
+			" release records a level's import or holds a component block of an issue, the one other form an" +
+			" approval writes one from: the node of a component or an interface, its visibility, state and project," +
+			" and its first version",
+	}, {
+		// Counted off Import's write of each statement of the level it cannot resolve (its holds
+		// loop over specstore.KindHold nodes): specNode's hold node with its visibility, state and project,
+		// and its hold value. TestImportLevelOne holds the import of level one (spec_component) to
+		// holding each of its 59 statements where it reads notes no approval names.
+		Name: "spec_hold", MovedBy: movedWithSpecs, Nodes: 1, Tuples: 4, Assumed: 59,
+		Driver: "assumed at the 59 statements of level one, every one of which its import holds where it reads notes" +
+			" no approval names, taken as landing inside the window, which over-states a write made once and a level" +
+			" whose notes a person approved, which holds none, since no table before this release records a level's" +
+			" import: the hold's node, its visibility, state and project, and its hold value",
+	}, {
+		// Counted off specstore's clearedHold, which an approval (specstore.Apply, through
+		// openHolds) and an import (specstore.Import) state a hold gone through once they write its
+		// statement: the node stated gone, which no longer restates it, so its write states the one
+		// state tuple.
+		Name: "spec_hold_cleared", MovedBy: movedWithSpecs, Tuples: 1, Assumed: 59,
+		Driver: "assumed at one for each assumed hold, 59, which over-states a hold whose statement no approval or" +
+			" import has written yet: the hold's node stated gone",
+	}, {
+		// Counted off specstore.RepairIssueFacts, which api's
+		// repairIssueHook writes in the create of the child issue a level's import opens for its
+		// holds: one value on each hold's node.
+		Name: "spec_repair_issue", MovedBy: movedWithSpecs, Tuples: 1, Assumed: 59,
+		Driver: "assumed at one for each assumed hold, 59, each of which the import's one child issue names: the" +
+			" repair_issue value on the hold's node",
 	}}
 }
 
@@ -690,8 +780,9 @@ func reachesANode(topic string) string {
 // lists; the messages written inside it, and each issue message's thread root, found up
 // in_reply_to as user_threads_message finds it; the thread of each comment, issue message and
 // answer written inside it, with its writer as user_threads_record names one; the ask events
-// inside it; the people a comment first names, the roles an event first addresses, and the
-// components an import inside it wrote.
+// inside it; the people a comment first names, the roles an event first addresses, the
+// components an import inside it wrote, and the blocks of the change request each person's
+// approval inside it of an issue's spec or Verification document covers.
 //
 // A comment's facts are read off its row as their writers read them: its author as authoredLink
 // does (graphstore.AuthorOf), a document it is anchored to or owned by only where the document's
@@ -705,6 +796,22 @@ func reachesANode(topic string) string {
 // the first comment naming them was written, and with no erasure taken out: an erase removes a
 // node and never moves the rate the node was written at, and graph_erasures is a table of this
 // branch, which the sizing reads none of.
+//
+// An approval's blocks are those api's applySpecChange reads a change request from
+// (specchange.FromVersions): the requirement blocks of the spec (specDocument) and the check
+// blocks of the Verification document (verificationDocument), told apart by the opening line of
+// the text the block index recorded of each. They are the blocks whose text the index recorded at
+// a version past the one the document's approval before it named, up to the approved one: each
+// with whether the latest version up to that earlier one held it (null where none held the block),
+// whether the approved version holds it, and whether the two hold it with other texts. The
+// approval before it is the person's approval of the same document, of whatever version, that
+// committed last before it, in the order docs.ReviewOrder reads a document's reviews (the order
+// their events committed, since created_at is a transaction's start and id is random), and version
+// 0 where there is none; the order is spelled out with its table named, as grapherase's
+// readReviews spells it, because docs' own tests import this package. An approval is a review a
+// person wrote
+// (docs.ReviewKindPerson), and artifact_reviews and its kind are tables of releases before this
+// branch.
 func sizingWritesWith(rooms bool) string {
 	return `
 	with recursive sized_comments as (
@@ -786,6 +893,42 @@ func sizingWritesWith(rooms bool) string {
 		from components c
 		join architecture_snapshots s on s.id = c.snapshot_id
 		where s.imported_at > ` + sizingWindow + `
+	),
+	sized_spec_blocks as (
+		select earlier.held, t.text is not null as holds, t.text is distinct from earlier.text as moved
+		from artifact_reviews r
+		join artifacts d on d.id = r.artifact_id
+		cross join lateral (
+			select coalesce((
+				select artifact_reviews.version from artifact_reviews
+				where artifact_reviews.artifact_id = r.artifact_id and artifact_reviews.state = 'approved'
+				  and artifact_reviews.kind = 'person' and artifact_reviews.id <> r.id
+				  and case
+				    when r.event_seq is not null and artifact_reviews.event_seq is not null
+				      then artifact_reviews.event_seq < r.event_seq
+				    when r.event_seq is not null then true
+				    when artifact_reviews.event_seq is not null then false
+				    else (artifact_reviews.created_at, artifact_reviews.id) < (r.created_at, r.id)
+				  end
+				order by artifact_reviews.event_seq desc nulls last, artifact_reviews.created_at desc,
+				         artifact_reviews.id desc
+				limit 1
+			), 0) as version
+		) previous
+		cross join lateral (
+			select distinct on (c.artifact_id, c.block_id) c.artifact_id, c.block_id, c.text
+			from document_block_texts c
+			where ` + documentTexts("c", "r.artifact_id", rooms) + ` and c.version > previous.version and c.version <= r.version
+			order by c.artifact_id, c.block_id, c.version desc
+		) t
+		left join lateral (
+			select p.text is not null as held, p.text from document_block_texts p
+			where p.artifact_id = t.artifact_id and p.block_id = t.block_id and p.version <= previous.version
+			order by p.version desc limit 1
+		) earlier on true
+		where r.state = 'approved' and r.kind = 'person' and r.created_at > ` + sizingWindow + `
+		  and ((` + specDocument("d") + ` and coalesce(t.text, earlier.text) ~ '^:{3,}requirement\{')
+		    or (` + verificationDocument("d") + ` and coalesce(t.text, earlier.text) ~ '^:{3,}check\{'))
 	)`
 }
 
@@ -840,4 +983,20 @@ func readStoreKinds(ctx context.Context, tx pgx.Tx) ([]StoreKind, error) {
 func roleDocument(artifact string) string {
 	return `(` + artifact + `.issue_key is not null and (` + artifact + `.is_primary or ` + artifact + `.slug in ('spec', '` +
 		model.ArtifactSlugVerification + `', '` + model.ArtifactSlugPlan + `')))`
+}
+
+// specDocument is true of the artifacts row aliased artifact while it is an issue's spec as api's
+// isSpecDocument reads one: its primary document.
+func specDocument(artifact string) string {
+	return `(` + artifact + `.issue_key is not null and ` + artifact + `.is_primary)`
+}
+
+// verificationDocument is true of the artifacts row aliased artifact while it is an issue's
+// Verification document as api's documentPlays reads one: the document whose role names it, or, on
+// a row that names no role, the markdown document of its slug. It reads no retirement, which a
+// column of this branch records, so a retired document of that slug is taken as one.
+func verificationDocument(artifact string) string {
+	return `(` + artifact + `.issue_key is not null and (` + artifact + `.role = '` + model.ArtifactRoleVerification +
+		`' or (` + artifact + `.role is null and ` + artifact + `.kind = 'doc' and ` + artifact + `.slug = '` +
+		model.ArtifactSlugVerification + `')))`
 }

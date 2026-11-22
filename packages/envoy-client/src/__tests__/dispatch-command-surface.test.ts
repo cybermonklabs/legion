@@ -38,6 +38,8 @@ import {
   reviewBody,
   riskBody,
   SESSION,
+  specLevelImportBody,
+  specSourceBody,
   stepsBody,
   UUID,
   versionBody,
@@ -292,6 +294,9 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
         final_list: null,
       });
     }
+    if (rest === "spec-import-level" && method === "POST") {
+      return response(specLevelImportBody(decodeURIComponent(segments[3])));
+    }
   }
   if (segments[2] === "artifacts" && segments.length >= 4) {
     if (rest === "" && method === "GET") return response(artifactBody("spec.md"));
@@ -363,6 +368,18 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     }
     if (rest === "architecture-sources") return response([architectureSource()]);
     if (rest.startsWith("architecture-sources/")) return response(architectureSource());
+    // `dispatch spec-source --action add`: the repository named a spec source on the branch the
+    // call sent.
+    if (rest.startsWith("spec-sources/") && method === "PUT") {
+      const sent = typeof body === "string" ? (JSON.parse(body) as { branch?: unknown }) : {};
+      return response(
+        specSourceBody(
+          segments[3],
+          segments.slice(5).join("/"),
+          typeof sent.branch === "string" ? sent.branch : ""
+        )
+      );
+    }
     if (rest === "artifacts") return response([]);
     if (rest === "plans") return response(plansBody());
   }

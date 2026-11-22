@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  Routes for the spec sources of a project (`GET`, `PUT` and
+  `DELETE /api/v1/projects/{key}/spec-sources[/{owner}/{repo}]`), the read of one approved node
+  with its versions and provenance (`GET /api/v1/projects/{key}/spec/{owner}/{repo}/nodes/{id}`),
+  and the import of an approved level (`POST /api/v1/issues/{key}/spec-import-level`). The import
+  reads the notes of a level only at a version that a person approved, and keeps each statement
+  whose kind, about, supports or parent does not resolve as a hold, with the fields it lacks. One
+  child issue of the level repairs the holds. The import answers 409 REPAIR_ISSUE_RACED when, three
+  times in a row, another import names a repair issue on one of its holds, or an approval clears
+  one, while it opens its own.
+time: 2026-11-22T11:32:15Z
+custom:
+    Issue: pr4984

@@ -449,10 +449,10 @@ test("a plan's requirement row reads requirement with no statement mark, and a s
   });
 });
 
-// A component is a node of The Spec beside the statements that are about it, so its row takes the
-// statements' colour; a conclusion is what a change found, which the person may answer, so its row
-// takes the decisions' colour.
-test("a component row takes a statement's colour and a conclusion row a decision's", () => {
+// A component and a conclusion are blocks and nothing more: neither is a statement, which only the
+// spec's own requirement is (`isStatement`), and neither is a decision, so each row takes a block's
+// colour.
+test("a component row and a conclusion row take a block's colour", () => {
   const drawn = (type: NodeType) => {
     const view = renderRow(
       node({ id: `spec#b-${type}`, text: "Billing takes each payment.", type })
@@ -461,30 +461,25 @@ test("a component row takes a statement's colour and a conclusion row a decision
       const tag = view.container.querySelector("[data-node-margin] [data-node-tag]");
       const dot = view.container.querySelector("[data-node-bullet] i");
       return {
+        block: tag?.classList.contains(pageKindTag.issue) ?? null,
+        blockBullet: dot?.classList.contains(pageKindBullet.issue) ?? null,
         decision: tag?.classList.contains(pageKindTag.decision) ?? null,
-        decisionBullet: dot?.classList.contains(pageKindBullet.decision) ?? null,
         statement: tag?.classList.contains(pageKindTag.statement) ?? null,
-        statementBullet: dot?.classList.contains(pageKindBullet.statement) ?? null,
         tag: tag?.textContent ?? null,
       };
     } finally {
       view.unmount();
     }
   };
-  expect(drawn("component")).toEqual({
-    decision: false,
-    decisionBullet: false,
-    statement: true,
-    statementBullet: true,
-    tag: NODE_TYPE_NAMES.component,
-  });
-  expect(drawn("conclusion")).toEqual({
-    decision: true,
-    decisionBullet: true,
-    statement: false,
-    statementBullet: false,
-    tag: NODE_TYPE_NAMES.conclusion,
-  });
+  for (const type of ["component", "conclusion"] as const) {
+    expect(drawn(type)).toEqual({
+      block: true,
+      blockBullet: true,
+      decision: false,
+      statement: false,
+      tag: NODE_TYPE_NAMES[type],
+    });
+  }
 });
 
 // R34, R9: a reading is a typed node - an agent's reading of a person's answer, inside the ask or

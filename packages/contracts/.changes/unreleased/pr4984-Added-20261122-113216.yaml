@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  The `spec.request_stale` event and its payload, the tools `dispatch_spec_source` and
+  `dispatch_spec_import_level`, and the routes of spec sources, of an approved node and of the
+  level import in the API document.
+time: 2026-11-22T11:32:16Z
+custom:
+    Issue: pr4984

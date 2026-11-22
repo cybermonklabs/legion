@@ -31,9 +31,9 @@ const GLYPH_PATHS: Readonly<Record<string, string>> = {
   "child-issue": "M3 2 v8 a3 3 0 0 0 3 3 h7 M10 10 l3 3 l-3 3",
   comment: "M2 3 h12 v8 h-7 l-5 4 Z",
   /** A component, a part of the software: a box with two pins on top. */
-  component: "M2 5 h12 v9 h-12 Z M5 2 v3 M11 2 v3",
+  component: "M2 5 h12 v9 h -12 Z M5 2 v3 M11 2 v3",
   /** A conclusion, what a change found: a seal with two ribbons. */
-  conclusion: "M8 1 a5 5 0 1 0 0.01 0 Z M5.5 10 l-1.5 5 l4 -2 l4 2 l-1.5 -5",
+  conclusion: "M8 1 a5 5 0 1 0 0.01 0 Z M5.5 10 l -1.5 5 l4 -2 l4 2 l -1.5 -5",
   decision: "M8 1 L15 5 v6 L8 15 L1 11 V5 Z",
   document: "M3 1 h7 l3 3 v11 h-10 Z",
   handoff: "M1 8 h10 M8 4 l4 4 l-4 4 M14 2 v12",

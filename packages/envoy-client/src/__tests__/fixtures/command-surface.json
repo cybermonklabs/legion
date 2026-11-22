@@ -2369,99 +2369,14 @@
             },
             "notes": "notes.md"
           }
-        },
-        {
-          "method": "POST",
-          "path": "/api/v1/issues/%3CKEY%3E/spec-import-level",
-          "headers": {
-            "Accept": "application/json",
-            "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
-          },
-          "body": {
-            "actor": {
-              "id": "session-1",
-              "kind": "session",
-              "origin": {
-                "cwd": "/workspace",
-                "host": "omp",
-                "machine": "test-machine",
-                "session_title": "Record the command surface"
-              }
-            },
-            "notes": "notes.md"
-          }
-        },
-        {
-          "method": "POST",
-          "path": "/api/v1/issues/%3CKEY%3E/spec-import-level",
-          "headers": {
-            "Accept": "application/json",
-            "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
-          },
-          "body": {
-            "actor": {
-              "id": "session-1",
-              "kind": "session",
-              "origin": {
-                "cwd": "/workspace",
-                "host": "omp",
-                "machine": "test-machine",
-                "session_title": "Record the command surface"
-              }
-            },
-            "notes": "notes.md"
-          }
-        },
-        {
-          "method": "POST",
-          "path": "/api/v1/issues/%3CKEY%3E/spec-import-level",
-          "headers": {
-            "Accept": "application/json",
-            "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
-          },
-          "body": {
-            "actor": {
-              "id": "session-1",
-              "kind": "session",
-              "origin": {
-                "cwd": "/workspace",
-                "host": "omp",
-                "machine": "test-machine",
-                "session_title": "Record the command surface"
-              }
-            },
-            "notes": "notes.md"
-          }
-        },
-        {
-          "method": "POST",
-          "path": "/api/v1/issues/%3CKEY%3E/spec-import-level",
-          "headers": {
-            "Accept": "application/json",
-            "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
-          },
-          "body": {
-            "actor": {
-              "id": "session-1",
-              "kind": "session",
-              "origin": {
-                "cwd": "/workspace",
-                "host": "omp",
-                "machine": "test-machine",
-                "session_title": "Record the command surface"
-              }
-            },
-            "notes": "notes.md"
-          }
         }
       ],
-      "outcome": "error",
+      "outcome": "result",
       "text": [
-        "POST http://dispatch.test/api/v1/issues/%3CKEY%3E/spec-import-level failed on its last attempt (unexpected request: POST /api/v1/issues/%3CKEY%3E/spec-import-level) (the last of 5 attempts), and an attempt of the write may have reached Dispatch, so it may or may not have taken effect. Dispatch finishes an attempt it received whatever this command does, so read the write back before you send it again: a new command sends it under a new key."
+        "The import of <KEY> wrote 1 node into the approved spec of acme/app: billing.",
+        "It holds 1 statement until a change request supplies what each lacks:",
+        "- a-bill-has-no-owner lacks kind",
+        "Their repair issue is <CHILD>."
       ]
     },
     {
@@ -2497,9 +2412,9 @@
           }
         }
       ],
-      "outcome": "error",
+      "outcome": "result",
       "text": [
-        "unexpected request: PUT /api/v1/projects/CORE/spec-sources/acme/app"
+        "CORE reads The Spec of acme/app@main: an approval of the spec of an issue of acme/app writes its change request into that repository's approved spec."
       ]
     },
     {

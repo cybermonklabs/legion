@@ -630,6 +630,40 @@ export function architectureSource() {
   };
 }
 
+/** `PUT /api/v1/projects/{key}/spec-sources/{owner}/{repo}`: the repository a spec source of its
+ *  project, on the branch the call named. */
+export function specSourceBody(project: string, repo: string, branch: string) {
+  return {
+    project,
+    repo,
+    branch,
+    enabled: true,
+    created_by: actor,
+    created_at: AT,
+    updated_at: AT,
+  };
+}
+
+/** `POST /api/v1/issues/{key}/spec-import-level`: the import of the level of the issue the call
+ *  named, which wrote one component, held one statement for the kind it lacks, and names the child
+ *  issue that repairs it. The child is a placeholder: no key of an issue is written here. */
+export function specLevelImportBody(issue: string) {
+  return {
+    issue,
+    repo: "acme/app",
+    written: ["billing"],
+    held: [
+      {
+        id: "a-bill-has-no-owner",
+        text: "A bill has no owner of its own.",
+        lacks: ["kind"],
+        provenance: { act: "import", issue },
+      },
+    ],
+    repair_issue: "<CHILD>",
+  };
+}
+
 /** `GET /api/v1/priorities`: one live priority with work under it, and one issue in each of the
  *  two faults, so the record holds every line `dispatch priorities` can print. Neither faulted
  *  issue is claimed, so the run reads no agent list and no printed line carries a liveness. */

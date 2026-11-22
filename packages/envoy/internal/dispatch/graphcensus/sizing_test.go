@@ -315,7 +315,9 @@ func renderedTexts(t *testing.T, markdown string) map[string]string {
 //
 // Beside it is a second document of CORE-1, the archive: the same three versions, each written
 // before the window opened and none indexed yet, so that a test can run the block index itself
-// over them (indexTheArchive) without the window counting what the index writes.
+// over them (indexTheArchive) without the window counting what the index writes. And beside
+// those are the issue's primary document and its Verification document, whose versions predate
+// the window and which people approved and reviewed on either side of it (seedApprovedSpec).
 func seedSizedHistory(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := context.Background()
@@ -491,6 +493,7 @@ func seedSizedHistory(t *testing.T, database *store.Store) {
 		}
 	}
 	seedSizedRelations(t, database, document, comment, message)
+	seedApprovedSpec(t, database, document)
 }
 
 // seedSizedRelations writes, beside the history seedSizedHistory writes, one row for each further
@@ -604,6 +607,105 @@ func seedSizedRelations(t *testing.T, database *store.Store, document, comment, 
 		if _, err := database.Pool.Exec(ctx, step.sql, step.args...); err != nil {
 			t.Fatalf("%s: %v", step.what, err)
 		}
+	}
+}
+
+// The versions seedApprovedSpec writes of the window document's issue's primary document and of
+// its Verification document. The spec's first version holds three requirements; its second keeps
+// one, rewords one, drops one and adds one, beside a check, which no change request reads out of a
+// spec. The Verification document holds a check, beside a requirement, which no change request
+// reads out of a Verification document.
+const (
+	approvedSpecFirst = ":::requirement{#r-kept}\nKept as it is.\n:::\n\n" +
+		":::requirement{#r-reworded}\nReworded once.\n:::\n\n" +
+		":::requirement{#r-dropped}\nDropped later.\n:::\n"
+	approvedSpecSecond = ":::requirement{#r-kept}\nKept as it is.\n:::\n\n" +
+		":::requirement{#r-reworded}\nReworded twice.\n:::\n\n" +
+		":::requirement{#r-added}\nAdded later.\n:::\n\n" +
+		":::check{#c-in-the-spec}\nA check the spec holds.\n:::\n"
+	approvedChecks = ":::check{#c-sent}\nThe bill is sent.\n:::\n\n" +
+		":::requirement{#r-in-the-checks}\nA requirement the Verification document holds.\n:::\n"
+)
+
+// seedApprovedSpec writes, as a build before the store writes them, the primary document and the
+// Verification document of the issue that holds the window's document, each created and written
+// before the window opened, with each version's blocks as the block index recorded them
+// (document_block_texts), and the reviews people wrote of them: alice approved the spec's first
+// version before the window opened and its second inside it, and the Verification document's one
+// version inside it; inside it too, bob asked for changes to the spec's second version and a plan
+// review approved it, neither of which is a person's approval. Every version predates the window,
+// so no term that counts a version or its blocks counts these.
+func seedApprovedSpec(t *testing.T, database *store.Store, window string) {
+	t.Helper()
+	ctx := context.Background()
+	documents := map[string]string{}
+	for _, document := range []struct {
+		slug, role string
+		primary    bool
+		versions   []string
+	}{
+		{slug: "requirements-md", primary: true, versions: []string{approvedSpecFirst, approvedSpecSecond}},
+		{slug: model.ArtifactSlugVerification, role: model.ArtifactRoleVerification, versions: []string{approvedChecks}},
+	} {
+		var artifactID string
+		if err := database.Pool.QueryRow(ctx, `
+			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, role, created_by, created_at)
+			select w.issue_key, w.project_key, $2, $2, 'doc', $3, nullif($4, ''), '{"kind":"user","id":"alice"}',
+			       now() - interval '40 days'
+			from artifacts w where w.id = $1::uuid
+			returning id::text
+		`, window, document.slug, document.primary, document.role).Scan(&artifactID); err != nil {
+			t.Fatalf("create the document %s: %v", document.slug, err)
+		}
+		documents[document.slug] = artifactID
+		// The block index records each block a version writes, drops or changes the text of, at
+		// that version, and every block of the document's first.
+		held := map[string]string{}
+		for index, markdown := range document.versions {
+			number := index + 1
+			rendered, _ := renderedBlocks(t, markdown)
+			if _, err := database.Pool.Exec(ctx, `
+				insert into artifact_versions (artifact_id, number, markdown, authors, created_at)
+				values ($1, $2, $3, '[{"kind":"user","id":"alice"}]', now() - make_interval(days => $4))
+			`, artifactID, number, rendered, 36-3*index); err != nil {
+				t.Fatalf("write version %d of %s: %v", number, document.slug, err)
+			}
+			texts := renderedTexts(t, markdown)
+			written := map[string]*string{}
+			for block, text := range texts {
+				if earlier, wrote := held[block]; !wrote || earlier != text {
+					written[block] = new(text)
+				}
+			}
+			for block := range held {
+				if _, kept := texts[block]; !kept {
+					written[block] = nil
+				}
+			}
+			for _, block := range slices.Sorted(maps.Keys(written)) {
+				if _, err := database.Pool.Exec(ctx, `
+					insert into document_block_texts (artifact_id, block_id, version, text) values ($1::uuid, $2, $3, $4)
+				`, artifactID, block, number, written[block]); err != nil {
+					t.Fatalf("record block %s of %s at version %d: %v", block, document.slug, number, err)
+				}
+			}
+			held = texts
+			if _, err := database.Pool.Exec(ctx, `
+				insert into document_indexed_versions (artifact_id, version) values ($1::uuid, $2)
+			`, artifactID, number); err != nil {
+				t.Fatalf("record version %d of %s indexed: %v", number, document.slug, err)
+			}
+		}
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into artifact_reviews (artifact_id, version, state, actor, reason, kind, created_at) values
+			($1::uuid, 1, 'approved', '{"kind":"user","id":"alice"}', null, 'person', now() - interval '34 days'),
+			($1::uuid, 2, 'approved', '{"kind":"user","id":"alice"}', null, 'person', now()),
+			($1::uuid, 2, 'changes_requested', '{"kind":"user","id":"bob"}', 'Not yet.', 'person', now()),
+			($1::uuid, 2, 'approved', '{"kind":"user","id":"alice"}', null, 'plan_review', now()),
+			($2::uuid, 1, 'approved', '{"kind":"user","id":"alice"}', null, 'person', now())
+	`, documents["requirements-md"], documents[model.ArtifactSlugVerification]); err != nil {
+		t.Fatalf("write the reviews of the spec and the Verification document: %v", err)
 	}
 }
 
@@ -1185,9 +1287,11 @@ func runTheOutbox(t *testing.T, database *store.Store, what, settled string) {
 // the blocks child moves; a comment with each fact its write states, its mention's delivery and the
 // bus's and a fallback copy's delivery of it; the read marks that comment and a message move, a
 // clear, a dismissal and a snooze; a message with a reply and a delivery; the events of an ask;
-// and a row of each further table a term counts (seedSizedRelations). Every term is printed with
-// the tuples a write this test states for it and its writes inside the window or the writes it is
-// assumed at, none of them zero, and the rows a day of graph_tuples is exactly their sum.
+// a row of each further table a term counts (seedSizedRelations); and a person's approvals of an
+// issue's spec and Verification document that add, reword and drop their blocks
+// (seedApprovedSpec). Every term is printed with the tuples a write this test states for it and
+// its writes inside the window or the writes it is assumed at, none of them zero, and the rows a
+// day of graph_tuples is exactly their sum.
 func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 	database := storetest.Open(t)
 	seedSizedHistory(t, database)
@@ -1301,6 +1405,20 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		"risk":             {tuples: 11, writes: 11 * sizingWindowDays, assumed: true},
 		"node_state":       {tuples: 1, writes: 10 * sizingWindowDays, assumed: true},
 		"pointer_retarget": {tuples: 2, writes: 1 * sizingWindowDays, assumed: true},
+		// alice's approval inside the window of the second version of the issue's spec adds r-added
+		// and rewords r-reworded, beside a check, which no change request reads out of a spec, and
+		// drops r-dropped, against the first version her approval before the window named; her
+		// approval of the Verification document's one version adds c-sent, beside a requirement,
+		// which no change request reads out of it; bob's request for changes and the plan review
+		// are no person's approval (seedApprovedSpec). No table records a level's import, so the
+		// terms of what only an import writes or follows read the writes they are assumed at.
+		"spec_node":         {tuples: 3, writes: 2},
+		"spec_version":      {tuples: 1, writes: 3},
+		"spec_removal":      {tuples: 1, writes: 1},
+		"spec_component":    {tuples: 4, writes: 43, assumed: true},
+		"spec_hold":         {tuples: 4, writes: 59, assumed: true},
+		"spec_hold_cleared": {tuples: 1, writes: 59, assumed: true},
+		"spec_repair_issue": {tuples: 1, writes: 59, assumed: true},
 	}
 	for _, name := range slices.Sorted(maps.Keys(want)) {
 		got, printedTerm := terms[name]
@@ -1341,13 +1459,14 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		t.Errorf("the sizing projects graph_tuples at %v rows a day, want %s: the sum of every term's writes times its tuples, %d, over %d days\n%s",
 			match, wantADay, tuples, sizingWindowDays, printed)
 	}
-	// The history's seven versions, the window document's three, the image's one and the
-	// archive's three, were written before the store held a version node, so the version backfill
-	// owes each its node and six tuples once. No pass of this build's rule has stated a document
-	// of this store, so the backfill's marking owes every block of a document it would mark its
-	// rank, text and placement (unstatedBlocksOwed). The year projects every backfill's rows beside
-	// the rate: each table's backfill-rows line is the sum of the backfill lines' nodes or tuples.
-	if line := "census: sizing backfill kind=version moved_by=" + movedWithBlocks + " owed_rows=7 nodes_a_row=1 tuples_a_row=6 nodes=7 tuples=42 "; !strings.Contains(printed, line) {
+	// The history's ten versions, the window document's three, the image's one, the archive's
+	// three, the approved spec's two and its Verification document's one, were written before the
+	// store held a version node, so the version backfill owes each its node and six tuples once. No
+	// pass of this build's rule has stated a document of this store, so the backfill's marking
+	// owes every block of a document it would mark its rank, text and placement
+	// (unstatedBlocksOwed). The year projects every backfill's rows beside the rate: each table's
+	// backfill-rows line is the sum of the backfill lines' nodes or tuples.
+	if line := "census: sizing backfill kind=version moved_by=" + movedWithBlocks + " owed_rows=10 nodes_a_row=1 tuples_a_row=6 nodes=10 tuples=60 "; !strings.Contains(printed, line) {
 		t.Errorf("the sizing prints no line %q:\n%s", line, printed)
 	}
 	var backfillNodes, backfillTuples int64
