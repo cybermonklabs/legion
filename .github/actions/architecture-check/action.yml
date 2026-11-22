@@ -39,6 +39,8 @@ runs:
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: ${{ github.action_path }}/../../../packages/envoy/go.mod
+        go-download-base-url: https://go.dev/dl
+        token: ''
         cache: false
 
     # setup-go adds its `go` problem matcher for the rest of the job, and the runner reads every
