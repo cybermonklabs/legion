@@ -266,11 +266,13 @@ func newGatedProc(t *testing.T, pids ...int) *gatedProc {
 // re-entry whose argv the test does not write, the session peer's shim (roleShim's `worker-shim`),
 // waits on nothing of its own and hands its agent the deadline its plan carries (peerPlan.End).
 //
-// Not hang guards, so not bounded by it: a span that is part of a case's claim. These are the race
-// cases' two-minute search budget (raceSwaps); the racer's 30 s (raceTheSwap's deadline) and
-// removeWhileFilling's 30 s, each of which also sets how long a load generator runs, so a removal
-// that never stops its passes fails with the case's own line rather than at the binary's timeout;
-// and the role-drain bounds handed to role-init (roleDrainStaysBound).
+// Not hang guards, so not bounded by it: a span that is part of a case's claim, or an answer a
+// re-entered process prints and then goes on from. These are the race cases' two-minute search
+// budget (raceSwaps); the racer's 30 s (raceTheSwap's deadline) and removeWhileFilling's 30 s, each
+// of which also sets how long a load generator runs, so a removal that never stops its passes fails
+// with the case's own line rather than at the binary's timeout; the role-drain bounds handed to
+// role-init (roleDrainStaysBound); and the role stage's minute for a detached process to be gone
+// (detachedGoneWithin), whose "running" must leave the stage its time for the generations after it.
 func beforeDeadline(t *testing.T) time.Duration {
 	return testwait.Bounded(t, 1<<60, 30*time.Second)
 }

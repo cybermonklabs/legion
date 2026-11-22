@@ -321,11 +321,11 @@ func TestRoleInitStageHelper(t *testing.T) {
 	os.Exit(0)
 }
 
-// runStage is the stage's whole run, in the stage's own test binary t: each of its waits is under
-// that binary's beforeDeadline, whose deadline the case set (reentry), and so is each process of
-// the test binary it starts (role-init, and the agent role-init starts).
+// runStage is the stage's whole run, in the stage's own test binary t, whose deadline the case set
+// (reentry), as each process of the test binary it starts has its own (role-init, and the agent
+// role-init starts). Its three waits for a detached process to be gone are answers it prints, not
+// hang guards, so each is capped at detachedGoneWithin.
 func runStage(t *testing.T, plan stagePlan) error {
-	guard := beforeDeadline(t)
 	if err := privateMounts(); err != nil {
 		return err
 	}
@@ -507,7 +507,7 @@ func runStage(t *testing.T, plan stagePlan) error {
 	fmt.Printf("stage container-home=%s\n", presence(filepath.Join(home, "planted")))
 	fmt.Printf("stage container-tmp=%s\n", presence(filepath.Join("/tmp", "planted")))
 	fmt.Printf("stage container-shm=%s\n", presence(filepath.Join("/dev/shm", "planted")))
-	fmt.Printf("stage detached=%s\n", detachedProcess(plan.Detached, guard))
+	fmt.Printf("stage detached=%s\n", detachedProcess(plan.Detached, detachedGoneWithin))
 	// The log's lines go on the one line a report carries (oneLine), here and in the agent.
 	fmt.Printf("stage testpg-source=%s\n", oneLine(content(serverLog)))
 	// Read without following a link: a link the role had put in the file's place would name
@@ -554,7 +554,7 @@ func runStage(t *testing.T, plan stagePlan) error {
 	if relaunched != nil {
 		return relaunched
 	}
-	fmt.Printf("stage2 detached=%s\n", detachedProcess(layout.Detached, guard))
+	fmt.Printf("stage2 detached=%s\n", detachedProcess(layout.Detached, detachedGoneWithin))
 
 	// The sibling role's first generation, after the role's two have written their own config
 	// home: what the role wrote there never reaches the sibling, nor the pod's shared one. A
@@ -577,7 +577,7 @@ func runStage(t *testing.T, plan stagePlan) error {
 	if err := runGeneration(t, siblingPlan, siblingLayout, 1, "agent-sibling"); err != nil {
 		return err
 	}
-	fmt.Printf("stage-sibling detached=%s\n", detachedProcess(siblingLayout.Detached, guard))
+	fmt.Printf("stage-sibling detached=%s\n", detachedProcess(siblingLayout.Detached, detachedGoneWithin))
 	fmt.Printf("stage shared-config-planted=%s\n", presence(filepath.Join(shared, "git", "config")))
 	fmt.Printf("stage own-config-planted=%s\n", presence(filepath.Join(homes, RoleConfigHomeDir, "git", "config")))
 	if mqueue == "present" {
@@ -661,13 +661,20 @@ func runGeneration(t *testing.T, plan stagePlan, layout agentPlan, generation ui
 	return nil
 }
 
+// detachedGoneWithin is how long the stage waits for a role's detached process to be gone once the
+// role's init has exited, before it answers "running". How soon the kernel shows that process gone
+// is not the claim, and on a loaded machine it can take seconds, so the cap is far past that; it is
+// an answer the stage prints rather than a hang guard, so it is short enough that a "running" still
+// leaves the stage its time for the generations after it (beforeDeadline).
+const detachedGoneWithin = time.Minute
+
 // detachedProcess says whether any process of the machine still runs the detached command the
-// role started, once the role's init has exited. The command sleeps far longer than any wait of
-// the case, so nothing but the end of the role's namespace ends it, and how soon the kernel shows
-// that is not the claim: the wait for it is under guard, the stage's hang guard.
-func detachedProcess(marker string, guard time.Duration) string {
+// role started, once the role's init has exited, waiting up to within for it to be gone. The
+// command sleeps far longer than any wait of the case, so nothing but the end of the role's
+// namespace ends it.
+func detachedProcess(marker string, within time.Duration) string {
 	var unreadable string
-	gone := testwait.Holds(guard, 50*time.Millisecond, func() bool {
+	gone := testwait.Holds(within, 50*time.Millisecond, func() bool {
 		entries, err := os.ReadDir("/proc")
 		if err != nil {
 			unreadable = "unreadable: " + err.Error()
