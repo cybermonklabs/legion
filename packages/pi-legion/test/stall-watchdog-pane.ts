@@ -220,9 +220,7 @@ const MOVED_ON = {
   strandedClaims: [],
   capabilities: [],
   repositories: {
-    owners: ["acme"],
-    mapped: [{ repo: "acme/widgets", default: true }],
-    refused: [],
+    live: [{ repo: "acme/widgets", apps: { implement: true, review: true } }],
     withoutWebhookApp: [],
     caches: [],
   },

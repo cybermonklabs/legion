@@ -145,10 +145,10 @@ func TestPendingForApproverAvoidsSequentialScans(t *testing.T) {
 	for _, statement := range []struct {
 		name, types, query, args string
 	}{
-		{"pendingForApproverQuery", "text, text", pendingForApproverQuery,
-			fmt.Sprintf("'nobody@example.com', '%s'", record.AnyoneApprover)},
-		{"pendingOrExpiredForApproverQuery", "text, text, boolean, boolean", pendingOrExpiredForApproverQuery,
-			fmt.Sprintf("'nobody@example.com', '%s', true, true", record.AnyoneApprover)},
+		{"pendingForApproverQuery", "text, text, text[]", pendingForApproverQuery,
+			fmt.Sprintf("'nobody@example.com', '%s', array['%sapprovers@example.com']", record.AnyoneApprover, record.GroupPrefix)},
+		{"pendingOrExpiredForApproverQuery", "text, text, text[], boolean, boolean", pendingOrExpiredForApproverQuery,
+			fmt.Sprintf("'nobody@example.com', '%s', array['%sapprovers@example.com'], true, true", record.AnyoneApprover, record.GroupPrefix)},
 	} {
 		t.Run(statement.name, func(t *testing.T) {
 			tx, err := st.Pool.Begin(ctx)

@@ -459,21 +459,20 @@ func (a *awsAttempts) record(o *secretsmanager.Options) {
 	})
 }
 
-// definiteRefusal reports whether the call err ended may have made nothing for certain: it made
-// exactly one attempt, and that attempt ended in an error whose code awsDefiniteRefusals lists. More
-// than one attempt is never certain: an attempt the SDK retried may have reached the store, which
-// then answers the retry as a refusal (a name taken, by the secret that attempt made). A client
-// that runs no SDK middleware, and so records no attempt, is judged by err alone.
+// definiteRefusal reports whether the call err ended may have made nothing for certain: every
+// attempt it made ended in an error whose code awsDefiniteRefusals lists. An attempt answered that
+// way acted on nothing, so a call the SDK retried for such a code (it retries a throttle such as
+// LimitExceededException, a quota refusal) and that met it every time made nothing either. One
+// attempt that ended any other way may have reached the store, which can then answer a retry as a
+// refusal (a name taken, by the secret that attempt made), so the call's outcome is open. A
+// client that runs no SDK middleware, and so records no attempt, is judged by err alone.
 func (a *awsAttempts) definiteRefusal(err error) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	switch len(a.errs) {
-	case 0:
+	if len(a.errs) == 0 {
 		return awsDefiniteRefusal(err)
-	case 1:
-		return awsDefiniteRefusal(a.errs[0])
 	}
-	return false
+	return !slices.ContainsFunc(a.errs, func(e error) bool { return !awsDefiniteRefusal(e) })
 }
 
 // awsDefiniteRefusals are the error codes Secrets Manager, or AWS's request handling in front of
@@ -575,44 +574,61 @@ func (b *awsBackend) removeTags(ctx context.Context, slug string, held heldTags,
 	return b.raceCheck(ctx, slug, held)
 }
 
+// tag and untag answer an error that is no definite refusal (awsAttempts.definiteRefusal: every
+// attempt ending in a code awsDefiniteRefusals lists) as tagsUnknown: a service fault, an attempt
+// that ended any other way before a retry, or a lost connection may follow a call the store
+// carried out.
 func (b *awsBackend) tag(ctx context.Context, slug string, tags map[string]string) error {
+	var attempts awsAttempts
 	_, err := b.sm.TagResource(ctx, &secretsmanager.TagResourceInput{
 		SecretId: aws.String(b.id(slug)),
 		Tags:     secrets.TagList(tags),
-	})
-	return err
+	}, attempts.record)
+	return tagOutcome(err, &attempts)
 }
 
 func (b *awsBackend) untag(ctx context.Context, slug string, keys []string) error {
+	var attempts awsAttempts
 	_, err := b.sm.UntagResource(ctx, &secretsmanager.UntagResourceInput{
 		SecretId: aws.String(b.id(slug)),
 		TagKeys:  keys,
-	})
-	return err
+	}, attempts.record)
+	return tagOutcome(err, &attempts)
+}
+
+// tagOutcome is a tag call's error as tag and untag answer it: nil, a definite refusal as it
+// is, and any other error as tagsUnknown.
+func tagOutcome(err error, attempts *awsAttempts) error {
+	if err == nil || attempts.definiteRefusal(err) {
+		return err
+	}
+	return tagsUnknown{err}
 }
 
 // raceCheck is how a tag write on AWS, whose tag calls take no condition, answers for the
 // github-owners rule when another writer retags the same secret between the write's read (held)
 // and the write itself: it reads the tags back, and when the type and github-owners there are a
-// pair the broker refuses (policy.GitHubOwnersFor), it answers errTagsChanged wrapping
-// errTagsRaced, naming the tags it read, the tags it found and the retag that sets the secret
-// right. It writes nothing: the tags it read are no more current than the other writer's, so
-// putting them back would take that writer's retag away, and more than one writer is the normal
-// case. It answers nil when the pair is one the broker serves.
+// pair the broker refuses (policy.GitHubOwnersFor), it answers errTagsChanged, saying this
+// retag's write landed beside the other writer's, naming the tags it read, the tags it found and
+// the retag that sets the secret right. It writes nothing: the tags it read are no more current
+// than the other writer's, so putting them back would take that writer's retag away, and more
+// than one writer is the normal case. It answers nil when the pair is one the broker serves. Both
+// of its errors come after the write landed, and are marked so (tagsLanded): the race, and a
+// read-back that failed.
 func (b *awsBackend) raceCheck(ctx context.Context, slug string, held heldTags) error {
 	now, err := b.currentTags(ctx, slug)
 	if err != nil {
-		return fmt.Errorf("the retag was written, but reading its tags back failed, so whether another write left it a type without the GitHub owners it needs is unknown: %w", err)
+		return tagsLanded{fmt.Errorf("the retag was written, but reading its tags back failed, so whether another write left it a type without the GitHub owners it needs is unknown: %w", err)}
 	}
 	secretType, owners := policy.TypeFromTags(now.tags), now.tags[policy.TagGitHubOwners]
 	if _, err := policy.GitHubOwnersFor(secretType, owners); err == nil {
 		return nil
 	}
 	name := b.displayName(b.id(slug))
-	return fmt.Errorf("%w, leaving type %q with github-owners %q, which the broker refuses; %w. This retag read %s and found %s. Give that type its owners with `%s`, or drop the type with `%s`",
-		errTagsChanged, secretType, owners, errTagsRaced, tagPairs(held.tags), tagPairs(now.tags),
+	return tagsLanded{fmt.Errorf("%w, leaving type %q with github-owners %q, which the broker refuses; this retag's write landed beside another writer's, and nothing was restored. This retag read %s and found %s. Give that type its owners with `%s`, or drop the type with `%s`",
+		errTagsChanged, secretType, owners, tagPairs(held.tags), tagPairs(now.tags),
 		b.agentSecrets("secret", "retag", name, "--type", secretType, "--github-owners", "LOGINS"),
-		b.agentSecrets("secret", "retag", name, "--type", policy.TagRemoved))
+		b.agentSecrets("secret", "retag", name, "--type", policy.TagRemoved))}
 }
 
 func (b *awsBackend) delete(ctx context.Context, slug string) (*time.Time, error) {

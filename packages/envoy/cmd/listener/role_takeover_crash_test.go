@@ -127,7 +127,7 @@ func crashKeptByItsHolder(t *testing.T, rig *crashRig, standIn *sessionStandIn, 
 			t.Fatalf("after sweep %d %s's own subject holds %v; want its three role messages alone, %v", i+1, holder, events, sent)
 		}
 	}
-	standIn.conn.Close()
+	standIn.close()
 	awaitNoRelaySubscriber(t, rig.url, holder)
 	back := startSessionStandIn(t, rig.url, holder, answerDone)
 	rig.register(rig.mux, holder, "epoch-2")
@@ -326,7 +326,7 @@ func crashReleasedBeforeAnyPass(t *testing.T) {
 // window: the holder stops and deregisters, and its claim is aged past the window.
 func crashReapedBeforeAnyPass(t *testing.T) {
 	crashEndedBeforeAnyPass(t, "4p", "", func(rig *crashRig, standIn *sessionStandIn, holder, role string) {
-		standIn.conn.Close()
+		standIn.close()
 		if recorder := rig.send(rig.mux, http.MethodDelete, "/v1/sessions/"+holder, ""); recorder.Code != http.StatusOK {
 			rig.t.Fatalf("DELETE /v1/sessions/%s: status %d %s", holder, recorder.Code, recorder.Body.String())
 		}
@@ -393,7 +393,7 @@ func crashRoleTakenBack(t *testing.T) {
 		sent = append(sent, item.EventID)
 	}
 	crashAwaitEvents(t, first, sent, nil, a+"'s frames, each answered received alone")
-	first.conn.Close()
+	first.close()
 	awaitNoRelaySubscriber(t, rig.url, a)
 	rig.gone(b)
 	rig.claim(rig.away, b, role)

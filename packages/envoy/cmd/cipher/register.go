@@ -1,12 +1,13 @@
 // packages/envoy/cmd/cipher/register.go
 //
-// cmdRegister implements "agent-secrets register [--wait SECONDS] [--session-id ID] [--exec --
-// COMMAND [ARGS...]]": the one command a machine session (not an agent box) runs at launch to
-// become a registered session root with agent-secrets-helper. With --exec the helper pins THIS
-// process by pidfd, and the command execs as the very pid that was registered — shims/omp wraps
-// omp this way, and omp becomes the session root every later `agent-secrets` invocation in its
-// process tree signs through. Without --exec the command names the session it runs inside, or
-// the launcher above it, and the helper never pins this process, which ends with the command.
+// cmdRegister implements "agent-secrets register [--wait SECONDS] [--session-id ID] [--projects
+// KEYS] [--exec -- COMMAND [ARGS...]]": the one command a machine session (not an agent box)
+// runs at launch to become a registered session root with agent-secrets-helper. With --exec the
+// helper pins THIS process by pidfd, and the command execs as the very pid that was registered —
+// shims/omp wraps omp this way, and omp becomes the session root every later `agent-secrets`
+// invocation in its process tree signs through. Without --exec the command names the session it
+// runs inside, or the launcher above it, and the helper never pins this process, which ends with
+// the command.
 package main
 
 import (
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/helper"
+	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -50,8 +52,18 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 	// requests of the one before it, so the session keeps them even where its key and its
 	// runtime id are new: another box, a container, a machine rebuilt from nothing.
 	sessionID := flags.String("session-id", "", "the omp session id this session keeps its broker identity under, across a restart of the helper or the machine")
+	// --projects names the Dispatch projects the session works on, whose private secrets the
+	// broker may then release to it. It defaults to AGENT_SECRETS_PROJECTS, the variable the
+	// session's own token trade reads, so one setting names both. The list is fixed at the
+	// session's first register: the helper refuses another list for a registered session.
+	projectsFlag := flags.String("projects", "", "the Dispatch projects this session works on, project keys separated by spaces (\"PRIV CORE\"); default "+cipherclient.ProjectsVar)
 	if err := flags.Parse(args); err != nil {
 		return exitUsage(err)
+	}
+	projects, err := sessionProjectsFlag(*projectsFlag, flags)
+	if err != nil {
+		fmt.Fprintf(stderr, "agent-secrets register: %v\n", err)
+		return exitUsageError
 	}
 	command := flags.Args()
 	if *doExec && len(command) == 0 {
@@ -89,7 +101,7 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 	// say), so it decides: it answers that session, else pins the launcher named, else refuses.
 	// With --exec nothing of this runs: the caller's pid is the process --exec replaces, which is
 	// the session's root.
-	req := helper.Request{WaitSeconds: *wait}
+	req := helper.Request{WaitSeconds: *wait, Projects: projects}
 	if *sessionID != "" {
 		req.SessionID = sessionID
 	}
@@ -127,6 +139,13 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 		// each prints on one line (redact.OneLine) and the line keeps its three tab-separated
 		// fields.
 		fmt.Fprintf(stdout, "%s\t%s\t%s\n", redact.OneLine(resp.RuntimeID), redact.OneLine(resp.EnrollmentID), redact.OneLine(resp.State))
+		// A refusal no retry mends (the broker enrolls no session of a restricted member's
+		// machine login): the helper asks no more, so the command says so and fails whether or
+		// not it was asked to wait.
+		if resp.State == "refused" {
+			fmt.Fprintf(stderr, "agent-secrets register: the broker refuses to enroll this session, and the helper asks no more: %s\n", resp.Error)
+			return 1
+		}
 		if *wait > 0 && resp.State != "enrolled" {
 			fmt.Fprintf(stderr, "agent-secrets register: not enrolled yet: %s\n", resp.Error)
 			return 1
@@ -141,6 +160,8 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 	switch {
 	case err != nil:
 		fmt.Fprintf(stderr, "agent-secrets: helper at %s unreachable (%v); this session has no secrets access until it is relaunched with the helper running\n", sock, err)
+	case resp.State == "refused":
+		fmt.Fprintf(stderr, "agent-secrets register: the broker refuses to enroll this session, and the helper asks no more (%s); launching anyway, with no secrets access\n", resp.Error)
 	case *wait > 0 && resp.State != "enrolled" && resp.Code == helper.CodeNoCredential && resp.EnrollmentID != "":
 		// A session that came back to an identity its record kept holds that enrollment and
 		// can sign with it, and the renew that confirms it is signed by that same key, so a
@@ -186,4 +207,15 @@ func registerWithPatience(sock string, req helper.Request, patience time.Duratio
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
+}
+
+// sessionProjectsFlag is the projects a register or a helper enroll names: --projects when the
+// command line sets it, AGENT_SECRETS_PROJECTS otherwise (cipherclient.TradeProjects), each read
+// by the broker's own rule for a list (cipherclient.ParseProjectsSetting), so a list that is no
+// list is refused, naming the setting and never the value, before the helper is asked.
+func sessionProjectsFlag(raw string, flags *flagSet) ([]string, error) {
+	if !flagGiven(flags, "projects") {
+		return cipherclient.TradeProjects(os.Getenv)
+	}
+	return cipherclient.ParseProjectsSetting("--projects", raw)
 }

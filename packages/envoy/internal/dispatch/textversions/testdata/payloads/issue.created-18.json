@@ -1,0 +1,93 @@
+{
+  "id": 582508,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 1,
+  "type": "issue.created",
+  "actor": {
+    "kind": "session",
+    "id": "01a1e0ca-c1f6-7276-9410-319e9ede3236",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet l",
+      "tmux": "lorem ipsum dolo",
+      "pane": "lor",
+      "session_title": "lorem ipsum dolor sit amet lorem ipsum dolo"
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-11-15T20:26:03.358255Z",
+  "payload": {
+    "key": "ACME-1",
+    "rank": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum d",
+    "repo": null,
+    "claim": null,
+    "route": null,
+    "title": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolo",
+    "forced": {
+      "past": [
+        "ACME-2",
+        "ACME-3",
+        "ACME-4",
+        "ACME-5"
+      ]
+    },
+    "labels": [
+      "lorem ip"
+    ],
+    "number": 2129,
+    "parent": "ACME-6",
+    "status": "triage",
+    "changed": [
+      "title",
+      "status",
+      "rank",
+      "assignee",
+      "parent",
+      "labels"
+    ],
+    "project": "ACME",
+    "advances": [],
+    "assignee": "alice@example.com",
+    "last_seq": 1,
+    "priority": null,
+    "ancestors": [
+      "ACME-6",
+      "ACME-7"
+    ],
+    "closed_at": null,
+    "blocked_by": [],
+    "components": {
+      "ids": [],
+      "mode": "inherit",
+      "reason": null,
+      "unknown": [],
+      "inherited_from": null
+    },
+    "created_at": "2026-11-15T20:26:03.358255Z",
+    "created_by": {
+      "id": "01a1e0ca-c1f6-7276-9410-319e9ede3236",
+      "kind": "session",
+      "owner": "alice@example.com",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet l",
+        "host": "lor",
+        "pane": "lor",
+        "tmux": "lorem ipsum dolo",
+        "machine": "lorem ipsum",
+        "session_title": "lorem ipsum dolor sit amet lorem ipsum dolo"
+      }
+    },
+    "updated_at": "2026-11-15T20:26:03.358255Z",
+    "resolved_repo": null,
+    "external_links": [],
+    "plan_artifact_id": "",
+    "advances_revision": 0,
+    "primary_artifact_id": "6e43f518-7f94-4fb1-863b-7a5adaf1a6a1",
+    "decisions_artifact_id": "",
+    "verification_artifact_id": ""
+  }
+}

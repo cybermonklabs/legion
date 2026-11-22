@@ -10,16 +10,19 @@ import (
 
 // StopActs is whether a queued stop, row id, still acts on its claim when the outbox runs it, with
 // lastStart the newest start the outbox ran against the claim (its last_start_row), and root the
-// issue's tree root as recorded, read only for a tree close. The outbox executor asks it of every
-// suspend, issue close and tree close, and StartFor of every queued stop, so all read one rule. A
-// tree close acts while its tree lingers at the root generation it names (record.Issue.LingersAt):
-// never once re-admission has moved the root on. A suspend — an issue's close, a child's leave, or
-// a re-entered child's interrupted run — a release — the idle pod's, which keeps the session and
-// the phase — and an issue close — a child's leave as done — act unless
-// a newer start has already run: that start replaced the run the stop was written for, so acting
-// would stop the run it began and retire the task with it, whatever the retry timing was. A row
-// with no id is not older than anything: the store gives every row one, and an unknown id must not
-// silently drop a stop. Any other operation is not a stop.
+// issue's tree root as recorded, read only for a tree close. The outbox asks it of every suspend
+// and issue close of the issue's own tree, and of a tree close whose tree holds no cleanup
+// reservation. StartFor asks it of every queued stop, so all read one rule. The other executor
+// fences are listed on record.SuperviseRequest.Generation. A reserved cleanup close still retires
+// its claim and drives the cleanup however stale its generation (reservedTreeClose). A tree
+// close acts while its tree lingers at the root generation it names (record.Issue.LingersAt): never
+// once re-admission has moved the root on. A suspend — an issue's close, a child's leave, or a
+// re-entered child's interrupted run — a release — the idle pod's, which keeps the session and the
+// phase — and an issue close — a child's leave as done — act unless a newer start has already run:
+// that start replaced the run the stop was written for, so acting would stop the run it began and
+// retire the task with it, whatever the retry timing was. A row with no id is not older than
+// anything: the store gives every row one, and an unknown id must not silently drop a stop. Any
+// other operation is not a stop.
 func StopActs(id int64, stop record.SuperviseRequest, lastStart int64, root *record.Issue) bool {
 	switch stop.Op {
 	case "tree_close":

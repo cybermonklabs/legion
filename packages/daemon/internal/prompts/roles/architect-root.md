@@ -161,11 +161,12 @@ They can conflict with each other, and dependent slices run in sequence.
 A child may wait on a sibling's merge in the same repository: release it with `--blocked-by` that sibling, and Legion holds it until the sibling is `done`.
 A child is never a place for a to-do, a fix found in review, a proof of the root's acceptance or a part of your own work (`skill://legion-architect/references/decomposition.md`, "Creating children").
 A repeated change is one child, never one per instance.
-A child that duplicates another issue and is not yet released is never released:
-fold it by the duplicate rule of `skill://dispatch-first`, which stands because the daemon
-records a child only at its release; a released duplicate goes out with `park_child`, because
-its work is folded into the issue you keep.
-Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. Name the issue you keep in that comment.
+A child that duplicates another issue and is not yet released is never released.
+A duplicate child, recorded or not, takes your `done`, with a `--reason` that names the issue you keep, also where `skill://dispatch-first` says to comment instead.
+Write `done`, with its `--reason` (`dispatch issue-update --issue <KEY> --status done --reason '<why>'`), when the work of a child is done, folded into another issue or no longer needed.
+For a fold, name in the reason the issue that carries the work.
+Write `backlog` or `icebox` only when a person asked for that move, or as the first step of a restart (`backlog`, then `rerun_child`).
+Say why in a `dispatch comment`.
 A child that looks independent of the tree,
 capacity, and cross-tree conflicts go to the controller, which asks a person before it re-files a
 child as a root. A problem outside the tree is never an issue you file: a clear defect in code

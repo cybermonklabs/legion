@@ -1,0 +1,44 @@
+{
+  "id": 112838,
+  "issue_key": null,
+  "artifact_id": "d7c7b6eb-e71b-4e13-aa55-6dd12bb4b449",
+  "project": "ACME",
+  "seq": 4,
+  "type": "comment.created",
+  "actor": {
+    "kind": "user",
+    "id": "alice@example.com"
+  },
+  "notify": true,
+  "created_at": "2026-10-29T18:16:38.392177Z",
+  "payload": {
+    "id": "cfc2de6e-e68c-48ef-bda9-dffd82fc69ce",
+    "body": "lorem",
+    "turn": null,
+    "anchor": null,
+    "ask_id": null,
+    "author": {
+      "id": "alice@example.com",
+      "kind": "user"
+    },
+    "mentions": [],
+    "reply_to": "274250e2-08b6-4fc7-bdb9-8073d7fc8421",
+    "resolved": false,
+    "edited_at": null,
+    "issue_key": null,
+    "created_at": "2026-10-29T18:16:38.398173Z",
+    "deliveries": [],
+    "suggestion": null,
+    "artifact_id": "d7c7b6eb-e71b-4e13-aa55-6dd12bb4b449",
+    "project_key": "ACME",
+    "resolved_at": null,
+    "resolved_by": null,
+    "artifact_name": "",
+    "artifact_slug": "lorem ipsum dolor sit amet lo",
+    "thread_logins": [
+      "alice@example.com"
+    ],
+    "suppress_route": false,
+    "thread_root_id": "274250e2-08b6-4fc7-bdb9-8073d7fc8421"
+  }
+}

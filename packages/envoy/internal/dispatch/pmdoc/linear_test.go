@@ -17,6 +17,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/cputest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // parseFullTarget and renderFullTarget are
@@ -1029,27 +1030,19 @@ const perCallReportMargin = 60 * time.Second
 const perCallHangCap = 30 * time.Minute
 
 // perCallDeadline bounds every one of growthVerdict's measured calls: what the test binary's own
-// deadline leaves after perCallReportMargin, capped at perCallHangCap. It is read from the
-// deadline rather than fixed because each measured call is a CPU-time measurement (cpuTimeOf,
-// cputest.Measure) that repeats its operation until a window reaches the measurement's
+// deadline leaves after perCallReportMargin (testwait.Remaining), capped at perCallHangCap. It is
+// read from the deadline rather than fixed because each measured call is a CPU-time measurement
+// (cpuTimeOf, cputest.Measure) that repeats its operation until a window reaches the measurement's
 // resolution, so the wall time it takes is the CPU it needs multiplied by whatever contention the
 // runner is under; a fixed wall-clock bound over a CPU-time budget fails healthy calls on a
 // loaded shared runner, which is what this file's own history records. For scale: a healthy
 // '<a b="x;a@b.cc ">' call at the 1 MiB tag shape, measured under -race in a two-CPU gVisor pod on
 // 2026-11-03, took 50.26s - 84% of the 60s bound this replaced, which is why the bound had to go
-// rather than be raised. A run whose deadline leaves no more than the
-// margin fails once, by name: that reads like a misconfigured run, not a hang.
+// rather than be raised. A run whose deadline leaves no more than the margin fails once, by name,
+// saying whether the -timeout was too short or the tests before used it up.
 func perCallDeadline(t *testing.T) time.Duration {
 	t.Helper()
-	deadline, bounded := t.Deadline()
-	if !bounded {
-		return perCallHangCap
-	}
-	left := time.Until(deadline)
-	if left <= perCallReportMargin {
-		t.Fatalf("the test binary's deadline leaves %s, not more than perCallReportMargin (%s): this looks like a misconfigured run; raise -timeout", left.Round(time.Millisecond), perCallReportMargin)
-	}
-	return min(perCallHangCap, left-perCallReportMargin)
+	return min(perCallHangCap, testwait.Remaining(t, perCallReportMargin))
 }
 
 // growsLinearly times what at each of sizes in turn and fails t at the first size whose time grew

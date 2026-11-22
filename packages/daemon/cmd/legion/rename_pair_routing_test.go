@@ -32,8 +32,8 @@ func (bothOwnersInstalled) InstalledOwners(context.Context, appauth.AppRole) ([]
 func pairRoutedBundle(t *testing.T) string {
 	t.Helper()
 	pair := ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
-	repos := func() []ghrepo.Repository { return []ghrepo.Repository{ghrepo.MustParse("cybermonklabs/legion")} }
-	credential := appauth.GitHubCredential(bothOwnersInstalled{}, repos, pair, nil, nil, slog.Default())
+	served := servesOneOf([]ghrepo.Repository{ghrepo.MustParse("cybermonklabs/legion")})
+	credential := appauth.GitHubCredential(bothOwnersInstalled{}, served, pair, nil, nil, slog.Default())
 	bundle, err := credential(context.Background(), legionclaim.RoleImplementer, ghrepo.MustParse("sjawhar/legion"))
 	if err != nil {
 		t.Fatalf("build the bundle: %v", err)

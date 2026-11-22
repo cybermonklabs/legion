@@ -257,8 +257,8 @@ nats_urls:
   - nats://127.0.0.1:$port_nats
 dispatch_url: http://127.0.0.1:$port_dispatch
 dispatch_token_file: $work/dispatch-token
-# The project's repository is Dispatch's mapping (the PUT below makes $repo its default), not a key of
-# legion.yaml.
+# The project's repository is no key of legion.yaml: the PUT below sets $repo as the project's
+# default repository in Dispatch, and the daemon takes each issue's repository from Dispatch.
 projects:
   $project: {}
 gates:

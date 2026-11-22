@@ -64,7 +64,7 @@ var (
 // the relation read, the inheritance walk it climbs and the columns' join, and answers the three
 // columns as the constants an issue with no relation reads as, so one scan and one argument list
 // serve both texts. Its one caller is the speed test that holds the relation read to twice the
-// time of the same page without it; every text the server runs passes true. The `advances`
+// work of the same page without it; every text the server runs passes true. The `advances`
 // filter term stays in both, because it is a filter rather than a read: a request that names no
 // `advances` key leaves its seed gated off (issueAdvancesFilterTerms), so the text without the
 // read measures the read alone. The move into `backlog` or `icebox` stays in both for the same
@@ -1118,8 +1118,8 @@ func (s *server) loadIssueWithProgress(ctx context.Context, q queryer, key strin
 
 // issueChildrenStatement reads the issue's direct children, $1 its key, each with a rollup over
 // its whole subtree (the child itself included, every status): done/total counts and the newest
-// updated_at. The recursive walk uses `union` with parentDepthCap like refs.Closure, so it
-// terminates even if a raced reparent ever commits a cycle. scanIssueChildren decodes its rows.
+// updated_at. The recursive walk uses `union` with parentDepthCap, so it terminates even if a
+// raced reparent ever commits a cycle. scanIssueChildren decodes its rows.
 //
 // The walk reads each subtree issue's row already, so it carries that row's status and
 // updated_at and the rollup counts them where it stands. Joining the walk's keys back to issues

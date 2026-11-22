@@ -497,7 +497,8 @@ func TestLoadAcceptsEveryEnvoyKey(t *testing.T) {
 			"natsUrls": ["nats://envoy-nats.internal.example:4222"],
 			"token": "envoy-token",
 			"natsSeed": "!secrets get NATS_NKEY_SEED",
-			"natsAuth": "broker"
+			"natsAuth": "broker",
+			"inbound": "listener"
 		}
 	}`)
 	cfg, err := Load(environment(nil), LoadOptions{CWD: t.TempDir(), HomeDir: home})
@@ -530,6 +531,7 @@ func TestLoadRejectsAMalformedEnvoySection(t *testing.T) {
 		{name: "token", envoy: `{"token": 1}`, issue: "envoy.token: Expected string"},
 		{name: "natsSeed", envoy: `{"natsSeed": false}`, issue: "envoy.natsSeed: Expected string"},
 		{name: "natsAuth", envoy: `{"natsAuth": true}`, issue: "envoy.natsAuth: Expected string"},
+		{name: "inbound", envoy: `{"inbound": 1}`, issue: "envoy.inbound: Expected string"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()

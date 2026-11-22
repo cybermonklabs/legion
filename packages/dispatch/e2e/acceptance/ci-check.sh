@@ -63,6 +63,10 @@ USAGE
 
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# psql is given DATABASE_URL without its password, and the password in PGPASSWORD (pg_url_run),
+# as e2e/psql.ts gives it.
+# shellcheck source-path=SCRIPTDIR source=../../../envoy/scripts/lib/pg-url.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../../../envoy/scripts/lib/pg-url.sh"
 require_env DISPATCH_URL PROJECT FAKE_GITHUB_PORT DATABASE_URL DEV_SIGNIN_LOGIN
 [[ "$FAKE_GITHUB_PORT" =~ ^[0-9]+$ ]] || {
   printf 'FAKE_GITHUB_PORT is %s, not a port number\n' "$FAKE_GITHUB_PORT" >&2
@@ -202,10 +206,12 @@ expect() {
 }
 
 # psql_quiet ARGS...: runs the SQL on stdin against DATABASE_URL with the psql variables ARGS
-# names (-v name=value), printing its rows unaligned. libpq would connect to PGHOSTADDR in place
-# of the URL's host, so it is left out, as e2e/psql.ts leaves it.
+# names (-v name=value), printing its rows unaligned. The URL reaches psql without its password,
+# which goes in PGPASSWORD (pg_url_run), and libpq would connect to PGHOSTADDR in place of the
+# URL's host, so it is left out, as e2e/psql.ts leaves it.
+psql_without_hostaddr() { env -u PGHOSTADDR psql "$@"; }
 psql_quiet() {
-  env -u PGHOSTADDR psql "$database_url" -X -q -A -t -v ON_ERROR_STOP=1 "$@"
+  pg_url_run "$database_url" psql_without_hostaddr -X -q -A -t -v ON_ERROR_STOP=1 "$@"
 }
 
 # sql SECTION WHAT ARGS...: psql_quiet, its rows in $work/sql; a failure fails.

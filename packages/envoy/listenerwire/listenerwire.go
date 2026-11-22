@@ -67,10 +67,12 @@ type APIError struct {
 	Expected []string `json:"expected,omitempty"`
 }
 
-// CodeMaybeStored is the code of a send's or a publish's 503 whose publish went out and was never
-// acknowledged: the stream may hold the message, so a caller reads it as a receipt timeout - it may
-// have landed, and a repeat under the same idempotency key is recognised - and not as a send that
-// stored nothing. Every other 503 of those routes leaves the code out.
+// CodeMaybeStored is the code of a send's or a publish's 503 after which the stream may hold the
+// message: its publish went out and was never acknowledged, or its request ended while the stream
+// was still storing an earlier publish under the same message id, an earlier attempt of the same
+// message. A caller reads it as a receipt timeout - it may have landed, and a repeat under the
+// same idempotency key is recognised - and not as a send that stored nothing. Every other 503 of
+// those routes leaves the code out.
 const CodeMaybeStored = "maybe_stored"
 
 // MessageBody is the message a send or a publish carries, which the listener builds the envelope
@@ -234,6 +236,11 @@ type PublishResponse struct {
 	// naming its holder. An older client reads neither field.
 	Recipients          *int `json:"recipients,omitempty"`
 	RecipientsConnected *int `json:"recipients_connected,omitempty"`
+	// Warnings names a role send's role when its topic named it in the old form, the role alone,
+	// with its new form, project first ("<old> is the old form of <new>; name <new>",
+	// store.Registry.ReadRole), as the subscribe and claim routes name an old form; it is left out
+	// when the topic named the role in the new form, and from every answer that is no role send.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // SessionInfo is the joined view of a session's interest record (topics, dir, machine) and its

@@ -78,7 +78,7 @@ const [PHASE = "", HANDOFF_WORD = ""] = runDaemonPane(DAEMON_MODULE, ["phase", r
  * (`workflow.RoleFor`, through daemon-pane.go), on the rig's one repository. `capabilities` is the
  * deployment's capability report, `strandedClaims` the claims nothing will wake, `heldOutboxRows`
  * the lifecycle rows held behind their issues' running ones, `consumers` the lag of the daemon's
- * durable consumers and `repositories` the project's mapping, each of which the reader requires;
+ * durable consumers and `repositories` the repositories the live records name, each of which the reader requires;
  * the rig has no deployment to report on, its one claim runs, it has no outbox and no NATS, so
  * the first four are the empty lists the daemon's MarshalJSON emits when there is none.
  * `wakesWaiting`, the wakes the pacing holds until their turn, is optional to the reader; the rig
@@ -106,9 +106,7 @@ const STATE = LegionStateResponse.parse({
   wakesWaiting: [],
   capabilities: [],
   repositories: {
-    owners: ["sjawhar"],
-    mapped: [{ repo: "sjawhar/legion-smoke", default: true }],
-    refused: [],
+    live: [{ repo: "sjawhar/legion-smoke", apps: { implement: true, review: true } }],
     withoutWebhookApp: [],
     caches: [],
   },

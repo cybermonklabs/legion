@@ -4,14 +4,17 @@
 # naming that job in the title and every other job at the result the jobs route shows; every
 # other run posts nothing, because ci.yaml's ci-ok job carries the verdict there; a failure only
 # a runner shutdown caused posts nothing either, since the platform killed the job and decided
-# nothing of the group; and a jobs list GitHub refuses still posts the verdict, where a refused
-# post fails the step.
+# nothing of the group; a group behind the front of the queue, whose base is not the tip of the
+# queue's branch, posts nothing and leaves its failing verdict to the ci-ok job, since the queue
+# cannot take it out before the groups in front of it end; and a jobs list GitHub refuses still
+# posts the verdict, where a refused post fails the step.
 #
 # Each case writes the run's jobs as the jobs route lists them and the `changes` and `job.status`
 # the reporting job saw, and runs the real scripts with a stand-in `gh` first on PATH: it answers
-# the jobs read and records each check run posted. The map is ci-ok.test.sh's four jobs and the
-# always-run list ci.yaml's own two, in a
-# ci.yaml of the case's own (CI_OK_WORKFLOW); one case reads the real ci.yaml.
+# the jobs read and the read of the queue branch's tip, records each check run posted, and logs
+# every call it gets, so a case can count the GitHub calls a run makes. The map is ci-ok.test.sh's
+# four jobs and the always-run list ci.yaml's own two, in a ci.yaml of the case's own
+# (CI_OK_WORKFLOW); one case reads the real ci.yaml.
 #
 # Run from anywhere: .github/scripts/ci-ok-report.test.sh
 # CI runs it in ci.yaml's test job.
@@ -29,7 +32,13 @@ mkdir "$work/bin"
 cat > "$work/bin/gh" <<GH
 #!/usr/bin/env bash
 set -euo pipefail
+echo "\$*" >> "$work/calls"
 case "\$*" in
+  *"repos/o/r/git/ref/heads/main"*)
+    if [ ! -e "$work/tip" ]; then echo "HTTP 502" >&2; exit 1; fi
+    cat "$work/tip" ;;
+  *"repos/o/r/git/ref/heads/release"*)
+    cat "$work/tip-release" ;;
   *"/actions/runs/41/jobs?per_page=100"*)
     if [ ! -e "$work/jobs" ]; then echo "HTTP 502" >&2; exit 1; fi
     cat "$work/jobs" ;;
@@ -80,10 +89,14 @@ selects='{"result": "success", "outputs": {"typecheck": "true", "envoy_client": 
 # object per line, as `gh api --jq '.jobs[] | …'` prints them, and the check run each of them
 # has on the head, as the commit's check-runs route lists them. The run's first case writes
 # none, which is both routes refusing the read. A job written here carries no annotation, so its
-# failure is read as a failure until a case writes the runner's with `annotations`.
+# failure is read as a failure until a case writes the runner's with `annotations`. The queue's
+# branch is at base123, the base run_report hands the script, so the group is the front of the
+# queue until a case calls `behind` or `tip_refused`.
 jobs() {
   local pair n=0
-  rm -f "$work"/posted.*.json "$work/post-fails" "$work/jobs" "$work/check-runs" "$work"/annotations.*
+  rm -f "$work"/posted.*.json "$work/post-fails" "$work/jobs" "$work/check-runs" "$work"/annotations.* \
+    "$work/calls"
+  echo base123 > "$work/tip"
   for pair in "$@"; do
     jq -nc --arg name "${pair%%=*}" --arg status "${pair#*=}" \
       '{name: $name, status: ($status | split("/")[0]), conclusion: ($status | split("/")[1])}' \
@@ -95,6 +108,17 @@ jobs() {
   done
 }
 
+# behind: the queue's branch is at another commit than the group's base, so a group stands in
+# front of this one. tip_refused: GitHub refuses the read of the branch's tip.
+behind() { echo other456 > "$work/tip"; }
+tip_refused() { rm -f "$work/tip"; }
+
+# calls <pattern>: how many of the run's GitHub calls carried the pattern.
+calls() {
+  if [ ! -e "$work/calls" ]; then echo 0; return; fi
+  grep -c -- "$1" "$work/calls" || true
+}
+
 # annotations <job> <message>...: the failure annotations GitHub filed on that job's check run,
 # which is where the runner's shutdown shows (runner-shutdown.sh).
 annotations() {
@@ -104,14 +128,35 @@ annotations() {
   printf '%s\n' "$@" | jq -R '{annotation_level: "failure", message: .}' > "$work/annotations.$id"
 }
 
-# run_report <changes> <event> <job status> [<workflow>]: sets out and status.
+# run_report <changes> <event> <job status> [<workflow>]: sets out and status. The group's base is
+# base123 on the queue's main, unless the case sets base_sha or base_ref.
 run_report() {
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
     GITHUB_SERVER_URL=https://github.com GH_RETRY_SECONDS=0 JOB=typecheck CHANGES=$1 \
-    EVENT=$2 JOB_STATUS=$3 HEAD_SHA=abc123 CI_OK_WORKFLOW=${4:-$work/ci.yaml} \
+    EVENT=$2 JOB_STATUS=$3 HEAD_SHA=abc123 BASE_SHA=${base_sha-base123} \
+    BASE_REF=${base_ref-refs/heads/main} CI_OK_WORKFLOW=${4:-$work/ci.yaml} \
     "$script_dir/ci-ok-report.sh" 2>&1)
   status=$?
+  set -e
+}
+
+# verdict <typecheck result>: sets verdict_status to the exit status of ci-ok.sh, the ci-ok job's
+# verdict at the end of a run, over this case's results: `changes` as $selects, lint and
+# envoy-client succeeded, and typecheck at the result given.
+verdict() {
+  local needs
+  needs=$(jq -nc --argjson changes "$selects" --arg typecheck "$1" \
+    '{changes: $changes, lint: {result: "success"}, typecheck: {result: $typecheck},
+      "envoy-client": {result: "success"}, "worker-image": {result: "skipped"}, docs: {result: "skipped"}}')
+  set +e
+  PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 GH_RETRY_SECONDS=0 \
+    HEAD_SHA=abc123 EVENT=merge_group NEEDS=$needs \
+    SELECTED_BY="$(yq -r '.env.CI_OK_SELECTED_BY' "$work/ci.yaml")" \
+    PULL_REQUEST_ONLY="$(yq -r '.env.CI_OK_PULL_REQUEST_ONLY' "$work/ci.yaml")" \
+    ALWAYS_RUN="$(yq -r '.env.CI_OK_ALWAYS_RUN' "$work/ci.yaml")" \
+    "$script_dir/ci-ok.sh" > "$work/verdict.out" 2>&1
+  verdict_status=$?
   set -e
 }
 
@@ -146,6 +191,103 @@ check "titles it with the job whose result decided the run" \
   "$(contains "$(field .output.title)" '^typecheck decided this merge-group run: ')"
 check "says nothing of a runner shutdown, since this job's check run carries no annotation" \
   "$(is "$(contains "$out" 'runner was shut down')" false)"
+check "reads the tip of the queue's branch once, which is the group's base: the front" \
+  "$(is "$(calls 'repos/o/r/git/ref/heads/main')" 1)"
+
+echo "case: the same failure in a group behind the front of the queue"
+# The queue's branch is at another commit than this group's base, so a group stands in front of
+# it. The queue takes a failed entry out only once every group in front of it has ended, and it
+# counts a group whose ci-ok failed as no longer building, so an early post here would only make
+# it build one more group on this one (on 2026-11-22, 41 groups in 28 minutes behind one broken
+# entry). So nothing is posted, the group stays building until its run ends, and the run's
+# own ci-ok job posts the failing verdict. Every input but the tip is the first case's, which
+# posts: the tip alone makes the difference.
+jobs typecheck=in_progress lint=in_progress envoy-client=queued
+behind
+run_report "$selects" merge_group failure
+check "exits 0" "$(is "$status" 0)"
+check "posts nothing" "$(is "$(posted)" 0)"
+check "says the group stands behind the front, naming its base and the branch's tip" \
+  "$(contains "$out" '^typecheck ended failure (changes ended success) on a merge-group run whose group stands behind the front of the queue: its base base123 is not other456, the tip of refs/heads/main')"
+check "leaves the verdict to the ci-ok job" \
+  "$(contains "$out" 'the ci-ok job posts this run.s verdict at the end of the run$')"
+check "makes one GitHub call, the read of the tip" "$(is "$(calls .)" 1)"
+check "reads no job list" "$(is "$(calls 'actions/runs/41/jobs')" 0)"
+check "reads no check runs for a runner shutdown" "$(is "$(calls 'check-runs')" 0)"
+# What the group still gets: the ci-ok job's verdict at the end of the run, ci-ok.sh over every
+# job's result, fails it on the same failure, and passes the same run with that job green.
+verdict failure
+check "the ci-ok job's verdict at the end of the run still fails the group" \
+  "$(is "$verdict_status" 1)"
+check "on the failed job" \
+  "$(contains "$(cat "$work/verdict.out")" '^::error::typecheck ended failure, but changes selected it')"
+verdict success
+check "and passes it when that job succeeded (control)" "$(is "$verdict_status" 0)"
+
+echo "case: a cancellation in a group behind the front of the queue"
+jobs typecheck=in_progress lint=in_progress envoy-client=queued
+behind
+run_report "$selects" merge_group cancelled
+check "exits 0" "$(is "$status" 0)"
+check "posts nothing" "$(is "$(posted)" 0)"
+check "says the group stands behind the front" \
+  "$(contains "$out" '^typecheck ended cancelled (changes ended success) on a merge-group run whose group stands behind the front')"
+
+echo "case: a failed changes in a group behind the front of the queue"
+jobs typecheck=in_progress lint=in_progress
+behind
+run_report '{"result": "failure", "outputs": {}}' merge_group success
+check "exits 0" "$(is "$status" 0)"
+check "posts nothing" "$(is "$(posted)" 0)"
+check "says the group stands behind the front" \
+  "$(contains "$out" '^typecheck ended success (changes ended failure) on a merge-group run whose group stands behind the front')"
+
+echo "case: a changes its time limit cancelled, in a group behind the front of the queue"
+jobs typecheck=in_progress lint=in_progress
+behind
+run_report '{"result": "cancelled", "outputs": {}}' merge_group success
+check "exits 0" "$(is "$status" 0)"
+check "posts nothing" "$(is "$(posted)" 0)"
+check "says the group stands behind the front" \
+  "$(contains "$out" '^typecheck ended success (changes ended cancelled) on a merge-group run whose group stands behind the front')"
+
+echo "case: a failure whose group's place in the queue GitHub will not tell"
+# The tip is read three times, then the group is treated as the front and the post goes up, as
+# every other refusal here prefers the failing verdict: a front group with no early post would
+# hold the queue until the end of its run.
+jobs typecheck=in_progress lint=in_progress envoy-client=queued
+tip_refused
+run_report "$selects" merge_group failure
+check "exits 0" "$(is "$status" 0)"
+check "posts its failing ci-ok" "$(is "$(posted)" 1)"
+check "failing" "$(is "$(field .conclusion)" failure)"
+check "tried the tip three times" "$(is "$(calls 'repos/o/r/git/ref/heads/main')" 3)"
+check "warns why it posted" \
+  "$(contains "$out" '::warning::GitHub refused the tip of refs/heads/main three times')"
+
+echo "case: a group of a queue on another branch reads that branch's tip, not main's"
+# Main's tip is the group's base here, so a read of main would call the group the front. The
+# queue's own branch is elsewhere, so a group stands in front of it and nothing goes up.
+jobs typecheck=in_progress lint=in_progress envoy-client=queued
+echo other789 > "$work/tip-release"
+base_ref=refs/heads/release run_report "$selects" merge_group failure
+check "posts nothing" "$(is "$(posted)" 0)"
+check "reads the release branch's tip" "$(is "$(calls 'repos/o/r/git/ref/heads/release')" 1)"
+check "and not main's" "$(is "$(calls 'repos/o/r/git/ref/heads/main')" 0)"
+check "names that branch" "$(contains "$out" 'is not other789, the tip of refs/heads/release')"
+# Control: with the release branch at the group's base, the group is that queue's front.
+jobs typecheck=in_progress lint=in_progress envoy-client=queued
+echo base123 > "$work/tip-release"
+base_ref=refs/heads/release run_report "$selects" merge_group failure
+check "posts at once when that branch is at the group's base (control)" "$(is "$(posted)" 1)"
+
+echo "case: a merge_group run without its group's base"
+jobs typecheck=in_progress
+base_sha='' run_report "$selects" merge_group failure
+check "fails the step" "$(is "$status" 1)"
+check "posts nothing" "$(is "$(posted)" 0)"
+check "names the input" \
+  "$(contains "$out" 'ci-ok-report.sh needs BASE_SHA in its environment on a merge_group run')"
 
 echo "case: a merge_group run whose reporting job's runner was shut down under it"
 # GitHub reports such a job `failure`, so without the annotations on its check run this would be
@@ -220,6 +362,8 @@ check "exits 0" "$(is "$status" 0)"
 check "posts nothing" "$(is "$(posted)" 0)"
 check "leaves the verdict to the ci-ok job" \
   "$(contains "$out" 'typecheck ended success on a merge_group run, which this job decides nothing of; the ci-ok job posts this run.s verdict')"
+check "reads no tip, since nothing is posted whatever the group's place" \
+  "$(is "$(calls 'git/ref')" 0)"
 
 echo "case: the same failure on a pull_request run"
 # No queue holds a pull request, and its run is cancelled by the next push, so nothing is posted
@@ -229,6 +373,7 @@ run_report "$selects" pull_request failure
 check "exits 0" "$(is "$status" 0)"
 check "posts nothing" "$(is "$(posted)" 0)"
 check "reads no job list either" "$(is "$(contains "$out" 'HTTP 502')" false)"
+check "makes no GitHub call at all" "$(is "$(calls .)" 0)"
 
 echo "case: the same failure on a dispatched run"
 jobs typecheck=in_progress
@@ -255,9 +400,9 @@ check "records every other job as unread" "$(contains "$(field .output.summary)"
 check "and the reporting job at its own status" \
   "$(contains "$(field .output.summary)" '^typecheck: failure (selected')"
 check "warns why it posted on an unread run" \
-  "$(contains "$out" "::warning::GitHub refused this run's job list three times")"
+  "$(contains "$out" "::warning::GitHub refused this run's job list at every attempt gh-read.sh made")"
 check "warns that it could not tell a runner shutdown from a failure either" \
-  "$(contains "$out" '::warning::GitHub refused the check runs on abc123 three times')"
+  "$(contains "$out" '::warning::GitHub refused the check runs on abc123 at every attempt gh-read.sh made')"
 
 echo "case: GitHub refuses the post"
 jobs typecheck=in_progress lint=in_progress envoy-client=queued
@@ -265,7 +410,7 @@ touch "$work/post-fails"
 run_report "$selects" merge_group failure
 check "fails the step" "$(is "$status" 1)"
 check "tried three times" "$(is "$(posted)" 3)"
-check "says so" "$(contains "$out" 'GitHub refused the ci-ok check run on abc123 three times')"
+check "says so" "$(contains "$out" 'GitHub refused the ci-ok check run on abc123 at every attempt gh-read.sh made')"
 
 echo "case: CHANGES is not toJSON(needs.changes)"
 jobs typecheck=in_progress

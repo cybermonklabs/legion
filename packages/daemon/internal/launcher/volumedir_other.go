@@ -8,7 +8,7 @@ import (
 	"runtime"
 )
 
-// The trimmer's opens are Linux's, as its reading of the volume is (volumeusage_other.go): the
+// The trimmer's opens are Linux's, as its reading of the volume is (volumestat_other.go): the
 // flags that make an open refuse a link and never wait on a FIFO are openat's, and the
 // descriptor a handle is made over is read back through /proc. The binary is built for other
 // platforms only so that a developer's machine can build and test the rest of it, and every

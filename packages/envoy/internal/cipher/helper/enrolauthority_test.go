@@ -227,7 +227,7 @@ func TestAMachinesSessionEnrolsWithNoOperatorAtAll(t *testing.T) {
 	f := newEnrolBroker(t)
 	b, _, credential := machineIdentityBroker(t, f)
 
-	id, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint-of-the-box-key", nil)
+	id, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint-of-the-box-key", nil, nil)
 	if err != nil {
 		t.Fatalf("a machine with no operator file could not enrol a session: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestAMachineLoginsSessionStillStatesItsApprover(t *testing.T) {
 	b.installCredential(&machineCredential{key: key, id: f.mint("credential-of-the-machine-login", key), expiresAt: time.Now().Add(24 * time.Hour), gone: make(chan struct{})}, &loginState{State: "issued"})
 	b.credMu.Unlock()
 
-	if _, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint", nil); err != nil {
+	if _, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	enrols, _ := f.calls()
@@ -278,7 +278,7 @@ func TestASignedInPersonsSessionEnrolsAsThem(t *testing.T) {
 	person := signedIn(t, f, "ada@example.com", "credential-of-adas-sign-in")
 	b.SignIns = &stubSignIns{authority: person}
 
-	if _, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint", nil); err != nil {
+	if _, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	enrols, _ := f.calls()
@@ -310,7 +310,7 @@ func TestARevokedSignInEnrolsUnderTheMachineInTheSameCall(t *testing.T) {
 	b.SignIns = signIns
 	f.enrolRefusals, f.enrolStatus, f.enrolCode = 1, http.StatusUnauthorized, "LAUNCHER_INVALID"
 
-	if _, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint", nil); err != nil {
+	if _, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint", nil, nil); err != nil {
 		t.Fatalf("a session registered after the sign-in was revoked must still enrol: %v", err)
 	}
 	enrols, _ := f.calls()
@@ -339,7 +339,7 @@ func TestAPersonsCredentialRefusedTwiceIsTheEnrolmentsAnswer(t *testing.T) {
 	b.SignIns = &stubSignIns{authority: signedIn(t, f, "ada@example.com", "credential-of-adas-sign-in")}
 	f.enrolRefusals, f.enrolStatus, f.enrolCode = 2, http.StatusUnauthorized, "LAUNCHER_INVALID"
 	// The second call is refused too: the stub keeps answering the same authority.
-	_, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint", nil)
+	_, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint", nil, nil)
 	var be *BrokerError
 	if !errors.As(err, &be) || be.Code != "LAUNCHER_INVALID" {
 		t.Fatalf("two refusals answered %v, want the broker's own refusal", err)
@@ -358,7 +358,7 @@ func TestAnUndecidedSignInFailsTheEnrolmentRatherThanDownscopingIt(t *testing.T)
 	b, _, _ := machineIdentityBroker(t, f)
 	b.SignIns = &stubSignIns{err: errors.New("2 people are signed in on this machine")}
 
-	_, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint", nil)
+	_, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "2 people are signed in") {
 		t.Fatalf("an undecided box answered %v, want the refusal that says why", err)
 	}
@@ -430,7 +430,7 @@ func TestBothKindsOfSessionFollowTheBoxAcrossASignIn(t *testing.T) {
 	}
 	box := func(t *testing.T, n int) {
 		t.Helper()
-		if _, _, err := b.EnrollSessionKey(context.Background(), "agent-box-"+strconv.Itoa(n), "thumbprint-of-box-"+strconv.Itoa(n), nil); err != nil {
+		if _, _, err := b.EnrollSessionKey(context.Background(), "agent-box-"+strconv.Itoa(n), "thumbprint-of-box-"+strconv.Itoa(n), nil, nil); err != nil {
 			t.Fatalf("enrol an agent box: %v", err)
 		}
 	}
