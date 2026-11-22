@@ -448,6 +448,28 @@ describe("a refusal the host did not walk", () => {
     expect(pane.setModelCalls).toEqual([]);
     expect(pane.saved).toEqual([]);
   });
+
+  test("steps down when the turn it refused ends waiting on a background job's result", async () => {
+    const pane = fixture();
+    pane.chain.set(OPUS, SONNET);
+
+    // The host ends a turn whose only resume is a background job's result with `willContinue`
+    // and `awaitingAsyncWork` both set. It retries nothing then, so the refused turn has settled,
+    // and the job's result starts the next turn on whatever model the session is left on.
+    await pane.runner.turnSettled(
+      { ...REFUSED, willContinue: true, awaitingAsyncWork: true },
+      pane.ctx
+    );
+
+    expect(pane.setModelCalls).toEqual([SONNET]);
+    expect(pane.last()?.arming).toEqual({
+      restoreTo: OPUS,
+      entryId: `entry-${entries}`,
+      dueAt: pane.live.now + HOUR,
+      cause: "refusal",
+    });
+    expect(pane.last()?.levels).toEqual({ [OPUS]: 2 });
+  });
 });
 
 describe("a turn that no content filter ended", () => {

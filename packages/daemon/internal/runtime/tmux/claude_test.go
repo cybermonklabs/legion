@@ -6,12 +6,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"syscall"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testfifo"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 var testClaude = ClaudeLaunch{Binary: "/opt/claude/bin/claude", PluginDir: "/opt/legion/claude-envoy", Bun: "/opt/bun/bin/bun"}
@@ -106,22 +106,29 @@ func TestWriteClaudeMCPConfig(t *testing.T) {
 }
 
 // A fifo or a link at the MCP configuration's path, which the pane can leave there since the
-// claim's directory is its own, is replaced by a 0600 regular file holding the configuration, and
-// the file a link named is left as it was. Written with os.WriteFile, as it was, a fifo holds the
-// spawn waiting for a reader for as long as none comes, and a link has the file it names truncated
-// and written.
+// claim's directory is its own, is replaced by a 0600 regular file holding the configuration, the
+// fifo is never opened for writing, and the file a link named is left as it was. Written with
+// os.WriteFile, as it was, a fifo holds the spawn waiting for a reader for as long as none comes,
+// and a link has the file it names truncated and written.
+//
+// No clock decides the row. The fifo carries a held reader (testfifo.Plant), so an open of it for
+// writing returns at once and is shown to that reader, and the write's answer is waited for with
+// no span of its own (testwait.Receive).
 func TestWriteClaudeMCPConfigReplacesAFifoOrALinkAtItsPath(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		// plant puts the shape at path and answers the check of what it must leave as it was,
-		// or nil.
+		// plant puts the shape at path and answers the check, made once the write answered, of
+		// what it must leave as it was, or nil.
 		plant func(t *testing.T, path string) (kept func(t *testing.T))
 	}{
 		{"a fifo", func(t *testing.T, path string) func(t *testing.T) {
-			if err := syscall.Mkfifo(path, 0o600); err != nil {
-				t.Fatal(err)
+			fifo := testfifo.Plant(t, path, 0o600)
+			return func(t *testing.T) {
+				t.Helper()
+				if shown := fifo.OpenedForWriting(t); shown != "" {
+					t.Errorf("writeClaudeMCPConfig opened the fifo at %s for writing, and the reader held on it was shown %s: it must replace the fifo without opening it", path, shown)
+				}
 			}
-			return nil
 		}},
 		{"a link to a file outside the directory", func(t *testing.T, path string) func(t *testing.T) {
 			precious := filepath.Join(t.TempDir(), "precious")
@@ -152,28 +159,7 @@ func TestWriteClaudeMCPConfigReplacesAFifoOrALinkAtItsPath(t *testing.T) {
 				path, err := writeClaudeMCPConfig(dir, testClaude)
 				answered <- answer{path, err}
 			}()
-			var got answer
-			select {
-			case got = <-answered:
-			case <-time.After(time.Second):
-				// The write waits in an open of the fifo for a reader. An open of it for reading
-				// and writing waits on nothing and is that reader, so the goroutine ends before
-				// the test does. It is opened again until the write answers, since the write may
-				// not yet have reached its open when the first is closed.
-				released := time.After(10 * time.Second)
-				for {
-					if fifo, err := os.OpenFile(path, os.O_RDWR|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0); err == nil {
-						_ = fifo.Close()
-					}
-					select {
-					case late := <-answered:
-						t.Fatalf("writeClaudeMCPConfig over %s waited more than a second, and answered %v only once the open it waited in was released", path, late.err)
-					case <-released:
-						t.Fatalf("writeClaudeMCPConfig over %s has not answered in 11 seconds", path)
-					case <-time.After(10 * time.Millisecond):
-					}
-				}
-			}
+			got := testwait.Receive(t, "writeClaudeMCPConfig over "+path, answered)
 			if got.err != nil || got.path != path {
 				t.Fatalf("writeClaudeMCPConfig over %s = %s, %v, want it replaced", path, got.path, got.err)
 			}

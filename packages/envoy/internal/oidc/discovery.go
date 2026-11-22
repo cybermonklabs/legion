@@ -182,6 +182,42 @@ func (v *LazyVerifier) Verify(ctx context.Context, raw string) (Claims, error) {
 	return verifier.Verify(ctx, raw)
 }
 
+// VerifyGoogleIdentity is Verifier.VerifyGoogleIdentity once the issuer is discovered, discovering
+// it first as Verify does; before that every error matches ErrIssuerUnavailable.
+func (v *LazyVerifier) VerifyGoogleIdentity(ctx context.Context, raw string) (Claims, error) {
+	verifier, err := v.discovery.discover(ctx)
+	if err != nil {
+		return Claims{}, err
+	}
+	return verifier.VerifyGoogleIdentity(ctx, raw)
+}
+
+// Issues reports whether raw's iss claim, read without verifying anything, names this verifier's
+// issuer, Google's scheme-less spelling included when the verifier is Google's (issuerNamed). A
+// caller that trusts several issuers picks with it the one verifier a token is for, so a token of
+// one issuer never makes another's verifier read its issuer; Verify still checks the issuer with
+// everything else. It reads unverified text, so it picks a verifier and decides nothing about a
+// caller: no claim anyone is admitted on comes from it. It reads nothing the discovery document
+// holds, so it answers the same before the issuer is discovered as after: a caller picks the
+// verifier a token is for while that issuer is down, and the token is then answered as one that
+// verifier could not check.
+func (v *LazyVerifier) Issues(raw string) bool {
+	claims, err := decodeUnverifiedClaims(raw)
+	return err == nil && issuerNamed(v.discovery.issuer, claims.Issuer)
+}
+
+// DiscoveredVerifier is a LazyVerifier whose issuer is discovered already, verifying with v: for a
+// caller that builds a Verifier itself, from keys it holds (NewWithKeys), and hands it where a
+// LazyVerifier is taken. It is nil for a nil v, so an unconfigured verifier stays one.
+func DiscoveredVerifier(v *Verifier) *LazyVerifier {
+	if v == nil {
+		return nil
+	}
+	discovered := newDiscovery(v.issuer, func(context.Context) (*Verifier, error) { return v, nil })
+	discovered.value, discovered.discovered = v, true
+	return &LazyVerifier{discovery: discovered}
+}
+
 // Discover reads the issuer's discovery document unless it has been read; its error matches
 // ErrIssuerUnavailable.
 func (v *LazyVerifier) Discover(ctx context.Context) error {

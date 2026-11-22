@@ -1,0 +1,10 @@
+kind: Removed
+body: |-
+    `KEYED_LAYER_MEMORY_MS`, `forgetKeyedLayerMemory`, `keyedLayerMemory` and `rememberKeyedLayer`,
+    which kept and saved which Dispatch origins had shown the keyed layer, are removed, and so is
+    `DispatchWriteUnsettledError`'s `keyed` argument. The `dispatch` command's session `state.json`
+    no longer carries `keyedLayer`; a file written before is read with the member ignored, and the
+    next save drops it.
+time: 2026-11-17T22:22:04.124253977Z
+custom:
+    Issue: pr4379

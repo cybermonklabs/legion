@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -299,8 +300,8 @@ func (b *secretBroker) recorded() ([]string, []Reread) {
 }
 
 // servedBy answers a reread as the broker would from what sm holds: absent for a secret it does
-// not hold or one scheduled for deletion, no-current-value for one with no AWSCURRENT version,
-// served otherwise, as the type its type tag names.
+// not hold or one scheduled for deletion, no-current-value for one with no AWSCURRENT version, and
+// otherwise what its tags answer (servedAs).
 func servedBy(sm secretsAPI) func(name string) Reread {
 	return func(name string) Reread {
 		out, err := sm.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID(name))})
@@ -310,8 +311,23 @@ func servedBy(sm secretsAPI) func(name string) Reread {
 		case !secrets.HasCurrentVersion(out.VersionIdsToStages):
 			return Reread{Name: name, Reason: policy.ReasonNoCurrentValue}
 		}
-		return Reread{Name: name, Served: true, Type: policy.TypeFromTags(secrets.TagMap(out.Tags))}
+		return servedAs(name, secrets.TagMap(out.Tags))
 	}
+}
+
+// servedAs is the reread the broker answers for a secret it holds with a current value and tags:
+// refused as its loader refuses a type that needs GitHub owners and has none or unreadable ones
+// (github-owners-missing, github-owners-malformed: a race between two retags can leave such a
+// pair), and served otherwise, as the type the tags name. It is the one statement of that answer
+// for the AWS fake (servedBy) and the GCP one (gcpServedBy).
+func servedAs(name string, tags map[string]string) Reread {
+	secretType := policy.TypeFromTags(tags)
+	if _, err := policy.GitHubOwnersFor(secretType, tags[policy.TagGitHubOwners]); errors.Is(err, policy.ErrGitHubOwnersMissing) {
+		return Reread{Name: name, Reason: policy.ReasonGitHubOwnersMissing}
+	} else if err != nil {
+		return Reread{Name: name, Reason: policy.ReasonGitHubOwnersMalformed}
+	}
+	return Reread{Name: name, Served: true, Type: secretType}
 }
 
 // useAWS makes the secret forms' AWS clients sm and a fakeSTS signed in as arn in account, with no
@@ -966,9 +982,10 @@ func (r *recordingTags) TagResource(ctx context.Context, in *secretsmanager.TagR
 	return r.Local.TagResource(ctx, in, o...)
 }
 
-// refusingTags is a secrets.Local whose TagResource IAM refuses, as it refuses a person changing
-// a shared secret's owner or tier: the SDK answers AccessDeniedException as a generic API error.
-type refusingTags struct{ *secrets.Local }
+// refusingTags is a store (any secretsAPI, so it wraps the package's other fakes) whose TagResource
+// IAM refuses, as it refuses a person changing a shared secret's owner or tier: the SDK answers
+// AccessDeniedException as a generic API error, a definite refusal, so the store did not act.
+type refusingTags struct{ secretsAPI }
 
 // accessDenied is the refusal refusingTags answers.
 const accessDenied = "User: arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc/ada@example.com is not authorized to perform: secretsmanager:TagResource"
@@ -1426,7 +1443,7 @@ func TestSecretListShowsValueAndDeletion(t *testing.T) {
 	}
 	rows := map[string][]string{}
 	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
-	if got := strings.Fields(lines[0]); strings.Join(got, " ") != "NAME OWNER TIER TYPE MAX_GRANT DEFAULT_GRANT VALUE DELETED EARLIEST_PURGE" {
+	if got := strings.Fields(lines[0]); strings.Join(got, " ") != "NAME OWNER TIER TYPE PROJECT PROJECT_CHANNELS MAX_GRANT DEFAULT_GRANT VALUE DELETED EARLIEST_PURGE" {
 		t.Fatalf("header = %q", lines[0])
 	}
 	for _, line := range lines[1:] {
@@ -1434,10 +1451,10 @@ func TestSecretListShowsValueAndDeletion(t *testing.T) {
 		rows[fields[0]] = fields
 	}
 	want := map[string][]string{
-		"EMPTY_KEY":    {"EMPTY_KEY", "shared", "agent", "-", "-", "-", "no", "-", "-"},
-		"GONE_KEY":     {"GONE_KEY", "ada@example.com", "agent", "-", "-", "-", "yes", "2026-10-01T12:00:00Z", "2026-10-08T12:00:00Z"},
-		"LIVE_KEY":     {"LIVE_KEY", "ada@example.com", "human", "-", "-", "session", "yes", "-", "-"},
-		"UNTAGGED_KEY": {"UNTAGGED_KEY", "-", "-", "-", "-", "-", "yes", "-", "-"},
+		"EMPTY_KEY":    {"EMPTY_KEY", "shared", "agent", "-", "-", "-", "-", "-", "no", "-", "-"},
+		"GONE_KEY":     {"GONE_KEY", "ada@example.com", "agent", "-", "-", "-", "-", "-", "yes", "2026-10-01T12:00:00Z", "2026-10-08T12:00:00Z"},
+		"LIVE_KEY":     {"LIVE_KEY", "ada@example.com", "human", "-", "-", "-", "-", "session", "yes", "-", "-"},
+		"UNTAGGED_KEY": {"UNTAGGED_KEY", "-", "-", "-", "-", "-", "-", "-", "yes", "-", "-"},
 	}
 	if len(rows) != len(want) {
 		t.Fatalf("rows = %v, want exactly %v", rows, want)

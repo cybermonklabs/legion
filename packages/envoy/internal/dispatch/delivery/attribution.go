@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/citebody"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -61,9 +62,11 @@ import (
 // body.
 //
 // Raising this by one is how a later change to the attribution reaches the merged rows already
-// stored. Nothing else revisits one — an open row comes round every five minutes, but a merged
-// row is read again only by that arm — so a change made without raising it leaves every pull
-// request merged before it judged by the rule of its day for good.
+// stored. Nothing else revisits one — an open row comes round at every reconcile pass of one
+// process, each starting at most five minutes after the one before it ended
+// (PullRequestHeadStaleAfter), but a merged row is read again only by that arm — so a change made
+// without raising it leaves every pull request merged before it judged by the rule of its day for
+// good.
 const AttributionRuleVersion = 2
 
 // attributionSource names the source a pull request's issue came from.
@@ -121,11 +124,19 @@ const (
 	// may carry is still github.com, and measuring those digits against 65535 would only lose
 	// citations to a typo.
 	maxHostName = 253
+	// citationReach is the most of a body before an issue path that citesGitHubIssue reads: up to
+	// maxHostName digits of a port, the colon before them, and up to maxHostName bytes of the run
+	// before that (authorityBefore). citedIssues hands each decision no more of the body than
+	// that and the path itself, so citesGitHubIssue, as it is or as a later change makes it, reads
+	// no more than citationReach bytes before a path however long the body is.
+	citationReach = 2*maxHostName + 1
 )
 
-// citesGitHubIssue says whether the issue path running from pathAt to end belongs to a URL whose
-// host is github.com. It asks one question, and it is the question the alert this file was
-// changed for asks: what is the host of the URL this path hangs off?
+// citesGitHubIssue says whether the issue path running from pathAt to the end of text belongs
+// to a URL whose host is github.com. text is the part of a body that ends where the path does and
+// starts at most citationReach bytes before the path (citedIssues). It asks one question, and
+// it is the question the alert this file was changed for asks: what is the host of the URL this
+// path hangs off?
 //
 // authorityBefore answers it by reading the run of host bytes immediately before the path, and
 // that read is what refuses most of the names that look like github.com: `@` and `%` are no host
@@ -144,20 +155,19 @@ const (
 // which is why there is none. So a citation inside another URL's path, query or fragment is
 // credited here as it is there, and what this change does to attribution is to refuse a host
 // that is not github.com and to credit a host spelled in any case or carrying a port.
-func citesGitHubIssue(body string, pathAt, end int) bool {
-	host := authorityBefore(body, pathAt)
+func citesGitHubIssue(text string, pathAt int) bool {
+	host := authorityBefore(text, pathAt)
 	if host < 0 {
 		return false
 	}
-	parsed, err := url.Parse("//" + body[host:end])
+	parsed, err := url.Parse("//" + text[host:])
 	return err == nil && strings.EqualFold(parsed.Hostname(), "github.com") &&
-		parsed.EscapedPath() == body[pathAt:end]
+		parsed.EscapedPath() == text[pathAt:]
 }
 
 // authorityBefore is where the authority owning the path at pathAt begins, or -1 where no host
 // stands before the path at all. It reads the port's digits and then the run of host bytes, each
-// bounded by a host name's length, so one match costs the same constant whatever the body holds
-// around it and a body of any size costs its own length plus that constant per match.
+// bounded by a host name's length, so it reads no byte more than citationReach before the path.
 func authorityBefore(body string, pathAt int) int {
 	at := pathAt
 	digits := at
@@ -186,7 +196,7 @@ func isHostByte(b byte) bool {
 func attributionInputsFrom(facts attributionFacts) AttributionInputs {
 	return AttributionInputs{
 		TitleKeys:   uniqueKeys(facts.Title + "\n" + facts.Body),
-		CitedIssues: citedIssues(facts.Repo, facts.Body),
+		CitedIssues: citedIssues(facts.Repo, citebody.New(facts.Body, nil)),
 		BranchKeys:  uniqueKeys(strings.ToUpper(facts.HeadRef)),
 		CommitKeys:  uniqueKeys(strings.Join(facts.CommitMessages, "\n")),
 	}
@@ -206,21 +216,26 @@ func appendUnique(list []string, values ...string) []string {
 }
 
 // citedIssues is every GitHub issue body cites, as https://github.com/<owner>/<repo>/issues/<n>,
-// in the order the citations appear; a bare #N names an issue of repo.
-func citedIssues(repo, body string) []string {
+// in the order the citations appear; a bare #N names an issue of repo. It reaches the body only
+// through citebody's counted reads, so the cost tests can count every byte it reads
+// (citebody.Reads); its production caller wraps the body with no counter, which counts nothing.
+// Each path's decision gets the body from citationReach bytes before the path to the path's end,
+// the most it reads, so its cost is bounded per path whatever the body holds before it.
+func citedIssues(repo string, body citebody.Body) []string {
 	type citation struct {
 		at  int
 		url string
 	}
 	citations := []citation{}
-	for _, match := range githubIssuePath.FindAllStringSubmatchIndex(body, -1) {
-		if !citesGitHubIssue(body, match[0], match[1]) {
+	for _, match := range body.Find(githubIssuePath) {
+		from := max(0, match[0]-citationReach)
+		if !citesGitHubIssue(body.Span(from, match[1]), match[0]-from) {
 			continue
 		}
-		citations = append(citations, citation{match[0], "https://github.com/" + body[match[2]:match[3]] + "/" + body[match[4]:match[5]] + "/issues/" + body[match[6]:match[7]]})
+		citations = append(citations, citation{match[0], "https://github.com/" + body.Span(match[2], match[3]) + "/" + body.Span(match[4], match[5]) + "/issues/" + body.Span(match[6], match[7])})
 	}
-	for _, match := range githubBareReference.FindAllStringSubmatchIndex(body, -1) {
-		citations = append(citations, citation{match[2], "https://github.com/" + repo + "/issues/" + body[match[2]:match[3]]})
+	for _, match := range body.Find(githubBareReference) {
+		citations = append(citations, citation{match[2], "https://github.com/" + repo + "/issues/" + body.Span(match[2], match[3])})
 	}
 	slices.SortStableFunc(citations, func(a, b citation) int { return cmp.Compare(a.at, b.at) })
 	urls := []string{}

@@ -303,7 +303,8 @@ func TestSweepRedeliversAServerFailureOnce(t *testing.T) {
 // a signature it cannot check, 400 for a body it cannot use, 422 for a publish NATS refused), and
 // what it cannot take now it may take later. So every failed attempt is asked for again on the
 // doubling backoff, past five requests, until GitHub records one OK; the sweep then says once, at
-// INFO, how many requests the delivery took.
+// INFO, how many requests the delivery took. Each request is due nine tenths of its backoff after
+// the one before (duty.LeasePeriod), the least time the sweeps that many intervals on can take.
 func TestSweepAsksAgainForEveryFailedDeliveryUntilGitHubRecordsItOK(t *testing.T) {
 	h := newHarness(t)
 	answers := []int{
@@ -320,13 +321,14 @@ func TestSweepAsksAgainForEveryFailedDeliveryUntilGitHubRecordsItOK(t *testing.T
 		t.Fatalf("first sweep: outcome %q, want %q", got, redeliver.Redelivered)
 	}
 	for i, backoff := range []time.Duration{2 * time.Minute, 4 * time.Minute, 8 * time.Minute, 16 * time.Minute, 32 * time.Minute, time.Hour} {
-		h.clock.advance(backoff - time.Second)
+		due := duty.LeasePeriod(backoff)
+		h.clock.advance(due - time.Second)
 		if got := outcome(h.sweep(redeliver.Options{}), "guid-refused"); got != redeliver.Waiting {
-			t.Fatalf("a second before backoff %s: outcome %q, want %q", backoff, got, redeliver.Waiting)
+			t.Fatalf("a second before nine tenths of backoff %s: outcome %q, want %q", backoff, got, redeliver.Waiting)
 		}
 		h.clock.advance(time.Second)
 		if got := outcome(h.sweep(redeliver.Options{}), "guid-refused"); got != redeliver.Redelivered {
-			t.Fatalf("after backoff %s (the redelivery before it answered %d): outcome %q, want %q", backoff, answers[i], got, redeliver.Redelivered)
+			t.Fatalf("nine tenths of backoff %s on (the redelivery before it answered %d): outcome %q, want %q", backoff, answers[i], got, redeliver.Redelivered)
 		}
 		if got, want := len(h.requests()), i+2; got != want {
 			t.Fatalf("requests after backoff %s = %d, want %d", backoff, got, want)
@@ -350,13 +352,13 @@ func TestSweepAsksAgainForEveryFailedDeliveryUntilGitHubRecordsItOK(t *testing.T
 }
 
 // A record waits the longest backoff, an hour, between its last request and the next, and the
-// index brings it back to a sweep when that hour is up and not before. GitHub recorded that
-// request OK, so the listing of the sweep that reads the record must still carry the OK attempt:
-// the listing is what closes a delivery, and a window no wider than the backoff no longer holds
-// the attempt by the time the record is read. A delivery GitHub has delivered would otherwise be
-// asked for again every hour until it expired undelivered. Here GitHub refused every request but
-// the last, so its log holds no failed attempt of this delivery inside any later window and the
-// record is the only thing that brings it back.
+// index brings it back to a sweep when nine tenths of that hour are up and not before. GitHub
+// recorded that request OK, so the listing of the sweep that reads the record must still carry
+// the OK attempt: the listing is what closes a delivery, and a window no wider than the backoff
+// no longer holds the attempt by the time the record is read. A delivery GitHub has delivered
+// would otherwise be asked for again every hour until it expired undelivered. Here GitHub refused
+// every request but the last, so its log holds no failed attempt of this delivery inside any
+// later window and the record is the only thing that brings it back.
 func TestADeliveryRecoveredDuringTheLongestBackoffIsDeliveredAndAskedForNoMore(t *testing.T) {
 	h := newHarness(t)
 	failed := h.fail("guid-recovered", http.StatusServiceUnavailable, 0)
@@ -384,8 +386,9 @@ func TestADeliveryRecoveredDuringTheLongestBackoffIsDeliveredAndAskedForNoMore(t
 
 	// The running loop sweeps every interval, and these ticks are offset by a minute so none
 	// lands in the minute the record is due in: the sweep that reads it is the one just past that
-	// minute, which is what the loop's tick and the jitter after it leave.
-	due := h.clock.Now().Add(time.Hour)
+	// minute, which is what the loop's tick and the jitter after it leave. The record is due nine
+	// tenths of the hour after its last request (duty.LeasePeriod).
+	due := h.clock.Now().Add(duty.LeasePeriod(time.Hour))
 	h.clock.advance(time.Minute)
 	closed := false
 	for h.clock.Now().Before(due.Add(2 * time.Minute)) {
@@ -424,11 +427,13 @@ func TestSweepExpiresADeliveryStillFailingAfter72Hours(t *testing.T) {
 	if got := len(h.requests()); got != 72 {
 		t.Fatalf("requests in the 72 hours = %d, want 72", got)
 	}
-	h.clock.advance(time.Hour - time.Second)
+	// The last request's backoff is the hour, so the next is due nine tenths of it on; the sweep a
+	// second before that waits, and the one at 72 hours expires the delivery instead.
+	h.clock.advance(duty.LeasePeriod(time.Hour) - time.Second)
 	if got := outcome(h.sweep(redeliver.Options{}), "guid-down"); got != redeliver.Waiting {
-		t.Fatalf("a second before 72 hours: outcome %q, want %q", got, redeliver.Waiting)
+		t.Fatalf("a second before the next request is due: outcome %q, want %q", got, redeliver.Waiting)
 	}
-	h.clock.advance(time.Second)
+	h.clock.advance(time.Hour - duty.LeasePeriod(time.Hour) + time.Second)
 	if got := outcome(h.sweep(redeliver.Options{}), "guid-down"); got != redeliver.Expired {
 		t.Fatalf("72 hours after the first failed attempt: outcome %q, want %q", got, redeliver.Expired)
 	}
@@ -525,13 +530,14 @@ func TestSweepAsksAgainWhenDueForAnAcceptedRequestWithNoNewAttempt(t *testing.T)
 		t.Fatalf("first sweep: outcome %q, want %q", got, redeliver.Redelivered)
 	}
 	for _, backoff := range []time.Duration{2 * time.Minute, 4 * time.Minute} {
-		h.clock.advance(backoff - time.Second)
+		due := duty.LeasePeriod(backoff)
+		h.clock.advance(due - time.Second)
 		if got := sweep(); got != redeliver.Waiting {
-			t.Fatalf("a second before backoff %s: outcome %q, want %q", backoff, got, redeliver.Waiting)
+			t.Fatalf("a second before nine tenths of backoff %s: outcome %q, want %q", backoff, got, redeliver.Waiting)
 		}
 		h.clock.advance(time.Second)
 		if got := sweep(); got != redeliver.Redelivered {
-			t.Fatalf("after backoff %s with no new attempt: outcome %q, want %q", backoff, got, redeliver.Redelivered)
+			t.Fatalf("nine tenths of backoff %s on with no new attempt: outcome %q, want %q", backoff, got, redeliver.Redelivered)
 		}
 	}
 	if got, want := github.requested(), []int64{failed.ID, failed.ID, failed.ID}; !slices.Equal(got, want) {
@@ -1459,9 +1465,10 @@ func TestDryRunReportsWithoutActing(t *testing.T) {
 	if got := h.logs.count("webhook delivery expired undelivered", "guid=guid-expiring"); got != 1 {
 		t.Fatalf("the continuous sweep logged the expiry %d times, want once:\n%s", got, h.logs)
 	}
-	// The two deliveries it redelivered are next looked at after the first backoff, two minutes
-	// on, and the expired one is asked for no more, so no entry is owed it.
-	due := h.clock.Now().Add(2 * time.Minute)
+	// The two deliveries it redelivered are next looked at nine tenths of the first backoff on,
+	// at the next sweep (duty.LeasePeriod), and the expired one is asked for no more, so no entry
+	// is owed it.
+	due := h.clock.Now().Add(duty.LeasePeriod(2 * time.Minute))
 	want := []string{
 		"cursor", "index",
 		"guid.guid-expiring", "guid.guid-backlog", "guid.guid-refused",

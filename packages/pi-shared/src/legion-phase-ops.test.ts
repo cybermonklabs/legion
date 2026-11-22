@@ -641,10 +641,10 @@ test("a root architect's handoff_complete is refused as unavailable before its o
   expect(root.routes).toEqual([]);
 });
 
-// A refusal that named only the field refused left the agent to guess the call again: an
-// architect sent park_child a `reason` and a worker sent ready_for_update an `issue`, and each was
-// told no more than that the field is refused. A refusal names, once after every field it refuses,
-// the fields the operation takes.
+// A refusal that named only the field refused left the agent to guess the call again. An
+// architect sent a `reason` to an operation that took only `issue`, and a worker sent
+// ready_for_update an `issue`. Each was told no more than that the field is refused. A refusal
+// names, once after every field it refuses, the fields the operation takes.
 test("a field an op does not take is refused naming the fields the op takes", async () => {
   const { ops, routes } = runtime();
   const refusals = [

@@ -244,10 +244,10 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	if err != nil {
 		return 0, err
 	}
-	// The project's repository mapping (GET /legion/v1/state, unauthenticated) is read and
+	// The state's repositories block (GET /legion/v1/state, unauthenticated) is read and
 	// validated before the capability mint: the mint revokes the incumbent controller's
-	// registration and grants (api.controllerSecret), so a repository-mapping failure found here
-	// must never cut a running controller off for a replacement that will not start.
+	// registration and grants (api.controllerSecret), so an unusable block found here must never
+	// cut a running controller off for a replacement that will not start.
 	if err := checkControllerRepositories(ctx, cfg.DaemonURL); err != nil {
 		removeDirs(created)
 		return 0, err
@@ -303,11 +303,11 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	// daemon has just answered with the controller's gh bundle (controllerStartGitHubCredential,
 	// controllerReach): the accounts it read the review App installed on, less any whose
 	// directory the bundle does not hold, and none where the daemon has no GitHub App to act as.
-	// They are not the owners of the repositories the project is mapped
-	// (api.RepositoriesView.Owners): the mapping bounds no token's reach (INFRA-2543), so those
-	// name too few owners where the review App is installed on an account the project maps
-	// nothing of, and no owner at all where the daemon refuses every mapped repository while the
-	// controller's gh still holds its directories (daemon.RepositoriesClause). It is the sentence
+	// They are not the owners of the repositories the state lists (api.RepositoriesView.Live):
+	// the repositories the live records name bound no token's reach (INFRA-2543), so those name
+	// too few owners where the review App is installed on an account no live record names a
+	// repository of, and no owner at all where no record is live while the controller's gh still
+	// holds its directories (daemon.RepositoriesClause). It is the sentence
 	// a daemon that launches its own controller writes from its own read of the installations
 	// (daemon.RepositoriesSentence), so the one controller prompt quotes one sentence.
 	// The start message travels as LEGION_CONTROLLER_START_MESSAGE (controllerEnvironment) and the
@@ -476,24 +476,26 @@ func probeAndMint(ctx context.Context, daemonURL string, probe daemon.Controller
 	return fetchControllerSecret(ctx, daemonURL, operatorToken, probe.Contract)
 }
 
-// checkControllerRepositories refuses a daemon whose repository mapping cannot be read, and
-// answers nil for one that can: it reads the one unauthenticated route that serves the mapping
-// (GET /legion/v1/state's `repositories` field, the bytes `legion state --json` prints).
-// controllerStart runs it before the capability mint, so a daemon that does not answer as a
-// conforming one does is found before the mint revokes a running controller for a replacement
+// checkControllerRepositories refuses a daemon whose repositories block cannot be read, and
+// answers nil for one that can: it reads the one unauthenticated route that serves the block
+// (GET /legion/v1/state's `repositories` field, the bytes `legion state --json` prints), which
+// this command, a caller the daemon places in no pod, is served in the shape this contract
+// writes. controllerStart runs it before the capability mint, so a daemon that does not answer as
+// a conforming one does is found before the mint revokes a running controller for a replacement
 // that will not start. Bounded by requestTimeout, as every other CLI read of the daemon's API is
 // (main.go's get).
 //
-// The mapping decides nothing of the controller's addressing, which names the owners of the gh
+// The block decides nothing of the controller's addressing, which names the owners of the gh
 // bundle the daemon answers after the mint (controllerStartGitHubCredential): the review App's
-// installation, and not the mapping, bounds what the controller's gh reaches (INFRA-2543).
+// installation, and not the repositories the live records name, bounds what the controller's gh
+// reaches (INFRA-2543).
 //
-// An empty or all-refused mapping is never a refusal: this route cannot tell a daemon with no
-// workflow (which always serves that shape) from a workflow whose mapping a refresh emptied, and
-// refusing either would block the operator action that recovers the project (admitting work,
-// docs/site/src/content/docs/legion/concepts.md, "Admission and the `legion` label"). It refuses
-// only an unusable read: a body without a `repositories` object
-// (absent or null, a shape no conforming daemon serves) and a mapped entry that is not
+// An empty `live`, or one whose every repository a role App is missing from, is never a refusal:
+// this route cannot tell a daemon with no workflow (which always serves that shape) from a
+// project with no live record, and refusing either would block the operator action that recovers
+// the project (admitting work, docs/site/src/content/docs/legion/concepts.md, "Admission and the
+// `legion` label"). It refuses only an unusable read: a body without a `repositories` object
+// (absent or null, a shape no conforming daemon serves) and a `live` entry whose `repo` is not
 // `owner/name`.
 func checkControllerRepositories(ctx context.Context, daemonURL string) error {
 	timed, cancel := context.WithTimeout(ctx, requestTimeout)
@@ -514,9 +516,9 @@ func checkControllerRepositories(ctx context.Context, daemonURL string) error {
 	if state.Repositories == nil {
 		return fmt.Errorf("%s/legion/v1/state's body names no repositories field (null or absent): not a shape a conforming daemon ever serves", daemonURL)
 	}
-	for _, mapped := range state.Repositories.Mapped {
-		if _, err := ghrepo.Parse("repositories.mapped", mapped.Repo); err != nil {
-			return fmt.Errorf("%s/legion/v1/state names an invalid mapped repository %q: %w", daemonURL, mapped.Repo, err)
+	for _, live := range state.Repositories.Live {
+		if _, err := ghrepo.Parse("repositories.live", live.Repo); err != nil {
+			return fmt.Errorf("%s/legion/v1/state names an invalid live repository %q: %w", daemonURL, live.Repo, err)
 		}
 	}
 	return nil

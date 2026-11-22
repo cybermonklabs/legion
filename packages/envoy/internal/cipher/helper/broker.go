@@ -1296,6 +1296,9 @@ type enrollBody struct {
 	Thumbprint string  `json:"thumbprint"`
 	SessionID  *string `json:"session_id"`
 	PodToken   *string `json:"pod_token"`
+	// Projects are the Dispatch projects the session names; omitted for none, so a broker from
+	// before the field reads the body as it always did.
+	Projects []string `json:"projects,omitempty"`
 }
 
 type leaseReply struct {
@@ -1424,7 +1427,7 @@ func (b *Broker) EnrollIdentity(ctx context.Context, cur identity) (string, time
 	if cur.SessionID != "" {
 		sessionID = &cur.SessionID
 	}
-	return b.enroll(ctx, cur.RuntimeID, cur.Thumbprint, sessionID, "host")
+	return b.enroll(ctx, cur.RuntimeID, cur.Thumbprint, sessionID, cur.Projects, "host")
 }
 
 // EnrollSessionKey registers a key the helper does not hold, one a launcher enrolls for a session
@@ -1432,8 +1435,8 @@ func (b *Broker) EnrollIdentity(ctx context.Context, cur identity) (string, time
 // the key's runtime_id, thumbprint and optional session_id directly. Otherwise it is Enroll: the
 // same fail-closed check when there is no machine credential yet, the same launcher proof, the
 // same 200/201 handling and the same 401 LAUNCHER_INVALID handling.
-func (b *Broker) EnrollSessionKey(ctx context.Context, runtimeID, thumbprint string, sessionID *string) (string, time.Time, error) {
-	return b.enroll(ctx, runtimeID, thumbprint, sessionID, "box")
+func (b *Broker) EnrollSessionKey(ctx context.Context, runtimeID, thumbprint string, sessionID *string, projects []string) (string, time.Time, error) {
+	return b.enroll(ctx, runtimeID, thumbprint, sessionID, projects, "box")
 }
 
 // enroll enrolls a key as kind session. A broker from before that kind (every release before
@@ -1441,11 +1444,11 @@ func (b *Broker) EnrollSessionKey(ctx context.Context, runtimeID, thumbprint str
 // it once more with legacyKind, the kind that broker knew the enrollment by: host for the
 // helper's own sessions, box for a key a launcher brings. That retry goes once the production
 // broker records the session kind.
-func (b *Broker) enroll(ctx context.Context, runtimeID, thumbprint string, sessionID *string, legacyKind string) (string, time.Time, error) {
-	id, lease, err := b.enrollAs(ctx, "session", runtimeID, thumbprint, sessionID)
+func (b *Broker) enroll(ctx context.Context, runtimeID, thumbprint string, sessionID *string, projects []string, legacyKind string) (string, time.Time, error) {
+	id, lease, err := b.enrollAs(ctx, "session", runtimeID, thumbprint, sessionID, projects)
 	var be *BrokerError
 	if errors.As(err, &be) && be.Status == http.StatusBadRequest && be.Code == "INVALID_KIND" {
-		return b.enrollAs(ctx, legacyKind, runtimeID, thumbprint, sessionID)
+		return b.enrollAs(ctx, legacyKind, runtimeID, thumbprint, sessionID, projects)
 	}
 	return id, lease, err
 }
@@ -1509,12 +1512,12 @@ func (b *Broker) enrolAuthority(ctx context.Context) (*cipherclient.Authority, *
 // (SignInAuthority.Refused) and chosen again, which trades afresh and settles on this machine's
 // own credential once the broker refuses the sign-in itself. So one enrolment is one answer,
 // and the session a launcher is waiting on enrols under the authority the box has now.
-func (b *Broker) enrollAs(ctx context.Context, kind, runtimeID, thumbprint string, sessionID *string) (string, time.Time, error) {
+func (b *Broker) enrollAs(ctx context.Context, kind, runtimeID, thumbprint string, sessionID *string, projects []string) (string, time.Time, error) {
 	authority, cred, err := b.enrolAuthority(ctx)
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	id, lease, err := b.enrollUnder(ctx, authority, cred, kind, runtimeID, thumbprint, sessionID)
+	id, lease, err := b.enrollUnder(ctx, authority, cred, kind, runtimeID, thumbprint, sessionID, projects)
 	if cred != nil || !isLauncherInvalid(err) {
 		return id, lease, err
 	}
@@ -1527,7 +1530,7 @@ func (b *Broker) enrollAs(ctx context.Context, kind, runtimeID, thumbprint strin
 	if authority, cred, err = b.enrolAuthority(ctx); err != nil {
 		return "", time.Time{}, err
 	}
-	return b.enrollUnder(ctx, authority, cred, kind, runtimeID, thumbprint, sessionID)
+	return b.enrollUnder(ctx, authority, cred, kind, runtimeID, thumbprint, sessionID, projects)
 }
 
 // enrollUnder is that one request, signed with authority. An operator is stated only where the
@@ -1542,7 +1545,7 @@ func (b *Broker) enrollAs(ctx context.Context, kind, runtimeID, thumbprint strin
 // too. A refusal the caller retries (a 401 LAUNCHER_INVALID, a 400 INVALID_KIND) is a 4xx and so
 // always known: an unknown outcome ends the op.
 func (b *Broker) enrollUnder(ctx context.Context, authority *cipherclient.Authority, cred *machineCredential,
-	kind, runtimeID, thumbprint string, sessionID *string,
+	kind, runtimeID, thumbprint string, sessionID *string, projects []string,
 ) (string, time.Time, error) {
 	url := b.URL.Raw() + "/v1/enrollments"
 	compact, err := proof.SignLauncher(authority.Key, authority.CredentialID, http.MethodPost, url, time.Now())
@@ -1553,7 +1556,7 @@ func (b *Broker) enrollUnder(ctx context.Context, authority *cipherclient.Author
 	if authority.Operator != "" {
 		operator = &authority.Operator
 	}
-	body, err := json.Marshal(enrollBody{Kind: kind, RuntimeID: runtimeID, Operator: operator, Thumbprint: thumbprint, SessionID: sessionID})
+	body, err := json.Marshal(enrollBody{Kind: kind, RuntimeID: runtimeID, Operator: operator, Thumbprint: thumbprint, SessionID: sessionID, Projects: projects})
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -1746,11 +1749,14 @@ func traceReach(ctx context.Context) (context.Context, *requestReach) {
 // unknown outcome (outcomeUnknown) when the request may have changed the broker's state, and as
 // it came otherwise.
 //
-// A 4xx answer is known: the broker decides its refusals before it writes anything. Every other
-// failure of a request that was sent is unknown: a transport error after the write (a reset, a
-// timeout, the op's context ending at its bound), a 5xx (a front door's 502 or 504 can come after
-// the broker wrote), and a 2xx the helper could not read (a body that will not read or decode, or
-// one that lacks what the caller needs). A failure of a request that was never sent in full is
+// A 4xx answer is known: the broker decides its refusals before it writes anything. So is the
+// broker's own 503 MEMBER_KIND_UNCHECKABLE (uncheckableCode), which it answers when it cannot
+// learn whether Dispatch calls the login's person a restricted member, before it writes anything:
+// nothing was enrolled, and the same request made later is asked afresh. Every other failure of a
+// request that was sent is unknown: a transport error after the write (a reset, a timeout, the
+// op's context ending at its bound), any other 5xx (a front door's 502 or 504 can come after the
+// broker wrote), and a 2xx the helper could not read (a body that will not read or decode, or one
+// that lacks what the caller needs). A failure of a request that was never sent in full is
 // known: a refused dial, a context that ended before the transport held a connection, a failed
 // write. So is a failure before any request: signing a proof, reading the operator file, a
 // sign-in's trade.
@@ -1769,7 +1775,7 @@ func (r *requestReach) settle(err error) error {
 		return nil
 	}
 	var be *BrokerError
-	if errors.As(err, &be) && be.Status >= 400 && be.Status < 500 {
+	if errors.As(err, &be) && (be.Status >= 400 && be.Status < 500 || be.Status == http.StatusServiceUnavailable && be.Code == uncheckableCode) {
 		return err
 	}
 	ended := errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
@@ -1778,6 +1784,12 @@ func (r *requestReach) settle(err error) error {
 	}
 	return err
 }
+
+// uncheckableCode is the code of the broker's own 503 for something it would do for a person
+// while it cannot learn whether Dispatch calls that person a restricted member
+// (projectaccess.UncheckableCode, spelled here as the helper reads it off the wire): it answers it
+// before it writes anything, so the outcome is known (settle).
+const uncheckableCode = "MEMBER_KIND_UNCHECKABLE"
 
 // outcomeUnknownError marks the failure of a broker request whose outcome the helper does not
 // know (requestReach.settle). It reads as the failure it wraps and unwraps to it, so every caller

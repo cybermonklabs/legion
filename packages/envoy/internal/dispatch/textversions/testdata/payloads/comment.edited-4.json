@@ -1,0 +1,46 @@
+{
+  "id": 679699,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 887,
+  "type": "comment.edited",
+  "actor": {
+    "kind": "user",
+    "id": "alice@example.com"
+  },
+  "notify": true,
+  "created_at": "2026-11-17T16:00:11.461792Z",
+  "payload": {
+    "id": "00e45473-7839-489c-89a7-9604349ca627",
+    "body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum ",
+    "turn": null,
+    "anchor": null,
+    "ask_id": null,
+    "author": {
+      "id": "alice@example.com",
+      "kind": "user"
+    },
+    "answers": "ee1650fd-97af-4b58-9690-e9a60e0cd2f1",
+    "mentions": [],
+    "reply_to": "ee1650fd-97af-4b58-9690-e9a60e0cd2f1",
+    "resolved": false,
+    "edited_at": "2026-11-17T16:00:11.461792Z",
+    "issue_key": "ACME-1",
+    "created_at": "2026-11-17T15:59:57.11817Z",
+    "deliveries": [],
+    "suggestion": null,
+    "artifact_id": null,
+    "reply_block": null,
+    "resolved_at": null,
+    "resolved_by": null,
+    "artifact_name": "",
+    "suppress_route": false,
+    "references_changed": [
+      {
+        "id": "ACME-2",
+        "kind": "issue"
+      }
+    ]
+  }
+}

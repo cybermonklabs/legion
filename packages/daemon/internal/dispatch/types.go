@@ -32,16 +32,18 @@ type Client interface {
 	// ArtifactSlugs is the slug of every document and file the issue holds.
 	ArtifactSlugs(ctx context.Context, key string) ([]string, error)
 	// UploadArtifact writes a markdown document on the issue under name, and answers the slug
-	// Dispatch filed it under. It names no token, so it is a first upload: Dispatch refuses a name
-	// the issue already holds 400 PRECONDITION_REQUIRED, and the outbox uploads only a name the
-	// issue lists no document under (messageArtifact).
+	// Dispatch filed it under. It names no token, so it is meant as a first upload, and the outbox
+	// uploads only a name the issue lists no document under (messageArtifact). Since
+	// legion-envoy-v32.36.1 Dispatch stores an upload naming no token over a name the issue already
+	// holds, as it did before it began to ask for one, and counts it
+	// (envoy_dispatch_document_replacements_unguarded_total); a token behind the live document is
+	// still refused 409 PRECONDITION_FAILED.
 	UploadArtifact(ctx context.Context, key, name, content string) (slug string, err error)
 	// EventsAfter is the issue's event log after a sequence, oldest first, each event as Dispatch
 	// serves it: the boot catch-up's read of what a root's durable stream may not have delivered.
 	EventsAfter(ctx context.Context, key string, after int64) ([]json.RawMessage, error)
 	Approval(ctx context.Context, artifactID string) (Approval, error)
 	Handoff(ctx context.Context, id string) (Handoff, error)
-	ListRepoProjects(ctx context.Context) ([]RepoProject, error)
 	// PutGatedSteps publishes the design-gate steps the deployment gates onto project's Dispatch
 	// project row, in the order it gates them; an empty list is a deployment that gates none.
 	PutGatedSteps(ctx context.Context, project string, steps []string) error
@@ -66,15 +68,6 @@ type Client interface {
 	// WebhookAppInstalled is whether Dispatch's GitHub App, the one GitHub sends a repository's
 	// webhook events through, is installed on repo (owner/name).
 	WebhookAppInstalled(ctx context.Context, repo string) (bool, error)
-}
-
-// RepoProject is one mapping of a GitHub repository (owner/name) to a Dispatch project, and
-// whether it is that project's default: the repository an issue resolves to when neither it nor
-// any ancestor names one.
-type RepoProject struct {
-	Repo    string
-	Project string
-	Default bool
 }
 
 // DesignGateDocument is one entry of an issue's design-gate publication, as Dispatch's route

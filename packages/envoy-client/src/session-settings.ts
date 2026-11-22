@@ -69,7 +69,8 @@ export interface SessionSettings {
  * session does not read is said too: an `envoy` section, a file that cannot be used while
  * `DISPATCH_URL` replaces it, and an OpenCode-era `.opencode/envoy.json` (`warnings`). Last, for a
  * session that opens a NATS connection (`nats` not false), an Envoy that is on and takes no inbound
- * messages is said to, naming why (`inbound.off`: no NATS server, or the seed's refusal), and a
+ * messages is said to, naming why (`inbound.off`: no NATS server, or the seed's refusal), one that
+ * takes them through the listener's relay socket is said to carry no live view, and a
  * pass deadline the resolver raised to the heartbeat interval (`passDeadlineRaisedFrom`,
  * `envoySettings`) is said to have been raised, naming both values.
  */
@@ -114,6 +115,11 @@ function startNotice(
   if (envoy.enabled && nats && "off" in envoy.inbound) {
     parts.push(
       `Envoy's inbound messages are off: ${envoy.inbound.off}; the Envoy tools still work`
+    );
+  }
+  if (envoy.enabled && nats && "relaySetting" in envoy.inbound) {
+    parts.push(
+      `Envoy's inbound messages come through the listener's relay socket (${envoy.inbound.relaySetting} is listener), which carries no live view: the Agents page shows nothing of this session's turns`
     );
   }
   if (envoy.enabled && envoy.passDeadlineRaisedFrom !== undefined) {

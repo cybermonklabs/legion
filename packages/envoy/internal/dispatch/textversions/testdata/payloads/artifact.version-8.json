@@ -1,0 +1,361 @@
+{
+  "id": 124805,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 660,
+  "type": "artifact.version",
+  "actor": {
+    "kind": "session",
+    "id": "01a18d1e-ae03-7215-9d2e-af31c52453cf",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum d",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsu",
+      "tmux": "lorem ipsu",
+      "pane": "lor"
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-10-30T14:15:22.24297Z",
+  "payload": {
+    "diff": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor",
+    "name": "lorem ips",
+    "version": {
+      "size": 211034,
+      "named": true,
+      "number": 9,
+      "authors": [
+        {
+          "id": "01a18d1e-ae03-7215-9d2e-af31c52453cf",
+          "kind": "session",
+          "owner": "alice@example.com",
+          "origin": {
+            "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsu",
+            "host": "lor",
+            "pane": "lor",
+            "tmux": "lorem ipsu",
+            "machine": "lorem ipsum d"
+          }
+        }
+      ],
+      "summary": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit ",
+      "created_at": "2026-10-30T14:15:22.24297Z"
+    },
+    "artifact_id": "64e49c9b-3ff7-4b5f-8930-9e6b091adcb3",
+    "references_changed": [
+      {
+        "id": "cd24cf4c-beda-408f-b755-cd887e4f1ce3",
+        "kind": "ask",
+        "issue_key": "ACME-2"
+      },
+      {
+        "id": "ACME-3",
+        "kind": "issue"
+      },
+      {
+        "id": "1462d7f7-5123-4918-a620-49880b56be49",
+        "kind": "ask",
+        "issue_key": "ACME-1"
+      },
+      {
+        "id": "ACME-4",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-5",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-6",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-7",
+        "kind": "issue"
+      },
+      {
+        "id": "56191913-b87c-408f-b973-e505e1a34543",
+        "kind": "ask",
+        "issue_key": "ACME-8"
+      },
+      {
+        "id": "82655e4c-7b4f-4777-b45f-c47f813070f7",
+        "kind": "ask",
+        "issue_key": "ACME-9"
+      },
+      {
+        "id": "a49d6e04-1e2a-431f-bf34-e1b1477f3c5c",
+        "kind": "ask",
+        "issue_key": "ACME-10"
+      },
+      {
+        "id": "f46ae257-e92e-4355-86a5-d7ea4a162fd4",
+        "kind": "ask",
+        "issue_key": "ACME-11"
+      },
+      {
+        "id": "ACME-12",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-13",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-14",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-15",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-16",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-17",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-18",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-19",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-20",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-21",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-22",
+        "kind": "issue"
+      },
+      {
+        "id": "3c176f63-de12-4831-a765-d3429f5393f6",
+        "kind": "ask",
+        "issue_key": "ACME-23"
+      },
+      {
+        "id": "f1445a18-dbf5-4416-9567-db35acc31782",
+        "kind": "ask",
+        "issue_key": "ACME-14"
+      },
+      {
+        "id": "bbb3237e-16e9-4d28-8f5b-fdf5da49d528",
+        "kind": "ask",
+        "issue_key": "ACME-24"
+      },
+      {
+        "id": "9918a493-b927-4fe2-8cd3-2f420f3b3d79",
+        "kind": "ask",
+        "issue_key": "ACME-25"
+      },
+      {
+        "id": "6307ee32-cf73-4c05-a99d-37c981e64a07",
+        "kind": "ask",
+        "issue_key": "ACME-18"
+      },
+      {
+        "id": "60c2fc48-580f-4d35-b7ee-5db82a9dd15e",
+        "kind": "ask",
+        "issue_key": "ACME-26"
+      },
+      {
+        "id": "de53cf5b-b9ad-4acb-854a-9f787b1b7de0",
+        "kind": "ask",
+        "issue_key": "ACME-26"
+      },
+      {
+        "id": "d12cc801-9073-4e67-8e58-0a61372b0a15",
+        "kind": "ask",
+        "issue_key": "ACME-26"
+      },
+      {
+        "id": "ACME-27",
+        "kind": "issue"
+      },
+      {
+        "id": "22e9ce75-ef8e-436d-b3ec-82db5c4ee87e",
+        "kind": "ask",
+        "issue_key": "ACME-26"
+      },
+      {
+        "id": "781f7ca9-59ff-4b16-848b-e6d3affc67de",
+        "kind": "ask",
+        "issue_key": "ACME-8"
+      },
+      {
+        "id": "082ad4ec-6420-473d-ac57-ca5b22d2c804",
+        "kind": "ask",
+        "issue_key": "ACME-26"
+      },
+      {
+        "id": "ACME-28",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-29",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-30",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-31",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-32",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-33",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-34",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-35",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-36",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-37",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-38",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-39",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-40",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-24",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-41",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-42",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-23",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-1",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-43",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-44",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-45",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-10",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-46",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-47",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-48",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-8",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-49",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-50",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-51",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-52",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-53",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-54",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-26",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-55",
+        "kind": "issue"
+      },
+      {
+        "id": "08096d9c-72c0-4285-b8fb-016aba401430",
+        "kind": "ask",
+        "issue_key": "ACME-46"
+      },
+      {
+        "id": "241c02ba-f53d-4eee-abb2-1a4bdf7686d4",
+        "kind": "ask",
+        "issue_key": "ACME-56"
+      },
+      {
+        "id": "ACME-57",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-9",
+        "kind": "issue"
+      }
+    ],
+    "references_changed_truncated": true,
+    "references_changed_truncated_kinds": [
+      "artifact"
+    ]
+  }
+}

@@ -83,7 +83,7 @@ func defaultRepositoryCache(t *testing.T) sandbox.RepositoryCache {
 	return cache
 }
 
-// noRepositories is a mapping that names none, for a test whose runtime makes no cache.
+// noRepositories is a cache set that names none, for a test whose runtime makes no cache.
 func noRepositories() []ghrepo.Repository { return nil }
 
 // writeKubeconfig is a kubeconfig of one cluster at server and one context, its current context
@@ -326,12 +326,35 @@ func TestAKubernetesDaemonRefusesTheBootItsWorkerImageProbeRefuses(t *testing.T)
 
 // Under kubernetes the worker stream is TCP on the daemon's bind, at a port the listener resolves
 // itself, the one address the runtime hands every pod's shim, and the runtime is given the
-// workflow's App tokens, its repository of an issue, already set when the runtime is built, and the
-// repositories Dispatch's mapping names, which its repository caches follow. The host's own agent
-// machinery never runs: no pane launcher is installed, no Dispatch token file is written, and the
-// workflow's boot has no worker-bin stage.
+// workflow's App tokens, its repository of an issue, already set when the runtime is built — for
+// an issue no record names, the repository Dispatch resolves the issue to, at GitHub's default
+// branch (unrecordedRepository) — and the cache set, the repositories the project's live records
+// name, which its repository caches follow: none for a project with no record. The host's own
+// agent machinery never runs: no pane launcher is installed, no Dispatch token file is written,
+// and the workflow's boot has no worker-bin stage.
 func TestAKubernetesDaemonServesItsWorkerStreamOnTCPAndRunsNoHostPaneMachinery(t *testing.T) {
-	cfg := workflowConfig(t, workflowNATS(t))
+	cfg := workflowConfigOn(t, workflowNATS(t), func(t *testing.T, project string) string {
+		return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
+			var body any
+			switch {
+			case servedBootCall(t, w, r, project):
+				return
+			case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues":
+				body = []any{}
+			case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues/LEGSMOKE-9":
+				body = map[string]any{"key": "LEGSMOKE-9", "title": "an operator's claim", "status": "in_progress", "labels": []string{},
+					"last_seq": 1, "project": project, "resolved_repo": "acme/widgets"}
+			default:
+				t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(body); err != nil {
+				t.Errorf("write %s: %v", r.URL.Path, err)
+			}
+		})
+	})
 	cfg.Runtime = kubernetesConfig(t, "https://127.0.0.1:1").Runtime
 	tokens := &workflowTokenRecorder{}
 	record := &built{}
@@ -351,13 +374,13 @@ func TestAKubernetesDaemonServesItsWorkerStreamOnTCPAndRunsNoHostPaneMachinery(t
 	awaitHealthz(t, cfg, done)
 
 	record.mu.Lock()
-	address, apps, repository, mapped := record.address, record.apps, record.repository, record.mapped
+	address, apps, repository, cached := record.address, record.apps, record.repository, record.cached
 	record.mu.Unlock()
-	if mapped == nil {
-		t.Fatal("the runtime was handed no mapping")
+	if cached == nil {
+		t.Fatal("the runtime was handed no cache set")
 	}
-	if got := mapped(); !slices.Equal(got, []ghrepo.Repository{ghrepo.MustParse("acme/widgets")}) {
-		t.Errorf("the runtime's repository caches follow %v, want the workflow's mapping, acme/widgets", got)
+	if got := cached(); len(got) != 0 {
+		t.Errorf("the runtime's repository caches follow %v, want none: no live record of the project names a repository", got)
 	}
 	prefix := "tcp://" + cfg.Bind + ":"
 	if !strings.HasPrefix(address, prefix) || strings.HasSuffix(address, ":0") {
@@ -383,7 +406,7 @@ func TestAKubernetesDaemonServesItsWorkerStreamOnTCPAndRunsNoHostPaneMachinery(t
 		t.Fatal("the runtime was handed no repository rule, want the workflow's")
 	}
 	if repo, branch, err := repository(ctx, "LEGSMOKE-9"); err != nil || repo.String() != "acme/widgets" || branch != "main" {
-		t.Errorf("the runtime's repository of an unrecorded issue = %s@%s, %v; want the project's default acme/widgets@main", repo, branch, err)
+		t.Errorf("the runtime's repository of an unrecorded issue = %s@%s, %v; want the one Dispatch resolves it to, acme/widgets@main", repo, branch, err)
 	}
 	for _, path := range []string{filepath.Join(cfg.StateDir, "bin"), filepath.Join(cfg.StateDir, "secrets", "dispatch-token")} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {

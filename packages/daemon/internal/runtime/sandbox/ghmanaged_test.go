@@ -25,12 +25,12 @@ const managedUser = "mona-cat_octo"
 var managedIssue = ghrepo.MustParse("Mona-Cat_Octo/widgets")
 
 // servingManagedUser is a daemon whose two Apps are installed on sjawhar and managedUser and
-// whose mapping serves the smoke repository alone, with the daemon's own gh answers
+// which serves the smoke repository alone, with the daemon's own gh answers
 // (appauth.GitHubCredential and appauth.GitHubDirs over the two records their bundles share):
-// the managed user's repository is no repository of the mapping, and an issue on it is run
+// the managed user's repository is no repository the daemon serves, and an issue on it is run
 // because both Apps are installed on that account (INFRA-2543 R4).
 func servingManagedUser(o *Options) {
-	served := func() []ghrepo.Repository { return []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion-smoke")} }
+	served := servesOneOf(func() []ghrepo.Repository { return []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion-smoke")} })
 	installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
 	apps := sourceOf(refusingOwnerTokens{refuse: new(atomic.Bool)}, installedOnOwners{managedUser, "sjawhar"})
 	o.GitHubCredential = appauth.GitHubCredential(apps, served, ghrepo.Renames{}, installed, left, o.Log)

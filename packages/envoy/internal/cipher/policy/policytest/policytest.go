@@ -56,16 +56,17 @@ const FixtureMaxGrant = "1h"
 // TypeSecret is Secret with a type tag: a secret whose release the broker mints from value. A
 // type that needs github-owners (policy.TypeNeedsGitHubOwners) also carries them
 // (FixtureGitHubOwners), without which the policy refuses it; a test of that refusal deletes the
-// tag. A google-service-account secret carries the requesters its own rules demand — its owner
-// alone — and the max-grant its type must set (FixtureMaxGrant), so the fixture loads for an owner
-// who is a person; a test of those refusals edits the tags.
+// tag. A google-service-account or anthropic-federation secret carries the requesters its own
+// rules demand — its owner alone — and the max-grant its type must set (FixtureMaxGrant), so the
+// fixture loads for an owner who is a person or a group; a test of those refusals edits the
+// tags. An anthropic-federation secret is human tier only, so it loads only for tier human.
 func TypeSecret(name, owner, tier, secretType, value string) secrets.LocalSecret {
 	secret := Secret(name, owner, tier, value)
 	secret.Tags[policy.TagType] = secretType
 	if policy.TypeNeedsGitHubOwners(secretType) {
 		secret.Tags[policy.TagGitHubOwners] = FixtureGitHubOwners
 	}
-	if secretType == policy.TypeGoogleServiceAccount {
+	if secretType == policy.TypeGoogleServiceAccount || secretType == policy.TypeAnthropicFederation {
 		secret.Tags[policy.TagRequesters] = owner
 		secret.Tags[policy.TagMaxGrant] = FixtureMaxGrant
 	}
@@ -90,6 +91,9 @@ func TypeValue(secretType string) string {
 		fields["service_account"] = "robot-1@acme-deployment.iam.gserviceaccount.com"
 	case policy.TypeAzureLogin:
 		fields["tenant_id"], fields["client_id"] = "tenant", "client"
+	case policy.TypeAnthropicFederation:
+		fields["organization_id"], fields["federation_rule_id"] = "00000000-0000-4000-8000-000000000000", "fdrl_01examplerule"
+		fields["service_account_id"], fields["service_account"] = "svac_01exampletarget", "robot-1@acme-deployment.iam.gserviceaccount.com"
 	default:
 		panic(fmt.Sprintf("policytest.TypeValue: no value of type %q", secretType))
 	}

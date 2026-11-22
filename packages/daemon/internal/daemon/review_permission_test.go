@@ -582,9 +582,9 @@ func TestAReviewPublishedBeforeATransferIsReadOnTheRepositoryGitHubHoldsItUnderN
 					}))
 					defer server.Close()
 					w := reviewPermissionRuntimeRenamed(pool, server.URL, quietLogger(), tc.renames)
-					// Dispatch maps the repository under the name it moved to, which is what
-					// makes cybermonklabs the owner whose installation holds it.
-					w.repositories.set([]mappedRepository{{Repo: ghrepo.MustParse("cybermonklabs/legion"), Default: true}}, nil)
+					// Both role Apps answered installed on the name the repository moved to, which
+					// is what makes cybermonklabs the owner whose installation holds it.
+					w.repositories.fill(ghrepo.MustParse("cybermonklabs/legion"))
 					w.tokens = servedOwnerTokens{owner: "cybermonklabs"}
 					err := caller.read(t, w)
 					switch {

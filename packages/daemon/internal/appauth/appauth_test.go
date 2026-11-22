@@ -1085,13 +1085,15 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 	}
 }
 
-// Every GitHub call of the start's mint keeps GitHub's answer where only the start reads it
+// Every GitHub call appauth makes keeps GitHub's answer where only the daemon's start reads it
 // (dispatch://INFRA-2597/spec R4): each answer other than 2xx carries an *AnswerError holding the
 // request's method and path, GitHub's status, body and rate-limit headers, inside the
-// TransientError where one is made, and the error's message is the one it was before. The answer is
-// a field and no link of the chain, so errors.As finds no *githubrest.Answer in any of these errors:
-// every reader of one after the start (internal/daemon's defaultBranchLimit, answeredRefusal and
-// the outbox's githubrest.RetryAfter among them) reads a mint's error as it did before.
+// TransientError where one is made, and the error's message is the one it was before. The start
+// reads it on its own calls, the App logins read and the key proof (internal/daemon's bootLimit);
+// a mint's calls carry it too, though the start mints no token. The answer is a field and no link
+// of the chain, so errors.As finds no *githubrest.Answer in any of these errors: every other
+// reader of one (internal/daemon's defaultBranchLimit and the outbox's githubrest.RetryAfter among
+// them) reads a mint's error as it did before.
 //
 // One row per call: the installation discovery, the permissions read and the exchange, each
 // refused for a spent rate limit; the exchange's 422 that carries the limit's headers, which is

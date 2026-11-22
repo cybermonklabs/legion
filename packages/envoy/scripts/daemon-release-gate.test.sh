@@ -19,6 +19,15 @@
 # expects a comparison prints `UNKNOWN` instead, which is the blindness an index-shaped pin causes.
 set -euo pipefail
 
+# Its developer-box rows hide a directory with `chmod 000` to show the gate's refusal of what it
+# cannot read, and root reads it anyway, so those rows fail as root for no fault of the gate's
+# (lib/daemon-release-gate-cases-developer-box.sh, "this user cannot search the hidden directory").
+# Say so once, rather than as a dozen row failures.
+if [ "$(id -u)" = 0 ]; then
+  echo "daemon-release-gate.test.sh: run it as a user other than root: its rows hide a directory with chmod 000, which root reads anyway" >&2
+  exit 1
+fi
+
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 readonly script="${project_root}/packages/envoy/scripts/daemon-release-gate.sh"
 # shellcheck source=lib/daemon-release-gate-harness.sh
@@ -398,6 +407,24 @@ run_gate FAKE_LIST_DOWN=1 -- "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the listing and GitHub's answer" \
   "$(has_line "UNKNOWN: cannot list ${deployment} legion/projects: gh: Server Error (HTTP 500)")"
+check "never reads the leftover list's pins" "$(lacks "docker" "$calls")"
+check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
+
+# A failed listing whose words quote a 404 is no missing directory either: only gh's own last line
+# for a 404 (`gh: <message> (HTTP 404)`) is one, so a 502 that quotes an upstream's 404 is refused,
+# as the 500 above is, and the leftover list is never read.
+echo "case: legion/projects/ cannot be listed, the refusal quoting an HTTP 404 it is not"
+new_case project-listing-quotes-404
+legion_stack "$fleet"
+fleet_files
+single "$worker_a" "$legion" "$ahead_rev"
+single "$worker_b" "$legion" "$identical_rev"
+compare "$ahead_rev" ahead 0
+compare "$identical_rev" identical 0
+run_gate FAKE_LIST_DOWN=1 "FAKE_LIST_DOWN_TEXT=gh: the proxy answered HTTP 404 from its upstream (HTTP 502)" -- "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the listing and GitHub's answer" \
+  "$(has_line "UNKNOWN: cannot list ${deployment} legion/projects: gh: the proxy answered HTTP 404 from its upstream (HTTP 502)")"
 check "never reads the leftover list's pins" "$(lacks "docker" "$calls")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
