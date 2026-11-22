@@ -59,12 +59,14 @@ const ISSUE = {
   open_asks: [],
 };
 
-/** The refusal the review route answers next, or null for a recorded review. */
+/** The refusal the review route answers next, or null for a recorded review. `body` holds what
+ *  the refusal carries beside its code and words. */
 let refusal: {
   readonly status: number;
   readonly code: string;
   readonly error: string;
   readonly headers?: Readonly<Record<string, string>>;
+  readonly body?: Readonly<Record<string, unknown>>;
 } | null = null;
 /** The approval request the next recorded review answered, or null when none was open. */
 let answeredAsk: string | null = null;
@@ -97,7 +99,7 @@ const server = Bun.serve({
       }
       if (refusal !== null) {
         return Response.json(
-          { code: refusal.code, error: refusal.error },
+          { ...refusal.body, code: refusal.code, error: refusal.error },
           { status: refusal.status, headers: refusal.headers ?? {} }
         );
       }
@@ -284,6 +286,72 @@ describe("dispatch review", () => {
     expect(posted()).toEqual([
       { path: "/api/v1/artifacts/artifact-spec/versions/3/reviews", body: { state: "approved" } },
     ]);
+  });
+
+  // A refusal of the approved spec names the nodes it refuses for: each stale node with the version
+  // the request read and the approved spec's current one (`statements`, SPEC_REQUEST_STALE), or
+  // each node with the rule it breaks (`problems`, the other refusals of the approved spec). The
+  // refusal line names each one after Dispatch's words, so an agent reads which node to write again.
+  test.each([
+    [
+      "SPEC_REQUEST_STALE",
+      "the approved spec changed after the request was written: a-bill-names-its-order (written against version 1; the approved spec holds version 2); write the request again against the approved spec and open a new approval request",
+      {
+        statements: [
+          { id: "a-bill-names-its-order", base: 1, current: 2 },
+          { id: "an-order-is-paid-once", base: 1, current: 0, removed: true },
+        ],
+      },
+      "the refusal names a-bill-names-its-order (base 1, current 2), an-order-is-paid-once (base 1, current 0, removed)",
+    ],
+    [
+      "SPEC_PARENT_MISSING",
+      "a-receipt-follows-a-payment: parent-missing: the parent a-receipt-is-sent is in neither the approved spec nor the request; propose the parent in the same request, or put the statement under a parent the approved spec holds",
+      {
+        problems: [
+          {
+            node: "a-receipt-follows-a-payment",
+            rule: "parent-missing",
+            detail:
+              "parent-missing: the parent a-receipt-is-sent is in neither the approved spec nor the request",
+          },
+        ],
+      },
+      "the refusal names a-receipt-follows-a-payment (parent-missing)",
+    ],
+  ])("a 409 %s names each node it refuses for after Dispatch's words, and exits 1", async (code, error, body, names) => {
+    refusal = { status: 409, code, error, body };
+
+    const result = await run(["review", ISSUE.key, "--version", "3", "--verdict", "approved"]);
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe(`${code}: ${error}; ${names}\n`);
+  });
+
+  test("the error a refusal of the approved spec throws carries its statements and problems as Dispatch sent them", async () => {
+    const statements = [{ id: "a-bill-names-its-order", base: 1, current: 2 }];
+    const problems = [
+      { node: "a-loop-node", rule: "loop", detail: "loop: a-loop-node supports itself" },
+    ];
+    refusal = {
+      status: 409,
+      code: "SPEC_REQUEST_STALE",
+      error: "the approved spec changed after the request was written",
+      body: { statements, problems },
+    };
+
+    const error: unknown = await executeDispatchTool({
+      tool: "dispatch_review",
+      args: { issue: ISSUE.key, version: 3, verdict: "approved" },
+      cwd: stateDir,
+      host: "omp",
+      sessionId: "ses-1",
+      config: { url: `http://127.0.0.1:${server.port}`, credential: bearerCredential(TOKEN) },
+      env: {},
+    }).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(DispatchServiceError);
+    expect(error).toMatchObject({ code: "SPEC_REQUEST_STALE", status: 409, statements, problems });
   });
 
   test("a review that answered an open approval request says so, for every document the request named, and that the answer carries this document alone", async () => {

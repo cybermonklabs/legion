@@ -1297,6 +1297,139 @@ for (const row of [
   });
 }
 
+// The refusals of the approved spec (R22): an approval of a change request Dispatch cannot write is
+// refused the same way however often it is sent, until the request is written again. The card
+// shows Dispatch's words and each thing the refusal names - a stale statement with the version the
+// request read and the one the approved spec holds now, or a node with the rule it breaks - and
+// offers no Retry. The control is the generic failure: a refusal Dispatch may not give again keeps
+// its Retry.
+const STALE_WORDS =
+  "the approved spec changed after the request was written: a-bill-names-its-order (written against version 1; the approved spec holds version 2); write the request again against the approved spec and open a new approval request";
+for (const row of [
+  {
+    body: {
+      statements: [
+        { base: 1, current: 2, id: "a-bill-names-its-order" },
+        { base: 1, current: 0, id: "an-order-is-paid-once", removed: true },
+        { base: 0, current: 3, id: "a-refund-is-paid" },
+      ],
+    },
+    code: "SPEC_REQUEST_STALE",
+    error: STALE_WORDS,
+    names:
+      "It names: a-bill-names-its-order (read version 1, now version 2), an-order-is-paid-once (read version 1, now removed), a-refund-is-paid (read no version, now version 3).",
+  },
+  {
+    body: {
+      problems: [
+        { detail: "retired-id: a-call is removed", node: "a-call", rule: "retired-id" },
+        { detail: "doubled-id: two blocks", node: "a-bill", rule: "doubled-id" },
+      ],
+    },
+    code: "SPEC_NODE_INVALID",
+    error: "a-call: retired-id: a-call is removed; a-bill: doubled-id: two blocks",
+    names: "It names: a-call (retired-id), a-bill (doubled-id).",
+  },
+  {
+    body: {},
+    code: "SPEC_CHECKS_NOT_INCLUDED",
+    error:
+      "the request adds, changes or removes the checks a-check, and its approval request does not name the issue's Verification document; open the request again with the Verification document beside the spec",
+    names: null,
+  },
+  {
+    body: {
+      problems: [
+        {
+          detail: "parent-missing: no a-receipt",
+          node: "a-receipt-follows",
+          rule: "parent-missing",
+        },
+      ],
+    },
+    code: "SPEC_PARENT_MISSING",
+    error:
+      "a-receipt-follows: parent-missing: no a-receipt; propose the parent in the same request",
+    names: "It names: a-receipt-follows (parent-missing).",
+  },
+  {
+    body: { problems: [{ detail: "loop: a-loop supports itself", node: "a-loop", rule: "loop" }] },
+    code: "SPEC_LOOP",
+    error: "a-loop: loop: a-loop supports itself",
+    names: "It names: a-loop (loop).",
+  },
+  {
+    body: {},
+    code: "APPROVAL_REQUEST_REQUIRED",
+    error:
+      "the approval request names version 2 of spec.md, and the document moved to version 3 after it: an approval counts only for the text its request names; open the request again on the new version",
+    names: null,
+  },
+]) {
+  test(`an approval card refused ${row.code} shows Dispatch's words and what it names, with no Retry`, async () => {
+    const user = userEvent.setup();
+    const submitted: AnswerAskInput[] = [];
+    const input = ask({
+      kind: "approval",
+      options: [{ label: "Approve" }, { label: "Request changes" }],
+    });
+    const { view } = renderCard(
+      <AskCard
+        answerAsk={async (_id, submission) => {
+          submitted.push(submission);
+          throw new ApiError(409, { ...row.body, code: row.code, error: row.error });
+        }}
+        ask={input}
+        getAskThread={emptyThread(input)}
+      />
+    );
+
+    try {
+      const card = view.getByTestId("ask-ask-1");
+      await user.click(await within(card).findByRole("radio", { name: "Approve" }));
+      await user.click(within(card).getByRole("button", { name: "Answer" }));
+      const alert = await within(card).findByRole("alert");
+      expect(alert.textContent).toBe(row.names === null ? row.error : `${row.error}\n${row.names}`);
+      expect(alert.textContent).not.toContain("Could not save your answer.");
+      expect(within(card).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+      expect(submitted).toHaveLength(1);
+    } finally {
+      view.unmount();
+    }
+  });
+}
+
+test("an approval card refused for a reason that may pass keeps its Retry", async () => {
+  const user = userEvent.setup();
+  const input = ask({
+    kind: "approval",
+    options: [{ label: "Approve" }, { label: "Request changes" }],
+  });
+  const { view } = renderCard(
+    <AskCard
+      answerAsk={async () => {
+        throw new ApiError(400, {
+          code: "ASK_REVISION_REQUIRED",
+          error: "expected_edited_at is required",
+        });
+      }}
+      ask={input}
+      getAskThread={emptyThread(input)}
+    />
+  );
+
+  try {
+    const card = view.getByTestId("ask-ask-1");
+    await user.click(await within(card).findByRole("radio", { name: "Approve" }));
+    await user.click(within(card).getByRole("button", { name: "Answer" }));
+    const alert = await within(card).findByRole("alert");
+    expect(alert.textContent).toContain("Could not save your answer.");
+    expect(within(card).getByRole("button", { name: "Retry" })).toBeTruthy();
+  } finally {
+    view.unmount();
+  }
+});
+
 // The press that Dispatch refused for the form is answered, not lost: Answer disables while the
 // answer is out, which hands the focus to the row, and the refusal gives it back to Answer, the
 // press the refusal's last line names. The control: an answer that lands leaves the focus on the

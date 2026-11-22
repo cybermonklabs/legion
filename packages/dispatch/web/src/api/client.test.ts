@@ -135,6 +135,33 @@ test("a 404 NOT_FOUND for a resource the server does not know is not sent again"
   expect(wait.waits).toEqual([]);
 });
 
+// A refusal of the approved spec names what it refuses for: each stale node with the version the
+// request read and the approved spec's current one (`statements`), or each node with the rule it
+// breaks (`problems`). The refusal the page reads carries both as Dispatch sent them, and a
+// refusal that names neither carries neither.
+test("a refusal of the approved spec carries its statements and problems", async () => {
+  const statements = [
+    { base: 1, current: 2, id: "a-bill-names-its-order" },
+    { base: 1, current: 0, id: "an-order-is-paid-once", removed: true },
+  ];
+  const problems = [{ detail: "loop: a-loop supports itself", node: "a-loop", rule: "loop" }];
+  const stub = scriptedFetch([
+    () =>
+      Response.json(
+        { code: "SPEC_REQUEST_STALE", error: "the approved spec changed", problems, statements },
+        { status: 409 }
+      ),
+    () => Response.json({ code: "ISSUE_CLOSED", error: "the issue is closed" }, { status: 409 }),
+  ]);
+  const api = createApiClient(stub.fetch, undefined, recordedSleep().sleep);
+
+  const refused = await api.getIssue("first").catch((thrown: unknown) => thrown);
+  expect(refused).toBeInstanceOf(ApiError);
+  expect(refused).toMatchObject({ code: "SPEC_REQUEST_STALE", problems, statements });
+  const other = await api.getIssue("second").catch((thrown: unknown) => thrown);
+  expect(other).toMatchObject({ code: "ISSUE_CLOSED", problems: undefined, statements: undefined });
+});
+
 test("a request aborted during a no-route wait rejects at once with the abort and is not sent again", async () => {
   const stub = scriptedFetch([
     () => noRoute("GET", "/api/github/rest/user"),

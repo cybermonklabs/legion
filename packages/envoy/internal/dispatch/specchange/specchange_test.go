@@ -19,34 +19,39 @@ const testIssue = "<issue>"
 // check's surface and run - left out.
 func TestFromBlocksReadsEachNodeOfTheSpec(t *testing.T) {
 	t.Parallel()
+	// Each proposal keeps its block's text as the document holds it, which a person reads before
+	// approving it (R22).
+	statementText := ":::requirement{#a-refund-returns-the-payment kind=\"behavior\" " +
+		"under=\"payments-are-kept\" supports=\"orders-are-billed orders-are-billed\" about=\"billing bank\" base=\"3\" " +
+		"serves=\"b-k1\" parent=\"b-ask\"}\nA refund returns the payment.\n:::\n"
+	checkText := ":::check{#a-refund-is-paid-back statement=\"a-refund-returns-the-payment\" " +
+		"subject=\"code\" procedure=\"program\" runner=\"go\" selector=\"example.com/billing TestARefundIsPaidBack\" job=\"go-test\" " +
+		"time_limit=\"24h\" surface=\"cli\" run=\"go test ./...\"}\n" +
+		"Claim: A refund pays the payment back.\nProcedure: The test refunds an order.\nFailing example: A build that keeps it.\n:::"
+	interfaceText := ":::component{#billing-to-bank name=\"Billing &amp; bank\" kind=\"interface\" joins=\"billing bank\" removes=\"true\" base=\"1\"}\nBilling pays the bank.\n:::\n"
 	request := FromBlocks(testIssue, []Block{
-		{Address: testIssue + "/spec#a-refund-returns-the-payment", Text: ":::requirement{#a-refund-returns-the-payment kind=\"behavior\" " +
-			"under=\"payments-are-kept\" supports=\"orders-are-billed orders-are-billed\" about=\"billing bank\" base=\"3\" " +
-			"serves=\"b-k1\" parent=\"b-ask\"}\nA refund returns the payment.\n:::\n"},
-		{Address: testIssue + "/verification#a-refund-is-paid-back", Text: ":::check{#a-refund-is-paid-back statement=\"a-refund-returns-the-payment\" " +
-			"subject=\"code\" procedure=\"program\" runner=\"go\" selector=\"example.com/billing TestARefundIsPaidBack\" job=\"go-test\" " +
-			"time_limit=\"24h\" surface=\"cli\" run=\"go test ./...\"}\n" +
-			"Claim: A refund pays the payment back.\nProcedure: The test refunds an order.\nFailing example: A build that keeps it.\n:::"},
-		{Address: testIssue + "/spec#billing-to-bank", Text: ":::component{#billing-to-bank name=\"Billing &amp; bank\" kind=\"interface\" joins=\"billing bank\" removes=\"true\" base=\"1\"}\nBilling pays the bank.\n:::\n"},
+		{Address: testIssue + "/spec#a-refund-returns-the-payment", Text: statementText},
+		{Address: testIssue + "/verification#a-refund-is-paid-back", Text: checkText},
+		{Address: testIssue + "/spec#billing-to-bank", Text: interfaceText},
 		{Address: testIssue + "/spec#k1", Text: ":::criterion{#k1}\nI want refunds.\n:::\n"},
 	})
 	if len(request.Problems) != 0 {
 		t.Fatalf("the request reads problems %+v, want none", request.Problems)
 	}
 	want := []Proposal{
-		{ID: "a-refund-returns-the-payment", Kind: KindStatement, Base: 3, Block: testIssue + "/spec#a-refund-returns-the-payment", Node: specgraph.Statement{
+		{ID: "a-refund-returns-the-payment", Kind: KindStatement, Base: 3, Block: testIssue + "/spec#a-refund-returns-the-payment", Text: statementText, Node: specgraph.Statement{
 			ID: "a-refund-returns-the-payment", Text: "A refund returns the payment.", Kind: specgraph.KindBehavior,
 			Parent: "payments-are-kept", Serves: []string{"orders-are-billed"}, About: []string{"bank", "billing"},
 			Pos: specgraph.Position{File: testIssue + "/spec#a-refund-returns-the-payment", Line: 1},
 		}},
-		{ID: "a-refund-is-paid-back", Kind: KindCheck, Block: testIssue + "/verification#a-refund-is-paid-back", Node: specgraph.Check{
+		{ID: "a-refund-is-paid-back", Kind: KindCheck, Block: testIssue + "/verification#a-refund-is-paid-back", Text: checkText, Node: specgraph.Check{
 			ID: "a-refund-is-paid-back", Serves: "a-refund-returns-the-payment", Claim: "A refund pays the payment back.",
 			ProcedureText: "The test refunds an order.", FailingExample: "A build that keeps it.",
 			Subject: specgraph.SubjectCode, Procedure: specgraph.ProcedureProgram,
 			Test:      &specgraph.Test{Runner: "go", Selector: "example.com/billing TestARefundIsPaidBack", Job: "go-test"},
 			TimeLimit: 24 * time.Hour, Pos: specgraph.Position{File: testIssue + "/verification#a-refund-is-paid-back", Line: 1},
 		}},
-		{ID: "billing-to-bank", Kind: KindInterface, Base: 1, Removes: true, Block: testIssue + "/spec#billing-to-bank", Node: specgraph.Component{
+		{ID: "billing-to-bank", Kind: KindInterface, Base: 1, Removes: true, Block: testIssue + "/spec#billing-to-bank", Text: interfaceText, Node: specgraph.Component{
 			ID: "billing-to-bank", Name: "Billing & bank", Purpose: "Billing pays the bank.", Interface: true,
 			Joins: []string{"bank", "billing"}, Pos: specgraph.Position{File: testIssue + "/spec#billing-to-bank", Line: 1},
 		}},

@@ -367,6 +367,35 @@ export function createProject(input: Body<"/api/v1/projects", "post">, options: 
   return post("/api/v1/projects", { body: input }, options);
 }
 
+/** `PUT /api/v1/projects/{key}/spec-sources/{owner}/{repo}`: names `repo` (`owner/name`) a spec
+ *  source of `project`, read from `branch`, as a person who edits the project does. From then on
+ *  an issue of that repository holds a change request, which a person's approval writes into the
+ *  repository's approved spec. */
+export function putSpecSource(
+  project: string,
+  repo: string,
+  branch = "main",
+  options: ApiOptions = {}
+) {
+  const [owner = "", name = ""] = repo.split("/");
+  return put(
+    "/api/v1/projects/{key}/spec-sources/{owner}/{repo}",
+    { body: { branch }, params: { key: project, owner, repo: name } },
+    options
+  );
+}
+
+/** `GET /api/v1/projects/{key}/spec/{owner}/{repo}/nodes/{id}`: one node of the approved spec of
+ *  `repo` (`owner/name`) in `project`, each version oldest first with its provenance. */
+export function getSpecNode(project: string, repo: string, id: string, options: ApiOptions = {}) {
+  const [owner = "", name = ""] = repo.split("/");
+  return get(
+    "/api/v1/projects/{key}/spec/{owner}/{repo}/nodes/{id}",
+    { params: { id, key: project, owner, repo: name } },
+    options
+  );
+}
+
 /** `PUT /api/v1/projects/{key}/gated-steps`: the design-gate steps the Legion deployment that
  *  serves `project` gates, in the order it gates them, published as that deployment's daemon
  *  publishes them - over the agent bearer, naming its session in `actor`, since the list is the

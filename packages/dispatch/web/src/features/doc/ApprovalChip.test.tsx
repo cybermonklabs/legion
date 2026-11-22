@@ -684,6 +684,40 @@ test("a form refusal of Approve is the header's alone, and any other refusal sta
   }
 });
 
+// A refusal of the approved spec (R22) is met again by the same Approve until its request is
+// written again: the header shows Dispatch's words and each thing the refusal names under the
+// actions, and the shell's corner lists no copy of it with a Retry that can only be refused.
+test("an approval refused by the approved spec shows Dispatch's words and what it names under the actions, and no Retry", async () => {
+  const user = userEvent.setup();
+  const words =
+    "the approved spec changed after the request was written: a-bill-names-its-order (written against version 1; the approved spec holds version 2); write the request again against the approved spec and open a new approval request";
+  const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
+    new ApiError(409, {
+      code: "SPEC_REQUEST_STALE",
+      error: words,
+      statements: [{ base: 1, current: 2, id: "a-bill-names-its-order" }],
+    })
+  );
+  const view = renderChipInShell(artifact({ latest_version: 12, state: "awaiting" }));
+  try {
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    const refusal = await screen.findByRole("alert");
+    expect(refusal.textContent).toBe(
+      `${words}\nIt names: a-bill-names-its-order (read version 1, now version 2).`
+    );
+    expect(refusal.closest('[role="dialog"]')).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Approve" })).not.toHaveAttribute("aria-disabled")
+    );
+    expect(screen.queryByTestId("pending-writes")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(createArtifactReview).toHaveBeenCalledTimes(1);
+  } finally {
+    createArtifactReview.mockRestore();
+    view.unmount();
+  }
+});
+
 // A browser takes the focus off a button that becomes `disabled` under it, which left a reader
 // who pressed Approve on the page itself when the refusal came. The press in flight holds the
 // button with `aria-disabled`, so the focus stays on it and the next Tab reaches Request
