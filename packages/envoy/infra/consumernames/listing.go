@@ -24,14 +24,20 @@ const listingOverlap = 32
 // requestTimeout bounds one JetStream API request whose ctx carries no deadline.
 const requestTimeout = 10 * time.Second
 
+// withRequestTimeout is ctx bounded by requestTimeout, with its cancel, when ctx carries no
+// deadline; a ctx that carries one comes back as it is, with a cancel that does nothing.
+func withRequestTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, requestTimeout)
+}
+
 // apiRequest sends one JetStream API request on nc, body marshalled as JSON (nil sends an empty
 // body), and answers the answer's body; an answer holding an error is a *jetstream.APIError.
 func apiRequest(ctx context.Context, nc *nats.Conn, subject string, body any) (json.RawMessage, error) {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, requestTimeout)
-		defer cancel()
-	}
+	ctx, cancel := withRequestTimeout(ctx)
+	defer cancel()
 	var data []byte
 	if body != nil {
 		var err error
@@ -84,9 +90,9 @@ func apiRefusal(nc *nats.Conn, subject string, err error) error {
 // when the run's connection nc recorded one and err does not name it already: whichever request
 // the grant refused (a JetStream API call, a KV write, a restore's chunk), the error then names the
 // refused subject in the server's words, as apiRefusal names one request's, never a bare timeout.
-// create-bucket, replay, convert and repair-sentinel answer their error through it, the commands
-// whose writes also go through clients other than apiRequest (nats.go's KV and JetStream puts,
-// jsm.go's restore, the selection store's requests).
+// backup, create-bucket, replay, convert and repair-sentinel answer their error through it, the
+// commands whose requests also go through clients other than apiRequest (kvrecords' walk, nats.go's
+// KV and JetStream puts, jsm.go's restore, the selection store's requests).
 func connRefusal(nc *nats.Conn, err error) error {
 	if err == nil || nc == nil {
 		return err

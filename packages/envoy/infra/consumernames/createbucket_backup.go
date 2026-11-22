@@ -12,7 +12,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -111,7 +110,7 @@ func createBucketReadSnapshot(dir string) (*createBucketBackup, error) {
 // records into the bucket's (createBucketWalkFrom). Its sha256 is that of its SHA256SUMS, which
 // names the sum of each of its files and which kvrecords.Read holds to them.
 func createBucketReadWalk(dir string) (*createBucketBackup, error) {
-	sums, err := os.ReadFile(filepath.Join(dir, kvrecords.SumsFile))
+	sum, err := walkSHA256(dir)
 	if err != nil {
 		return nil, fmt.Errorf("--backup %s: %w", dir, err)
 	}
@@ -126,8 +125,7 @@ func createBucketReadWalk(dir string) (*createBucketBackup, error) {
 	if err != nil {
 		return nil, fmt.Errorf("--backup %s: %w", dir, err)
 	}
-	sum := sha256.Sum256(sums)
-	return &createBucketBackup{dir: dir, format: createBucketFormatWalk, sha256: hex.EncodeToString(sum[:]), walk: walk}, nil
+	return &createBucketBackup{dir: dir, format: createBucketFormatWalk, sha256: sum, walk: walk}, nil
 }
 
 // createBucketWalk is a walk backup's content: the records a restore writes back
@@ -243,9 +241,8 @@ func createBucketExactValue(key, op string, data []byte) (*selection.StoreState,
 // the first that is no exact value of its key's kind (createBucketExactValue), naming its key and
 // sequence.
 func createBucketCheckValues(ctx context.Context, nc *nats.Conn, last uint64) error {
-	prefix := "$KV." + selection.SessionBucket + "."
 	for seq := uint64(1); seq <= last; {
-		m, held, err := replayStreamMessage(ctx, nc, selection.SessionBucket, map[string]any{"seq": seq, "next_by_subj": prefix + ">"})
+		m, held, err := replayStreamMessage(ctx, nc, selection.SessionBucket, map[string]any{"seq": seq, "next_by_subj": selectionKeyPrefix + ">"})
 		if err != nil {
 			return err
 		}
@@ -255,7 +252,7 @@ func createBucketCheckValues(ctx context.Context, nc *nats.Conn, last uint64) er
 		if m.Seq < seq {
 			return unknownf(nil, "%s answered sequence %d for the next message from %d", selectionStreamName, m.Seq, seq)
 		}
-		key := strings.TrimPrefix(m.Subject, prefix)
+		key := strings.TrimPrefix(m.Subject, selectionKeyPrefix)
 		if _, err := createBucketExactValue(key, m.Op, m.Data); err != nil {
 			return fmt.Errorf("selection bucket %s's key %s at sequence %d %w", selection.SessionBucket, key, m.Seq, err)
 		}
@@ -266,7 +263,7 @@ func createBucketCheckValues(ctx context.Context, nc *nats.Conn, last uint64) er
 
 // createBucketWalkHolds reads what the selection bucket holds against walk, behind the caller's
 // barrier, for a bucket with no sentinel, by each key's last message and the count of its keys,
-// never by a sequence: a load publishes each record again, so its sequences start over (plan v66).
+// never by a sequence: a load publishes each record again, so its sequences start over (the plan).
 // It answers held, each of walk's keys whose last message is the walk's (createBucketSameEntry);
 // extra, how many of the bucket's keys (info's num_subjects) are neither one of those nor a
 // hold's barrier key (createBucketBarrierKey, by info's subjects, which the caller read); and
@@ -287,9 +284,8 @@ func createBucketWalkHolds(ctx context.Context, nc *nats.Conn, info *jetstream.S
 		held[entry.Key] = true
 	}
 	counted := uint64(len(held))
-	prefix := "$KV." + selection.SessionBucket + "."
 	for subject := range info.State.Subjects {
-		if createBucketBarrierKey(strings.TrimPrefix(subject, prefix), holdID) {
+		if createBucketBarrierKey(strings.TrimPrefix(subject, selectionKeyPrefix), holdID) {
 			counted++
 		}
 	}
@@ -305,7 +301,7 @@ func createBucketSameEntry(m replayMessage, entry createBucketWalkEntry) bool {
 }
 
 // createBucketReplayWalk loads walk into the fresh bucket: each key's last message published
-// again, in the walk's order (plan v66: a walk is loaded by publishing, never restored as a
+// again, in the walk's order (the plan: a walk is loaded by publishing, never restored as a
 // snapshot), and adds the sequence each put was acknowledged at to own: the postcheck's account of
 // the command's own writes, whose count is also what a stop says the load left.
 func createBucketReplayWalk(ctx context.Context, nc *nats.Conn, walk *createBucketWalk, own map[uint64]bool) error {
@@ -368,12 +364,9 @@ func createBucketPutWalkEntry(ctx context.Context, nc *nats.Conn, entry createBu
 // their order, conditional on the key's last sequence being 0 (no message yet), and answers the
 // acknowledged sequence. A header the publish's own condition sets is not taken from the walk.
 func createBucketPutNew(ctx context.Context, nc *nats.Conn, entry createBucketWalkEntry) (uint64, error) {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, requestTimeout)
-		defer cancel()
-	}
-	msg := nats.NewMsg("$KV." + selection.SessionBucket + "." + entry.Key)
+	ctx, cancel := withRequestTimeout(ctx)
+	defer cancel()
+	msg := nats.NewMsg(selectionKeyPrefix + entry.Key)
 	for _, header := range entry.Header {
 		if strings.HasPrefix(header.Name, "Nats-Expected-") {
 			continue
@@ -382,7 +375,7 @@ func createBucketPutNew(ctx context.Context, nc *nats.Conn, entry createBucketWa
 			msg.Header.Add(header.Name, value)
 		}
 	}
-	msg.Header.Set(jetstream.ExpectedLastSubjSeqHeader, strconv.FormatUint(0, 10))
+	msg.Header.Set(jetstream.ExpectedLastSubjSeqHeader, "0")
 	msg.Data = entry.Value
 	reply, err := nc.RequestMsgWithContext(ctx, msg)
 	if err != nil {

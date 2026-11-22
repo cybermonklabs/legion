@@ -41,9 +41,10 @@ const convertConflicts = 16
 
 // convertSet is the hold's convert record: every fixed name convert converts, saved before its
 // first mutation, with the configuration it read from each one's info, so a rerun after a crash
-// between F's delete and N's create still creates N from F's configuration, and restore --finish
-// creates F again from it; and the complete mark, set once a listing holds no fixed name and
-// every family's broker cutover row and store marker read done.
+// between F's delete and N's create still creates N from F's configuration, and restore --prepare
+// copies it into its own saved set, from which restore --finish creates F again; and the complete
+// mark, set once a listing holds no fixed name and every family's broker cutover row and store
+// marker read done.
 type convertSet struct {
 	Names    []convertSetName `json:"names"`
 	Complete bool             `json:"complete"`
@@ -91,7 +92,8 @@ type convertRule struct {
 // (convertLeft), and any other refusal or UNKNOWN records what convert's runs left by
 // convertProgress, an UNKNOWN under leftUnknown, so the hold always has its way out.
 func (r *run) convert(ctx context.Context) error {
-	return connRefusal(r.nc, convertRule{}.run(ctx, r))
+	err := convertRule{}.run(ctx, r)
+	return connRefusal(r.nc, err)
 }
 
 // convertProgress is what a run of convert knows of its saved set since its intent, which the
@@ -130,12 +132,25 @@ func (c convertRule) run(ctx context.Context, r *run) error {
 
 // held is convert's work after its intent, what it knows of its saved set kept in p.
 func (c convertRule) held(ctx context.Context, r *run, a *admission, p *convertProgress) error {
+	// stop is convert's stop for reason, its left read from p at the stop (convertLeft): nothing
+	// while no run of convert saved the set, else the saved set.
+	stop := func(reason string) error {
+		return a.stop(ctx, reason, convertLeft(r.o.holdID, p.set, p.saved))
+	}
+	// checkStores stops convert when a family's store refuses p's set (convertRule.checkStores).
+	checkStores := func() error {
+		refusal, err := c.checkStores(ctx, r, p.set)
+		if err != nil || refusal == "" {
+			return err
+		}
+		return stop(refusal)
+	}
 	cohort, _, found, err := readPrepareCohort(ctx, r.records, r.o.holdID)
 	if err != nil {
 		return err
 	}
 	if !found {
-		return a.stop(ctx, fmt.Sprintf("hold %s has no cohort record: consumer-names prepare --hold %s did not run before hold set, so no fixed name's floor before the hold is known", r.o.holdID, r.o.holdID), convertLeft(r.o.holdID, convertSet{}, false))
+		return stop(fmt.Sprintf("hold %s has no cohort record: consumer-names prepare --hold %s did not run before hold set, so no fixed name's floor before the hold is known", r.o.holdID, r.o.holdID))
 	}
 	r.read(fmt.Sprintf("hold %s's cohort record", r.o.holdID))
 	nc, _, err := r.conn(ctx)
@@ -172,11 +187,8 @@ func (c convertRule) held(ctx context.Context, r *run, a *admission, p *convertP
 		r.read("the info of each fixed name it listed")
 		p.set = c.withDispatch(r, p.set)
 	}
-	if refusal, err := c.checkStores(ctx, r, p.set); err != nil || refusal != "" {
-		if err != nil {
-			return err
-		}
-		return a.stop(ctx, refusal, convertLeft(r.o.holdID, p.set, found))
+	if err := checkStores(); err != nil {
+		return err
 	}
 	r.read("the store of each of its families: " + strings.Join(c.families(r, p.set), ", "))
 	if !found {
@@ -193,7 +205,9 @@ func (c convertRule) held(ctx context.Context, r *run, a *admission, p *convertP
 
 	var noStart []convertNoStart
 	converted := 0
-	for _, name := range p.set.Names {
+	// convertOne converts one saved name (convertName), counting it in converted when it answers
+	// done, and in noStart when it has no safe start.
+	convertOne := func(name convertSetName) error {
 		done, missing, err := c.convertName(ctx, r, nc, name, cohort.member(name.Fixed))
 		if err != nil {
 			return err
@@ -204,9 +218,15 @@ func (c convertRule) held(ctx context.Context, r *run, a *admission, p *convertP
 		if done {
 			converted++
 		}
+		return nil
+	}
+	for _, name := range p.set.Names {
+		if err := convertOne(name); err != nil {
+			return err
+		}
 	}
 	if len(noStart) > 0 {
-		return a.stop(ctx, convertNoStartReason(r.o.holdID, noStart), convertLeft(r.o.holdID, p.set, true))
+		return stop(convertNoStartReason(r.o.holdID, noStart))
 	}
 	r.read(fmt.Sprintf("the record and consumers of each of the %d saved names", len(p.set.Names)))
 
@@ -230,27 +250,20 @@ func (c convertRule) held(ctx context.Context, r *run, a *admission, p *convertP
 			break
 		}
 		added := false
-		for i, name := range fixed {
+		for _, name := range fixed {
 			if p.set.has(name.Fixed) {
 				continue
 			}
-			info, err := consumerInfo(ctx, nc, notifications, name.Fixed)
+			entry, err := convertEntry(ctx, nc, name)
 			if err != nil {
-				return unknownf(err, "the info of %s", name.Fixed)
+				return err
 			}
-			if info != nil {
-				config := info.Config
-				fixed[i].Config = &config
-			}
-			p.set.Names = append(p.set.Names, fixed[i])
+			p.set.Names = append(p.set.Names, entry)
 			added = true
 		}
 		if added {
-			if refusal, err := c.checkStores(ctx, r, p.set); err != nil || refusal != "" {
-				if err != nil {
-					return err
-				}
-				return a.stop(ctx, refusal, convertLeft(r.o.holdID, p.set, true))
+			if err := checkStores(); err != nil {
+				return err
 			}
 			if gen, err = c.saveSet(ctx, r, p.set, gen); err != nil {
 				return err
@@ -261,20 +274,13 @@ func (c convertRule) held(ctx context.Context, r *run, a *admission, p *convertP
 				if saved.Fixed != name.Fixed {
 					continue
 				}
-				done, missing, err := c.convertName(ctx, r, nc, saved, cohort.member(saved.Fixed))
-				if err != nil {
+				if err := convertOne(saved); err != nil {
 					return err
-				}
-				if missing != nil {
-					noStart = append(noStart, *missing)
-				}
-				if done {
-					converted++
 				}
 			}
 		}
 		if len(noStart) > 0 {
-			return a.stop(ctx, convertNoStartReason(r.o.holdID, noStart), convertLeft(r.o.holdID, p.set, true))
+			return stop(convertNoStartReason(r.o.holdID, noStart))
 		}
 	}
 	if !clean {
@@ -391,14 +397,9 @@ func (c convertRule) collect(ctx context.Context, nc *nats.Conn, cohort prepareC
 		if !ok {
 			continue
 		}
-		entry := convertSetName{Family: m.Family, Logical: m.Logical, Fixed: name}
-		info, err := consumerInfo(ctx, nc, notifications, name)
+		entry, err := convertEntry(ctx, nc, convertSetName{Family: m.Family, Logical: m.Logical, Fixed: name})
 		if err != nil {
-			return convertSet{}, unknownf(err, "the info of %s", name)
-		}
-		if info != nil {
-			config := info.Config
-			entry.Config = &config
+			return convertSet{}, err
 		}
 		set.Names = append(set.Names, entry)
 	}
@@ -409,6 +410,21 @@ func (c convertRule) collect(ctx context.Context, nc *nats.Conn, cohort prepareC
 	}
 	slices.SortFunc(set.Names, func(a, b convertSetName) int { return strings.Compare(a.Fixed, b.Fixed) })
 	return set, nil
+}
+
+// convertEntry is entry, a fixed name of the set, with its configuration as its info answers it,
+// and none for a name the server does not hold. collect and held's listings both build a set
+// entry so.
+func convertEntry(ctx context.Context, nc *nats.Conn, entry convertSetName) (convertSetName, error) {
+	info, err := consumerInfo(ctx, nc, notifications, entry.Fixed)
+	if err != nil {
+		return convertSetName{}, unknownf(err, "the info of %s", entry.Fixed)
+	}
+	if info != nil {
+		config := info.Config
+		entry.Config = &config
+	}
+	return entry, nil
 }
 
 // saveSet writes set as the hold's convert record at gen and answers its new gen.
@@ -724,7 +740,7 @@ func (c convertRule) convertName(ctx context.Context, r *run, nc *nats.Conn, nam
 			}
 			next.Start = clampStart(slices.Min(starts), stream.State)
 			next.LastFloor, next.Restore = nil, nil
-			if revision != 0 && next.Start == record.Start && next.Current == record.Current && len(next.Retired) == len(record.Retired) {
+			if revision != 0 && next.Start == record.Start && next.Current == record.Current {
 				return false, nil, nil
 			}
 			if _, err := st.Write(ctx, m.Logical, next, revision); err != nil {
@@ -782,6 +798,13 @@ func (c convertRule) convertName(ctx context.Context, r *run, nc *nats.Conn, nam
 //     cleared.
 func (c convertRule) settle(ctx context.Context, r *run, nc *nats.Conn, st familyStore, m member, name convertSetName, bound *prepareCohortMember, record selection.Record, revision uint64) error {
 	op := record.Op
+	// dropCandidate retires op's candidate and clears the operation, its start kept.
+	dropCandidate := func() error {
+		next := retire(convertClone(record), m.Fixed, op.Candidate)
+		next.Op = nil
+		_, err := st.Write(ctx, m.Logical, next, revision)
+		return err
+	}
 	if op.Kind == selection.OpDelete {
 		next := convertClone(record)
 		if !op.FloorRecorded && op.Old != "" {
@@ -809,10 +832,7 @@ func (c convertRule) settle(ctx context.Context, r *run, nc *nats.Conn, st famil
 		return err
 	}
 	if op.Kind == selection.OpReplace && record.Start == 0 {
-		next := retire(convertClone(record), m.Fixed, op.Candidate)
-		next.Op = nil
-		_, err := st.Write(ctx, m.Logical, next, revision)
-		return err
+		return dropCandidate()
 	}
 	info, err := c.awaitCandidate(ctx, r, nc, *op)
 	if err != nil {
@@ -822,10 +842,7 @@ func (c convertRule) settle(ctx context.Context, r *run, nc *nats.Conn, st famil
 		return c.publish(ctx, nc, st, m, record, revision, info)
 	}
 	if op.Kind != selection.OpReplace {
-		next := retire(convertClone(record), m.Fixed, op.Candidate)
-		next.Op = nil
-		_, err := st.Write(ctx, m.Logical, next, revision)
-		return err
+		return dropCandidate()
 	}
 	config := name.Config
 	if config == nil {
@@ -1040,8 +1057,9 @@ func convertFloor(info *jetstream.ConsumerInfo) uint64 {
 
 // clampStart is today's clamp (internal/bus/session_consumers.go create, firstStart) of a create's
 // start on a stream in state: a start past the sequence after the stream's last becomes the
-// stream's first sequence, at least 1, the sequence an empty stream stores next. convert,
-// convert's settle and replace start each fresh name through it.
+// stream's first sequence, at least 1, the sequence an empty stream stores next. convertName and
+// replace start each fresh name through it; convert's settle reuses the start an open operation
+// saved.
 func clampStart(start uint64, state jetstream.StreamState) uint64 {
 	if start > state.LastSeq+1 {
 		return max(1, state.FirstSeq)
@@ -1071,7 +1089,7 @@ func convertClone(record selection.Record) selection.Record {
 // retire is record with name added to its retired names, once, in a copy of its list: convert,
 // replay and restore each retire a name a record no longer selects through it. It never retires
 // fixed, the logical's fixed name: the selection package refuses a record that names it anywhere
-// but as an open operation's old name (consumernames checkNames), and its own replace deletes the
+// but as an open operation's old name (consumernames Names.Check), and its own replace deletes the
 // fixed name rather than retiring it, so whoever replaces the fixed name deletes it.
 func retire(record selection.Record, fixed, name string) selection.Record {
 	if name != "" && name != fixed && !slices.Contains(record.Retired, name) {
