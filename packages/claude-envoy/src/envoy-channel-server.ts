@@ -1703,9 +1703,11 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * (`connectionLost`, which the replacement's own step in the chain clears, `reopenFor`): until
    * then the new id's relay can be neither moved to its credential nor subscribed, so the new id's
    * registration would be refused after the identity had already moved, and the handoff would end
-   * there, half done and never reported. The check follows the read of the handoff file, since a
-   * heartbeat whose read spans the replacement's dial reaches the new connection before that
-   * connection's set-up runs. The next heartbeat after it adopts the `/clear`.
+   * there, half done and never reported. A heartbeat queued in the chain can run after the
+   * replacement has connected and before that set-up. The check follows the read of the handoff
+   * file: the connection can close for good, and its replacement connect, while that read is
+   * awaited, and only a check after it sees the loss. The next heartbeat after the set-up adopts
+   * the `/clear`.
    *
    * The deregistration of the old id carries this process's client instance id, so the listener
    * removes that entry only while it is still this instance's: a later process that resumed the
