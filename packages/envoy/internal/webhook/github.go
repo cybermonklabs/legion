@@ -144,11 +144,13 @@ func githubHandler(secret, mentionTrigger, reviewerAppID, verdictAppID string, p
 		// integration and the App's id, so a line that names it says which App delivered.
 		targetType := r.Header.Get("X-GitHub-Hook-Installation-Target-Type")
 		targetID := r.Header.Get("X-GitHub-Hook-Installation-Target-ID")
-		// The two headers are not covered by the body's signature, so a signed body replayed with
-		// forged headers chooses them: both lines log them quoted (%q), so a value holding a space
-		// or an `=` adds no field to the line.
+		// The body's signature covers neither these two headers nor X-GitHub-Delivery, so a signed
+		// body replayed with forged headers chooses them. Each line logs what it holds of them
+		// quoted (%q): the github sender line target_type, target_id and delivery, the github
+		// published line target_id, delivery and the key built from the delivery, and the github
+		// mention detected line delivery. A value holding a space or an `=` adds no field.
 		if githubEvent(event) {
-			log.Printf("github sender login=%s type=%s target_type=%q target_id=%q delivery=%s event=%s",
+			log.Printf("github sender login=%s type=%s target_type=%q target_id=%q delivery=%q event=%s",
 				githubSenderField(payload, "login"),
 				githubSenderField(payload, "type"),
 				targetType, targetID,
@@ -211,7 +213,7 @@ func githubHandler(secret, mentionTrigger, reviewerAppID, verdictAppID string, p
 			// deliver of one event can be told apart and counted. A topic published before a later
 			// one failed is logged too.
 			err := publisher.PublishEachWithin(answer, item, func(topic string, duplicate, resent bool) {
-				log.Printf("github published delivery=%s event=%s action=%s topic=%s key=%s target_id=%q result=%s resent=%t",
+				log.Printf("github published delivery=%q event=%s action=%s topic=%s key=%q target_id=%q result=%s resent=%t",
 					delivery, event, action, topic, item.DedupeKey, targetID, publishResult(duplicate, resent), resent)
 			})
 			if err != nil {
@@ -220,7 +222,7 @@ func githubHandler(secret, mentionTrigger, reviewerAppID, verdictAppID string, p
 			}
 		}
 		if len(items) > 1 {
-			log.Printf("github mention detected delivery=%s trigger=%s", delivery, strings.TrimSpace(trigger))
+			log.Printf("github mention detected delivery=%q trigger=%s", delivery, strings.TrimSpace(trigger))
 		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))

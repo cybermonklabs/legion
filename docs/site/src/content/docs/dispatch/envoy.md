@@ -65,8 +65,12 @@ the delivery's GUID, its event and action, the topic, the key, the hook target's
 `result=duplicate`, the stream's answer, and `resent=true` where that answer came to the bus's
 resend after the connection closed under its first send, which counts as `stored` since the first
 send may have stored that copy. A comment or a review also logs a `github sender` line, which
-names the sender and the hook target's type and id. Both lines write the two hook-target headers
-quoted (`target_id="5341240"`), since the body's signature does not cover them.
+names the sender and the hook target's type and id. The body's signature covers neither
+`X-GitHub-Delivery` nor the two hook-target headers, so the lines write what they hold of them
+quoted: the `github sender` line `target_type`, `target_id` and `delivery`
+(`target_type="integration" target_id="5341240"`), the `github published` line `target_id`,
+`delivery` and `key`, the key being built from the delivery, and the `github mention detected`
+line `delivery`.
 
 When a repository has been renamed, the listener publishes each of its events a second time under
 the former name, for every pair `ENVOY_GITHUB_REPOSITORY_RENAMES` configures as

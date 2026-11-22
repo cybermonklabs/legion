@@ -22,11 +22,11 @@ import (
 )
 
 // publishedLine is the github published line of a push of sharedDelivery on topic, from the App
-// targetID, with the stream's answer result to a publish that was not sent again. The hook
-// target's id is logged quoted (%q).
+// targetID, with the stream's answer result to a publish that was not sent again. The delivery,
+// the key and the hook target's id are logged quoted (%q).
 func publishedLine(topic, targetID, result string) string {
-	return fmt.Sprintf("github published delivery=%s event=push action= topic=%s key=github.%s target_id=%q result=%s resent=false",
-		sharedDelivery, topic, sharedDelivery, targetID, result)
+	return fmt.Sprintf("github published delivery=%q event=push action= topic=%s key=%q target_id=%q result=%s resent=false",
+		sharedDelivery, topic, "github."+sharedDelivery, targetID, result)
 }
 
 // A publish whose connection closes under it after its first send reached the stream is sent
@@ -88,8 +88,8 @@ func TestAResendWhoseFirstTryWasStoredLogsStored(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatal("the delivery whose publish was sent again did not answer")
 	}
-	want := []string{fmt.Sprintf("github published delivery=%s event=push action= topic=%s key=github.%s target_id=%q result=stored resent=true",
-		sharedDelivery, topic, sharedDelivery, "5341240")}
+	want := []string{fmt.Sprintf("github published delivery=%q event=push action= topic=%s key=%q target_id=%q result=stored resent=true",
+		sharedDelivery, topic, "github."+sharedDelivery, "5341240")}
 	if got := linesStarting(logged.String(), "github published "); !slices.Equal(got, want) {
 		t.Fatalf("the resent publish logged\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
@@ -209,36 +209,51 @@ func fieldCount(fields []string, key string) int {
 	return n
 }
 
-// The two hook-target headers are not covered by the body's signature, so a signed body replayed
-// with forged headers chooses their values. The github sender and github published lines log each
-// of them quoted (%q), so a forged value holding a space and an `=` adds no field of its own: a
-// reader of the line finds one result= and one target_id=, which holds the whole forged value.
+// X-GitHub-Delivery and the two hook-target headers are not covered by the body's signature, so a
+// signed body replayed with forged headers chooses their values. The github sender and github
+// published lines log each of them quoted (%q), and the key built from the delivery too, so a
+// forged value holding a space and an `=` adds no field of its own: a reader of each line finds one
+// delivery= and one target_id=, each holding the whole forged value, and one result= on the
+// published line alone. The github mention detected line quotes the delivery as well.
 func TestAForgedHookTargetHeaderAddsNoFieldToTheGitHubLines(t *testing.T) {
 	logged := captureLog(t)
 	handler := GitHubHandler("s", "@legion", "", "", githubStream(t), &mockRecorder{})
 	const (
-		forgedType   = "integration result=stored"
-		forgedTarget = "1 result=stored"
+		forgedDelivery = "d-1 result=stored target_id=5341305"
+		forgedType     = "integration result=stored"
+		forgedTarget   = "1 result=stored"
 	)
-	body := withInstallation(t, withComment(githubFixture(t, "issue-comment-pr-created"), "Please review."), 1001)
-	postDelivery(t, handler, "issue_comment", sharedDelivery, body, map[string]string{
+	body := withInstallation(t, withComment(githubFixture(t, "issue-comment-pr-created"), "@legion please review"), 1001)
+	postDelivery(t, handler, "issue_comment", forgedDelivery, body, map[string]string{
 		"X-GitHub-Hook-Installation-Target-Type": forgedType,
 		"X-GitHub-Hook-Installation-Target-ID":   forgedTarget,
 	})
 	published := linesStarting(logged.String(), "github published ")
 	senders := linesStarting(logged.String(), "github sender ")
-	if len(published) != 1 || len(senders) != 1 {
-		t.Fatalf("logged %d github published and %d github sender lines, want one each:\n%s", len(published), len(senders), logged.String())
+	mentions := linesStarting(logged.String(), "github mention detected ")
+	if len(published) == 0 || len(senders) != 1 || len(mentions) != 1 {
+		t.Fatalf("logged %d github published, %d github sender and %d github mention detected lines, want some, one and one:\n%s",
+			len(published), len(senders), len(mentions), logged.String())
 	}
-	for _, line := range []string{published[0], senders[0]} {
+	for _, line := range append(append(slices.Clone(published), senders...), mentions...) {
 		fields := logFields(line)
+		if n := fieldCount(fields, "delivery"); n != 1 || !slices.Contains(fields, "delivery="+strconv.Quote(forgedDelivery)) {
+			t.Errorf("a reader of %q finds %d delivery= fields, want one holding %q whole", line, n, forgedDelivery)
+		}
+		if strings.HasPrefix(line, "github mention detected ") {
+			continue
+		}
 		if n := fieldCount(fields, "target_id"); n != 1 || !slices.Contains(fields, "target_id="+strconv.Quote(forgedTarget)) {
 			t.Errorf("a reader of %q finds %d target_id= fields, want one holding %q whole", line, n, forgedTarget)
 		}
-		// The published line writes one result= of its own; the sender line writes none.
+		// A published line writes one result= of its own, and a key built from the delivery; the
+		// sender line writes neither.
 		want := 0
-		if line == published[0] {
+		if strings.HasPrefix(line, "github published ") {
 			want = 1
+			if n := fieldCount(fields, "key"); n != 1 || !slices.Contains(fields, "key="+strconv.Quote("github."+forgedDelivery)) {
+				t.Errorf("a reader of %q finds %d key= fields, want one holding the key whole", line, n)
+			}
 		}
 		if n := fieldCount(fields, "result"); n != want {
 			t.Errorf("a reader of %q finds %d result= fields, want %d", line, n, want)
@@ -283,11 +298,11 @@ func TestGitHubSenderLineNamesTheWebhookApp(t *testing.T) {
 	}`)
 
 	lines := post("issue_comment", "d-target", comment, appDelivery("5341240"))
-	if want := []string{`github sender login=octocat type=User target_type="integration" target_id="5341240" delivery=d-target event=issue_comment`}; !slices.Equal(lines, want) {
+	if want := []string{`github sender login=octocat type=User target_type="integration" target_id="5341240" delivery="d-target" event=issue_comment`}; !slices.Equal(lines, want) {
 		t.Errorf("lines = %q, want %q", lines, want)
 	}
 	lines = post("issue_comment", "d-no-target", comment, nil)
-	if want := []string{`github sender login=octocat type=User target_type="" target_id="" delivery=d-no-target event=issue_comment`}; !slices.Equal(lines, want) {
+	if want := []string{`github sender login=octocat type=User target_type="" target_id="" delivery="d-no-target" event=issue_comment`}; !slices.Equal(lines, want) {
 		t.Errorf("lines without the headers = %q, want %q: both target keys with no value", lines, want)
 	}
 	for _, other := range []struct {
@@ -330,8 +345,8 @@ func TestGitHubPublishedLineNamesKeyTargetAndResult(t *testing.T) {
 			want := func(targetID, result string) []string {
 				var lines []string
 				for _, topic := range topics {
-					lines = append(lines, fmt.Sprintf("github published delivery=%s event=%s action=%s topic=%s key=github.%s target_id=%q result=%s resent=false",
-						sharedDelivery, row.event, action, topic, sharedDelivery, targetID, result))
+					lines = append(lines, fmt.Sprintf("github published delivery=%q event=%s action=%s topic=%s key=%q target_id=%q result=%s resent=false",
+						sharedDelivery, row.event, action, topic, "github."+sharedDelivery, targetID, result))
 				}
 				return lines
 			}
