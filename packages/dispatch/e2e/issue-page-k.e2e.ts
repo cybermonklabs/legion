@@ -23,6 +23,7 @@ import {
   DESKTOP,
   drawnRows,
   expectIssuePageDrawn,
+  expectOpeningLanded,
   expectRowGroups,
   expectRowLayouts,
   focusThePage,
@@ -272,6 +273,7 @@ async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSe
     // The focus is moved to the page only after that, or the first focus could land after the
     // move and keep the focus off the page.
     const question = blockNodeId(await primarySlug(seeded.key), seeded.openQuestion.blockId);
+    await expectOpeningLanded(page);
     await expect
       .poll(() => focusedNodeId(page), {
         message: "the conversation does not open on the question that waits on the reader",
@@ -699,8 +701,8 @@ test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser
 
 // c-rows (2): the chart is one tab stop of the page, and the outline's own keys move through its
 // steps in their order, passing over a cycle's row. Beyond the check: an address naming a task of
-// a cycle puts the focus on the cycle's row, an address naming a node that is no task draws the
-// plan as /plan does, Escape gives a row back from its link, and a press of the switch under an
+// a cycle puts the focus on the cycle's row, one naming a node the view draws no row for lands on
+// it in the outline, Escape gives a row back from its link, and a press of the switch under an
 // address leaves the focus on the button pressed.
 // The plan is `seedPlanOrder`, as row (1) reads it. At 390 by 664 px, after End and after Home,
 // the focused card stands on screen, clear of what stays at the top, whose height the page
@@ -719,9 +721,11 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
         .toBe(id);
     };
 
-    // `t p` turns Plan on from the conversation, and puts the focus on the first step's row.
+    // `t p` turns Plan on from the conversation, and puts the focus on the first step's row. The
+    // page's opening puts the focus on a row first, and the focus leaves for the page after it.
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    await expectOpeningLanded(page);
     await focusThePage(page);
     await page.keyboard.press("t");
     await page.keyboard.press("p");
@@ -818,6 +822,7 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
     // Back on /plan, Tab goes from "Chart" to "Steps", then into the chart at its first step;
     // Enter and Space press the two buttons.
     await gotoIssue(page, planPath(seeded.key));
+    await expectOpeningLanded(page);
     await expect(planView(page, "chart")).toHaveAttribute("aria-pressed", "true");
     await expect.poll(() => chartOrder(page)).toEqual(charted);
     await planView(page, "chart").focus();
@@ -855,6 +860,7 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
     // Under an address that names a step, a press of the switch is the reader taking over: the
     // focus stays on the button pressed.
     await gotoIssue(page, planPath(seeded.key, `#b-${T.first}`));
+    await expectOpeningLanded(page);
     await expect
       .poll(() => focusedNodeId(page), { message: `#b-${T.first} does not focus its row` })
       .toBe(step(T.first));
@@ -884,6 +890,7 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
     // An address naming a task of a cycle puts the focus on the cycle's row, which stands for
     // that task, and the arrow goes on to the step after it.
     await gotoIssue(page, planPath(seeded.key, `#b-${T.knotA}`));
+    await expectOpeningLanded(page);
     await expect(
       planChart(page).locator("[data-plan-cycle-row]"),
       `#b-${T.knotA} does not put the focus on the cycle's row`
@@ -895,34 +902,36 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
       .toBe(step(T.knotA));
     await reach("ArrowDown", step(T.loose));
 
-    // An address naming a node that is no task draws the plan as /plan does: the statement's
-    // address draws no row of it, and a comment's no bar of it.
-    const statement = blockNodeId(specSlug, requirementBlockId(1));
-    await gotoIssue(page, planPath(seeded.key, `#b-${requirementBlockId(1)}`));
-    await expect
-      .poll(() => chartOrder(page), {
-        message: `#b-${requirementBlockId(1)} does not draw the bars of /plan`,
-      })
-      .toEqual(charted);
-    await expect(
-      nodeRow(page, statement),
-      `#b-${requirementBlockId(1)} draws a row of the statement it names`
-    ).toHaveCount(0);
+    // An address naming a node the view draws no row for - a comment, a statement - draws the
+    // outline in the view's place, which lands on that node's row. The view tells the stage so
+    // once every read has answered, so each reading waits for the focus on that row before it
+    // reads that no chart is drawn. Each address is a page load of its own: the comment's comes
+    // after a fragment and the statement's after the comment's search, so neither changes the
+    // fragment alone on the page that is already open.
     const comment = await createComment(seeded.key, { body: "The plan reads in its order." });
     await gotoIssue(page, planPath(seeded.key, `?comment=${comment.id}`));
     await expect
-      .poll(() => chartOrder(page), {
-        message: "?comment= does not draw the bars of /plan",
+      .poll(() => focusedNodeId(page), {
+        message: "?comment= leaves the focus off the outline's row of the comment",
       })
-      .toEqual(charted);
+      .toBe(comment.id);
+    await expect(planChart(page), "?comment= draws the chart where the outline is").toHaveCount(0);
+    const statement = blockNodeId(specSlug, requirementBlockId(1));
+    await gotoIssue(page, planPath(seeded.key, `#b-${requirementBlockId(1)}`));
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: `#b-${requirementBlockId(1)} leaves the focus off the outline's row of the statement`,
+      })
+      .toBe(statement);
     await expect(
-      planBody(page).locator('[data-node-row][data-node-type="comment"]'),
-      "?comment= draws the comment it names as a bar"
+      planChart(page),
+      `#b-${requirementBlockId(1)} draws the chart in the outline's place`
     ).toHaveCount(0);
 
     // On a phone the down arrow moves from card to card in the same order.
     await page.setViewportSize(PHONE_K);
     await gotoIssue(page, planPath(seeded.key));
+    await expectOpeningLanded(page);
     await expect.poll(() => chartOrder(page)).toEqual(charted);
     await nodeRow(page, step(T.third)).first().focus();
     await expect.poll(() => focusedNodeId(page)).toBe(step(T.third));
@@ -1188,6 +1197,7 @@ test("on a phone the Plan chart is one card for each step @phone @phone-only", a
     const T = PLAN_ORDER_TASKS;
     await page.setViewportSize(PHONE_K);
     await gotoIssue(page, planPath(seeded.key));
+    await expectOpeningLanded(page);
 
     await expect(
       planChart(page).locator("[data-plan-bar-row]"),

@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  Dispatch approves a document in milliseconds again, not in up to a minute. Each review a write
+  records, and each ask it opens, found the event it had just appended by comparing `events.id`
+  with `currval(...)`. Postgres evaluates that volatile function row by row and cannot use it as an
+  index key, so each of those statements read the whole `events` table while it held the owner's
+  lock and its transaction id: two whole reads per reviewed document (a spec and its Verification
+  document made four), and one per ask opened. Live event readers waited behind that transaction
+  id too. The statements now take the id from a scalar subquery, which Postgres runs once and uses
+  as a key of `events_pkey`, so each reads one row.
+time: 2026-11-21T19:12:01Z
+custom:
+    Issue: pr4883

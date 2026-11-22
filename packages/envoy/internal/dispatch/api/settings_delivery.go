@@ -47,8 +47,8 @@ type deliverySettingsInput struct {
 
 // putDeliverySettings answers PUT /api/v1/settings/delivery: set (or replace) the one
 // delivery_settings row after proving the GitHub App can read the deploy repository, the same
-// access-check-before-write shape putArchitectureSource uses. Unlike putArchitectureSource and
-// putRepoProject, this is a bare pool write with no appended event: every sibling settings route
+// access-check-before-write shape putArchitectureSource uses. Unlike putArchitectureSource, this
+// is a bare pool write with no appended event: every sibling settings route
 // scopes its event to the project it changes (projectOwner), but delivery_settings is a true
 // singleton with no project, issue, or artifact to own it, and events/broker.go's
 // eventOwnerKey refuses an event with none of those unless its payload names a specific session
@@ -71,6 +71,14 @@ func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	// The deploy repository and each excluded one are stored under their new name where a rename
+	// pair renames them away (refs.Renames.Canonical), so no write stores an old name. The access
+	// check below reads the deploy repository by that name, the one GitHub answers for.
+	repoOwner, repoName = s.renamedOwnerName(repoOwner, repoName)
+	excludedRepos := make([]string, len(input.ExcludedRepos))
+	for i, excluded := range input.ExcludedRepos {
+		excludedRepos[i] = s.deps.Renames.Canonical(excluded)
 	}
 	for name, value := range map[string]string{
 		"deploy_workflow_path":    input.DeployWorkflowPath,
@@ -109,7 +117,7 @@ func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 		ProductionApplyStepName: optionalJobName(input.ProductionApplyStepName),
 		PRChecksWorkflowPath:    input.PRChecksWorkflowPath,
 		PopulationAuthors:       input.PopulationAuthors,
-		ExcludedRepos:           input.ExcludedRepos,
+		ExcludedRepos:           excludedRepos,
 		StagingE2EJobName:       optionalJobName(input.StagingE2EJobName),
 		StagingApplyJobName:     optionalJobName(input.StagingApplyJobName),
 		PRChecksRollupJobName:   optionalJobName(input.PRChecksRollupJobName),

@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  A Go tool that reads `AGENT_SECRETS_MACHINE_IDENTITY` (`agent-secrets`, the helper,
+  `legion controller start`) now refuses `device-login` by name: it is a device login, which only
+  the TypeScript client of the Dispatch and Envoy plugins trades, so the refusal says to unset it
+  for that command or to name `kubernetes`, `metadata` or `pool`. Before, it called `device-login`
+  a kind it does not know.
