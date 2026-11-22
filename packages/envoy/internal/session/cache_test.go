@@ -69,15 +69,20 @@ func waitFollowing(t *testing.T, r *SessionRegistry) {
 	})
 }
 
-// cacheReady waits for r's first read to end (WaitForCacheReady) and fails the test when that wait
-// returns an error. Its one bound is the test binary's deadline (testwait.Receive).
-func cacheReady(t *testing.T, r *SessionRegistry) {
+// cacheReady waits for r's first read to end (WaitForCacheReady: the session registry's, or the
+// known-session store's) and fails the test when that wait returns an error. Its one bound is the
+// test binary's deadline (testwait.Receive).
+func cacheReady(t *testing.T, r interface{ WaitForCacheReady(context.Context) error }) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	what := "the session cache's first read to end"
+	if _, known := r.(*KnownSessions); known {
+		what = "the known-session store's first read to end"
+	}
 	ready := make(chan error, 1)
 	go func() { ready <- r.WaitForCacheReady(ctx) }()
-	if err := testwait.Receive(t, "the session cache's first read to end", ready); err != nil {
+	if err := testwait.Receive(t, what, ready); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
 	}
 }

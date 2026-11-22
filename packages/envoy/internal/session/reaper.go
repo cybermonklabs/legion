@@ -156,8 +156,9 @@ func (r *SessionRegistry) ReapSessions(ctx context.Context, reaper SessionReaper
 	stream := reaper.streamState(ctx)
 	// One budget for the whole pass, not one per record: a pass that reaped sixty records with a
 	// budget each could spend sixty times it on the one bus every delivery this listener makes
-	// crosses, and the next tick would already be due.
-	deadline := time.Now().Add(reapStoredReadBudget)
+	// crosses, and the next tick would already be due. It is measured on the registry's clock, as
+	// the records' ages are, which is the real one outside a test.
+	budget := readBudget{now: r.now, deadline: r.now().Add(reapStoredReadBudget)}
 	reaped := 0
 	for _, candidate := range candidates {
 		deleted, err := r.deleteGone(ctx, candidate)
@@ -173,7 +174,7 @@ func (r *SessionRegistry) ReapSessions(ctx context.Context, reaper SessionReaper
 		}
 		reaped++
 		reaper.deleteConsumer(ctx, candidate.sessionID)
-		stored, bounded := reaper.storedAfterLastSeen(ctx, candidate.sessionID, candidate.lastSeen, stream, deadline)
+		stored, bounded := reaper.storedAfterLastSeen(ctx, candidate.sessionID, candidate.lastSeen, stream, budget)
 		reaper.Reaped.Inc()
 		reaper.StoredAfterLastSeen.Add(int64(stored))
 		r.logger().Warn("session reaper deleted the record of a session that reached the gone horizon with no clean stop",
@@ -337,14 +338,14 @@ func (reaper SessionReaper) streamState(ctx context.Context) nats.StreamState {
 // bounded reports a count that stopped at reapStoredMessageCap, at the pass's read deadline, at
 // the end of ctx or at a read that failed, so a partial count is never read as the whole of what
 // was stored.
-func (reaper SessionReaper) storedAfterLastSeen(ctx context.Context, sessionID string, lastSeen int64, stream nats.StreamState, deadline time.Time) (count int, bounded bool) {
+func (reaper SessionReaper) storedAfterLastSeen(ctx context.Context, sessionID string, lastSeen int64, stream nats.StreamState, budget readBudget) (count int, bounded bool) {
 	if reaper.Client == nil || stream.LastSeq == 0 || lastSeen <= 0 {
 		return 0, false
 	}
 	// The session's agent subject in either form, the session alone and under any project
 	// (contracts.TopicForms), each walked on its own: its consumer filters on both.
 	for _, subject := range contracts.TopicForms(contracts.LegacyAgentSubject(sessionID)) {
-		stored, partial := reaper.storedOnAfter(ctx, subject, lastSeen, stream, deadline)
+		stored, partial := reaper.storedOnAfter(ctx, subject, lastSeen, stream, budget)
 		count += stored
 		if partial {
 			return count, true
@@ -354,13 +355,13 @@ func (reaper SessionReaper) storedAfterLastSeen(ctx context.Context, sessionID s
 }
 
 // storedOnAfter is storedAfterLastSeen for one subject.
-func (reaper SessionReaper) storedOnAfter(ctx context.Context, subject string, lastSeen int64, stream nats.StreamState, deadline time.Time) (count int, bounded bool) {
+func (reaper SessionReaper) storedOnAfter(ctx context.Context, subject string, lastSeen int64, stream nats.StreamState, budget readBudget) (count int, bounded bool) {
 	walk := &storedWalk{
-		reaper:   reaper,
-		subject:  subject,
-		after:    time.UnixMilli(lastSeen),
-		stream:   stream,
-		deadline: deadline,
+		reaper:  reaper,
+		subject: subject,
+		after:   time.UnixMilli(lastSeen),
+		stream:  stream,
+		budget:  budget,
 	}
 	first, outcome := walk.firstAfter(ctx)
 	if outcome != storedFound {
@@ -377,16 +378,31 @@ func (reaper SessionReaper) storedOnAfter(ctx context.Context, subject string, l
 	return count, false
 }
 
+// readBudget is what is left of a pass's time for its stored-message counts
+// (reapStoredReadBudget): the deadline the budget ends at, and the clock it is measured on, which
+// is the registry's (SessionRegistry.now). A test that holds that clock decides when the budget
+// runs out, rather than how long a loaded machine takes over the reads. What is left on that clock
+// becomes each read's timeout in real time (storedWalk.next): in production the two clocks are
+// one, and under a held clock each read may wait the whole budget, the walk then bounded by its
+// read cap and ctx.
+type readBudget struct {
+	now      func() time.Time
+	deadline time.Time
+}
+
+// left is how long the budget has left on its clock; below zero once it has run out.
+func (b readBudget) left() time.Duration { return b.deadline.Sub(b.now()) }
+
 // storedWalk is one reaped session's walk of the notification stream: what it looks for, and what
-// it has left to look with. The seek and the count share one walk, so the cap and the deadline
+// it has left to look with. The seek and the count share one walk, so the cap and the budget
 // bound the whole of that record's reading and not each phase of it.
 type storedWalk struct {
-	reaper   SessionReaper
-	subject  string
-	after    time.Time
-	stream   nats.StreamState
-	deadline time.Time
-	reads    int
+	reaper  SessionReaper
+	subject string
+	after   time.Time
+	stream  nats.StreamState
+	budget  readBudget
+	reads   int
 }
 
 // storedOutcome is what one read of a walk's subject answered.
@@ -404,18 +420,19 @@ const (
 )
 
 // next reads the first message at or after seq on the walk's subject, and spends one of the
-// walk's reads on it. Each read is held to the pass's own deadline: the pass carries no caller's
-// deadline, and a stored-message read given none waits out its own 10 s (bus.Client's
+// walk's reads on it. Each read is held to what is left of the pass's budget: the pass carries no
+// caller's deadline, and a stored-message read given none waits out its own 10 s (bus.Client's
 // storedMessageWait), twice the budget of every count a pass makes.
 //
 // A message past the last sequence the pass read for the stream is one stored since that read,
 // which this count does not reach for: it is the end of the walk, as no message at all is.
 func (w *storedWalk) next(ctx context.Context, seq uint64) (bus.StoredMessage, storedOutcome) {
-	if w.reads >= reapStoredMessageCap || time.Now().After(w.deadline) || ctx.Err() != nil {
+	left := w.budget.left()
+	if w.reads >= reapStoredMessageCap || left < 0 || ctx.Err() != nil {
 		return bus.StoredMessage{}, storedStopped
 	}
 	w.reads++
-	readCtx, cancel := context.WithDeadline(ctx, w.deadline)
+	readCtx, cancel := context.WithTimeout(ctx, left)
 	defer cancel()
 	stored, err := w.reaper.Client.NextStoredMessage(readCtx, w.subject, seq)
 	switch {

@@ -1,7 +1,6 @@
 package session
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -15,8 +14,11 @@ import (
 // since its consumer filters on both; a message for another session in either form is not counted.
 func TestAReapedSessionsStoredCountTakesEitherFormOfItsSubject(t *testing.T) {
 	client := setupNATS(t)
-	now := &clock{}
-	r := reapingRegistry(t, client, now)
+	// The registry's clock is held, so the pass's read budget (reapStoredReadBudget, measured on
+	// that clock) runs out only if the row moves it. The registration is stamped at the moment the
+	// clock was taken, before every message the stream stamps below in real time.
+	clock := &heldClock{now: time.Now()}
+	r := reapingRegistry(t, client, clock.Now)
 	const sessionID = "ses_counted_forms"
 	publish := func(eventID, topic string) {
 		t.Helper()
@@ -41,13 +43,11 @@ func TestAReapedSessionsStoredCountTakesEitherFormOfItsSubject(t *testing.T) {
 	publish("no-project", contracts.AgentSubject(contracts.NoProject, sessionID))
 	publish("a-project", contracts.AgentSubject("INFRA", sessionID))
 	publish("another-session", contracts.AgentSubject("INFRA", "ses_other"))
-	now.advance(3 * time.Minute)
+	clock.advance(3 * time.Minute)
 
 	met := metrics.New()
 	stored := met.NewCounter("stored", "test")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if reaped := r.ReapSessions(ctx, SessionReaper{Client: client, StoredAfterLastSeen: stored}); reaped != 1 {
+	if reaped := reapPass(t, r, SessionReaper{Client: client, StoredAfterLastSeen: stored}); reaped != 1 {
 		t.Fatalf("the pass reaped %d records, want the one past the horizon", reaped)
 	}
 	if got := counterValue(t, met, "stored"); got != 3 {

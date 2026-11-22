@@ -34,6 +34,35 @@ func setupNATS(t *testing.T) *bus.Client {
 	return client
 }
 
+// agelessSessionBucket creates the test's session bucket with no maximum age before a registry
+// opens it, so the server drops no record while the test runs. A registry opened on it keeps the
+// bucket as it is (bus.EnsureKeyValue) and, finding no TTL there, expires its rows by the TTL it
+// was opened with (WithSessionTTL), measured on its own clock alone: a test that holds that clock
+// (heldClock) decides when a row passes its deadline, and the server's real time decides nothing.
+func agelessSessionBucket(t *testing.T, client *bus.Client) {
+	t.Helper()
+	js, err := client.Conn.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	if _, err := js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bus.SessionBucket, Replicas: 1, Storage: natsgo.FileStorage}); err != nil {
+		t.Fatalf("create the session bucket with no maximum age: %v", err)
+	}
+}
+
+// recordCreated is the moment the server stored key's latest record in kv, which a registry
+// measures that record's deadline from once its watcher delivers it (expiryFor). The server stamps
+// it in real time and no registry clock moves it, so a test that moves a held clock past a
+// deadline moves it to a moment computed from here.
+func recordCreated(t *testing.T, kv natsgo.KeyValue, key string) time.Time {
+	t.Helper()
+	entry, err := kv.Get(key)
+	if err != nil {
+		t.Fatalf("read %s's record: %v", key, err)
+	}
+	return entry.Created()
+}
+
 func TestSessionEntry_HostOrMachine(t *testing.T) {
 	reported := SessionEntry{MachineID: "example-listener", Host: "example-host-b"}
 	if got := reported.HostOrMachine(); got != "example-host-b" {
@@ -98,7 +127,9 @@ func TestSessionEntryTmuxPlaceSurvivesTheBucketAndIsOmittedWhenNil(t *testing.T)
 
 func TestSessionRegistry_PutAndGet(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	// No TTL: nothing expires, so the read below finds the write however long the machine takes
+	// between the two.
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(0))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -124,7 +155,9 @@ func TestSessionRegistry_PutAndGet(t *testing.T) {
 // session list read back from the bucket names them.
 func TestSessionRegistry_PutAndGetKeepsThePluginAndItsVersion(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	// No TTL: nothing expires, so the read below finds the write however long the machine takes
+	// between the two.
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(0))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -147,7 +180,9 @@ func TestSessionRegistry_PutAndGetKeepsThePluginAndItsVersion(t *testing.T) {
 // a predecessor can read whose instance that predecessor belongs to.
 func TestSessionRegistry_PutAndGetKeepsTheClientInstanceID(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	// No TTL: nothing expires, so the read below finds the write however long the machine takes
+	// between the two.
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(0))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -172,7 +207,9 @@ func TestSessionRegistry_PutAndGetKeepsTheClientInstanceID(t *testing.T) {
 // than with another instance's id it no longer belongs to.
 func TestSessionRegistry_PutWithoutClientInstanceIDClearsTheStoredOne(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	// No TTL: nothing expires, so the read below finds the writes however long the machine takes
+	// between them.
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(0))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -210,9 +247,16 @@ func TestSessionRegistry_GetNotFound(t *testing.T) {
 	}
 }
 
+// An entry leaves once its TTL has passed. The bucket has no maximum age of its own
+// (agelessSessionBucket) and the registry reads a clock the test holds (heldClock), so the entry
+// passes its deadline when the test moves that clock past it, and not after two seconds of a
+// loaded machine's real time.
 func TestSessionRegistry_TTLExpiry(t *testing.T) {
+	const ttl = 2 * time.Second
+	clock := &heldClock{now: time.Now()}
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(2*time.Second))
+	agelessSessionBucket(t, client)
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(ttl), WithSessionClock(clock.Now))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -226,36 +270,60 @@ func TestSessionRegistry_TTLExpiry(t *testing.T) {
 		t.Fatalf("expected entry to exist immediately: %v", err)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		time.Sleep(500 * time.Millisecond)
-		if _, err := reg.Get("ses_expiry"); err != nil {
-			return
-		}
+	// The row's deadline is one TTL past the write's own UpdatedAt (the held clock) until the
+	// watcher delivers its record, and one TTL past the record's Created after that. Created is
+	// the later of the two, so a moment past it is past the deadline either way.
+	clock.moveTo(recordCreated(t, reg.watcher.KV().Legacy(), "ses_expiry").Add(ttl + time.Millisecond))
+	if _, err := reg.Get("ses_expiry"); !errors.Is(err, natsgo.ErrKeyNotFound) {
+		t.Fatalf("Get(ses_expiry) past its TTL = %v, want %v", err, natsgo.ErrKeyNotFound)
 	}
-	t.Fatal("session entry did not expire within 5s (TTL was 2s)")
 }
 
+// A second write moves the entry's deadline past the first one's. The bucket has no maximum age of
+// its own and the registry reads a clock the test holds, so the entry is read at a moment computed
+// from the two writes, past the first one's deadline and before the second one's, rather than after
+// two real sleeps whose sum a loaded machine overruns.
 func TestSessionRegistry_PutRefreshesTTL(t *testing.T) {
+	const (
+		ttl = 2 * time.Second
+		id  = "ses_refresh"
+	)
+	clock := &heldClock{now: time.Now()}
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(2*time.Second))
+	agelessSessionBucket(t, client)
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(ttl), WithSessionClock(clock.Now))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
+	kv := reg.watcher.KV().Legacy()
 
 	entry := SessionEntry{Port: 13381, MachineID: "test-machine", Dir: "/test"}
-	if err := reg.Put("ses_refresh", entry); err != nil {
+	if err := reg.Put(id, entry); err != nil {
 		t.Fatalf("put failed: %v", err)
 	}
-
-	time.Sleep(1500 * time.Millisecond)
-	if err := reg.Put("ses_refresh", entry); err != nil {
+	first := recordCreated(t, kv, id)
+	// The refresh is stamped past the first record's Created: Put writes the held clock's whole
+	// milliseconds as UpdatedAt.
+	clock.moveTo(first.Add(2 * time.Millisecond))
+	written := time.UnixMilli(clock.Now().UnixMilli())
+	if err := reg.Put(id, entry); err != nil {
 		t.Fatalf("refresh put failed: %v", err)
 	}
-
-	time.Sleep(1500 * time.Millisecond)
-
-	if _, err := reg.Get("ses_refresh"); err != nil {
+	second := recordCreated(t, kv, id)
+	// The row holds the refresh at its revision in one of two forms, whichever reached the copy
+	// last, since the copy refuses only lower revisions: Put's own write, due one TTL past its
+	// UpdatedAt, or the watcher's delivery, due one TTL past its Created. The first record's
+	// deadline is one TTL past its Created at the latest. So a moment past that and short of the
+	// earlier of the refresh's two deadlines answers the same whichever form the row holds.
+	refreshed := second
+	if written.Before(refreshed) {
+		refreshed = written
+	}
+	if !refreshed.After(first) {
+		t.Fatalf("the refresh was written at %v and stored at %v, not both after the first record's %v, so no moment lies between their deadlines", written, second, first)
+	}
+	clock.moveTo(first.Add(ttl).Add(refreshed.Sub(first) / 2))
+	if _, err := reg.Get(id); err != nil {
 		t.Fatalf("expected entry to still exist after TTL refresh, got: %v", err)
 	}
 }
@@ -441,7 +509,7 @@ func TestSessionRegistryDeleteIf_DeletesAMalformedValueThatNamesAnotherInstance(
 	if _, err := reg.watcher.KV().Get(sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Fatalf("read the deleted key: %v, want nats.ErrKeyNotFound", err)
 	}
-	waitFor(t, 5*time.Second, func() bool {
+	waitFor(t, "the conditional delete's warning about the malformed value", func() bool {
 		return strings.Contains(logs.String(), "session registry deleting a malformed value under a conditional delete")
 	})
 }
@@ -536,19 +604,16 @@ func TestSessionRegistryDeleteIf_DeletesARegistrationNoNewerThanTheMoment(t *tes
 }
 
 // openRegistryForInstanceDelete opens a registry whose cache has caught up with its bucket, so a
-// conditional-delete test reads what it seeded and nothing else.
+// conditional-delete test reads what it seeded and nothing else. It has no TTL, so nothing the
+// test seeded expires however long the machine takes between the seed and the reads after it.
 func openRegistryForInstanceDelete(t *testing.T) *SessionRegistry {
 	t.Helper()
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(0))
 	if err != nil {
 		t.Fatalf("OpenSessionRegistry: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := reg.WaitForCacheReady(ctx); err != nil {
-		t.Fatalf("WaitForCacheReady: %v", err)
-	}
+	cacheReady(t, reg)
 	return reg
 }
 
@@ -594,19 +659,17 @@ func TestSessionRegistry_Ping_ClosedConnReturnsError(t *testing.T) {
 
 func TestSessionRegistry_RewatchRestartsStoppedWatcher(t *testing.T) {
 	client := setupNATS(t)
-	registry, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
+	// No TTL: nothing expires, so the record written after the rewatch is read however long the
+	// machine takes to deliver it.
+	registry, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(0))
 	if err != nil {
 		t.Fatalf("open registry: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := registry.WaitForCacheReady(ctx); err != nil {
-		t.Fatalf("wait for initial cache: %v", err)
-	}
+	cacheReady(t, registry)
 
 	url := client.Conn.ConnectedUrl()
 	client.Close()
-	waitFor(t, 5*time.Second, func() bool { return registry.WatchErr() != nil })
+	waitFor(t, "the watcher to stop with the connection", func() bool { return registry.WatchErr() != nil })
 	if err := registry.Ping(); err == nil {
 		t.Fatal("stopped watcher should make the registry unhealthy")
 	}
@@ -639,7 +702,7 @@ func TestSessionRegistry_RewatchRestartsStoppedWatcher(t *testing.T) {
 	if _, err := kv.Put("ses_after_rewatch", value); err != nil {
 		t.Fatalf("put replacement entry: %v", err)
 	}
-	waitFor(t, 5*time.Second, func() bool {
+	waitFor(t, "the rewatched cache to take ses_after_rewatch", func() bool {
 		got, err := registry.Get("ses_after_rewatch")
 		return err == nil && reflect.DeepEqual(got, entry)
 	})
@@ -652,11 +715,7 @@ func TestSessionRegistryWatcherEvictsMalformedValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSessionRegistry: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := reg.WaitForCacheReady(ctx); err != nil {
-		t.Fatalf("WaitForCacheReady: %v", err)
-	}
+	cacheReady(t, reg)
 
 	const sessionID = "ses_malformed"
 	if err := reg.Put(sessionID, SessionEntry{Port: 13381, MachineID: "example-host", Dir: "/example"}); err != nil {
@@ -666,14 +725,14 @@ func TestSessionRegistryWatcherEvictsMalformedValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("put malformed value: %v", err)
 	}
-	waitForSessionEviction(t, reg, sessionID, 5*time.Second)
+	waitForSessionEviction(t, reg, sessionID)
 
 	for _, want := range []string{
 		"level=WARN",
 		"key=" + sessionID,
 		"revision=" + strconv.FormatUint(revision, 10),
 	} {
-		waitFor(t, 5*time.Second, func() bool {
+		waitFor(t, "the watcher's warning to carry "+want, func() bool {
 			return strings.Contains(logs.String(), want)
 		})
 	}
@@ -682,15 +741,13 @@ func TestSessionRegistryWatcherEvictsMalformedValue(t *testing.T) {
 
 func TestSessionRegistryPutDoesNotOverwriteNewerWatcherValue(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	// No TTL: nothing expires, so the read at the end finds the remote entry however long the
+	// machine takes after its write.
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(0))
 	if err != nil {
 		t.Fatalf("OpenSessionRegistry: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := reg.WaitForCacheReady(ctx); err != nil {
-		t.Fatalf("WaitForCacheReady: %v", err)
-	}
+	cacheReady(t, reg)
 
 	const sessionID = "ses_revision"
 	raw := reg.watcher.KV()
@@ -705,7 +762,7 @@ func TestSessionRegistryPutDoesNotOverwriteNewerWatcherValue(t *testing.T) {
 			if _, err := raw.Put(sessionID, buf); err != nil {
 				t.Fatalf("put remote entry: %v", err)
 			}
-			waitFor(t, 5*time.Second, func() bool {
+			waitFor(t, "the watcher to deliver the remote entry", func() bool {
 				got, err := reg.Get(sessionID)
 				return err == nil && got.Port == remote.Port
 			})
@@ -730,11 +787,7 @@ func TestSessionRegistryDeleteHistoryFailureSuppressesStaleWatcherUpdate(t *test
 	if err != nil {
 		t.Fatalf("OpenSessionRegistry: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := reg.WaitForCacheReady(ctx); err != nil {
-		t.Fatalf("WaitForCacheReady: %v", err)
-	}
+	cacheReady(t, reg)
 
 	const sessionID = "ses_delete"
 	item := SessionEntry{Port: 13381, MachineID: "example-host", Dir: "/example"}
@@ -781,9 +834,7 @@ func useKV(t *testing.T, r *SessionRegistry, kv natsgo.KeyValue) {
 	r.watcher = rebuilt
 	r.mu.Unlock()
 	rebuilt.Start()
-	if err := r.WaitForCacheReady(ctx); err != nil {
-		t.Fatalf("wait for the rebuilt watcher: %v", err)
-	}
+	cacheReady(t, r)
 }
 
 type interleavingSessionPutKeyValue struct {
@@ -855,14 +906,20 @@ func (kv *historyFailSessionKeyValue) History(string, ...natsgo.WatchOpt) ([]nat
 	return nil, kv.err
 }
 
-func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
+// waitFor waits until condition holds, and fails the test naming what when it never does. Its one
+// bound is the test binary's deadline (testwait.Until): a loaded machine that is slow to bring the
+// state about is not a failure.
+func waitFor(t *testing.T, what string, condition func() bool) {
 	t.Helper()
-	testwait.WithinPolling(t, timeout, testwait.Poll, "observable state", condition)
+	testwait.Until(t, what, func() (bool, bool) {
+		held := condition()
+		return held, held
+	})
 }
 
-func waitForSessionEviction(t *testing.T, reg *SessionRegistry, sessionID string, timeout time.Duration) {
+func waitForSessionEviction(t *testing.T, reg *SessionRegistry, sessionID string) {
 	t.Helper()
-	waitFor(t, timeout, func() bool {
+	waitFor(t, "the watcher to evict "+sessionID, func() bool {
 		_, getErr := reg.Get(sessionID)
 		entries, listErr := reg.List()
 		return getErr != nil && listErr == nil && len(entries) == 0

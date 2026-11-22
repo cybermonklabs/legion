@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // counterValue reads name's unlabelled sample from met's own scrape, the only way a counter's
@@ -38,17 +39,33 @@ func counterValue(t *testing.T, met *metrics.Registry, name string) int64 {
 	return 0
 }
 
+// reapPass runs one pass of the reaper (ReapSessions) under the test's context on a goroutine of
+// its own and returns how many records it deleted. A pass that reads the stream asks for its state
+// under that context (streamState), which nats.go bounds by nothing else, so the pass's answer is
+// taken with the test binary's deadline as its one bound (testwait.Receive): a server that never
+// answers fails the row by name rather than at the binary's alarm.
+func reapPass(t *testing.T, r *SessionRegistry, reaper SessionReaper) int {
+	t.Helper()
+	reaped := make(chan int, 1)
+	go func() { reaped <- r.ReapSessions(t.Context(), reaper) }()
+	return testwait.Receive(t, "the reaper's pass to end", reaped)
+}
+
 // reapingRegistry opens a registry whose records outlive the horizon in the bucket - the maximum
 // age is far longer than the windows - so what the reaper deletes is decided by a record's own age
 // and never by the bucket's backstop having dropped it first. That is the deployed shape this
 // change exists for: ENVOY_SESSION_MAX_AGE past the gone horizon, so a stalled session's record
 // stands long enough to be read as unresponsive.
-func reapingRegistry(t *testing.T, client *bus.Client, now *clock, options ...SessionRegistryOption) *SessionRegistry {
+//
+// now is the registry's clock. A row that judges a record's state some steps after writing it
+// holds that clock (heldClock), so the state is the age the row set by its advances and not that
+// age plus however long the machine took over the steps between.
+func reapingRegistry(t *testing.T, client *bus.Client, now func() time.Time, options ...SessionRegistryOption) *SessionRegistry {
 	t.Helper()
 	r, err := OpenSessionRegistry(t.Context(), client.Conn, append([]SessionRegistryOption{
 		WithSessionReplicas(1),
 		WithSessionTTL(time.Hour),
-		WithSessionClock(now.Now),
+		WithSessionClock(now),
 		WithSessionLiveWindow(time.Minute),
 		WithSessionGoneHorizon(2 * time.Minute),
 	}, options...)...)
@@ -56,7 +73,7 @@ func reapingRegistry(t *testing.T, client *bus.Client, now *clock, options ...Se
 		t.Fatalf("open session registry: %v", err)
 	}
 	t.Cleanup(r.StopWatch)
-	waitFor(t, 5*time.Second, r.watcher.Following)
+	waitFollowing(t, r)
 	return r
 }
 
@@ -69,16 +86,16 @@ func reapingRegistry(t *testing.T, client *bus.Client, now *clock, options ...Se
 // so this pins the ordering the pass depends on and not a single conditional delete.
 func TestAReaperPassDeletesARecordPastTheHorizonAndKeepsOneRegisteredSince(t *testing.T) {
 	client := setupNATS(t)
-	now := &clock{}
-	r := reapingRegistry(t, client, now)
+	clock := &heldClock{now: time.Now()}
+	r := reapingRegistry(t, client, clock.Now)
 	for _, id := range []string{"ses_gone", "ses_back"} {
 		if err := r.Put(id, SessionEntry{Port: 1, MachineID: "m1"}); err != nil {
 			t.Fatalf("register %s: %v", id, err)
 		}
 	}
-	now.advance(3 * time.Minute)
+	clock.advance(3 * time.Minute)
 
-	candidates := r.goneCandidates(now.Now())
+	candidates := r.goneCandidates(clock.Now())
 	if len(candidates) != 2 {
 		t.Fatalf("the pass judged %+v, want both records gone", candidates)
 	}
@@ -86,8 +103,7 @@ func TestAReaperPassDeletesARecordPastTheHorizonAndKeepsOneRegisteredSince(t *te
 	if err := r.Put("ses_back", SessionEntry{Port: 1, MachineID: "m1"}); err != nil {
 		t.Fatalf("re-register ses_back: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := t.Context()
 	for _, candidate := range candidates {
 		deleted, err := r.deleteGone(ctx, candidate)
 		if err != nil {
@@ -115,26 +131,25 @@ func TestAReaperPassDeletesARecordPastTheHorizonAndKeepsOneRegisteredSince(t *te
 // depends on its record standing, and nothing but the horizon takes it away.
 func TestAReaperPassKeepsAnUnresponsiveRecordAndCountsTheGoneOne(t *testing.T) {
 	client := setupNATS(t)
-	now := &clock{}
-	r := reapingRegistry(t, client, now)
+	clock := &heldClock{now: time.Now()}
+	r := reapingRegistry(t, client, clock.Now)
 	if err := r.Put("ses_gone", SessionEntry{Port: 1, MachineID: "m1"}); err != nil {
 		t.Fatalf("register ses_gone: %v", err)
 	}
-	now.advance(90 * time.Second)
+	clock.advance(90 * time.Second)
 	if err := r.Put("ses_stalled", SessionEntry{Port: 2, MachineID: "m1"}); err != nil {
 		t.Fatalf("register ses_stalled: %v", err)
 	}
-	// ses_gone is now 2m30s old (past the 2m horizon) and ses_stalled 1m (past the 1m live
-	// window, inside the horizon).
-	now.advance(60 * time.Second)
+	// ses_gone is now 2m31s old (past the 2m horizon) and ses_stalled 1m1s (past the 1m live
+	// window, inside the horizon): an age of exactly the window still reads live (StateOf).
+	clock.advance(61 * time.Second)
 	if _, state := r.Lookup("ses_stalled"); state != Unresponsive {
 		t.Fatalf("ses_stalled = %s, want %s", state, Unresponsive)
 	}
 
 	met := metrics.New()
 	reaper := SessionReaper{Reaped: met.NewCounter("reaped", "test"), StoredAfterLastSeen: met.NewCounter("stored", "test")}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := t.Context()
 	if reaped := r.ReapSessions(ctx, reaper); reaped != 1 {
 		t.Fatalf("the pass reaped %d records, want only the one past the horizon", reaped)
 	}
@@ -154,23 +169,24 @@ func TestAReaperPassKeepsAnUnresponsiveRecordAndCountsTheGoneOne(t *testing.T) {
 // it, and so are a live and an unresponsive session, whose records this pass never deletes.
 func TestAReaperPassDeletesTheConsumerOfEveryRecordItDeleted(t *testing.T) {
 	client := setupNATS(t)
-	now := &clock{}
-	r := reapingRegistry(t, client, now)
+	clock := &heldClock{now: time.Now()}
+	r := reapingRegistry(t, client, clock.Now)
 	for _, id := range []string{"ses_gone", "ses_back"} {
 		if err := r.Put(id, SessionEntry{Port: 1, MachineID: "m1"}); err != nil {
 			t.Fatalf("register %s: %v", id, err)
 		}
 	}
-	now.advance(90 * time.Second)
+	clock.advance(90 * time.Second)
 	if err := r.Put("ses_stalled", SessionEntry{Port: 2, MachineID: "m1"}); err != nil {
 		t.Fatalf("register ses_stalled: %v", err)
 	}
-	now.advance(60 * time.Second)
+	clock.advance(61 * time.Second)
 	if err := r.Put("ses_live", SessionEntry{Port: 3, MachineID: "m1"}); err != nil {
 		t.Fatalf("register ses_live: %v", err)
 	}
-	// ses_gone and ses_back are 2m30s old (past the 2m horizon), ses_stalled 1m (past the 1m
-	// live window, inside the horizon) and ses_live has just registered.
+	// ses_gone and ses_back are 2m31s old (past the 2m horizon), ses_stalled 1m1s (past the 1m
+	// live window, inside the horizon: an age of exactly the window still reads live, StateOf) and
+	// ses_live has just registered.
 	if _, state := r.Lookup("ses_stalled"); state != Unresponsive {
 		t.Fatalf("ses_stalled = %s, want %s", state, Unresponsive)
 	}
@@ -179,7 +195,7 @@ func TestAReaperPassDeletesTheConsumerOfEveryRecordItDeleted(t *testing.T) {
 	// ses_back on the row and the revision it holds now and the bucket holds neither: its
 	// conditional delete is the refused one, in a pass and not in a call a test makes itself.
 	r.StopWatch()
-	returning := reapingRegistry(t, client, now)
+	returning := reapingRegistry(t, client, clock.Now)
 	if err := returning.Put("ses_back", SessionEntry{Port: 1, MachineID: "m1"}); err != nil {
 		t.Fatalf("re-register ses_back: %v", err)
 	}
@@ -188,8 +204,7 @@ func TestAReaperPassDeletesTheConsumerOfEveryRecordItDeleted(t *testing.T) {
 	reaper := SessionReaper{DeleteConsumer: func(_ context.Context, sessionID string) {
 		consumers = append(consumers, sessionID)
 	}}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := t.Context()
 	if reaped := r.ReapSessions(ctx, reaper); reaped != 1 {
 		t.Fatalf("the pass reaped %d records, want only ses_gone's", reaped)
 	}
@@ -207,7 +222,7 @@ func TestAReaperPassDeletesTheConsumerOfEveryRecordItDeleted(t *testing.T) {
 func TestAReaperPassAsksForTheConsumerOfEveryRecordItReaped(t *testing.T) {
 	client := setupNATS(t)
 	now := &clock{}
-	r := reapingRegistry(t, client, now)
+	r := reapingRegistry(t, client, now.Now)
 	for _, id := range []string{"ses_one", "ses_two"} {
 		if err := r.Put(id, SessionEntry{Port: 1, MachineID: "m1"}); err != nil {
 			t.Fatalf("register %s: %v", id, err)
@@ -220,8 +235,7 @@ func TestAReaperPassAsksForTheConsumerOfEveryRecordItReaped(t *testing.T) {
 	reaper := SessionReaper{DeleteConsumer: func(_ context.Context, sessionID string) {
 		asked = append(asked, sessionID)
 	}}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	if reaped := r.ReapSessions(ctx, reaper); reaped != 2 {
 		t.Fatalf("the pass reaped %d records, want both past the horizon", reaped)
@@ -241,8 +255,8 @@ func TestAReaperPassAsksForTheConsumerOfEveryRecordItReaped(t *testing.T) {
 // horizon is reported by how much piled up while it was not answering.
 func TestAReapedSessionsStoredCountStartsAtItsLastRegistration(t *testing.T) {
 	client := setupNATS(t)
-	now := &clock{}
-	r := reapingRegistry(t, client, now)
+	clock := &heldClock{now: time.Now()}
+	r := reapingRegistry(t, client, clock.Now)
 	const sessionID = "ses_counted"
 	publish := func(eventID string) {
 		t.Helper()
@@ -265,6 +279,11 @@ func TestAReapedSessionsStoredCountStartsAtItsLastRegistration(t *testing.T) {
 	// records its own: a pause here keeps the two phases on either side of the registration
 	// rather than inside one millisecond of it.
 	time.Sleep(10 * time.Millisecond)
+	// The registration is stamped on the registry's clock, which the row holds so the pass's read
+	// budget (reapStoredReadBudget, measured on that clock) runs out only if the row moves it. The
+	// clock is moved to the real time here because the count compares the registration with the
+	// times the stream stamps on its messages, which are the server's real time.
+	clock.moveTo(time.Now())
 	if err := r.Put(sessionID, SessionEntry{Port: 1, MachineID: "m1", SelfSubscribed: true}); err != nil {
 		t.Fatalf("register %s: %v", sessionID, err)
 	}
@@ -272,13 +291,11 @@ func TestAReapedSessionsStoredCountStartsAtItsLastRegistration(t *testing.T) {
 	publish("after-1")
 	publish("after-2")
 	publish("after-3")
-	now.advance(3 * time.Minute)
+	clock.advance(3 * time.Minute)
 
 	met := metrics.New()
 	stored := met.NewCounter("stored", "test")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if reaped := r.ReapSessions(ctx, SessionReaper{Client: client, StoredAfterLastSeen: stored}); reaped != 1 {
+	if reaped := reapPass(t, r, SessionReaper{Client: client, StoredAfterLastSeen: stored}); reaped != 1 {
 		t.Fatalf("the pass reaped %d records, want the one past the horizon", reaped)
 	}
 	if got := counterValue(t, met, "stored"); got != 3 {
@@ -294,13 +311,13 @@ func TestAReapedSessionsStoredCountStartsAtItsLastRegistration(t *testing.T) {
 // that had just come back, which is the one thing this whole change exists to stop.
 func TestADeleteWithNoJudgedRevisionJudgesTheRecordAgain(t *testing.T) {
 	client := setupNATS(t)
-	now := &clock{}
-	r := reapingRegistry(t, client, now)
+	clock := &heldClock{now: time.Now()}
+	r := reapingRegistry(t, client, clock.Now)
 	if err := r.Put("ses_back", SessionEntry{Port: 1, MachineID: "m1"}); err != nil {
 		t.Fatalf("register ses_back: %v", err)
 	}
-	now.advance(3 * time.Minute)
-	candidates := r.goneCandidates(now.Now())
+	clock.advance(3 * time.Minute)
+	candidates := r.goneCandidates(clock.Now())
 	if len(candidates) != 1 {
 		t.Fatalf("the pass judged %+v, want the one record gone", candidates)
 	}
@@ -308,8 +325,7 @@ func TestADeleteWithNoJudgedRevisionJudgesTheRecordAgain(t *testing.T) {
 	if err := r.Put("ses_back", SessionEntry{Port: 1, MachineID: "m1"}); err != nil {
 		t.Fatalf("re-register ses_back: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	// The same candidate with no revision on it, which is what a copy that cannot fence the key
 	// hands the pass (kvwatch.Copy.FenceFor).
@@ -345,8 +361,8 @@ func TestADeleteWithNoJudgedRevisionJudgesTheRecordAgain(t *testing.T) {
 // wants the number for.
 func TestAReapedSessionsStoredCountIsReachedPastMoreOldMessagesThanTheCap(t *testing.T) {
 	client := setupNATS(t)
-	now := &clock{}
-	r := reapingRegistry(t, client, now)
+	clock := &heldClock{now: time.Now()}
+	r := reapingRegistry(t, client, clock.Now)
 	const sessionID = "ses_busy"
 	publish := func(eventID string) {
 		t.Helper()
@@ -370,19 +386,21 @@ func TestAReapedSessionsStoredCountIsReachedPastMoreOldMessagesThanTheCap(t *tes
 	// records its own: a pause here keeps the two phases on either side of the registration
 	// rather than inside one millisecond of it.
 	time.Sleep(10 * time.Millisecond)
+	// The registration is stamped on the registry's clock, held as in
+	// TestAReapedSessionsStoredCountStartsAtItsLastRegistration and moved to the real time here
+	// for the same reason.
+	clock.moveTo(time.Now())
 	if err := r.Put(sessionID, SessionEntry{Port: 1, MachineID: "m1", SelfSubscribed: true}); err != nil {
 		t.Fatalf("register %s: %v", sessionID, err)
 	}
 	time.Sleep(10 * time.Millisecond)
 	publish("after-1")
 	publish("after-2")
-	now.advance(3 * time.Minute)
+	clock.advance(3 * time.Minute)
 
 	met := metrics.New()
 	stored := met.NewCounter("stored", "test")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if reaped := r.ReapSessions(ctx, SessionReaper{Client: client, StoredAfterLastSeen: stored}); reaped != 1 {
+	if reaped := reapPass(t, r, SessionReaper{Client: client, StoredAfterLastSeen: stored}); reaped != 1 {
 		t.Fatalf("the pass reaped %d records, want the one past the horizon", reaped)
 	}
 	if got := counterValue(t, met, "stored"); got != 2 {
@@ -397,13 +415,12 @@ func TestAReapedSessionsStoredCountIsReachedPastMoreOldMessagesThanTheCap(t *tes
 // session as dead.
 func TestAPassAdoptsAMaximumAgeAnotherProcessSet(t *testing.T) {
 	client := setupNATS(t)
-	now := &clock{}
-	r, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute), WithSessionClock(now.Now))
+	r, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
 	t.Cleanup(r.StopWatch)
-	waitFor(t, 5*time.Second, r.watcher.Following)
+	waitFollowing(t, r)
 	if got := r.TTL(); got != time.Minute {
 		t.Fatalf("the registry opened on a %s maximum age, want the minute the bucket was created with", got)
 	}
@@ -416,9 +433,7 @@ func TestAPassAdoptsAMaximumAgeAnotherProcessSet(t *testing.T) {
 		t.Fatalf("another process raising the bucket's maximum age: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	r.ReapSessions(ctx, SessionReaper{})
+	r.ReapSessions(t.Context(), SessionReaper{})
 	if got := r.TTL(); got != 90*time.Minute {
 		t.Fatalf("the maximum age in use after one pass = %s, want the 90m another process set", got)
 	}

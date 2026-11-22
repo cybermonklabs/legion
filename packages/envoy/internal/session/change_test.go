@@ -7,6 +7,8 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // sessionChange is one id OnChange reported, with what Get answered for it at the time, as the
@@ -28,36 +30,31 @@ func watchSessionChanges(t *testing.T, r *SessionRegistry) (<-chan sessionChange
 	return changes, stop
 }
 
+// awaitSessionChange reads the changes reported until one is what want accepts, and returns it.
+// Each read's one bound is the test binary's deadline (testwait.Receive): a loaded machine that is
+// slow to report a change is not a failure.
 func awaitSessionChange(t *testing.T, changes <-chan sessionChange, want func(sessionChange) bool, what string) sessionChange {
 	t.Helper()
-	deadline := time.After(5 * time.Second)
 	for {
-		select {
-		case change := <-changes:
-			if want(change) {
-				return change
-			}
-		case <-deadline:
-			t.Fatalf("no change reported: %s", what)
+		if change := testwait.Receive(t, "a change reported: "+what, changes); want(change) {
+			return change
 		}
 	}
 }
 
 func TestOnChangeReportsWritesDeletesAndAnotherListenersWrites(t *testing.T) {
 	client := setupNATS(t)
-	writer, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
+	// No TTL: nothing expires, so a change is reported live however long the machine takes to
+	// deliver it.
+	writer, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(0))
 	if err != nil {
 		t.Fatalf("open the writing registry: %v", err)
 	}
-	follower, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
+	follower, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(0))
 	if err != nil {
 		t.Fatalf("open the following registry: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := follower.WaitForCacheReady(ctx); err != nil {
-		t.Fatalf("follower cache ready: %v", err)
-	}
+	cacheReady(t, follower)
 	changes, stop := watchSessionChanges(t, follower)
 
 	// Another listener's write reaches the follower through its watcher.
@@ -102,13 +99,13 @@ func TestOnChangeReportsWritesDeletesAndAnotherListenersWrites(t *testing.T) {
 	}
 }
 
-// A lapse is reported to a callback that was already listening when it happened. The row is
-// seeded with a deadline the registry's own expiry timer cannot reach while the test runs -- the
-// timer is armed on real time, for half a minute away -- and the registry's clock is moved past
-// that deadline afterwards, so PruneLapsed is what finds the lapse and nothing can have swept it
-// before OnChange was registered.
+// A lapse is reported to a callback that was already listening when it happened. The registry
+// reads a clock the test holds (heldClock), and the row is seeded with a deadline half a minute
+// past it, so neither the registry's own expiry timer nor anything else can find the lapse before
+// OnChange is registered, however long the machine takes; the test then moves the clock past that
+// deadline, so PruneLapsed is what finds it.
 func TestOnChangeReportsALapseOncePruneLapsedFindsIt(t *testing.T) {
-	moved := &clock{}
+	moved := &heldClock{now: time.Now()}
 	r := newTestRegistry(5 * time.Minute)
 	r.now = moved.Now
 	now := moved.Now()

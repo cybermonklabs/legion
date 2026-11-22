@@ -188,18 +188,26 @@ func TestRegistryReadsRaceWatchedWritesAndExpiry(t *testing.T) {
 }
 
 // TestExpiryKeepsAnEntryRewrittenBetweenItsDeadlineAndItsCallback holds the registry's write lock
-// across an entry's deadline, so the expiry callback waits, and writes the session's next heartbeat
-// as the watcher would. When the callback runs it must find the newer entry and keep it.
+// while it moves the registry's clock past an entry's deadline and writes the session's next
+// heartbeat as the watcher would, then runs the expiry callback itself (expireDue). The callback
+// must find the newer entry and keep it.
+//
+// The registry reads a clock the test holds (heldClock), and the test moves it past the deadline
+// only while it holds the lock: a timer callback that runs before that finds nothing due, so every
+// callback that can remove the row runs after the rewrite, and the rewritten row stays within its
+// own TTL however long the machine takes after it.
 func TestExpiryKeepsAnEntryRewrittenBetweenItsDeadlineAndItsCallback(t *testing.T) {
 	const ttl = time.Minute
+	clock := &heldClock{now: time.Now()}
 	r := newTestRegistry(ttl)
+	r.now = clock.Now
 	const id = "ses_rewritten"
-	deadline := time.Now().Add(100 * time.Millisecond)
+	deadline := clock.Now().Add(100 * time.Millisecond)
 	r.applyWatched(watchedPut(t, id, 1, deadline.Add(-ttl), SessionEntry{Port: 1, UpdatedAt: deadline.Add(-ttl).UnixMilli()}))
 
 	r.mu.Lock()
-	time.Sleep(time.Until(deadline) + 50*time.Millisecond)
-	now := time.Now()
+	clock.advance(150 * time.Millisecond)
+	now := clock.Now()
 	fresh := SessionEntry{Port: 2, UpdatedAt: now.UnixMilli()}
 	// What applyWatched does with the watcher's next put; it takes the lock this test holds.
 	value, err := json.Marshal(fresh)
@@ -465,12 +473,16 @@ func rowDeadline(r *SessionRegistry, id string) (time.Time, bool) {
 // cached row's deadline with it, so the cache expires rows by the age the bucket itself keeps
 // them for: a raise pushes each deadline out by the difference, leaving it one new TTL from the
 // moment the record was written, and a cut that puts a row's deadline in the past takes the row
-// at once through the expiry timer, which keeps its last heartbeat as any other expiry does.
+// at once through the expiry timer, which keeps its last heartbeat as any other expiry does. The
+// registry reads a clock the test holds (heldClock), so the heartbeat that expiry keeps is within
+// its retention however long the machine takes before the row reads it.
 func TestSetTTLMovesEveryCachedRowsDeadline(t *testing.T) {
 	const id = "ses_maxage"
+	clock := &heldClock{now: time.Now()}
 	r := newTestRegistry(time.Hour)
+	r.now = clock.Now
 	r.lastSeenRetention = time.Minute
-	created := time.Now()
+	created := clock.Now()
 	r.applyWatched(watchedPut(t, id, 1, created, SessionEntry{Port: 1, UpdatedAt: created.UnixMilli()}))
 	if got, ok := rowDeadline(r, id); !ok || !got.Equal(created.Add(time.Hour)) {
 		t.Fatalf("the row's deadline = %v (held %v), want one TTL past its record %v", got, ok, created.Add(time.Hour))
@@ -485,6 +497,7 @@ func TestSetTTLMovesEveryCachedRowsDeadline(t *testing.T) {
 	}
 
 	// A maximum age shorter than the row's age: its new deadline has already passed.
+	clock.advance(2 * time.Millisecond)
 	r.SetTTL(time.Millisecond)
 	waitForCacheSize(t, r, 0)
 	if got := r.LastSeen(id); got != created.UnixMilli() {

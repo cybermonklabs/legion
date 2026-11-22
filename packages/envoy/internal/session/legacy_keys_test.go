@@ -23,7 +23,9 @@ func TestASessionRegistryOverKeysAnEarlierListenerStoredServesAndDeletesThem(t *
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	raw, err := js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bus.SessionBucket, TTL: 10 * time.Second, Storage: natsgo.FileStorage})
+	// No TTL on the bucket or the registry: nothing expires, so the reads below find what the
+	// earlier listener stored however long the machine takes before them.
+	raw, err := js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bus.SessionBucket, Storage: natsgo.FileStorage})
 	if err != nil {
 		t.Fatalf("create session bucket: %v", err)
 	}
@@ -38,16 +40,12 @@ func TestASessionRegistryOverKeysAnEarlierListenerStoredServesAndDeletesThem(t *
 		}
 	}
 
-	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(0))
 	if err != nil {
 		t.Fatalf("open over the earlier listener's keys: %v", err)
 	}
 	t.Cleanup(reg.StopWatch)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := reg.WaitForCacheReady(ctx); err != nil {
-		t.Fatalf("wait for the cache: %v", err)
-	}
+	cacheReady(t, reg)
 	for _, sessionID := range []string{"ses_ordinary", readable, unreadable} {
 		if _, err := reg.Get(sessionID); err != nil {
 			t.Fatalf("get the %d-byte session: %v", len(sessionID), err)
