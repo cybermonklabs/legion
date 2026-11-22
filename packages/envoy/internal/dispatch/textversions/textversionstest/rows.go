@@ -83,24 +83,6 @@ func requireRows(t testing.TB, database *store.Store, want []Written, only bool)
 	}
 }
 
-// AwaitRows waits until every event of ids has its one row, running each between reads when it
-// is set, and fails once within has passed, with the count of rows it read last.
-func AwaitRows(t testing.TB, database *store.Store, ids []int64, within time.Duration, each func()) {
-	t.Helper()
-	var rows int
-	if !testwait.Holds(within, 50*time.Millisecond, func() bool {
-		if rows = RowsOf(t, database, ids...); rows == len(ids) {
-			return true
-		}
-		if each != nil {
-			each()
-		}
-		return false
-	}) {
-		t.Fatalf("the events %v had %d rows within %v; want %d", ids, rows, within, len(ids))
-	}
-}
-
 // AwaitRowsUntil waits until every event of ids has its one row, running each between reads when
 // it is set, bounded by the test binary's deadline alone (testwait.UntilPolling), whose failure
 // names the events and the count of rows it read last. The fill writes an event's row only once
