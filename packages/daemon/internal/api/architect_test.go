@@ -640,9 +640,11 @@ func TestArchitectRoutesRefuseWrongRoleAndForeignTree(t *testing.T) {
 func TestSignOffAndRetryAreTheOwningArchitects(t *testing.T) {
 	h, facts, statuses := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209", "LEGION-210")
-	// sign_off reads each issue's Dispatch status before it writes retro there.
+	// sign_off reads each issue's Dispatch status before it writes retro there, and the record has
+	// taken the event that showed it, so the status is no move the daemon has not taken.
 	for _, key := range []string{"LEGION-209", "LEGION-210"} {
 		statuses.issues[key] = dispatch.Issue{Key: key, Status: "needs_review", LastSeq: 3}
+		recordSaw(t, h, key, "in_progress", "needs_review", 3)
 	}
 	root := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
 	subArchitect := newLiveClaimIn(t, h, "LEGION-208", "LEGION-209", claim.RoleArchitect)
