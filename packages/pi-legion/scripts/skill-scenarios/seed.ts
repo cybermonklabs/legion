@@ -6,14 +6,19 @@
 //
 //   seed.ts project                        project LWEVAL, which each run's own issue is filed in;
 //                                          the world of every scenario but brainstorm
-//   seed.ts tester-proof <file>            one run's own issue, the greet() issue the tester's world
-//                                          implements; writes {issue} to <file>
+//   seed.ts tester-proof <file> <world file> <before_merge|after_merge>
+//                                          one run's own issue, the greet() issue the tester's world
+//                                          implements, on the repository <world file> (rig.sh's
+//                                          world.json) names, its Verification document's one
+//                                          check k1 written with that `when`; writes {issue,
+//                                          checks} to <file>, each check with the implementer's
+//                                          result where it has one
 //   seed.ts implement-handoff <file> <body file> <commit>
 //                                          records <body file>, one JSON object, as the implement
 //                                          handoff of the issue <file> names, under the session
-//                                          IMPLEMENTER (never the run's), records its passing
-//                                          result on check k1 at <commit>, and writes {issue,
-//                                          implement: {id, version}} to <file>
+//                                          IMPLEMENTER (never the run's), records the result each
+//                                          check of <file> carries at <commit>, and writes {issue,
+//                                          checks, implement: {id, version}} to <file>
 //   seed.ts capture-handoffs <file> <run dir>
 //                                          every handoff record of the issue <file> names, newest
 //                                          first as Dispatch lists them, each with the body it
@@ -129,12 +134,35 @@ const SpecFixture = z.object({ issue: z.string(), spec_artifact: z.string() });
 type SpecFixture = z.infer<typeof SpecFixture>;
 /** The session a seeded ask is opened as: another agent's, never the run's own. */
 export const SEED_ASKER = { kind: "session", id: "spec-source-agent" } as const;
-/** What `tester-proof` writes, and `implement-handoff` and `capture-handoffs` read: the run's issue,
- * and once `implement-handoff` recorded it, the implementer's record. */
+/** One check of the run's Verification document as `tester-proof` wrote it: its block id, when it
+ * runs, and the implementer's result `implement-handoff` records against it, where it has one. A
+ * check that runs `after_merge` has none: its result is recorded after the merge, on a look of the
+ * production check (skill://legion-worker/references/pr-body.md), so before the merge it is the
+ * body's `not yet run` line and holds no result. rig.sh's worker_fixture writes the pull request
+ * body's line for each check from this list (checks_lines). */
+const TesterCheck = z.object({
+  id: z.string(),
+  when: z.enum(["before_merge", "after_merge"]),
+  result: z
+    .object({
+      role: z.literal("implementer"),
+      verdict: z.literal("pass"),
+      observed: z.string(),
+    })
+    .optional(),
+});
+/** What `tester-proof` writes, and `implement-handoff` and `capture-handoffs` read: the run's issue
+ * and the checks of its Verification document, and once `implement-handoff` recorded it, the
+ * implementer's record. */
 const TesterFixture = z.object({
   issue: z.string(),
+  checks: z.array(TesterCheck),
   implement: z.object({ id: z.string(), version: z.number().int() }).optional(),
 });
+/** The world's repository as rig.sh's world_repository writes it to world.json, which the run's
+ * issue names (Dispatch's create body takes `repo`, packages/envoy/internal/dispatch/api/
+ * issue_create.go). */
+const TesterWorld = z.object({ repo: z.string().min(1) });
 /** The session the tester's predecessor wrote its implement handoff as: the implementer's, never
  * the run's own. */
 export const IMPLEMENTER = { kind: "session", id: "rig-implementer" } as const;
@@ -571,18 +599,47 @@ async function seedProject(): Promise<void> {
   console.log("seeded LWEVAL");
 }
 
-/** `tester-proof <file>`: the run's own greet() issue, whose spec marks what rig.sh's
- * worker_fixture meets as `requirement` blocks, and whose Verification document holds the one
- * `check` block the implementer's result and the tester's own run are recorded against. The check
- * names no `serves`, since a pointer must name a block of a document this seed has not read back;
- * the pointer rules are the Dispatch suites' to prove, not this fixture's. Each run's records go
- * on its own issue alone, and `force` passes Dispatch's duplicate check should the issue be filed
- * again. */
-export async function testerProofIssue(file: string): Promise<void> {
+/** The reading the implementer records against k1 (`observed`), which Dispatch's result line
+ * carries and the pull request body repeats (rig.sh's checks_lines). */
+const IMPLEMENTER_READING = "prints Hello, Ada! and exits 0";
+
+/** `tester-proof <file> <world file> <when>`: the run's own greet() issue, on the repository the
+ * world file names (rig.sh's world.json, `repo`), so the issue, the worker's addressing and its
+ * pull request name one repository; whose spec marks what rig.sh's worker_fixture meets as
+ * `requirement` blocks; and whose Verification document holds the one `check` block, written to
+ * run `<when>`, the implementer's result and the tester's own run are recorded against. The
+ * check names no `serves`, since a pointer must name a block of a document this seed has not read
+ * back; the pointer rules are the Dispatch suites' to prove, not this fixture's. Each run's
+ * records go on its own issue alone, and `force` passes Dispatch's duplicate check should the
+ * issue be filed again. The checks go to <file> as the document holds them, each `before_merge`
+ * check with the implementer's result implement-handoff records, and rig.sh writes the pull
+ * request body's check lines from them.
+ *
+ * `after_merge` writes that check for a world whose role must
+ * reach an approval (rig.sh's world_check_when). A reviewer refuses its approval while a
+ * `before_merge` check of the issue
+ * has no standing pass, and a pass stands only when Dispatch can place its commit at one of the
+ * issue's bases (`passStandsOf`, packages/envoy/internal/dispatch/api/results_comparison.go).
+ * This rig's Dispatch reaches no GitHub at all — its worlds are answered by a gh stand-in — so it
+ * can place no commit, no pass of a `before_merge` check can stand, and a reviewer that follows
+ * its own rule refuses every approval. Measured on 2026-11-12 at the merge head `8c774ed2`: world
+ * `i` scored 1 of 5, four of the five runs doing every act the re-run rule asks — the record, its
+ * order, the one re-run, the wait and the disposal — and failing on the outcome alone, each
+ * naming the gate ("k1 (before_merge) has no pass standing"). With the check written
+ * `after_merge` the issue holds no `before_merge` check, which the reviewer names as a gap in its
+ * review body and approves, as `skill://legion-worker/references/merge-gate.md` tells it to. An
+ * `after_merge` check holds no result before the merge, so the implementer records none. */
+export async function testerProofIssue(
+  file: string,
+  worldFile: string,
+  when: "before_merge" | "after_merge"
+): Promise<void> {
+  const { repo } = TesterWorld.parse(JSON.parse(readFileSync(worldFile, "utf8")));
   const issue = await createIssue(
     {
       project: "LWEVAL",
       force: true,
+      repo,
       title: "greet(): a greeting helper for the widgets CLI",
       spec: [
         "## Goal",
@@ -613,45 +670,66 @@ export async function testerProofIssue(file: string): Promise<void> {
       content: [
         "# Verification",
         "",
-        ':::check{#k1 surface="cli" run="bun greet.ts Ada" when="before_merge" negative_control="bun greet.ts with no name exits 2 and prints the usage line to stderr."}',
+        `:::check{#k1 surface="cli" run="bun greet.ts Ada" when="${when}" negative_control="bun greet.ts with no name exits 2 and prints the usage line to stderr."}`,
         "`bun greet.ts <name>` prints the greeting, trims the name, and exits 2 with a usage line when no name is given.",
         ":::",
       ].join("\n"),
     },
     { as: "agent" }
   );
-  const fixture: z.infer<typeof TesterFixture> = { issue: issue.key };
+  const fixture: z.infer<typeof TesterFixture> = {
+    issue: issue.key,
+    checks: [
+      {
+        id: "k1",
+        when,
+        ...(when === "before_merge"
+          ? {
+              result: {
+                role: "implementer" as const,
+                verdict: "pass" as const,
+                observed: IMPLEMENTER_READING,
+              },
+            }
+          : {}),
+      },
+    ],
+  };
   writeFileSync(file, `${JSON.stringify(fixture)}\n`);
   console.log(`seeded ${issue.key}`);
 }
 
 /** `implement-handoff <file> <body file> <commit>`: the implementer's handoff on the run's issue,
- * as `dispatch handoff-write` records it under the implementer's session, and its passing result
- * against the issue's check `k1` at `<commit>`, as `dispatch result` records it. A body that is no
- * JSON object is the fixture's fault, refused before anything is written. */
+ * as `dispatch handoff-write` records it under the implementer's session, and the implementer's
+ * result of each check <file> carries one for, at `<commit>`, as `dispatch result` records it. A
+ * body that is no JSON object is the fixture's fault, refused before anything is written. */
 export async function implementHandoff(
   file: string,
   bodyFile: string,
   commit: string
 ): Promise<void> {
-  const { issue } = TesterFixture.parse(JSON.parse(readFileSync(file, "utf8")));
+  const { issue, checks } = TesterFixture.parse(JSON.parse(readFileSync(file, "utf8")));
   const body: unknown = JSON.parse(readFileSync(bodyFile, "utf8"));
   if (typeof body !== "object" || body === null || Array.isArray(body))
     throw new Error(`${bodyFile} holds no JSON object, which a handoff body is`);
   const recorded = await createHandoff(issue, "implement", body, IMPLEMENTER);
-  await agentPost(`/api/v1/issues/${encodeURIComponent(issue)}/results`, {
-    check: "k1",
-    role: "implementer",
-    verdict: "pass",
-    commit,
-    surface: "cli",
-    run: "bun greet.ts Ada",
-    observed: "prints Hello, Ada! and exits 0",
-    negative_control: "bun greet.ts → exit 2, usage: greet.ts <name> on stderr",
-    actor: IMPLEMENTER,
-  });
+  for (const { id, result } of checks) {
+    if (result === undefined) continue;
+    await agentPost(`/api/v1/issues/${encodeURIComponent(issue)}/results`, {
+      check: id,
+      role: result.role,
+      verdict: result.verdict,
+      commit,
+      surface: "cli",
+      run: "bun greet.ts Ada",
+      observed: result.observed,
+      negative_control: "bun greet.ts → exit 2, usage: greet.ts <name> on stderr",
+      actor: IMPLEMENTER,
+    });
+  }
   const fixture: z.infer<typeof TesterFixture> = {
     issue,
+    checks,
     implement: { id: recorded.id, version: recorded.version },
   };
   writeFileSync(file, `${JSON.stringify(fixture)}\n`);
@@ -895,7 +973,7 @@ async function captureBrainstorm(runDir: string): Promise<void> {
 }
 
 const USAGE =
-  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir>";
+  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> <world file> <before_merge|after_merge> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir>";
 
 /** Runs the mode `argv` names; false when argv names no mode, with its arguments. The first six
  * modes take extra arguments and ignore them, as they always did; each new mode takes exactly its
@@ -926,8 +1004,14 @@ async function main(argv: string[]): Promise<boolean> {
   else if (command === "askgate" && file !== undefined && n === 2) await seedAskgate(file);
   else if (command === "capture-askgate" && file !== undefined && second !== undefined && n === 3)
     await captureAskgate(file, second);
-  else if (command === "tester-proof" && file !== undefined && n === 2)
-    await testerProofIssue(file);
+  else if (
+    command === "tester-proof" &&
+    file !== undefined &&
+    second !== undefined &&
+    (third === "before_merge" || third === "after_merge") &&
+    n === 4
+  )
+    await testerProofIssue(file, second, third);
   else if (
     command === "implement-handoff" &&
     file !== undefined &&

@@ -17,6 +17,20 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+/**
+ * The bound of each hook this fixture registers, every one of which makes or removes a directory
+ * tree and so does real work rather than wait on anything: a removal's cost grows with the tree a
+ * caller staged. Bun's default for a hook is 5 s, which nobody chose for that work. Measured on
+ * 2026-11-15 in an issue pod with two CPUs, against the tree packages/pi-legion's
+ * scripts/skill-scenarios/score.test.ts stages: removing it took 0.74 to 0.79 s with the pod quiet,
+ * three runs, and with the pod's CPUs loaded one removal ran 5.32 s and failed that file after all
+ * 118 of its rows had passed. Thirty seconds lets a loaded machine finish such a removal, and only
+ * lengthens the bound, so it turns no passing suite red: what it reaches is a hook that fails today.
+ * The work is synchronous, so Bun cannot interrupt it: a hook that hangs is reported timed out once
+ * it returns, not stopped at the bound.
+ */
+const HOOK_WORK_TIMEOUT_MS = 30_000;
+
 /** What {@link temporaryDirectories} takes. */
 export type TemporaryDirectoriesOptions = {
   /**
@@ -140,7 +154,7 @@ export function temporaryDirectories(
   const made: string[] = [];
   afterEach(() => {
     removeEvery(made.splice(0));
-  });
+  }, HOOK_WORK_TIMEOUT_MS);
   return (suffix) => {
     const directory = mkdtempSync(join(root, nameTemplate(prefix, suffix)));
     made.push(directory);
@@ -185,10 +199,10 @@ export function temporaryDirectory(
   );
   beforeAll(() => {
     mkdirSync(directory, { mode: 0o700 });
-  });
+  }, HOOK_WORK_TIMEOUT_MS);
   afterAll(() => {
     removeTree(directory);
-  });
+  }, HOOK_WORK_TIMEOUT_MS);
   return directory;
 }
 

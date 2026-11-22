@@ -51,6 +51,10 @@ const inherited = {
   OMP_SESSION_EXCLUSIVE: "1",
 };
 
+// The world the pane's issue is on, as the run's world.json holds it: its gh bundle is under the
+// directory of the world's owner.
+const world = { repository: "example/widgets", defaultBranch: "main" };
+
 // The pane environment comes from the daemon's own functions, compiled and run by `go run`, which
 // can take minutes on a cold build cache.
 test.skipIf(skip)(
@@ -60,6 +64,7 @@ test.skipIf(skip)(
       { rig, port: 13399, profile: "rig-profile" },
       inherited,
       { project: "skillsrig", issue: "LWEVAL-1", role: "tester" },
+      world,
       { daemonModule: DAEMON_MODULE }
     ).env;
 
@@ -73,7 +78,7 @@ test.skipIf(skip)(
     expect(workerEnv).not.toHaveProperty("LEGION_JJ_PATH");
     expect(workerEnv).not.toHaveProperty("OMP_SESSION_EXCLUSIVE");
     const ghRoot = `${rig}/state/secrets/legion-skillsrig-lweval-1-tester-gh`;
-    const ghConfigDir = `${ghRoot}/skills-rig`;
+    const ghConfigDir = `${ghRoot}/example`;
     expect(workerEnv).toMatchObject({
       GEMINI_API_KEY: GEMINI_KEY,
       OPENAI_API_KEY: OPENAI_KEY,
@@ -126,6 +131,7 @@ test.skipIf(skip)(
       { rig, port: 13399, profile: "rig-envoy-profile" },
       inherited,
       { project: "skillsrig", issue: "LWEVAL-1", role: "tester" },
+      world,
       { daemonModule: DAEMON_MODULE }
     ).env;
 
@@ -164,6 +170,7 @@ test.skipIf(skip)(
         { rig, port: 13399, profile: "rig-seed-profile" },
         { ...inherited, ENVOY_NATS_URL: "nats://other-nats.internal.example:4222" },
         { project: "skillsrig", issue: "LWEVAL-1", role: "tester" },
+        world,
         { daemonModule: DAEMON_MODULE }
       )
     ).toThrow(
@@ -190,6 +197,7 @@ test.skipIf(skip)(
         { rig, port: 13399, profile: "rig-no-nats-profile" },
         inherited,
         { project: "skillsrig", issue: "LWEVAL-1", role: "tester" },
+        world,
         { daemonModule: DAEMON_MODULE }
       )
     ).toThrow("envoy: Envoy has no NATS server (envoy.natsUrls, ENVOY_NATS_URL)");
@@ -207,10 +215,10 @@ test.skipIf(skip)(
     const claim = { project: "skillsrig", issue: "LWEVAL-1", role: "tester" } as const;
     const launch = { rig, port: 13399, profile: "rig-profile" };
     const shimmed = { ...inherited, PATH: `${scriptBin}:${outerBin}:/usr/bin` };
-    expect(() => workerPane(launch, shimmed, claim, { daemonModule: DAEMON_MODULE })).toThrow(
-      `the first gh on the daemon's PATH, ${path.join(scriptBin, "gh")}, is a script`
-    );
-    const named = workerPane(launch, shimmed, claim, {
+    expect(() =>
+      workerPane(launch, shimmed, claim, world, { daemonModule: DAEMON_MODULE })
+    ).toThrow(`the first gh on the daemon's PATH, ${path.join(scriptBin, "gh")}, is a script`);
+    const named = workerPane(launch, shimmed, claim, world, {
       daemonModule: DAEMON_MODULE,
       ghPath: path.join(scriptBin, "gh"),
     }).env;

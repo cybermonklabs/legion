@@ -1,0 +1,18 @@
+kind: Added
+body: |-
+  `skill://legion-worker/references/red-at-the-head.md`: the reviewer in `reviewing`, the
+  implementer while it holds `implementing`, or the merger in `merging` at a head its own forward
+  merge made re-runs a red CI check at the head of its pull request once, after it records the
+  repository, the pull request, the head, the check, the run, the attempt, the failed job and the
+  failing line, and follows the page's order, waits and read of the spend. The merger re-runs only
+  a failed `pull_request` check, records the failure in a `dispatch comment` on the issue, since
+  it writes no handoff, and re-runs no group build and nothing at any other head. The tester presses
+  nothing and reads no CI: the worker skill's pull-request body reference has it let CI do its job,
+  and its `ci_check` reference has it neither read nor record a `ci_check` check's derived result,
+  which the reviewer reads before it approves. The `legion-controller` skill gains the census of
+  those tests: one issue per test, with every later occurrence a comment on it. The reviewer neither
+  waits for nor re-runs a check the base does not require for the approval, while the implementer
+  still re-runs such a red once. A failed job of the head's own `pull_request` run is acted on once
+  that run has completed, whether or not GitHub's checks of the pull request list it yet.
+custom:
+  Issue: pr3514
