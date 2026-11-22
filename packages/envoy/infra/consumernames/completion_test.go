@@ -30,10 +30,10 @@ func (rig *convertRig) convertWith(ctx context.Context, rule convertRule, holdID
 	return code, stderr.String()
 }
 
-// censusClean runs `streams census` (censusCommand, t-10's word with this package's readers) for
-// families until a run prints CLEAN, three runs at most, and requires one does. The word writes
-// its own journal entries: its intent at each run, a stop entry after each run that is not clean,
-// and its done entry after the clean one.
+// censusClean runs `streams census` (censusCommand: writerhold's streams census word with this
+// package's readers) for families until a run prints CLEAN, three runs at most, and requires one
+// does. The word writes its own journal entries: its intent at each run, a stop entry after each
+// run that is not clean, and its done entry after the clean one.
 func (rig *convertRig) censusClean(holdID string, families ...string) {
 	rig.t.Helper()
 	var extra []string
@@ -62,14 +62,14 @@ func (rig *convertRig) admittedCensus(holdID string, families ...string) {
 	require.Equal(rig.t, "done", rig.lastEntry(holdID, censusCommandName).State, "the clean census wrote no done entry")
 }
 
-// Completion covers the whole cutover (gate 1, red team F3): create-bucket succeeds and leaves the
-// hold's record incomplete, so release is refused; a replay inside the hold does not complete it
-// either; convert killed before its last listing leaves its intent, and release is refused; a
-// streams census sent then exits naming convert and changes nothing; after convert's rerun and a
-// clean census, release succeeds. Control: round 17's rule made create-bucket's done entry the
-// final one, which would have completed the record right there: the record reads incomplete after
-// it, and release is refused, where that rule accepted it. It fails when any step before convert
-// and the census completes the hold, or the census runs before convert.
+// Completion covers the whole cutover: create-bucket succeeds and leaves the hold's record
+// incomplete, so release is refused; a replay inside the hold does not complete it either; convert
+// killed before its last listing leaves its intent, and release is refused; a streams census sent
+// then exits naming convert and changes nothing; after convert's rerun and a clean census, release
+// succeeds. Control: round 17's rule made create-bucket's done entry the final one, which would
+// have completed the record right there: the record reads incomplete after it, and release is
+// refused, where that rule accepted it. It fails when any step before convert and the census
+// completes the hold, or the census runs before convert.
 func TestCompletionCoversTheWholeCutover(t *testing.T) {
 	rig := newConvertRig(t, 0)
 	rig.publish("notifications.agent.c1", 3)
@@ -126,14 +126,14 @@ func TestCompletionCoversTheWholeCutover(t *testing.T) {
 	require.NoError(t, rig.release(id))
 }
 
-// A forged store marker completes nothing (the round-17 gate's item 2): in a cutover hold where
-// convert has not run, every family's store marker is written cutover = done as the stores' own
-// writers write it (the bucket's sentinel by a conditional KV write of its key, which a listener's
-// KVWriteExisting grant admits, and Dispatch's and the daemon's intake_consumers rows through
-// their databases), and no broker cutover row exists. streams census, with every store its readers
-// read named, exits naming convert and changes nothing: the word's own admission is refused, convert
-// having no done entry, before it reads any marker. create-bucket's entries leave the record
-// incomplete, and release is refused.
+// A forged store marker completes nothing: in a cutover hold where convert has not run, every
+// family's store marker is written cutover = done as the stores' own writers write it (the
+// bucket's sentinel by a conditional KV write of its key, which a listener's KVWriteExisting grant
+// admits, and Dispatch's and the daemon's intake_consumers rows through their databases), and no
+// broker cutover row exists. streams census, with every store its readers read named, exits naming
+// convert and changes nothing: the word's own admission is refused, convert having no done entry,
+// before it reads any marker. create-bucket's entries leave the record incomplete, and release is
+// refused.
 // Control: every store marker reads done, which round 17's rule read, so that rule's census would
 // have run and its release succeeded with every fixed name unconverted. It fails when any step
 // decides on a store marker. The sentinel's write goes through the operator's connection: a
@@ -157,12 +157,12 @@ func TestAForgedStoreMarkerCompletesNothing(t *testing.T) {
 	require.Zero(t, code, stderr)
 
 	forger, _ := rig.operator()
-	listenerStore := newSessionStore(forger)
-	state, revision, err := convertSentinel(ctx, listenerStore, familySession)
+	store := newSessionStore(forger)
+	state, revision, err := convertSentinel(ctx, store, familySession)
 	require.NoError(t, err)
 	state.Cutover = selection.CutoverDone
-	_, err = listenerStore.WriteSentinel(ctx, state, revision)
-	require.NoError(t, err, "the listener's own write of the sentinel")
+	_, err = store.WriteSentinel(ctx, state, revision)
+	require.NoError(t, err, "the forged write of the sentinel, as the operator")
 	for _, store := range []pgFamilyStore{pgFamilyOf(t, familyDispatch, dispatch), pgFamilyOf(t, daemonFamily("p1"), daemon)} {
 		_, err := store.WriteSentinel(ctx, selection.StoreState{Cutover: selection.CutoverDone}, 0)
 		require.NoError(t, err)

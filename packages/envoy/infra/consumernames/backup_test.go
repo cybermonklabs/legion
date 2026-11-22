@@ -1,7 +1,6 @@
 package consumernames
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io/fs"
@@ -78,15 +77,13 @@ func TestTheBackupsFlags(t *testing.T) {
 			"envoy-infra consumer-names convert: --out is backup's alone"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
-			full := append(append(append([]string{}, row.args...), commonArgs...), writingArgs...)
-			code := runCommand(context.Background(), full, &stdout, &stderr, refused)
-			require.Equal(t, row.code, code, stderr.String())
+			code, _, stderr := createBucketRun(t, context.Background(), refused, row.args...)
+			require.Equal(t, row.code, code, stderr)
 			if row.problem == "" {
-				require.NotContains(t, stderr.String(), "usage:", "control: the flags did not pass the usage check")
+				require.NotContains(t, stderr, "usage:", "control: the flags did not pass the usage check")
 				return
 			}
-			require.Contains(t, stderr.String(), row.problem+"\n")
+			require.Contains(t, stderr, row.problem+"\n")
 		})
 	}
 }

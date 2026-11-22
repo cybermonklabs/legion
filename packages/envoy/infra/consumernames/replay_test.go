@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -95,10 +94,7 @@ func TestReplayWritesTheKeysRecordWithItsStartAndNoCurrent(t *testing.T) {
 		Op:        &selection.Op{Kind: selection.OpCreate, Owner: "a crashed listener", Candidate: candidate, ReservedAt: time.Now()},
 		LastFloor: &selection.Floor{Floor: 6, Name: current, StreamID: "s"}}, 0)
 	require.NoError(t, err)
-	marker := nats.NewMsg("$KV." + selection.SessionBucket + ".ses_deleted")
-	marker.Header.Set("KV-Operation", "DEL")
-	_, err = js.PublishMsg(ctx, marker)
-	require.NoError(t, err)
+	createBucketMarker(t, js, "ses_deleted", "DEL")
 	listenerKey := selection.DurableKey(bus.ListenerDurable(holdtest.ListenerMachines[0]))
 
 	replays := func() int { return len(createBucketEntries(h.journal(id), replayCommand)) }

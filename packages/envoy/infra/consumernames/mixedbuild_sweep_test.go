@@ -33,12 +33,6 @@ const mixedBuildSweepCap = 256
 // many it listed, judged gone and deleted (session_consumer_sweep.go, pass).
 const mixedBuildSweepLine = "session consumer sweep pass"
 
-// mixedBuildCensusCommand is the cutover workflow's final command (holdrecord table.go). Round
-// 17's window (mixedBuildCutoverByRound17) runs no census and writes that command's entries
-// itself, as `hold set`'s are written (harness_test.go, held); the window through the commands
-// runs the word, which writes its own (mixedBuildCensus).
-const mixedBuildCensusCommand = "streams census"
-
 // The listener entries of the stack (holdtest.ListenerMachines) the row's programs connect as: the
 // previous release's listener, and this tree's session consumer calls.
 var (
@@ -196,9 +190,8 @@ func (h *stack) mixedBuildFixedSessions(n int) []*mixedBuildSession {
 // tree's pull (bus.SessionConsumers.Pull), acking the one message it takes, and answers its stream
 // sequence. A pull that meets bus.ErrSessionConsumerNotFound is sent again until 30 seconds pass:
 // the bus answers a pull that met no responder so, and on the three-server hub a consumer whose
-// leader is named is not yet a responder on every server (two step 2 runs met it, once in 300
-// sessions each, the second after a wait for the consumer's leader). Any other answer fails the
-// setup.
+// leader is named is not yet a responder on every server (seen twice, once in 300 sessions each,
+// the second time after a wait for the consumer's leader). Any other answer fails the setup.
 func mixedBuildFirstPull(t *testing.T, sc *bus.SessionConsumers, sessionID, name string) uint64 {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
@@ -241,10 +234,11 @@ func (h *stack) mixedBuildCutoverWithTheCommands() {
 	require.NoError(h.t, h.release(id), "release the cutover hold after convert and a clean census")
 }
 
-// mixedBuildCensus runs `envoy-infra streams census` (censusCommand, t-10's word with this
-// package's readers) until a run is clean: the word writes its intent at each run, its stop entry
-// after a run that removed something (exit 1), which is run again, and its done entry after the
-// clean run, which completes the cutover's record. An UNKNOWN (exit 2) fails the test.
+// mixedBuildCensus runs `envoy-infra streams census` (censusCommand: writerhold's streams census
+// word with this package's readers) until a run is clean: the word writes its intent at each run,
+// its stop entry after a run that removed something (exit 1), which is run again, and its done
+// entry after the clean run, which completes the cutover's record. An UNKNOWN (exit 2) fails the
+// test.
 func (h *stack) mixedBuildCensus(id string, families ...string) {
 	h.t.Helper()
 	for run := 1; ; run++ {
@@ -265,6 +259,9 @@ func (h *stack) mixedBuildCensus(id string, families ...string) {
 // with its marker done, then for each session a consumer of the fixed one's configuration at its
 // ack floor + 1, the record selecting it, and the fixed one's delete; the family's broker cutover
 // row; and each command's journal entries, so the release is allowed as it was after round 17's.
+// It runs no census and writes the cutover workflow's final command's entries
+// (censusCommandName) itself, as `hold set`'s are written (harness_test.go, held); the window
+// through the commands runs the word, which writes its own (mixedBuildCensus).
 func (h *stack) mixedBuildCutoverByRound17(sessions []*mixedBuildSession) {
 	h.t.Helper()
 	ctx := context.Background()
@@ -306,9 +303,9 @@ func (h *stack) mixedBuildCutoverByRound17(sessions []*mixedBuildSession) {
 	require.NoError(h.t, err)
 	require.NoError(h.t, h.records().AppendDone(ctx, id, actionConvert, nil))
 
-	_, err = h.records().Admit(ctx, id, holdrecord.Request{Command: mixedBuildCensusCommand}, nil)
+	_, err = h.records().Admit(ctx, id, holdrecord.Request{Command: censusCommandName}, nil)
 	require.NoError(h.t, err)
-	require.NoError(h.t, h.records().AppendDone(ctx, id, mixedBuildCensusCommand, nil))
+	require.NoError(h.t, h.records().AppendDone(ctx, id, censusCommandName, nil))
 	require.NoError(h.t, h.release(id), "release round 17's cutover hold")
 }
 

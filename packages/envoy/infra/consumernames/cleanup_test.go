@@ -34,9 +34,8 @@ func cleanupPull(t *testing.T, nc *nats.Conn, name, logical string) {
 	t.Helper()
 	m, err := replayMember(logical)
 	require.NoError(t, err, "the member of %s", logical)
-	_, err = writeConsumer(t.Context(), nc, notifications, jetstream.ConsumerConfig{Durable: name, AckPolicy: jetstream.AckExplicitPolicy,
-		FilterSubject: "notifications.agent.cleanup." + name[len(name)-3:], Metadata: m.Metadata()}, actionCreateConsumer)
-	require.NoError(t, err, "create %s", name)
+	makeConsumer(t, nc, jetstream.ConsumerConfig{Durable: name, AckPolicy: jetstream.AckExplicitPolicy,
+		FilterSubject: "notifications.agent.cleanup." + name[len(name)-3:], Metadata: m.Metadata()})
 }
 
 // cleanup, with the row held in a consumer-cleanup hold, deletes the retired names of every family
@@ -64,11 +63,6 @@ func TestTheCleanupDeletesOnlyRecordedRetiredNames(t *testing.T) {
 	daemon := pgFamilyOf(t, daemonFamily("PROJ"), daemonPool)
 	// cleanup reads each daemon store by the census's rule, at the address its Deployment names.
 	projFile := "PROJ=" + h.censusDaemonDeployed("PROJ", daemonPool)
-	write := func(store selection.Store, logical string, record selection.Record) {
-		t.Helper()
-		_, err := store.Write(ctx, logical, record, 0)
-		require.NoError(t, err, "write %s", logical)
-	}
 	const (
 		sessionCurrent  = "session~cleanupSessionCurrentAAA"
 		sessionRetired  = "session~cleanupSessionRetiredBBB"
@@ -88,11 +82,11 @@ func TestTheCleanupDeletesOnlyRecordedRetiredNames(t *testing.T) {
 		dispatchCurrent: "delivery-events"} {
 		cleanupPull(t, nc, name, logical)
 	}
-	write(kv, "ses_a", selection.Record{Current: sessionCurrent, Start: 2, Retired: []string{sessionRetired, sessionAbsent}})
-	write(kv, "ses_b", selection.Record{Current: selfRetired, Start: 2, Retired: []string{selfRetired}})
-	write(kv, listenerKey, selection.Record{Current: listenerCurrent, Start: 2, Retired: []string{listenerOld}})
-	write(daemon, "legion-go-PROJ-github", selection.Record{Current: daemonCurrent, Start: 2, Retired: []string{daemonRetired}})
-	write(dispatch, "delivery-events", selection.Record{Current: dispatchCurrent, Start: 2, Retired: []string{dispatchAbsent}})
+	writeRecord(t, kv, "ses_a", selection.Record{Current: sessionCurrent, Start: 2, Retired: []string{sessionRetired, sessionAbsent}})
+	writeRecord(t, kv, "ses_b", selection.Record{Current: selfRetired, Start: 2, Retired: []string{selfRetired}})
+	writeRecord(t, kv, listenerKey, selection.Record{Current: listenerCurrent, Start: 2, Retired: []string{listenerOld}})
+	writeRecord(t, daemon, "legion-go-PROJ-github", selection.Record{Current: daemonCurrent, Start: 2, Retired: []string{daemonRetired}})
+	writeRecord(t, dispatch, "delivery-events", selection.Record{Current: dispatchCurrent, Start: 2, Retired: []string{dispatchAbsent}})
 	for _, family := range []string{familySession, familyDispatch, daemonFamily("PROJ")} {
 		_, err := h.records().PutCutover(ctx, family, selection.CutoverDone, id)
 		require.NoError(t, err)
@@ -252,9 +246,9 @@ func TestPlainCleanupSkipsAGoneDaemonStore(t *testing.T) {
 // cleanup, cleanup --gone and replace run only in a consumer-cleanup hold: with the row held in a
 // cutover hold, each, and each with --final, is refused at its admission, naming the workflow it
 // runs in and the hold's, and writes nothing: no journal entry, and the retired name cleanup would
-// delete stays on the stream. Control: today's cleanup under any held row runs in the cutover hold
-// and deletes that name (the red run, before the commands joined the workflow); the same cleanup
-// in a consumer-cleanup hold deletes it (TestTheCleanupDeletesOnlyRecordedRetiredNames).
+// delete stays on the stream. Control: the cleanup before the commands joined the workflow ran
+// under any held row, in the cutover hold, and deleted that name (the red run); the same cleanup in
+// a consumer-cleanup hold deletes it (TestTheCleanupDeletesOnlyRecordedRetiredNames).
 func TestTheConsumerCleanupCommandsRunOnlyInItsHold(t *testing.T) {
 	h := newStack(t)
 	ctx := t.Context()
@@ -329,15 +323,6 @@ func TestTheConsumerCleanupFlags(t *testing.T) {
 	}
 }
 
-// cleanupGoneConsumer creates, as the operator on nc, a consumer named name of the notification
-// stream carrying logical as its logical name, as a daemon creates one.
-func cleanupGoneConsumer(t *testing.T, nc *nats.Conn, name, logical string) {
-	t.Helper()
-	_, err := writeConsumer(t.Context(), nc, notifications, jetstream.ConsumerConfig{Durable: name, FilterSubject: bus.LegionWakeTopic,
-		AckPolicy: jetstream.AckExplicitPolicy, Metadata: map[string]string{selection.LogicalMetadataKey: logical}}, actionCreateConsumer)
-	require.NoError(t, err, "create %s", name)
-}
-
 // A daemon whose store is gone (its database answers SQLSTATE 3D000 at the address its Deployment
 // names) keeps its consumers through a plain census, which names each LEFT, and loses them to
 // cleanup --gone in a consumer-cleanup hold: it reads the Deployment again, finds the store gone,
@@ -362,7 +347,7 @@ func TestTheCleanupGoneRemovesAGoneStoresConsumers(t *testing.T) {
 	declared, undeclared := selection.FreshName(wake), selection.FreshName(ready)
 	goneConsumers := []string{declared, undeclared, dispatch}
 	for name, logical := range map[string]string{declared: wake, undeclared: ready, dispatch: dispatch} {
-		cleanupGoneConsumer(t, nc, name, logical)
+		daemonConsumer(t, nc, name, logical)
 	}
 	for _, family := range []string{familySession, daemonFamily("GONE")} {
 		_, err := h.records().PutCutover(ctx, family, selection.CutoverDone, census)
@@ -390,7 +375,7 @@ func TestTheCleanupGoneRemovesAGoneStoresConsumers(t *testing.T) {
 	id := h.heldHold(holdrecord.WorkflowConsumerCleanup)
 	nc, _ = h.operator()
 	live := selection.FreshName("legion-go-LIVE-wake")
-	cleanupGoneConsumer(t, nc, live, "legion-go-LIVE-wake")
+	daemonConsumer(t, nc, live, "legion-go-LIVE-wake")
 	liveEntry, liveDB := censusDaemonStore(t, "LIVE", daemonMigrations...)
 	h.censusDeploy(censusDeploymentOf("LIVE", liveDB))
 	down := censusAnsweringServer(t, "DOWN", "daemon_down", "57P01")

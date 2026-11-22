@@ -60,14 +60,11 @@ func newConvertRigWith(t *testing.T, change func(*jetstream.StreamConfig)) *conv
 	h := newStack(t)
 	id := h.heldHold(holdrecord.WorkflowStreamsUpdate)
 	nc, js := h.operator()
-	raw, err := json.Marshal(bus.NotificationStreamConfig(1, 0))
-	require.NoError(t, err)
-	var config jetstream.StreamConfig
-	require.NoError(t, json.Unmarshal(raw, &config))
+	config := notificationStreamConfig(t, 1)
 	// The stream's identity, as the listener writes it when it creates the stream.
 	config.Metadata = map[string]string{selection.StreamIdentityMetadataKey: convertRigStreamID}
 	change(&config)
-	_, err = js.CreateStream(context.Background(), config)
+	_, err := js.CreateStream(context.Background(), config)
 	require.NoError(t, err)
 	nc.Close()
 	require.NoError(t, h.release(id))
@@ -163,18 +160,6 @@ func (rig *convertRig) heldForConvert() (string, prepareCohort) {
 	return id, cohort
 }
 
-// censusDone writes `streams census`'s entries in hold id's journal as its contract writes them
-// around a clean run (its admission and intent, then its done entry, which completes the cutover's
-// record), without the run itself: these rows test what comes before the census, and the census's
-// own rows are admittedCensus's (completion_test.go).
-func (rig *convertRig) censusDone(id string) {
-	rig.t.Helper()
-	ctx := context.Background()
-	_, err := rig.records().Admit(ctx, id, holdrecord.Request{Command: censusCommandName}, nil)
-	require.NoError(rig.t, err)
-	require.NoError(rig.t, rig.records().AppendDone(ctx, id, censusCommandName, nil))
-}
-
 // pgRecord reads logical's record in family's intake_consumers rows on db.
 func pgRecord(t *testing.T, family string, db *pgxpool.Pool, logical string) selection.Record {
 	t.Helper()
@@ -189,9 +174,7 @@ func (rig *convertRig) fixedNames() []string {
 	rig.t.Helper()
 	nc, _ := rig.operator()
 	defer nc.Close()
-	names, err := consumerNames(context.Background(), nc, notifications)
-	require.NoError(rig.t, err)
-	return slices.DeleteFunc(names, func(name string) bool { _, ok := classify(name); return !ok })
+	return slices.DeleteFunc(censusConsumers(rig.t, nc), func(name string) bool { _, ok := classify(name); return !ok })
 }
 
 // requireFresh requires record to select a fresh name of m started at start, carrying m's
@@ -863,15 +846,7 @@ func (rig *convertRig) convertOnWire(id string, w *convertWire) (int, string, st
 	run, kill := context.WithCancel(context.Background())
 	defer kill()
 	w.cut = kill
-	e := rig.e
-	e.connect = func(context.Context, options) (*nats.Conn, error) {
-		return nats.Connect(rig.s.Cluster.URL(), append(rig.s.OperatorCredential(), nats.SetCustomDialer(w), nats.Name("envoy-infra consumer-names"),
-			nats.MaxReconnects(-1), nats.ReconnectWait(100*time.Millisecond), nats.Timeout(10*time.Second))...)
-	}
-	// The held re-read's report admits no connection but the command's and the auth service's,
-	// which rig.run sees to; this run is the test's own.
-	rig.closeOperators()
-	return createBucketRun(rig.t, run, e, actionConvert, "--hold", id)
+	return rig.runDialed(run, w, actionConvert, "--hold", id)
 }
 
 // convertKilledBeforeTheDelete runs convert --hold id killed right before it sends the delete of
@@ -1036,12 +1011,7 @@ func TestConvertStopsOnAFailedDeleteOfTheFixedNameAndNeverRetiresIt(t *testing.T
 			code, _, stderr := createBucketRun(t, ctx, g.env(), actionConvert, "--hold", id)
 			require.Equal(t, 1, code, stderr)
 			require.Contains(t, stderr, `Permissions Violation for Publish to "`+refused+`"`, "the run's error names no refused delete of F")
-			var stop holdrecord.Operation
-			for _, op := range readJournal(t, g.records, id).Ops {
-				if op.Command == actionConvert {
-					stop = op
-				}
-			}
+			stop := lastOf(readJournal(t, g.records, id), actionConvert)
 			require.Equal(t, "stop", stop.State, "convert's last entry after the failed delete")
 			require.Contains(t, stop.Outputs["reason"], "delete "+fixed+", ", "the stop names no delete of F")
 			require.Contains(t, stop.Outputs["reason"], m.Logical+"'s record", "the stop names no record of K")

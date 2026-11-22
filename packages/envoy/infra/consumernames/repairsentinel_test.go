@@ -37,14 +37,7 @@ func repairSentinelValue(t *testing.T, h *stack) []byte {
 // read as the operator.
 func repairPlant(t *testing.T, h *stack, as *nats.Conn) []byte {
 	t.Helper()
-	require.NoError(t, as.PublishRequest("$JS.API.STREAM.INFO."+notifications, "$KV."+selection.SessionBucket+"."+selection.SentinelKey, nil))
-	require.NoError(t, as.Flush())
-	var value []byte
-	require.Eventually(t, func() bool {
-		value = repairSentinelValue(t, h)
-		return bytes.Contains(value, []byte(`"io.nats.jetstream.api.v1.stream_info_response"`))
-	}, 10*time.Second, 50*time.Millisecond, "the STREAM.INFO answer never reached %s", selection.SentinelKey)
-	return value
+	return storeStreamInfoAnswer(t, as, selection.SentinelKey, func() []byte { return repairSentinelValue(t, h) })
 }
 
 // repairRecordsSentinel is the sentinel the broker's records give, read by the row from the
@@ -53,26 +46,19 @@ func repairPlant(t *testing.T, h *stack, as *nats.Conn) []byte {
 // for the boundary, as json.Marshal writes it under the sentinel's own key and family
 // (ownSentinel). A row checks it against the bytes convert or restore --finish wrote before the
 // damage, so it is no copy of the command's own reading.
-func repairRecordsSentinel(t *testing.T, records *holdrecord.Client) []byte {
+func repairRecordsSentinel(t *testing.T, h *stack) []byte {
 	t.Helper()
 	ctx := context.Background()
-	rows, err := records.Cutovers(ctx)
-	require.NoError(t, err)
-	var row holdrecord.CutoverRow
-	for _, r := range rows {
-		if r.Family == familySession {
-			row = r
-		}
-	}
+	row, _ := h.cutoverRow(familySession)
 	require.NotEmpty(t, row.HoldID, "the broker holds no session cutover row")
 	hold := row.HoldID
 	if row.State == selection.CutoverRolledBack {
-		set, found, err := readRestoreSet(ctx, records, row.HoldID)
+		set, found, err := readRestoreSet(ctx, h.records(), row.HoldID)
 		require.NoError(t, err)
 		require.True(t, found, "rollback hold %s saved no set", row.HoldID)
 		hold = set.CutoverHold
 	}
-	cohort, _, found, err := readPrepareCohort(ctx, records, hold)
+	cohort, _, found, err := readPrepareCohort(ctx, h.records(), hold)
 	require.NoError(t, err)
 	require.True(t, found, "hold %s has no cohort record", hold)
 	value, err := json.Marshal(ownSentinel(familySession, selection.StoreState{Cutover: row.State, Boundary: cohort.Boundary, Hold: hold}))
@@ -147,7 +133,7 @@ func TestRepairSentinelRewritesAMalformedSentinelSoSessionsServeAgain(t *testing
 	rig.admittedCensus(cutover, familySession)
 	require.NoError(t, rig.release(cutover))
 	converted := repairSentinelValue(t, rig.stack)
-	records := repairRecordsSentinel(t, rig.records())
+	records := repairRecordsSentinel(t, rig.stack)
 	require.NoError(t, repairCheck(records, converted), "the broker's records give the sentinel convert wrote")
 	current := rig.record(familySession, "r1").Current
 	require.Contains(t, current, sessionFreshPrefix+"~", "convert selected no fresh name for r1")
@@ -318,7 +304,7 @@ func TestRestoreCutoverHoldIsTheDoneSessionRowsHold(t *testing.T) {
 // writes {cutover rolled_back, boundary, the cutover's hold}, byte for byte what restore --finish
 // left; after the release a fixed-mode listener's read of the sentinel (the listener's
 // RefuseConvertedStore reads selection.Store.State) succeeds with rolled_back, which is no done, so
-// fixed names run, and the readers' decode takes it. Control: the rollback run by today's
+// fixed names run, and the readers' decode takes it. Control: the rollback run by the earlier
 // restore (restoreRuleSet's noCutoverHold) saves no cutover hold, and the repair stops UNKNOWN
 // naming it, before its intent, the malformed sentinel left as it was.
 func TestRepairSentinelAfterARollbackLetsFixedListenersStart(t *testing.T) {
@@ -348,7 +334,7 @@ func TestRepairSentinelAfterARollbackLetsFixedListenersStart(t *testing.T) {
 		return rig, cutover, rollback, left
 	}
 
-	t.Run("control: today's restore saves no cutover hold, and the repair stops UNKNOWN", func(t *testing.T) {
+	t.Run("control: the earlier restore saves no cutover hold, and the repair stops UNKNOWN", func(t *testing.T) {
 		restoreWithRules(t, restoreRuleSet{noCutoverHold: true})
 		rig, _, rollback, _ := rolledBack(t)
 		set, found, err := readRestoreSet(ctx, rig.records(), rollback)
@@ -372,7 +358,7 @@ func TestRepairSentinelAfterARollbackLetsFixedListenersStart(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, found)
 		require.Equal(t, cutover, set.CutoverHold, "restore --prepare recorded the cutover hold")
-		records := repairRecordsSentinel(t, rig.records())
+		records := repairRecordsSentinel(t, rig.stack)
 		require.NoError(t, repairCheck(records, left), "the broker's records give the sentinel restore --finish left")
 
 		repair := rig.heldHold(holdrecord.WorkflowSentinelRepair)

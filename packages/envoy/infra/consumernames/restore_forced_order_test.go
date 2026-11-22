@@ -15,7 +15,7 @@ import (
 
 // Families 3 and 4 of the design's forced-order tests (§7) for restore, each a race regression on
 // the writer hold's stack: its control, an earlier round's rule (restoreRuleSet), runs first and
-// loses the row's messages; the treatment, this head's rule, delivers them on the restored fixed
+// loses the row's messages; the treatment, the current rule, delivers them on the restored fixed
 // name, which the previous release pulls by name. Each asserts its hold point was reached and that
 // the messages it expects are not none. Each runs with the stream and the selection bucket at one
 // copy and at three on the stack's three servers, on the nats-server forced-order.sh links: on

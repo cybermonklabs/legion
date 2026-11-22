@@ -45,7 +45,7 @@ func TestPrepareSavesTheBoundaryAndEachFixedNamesFloor(t *testing.T) {
 	require.Equal(t, 1, code, "control: prepare in a released row")
 	require.Contains(t, stderr, "released")
 
-	id := rig.prepared("cutover")
+	id := rig.prepared(holdrecord.WorkflowCutover)
 	daemonFloor := convertFloor(rig.consumer("legion-go-p1-github"))
 	code, stdout, stderr := rig.run(actionPrepare, "--hold", id)
 	require.Zero(t, code, stderr)
@@ -123,9 +123,9 @@ func (rig *convertRig) boundaryWindow(afterPrepare, set func(id string), beforeC
 	return id, cohort
 }
 
-// boundaryFirstStart is K's first-create rule, today's (internal/bus/session_consumers.go
-// create's default branch, :996-1013): its agent subject's first stored message, else the
-// stream's end.
+// boundaryFirstStart is K's first-create rule, today's (internal/bus/session_consumers.go,
+// SessionConsumers.create's default branch, firstOwnMessage): its agent subject's first stored
+// message, else the stream's end.
 func (rig *convertRig) boundaryFirstStart() uint64 {
 	rig.t.Helper()
 	ctx := context.Background()
@@ -342,7 +342,7 @@ func boundaryLongAfterRow(t *testing.T) {
 	rig.publish("notifications.dispatch.other", 3)
 	retained := shared[2]
 	ahead := func() time.Time { return time.Now().Add(2 * time.Hour) }
-	require.True(t, ahead().Sub(time.Now()) > time.Hour, "control: the listener's clock reads the boundary past an hour-long end")
+	require.True(t, ahead().Sub(time.Now()) > time.Hour, "the row's premise: the listener's clock reads two hours past the servers', past an hour-long end")
 	require.Empty(t, rig.boundaryDelivers(rig.boundaryFirstStart()), "control: the first-create rule after an end by time delivered the retained message")
 	name, start := rig.boundaryRegister(ahead)
 	require.Equal(t, cohort.Boundary, start)

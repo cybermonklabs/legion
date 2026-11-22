@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -123,12 +124,7 @@ func (h *grantsHub) watch(t *testing.T) func() []string {
 			"the watcher's subscription never finished draining")
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		var subjects []string
-		for subject := range h.seen {
-			subjects = append(subjects, subject)
-		}
-		slices.Sort(subjects)
-		return subjects
+		return slices.Sorted(maps.Keys(h.seen))
 	}
 }
 
@@ -305,15 +301,15 @@ func grantsSessionBucket(g *grantsRig, id string) {
 	createBucketMakeBucket(g.t, g.hub.admin, selection.StoreState{Boundary: 1, Hold: id})
 }
 
-// The grant test, by phase (plan t-7): prepare runs as a user granted exactly
-// Operator(OperatorPhasePrepare) and succeeds; create-bucket, convert, replay and create-bucket
-// --after-loss each run as a user granted exactly Operator(OperatorPhaseHeld), succeed, and write
-// their intent and done entries; status runs under exactly Operator(OperatorPhaseReleased). The
-// static user holds the list natsgrant.Operator renders, which is the auth service's answer to the
-// operator under that phase. Control: for each subject the command published under the whole grant,
-// the grant with every entry that admits that subject removed (and, as one more, the grant with no
-// subscribe of the operator's inbox) fails the command, and its error names the refused subject in
-// the server's words.
+// The grant test, by phase: prepare runs as a user granted exactly Operator(OperatorPhasePrepare)
+// and succeeds; create-bucket, convert, replay and create-bucket --after-loss each run as a user
+// granted exactly Operator(OperatorPhaseHeld), succeed, and write their intent and done entries;
+// status runs under exactly Operator(OperatorPhaseReleased). The static user holds the list
+// natsgrant.Operator renders, which is the auth service's answer to the operator under that phase.
+// Control: for each subject the command published under the whole grant, the grant with every
+// entry that admits that subject removed (and, as one more, the grant with no subscribe of the
+// operator's inbox) fails the command, and its error names the refused subject in the server's
+// words.
 func TestTheGrantByPhase(t *testing.T) {
 	restoreTimeout := createBucketRestoreTimeout
 	createBucketRestoreTimeout = 5 * time.Second

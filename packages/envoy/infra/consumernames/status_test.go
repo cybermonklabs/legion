@@ -100,7 +100,7 @@ func TestTheStatusWalkReadsTheBucketUnderTheReleasedGrant(t *testing.T) {
 
 	without := natsgrant.Permissions{Subscribe: released.Subscribe}
 	for _, subject := range released.Publish {
-		if subject != "$JS.API.STREAM.MSG.GET.KV_"+selection.SessionBucket {
+		if subject != "$JS.API.STREAM.MSG.GET."+selectionStreamName {
 			without.Publish = append(without.Publish, subject)
 		}
 	}
@@ -137,40 +137,32 @@ func TestTheStatusListsEveryFamilysRecordsAndBlockers(t *testing.T) {
 	require.NoError(t, holdrecord.Barrier(ctx, js, selection.SessionBucket, id))
 	pull := func(name string) {
 		t.Helper()
-		_, err := writeConsumer(ctx, nc, notifications, jetstream.ConsumerConfig{Durable: name, AckPolicy: jetstream.AckExplicitPolicy,
-			FilterSubject: "notifications.agent." + strings.NewReplacer("~", "_").Replace(name)}, actionCreateConsumer)
-		require.NoError(t, err, "create %s", name)
+		makeConsumer(t, nc, jetstream.ConsumerConfig{Durable: name, AckPolicy: jetstream.AckExplicitPolicy,
+			FilterSubject: "notifications.agent." + strings.NewReplacer("~", "_").Replace(name)})
 	}
 	kv := selection.NewKVStore(selection.ConnRequester{Conn: nc})
-	write := func(store selection.Store, logical string, record selection.Record) {
-		t.Helper()
-		_, err := store.Write(ctx, logical, record, 0)
-		require.NoError(t, err, "write %s", logical)
-	}
 	for _, name := range []string{"session~A", "session~R", "session~C", "listener-hub~L", "delivery-events~D", "s-ses_fixed"} {
 		pull(name)
 	}
-	write(kv, "ses_a", selection.Record{Current: "session~A", Start: 3, Retired: []string{"session~R", "session~Q"}})
-	write(kv, "ses_b", selection.Record{Current: "session~B", Start: 4})
-	write(kv, "ses_c", selection.Record{Current: "session~C", Start: 5, Op: &selection.Op{Kind: selection.OpReplace, Candidate: "session~N", Old: "session~C", Owner: "o1", ReservedAt: time.Now()}})
-	write(kv, selection.DurableKey("listener-hub"), selection.Record{Current: "listener-hub~L", Start: 6})
-	write(kv, "ses_gone", selection.Record{Current: "session~G"})
+	writeRecord(t, kv, "ses_a", selection.Record{Current: "session~A", Start: 3, Retired: []string{"session~R", "session~Q"}})
+	writeRecord(t, kv, "ses_b", selection.Record{Current: "session~B", Start: 4})
+	writeRecord(t, kv, "ses_c", selection.Record{Current: "session~C", Start: 5, Op: &selection.Op{Kind: selection.OpReplace, Candidate: "session~N", Old: "session~C", Owner: "o1", ReservedAt: time.Now()}})
+	writeRecord(t, kv, selection.DurableKey("listener-hub"), selection.Record{Current: "listener-hub~L", Start: 6})
+	writeRecord(t, kv, "ses_gone", selection.Record{Current: "session~G"})
 	statusPublishKV(t, nc, "ses_gone", nil, "DEL")
 
 	dispatch := pgFamilyOf(t, familyDispatch, h.database(familyDispatch, dispatchMigrations...))
-	write(dispatch, "delivery-events", selection.Record{Current: "delivery-events~D", Start: 7})
+	writeRecord(t, dispatch, "delivery-events", selection.Record{Current: "delivery-events~D", Start: 7})
 	daemon := pgFamilyOf(t, daemonFamily("PROJ"), h.database(daemonFamily("PROJ"), daemonMigrations...))
 	_, err = daemon.WriteSentinel(ctx, selection.StoreState{Cutover: selection.CutoverDone}, 0)
 	require.NoError(t, err)
-	write(daemon, "legion-go-PROJ-wake", selection.Record{Current: "legion-go-PROJ-wake~W", Start: 8, Retired: []string{"legion-go-PROJ-wake~V"}})
+	writeRecord(t, daemon, "legion-go-PROJ-wake", selection.Record{Current: "legion-go-PROJ-wake~W", Start: 8, Retired: []string{"legion-go-PROJ-wake~V"}})
 	h.database(daemonFamily("MISS"))
 	for _, family := range []string{familySession, familyDispatch, daemonFamily("PROJ")} {
 		_, err := h.records().PutCutover(ctx, family, selection.CutoverDone, id)
 		require.NoError(t, err)
 	}
-	_, err = h.records().Admit(ctx, id, holdrecord.Request{Command: "streams census"}, nil)
-	require.NoError(t, err)
-	require.NoError(t, h.records().AppendDone(ctx, id, "streams census", nil))
+	h.censusDone(id)
 
 	code, _, stderr := h.run(actionStatus, "--dispatch-database-file", "dispatch.url", "--daemon-database", "PROJ=proj.url")
 	require.Equal(t, 1, code, "control: status under a held row")
@@ -191,7 +183,7 @@ func TestTheStatusListsEveryFamilysRecordsAndBlockers(t *testing.T) {
 		"  6. hold release done\n",
 		"cutover session: done (hold " + id,
 		"cutover daemon/PROJ: done (hold " + id,
-		"store session (KV_" + selection.SessionBucket + "): cutover=done boundary=1",
+		"store session (" + selectionStreamName + "): cutover=done boundary=1",
 		"record session ses_a: current session~A (on the stream), start 3, retired [session~R (on the stream), session~Q (absent)]",
 		"record session durable.listener-hub: current listener-hub~L (on the stream), start 6",
 		"record session ses_gone: deleted",
@@ -314,9 +306,7 @@ func TestStatusListsARecordItsCreatorRefusesAsABlocker(t *testing.T) {
 	_, err = kv.Write(ctx, "ses_other", selection.Record{Current: selection.FreshName("legion-go-PROJ-wake"), Start: 1}, 0)
 	require.NoError(t, err)
 	h.database(familyDispatch, dispatchMigrations...)
-	_, err = h.records().Admit(ctx, id, holdrecord.Request{Command: "streams census"}, nil)
-	require.NoError(t, err)
-	require.NoError(t, h.records().AppendDone(ctx, id, "streams census", nil))
+	h.censusDone(id)
 	require.NoError(t, h.release(id))
 
 	code, stdout, stderr := h.run(actionStatus, "--dispatch-database-file", "dispatch.url")

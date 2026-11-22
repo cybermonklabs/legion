@@ -94,13 +94,6 @@ func mixedBuildCurrentListener(t *testing.T) string {
 	return cmdtest.BuildCommand(t, cmdtest.Command{Name: "envoy-listener", Dir: filepath.Join("..", "..", "cmd", "listener")})
 }
 
-// The commands of the buckets-create and streams-update workflows (holdrecord table.go), each of
-// which is its hold's one entry and completes it.
-const (
-	mixedBuildBucketsCreate = "buckets create"
-	mixedBuildStreamsUpdate = "streams update"
-)
-
 // mixedBuildProvision makes what a hub holds before its first listener starts, as the operator
 // makes it, each in a hold of its own workflow: every bucket a listener copies (bus.CopiedBuckets),
 // which no listener creates, as `envoy-infra buckets create` does; then every other declared
@@ -114,32 +107,21 @@ const (
 func (h *stack) mixedBuildProvision() {
 	h.t.Helper()
 	ctx := context.Background()
-	id := h.heldHold(holdrecord.WorkflowBucketsCreate)
-	_, err := h.records().Admit(ctx, id, holdrecord.Request{Command: mixedBuildBucketsCreate}, nil)
-	require.NoError(h.t, err)
-	nc, _ := h.operator()
-	legacy, err := nc.JetStream()
-	require.NoError(h.t, err)
-	for _, bucket := range bus.CopiedBuckets() {
-		_, err := bus.CreateCopiedBucket(ctx, nc, legacy, bucket, 1)
-		require.NoError(h.t, err, "create the copied bucket %s", bucket)
-	}
-	nc.Close()
-	require.NoError(h.t, h.records().AppendDone(ctx, id, mixedBuildBucketsCreate, nil))
-	require.NoError(h.t, h.release(id))
-
-	id = h.heldHold(holdrecord.WorkflowStreamsUpdate)
-	_, err = h.records().Admit(ctx, id, holdrecord.Request{Command: mixedBuildStreamsUpdate}, nil)
-	require.NoError(h.t, err)
-	nc, _ = h.operator()
-	held := func(context.Context) (natsgrant.OperatorPhase, error) { return natsgrant.OperatorPhaseHeld, nil }
-	report, err := streams.Update(ctx, nc, streamset.Settings{Replicas: 1}, held)
-	require.NoError(h.t, err, "streams update")
-	require.Empty(h.t, report.Unknown, "streams update read something it could not: %v", report.Unknown)
-	require.Empty(h.t, report.Failures, "streams update failed: %v", report.Failures)
-	nc.Close()
-	require.NoError(h.t, h.records().AppendDone(ctx, id, mixedBuildStreamsUpdate, nil))
-	require.NoError(h.t, h.release(id))
+	operatorInHold(h.t, h, holdrecord.WorkflowBucketsCreate, func(nc *nats.Conn, _ jetstream.JetStream) {
+		legacy, err := nc.JetStream()
+		require.NoError(h.t, err)
+		for _, bucket := range bus.CopiedBuckets() {
+			_, err := bus.CreateCopiedBucket(ctx, nc, legacy, bucket, 1)
+			require.NoError(h.t, err, "create the copied bucket %s", bucket)
+		}
+	})
+	operatorInHold(h.t, h, holdrecord.WorkflowStreamsUpdate, func(nc *nats.Conn, _ jetstream.JetStream) {
+		held := func(context.Context) (natsgrant.OperatorPhase, error) { return natsgrant.OperatorPhaseHeld, nil }
+		report, err := streams.Update(ctx, nc, streamset.Settings{Replicas: 1}, held)
+		require.NoError(h.t, err, "streams update")
+		require.Empty(h.t, report.Unknown, "streams update read something it could not: %v", report.Unknown)
+		require.Empty(h.t, report.Failures, "streams update failed: %v", report.Failures)
+	})
 }
 
 // mixedBuildListenerTokenFile writes the platform token of the stack's listener entry machine (one

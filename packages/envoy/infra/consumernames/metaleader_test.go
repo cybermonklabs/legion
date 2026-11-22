@@ -84,14 +84,14 @@ func (rig *convertRig) metaLeaderMove(ctx context.Context) string {
 	return pod
 }
 
-// A meta-leader change after the barrier discards the listing (the round-17 gate on plan v6), on
-// three servers: convert's listing that a meta leader other than the barrier's may have answered
-// is not taken. The row moves the meta leader (an eviction of its pod) after the barrier stream is
-// listed and the consumer names read, before the meta group is read again; the term check then sees
-// another term and leader, discards the listing, makes the barrier again and lists again, and the
-// conversion goes on from the second listing. Control, run first in a hold of its own: with the term
-// check removed, convert takes the listing the leader change followed. It fails when a listing
-// answered across a meta-leader change is taken.
+// A meta-leader change after the barrier discards the listing, on three servers: convert's listing
+// that a meta leader other than the barrier's may have answered is not taken. The row moves the
+// meta leader (an eviction of its pod) after the barrier stream is listed and the consumer names
+// read, before the meta group is read again; the term check then sees another term and leader,
+// discards the listing, makes the barrier again and lists again, and the conversion goes on from
+// the second listing. Control, run first in a hold of its own: with the term check removed,
+// convert takes the listing the leader change followed. It fails when a listing answered across a
+// meta-leader change is taken.
 //
 // The row forces the rule, not the miss: a successor that holds an earlier consumer create's apply
 // (meta.apply) does not stand for leader while it has a committed entry it has not applied
