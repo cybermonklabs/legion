@@ -104,13 +104,13 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 		return recorder, time.Since(started)
 	}
 	list := func() (*httptest.ResponseRecorder, time.Duration) {
-		return get(sessionsHandler(registry, sessions), "/v1/sessions")
+		return get(sessionsHandler(registry, sessions, nil), "/v1/sessions")
 	}
 	entry := func(id string) (*httptest.ResponseRecorder, time.Duration) {
 		return get(sessionEntryHandler(state), "/v1/registry/"+id)
 	}
 	interests := func(id string) (*httptest.ResponseRecorder, time.Duration) {
-		return get(adminInterestsHandler(registry, sessions, nil, logging.New("test")), "/v1/interests/"+id)
+		return get(adminInterestsHandler(registry, sessions, nil, nil, logging.New("test")), "/v1/interests/"+id)
 	}
 	wantTopics := func(t *testing.T, info listenerwire.SessionInfo, want []string) {
 		t.Helper()

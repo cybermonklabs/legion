@@ -20,10 +20,6 @@ import (
 // AST transformer, whose work parseSource does itself (unescapeTablePipes).
 type lazyAwareTable struct{}
 
-// tableTransformer is goldmark's table paragraph transformer, which lazyTableRows runs where
-// findTableRows reads a table the budget pays for.
-var tableTransformer = extension.NewTableParagraphTransformer()
-
 // unescapeTablePipes takes the backslash out of every escaped pipe in a table cell's code span, as
 // goldmark's table AST transformer does (extension/table.go:299-342 at v1.8.6). pmdoc does not
 // register that transformer: goldmark runs it inside its parse, before parseSource checks the
@@ -161,8 +157,16 @@ func recordTablePadding(pc parser.Context, padding tablePadding) bool {
 	return false
 }
 
+// Extend gives the parser goldmark's table paragraph transformer, behind lazyTableRows. It asks
+// goldmark for the transformer here, at the call, rather than reading a variable of this package:
+// goldmark.New calls Extend through the goldmark.Extender interface while it initializes
+// blockReader and displayReader, and Go's initialization order follows no call through an
+// interface, so a variable of this package could still be nil then. It was in every build made
+// without inlining (-gcflags=all=-l, and so every debugger build), where the readers copied a nil
+// transformer and each table panicked. goldmark's own package is initialized before this one
+// starts, so its transformer exists whenever Extend runs.
 func (lazyAwareTable) Extend(m goldmark.Markdown) {
-	m.Parser().AddOptions(parser.WithParagraphTransformers(util.Prioritized(lazyTableRows{table: tableTransformer}, 200)))
+	m.Parser().AddOptions(parser.WithParagraphTransformers(util.Prioritized(lazyTableRows{table: extension.NewTableParagraphTransformer()}, 200)))
 }
 
 // lazyTableRows runs goldmark's table transformer only where the browser editor's parser reads a

@@ -48,6 +48,16 @@ def hours: (. / 360 | floor) / 10;
 # last_line is a text's last line that is not empty, or null.
 def last_line: split("\n") | map(select(length > 0)) | last;
 
+# masked_urls is a NATS_URLS as a line prints it: in each URL, split at commas as the listener
+# splits them (internal/config Load), everything before its last @ after the scheme, if it has one,
+# is masked (masked_userinfo). printable masks a URL with a scheme in any text; this also masks one
+# with none, which the listener's NATS client dials with its default scheme, so no line prints a
+# credential a listener's environment holds.
+def masked_urls:
+  split(",")
+  | map(sub("^(?<s>([A-Za-z][A-Za-z0-9+.-]*://)?)(?<i>[\\s\\S]*)@"; "\(.s)\(.i | masked_userinfo)@"))
+  | join(",");
+
 # cli_failure names a Job line's failed nats CLI read: its exit status and its last error line.
 def cli_failure: "the nats CLI exited \(.rc): \((.err | last_line) // "no error text" | printable)";
 
@@ -314,11 +324,39 @@ def rfc3339: if type == "string" then (sub("\\.[0-9]+"; "") | try fromdateiso860
        | (.name | ltrimstr("listener-")) as $m
        | select(($machines | index($m)) == null)
        | if .push_bound == true then
-           {unknown: "listener machine \($m | printable) is bound to its durable \(.name | printable) on the bus, and no listener this reading read serves as that machine: name it with --listener \($m | printable)=<url>, or read it in the cluster"}
+           {unknown: "listener machine \($m | printable) is bound to its durable \(.name | printable) on the bus, and no listener this reading read serves as that machine: name it with --listener \($m | printable)=<url> if it runs outside the cluster, or, if it runs in the cluster and dials the bus by another address, name that NATS_URLS with --bus-alias"}
          else
-           {unknown: "listener machine \($m | printable) has its durable \(.name | printable) on the bus and is not bound to it now (offline, asleep or restarting; last active \(.delivered.last_active // "never" | printable)), and no listener this reading read serves as that machine: what it counted while it ran cannot be read; read again while it runs, naming it with --listener \($m | printable)=<url> unless it runs in the cluster"}
+           {unknown: "listener machine \($m | printable) has its durable \(.name | printable) on the bus and is not bound to it now (offline, asleep or restarting; last active \(.delivered.last_active // "never" | printable)), and no listener this reading read serves as that machine: what it counted while it ran cannot be read; read again while it runs, naming it with --listener \($m | printable)=<url> if it runs outside the cluster, or its NATS_URLS with --bus-alias if it runs in the cluster and dials the bus by another address"}
          end
      else empty end),
+    # A listener container on another bus that serves as the machine of a listener this reading
+    # read (a load-test stack's listener given a machine of the bus's, or a --bus-alias that names
+    # another bus): the durable listener-<machine> on the bus can be either's, so the census above
+    # takes the one read for the one not read, and what the one not read counted is never read.
+    (($in.other_bus // [])[]
+      | select(.machine | type == "string")
+      | . as $o
+      | ($o.machine | gsub(" "; "-")) as $m
+      | [$listeners[] | select(.unknown | not) | select((.machine | strings | gsub(" "; "-")) == $m) | .id] as $read
+      | select(($read | length) > 0)
+      | {unknown: ("listener pod \($o.ns)/\($o.pod) container \($o.container), on another bus (NATS_URLS \($o.urls // "unset" | masked_urls)) and not read, serves as machine \($o.machine), as \($read | join(" and ")), which this reading read, does: the durable listener-\($m) on the bus can be either's, so this reading cannot show which one it counted; give --bus-alias only a NATS_URLS that reaches the bus's NATS servers, and give a listener on another bus a machine of its own" | printable)}),
+    # A listener container on another bus whose ENVOY_MACHINE_ID is no literal value (set through
+    # valueFrom, holding a $(VAR) reference Kubernetes expands, possibly set through envFrom, or
+    # not set at all): the gate cannot read its machine, so it cannot tell whether that machine is
+    # one a listener this reading read serves as, which the rule above holds to; it is UNKNOWN, as
+    # anything the gate cannot read is. A literal value is read trimmed, as the listener reads it.
+    (($in.other_bus // [])[]
+      | select(.machine | type != "string")
+      | {unknown: ("listener pod \(.ns)/\(.pod) container \(.container), on another bus (NATS_URLS \(.urls // "unset" | masked_urls)) and not read, \(if .machine_from == "valueFrom" then "sets ENVOY_MACHINE_ID through valueFrom" elif .machine_from == "reference" then "sets ENVOY_MACHINE_ID with a $(VAR) reference, which Kubernetes expands" elif .machine_from == "envFrom" then "sets no ENVOY_MACHINE_ID of its own and takes envFrom, which may set it" else "sets no ENVOY_MACHINE_ID" end), so its machine cannot be read and whether a listener this reading read serves as that machine cannot be told; set ENVOY_MACHINE_ID on it as a literal value" | printable)}),
+    # A listener container, on the bus or on another, that lists ENVOY_MACHINE_ID or NATS_URLS more
+    # than once: the kubelet takes the last entry of a name and the gate reads the first, so the
+    # machine it runs as, or the bus it dials, is not the one the gate read. UNKNOWN, naming every
+    # value (a NATS_URLS masked).
+    ((($in.pods // []) + ($in.other_bus // []))[]
+      | . as $l
+      | ($l.duplicates // [])
+      | select(length > 0)
+      | {unknown: ("listener pod \($l.ns)/\($l.pod) container \($l.container) lists \(map("\(.name) \(.values | length) times (\(if .name == "NATS_URLS" then (.values | map(masked_urls)) else .values end | join(", ")))") | join(" and ")): the kubelet takes the last entry of a name and this reading the first, so what it runs as cannot be read; list each name once" | printable)}),
 
     # The stream's subjects.
     ($subjectpages[] | select(.page.problem) | {unknown: "the stream's subjects under \(.family | printable): \(.page.problem)"}),
@@ -444,8 +482,12 @@ def rfc3339: if type == "string" then (sub("\\.[0-9]+"; "") | try fromdateiso860
       + [$listeners[] | select(.unknown | not) | "READ: \(.id): \(if .counts == {} then "no old-form name counted" else (.counts | to_entries | map("\(.key | printable) \(.value)") | join(", ")) end) since its start \(if .start then (.start | todate) else "(no start-time gauge)" end)"]
       # A listener container on another bus than the listener Deployment's (a load-test stack's,
       # on its own NATS) is no listener of the bus this reading is about; one on this bus that
-      # is missed leaves its durable unread, which the census names.
-      + [($in.other_bus // [])[] | "SKIP: listener pod \(.ns)/\(.pod) container \(.container) is on another bus (NATS_URLS \(.urls // "unset")), not the listener Deployment's \($in.bus // ""), and is not read" | printable]
+      # is missed leaves its durable unread, which the census names. The line names its machine,
+      # which the census names too, and how to read it when its NATS_URLS is another address of
+      # this bus. Each NATS_URLS is printed with any credential in it masked.
+      + [($in.bus_aliases // []) as $aliases
+        | ($in.other_bus // [])[]
+        | "SKIP: listener pod \(.ns)/\(.pod) container \(.container) is on another bus (NATS_URLS \(.urls // "unset" | masked_urls)), not the listener Deployment's \($in.bus // "" | masked_urls)\(if ($aliases | length) > 0 then " or a --bus-alias (\($aliases | join(", ")))" else "" end), and is not read (machine \(.machine // "unset"); if its NATS_URLS reaches the same NATS servers, name it with --bus-alias)" | printable]
       + [$all[] | select(.pass) | "PASS: " + .pass]
       + [$foundlines[] | "FOUND: " + .]
       + [$shut[] | "GATE SHUT: " + .shut]

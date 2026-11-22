@@ -1844,8 +1844,9 @@ func streamFull(err error) error {
 // names the one it will hold (nats-server's JSStreamDuplicateMessageConflict). It is not an
 // ErrRefused: the same publish sent again once the earlier one is stored is answered as a
 // duplicate with that copy's sequence, which is what a caller that reads the acknowledgement
-// retries for (PublishStoredAck; the listener's keep, cmd/listener/role_keep.go). The error still
-// matches nats-server's *nats.APIError.
+// retries for (PublishStoredAck, PublishAckWithin; cmd/listener's publishPastInProcess, which the
+// listener's request publishes, keep and takeover copy take). The error still matches
+// nats-server's *nats.APIError.
 var ErrDuplicateInProcess = errors.New("a publish under the same message id is still in process")
 
 // jsStreamDuplicateMessageConflict is nats-server's code for a publish whose message id is a
@@ -1989,7 +1990,9 @@ func (c *Client) PublishAckWithin(ctx context.Context, item contracts.Envelope) 
 // (sendStored). The first may have reached the stream before the close, so a Duplicate that comes
 // with Resent may name the copy this very call stored: a caller that charges nothing for a repeat
 // of an earlier message (cmd/listener's sender limit, and its keep of a role message) reads such a
-// verdict as the call's own copy rather than as a repeat.
+// verdict as the call's own copy rather than as a repeat. cmd/listener's publishPastInProcess sets
+// it for the same reason on the answer to a publish it made again after the stream refused, as
+// still in process, a send of the same call that nothing had answered (ErrUnacknowledged).
 type StoredAck struct {
 	Sequence  uint64
 	Duplicate bool
@@ -2373,7 +2376,10 @@ type PendingForward struct {
 // ends, and releases its reply subscription. No acknowledgement by the deadline, the stream's
 // error answer, and the server's no-responders answer (nothing captured the subject) are each
 // ErrForwardNotStored, wrapping the reason and, when publishConfirmed could not confirm the
-// publish, the reason for that.
+// publish, the reason for that. A clustered stream's refusal of a forward whose Nats-Msg-Id an
+// earlier forward still has in process wraps ErrDuplicateInProcess too, since the same forward
+// sent again once the earlier one is stored is acknowledged as its duplicate (cmd/listener's
+// publishPastInProcess).
 func (f *PendingForward) Wait() error {
 	defer f.replies.Unsubscribe()
 	for {
@@ -2398,7 +2404,7 @@ func (f *PendingForward) Wait() error {
 		}
 		// The stream's error answer to the forward, which no later reply changes.
 		if ack.Error != nil {
-			return fmt.Errorf("%w: %w", ErrForwardNotStored, ack.Error)
+			return fmt.Errorf("%w: %w", ErrForwardNotStored, duplicateInProcess(ack.Error))
 		}
 		return nil
 	}

@@ -1017,8 +1017,11 @@ where a check run posted with POST /repos/.../check-runs joins the Actions App's
 at that commit, which is another workflow's as often as not (.github/scripts/post-check-run.sh's
 header holds the measurement). Every job but `changes` and those CI_OK_EXEMPT names still
 ends with the ci-ok-report step (.github/actions/ci-ok-report), which posts a failing ci-ok
-at once when that job's own result decides a merge-group run, so the queue drops a doomed
-group at the first failure rather than at the end of the run; the ci-ok job's last step then
+at once when that job's own result decides a merge-group run of the queue's front group, so
+the queue drops a doomed group at the first failure rather than at the end of the run; a group
+behind the front posts nothing early, since the queue cannot drop it before the groups in front
+of it end (.github/scripts/ci-ok-report.sh's header says what that costs); the ci-ok job's last
+step then
 sets every ci-ok check run on the head that is not its own to its own conclusion, so one
 verdict stands at the end of every attempt. pr-title, the other check that ruleset requires, is
 the `pr-title` job at the end of this file, in the same shape and for the same reason: it runs
@@ -1369,6 +1372,18 @@ own: `toJSON(needs.changes)` carries every output of this job, so the ci-ok job 
 ci-ok-report.sh both already have it. It is the one filter step's outputs as one object.
 On a dispatched run that step is skipped and this is `{}`, which is right - the label
 holds nothing back there, and the changes job's other outputs are all 'true'.
+
+A job the label held back did not run at this head, and ci-ok passes over its skip, so
+ci-ok.sh names it once more after its verdict, pass or fail, on a line of its own:
+`not run at this head: <job> (selected by paths, gated by full-ci; runs in the merge queue)`.
+The same lines go to the ci-ok job's summary, apart from the jobs that ran and passed, so a
+green ci-ok on a pull request without the label is not read as those jobs passing.
+dispatch-browser runs there too, but only its two-project pull-request lane
+(.github/ci-notes/ci.md#what-the-lane-input-reads), so the ci-ok job hands ci-ok.sh its name
+in PARTIAL, built from the same label term as its `lane:` input, and a success of it is named
+`ran in part at this head: dispatch-browser (selected by paths, its full lane gated by full-ci;
+runs in the merge queue)` and left out of the jobs that ran and passed. A run in which the
+label held nothing back and trimmed nothing writes no summary.
 
 ## On pull_request dorny/paths-filter reads the file list from the API and reads
 
@@ -2138,10 +2153,17 @@ not run, measured on a probe run of this repository — so a force-cancelled run
 ci-ok, and its ci-ok job, which waits for every job of the run, is left unstarted or
 cancelled rather than concluding one. That is what this act wants: a failing ci-ok on a
 group the queue still holds could
-take an innocent pull request out of the queue. The run of a group whose own job failed
-posts that group's failing ci-ok from that job itself, through the merge-group branch of
-.github/scripts/ci-ok-report.sh, so the queue reads the verdict and rebuilds the groups
-above it without waiting for the rest of that run.
+take an innocent pull request out of the queue. The run of the front group, whose base is the
+tip of main, posts that group's failing ci-ok from the job that failed, through the merge-group
+branch of .github/scripts/ci-ok-report.sh, so the queue reads the verdict and rebuilds the
+groups above it without waiting for the rest of that run. A group behind the front posts
+nothing early: the queue takes its pull request out only once the groups in front of it have
+ended, and a failing ci-ok makes the queue count the group as no longer building and build
+another on it, which built 41 groups in 28 minutes behind one broken entry on 2026-11-22
+(.github/scripts/ci-ok-report.sh's header). Its run's ci-ok job posts its verdict at the end of
+the run. The cost: when the groups in front end before that run does, the entry leaves at the
+run's end, or when a later job of the run fails once the group is the front, rather than the
+moment the groups in front end.
 
 The job follows these rules:
   * it runs only on `merge_group` and only on attempt 1
