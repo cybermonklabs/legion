@@ -310,6 +310,8 @@ esac
 
 export interface StandInDispatch {
   readonly origin: string;
+  /** Its process, whose environment a row can read as the kernel holds it. */
+  readonly pid: number;
   /** Each request it answered so far, `METHOD path`. */
   seen(): string[];
   stop(): void;
@@ -362,11 +364,12 @@ function standInDispatch(
   });
   liveDispatches.add(child.pid);
   // Its readiness, read as the rest of the preparation is, before any leg starts: the port the
-  // child bound, answering this nonce at /_ready, within 10 s.
+  // child bound, answering this nonce at /_ready, read for at most 10 s by the clock, plus the 1 s
+  // of the last read, so a port that takes connections and never answers holds it 11 s at most.
   const ready = Bun.spawnSync([
     "bash",
     "-c",
-    'i=0; while [ "$i" -lt 200 ]; do if [ -s "$0" ]; then p=$(cat "$0"); [ "$(curl -q -sf --max-time 1 "http://127.0.0.1:$p/_ready")" = "$1" ] && { echo "$p"; exit 0; }; fi; sleep 0.05; i=$((i + 1)); done; exit 1',
+    'deadline=$((SECONDS + 10)); while [ "$SECONDS" -lt "$deadline" ]; do if [ -s "$0" ]; then p=$(cat "$0"); [ "$(curl -q -sf --max-time 1 "http://127.0.0.1:$p/_ready")" = "$1" ] && { echo "$p"; exit 0; }; fi; sleep 0.05; done; exit 1',
     portFile,
     nonce,
   ]);
@@ -382,6 +385,7 @@ function standInDispatch(
   const seenFile = join(state, "dispatch-seen");
   return {
     origin,
+    pid: child.pid,
     seen: () =>
       existsSync(seenFile)
         ? readFileSync(seenFile, "utf8")
@@ -432,8 +436,9 @@ export async function prepareStandIn(
   scratch: Scratch,
   standIns: StandIns
 ): Promise<PreparedStandIn> {
-  // The ports the broker and the listener are named at: refused, from the range the kernel hands
-  // no `port: 0` listener and reserved for this process, so no other run's server can take one.
+  // The ports the broker and the listener are named at: refused, from a range the kernel hands no
+  // `port: 0` listener, each held by a UDP bind of this process so no other `closedPort` call gets
+  // it. A program that binds the number over TCP is not stopped; none of this suite does.
   const brokerPort = await closedPort();
   const listenerPort = await closedPort();
   const state = scratch("state");

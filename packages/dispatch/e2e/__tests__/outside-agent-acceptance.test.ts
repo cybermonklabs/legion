@@ -422,6 +422,17 @@ async function runStandIns(...standIns: StandIns[]): Promise<StandInRun[]> {
   return Promise.all(prepared.map(runStandIn));
 }
 
+/** The squatter's pid, the first line `squat`'s shell prints: a whole number above 0, or a throw
+ *  that names what was printed. Never 0 or below, which `process.kill` reads as this process's
+ *  whole group or as every process it may signal, so no kill is sent on a pid this cannot read. */
+function squatterPid(printed: string): number {
+  const first = printed.trim().split("\n")[0] ?? "";
+  const pid = /^[0-9]+$/.test(first) ? Number(first) : 0;
+  if (pid <= 0)
+    throw new Error(`the squatter's pid could not be read from ${JSON.stringify(first)}`);
+  return pid;
+}
+
 /** Starts a process that binds `port` and answers there as another run's stand-in Dispatch does
  *  (`/_ready` "ready", /healthz commit `another-run`), and waits until it answers there; returns
  *  the squatter's pid, or stops it and throws. The squatter tries the port for at most 10 s by the
@@ -439,7 +450,7 @@ function squat(port: number): number {
     squatter,
     String(port),
   ]);
-  const pid = Number(started.stdout.toString().trim().split("\n")[0]);
+  const pid = squatterPid(started.stdout.toString());
   if (!started.success) {
     try {
       process.kill(pid, "SIGKILL");
@@ -487,63 +498,145 @@ async function withSquat<T>(body: () => Promise<T>): Promise<{ result: T; squatt
 describe.skipIf(skipWithout("bash", "curl", "git", "bun"))(
   "the stand-in Dispatch's port and readiness",
   () => {
-    test("control: the squat takes a port a listener of this process closed, and answers there as another run's stand-in", async () => {
-      const { result, squatted } = await withSquat(async () => {
-        const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
-        const { port } = listener;
-        listener.stop(true);
-        return { port, ready: await (await fetch(`http://127.0.0.1:${port}/_ready`)).text() };
-      });
-      expect({ squatted, ready: result.ready }).toEqual({
-        squatted: [result.port],
-        ready: "ready",
-      });
-    });
-
-    test("the squat's wait is held by the clock: on a port that takes connections and never answers, it gives up within 15 s", () => {
-      // The kernel takes each connection into this listener's queue while the wait blocks this
-      // file's event loop, so every read connects and then hears nothing until its 1 s passes.
-      const holder = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
-      const began = performance.now();
-      let thrown = "";
-      try {
-        squat(holder.port);
-      } catch (error) {
-        thrown = String(error);
-      } finally {
-        holder.stop(true);
+    test(
+      "control: the squat takes a port a listener of this process closed, and answers there as another run's stand-in",
+      async () => {
+        const { result, squatted } = await withSquat(async () => {
+          const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+          const { port } = listener;
+          listener.stop(true);
+          return { port, ready: await (await fetch(`http://127.0.0.1:${port}/_ready`)).text() };
+        });
+        expect({ squatted, ready: result.ready }).toEqual({
+          squatted: [result.port],
+          ready: "ready",
+        });
+      },
+      {
+        // It drives one squat, a synchronous wait its own clock ends within 11 s, which Bun's 5 s
+        // default of a plain `bun test` would cut short; 20 s leaves that wait room under load.
+        timeout: 20_000,
       }
-      const seconds = (performance.now() - began) / 1000;
-      expect({ thrown, withinTheCap: seconds < 15, seconds }).toEqual({
-        thrown: `Error: the squatter did not take port ${holder.port}`,
-        withinTheCap: true,
-        seconds: expect.any(Number),
+    );
+
+    test("squat throws on a squatter pid it cannot read, before any kill: an empty line, 0 and -1 are refused, and a whole number above 0 is read", () => {
+      // squat's shell stands in printing each line as its pid and failing, which is the path that
+      // kills the squatter; process.kill records every signal it is asked to send and sends none.
+      const spawnSync = Bun.spawnSync;
+      const kill = process.kill;
+      const sent: unknown[] = [];
+      const read: unknown[] = [];
+      process.kill = ((pid: number, signal?: string | number) => {
+        sent.push([pid, signal]);
+        return true;
+      }) as typeof process.kill;
+      try {
+        for (const printed of ["", "\n", "0\n", "-1\n"]) {
+          Bun.spawnSync = (() => ({
+            stdout: Buffer.from(printed),
+            success: false,
+          })) as unknown as typeof Bun.spawnSync;
+          try {
+            read.push(squat(1));
+          } catch (error) {
+            read.push(String(error));
+          }
+        }
+        read.push(squatterPid("4242\n"));
+      } finally {
+        Bun.spawnSync = spawnSync;
+        process.kill = kill;
+      }
+      expect({ read, sent }).toEqual({
+        read: [
+          `Error: the squatter's pid could not be read from ""`,
+          `Error: the squatter's pid could not be read from ""`,
+          `Error: the squatter's pid could not be read from "0"`,
+          `Error: the squatter's pid could not be read from "-1"`,
+          4242,
+        ],
+        sent: [],
       });
     });
 
-    test("a prepared run's origin serves its own stand-in Dispatch under the squat: no port of it is one this process chose and closed", async () => {
-      const { result, squatted } = await withSquat(async () => {
-        let prepared: PreparedStandIn;
+    test(
+      "the squat's wait is held by the clock: on a port that takes connections and never answers, it gives up within 15 s",
+      () => {
+        // The kernel takes each connection into this listener's queue while the wait blocks this
+        // file's event loop, so every read connects and then hears nothing until its 1 s passes.
+        const holder = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+        const began = performance.now();
+        let thrown = "";
         try {
-          prepared = await prepareStandIn(scratch, passingControls);
+          squat(holder.port);
         } catch (error) {
-          return { thrown: String(error) };
-        }
-        try {
-          const answer = (await (await fetch(`${prepared.dispatch.origin}/healthz`)).json()) as {
-            commit?: string;
-          };
-          return { built: prepared.repo.built, served: answer.commit };
+          thrown = String(error);
         } finally {
-          prepared.dispatch.stop();
+          holder.stop(true);
         }
-      });
-      expect({ ...result, squatted }).toEqual({
-        built: expect.any(String),
-        served: "built" in result ? result.built : "the run's own build",
-        squatted: [],
-      });
-    });
+        const seconds = (performance.now() - began) / 1000;
+        expect({ thrown, withinTheCap: seconds < 15, seconds }).toEqual({
+          thrown: `Error: the squatter did not take port ${holder.port}`,
+          withinTheCap: true,
+          seconds: expect.any(Number),
+        });
+      },
+      {
+        // It drives one squat against a port that never answers, which the squat's own clock ends
+        // within 11 s by design; 20 s is past the 15 s it asserts, so the assertion fails first.
+        timeout: 20_000,
+      }
+    );
+
+    test(
+      "a prepared run's origin serves its own stand-in Dispatch under the squat, and the stand-in is given no port: no port of it is one this process chose and closed",
+      async () => {
+        const { result, squatted } = await withSquat(async () => {
+          let prepared: PreparedStandIn;
+          try {
+            prepared = await prepareStandIn(scratch, passingControls);
+          } catch (error) {
+            return { thrown: String(error) };
+          }
+          try {
+            const answer = (await (await fetch(`${prepared.dispatch.origin}/healthz`)).json()) as {
+              commit?: string;
+            };
+            // The settings the stand-in runs with, as the kernel holds them: a port handed to it
+            // by any means the squat of `Bun.listen` cannot see (`Bun.serve`, `node:net`) would
+            // show here as a `port` of its settings.
+            const settings = readFileSync(`/proc/${prepared.dispatch.pid}/environ`, "utf8")
+              .split("\0")
+              .filter((entry) => entry.startsWith("OUTSIDE_STAND_IN_DISPATCH="))
+              .map(
+                (entry) =>
+                  JSON.parse(entry.slice("OUTSIDE_STAND_IN_DISPATCH=".length)) as Record<
+                    string,
+                    unknown
+                  >
+              );
+            return {
+              built: prepared.repo.built,
+              served: answer.commit,
+              handed: settings.map((each) => each.port ?? null),
+            };
+          } finally {
+            prepared.dispatch.stop();
+          }
+        });
+        expect({ ...result, squatted }).toEqual({
+          built: expect.any(String),
+          served: "built" in result ? result.built : "the run's own build",
+          handed: [null],
+          squatted: [],
+        });
+      },
+      {
+        // It drives a preparation (a git checkout, and the stand-in's start, whose readiness its own
+        // clock ends within 11 s) and at most one squat, also 11 s by its clock; 30 s holds both.
+        timeout: 30_000,
+      }
+    );
   }
 );
 
