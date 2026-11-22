@@ -392,12 +392,13 @@ $ reread DEMO_BROKEN_APP
 The first reread wrote two lines, each `agent secret policy refused`. The copy is also a
 `github-app` secret no profile names, so the reread's load refused it `github-app-no-profile` first,
 and its value read then refused it `value-malformed`, the reason it is refused by from then on, with
-the reason it had before in `was`. The second reread wrote none, since the secret's state did not
-change ([the value read](/legion/broker/operate/#the-value-read)):
+the reason it had before in `was` and the decoder's words of what is wrong in `detail`. The second
+reread wrote none, since the secret's state did not change
+([the value read](/legion/broker/operate/#the-value-read)):
 
 ```json
-{"time":"2026-11-20T12:19:01.593649576Z","severity":"ERROR","message":"agent secret policy refused","name":"example/agent-secrets/demo-broken-app","reason":"github-app-no-profile","owner":"legion-daemon","first_load":false,"detail":"no profile names it, and every GitHub App token is a profile's"}
-{"time":"2026-11-20T12:19:01.593772119Z","severity":"ERROR","message":"agent secret policy refused","name":"example/agent-secrets/demo-broken-app","reason":"value-malformed","owner":"legion-daemon","first_load":false,"was":"github-app-no-profile"}
+{"time":"2026-11-20T12:19:01.593649576Z","severity":"ERROR","message":"agent secret policy refused","name":"example/agent-secrets/demo-broken-app","reason":"github-app-no-profile","owner":"legion-daemon","first_load":false,"detail":"no profile names it, and every GitHub token the broker hands over is a profile's"}
+{"time":"2026-11-20T12:19:01.593772119Z","severity":"ERROR","message":"agent secret policy refused","name":"example/agent-secrets/demo-broken-app","reason":"value-malformed","owner":"legion-daemon","first_load":false,"was":"github-app-no-profile","detail":"the stored value cannot be minted from: GitHub App secret needs an app_id and private_key"}
 ```
 
 ## Exchange a pod's token

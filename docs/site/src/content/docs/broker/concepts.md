@@ -661,8 +661,9 @@ type with the profile's own scope, and each that does not is refused alone, logg
 another profile), `profile-name-taken` (a stored secret other than its source holds its name,
 which is refused by that name too, unless that stored secret carries the tag `superseded-by`
 whose value is exactly the profile's source: then the profile is served by the name and the stored
-secret is not, which is how a deployment moves a name from a key the broker held to the minted
-tokens that replace it; any other value, and no tag, leaves the profile refused),
+secret is not, whether the broker serves the stored secret, refuses it or waits for its value, which
+is how a deployment moves a name from a key the broker held to the minted tokens that replace it
+and then retires the key; any other value, and no tag, leaves the profile refused),
 `profile-block-mismatch` (a `github` or `google` block that
 does not fit the source's type, `github-owners` or `scopes`), `profile-looser` (looser than the
 source in tier, `requesters` or `maxGrant`), `profile-needs-proxy` (no `proxy` block on a stored

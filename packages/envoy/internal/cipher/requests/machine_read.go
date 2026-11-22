@@ -626,7 +626,7 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 		// line is safe to log; the session sees the same words as MINT_FAILED.
 		slog.Error(MintFailedMessage, "name", g.name, "type", secretType, "class", secrets.MintErrorClass(err), "attempts", secrets.MintAttempts(err), "error", err)
 		if errors.Is(err, secrets.ErrMintStoredValue) {
-			m.Policy.RefuseValue(ctx, g.name, version, secretType)
+			m.Policy.RefuseValue(ctx, g.name, version, secretType, err)
 		}
 		return secrets.Minted{}, fmt.Errorf("%w: %w", ErrMintFailed, err)
 	}

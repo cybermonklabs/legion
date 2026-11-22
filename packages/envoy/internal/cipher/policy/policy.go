@@ -149,9 +149,11 @@ const (
 	ProjectChannelsSlack = "slack"
 	// TagSupersededBy names the profile source that replaces a stored secret under the stored
 	// secret's own name: a profile of that name whose source is exactly this value is served by the
-	// name, and the stored secret is not (supersededBy). Any other value, and a stored secret with
-	// no such tag, leaves a profile of its name refused profile-name-taken. A broker before this tag
-	// reads no such tag and refuses that profile as before, so a deployment can add the tag first.
+	// name, and the stored secret is not (supersededBy), whether the policy serves the stored
+	// secret, refuses it or holds it waiting for its value, so retiring the old secret's value
+	// leaves the profile served. Any other value, and a stored secret with no such tag, leaves a
+	// profile of its name refused profile-name-taken. A broker before this tag reads no such tag and
+	// refuses that profile as before, so a deployment can add the tag first.
 	TagSupersededBy = "superseded-by"
 	// typeSourcePrefix opens the Source of a type secret (TypeSource). The type and store source
 	// are frozen into a request, so changing or clearing the type ends every live grant.
@@ -553,8 +555,9 @@ var ErrPendingValue = errors.New("exists and awaits its first value; ask again a
 var ErrServedOnlyAsProfiles = errors.New("is served only through its profiles")
 
 // ErrProfileRefused is a request for a name the profiles file decides and the policy refuses: a
-// profile that failed against its source, or a github-app secret no profile names
-// (ReasonGitHubAppNoProfile). Evaluate's error gives the reason and its detail.
+// profile that failed against its source, or a github-app or github-installations secret no
+// profile names (ReasonGitHubAppNoProfile, ReasonGitHubInstallationsNoProfile). Evaluate's error
+// gives the reason and its detail.
 var ErrProfileRefused = errors.New("is refused by the profiles file")
 
 // ReasonAbsent is LoadOne's answer for a name no secret carries: none exists under the prefix, or
@@ -732,7 +735,8 @@ type Set struct {
 	profiles Profiles
 	// profileRefused is, for each name a request may ask for that the set refuses because of the
 	// profiles file, its refusal as Refused holds it: each failed profile's name, and each
-	// github-app secret no profile names (ReasonGitHubAppNoProfile). Evaluate answers it
+	// github-app or github-installations secret no profile names (ReasonGitHubAppNoProfile,
+	// ReasonGitHubInstallationsNoProfile). Evaluate answers it
 	// ErrProfileRefused. Refused itself is keyed by store id, which Evaluate, holding no prefix,
 	// cannot form.
 	profileRefused map[string]Refusal
@@ -765,9 +769,14 @@ type Refusal struct {
 	Owner string
 	// Detail says which part of a profile, or of the store's secret beside it, a profile reason
 	// is about (the source's own reason, the account a github block names that the source does
-	// not), and is "" for every reason that is a secret's own tag's. RefusedMessage writes it as
-	// detail.
+	// not), or, for ReasonValueMalformed, the decoder's own words of what is wrong with the value
+	// (secrets.ParseValue, which never quotes the value), and is "" for every reason that is a
+	// secret's own tag's. RefusedMessage writes it as detail.
 	Detail string
+	// SupersededBy is the refused secret's superseded-by tag (TagSupersededBy) as written, "" for
+	// none: a refused secret gives its name to the profile of that source as a served one does
+	// (supersededBy), so retiring the old secret's value leaves the profile served.
+	SupersededBy string
 }
 
 // Pending is one secret under the prefix waiting for its first value (ReasonPendingValue), as a
@@ -778,6 +787,9 @@ type Pending struct {
 	// Created is when the store created the secret, so a caller can tell the wait has ended
 	// (Current.PendingValue, pendingAt) without a reload.
 	Created time.Time
+	// SupersededBy is the secret's superseded-by tag (TagSupersededBy) as written, "" for none, as
+	// Refusal's is.
+	SupersededBy string
 }
 
 // setOf is NewSet(secrets) carrying refused, pending and versions, which NewSet's Version leaves

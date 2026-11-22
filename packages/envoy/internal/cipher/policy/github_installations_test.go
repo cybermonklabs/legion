@@ -90,30 +90,65 @@ func TestAGitHubInstallationsSecretIsRefusedWithNoProfileNoOwnersOrAValueTheDeco
 	})
 }
 
+// TestALoadOfAValueOfAnotherShapeVersionNamesTheVersionItReadAndTheOnesItKnows: the load reads
+// each type secret's value before anybody asks for it, so a github-installations value whose
+// shapeVersion is not 1 is refused there, value-malformed, and the refusal's detail is the
+// decoder's words: the version it read and the versions it knows. A profile of it is refused
+// profile-source-missing with the same words, so the session that asks for the profile is told why.
+//
+// The named revert: drop the decoder's words from the value refusal (withhold), and neither detail
+// names the version.
+func TestALoadOfAValueOfAnotherShapeVersionNamesTheVersionItReadAndTheOnesItKnows(t *testing.T) {
+	value := strings.Replace(policytest.GitHubInstallationsValue(), `"shapeVersion":1`, `"shapeVersion":2`, 1)
+	if !strings.Contains(value, `"shapeVersion":2`) {
+		t.Fatalf("the fixture value names no shapeVersion 1 to replace: %d bytes", len(value))
+	}
+	source := policytest.TypeSecret(tokensSourceName, appOwner, policy.TierAgent, policy.TypeGitHubInstallations, value)
+	cur, _ := profiled(t, []secrets.LocalSecret{source}, `{"name": "TOKENS_READ", "source": "APP_TOKENS", `+acmeRead+`}`)
+	set := cur.Get()
+	refusal := set.Refused[policytest.ID(tokensSourceName)]
+	profile := refusedProfile(t, set, "TOKENS_READ", policy.ReasonProfileSourceMissing)
+	for _, detail := range []string{refusal.Detail, profile.Detail} {
+		if refusal.Reason != policy.ReasonValueMalformed || !strings.Contains(detail, "shapeVersion 2") || !strings.Contains(detail, "[1]") || strings.Contains(detail, "fixture-token") {
+			t.Errorf("the source's refusal %+v, and the profile's detail %q; want value-malformed naming shapeVersion 2 and [1], and no token", refusal, detail)
+		}
+	}
+}
+
 // TestAProfileTakesAStoredSecretsNameOnlyWhereThatSecretIsSupersededByItsSource: a profile named
 // for a stored secret other than its source is refused profile-name-taken, unless that stored
 // secret carries superseded-by whose value is exactly the profile's own source. Then the profile
 // is served from its source under that name, and the stored secret is not served by its name. The
 // stored secret here is a github-app key, the profile the github-installations tokens a minter
-// mints with that key: the cutover from the one to the other under one name.
+// mints with that key: the cutover from the one to the other under one name. The tag is honoured
+// while the key is refused too, its value unreadable or its version gone, so retiring the key
+// leaves the profile served.
 //
-// The named revert: drop the superseded-by arm, and the exact value is refused profile-name-taken.
+// The named reverts: drop the superseded-by arm, and the exact value is refused profile-name-taken;
+// read the tag of a served key alone, and the two retired keys' rows are refused.
 func TestAProfileTakesAStoredSecretsNameOnlyWhereThatSecretIsSupersededByItsSource(t *testing.T) {
 	const takeover = `{"name": "LEGION_IMPLEMENT_APP", "source": "APP_TOKENS", "github": {"accounts": ["acme"], "permissions": {"contents": "read", "metadata": "read"}}}`
 	for _, row := range []struct {
 		name       string
 		annotation *string
+		value      *string // the key's value; nil for one the decoder reads
 		served     bool
 	}{
-		{"superseded-by the profile's own source", new("APP_TOKENS"), true},
-		{"superseded-by another name", new("OTHER_TOKENS"), false},
-		{"superseded-by in another case", new("app_tokens"), false},
-		{"no superseded-by", nil, false},
+		{"superseded-by the profile's own source", new("APP_TOKENS"), nil, true},
+		{"superseded-by another name", new("OTHER_TOKENS"), nil, false},
+		{"superseded-by in another case", new("app_tokens"), nil, false},
+		{"no superseded-by", nil, nil, false},
+		{"superseded-by the source, of a key whose value is unreadable", new("APP_TOKENS"), new("{}"), true},
+		{"superseded-by the source, of a key with no current value", new("APP_TOKENS"), new(""), true},
+		{"superseded-by another name, of a key with no current value", new("OTHER_TOKENS"), new(""), false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			key := appSource() // LEGION_IMPLEMENT_APP, a github-app key
 			if row.annotation != nil {
 				key.Tags[policy.TagSupersededBy] = *row.annotation
+			}
+			if row.value != nil {
+				key.Value = *row.value
 			}
 			cur, _ := profiled(t, []secrets.LocalSecret{key, tokensSource()}, takeover)
 			set := cur.Get()
@@ -125,7 +160,7 @@ func TestAProfileTakesAStoredSecretsNameOnlyWhereThatSecretIsSupersededByItsSour
 			if served.Type() != policy.TypeGitHubInstallations || served.Profile.Source != tokensSourceName {
 				t.Fatalf("%s = %+v; want the profile of APP_TOKENS, a github-installations secret", appSourceName, served)
 			}
-			if refusal, refused := set.Refused[policytest.ID(appSourceName)]; refused {
+			if refusal, refused := set.Refused[policytest.ID(appSourceName)]; refused && (row.value == nil || refusal.Reason == policy.ReasonProfileNameTaken) {
 				t.Errorf("the superseded stored secret is refused %+v; want it out of the way, its name the profile's", refusal)
 			}
 		})

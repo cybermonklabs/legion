@@ -117,7 +117,7 @@ func (p Profiles) serve(i int, set *Set, prefix string) (Secret, Refusal) {
 	refuse := func(reason, detail string) (Secret, Refusal) {
 		return Secret{}, Refusal{Reason: reason, Owner: source.Owner, Detail: detail}
 	}
-	if profile.Name != profile.Source && storeHolds(set, profile.Name, prefix) && !supersededBy(set, profile) {
+	if profile.Name != profile.Source && storeHolds(set, profile.Name, prefix) && !supersededBy(set, profile, prefix) {
 		return refuse(ReasonProfileNameTaken, "the stored secret "+profile.Name+" holds this name")
 	}
 	if detail := blockMismatch(profile, source); detail != "" {
@@ -183,15 +183,20 @@ func (p Profiles) serve(i int, set *Set, prefix string) (Secret, Refusal) {
 }
 
 // sourceMissing is the refusal of a profile whose source set does not serve, with the source's own
-// state as its detail: the reason the policy refuses it, its wait for a value, its being a
-// profile, which is never the source of another, or its absence.
+// state as its detail: the reason the policy refuses it and that refusal's own detail where it has
+// one (a value refusal's decoder words, such as the shapeVersion it read), its wait for a value,
+// its being a profile, which is never the source of another, or its absence.
 func (p Profiles) sourceMissing(source string, set *Set, prefix string) Refusal {
 	id := prefix + slugOf(source)
 	missing := func(owner, why string) Refusal {
 		return Refusal{Reason: ReasonProfileSourceMissing, Owner: owner, Detail: "source " + source + ": " + why}
 	}
 	if refusal, refused := set.Refused[id]; refused {
-		return missing(refusal.Owner, refusal.Reason)
+		why := refusal.Reason
+		if refusal.Detail != "" {
+			why += " (" + refusal.Detail + ")"
+		}
+		return missing(refusal.Owner, why)
 	}
 	if pending, waits := set.Pending[id]; waits {
 		return missing(pending.Owner, ReasonPendingValue)
@@ -215,15 +220,25 @@ func storeHolds(set *Set, name, prefix string) bool {
 }
 
 // supersededBy reports whether the stored secret of profile's name is superseded by profile's
-// source: it is served, and its superseded-by tag (Secret.SupersededBy) is exactly the source's
-// name. Such a secret gives its name up to the profile, which is how a deployment moves a name
-// from a key the broker held to the minted tokens that replace it without a gap: a profile of the
-// name is refused while the stored secret holds it (ReasonProfileNameTaken), and the stored secret
-// is not served by its name once the profile is. A stored secret the policy refuses or holds
-// pending keeps the name, since its tags are not read.
-func supersededBy(set *Set, profile *Profile) bool {
-	stored, served := set.Secrets[profile.Name]
-	return served && stored.SupersededBy == profile.Source
+// source: its superseded-by tag (TagSupersededBy) is exactly the source's name, whether set serves
+// it, refuses it or holds it waiting for its value (Secret.SupersededBy, Refusal.SupersededBy,
+// Pending.SupersededBy). Such a secret gives its name up to the profile, which is how a deployment
+// moves a name from a key the broker held to the minted tokens that replace it without a gap: a
+// profile of the name is refused while the stored secret holds it (ReasonProfileNameTaken), and
+// the stored secret is not served by its name once the profile is. The tag is honoured on a
+// refused secret too, so retiring the old key (a disabled or destroyed version, an unreadable
+// value) leaves the profile served; it gives nothing wider, since the tag must name the source of
+// a profile the deployment's own profiles file defines.
+func supersededBy(set *Set, profile *Profile, prefix string) bool {
+	if stored, served := set.Secrets[profile.Name]; served {
+		return stored.SupersededBy == profile.Source
+	}
+	id := prefix + slugOf(profile.Name)
+	if refusal, refused := set.Refused[id]; refused {
+		return refusal.SupersededBy == profile.Source
+	}
+	pending, waits := set.Pending[id]
+	return waits && pending.SupersededBy == profile.Source
 }
 
 // blockMismatch says how profile's github or google block does not fit source, and is "" when
