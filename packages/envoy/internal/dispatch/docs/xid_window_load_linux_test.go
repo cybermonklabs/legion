@@ -268,11 +268,13 @@ func threadCPU(t *testing.T) time.Duration {
 // any other rig problem, beside a violation too. The decision itself, xidRuntimeWaitProblem, is
 // proven with no clock or load by storetest's TestAWindowThatKeepsD6OnlyOnARuntimeWaitIsUnknown
 // and TestAWaitOnAPHandedToALockedThreadDecidesNothing; that analyzeXidWindows applies it is shown
-// only by this arm's runs that reach the UNKNOWN branch, which log it. A receive on a channel the
+// only by this arm's runs that reach the UNKNOWN branch, which log it: envoy-go-docs-finalizers
+// runs the docs package with -v, so its log says which branch ran. A receive on a channel the
 // code waits on for as long is a wait the code asked for (GoWaiting), and breaks D6. Each arm
 // first holds that the wait happened: its gap, read off the thread's clocks alone, is over the
-// bound, and in the spinner arm the goroutine waited on the runtime past it too. The one P is set
-// inside the measured operation, since Measure runs its operation with idle Ps beside it.
+// bound, and in the spinner arm the goroutine waited on the runtime past that 5 ms bound too. The
+// one P is set inside the measured operation, since Measure runs its operation with idle Ps beside
+// it.
 func TestXidWindowRigReadsTheRuntimesWaitAsTheRuntimes(t *testing.T) {
 	storetest.RequireXidGapJudgment(t)
 	for _, probe := range []struct {
@@ -299,8 +301,8 @@ func TestXidWindowRigReadsTheRuntimesWaitAsTheRuntimes(t *testing.T) {
 					storetest.XidMillis(gap.Clock-gap.Runnable), storetest.XidMillis(storetest.XidMaxGap), window.Detail())
 			}
 			if !probe.breaks && gap.GoRunnable <= storetest.XidMaxGap {
-				t.Fatalf("the goroutine waited %s runnable on the runtime, not past %s: the spinner did not hold the P, so this run proves nothing\n%s",
-					storetest.XidMillis(gap.GoRunnable), storetest.XidMillis(storetest.XidMaxGap), window.Detail())
+				t.Fatalf("the goroutine waited %s runnable on the runtime (traced %t, rig problems %v), not past %s: the spinner did not hold the P, or the trace did not show the gap, so this run proves nothing\n%s",
+					storetest.XidMillis(gap.GoRunnable), gap.Traced, report.Problems, storetest.XidMillis(storetest.XidMaxGap), window.Detail())
 			}
 			err := report.Err()
 			switch {

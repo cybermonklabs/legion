@@ -31,10 +31,11 @@ import (
 // decision itself, xidRuntimeWaitProblem, is proven with no clock or load by storetest's
 // TestAWindowThatKeepsD6OnlyOnARuntimeWaitIsUnknown and
 // TestAWaitOnAPHandedToALockedThreadDecidesNothing; that analyzeXidWindows applies it is shown
-// only by this row's runs that reach the UNKNOWN branch, which log it (CI runs without -v, so a
-// pass there does not say which branch ran). Taking the wait out as the runtime's, the rig before
-// this row read such a gap - a reviewer's forcing of 145 workers at 72 Ps, 50.125 ms on the clock
-// and 1.826 ms of the thread's CPU - as 0.159 ms made, and the window kept D6 (2026-11-21).
+// only by this row's runs that reach the UNKNOWN branch, which log it: envoy-go-docs-finalizers
+// runs the docs package with -v, so its log says which branch ran. Taking the wait out as the
+// runtime's, the rig before this row read such a gap - a reviewer's forcing of 145 workers at
+// 72 Ps, 50.125 ms on the clock and 1.826 ms of the thread's CPU - as 0.159 ms made, and the
+// window kept D6 (2026-11-21).
 //
 // The spinners run on threads of their own kept off the CPU the window's thread is pinned to. On
 // that CPU they made the window's thread queue for it outside the runtime's wait, where the rig
@@ -126,8 +127,8 @@ func TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP(t *t
 	t.Logf("%d goroutines spun at %d Ps; the gap took %s on the clock, its goroutine %s runnable on the runtime\n%s",
 		workers, ps, storetest.XidMillis(gap.Clock), storetest.XidMillis(gap.GoRunnable), window.Detail())
 	if gap.GoRunnable < xidOwnPsSpin/2 {
-		t.Fatalf("the transaction's goroutine waited %s runnable on the runtime, not half of the %s its own goroutines spun: they did not hold the Ps, so this run proves nothing\n%s",
-			storetest.XidMillis(gap.GoRunnable), xidOwnPsSpin, window.Detail())
+		t.Fatalf("the transaction's goroutine waited %s runnable on the runtime (traced %t, rig problems %v), not half of the %s its own goroutines spun: they did not hold the Ps, or the trace did not show the gap, so this run proves nothing\n%s",
+			storetest.XidMillis(gap.GoRunnable), gap.Traced, report.Problems, xidOwnPsSpin, window.Detail())
 	}
 	err := report.Err()
 	switch {
