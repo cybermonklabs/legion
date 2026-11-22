@@ -181,18 +181,24 @@ func TestADrainOfACommentWaitsForItsOwnerLock(t *testing.T) {
 				t.Fatalf("plan the edited comment's references: %v", err)
 			}
 
-			// The drainer draining the comment, on a connection of its own.
+			// The drainer draining the comment, on a connection of its own; the test reads that
+			// backend alone, for the wait (storetest.WaitForQueuedBehind) and for its transaction
+			// id (storetest.HoldsTransactionID), so another backend waiting on the lock answers
+			// for neither.
+			drainPool, drainPID := storetest.OneConnection(t, database.Pool)
 			drained := make(chan drainAnswer, 1)
 			go func() {
-				drained <- drainer.drain(ctx, database, comment, enqueuedAt)
+				drained <- drainer.drain(ctx, &store.Store{Pool: drainPool}, comment, enqueuedAt)
 			}()
-			answer, early, holdingXid := storetest.AwaitOwnerLockWaiter(t, database, "the drain", drained)
+			answer, early := storetest.WaitForQueuedBehind(t, editor, drainPID, drained)
 			if early {
 				t.Fatalf("the drain answered (indexed %v, error %v) without waiting for the comment's owner lock, which the edit holds through its read phase",
 					answer.indexed, answer.err)
 			}
-			if holdingXid != 0 {
-				t.Fatalf("%d backends hold a transaction id while they wait on the owner lock, want none: the drain reads and plans before its first write", holdingXid)
+			if holdingXid, err := storetest.HoldsTransactionID(ctx, database, drainPID); err != nil {
+				t.Fatal(err)
+			} else if holdingXid {
+				t.Fatal("the drain holds a transaction id while it waits on the owner lock, want none: the drain reads and plans before its first write")
 			}
 			var revision int
 			var owedAt *time.Time

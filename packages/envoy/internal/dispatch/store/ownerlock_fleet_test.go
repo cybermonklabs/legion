@@ -643,38 +643,12 @@ func holdRowAsAnEarlierBuild(t *testing.T, s *Store, owner Owner) pgx.Tx {
 	return holder
 }
 
-// awaitRowLockWaiter waits up to ten seconds for a backend to wait on a row lock in a statement
-// of lockOwnerRows (an owner row's lock taken beside the advisory lock), or for answered.
-func awaitRowLockWaiter(t *testing.T, s *Store, answered <-chan error) (error, bool) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		select {
-		case err := <-answered:
-			return err, true
-		default:
-		}
-		var waiting int
-		if err := s.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'
-			  and query like '%= any($1::%order by%for %'`).Scan(&waiting); err != nil {
-			t.Fatal(err)
-		}
-		if waiting > 0 {
-			return nil, false
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no owner lock waited on the owner's row within 10s")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-}
-
 // The read a lock guards sees what a writer of an earlier build committed while it held the row:
 // LockOwnerAndRead, sent with its read in one batch, waits on the row that writer holds and reads
 // again behind it, so the read answers the title the writer wrote rather than the one before it.
-// With no process of that build registered it does not wait, and reads the title as it stood.
+// With no process of that build registered it does not wait, and reads the title as it stood. The
+// read runs on a connection of its own, and the wait reads that backend alone (awaitBlockedBy), so
+// no other backend waiting on the row lets the writer commit before the read waits on it.
 func TestTheReadTheOwnerLockGuardsSeesTheCommitOfAWriterOfAnEarlierBuild(t *testing.T) {
 	for _, state := range []fleetState{fleetStateNamed(t, "no process registered"), fleetStateNamed(t, "a live process of an earlier build")} {
 		t.Run(state.name, func(t *testing.T) {
@@ -685,10 +659,11 @@ func TestTheReadTheOwnerLockGuardsSeesTheCommitOfAWriterOfAnEarlierBuild(t *test
 			if _, err := holder.Exec(ctx, `update issues set title = 'Closed by the earlier build' where key = $1`, owners.issueA.Key); err != nil {
 				t.Fatal(err)
 			}
+			reading, readerPID := oneConnection(t, s)
 			read := make(chan string, 1)
 			answered := make(chan error, 1)
 			go func() {
-				tx, err := s.Pool.Begin(ctx)
+				tx, err := reading.Pool.Begin(ctx)
 				if err != nil {
 					answered <- err
 					return
@@ -700,7 +675,7 @@ func TestTheReadTheOwnerLockGuardsSeesTheCommitOfAWriterOfAnEarlierBuild(t *test
 				answered <- err
 			}()
 			if state.legacy {
-				if err, early := awaitRowLockWaiter(t, s, answered); early {
+				if err, early := awaitBlockedBy(t, s, holder.Conn().PgConn().PID(), readerPID, answered); early {
 					t.Fatalf("LockOwnerAndRead answered (%v, %q) while a writer of an earlier build held the row; want it to wait for that row", err, <-read)
 				}
 			} else if err := <-answered; err != nil {

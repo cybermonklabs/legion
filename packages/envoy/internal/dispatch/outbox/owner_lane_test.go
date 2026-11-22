@@ -338,11 +338,18 @@ func TestAnOwnerLeftForTheBatchsEndLogsItsFailureOnce(t *testing.T) {
 // refused its connection - failing that batch, and with it the scan, which ends every batch still
 // running - unless both run inside the scan's statement gate (lanes.statement). The other owner's
 // event is published, and the settled mention's own event with it.
+//
+// The outbox runs on a connection of its own, and the wait for the settle watches that backend
+// alone (storetest.WaitForQueuedBehind), so no other backend queued on the owner's lock lets the
+// second batch start before the settle waits. One connection keeps what the row tests: the rule
+// refuses a second connection to the scan's context whatever the pool holds, and the second
+// batch's statements wait for the gate, not for the pool.
 func TestASettleWaitingOnTheOwnerLockDoesNotFailTheBatchBesideIt(t *testing.T) {
 	ctx := store.WithTransactionTracking(context.Background())
 	database := storetest.Open(t)
+	outboxPool, outboxPID := storetest.OneConnection(t, database.Pool)
 	publisher := &recordingPublisher{}
-	deps := Deps{Store: database, Publisher: publisher, Broker: events.NewBroker()}
+	deps := Deps{Store: &store.Store{Pool: outboxPool}, Publisher: publisher, Broker: events.NewBroker()}
 	route := "session:s1"
 	seedIssue(t, database, "T-1", &route)
 	if _, err := database.Pool.Exec(ctx, `
@@ -378,16 +385,9 @@ func TestASettleWaitingOnTheOwnerLockDoesNotFailTheBatchBesideIt(t *testing.T) {
 	outbox := holding(t, deps)
 	ended := make(chan scanEnd, 1)
 	go func() { ended <- outbox.scan(ctx, unfenced{}) }()
-	waitFor(t, 10*time.Second, "the settle waiting on the comment owner's lock", func() bool {
-		var waiting int
-		if err := database.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'
-		`).Scan(&waiting); err != nil {
-			t.Fatalf("read the lock waiters: %v", err)
-		}
-		return waiting > 0
-	})
+	if end, early := storetest.WaitForQueuedBehind(t, claim, outboxPID, ended); early {
+		t.Fatalf("the scan ended %+v before its settle waited on the comment owner's lock", end)
+	}
 
 	// Another owner's event, which a second batch of the same scan reads while the settle waits.
 	otherComment := seedComment(t, database, "T-2", alice, "a comment of another owner", nil)
