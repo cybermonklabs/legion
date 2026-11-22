@@ -75,7 +75,7 @@ import (
 // than parseStepsPerCharacter steps and allocates no more than parseBytesPerCharacter bytes for
 // each of its characters: counts linear in the body. A parse that walked a list's events back to
 // its start for each item it opened took the plain list 192 million steps, 30 times its bound, and
-// one that copied them for each item allocated 6.3 GB, 6 times its bound.
+// one that copied them for each item allocated 6.3 GB, 3 times its bound.
 func TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinTheirStepsAndBytesPerCharacter(t *testing.T) {
 	// The shapes spell their refusals with heavybodies.MaxNesting, which is this package's own
 	// maxNesting copied: heavybodies may not import pmdoc, since this test is in-package, so the
@@ -129,9 +129,12 @@ const parseStepsPerCharacter = 2 * maxNesting
 // of a heavy body (workOf). At the cap the shapes that leave 49 lists open over thousands of blank
 // lines allocated 13,468 and 13,458 bytes a character, the 100 items nested the same way 8,447
 // before their refusal, the run of brackets 2,652, the plain list 2,389, and the others 802 or
-// fewer; twice the most, rounded up to a power of two, is 32 KiB. A parse that copied a list's
-// events for each item it opened would allocate over a hundred kibibytes a character at the cap.
-const parseBytesPerCharacter = 32 << 10
+// fewer. A race build allocates more where the parse matches a regexp: the race detector makes
+// sync.Pool drop a quarter of what is put back, and regexp keeps its backtracker's state there, so
+// the plain list allocated 16,328 bytes a character in one. Twice that, rounded up to a power of
+// two, is 64 KiB. A parse that copied a list's events for each item it opened allocated 196,364
+// bytes a character on the plain list.
+const parseBytesPerCharacter = 64 << 10
 
 // Every shape a write stores parses in work proportional to its length, counted at an eighth of
 // what the shape grows and then at the whole of it: a shape whose steps or allocations grew with
@@ -209,9 +212,9 @@ func TestHeavyBodiesAtTheBodyCapParseAndEncodeInWorkProportionalToTheirLength(t 
 	}
 }
 
-// work is what one call costs in the two counts this file holds a parse and a write to: the steps
-// the package counts of its own work (ParseWork and UpdateWork, work.go) and the bytes the call
-// allocates on the heap.
+// callWork is what one call costs in the two counts this file holds a parse and a write to: the
+// steps the package counts of its own work (ParseWork and UpdateWork, work.go) and the bytes the
+// call allocates on the heap.
 type callWork struct {
 	steps, bytes uint64
 }
@@ -220,6 +223,10 @@ type callWork struct {
 // runtime.MemStats.TotalAlloc counts between a reading before op and one after it. ReadMemStats
 // stops the world and flushes every processor's cache of spans before it reads, so the bytes are
 // every allocation made between the two readings, whether or not a collection ran between them.
+// The steps are the same in every run of a body. The bytes are too but for what sync.Pool hands
+// back: a collection empties it, and a race build drops a quarter of what is put back, so a pooled
+// object is made again (parseBytesPerCharacter has the measure).
+//
 // Both counts are the process's, so nothing else may run beside op: no test in this package calls
 // t.Parallel, and a timed call of linear_test.go still running past its deadline (leakedCallGuard)
 // fails t before op runs.
