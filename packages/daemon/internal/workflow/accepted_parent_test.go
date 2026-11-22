@@ -220,7 +220,7 @@ func TestTheNoticeOfATodoUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t 
 			if tc.steps != nil {
 				seedStepsPlan(t, pool, "LEGION-208", 1, tc.steps...)
 				seedRecord(t, pool, func(tx pgx.Tx) error {
-					return record.NewStore().MoveTask(t.Context(), tx, "LEGION-208", 1, "a", record.TaskPlace{Kind: record.PlaceMerge}, record.TaskRunning)
+					return seedMove(t.Context(), tx, "LEGION-208", 1, "a", record.TaskPlace{Kind: record.PlaceMerge}, record.TaskRunning)
 				})
 			}
 

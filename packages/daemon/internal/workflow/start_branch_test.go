@@ -87,6 +87,13 @@ func TestAStartOfATaskNamesItsBranch(t *testing.T) {
 				return err
 			}
 		}
+		// The store's move into running writes that each step waits for its join; a's and b's
+		// joins ended, so their steps run.
+		for _, id := range []string{"a", "b"} {
+			if err := records.SetStepWait(ctx, tx, startBranchIssue, 1, id, record.StepWaitNone, nil); err != nil {
+				return err
+			}
+		}
 		return records.SetStepWait(ctx, tx, startBranchIssue, 1, "ab", record.StepWaitAgent, &given)
 	})
 	if branches["a"] != "legion/LEGION-209" || branches["b"] != "legion/LEGION-209.b" {

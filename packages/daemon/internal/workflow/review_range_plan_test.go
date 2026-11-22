@@ -29,7 +29,7 @@ func plannedReviewRoundOne(t *testing.T) (*pgxpool.Pool, *Engine, func(string, i
 	standsIn(t, pool, phase.Testing, "testing")
 	seedStepsPlan(t, pool, "LEGION-208", 1, "implementer", "tester", "reviewer")
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().MoveTask(t.Context(), tx, "LEGION-208", 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
+		return seedMove(t.Context(), tx, "LEGION-208", 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
 	})
 	engine, apply := entersRoundOne(t, pool)
 	assertWalksAt(t, pool, engine, "LEGION-208", phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 3})

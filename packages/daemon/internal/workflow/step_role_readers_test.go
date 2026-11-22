@@ -37,7 +37,7 @@ func standAtStep(t *testing.T, pool *pgxpool.Pool, issue record.Issue, held bool
 	seedStepsPlan(t, pool, issue.Key, issue.Generation, "implementer", string(deploymentChecker))
 	var read *record.Issue
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		if err := record.NewStore().MoveTask(t.Context(), tx, issue.Key, issue.Generation, "a",
+		if err := seedMove(t.Context(), tx, issue.Key, issue.Generation, "a",
 			record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning); err != nil {
 			return err
 		}

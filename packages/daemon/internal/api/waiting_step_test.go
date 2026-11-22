@@ -54,6 +54,10 @@ func seedAWaitsForTheTester(t *testing.T, h *harness, key string) {
 				return err
 			}
 		}
+		// The move writes the wait of a start for its join; this seed stands for a task m whose join ended.
+		if err := records.SetStepWait(ctx, tx, key, 1, "m", record.StepWaitNone, nil); err != nil {
+			return err
+		}
 		return records.SetStepWait(ctx, tx, key, 1, "a", record.StepWaitAgent, &since)
 	}); err != nil {
 		t.Fatalf("seed the plan of %s: %v", key, err)

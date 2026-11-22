@@ -47,6 +47,10 @@ func seedTwoTasks(t *testing.T, h *harness, key string) {
 			if err := records.MoveTask(ctx, tx, key, 1, at.task, record.TaskPlace{Kind: record.PlaceStep, Position: at.place}, record.TaskRunning); err != nil {
 				return err
 			}
+			// The move writes the wait of a start for its join; this seed stands for a task whose join ended.
+			if err := records.SetStepWait(ctx, tx, key, 1, at.task, record.StepWaitNone, nil); err != nil {
+				return err
+			}
 			if err := records.PutReturnCounts(ctx, tx, key, 1, at.task, record.ReturnCounts{Pass: at.pass}); err != nil {
 				return err
 			}

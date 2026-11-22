@@ -50,6 +50,8 @@ func seedKeyedPlan(t *testing.T, pool *pgxpool.Pool, key string, generation uint
 		for _, put := range []error{
 			records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps),
 			records.MoveTask(ctx, tx, key, generation, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning),
+			// The move writes the wait of a start for its join; this seed stands for a task whose join ended.
+			records.SetStepWait(ctx, tx, key, generation, "a", record.StepWaitNone, nil),
 		} {
 			if put != nil {
 				t.Fatalf("seed the plan of %s: %v", key, put)

@@ -628,7 +628,7 @@ func TestAClosedIssueReachesTheClaimOfARoleOfARemovedTask(t *testing.T) {
 	engine := closingTree(t, pool, "")
 	seedStepsPlan(t, pool, "LEGION-209", 7, "implementer")
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().MoveTask(t.Context(), tx, "LEGION-209", 7, "a", record.TaskPlace{Kind: record.PlaceMerge}, record.TaskRunning)
+		return seedMove(t.Context(), tx, "LEGION-209", 7, "a", record.TaskPlace{Kind: record.PlaceMerge}, record.TaskRunning)
 	})
 
 	applyRefusingNothing(t, pool, engine, intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"})

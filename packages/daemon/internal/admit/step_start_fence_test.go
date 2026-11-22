@@ -60,6 +60,10 @@ func TestAnOwedStartOfAnotherStepsRoleIsEnded(t *testing.T) {
 				if err := records.MoveTask(ctx, tx, key, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: tc.at}, record.TaskRunning); err != nil {
 					t.Fatalf("seed the task of %s at step %d: %v", key, tc.at, err)
 				}
+				// The move writes the wait of a start for its join; this seed stands for a task whose join ended.
+				if err := records.SetStepWait(ctx, tx, key, 1, "a", record.StepWaitNone, nil); err != nil {
+					t.Fatalf("end the join wait of the task of %s: %v", key, err)
+				}
 				if err := workflow.StartOrOwe(ctx, tx, records, key, record.SuperviseRequest{Op: "start", Tree: "LEGION-100", Role: linter,
 					Generation: 1, Phase: phase.Step, Task: "Lint " + key + ".", Entry: 1}, fixedNow); err != nil {
 					t.Fatalf("owe %s the linter's start: %v", key, err)

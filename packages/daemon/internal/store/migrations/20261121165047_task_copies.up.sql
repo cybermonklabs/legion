@@ -8,7 +8,11 @@
 -- (record.PlanTask.BranchOf), which is the branch of every task the upgrade finds, since no release
 -- before this one gave a task a branch of its own. plan_tasks.join_conflicts is the id of each need
 -- of the task whose merge into the task's branch GitHub refused as a conflict, which the task's
--- first step joins by hand (record's SetJoinConflicts).
+-- first step joins by hand (record's SetJoinConflicts). plan_tasks.start_reason is why the task
+-- started again at its first step (record's SetStartReason), '' for a first start: the start again
+-- of a stopped task waits for the join of its needs, and the step that starts after that wait
+-- tells its agent why and counts as a move back, as a start again that waits for nothing does.
+-- Every move of the task clears it.
 --
 -- plan_branches is each branch name a generation of an issue gave to one of its tasks. GitHub keeps
 -- a branch and its commits after the task that held it was stopped and a later version removed it,
@@ -40,26 +44,30 @@
 --     'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
 --     'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
 --     'conflict_confirm', 'merge_forward'));
---   alter table plan_tasks drop column if exists branch, drop column if exists join_conflicts;
+--   alter table plan_tasks drop column if exists branch, drop column if exists join_conflicts,
+--     drop column if exists start_reason;
 --   drop table if exists plan_branches;
 --   delete from schema_version where version = 20261121165047;
 --   commit;
 --   SQL
 --
 -- The release before this one boots without the statements: its plan_tasks reads and writes name
--- each column they touch, and it names neither new column nor the new table. They are owed to the
--- roll forward. With the columns and the table dropped and the row deleted, store.apply runs this
--- file again, and each task the roll forward finds reads the issue's own branch. What the way back
--- costs is the branch of each task that started on a branch of its own: the roll forward reads the
--- issue's branch for it, so its next step works on the issue's branch, not on the task's.
+-- each column they touch, and it names none of the three new columns nor the new table. They are
+-- owed to the roll forward. With the columns and the table dropped and the row deleted, store.apply
+-- runs this file again, and each task the roll forward finds reads the issue's own branch. What the
+-- way back costs is the branch of each task that started on a branch of its own: the roll forward
+-- reads the issue's branch for it, so its next step works on the issue's branch, not on the task's;
+-- and the reason of each start again whose step still waits for its join, whose step then starts
+-- with no reason and not as a move back.
 --
--- The way back drops plan_branches with the two columns (`drop table if exists plan_branches`
+-- The way back drops plan_branches with the three columns (`drop table if exists plan_branches`
 -- above): the earlier release names it in no statement, and the roll forward creates it again
 -- empty. What that costs is the names the generations gave: after the roll forward, a task that
 -- starts takes a name again by the rows alone, so it can take the name of a task that a later
 -- version removed before the rollback, and that branch's commits.
 alter table plan_tasks add column branch text not null default '',
-  add column join_conflicts text[] not null default '{}';
+  add column join_conflicts text[] not null default '{}',
+  add column start_reason text not null default '';
 
 create table plan_branches (
   issue text not null,

@@ -45,7 +45,7 @@ func tryInTx(t *testing.T, pool *pgxpool.Pool, engine *Engine, write func(ctx co
 func forgeTaskPlace(t *testing.T, pool *pgxpool.Pool, key string, generation uint64, place record.TaskPlace) {
 	t.Helper()
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().MoveTask(t.Context(), tx, key, generation, "a", place, record.TaskRunning)
+		return seedMove(t.Context(), tx, key, generation, "a", place, record.TaskRunning)
 	})
 }
 

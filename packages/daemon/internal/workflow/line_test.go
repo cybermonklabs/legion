@@ -120,6 +120,18 @@ func TestAMoveOfTheTaskSetsTheRoleOfItsStep(t *testing.T) {
 		if err != nil {
 			return err
 		}
+		// The task's start at its first step, as the start that follows its move ends the wait for
+		// a join that move writes: the task holds the issue's own branch and needs none.
+		first := record.TaskPlace{Kind: record.PlaceStep, Position: 1}
+		if err := engine.store.MoveTask(ctx, tx, issue.Key, issue.Generation, w.Task, first, record.TaskRunning); err != nil {
+			return err
+		}
+		if err := engine.store.SetStepWait(ctx, tx, issue.Key, issue.Generation, w.Task, record.StepWaitNone, nil); err != nil {
+			return err
+		}
+		if w, err = engine.walk(ctx, tx, *issue); err != nil {
+			return err
+		}
 		for _, move := range []struct {
 			to    phase.Phase
 			place record.TaskPlace

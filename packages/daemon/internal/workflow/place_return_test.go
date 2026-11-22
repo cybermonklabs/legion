@@ -28,7 +28,7 @@ func seedStepsAt(t *testing.T, pool *pgxpool.Pool, key string, generation uint64
 		}
 	}
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().MoveTask(t.Context(), tx, key, generation, "a", stepPlace(at), record.TaskRunning)
+		return seedMove(t.Context(), tx, key, generation, "a", stepPlace(at), record.TaskRunning)
 	})
 }
 

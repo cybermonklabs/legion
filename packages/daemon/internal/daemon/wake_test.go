@@ -221,7 +221,11 @@ func TestTheReleaseOfAPodAtStepArmsTheDeploymentRolesBackstop(t *testing.T) {
 				if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
 					return err
 				}
-				return records.MoveTask(ctx, tx, key, 2, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
+				if err := records.MoveTask(ctx, tx, key, 2, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning); err != nil {
+					return err
+				}
+				// The move writes the wait of a start for its join; this seed stands for a task whose join ended.
+				return records.SetStepWait(ctx, tx, key, 2, "a", record.StepWaitNone, nil)
 			}); err != nil {
 				t.Fatalf("seed the plan of %s at the checker's step: %v", key, err)
 			}
@@ -286,7 +290,11 @@ func TestAWakeOrAStopOfAnotherClaimOfTheRoleLeavesTheWorkersBackstop(t *testing.
 		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
 			return err
 		}
-		return records.MoveTask(ctx, tx, key, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
+		if err := records.MoveTask(ctx, tx, key, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning); err != nil {
+			return err
+		}
+		// The move writes the wait of a start for its join; this seed stands for a task whose join ended.
+		return records.SetStepWait(ctx, tx, key, 1, "a", record.StepWaitNone, nil)
 	}); err != nil {
 		t.Fatalf("seed the plan of %s at the checker's step: %v", key, err)
 	}

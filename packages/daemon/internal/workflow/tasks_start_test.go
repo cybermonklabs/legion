@@ -70,6 +70,7 @@ func TestEachTaskStartsWhenItsNeedsAreDone(t *testing.T) {
 		planTask{id: "e", steps: []string{"tester"}, agents: []claim.Agent{"tester"}, needs: []string{"d"}, state: record.TaskWaiting})
 
 	firstStepOf(t, pool, engine, root.Key)
+	joinEnds(t, pool, engine, root.Key, "b")
 
 	tasks := tasksOf(t, pool, engine, root.Key)
 	assertTask(t, tasks, "a", record.TaskRunning, atStep(1))
@@ -86,6 +87,7 @@ func TestEachTaskStartsWhenItsNeedsAreDone(t *testing.T) {
 	}
 
 	taskMoves(t, pool, engine, root.Key, "b", TriggerImplementationReady, "")
+	joinEnds(t, pool, engine, root.Key, "c")
 	tasks = tasksOf(t, pool, engine, root.Key)
 	assertTask(t, tasks, "b", record.TaskDone, atStep(1))
 	assertTask(t, tasks, "c", record.TaskRunning, atStep(1))
@@ -100,12 +102,14 @@ func TestEachTaskStartsWhenItsNeedsAreDone(t *testing.T) {
 	assertTask(t, tasks, "d", record.TaskWaiting, noAct)
 
 	taskMoves(t, pool, engine, root.Key, "c", TriggerImplementationReady, "")
+	joinEnds(t, pool, engine, root.Key, "d")
 	tasks = tasksOf(t, pool, engine, root.Key)
 	assertTask(t, tasks, "c", record.TaskDone, atStep(1))
 	assertTask(t, tasks, "d", record.TaskRunning, atStep(1))
 	assertTask(t, tasks, "e", record.TaskWaiting, noAct)
 
 	taskMoves(t, pool, engine, root.Key, "d", TriggerImplementationReady, "")
+	joinEnds(t, pool, engine, root.Key, "e")
 	tasks = tasksOf(t, pool, engine, root.Key)
 	assertTask(t, tasks, "d", record.TaskDone, atStep(1))
 	assertTask(t, tasks, "e", record.TaskRunning, atStep(1))
@@ -171,6 +175,7 @@ func TestAStoppedTaskStartsAgainOnlyWhereItsNeedsAreDone(t *testing.T) {
 
 	given := laterVersion(t, root.Key, root.Generation, 2, block("a", ""), block("b", " Again."), block("c", "", "a", "b", "d"), block("d", " Again.", "a"))
 	mustTake(t, "version 2", applyFacts(t, pool, engine)("version-2", given))
+	joinEnds(t, pool, engine, root.Key, "b")
 
 	tasks := tasksOf(t, pool, engine, root.Key)
 	assertTask(t, tasks, "a", record.TaskRunning, atStep(1))

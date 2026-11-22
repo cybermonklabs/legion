@@ -11,7 +11,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"slices"
@@ -25,7 +24,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
-	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // newWindowRig is newTaskBranchRig whose fake GitHub runs during once, outside any transaction of
@@ -161,11 +159,11 @@ func holdsOnlyItsNeeds(t *testing.T, rig *taskBranchRig) {
 	}
 }
 
-// The join's conflicts are written onto the task only as the row judged it: a later version that
-// changes the task's needs while the row joins them on GitHub leaves the row's conflicts unwritten,
-// and the row waits, so its next run joins the needs the task holds then. The controls: a conflict
-// of a need the task holds is recorded, and a later version taken before the row runs is joined as
-// it stands.
+// The join's conflicts are written onto the task only where its step waits for that join: a later
+// version that changes the task's needs while the row joins them on GitHub starts the task again,
+// whose start queues a join of its own, so the end of the row's join changes nothing, and the next
+// row joins the needs the task holds then. The controls: a conflict of a need the task holds is
+// recorded, and a later version taken before the row runs is joined as it stands.
 func TestTheJoinsConflictsNameOnlyNeedsTheTaskHolds(t *testing.T) {
 	t.Run("control: a conflict of a need d holds is recorded", func(t *testing.T) {
 		rig := newWindowRig(t, nil, twoNeeds...)
@@ -195,11 +193,13 @@ func TestTheJoinsConflictsNameOnlyNeedsTheTaskHolds(t *testing.T) {
 		}, twoNeeds...)
 		a := conflictingNeeds(t, rig)
 
-		err := rig.attempt("d")
+		if err := rig.attempt("d"); err != nil {
+			t.Fatalf("the row whose task changed while it joined answered %v, want it run: the end of its join changes nothing", err)
+		}
 
 		holdsOnlyItsNeeds(t, rig)
-		if !errors.Is(err, wait.ErrWaiting) {
-			t.Errorf("the row whose task changed while it joined answered %v, want a wait: its next run joins the needs d holds now", err)
+		if d := rig.task(t, "d"); d.StepWait != record.StepWaitJoin {
+			t.Fatalf("task d after the row whose join it no longer waits for waits for %q, want its own join", d.StepWait)
 		}
 		rig.run(t, "d")
 		d := rig.task(t, "d")
@@ -214,8 +214,10 @@ func TestTheJoinsConflictsNameOnlyNeedsTheTaskHolds(t *testing.T) {
 
 // The join's conflicts reach the generation the run goes on at: admission's re-admission of the
 // issue as an orphan root, which carries the run to a new generation in the same branches, lands
-// while the row joins, and the row writes what the join found onto the carried task. The controls:
-// a re-admission after the row carries the conflicts the row wrote, and a re-admission that starts
+// while the row joins, so the end of the row's join, of the generation the issue left, changes
+// nothing, and the row of the join the settle of the re-admission queues at the new generation
+// (workflow's joinAgain) writes what its join found onto the carried task. The controls: a
+// re-admission after the row carries the conflicts the row wrote, and a re-admission that starts
 // the plan from its start gets none, since its task's first start there joins its needs itself.
 func TestTheJoinsConflictsReachTheGenerationTheRunGoesOnAt(t *testing.T) {
 	next := taskBranchIssue.Generation + 1
@@ -238,9 +240,16 @@ func TestTheJoinsConflictsReachTheGenerationTheRunGoesOnAt(t *testing.T) {
 		}, twoNeeds...)
 		conflictingNeeds(t, rig)
 		rig.run(t, "d")
+		if got := rig.taskAt(t, next, "d").JoinConflicts; len(got) != 0 {
+			t.Fatalf("task d at generation %d after the row of generation %d holds join conflicts %v, want none: that join ended at a generation the issue left",
+				next, taskBranchIssue.Generation, got)
+		}
+		row := mustOutboxRow(t, taskBranchIssue.Key, record.TaskBranch{Generation: next, Task: "d"}, time.Now())
+		if err := rig.runner.execute(context.Background(), row); err != nil {
+			t.Fatalf("execute the branch row of task d at generation %d: %v", next, err)
+		}
 		if got := rig.taskAt(t, next, "d").JoinConflicts; !slices.Equal(got, []string{"c"}) {
-			t.Fatalf("task d at generation %d, the run carried on, holds join conflicts %v (generation %d holds %v); its branch lacks c's work, want [c]",
-				next, got, taskBranchIssue.Generation, rig.task(t, "d").JoinConflicts)
+			t.Fatalf("task d at generation %d, the run carried on, holds join conflicts %v after its own row; its branch lacks c's work, want [c]", next, got)
 		}
 	})
 	t.Run("control: the re-admission that starts the plan from its start inside the row's window", func(t *testing.T) {
@@ -258,11 +267,11 @@ func TestTheJoinsConflictsReachTheGenerationTheRunGoesOnAt(t *testing.T) {
 	})
 }
 
-// The row judges the task under the lock every fact applies under, not merely again: a later
-// version whose fact holds that lock when the row comes to write is the version the row judges, so
-// the row waits for the fact's commit, writes nothing, and waits for its next run. A judgement read
-// beside the lock would read the version the fact has not committed yet, and write c's conflict
-// onto a task that no longer needs c.
+// The end of the join applies under the lock every fact applies under, not merely again: a later
+// version whose fact holds that lock when the row comes to apply it is the version the end of the
+// join reads, so the row waits for the fact's commit, and its end changes nothing, since the task
+// no longer waits for that join. An end read beside the lock would read the version the fact has
+// not committed yet, and write c's conflict onto a task that no longer needs c.
 func TestTheJoinsConflictsAreJudgedUnderTheFactLock(t *testing.T) {
 	held := make(chan pgx.Tx, 1)
 	rig := newWindowRig(t, func(rig *taskBranchRig) {
@@ -304,7 +313,7 @@ func TestTheJoinsConflictsAreJudgedUnderTheFactLock(t *testing.T) {
 	err := <-done
 
 	holdsOnlyItsNeeds(t, rig)
-	if !errors.Is(err, wait.ErrWaiting) {
-		t.Errorf("the row whose task a fact changed while it waited to write answered %v, want a wait", err)
+	if err != nil {
+		t.Errorf("the row whose task a fact changed while it waited to apply its end answered %v, want it run: its end changes nothing", err)
 	}
 }

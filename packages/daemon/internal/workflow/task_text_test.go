@@ -175,6 +175,8 @@ func TestAStepOfASecondTaskNamesItsOwnWorkingCopy(t *testing.T) {
 	const working = " Working copy: branch legion/LEGION-208.b, directory /work/LEGION-208.b."
 
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	// Task a's branch is not the issue's own, so its start waits for its join: the end of that join.
+	joinsEnd(t, pool, engine, root.Key)
 	hasPrefix(t, "implementer", lastStart(t, pool, root.Key, claim.RoleImplementer),
 		"Continue root. Issue: LEGION-208. Phase: implementing."+working+" Task: a. Step 1 of 2: implementer.")
 

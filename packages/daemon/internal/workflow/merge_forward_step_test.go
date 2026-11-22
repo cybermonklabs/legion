@@ -34,7 +34,7 @@ func TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole(t *testing.T) {
 			pool := seedConflictIssue(t, tc.at, tc.status, settledGreen("lint"))
 			seedStepsPlan(t, pool, "LEGION-208", 1, tc.steps...)
 			seedRecord(t, pool, func(tx pgx.Tx) error {
-				return record.NewStore().MoveTask(t.Context(), tx, "LEGION-208", 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
+				return seedMove(t.Context(), tx, "LEGION-208", 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
 			})
 			if tc.at == phase.Step {
 				seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: tc.worker, Claim: claim.Token(string(tc.worker) + "-claim"), Entry: 1})

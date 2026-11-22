@@ -3212,6 +3212,20 @@ func (s *Postgres) BranchQueued(ctx context.Context, tx pgx.Tx, issue string) (b
 	return queued, nil
 }
 
+// TaskBranchQueued says whether the outbox still holds a task_branch row (TaskBranch) of task of
+// issue at generation — due, running or backing off — so the join of the task's needs at that
+// generation has not ended: a row finishes when its join ends, or when it serves a generation the
+// issue has left, which it then joins nothing of.
+func (s *Postgres) TaskBranchQueued(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (bool, error) {
+	var queued bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and kind = $2
+		and (payload->>'generation')::bigint = $3 and payload->>'task' = $4)`,
+		issue, string(OutboxKindTaskBranch), int64(generation), task).Scan(&queued); err != nil {
+		return false, fmt.Errorf("read whether the branch row of task %s of %s at generation %d is still queued: %w", task, issue, generation, err)
+	}
+	return queued, nil
+}
+
 // UnfinishedLanes is every lane of project's issues with a row still in the outbox — due, running,
 // backing off or held — by issue then lane: the lanes the runner needs an executor for. The kinds
 // left are read and sorted into lanes here (LaneOf), rather than mapped in SQL, so laneKinds stays

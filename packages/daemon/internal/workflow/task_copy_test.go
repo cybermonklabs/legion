@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -95,8 +96,12 @@ func TestASecondTaskQueuesItsBranchRow(t *testing.T) {
 					return err
 				}
 				for _, task := range tc.starts {
-					if err := engine.startTaskCopy(ctx, tx, root, task); err != nil {
+					queued, err := engine.startTaskCopy(ctx, tx, root, task)
+					if err != nil {
 						return err
+					}
+					if want := slices.Contains(tc.rows, task); queued != want {
+						t.Errorf("the start of task %s answers that it queued its join %t, want %t", task, queued, want)
 					}
 				}
 				return nil

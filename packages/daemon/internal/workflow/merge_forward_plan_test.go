@@ -38,7 +38,7 @@ func plannedConflictIssue(t *testing.T, at phase.Phase, steps ...string) *pgxpoo
 		place = record.TaskPlace{Kind: record.PlaceMerge}
 	}
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().MoveTask(t.Context(), tx, "LEGION-208", 1, "a", place, record.TaskRunning)
+		return seedMove(t.Context(), tx, "LEGION-208", 1, "a", place, record.TaskRunning)
 	})
 	return pool
 }

@@ -43,6 +43,10 @@ func seedStepStartPlan(t *testing.T, pool *store.Pool, records record.Store, at 
 		if err := records.MoveTask(ctx, tx, stepStartKey, 2, "a", record.TaskPlace{Kind: record.PlaceStep, Position: at}, record.TaskRunning); err != nil {
 			return err
 		}
+		// The move writes the wait of a start for its join; this seed stands for a task whose join ended.
+		if err := records.SetStepWait(ctx, tx, stepStartKey, 2, "a", record.StepWaitNone, nil); err != nil {
+			return err
+		}
 		return records.PutPhase(ctx, tx, record.PhaseRow{Issue: stepStartKey, Role: stepStartLinter, Entry: 1,
 			EntryTask: "Lint it. Issue: LEGION-208. Phase: step.", EntryRaisedAt: time.Now()})
 	}); err != nil {

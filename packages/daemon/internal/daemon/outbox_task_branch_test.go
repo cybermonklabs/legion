@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // taskBranchIssue is the issue whose plan each test of a task's branch stores.
@@ -41,9 +42,10 @@ type plannedTask struct {
 
 // newTaskBranchRig stores taskBranchIssue and its plan of tasks, starts each task in the order of
 // their ids as the start of tasks does — its branch given (record.Store.AssignTaskBranch), then
-// the task moved to running at its first step — and stands up the executor and the fake GitHub.
-// Any request the fake does not serve fails the test. Each rig is the store as the start of tasks
-// leaves it with a plan of several tasks that register_plan took.
+// the task moved to running at its first step, whose step waits for its join — and stands up the
+// executor, which applies the end of each join through the real workflow engine, and the fake
+// GitHub. Any request the fake does not serve fails the test. Each rig is the store as the start of
+// tasks leaves it with a plan of several tasks that register_plan took.
 func newTaskBranchRig(t *testing.T, tasks ...plannedTask) *taskBranchRig {
 	t.Helper()
 	ctx := context.Background()
@@ -54,6 +56,7 @@ func newTaskBranchRig(t *testing.T, tasks ...plannedTask) *taskBranchRig {
 		}
 	}})
 	rig.runner = &outbox{log: quietLogger(), pool: rig.pool, dispatchProject: "LEGION", records: rig.records, tokens: roleTokens{}, project: "legion", githubAPI: api}
+	rig.runner.handlers = []intake.Handler{workflow.New(rig.records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())}
 	putOutboxIssue(t, rig.pool, rig.records, taskBranchIssue)
 	issue := taskBranchIssue
 	v := record.PlanVersion{Issue: issue.Key, Generation: issue.Generation, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner, GivenAt: time.Now()}

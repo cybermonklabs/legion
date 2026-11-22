@@ -142,8 +142,10 @@ type ReturnCounts struct {
 // StepWaitSince are what the step at a running task's place waits for and since when, nil where it
 // waits for nothing (SetStepWait). Branch is the GitHub branch the task works on, "" until its
 // first start gives it one (AssignTaskBranch), and JoinConflicts is the id of each need whose join
-// into that branch GitHub refused as a conflict (SetJoinConflicts). Needs and JoinConflicts are nil
-// where they hold none.
+// into that branch GitHub refused as a conflict (SetJoinConflicts). StartReason is why the task
+// started again at its first step (SetStartReason), "" for a first start and after any later move:
+// the step that starts after a wait reads it (the workflow's startAfterWait). Needs and
+// JoinConflicts are nil where they hold none.
 type PlanTask struct {
 	Issue       string
 	Generation  uint64
@@ -167,6 +169,7 @@ type PlanTask struct {
 	HoldReason     HoldReason
 	StepWait       StepWait
 	StepWaitSince  *time.Time
+	StartReason    string
 }
 
 // BranchOf is the GitHub branch task works on, for the task of the issue keyed issueKey: the branch
@@ -267,6 +270,23 @@ func (s *Postgres) SetJoinConflicts(ctx context.Context, tx pgx.Tx, issue string
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("%s: the plan holds no such task", describe)
+	}
+	return nil
+}
+
+// SetStartReason writes reason as why task of the plan of issue at generation started again at its
+// first step: the start again of a stopped task, in the transaction that moves it there
+// (MoveTask, which clears it at every move), so the step that starts after a wait for its join
+// or its agent is told why and counts as a move back. A task that is not running, and a task the
+// plan does not hold, are refused, naming it.
+func (s *Postgres) SetStartReason(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, reason string) error {
+	tag, err := tx.Exec(ctx, `update plan_tasks set start_reason = $4 where issue = $1 and generation = $2 and task = $3 and state = 'running'`,
+		issue, int64(generation), task, reason)
+	if err != nil {
+		return fmt.Errorf("write why task %s of %s at generation %d started again: %w", task, issue, generation, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("write why task %s of %s at generation %d started again: the plan holds no such task that is running", task, issue, generation)
 	}
 	return nil
 }
@@ -531,7 +551,8 @@ const planTaskColumns = `plan_tasks.issue, plan_tasks.generation, plan_tasks.tas
 	plan_tasks.block_text, plan_tasks.needs, plan_tasks.part_of, plan_tasks.owner_role, plan_tasks.merges, plan_tasks.steps_by_default,
 	plan_tasks.state, plan_tasks.stopped_reason, plan_tasks.running_kind, plan_tasks.position,
 	plan_tasks.pass, plan_tasks.rounds, plan_tasks.conflict_rounds, plan_tasks.backward_moves, plan_tasks.cap_told,
-	plan_tasks.branch, plan_tasks.join_conflicts, plan_tasks.hold_reason, plan_tasks.step_wait, plan_tasks.step_wait_since`
+	plan_tasks.branch, plan_tasks.join_conflicts, plan_tasks.hold_reason, plan_tasks.step_wait, plan_tasks.step_wait_since,
+	plan_tasks.start_reason`
 
 // scanPlanTasks reads every row of a query of planTaskColumns and closes rows.
 func scanPlanTasks(rows pgx.Rows) ([]PlanTask, error) {
@@ -544,7 +565,7 @@ func scanPlanTasks(rows pgx.Rows) ([]PlanTask, error) {
 		if err := rows.Scan(&task.Issue, &generation, &task.Task, &task.PlanVersion, &task.BlockText, &task.Needs, &task.PartOf,
 			&task.OwnerRole, &task.Merges, &task.StepsByDefault, &task.State, &task.StoppedReason, &task.Place.Kind, &task.Place.Position,
 			&task.Counts.Pass, &task.Counts.Rounds, &task.Counts.ConflictRounds, &moves, &task.Counts.CapTold,
-			&task.Branch, &task.JoinConflicts, &task.HoldReason, &task.StepWait, &task.StepWaitSince); err != nil {
+			&task.Branch, &task.JoinConflicts, &task.HoldReason, &task.StepWait, &task.StepWaitSince, &task.StartReason); err != nil {
 			return nil, err
 		}
 		task.Generation = uint64(generation)
@@ -663,10 +684,10 @@ func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from,
 	if carried {
 		tasks = `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default,
 			state, stopped_reason, hold_reason, running_kind, position, step_wait, step_wait_since, pass, rounds, conflict_rounds,
-			backward_moves, cap_told, branch, join_conflicts)
+			backward_moves, cap_told, branch, join_conflicts, start_reason)
 			select issue, $3, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default,
 			state, stopped_reason, hold_reason, running_kind, position, step_wait, step_wait_since, pass, rounds, conflict_rounds,
-			backward_moves, cap_told, branch, join_conflicts
+			backward_moves, cap_told, branch, join_conflicts, start_reason
 			from plan_tasks where issue = $1 and generation = $2`
 		names = []string{`insert into plan_branches (issue, generation, branch)
 			select issue, $3, branch from plan_branches where issue = $1 and generation = $2 on conflict do nothing`}
@@ -726,10 +747,14 @@ func (s *Postgres) DeleteTasks(ctx context.Context, tx pgx.Tx, issue string, gen
 // write of the walk's moveTask. A stop is StopTask's, which records why, and a hold HoldTask's, so
 // the states stopped and held are refused here. A move takes a stop's reason away, but a move to
 // left (TaskLeft): a stopped task whose issue leaves the workflow keeps why it was stopped, the one
-// record of why it was not done. A move ends a hold's reason and the wait of the step the task
-// stood at, whose start it no longer waits to deliver. A place no task can stand at, a step the
-// task does not have, a task the plan does not hold and a task that left the workflow, which
-// nothing moves again, are refused.
+// record of why it was not done. A move ends a hold's reason, why the task started again
+// (SetStartReason, which a start again writes after its move) and the wait of the step the task
+// stood at, whose start it no longer waits to deliver. A move into running from waiting or stopped
+// is a start of the task, whose step waits for the join of its needs (StepWaitJoin) since this
+// transaction's moment, until the start that follows the move (the workflow's Engine.start) ends
+// that wait or the end of the join does; every other move writes no wait. A place no task can
+// stand at, a step the task does not have, a task the plan does not hold and a task that left the
+// workflow, which nothing moves again, are refused.
 func (s *Postgres) MoveTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, place TaskPlace, state TaskState) error {
 	describe := fmt.Sprintf("move task %s of %s at generation %d to %s %d, %s", task, issue, generation, place.Kind, place.Position, state)
 	switch state {
@@ -746,7 +771,9 @@ func (s *Postgres) MoveTask(ctx context.Context, tx pgx.Tx, issue string, genera
 	}
 	tag, err := tx.Exec(ctx, `update plan_tasks set running_kind = $4, position = $5, state = $6,
 		stopped_reason = case when $6 = 'left' then stopped_reason else '' end,
-		hold_reason = '', step_wait = '', step_wait_since = null
+		hold_reason = '', start_reason = '',
+		step_wait = case when $6 = 'running' and state in ('waiting', 'stopped') then 'join' else '' end,
+		step_wait_since = case when $6 = 'running' and state in ('waiting', 'stopped') then now() end
 		where issue = $1 and generation = $2 and task = $3 and state <> 'left'
 		and ($4 <> 'step' or exists (select 1 from plan_steps where plan_steps.issue = $1 and plan_steps.generation = $2
 			and plan_steps.task = $3 and plan_steps.position = $5))`,

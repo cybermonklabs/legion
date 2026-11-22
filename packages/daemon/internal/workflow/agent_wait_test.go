@@ -98,6 +98,7 @@ func TestAStepWaitsForItsAgentInAnotherTask(t *testing.T) {
 		planTask{id: "z", steps: []string{"reviewer"}, agents: []claim.Agent{"reviewer"}, needs: []string{"x", "y"}, state: record.TaskWaiting})
 
 	firstStepOf(t, pool, engine, root.Key)
+	joinsEnd(t, pool, engine, root.Key)
 
 	tasks := tasksOf(t, pool, engine, root.Key)
 	assertWaits(t, tasks, "x", atStep(1), record.StepWaitNone)
@@ -115,6 +116,7 @@ func TestAStepWaitsForItsAgentInAnotherTask(t *testing.T) {
 	}
 
 	taskMoves(t, pool, engine, root.Key, "x", TriggerImplementationReady, "")
+	joinsEnd(t, pool, engine, root.Key)
 
 	tasks = tasksOf(t, pool, engine, root.Key)
 	assertTask(t, tasks, "x", record.TaskDone, atStep(1))
@@ -122,6 +124,7 @@ func TestAStepWaitsForItsAgentInAnotherTask(t *testing.T) {
 	assertStartOf(t, newestStart(t, pool, root.Key, claim.RoleImplementer), root.Key, "y", "k")
 
 	taskMoves(t, pool, engine, root.Key, "y", TriggerImplementationReady, "")
+	joinsEnd(t, pool, engine, root.Key)
 
 	tasks = tasksOf(t, pool, engine, root.Key)
 	assertTask(t, tasks, "y", record.TaskDone, atStep(1))
@@ -154,11 +157,13 @@ func TestATransitionToTheNextStepOfABusyAgentWaits(t *testing.T) {
 			planTask{id: "z", steps: []string{"reviewer"}, agents: []claim.Agent{"reviewer"}, needs: []string{"x", "y"}, state: record.TaskWaiting})
 
 		firstStepOf(t, pool, engine, root.Key)
+		joinsEnd(t, pool, engine, root.Key)
 		tasks := tasksOf(t, pool, engine, root.Key)
 		assertWaits(t, tasks, "x", atStep(1), record.StepWaitNone)
 		assertWaits(t, tasks, "y", atStep(1), record.StepWaitNone)
 
 		taskMoves(t, pool, engine, root.Key, "x", TriggerImplementationReady, "")
+		joinsEnd(t, pool, engine, root.Key)
 
 		tasks = tasksOf(t, pool, engine, root.Key)
 		assertWaits(t, tasks, "x", atStep(2), record.StepWaitAgent)
@@ -170,6 +175,7 @@ func TestATransitionToTheNextStepOfABusyAgentWaits(t *testing.T) {
 		assertStartOf(t, starts[0], root.Key, "y", "k")
 
 		taskMoves(t, pool, engine, root.Key, "y", TriggerTesterPassed, "")
+		joinsEnd(t, pool, engine, root.Key)
 
 		tasks = tasksOf(t, pool, engine, root.Key)
 		assertTask(t, tasks, "y", record.TaskDone, atStep(1))
@@ -206,6 +212,7 @@ func TestATransitionToTheNextStepOfABusyAgentWaits(t *testing.T) {
 		}
 
 		taskMoves(t, pool, engine, root.Key, "m", TriggerImplementationReady, "")
+		joinsEnd(t, pool, engine, root.Key)
 
 		tasks = tasksOf(t, pool, engine, root.Key)
 		assertTask(t, tasks, "m", record.TaskDone, atStep(1))
@@ -244,9 +251,11 @@ func TestAnAgentFreedByAMoveToANextStepGoesToItsWaiter(t *testing.T) {
 				planTask{id: "y", steps: []string{"implementer:k"}, agents: []claim.Agent{"k"}, state: record.TaskWaiting},
 				planTask{id: "z", steps: []string{"tester"}, agents: []claim.Agent{"tester"}, needs: []string{"x", "y"}, state: record.TaskWaiting})
 			firstStepOf(t, pool, engine, root.Key)
+			joinsEnd(t, pool, engine, root.Key)
 			assertWaits(t, tasksOf(t, pool, engine, root.Key), "y", atStep(1), record.StepWaitAgent)
 
 			taskMoves(t, pool, engine, root.Key, "x", TriggerImplementationReady, "")
+			joinsEnd(t, pool, engine, root.Key)
 
 			tasks := tasksOf(t, pool, engine, root.Key)
 			assertWaits(t, tasks, "y", atStep(1), record.StepWaitNone)
@@ -286,6 +295,7 @@ func TestAFreedAgentTakesTheStepThatWaitedLongest(t *testing.T) {
 	})
 
 	taskMoves(t, pool, engine, root.Key, "s", TriggerImplementationReady, "")
+	joinsEnd(t, pool, engine, root.Key)
 
 	tasks := tasksOf(t, pool, engine, root.Key)
 	assertTask(t, tasks, "s", record.TaskDone, atStep(1))
@@ -311,7 +321,9 @@ func aWaitsWhileMWorks(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue) {
 		planTask{id: "x", steps: []string{"tester"}, agents: []claim.Agent{"tester"}, state: record.TaskWaiting},
 		planTask{id: "z", steps: []string{"reviewer"}, agents: []claim.Agent{"reviewer"}, needs: []string{"a", "m"}, state: record.TaskWaiting})
 	firstStepOf(t, pool, engine, root.Key)
+	joinsEnd(t, pool, engine, root.Key)
 	taskMoves(t, pool, engine, root.Key, "x", TriggerTesterPassed, "")
+	joinsEnd(t, pool, engine, root.Key)
 
 	tasks := tasksOf(t, pool, engine, root.Key)
 	assertWaits(t, tasks, "a", atStep(1), record.StepWaitAgent)

@@ -595,6 +595,8 @@ func TestAVersionThatReplacesTheStoppedDefaultTaskStartsTheNewTask(t *testing.T)
 		prompts := len(hookPrompts(t, pool))
 
 		mustTake(t, "version 1 given again after the stop", apply(id, version1))
+		// The new task a takes a branch of its own, so its start waits for its join: the end of that join.
+		joinsEnd(t, pool, engine, key)
 
 		after := planStandingOf(t, pool, engine, key, gen)
 		if !reflect.DeepEqual(after.versions, []string{"0 default", "1 owner"}) {

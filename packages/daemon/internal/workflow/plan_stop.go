@@ -347,6 +347,10 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if err := e.moveTask(ctx, tx, &issue, &w, first, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning); err != nil {
 		return err
 	}
+	if err := e.store.SetStartReason(ctx, tx, issue.Key, issue.Generation, w.Task, reason); err != nil {
+		return err
+	}
+	w.StartReason = reason
 	issue.Hold, issue.Status = nil, status
 	if err := e.WriteIssue(ctx, tx, issue); err != nil {
 		return err

@@ -138,7 +138,7 @@ func TestTheStepsOfAnyOrderMoveOn(t *testing.T) {
 		root := stepRoot(t, pool, phase.Planning)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "planner")
 		seedRecord(t, pool, func(tx pgx.Tx) error {
-			return record.NewStore().MoveTask(t.Context(), tx, root.Key, root.Generation, "a",
+			return seedMove(t.Context(), tx, root.Key, root.Generation, "a",
 				record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
 		})
 		move(t, pool, engine, root.Key, TriggerPlannerCompleted, record.TaskPlace{}, record.PhaseRow{})

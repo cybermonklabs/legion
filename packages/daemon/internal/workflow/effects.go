@@ -453,13 +453,23 @@ const testerVerdictLabel = "Tester's verdict"
 // its step's agent, which the entry wrote on the role's phases row (startMarks.agent): two tasks'
 // steps of one role run at one time, each its own agent's, so each start is a row of its own.
 //
-// It is the one place a step of a plan of several tasks starts, and an agent does one step at a
-// time: where the step's agent does a step of another task, or a step of another task has waited
-// for it since earlier, the step waits for its agent instead (waitForAgent), and nothing of it
-// starts: no entry is raised, no start is counted and no start is queued. The settle hands the
-// agent on when it is free (handOnAgents), through this function again. A plan of one task, and a
-// run with no plan rows, pass no such check.
+// It is the one place a step starts. A start of a task, the first and a start again, whose step
+// waits for the join of its needs (record.StepWaitJoin, which the move into running writes) first
+// joins them (startTaskCopy): where that queued the task's task_branch row, the step keeps its wait
+// and nothing of it starts, and the end of the join (taskJoined) starts it through this function
+// again; else the wait ends here. That comes before every other check, so a first step of any role
+// joins its needs. And an agent does one step at a time: where the step's agent does a step of
+// another task, or a step of another task has waited for it since earlier, the step waits for its
+// agent instead (waitForAgent), and nothing of it starts: no entry is raised, no start is counted
+// and no start is queued. The settle hands the agent on when it is free (handOnAgents), through
+// this function again. A plan of one task, and a run with no plan rows, pass no agent's check.
 func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, role claim.Role, told func(Standing) string, movedBack bool) error {
+	if w.Wait == record.StepWaitJoin {
+		waits, err := e.joinNeeds(ctx, tx, issue, &w, role)
+		if err != nil || waits {
+			return err
+		}
+	}
 	if role == "" {
 		return nil
 	}
@@ -555,6 +565,27 @@ func (e *Engine) waitForAgent(ctx context.Context, tx pgx.Tx, issue record.Issue
 	}
 	e.logOnCommit(ctx, "workflow: a step waits for its agent", args...)
 	return true, nil
+}
+
+// joinNeeds joins the needs of w's task of issue at a start of the task whose step waits for that
+// join (startTaskCopy), and says whether the step goes on waiting for it: where the join queued
+// the task's task_branch row, the wait stands, and the log says so; else the wait ends, and w's
+// with it.
+func (e *Engine) joinNeeds(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Walk, role claim.Role) (bool, error) {
+	queued, err := e.startTaskCopy(ctx, tx, issue, w.Task)
+	if err != nil {
+		return false, err
+	}
+	if queued {
+		e.logOnCommit(ctx, "workflow: a step waits for the join of its task's needs", "issue", issue.Key, "tree", issue.Tree, "task", w.Task,
+			"place", placeWords(w.Place), "role", role, "needs", w.Needs)
+		return true, nil
+	}
+	if err := e.store.SetStepWait(ctx, tx, issue.Key, issue.Generation, w.Task, record.StepWaitNone, nil); err != nil {
+		return false, err
+	}
+	w.Wait, w.WaitSince = record.StepWaitNone, nil
+	return false, nil
 }
 
 // placeWords is place as a log line names it: `step <i>`, `retro` or `merge`.

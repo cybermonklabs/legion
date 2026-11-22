@@ -64,9 +64,9 @@ func (h heldWork) stand(t *testing.T, pool *pgxpool.Pool, issue record.Issue) re
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		store := record.NewStore()
 		if h.reason == record.HoldForChildren {
-			return store.MoveTask(t.Context(), tx, issue.Key, issue.Generation, "a", record.TaskPlace{Kind: record.PlaceRetro}, record.TaskRunning)
+			return seedMove(t.Context(), tx, issue.Key, issue.Generation, "a", record.TaskPlace{Kind: record.PlaceRetro}, record.TaskRunning)
 		}
-		if err := store.MoveTask(t.Context(), tx, issue.Key, issue.Generation, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning); err != nil {
+		if err := seedMove(t.Context(), tx, issue.Key, issue.Generation, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning); err != nil {
 			return err
 		}
 		return store.StopTask(t.Context(), tx, issue.Key, issue.Generation, "a", "task a of "+issue.Key+" was stopped by its owner")

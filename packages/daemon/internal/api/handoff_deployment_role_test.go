@@ -43,7 +43,11 @@ func seedCheckerStep(t *testing.T, h *harness, key string) {
 		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
 			return err
 		}
-		return records.MoveTask(ctx, tx, key, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
+		if err := records.MoveTask(ctx, tx, key, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning); err != nil {
+			return err
+		}
+		// The move writes the wait of a start for its join; this seed stands for a task whose join ended.
+		return records.SetStepWait(ctx, tx, key, 1, "a", record.StepWaitNone, nil)
 	})
 	if err != nil {
 		t.Fatalf("seed the checker's step of %s: %v", key, err)

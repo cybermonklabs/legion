@@ -13,28 +13,30 @@ import (
 
 // startTaskCopy gives task of issue's plan its branch at a start of the task, in the transaction
 // that starts it (record.Store.AssignTaskBranch: once, the issue's own branch for the first task of
-// the generation to start, else the first give of the task's slug no task of the generation took).
-// A task whose branch is not the issue's own, or that needs other tasks, gets one task_branch row
-// (record.TaskBranch), which makes its branch on GitHub at the joined work of its needs before any
-// start of the issue's roles goes out. The task that holds the issue's own branch and needs none
-// queues nothing: the issue_branch row its first step queues makes that branch (gateOpened). A
-// task the plan does not hold is refused, naming it.
-func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, issue record.Issue, task string) error {
+// the generation to start, else the first give of the task's slug no task of the generation took),
+// and answers whether it queued the join of the task's needs. A task whose branch is not the
+// issue's own, or that needs other tasks, gets one task_branch row (record.TaskBranch), which makes
+// its branch on GitHub at the joined work of its needs and ends with the fact that starts its step
+// (intake.TaskJoined). The task that holds the issue's own branch and needs none queues nothing:
+// the issue_branch row its first step queues makes that branch (gateOpened). Its one caller is the
+// start of every step (Engine.start), at each start of a task, the first and a start again. A task
+// the plan does not hold is refused, naming it.
+func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, issue record.Issue, task string) (bool, error) {
 	branch, err := e.store.AssignTaskBranch(ctx, tx, issue.Key, issue.Generation, task)
 	if err != nil {
-		return err
+		return false, err
 	}
 	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil {
-		return err
+		return false, err
 	}
 	// AssignTaskBranch refused a task the plan does not hold, and holds the generation's task rows
 	// locked, each of which names a version of the plan (its foreign key): the plan holds the task.
 	at := slices.IndexFunc(stored.Tasks, func(row record.PlanTask) bool { return row.Task == task })
 	if branch == claim.IssueBranch(issue.Key) && len(stored.Tasks[at].Needs) == 0 {
-		return nil
+		return false, nil
 	}
-	return e.enqueue(ctx, tx, issue.Key, record.TaskBranch{Generation: issue.Generation, Task: task})
+	return true, e.enqueue(ctx, tx, issue.Key, record.TaskBranch{Generation: issue.Generation, Task: task})
 }
 
 // taskJoined applies the end of a task's join (intake.TaskJoined) in the fact's transaction: where
@@ -79,19 +81,8 @@ func (e *Engine) taskJoined(ctx context.Context, tx pgx.Tx, fact intake.TaskJoin
 	if err != nil {
 		return intake.Result{}, err
 	}
-	role := w.RoleAt(w.Place)
-	if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
-		return intake.Result{}, err
-	}
-	pr, err := e.store.PullRequestOfTask(ctx, tx, issue.Key, fact.Task)
-	if err != nil {
-		return intake.Result{}, err
-	}
-	e.logOnCommit(ctx, "workflow: a task's join ended, and its step starts", "issue", issue.Key, "tree", issue.Tree, "task", fact.Task,
-		"place", placeWords(w.Place), "role", role, "branch", fact.Branch, "needs", fact.Needs, "conflicts", fact.Conflicts)
-	return intake.Result{}, e.start(ctx, tx, view, w, role, func(at Standing) string {
-		return task(view, at, record.PhaseRow{}, pr, "")
-	}, false)
+	return intake.Result{}, e.startAfterWait(ctx, tx, view, w, "workflow: a task's join ended, and its step starts",
+		"branch", fact.Branch, "needs", fact.Needs, "conflicts", fact.Conflicts)
 }
 
 // stepOfStart is the running step start starts on issue (record.Issue.Running): the step of the
