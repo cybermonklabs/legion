@@ -801,8 +801,12 @@ func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing
 		// them, and its consumer holds each unacknowledged when the takeover's pass reads it.
 		readable := roleFramesOfEveryShape(t, copiesRole)
 		unreadable := framesNoReadCanTellTheRoleOf(t)
+		// Stored after the others, so the takeover's pass copies it after each of them and the
+		// walk forwards it after each of their copies (laterRoleMessage).
+		later := laterRoleMessage(t, copiesRole)
 		rig.storeFrames(t, copiesHolder, readable)
 		rig.storeFrames(t, copiesHolder, unreadable)
+		rig.storeFrames(t, copiesHolder, []markedFrame{later})
 
 		// The new holder's process reads each frame as bytes (hearMarks), so a frame that
 		// reached it is counted however little of it an envelope takes.
@@ -812,10 +816,14 @@ func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing
 		if !taker.awaitMarks(copiesWatchBound, readable...) {
 			t.Errorf("%s did not receive every role message within %s of its claim: it received %v", copiesTaker, copiesWatchBound, taker.allMarks())
 		}
+		// A second copy of a frame, or a copy of a frame no read can tell the role of, can reach
+		// the new holder after the first copy of every role message has, so the counts below are
+		// read once it received the role message stored after them all, which reaches it after
+		// any such copy.
+		if !taker.awaitMarks(copiesWatchBound, later) {
+			t.Errorf("%s did not receive %q, stored after the others, within %s of its claim: it received %v", copiesTaker, later, copiesWatchBound, taker.allMarks())
+		}
 		rig.awaitHandoverIdle(t, copiesRole)
-		// The watch outlasts the handover by copiesSettle, so a frame it sent after the ones the
-		// row waits for is counted too.
-		time.Sleep(copiesSettle)
 
 		for _, frame := range readable {
 			t.Run("case: "+frame.shape+" reaches the new holder once", func(t *testing.T) {
