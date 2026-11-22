@@ -685,7 +685,7 @@ func parseSource(p parser.Parser, source []byte, context parser.Context) (ast.No
 // read it, before any bound is held against it, which a reader that answers no refusal reads
 // instead of the refusal (FindDecisionCard).
 func readSource(p parser.Parser, source []byte, context parser.Context) ast.Node {
-	context.Set(tabFreeKey, !holdsTab(source))
+	context.Set(tabFreeKey, bytes.IndexByte(source, '\t') < 0)
 	reader := &lastLineColumns{Reader: gmtext.NewReader(source)}
 	root := p.Parse(reader, parser.WithContext(context))
 	definitionsInPlace(root, context)
@@ -697,24 +697,6 @@ func readSource(p parser.Parser, source []byte, context parser.Context) ast.Node
 	}
 	return root
 }
-
-// holdsTab reports whether source holds a tab, the one scan of the whole source tabFree's answer
-// comes from. It reads the source in runs of tabScanRun bytes, one statement for each, so the
-// statements the heavy-bodies rows count of a parse (heavy_bodies_test.go) grow with the bytes it
-// reads: one call of bytes.IndexByte over the whole source would be one statement whatever its
-// length, and a parse that asked this again for each open block on each line would count as the
-// scan once each time.
-func holdsTab(source []byte) bool {
-	for start := 0; start < len(source); start += tabScanRun {
-		if bytes.IndexByte(source[start:min(start+tabScanRun, len(source))], '\t') >= 0 {
-			return true
-		}
-	}
-	return false
-}
-
-// tabScanRun is how many bytes holdsTab reads in one statement.
-const tabScanRun = 64
 
 // lastLineColumns is goldmark's reader keeping the document's last line where it has no line feed
 // and its containers' markers leave only columns of a tab they took part of: goldmark reads no

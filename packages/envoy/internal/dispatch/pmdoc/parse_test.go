@@ -361,11 +361,11 @@ func TestParseReadsAFootnoteDefinitionEndingInABlock(t *testing.T) {
 	}
 }
 
-// A reference goldmark's exact match leaves unresolved is looked up among the definitions by its
-// label's key once, not compared with every definition: with 2,000 definitions and 2,000 such
-// references a document parses in about the time it takes with the definitions written as plain
-// paragraphs, where comparing each pair would take over a hundred times as long. The two timings
-// are taken in the same run, so a slow machine slows both.
+// A reference no definition's label equals is looked up among the definitions by its label's key
+// once, not compared with every definition (footnoteReferenceParser): with 2,000 definitions and
+// 2,000 such references a document parses in about the time it takes with the definitions written
+// as plain paragraphs, where comparing each pair would take over a hundred times as long. The two
+// timings are taken in the same run, so a slow machine slows both.
 func TestParseResolvesUnmatchedReferencesWithoutComparingEveryDefinition(t *testing.T) {
 	document := func(definitions bool) string {
 		var markdown strings.Builder

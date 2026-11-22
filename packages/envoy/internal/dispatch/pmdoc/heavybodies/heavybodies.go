@@ -94,10 +94,11 @@ func nestedRefusal(line int) string {
 // carry no marker of their own; a run of brackets; 49 items nested by indentation and then blank
 // lines, and 100 items nested the same way; 49 markers on one line and then blank lines; a chain
 // of list markers on one line; and a typed fence whose label opens a run of brackets. A tenth,
-// footnote references and then their definitions, froze no tab: it is the body whose references
-// goldmark's footnote parser resolves by walking the definitions written before each one's
-// (footnoteParser.Parse, extension/footnote.go:155 at v1.8.6), work that grows with the square of
-// the references, in a package pmdoc's counted tests put no counter in.
+// footnote references and then their definitions, froze no tab: it holds the resolution of a
+// body's references to their definitions linear in their number. goldmark's footnote parser found
+// each reference's definition by walking the definitions from the first (footnoteParser.Parse,
+// extension/footnote.go:155 at v1.8.6), work that grows with the square of the references, and
+// pmdoc's reference parser no longer calls it (footnoteReferenceParser, pmdoc/footnotes.go).
 //
 // A list opener opens a list and its first item, two of the blocks MaxNesting counts, so 49 items
 // nested by indentation stand inside 98 blocks and are stored, while the 51st line of 100 such

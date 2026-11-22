@@ -77,7 +77,7 @@
     {
       "id": "footnote-references-then-definitions",
       "side": "go",
-      "why": "Go's Shape \"1,523 footnote references and then their definitions\" froze no browser tab: it is held for the server's parse, whose footnote references goldmark resolves by walking the definitions before each one's (INFRA-3904), so no browser row draws it. What gates it is pmdoc's TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinTheirStepsAndBytesPerCharacter and the API's TestHeavyDocumentWriteVerdicts."
+      "why": "Go's Shape \"1,523 footnote references and then their definitions\" froze no browser tab: it is held for the server's parse, which resolved each footnote reference by walking the definitions until pmdoc resolved them from maps of its own (INFRA-3904), so no browser row draws it. What gates it is pmdoc's TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinTheirStepsAndBytesPerCharacter and the API's TestHeavyDocumentWriteVerdicts."
     },
     {
       "id": "nested-100-items-then-text-lines",
