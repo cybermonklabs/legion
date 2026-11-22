@@ -37,10 +37,12 @@ func Process() time.Duration {
 // user and system, that thread spent while op ran (clock_gettime(CLOCK_THREAD_CPUTIME_ID)). It
 // counts op's own goroutine alone. Every other goroutine runs on other threads and is left out:
 // the garbage collector's mark workers, which mark the whole process's heap whenever a collection
-// falls due during op, and whatever other work the process runs. The collection work charged to
-// op's own goroutine, its assists, stays in, and so does every page fault its
-// allocation takes. op must do its work on its own goroutine: work it hands to another goroutine
-// is not counted.
+// falls due during op, and whatever other work the process runs. The collector work the runtime
+// does on op's own goroutine stays in: the mark assists its allocation is charged, the sweeping
+// it pays for as it allocates, the sweep that finishes the last cycle when its allocation starts a
+// collection, and the end of a mark phase that one of its assists completes. So does every page
+// fault its allocation takes. op must do its work on its own goroutine: work it hands to another
+// goroutine is not counted.
 func OnThread(op func()) time.Duration {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -61,8 +63,8 @@ func thread() time.Duration {
 
 // resolution and threadResolution are the smallest steps Process and the thread clock move in on
 // this machine, each measured once (smallestStep). A Linux kernel moves them in steps far under a
-// millisecond; gVisor moves the process clock in 10 ms steps, so there a call shorter than 10 ms
-// reads as 0 or 10 ms.
+// millisecond; gVisor moves both in whole ticks of 10 ms, so there a call shorter than 10 ms reads
+// as 0 or 10 ms on either clock.
 var (
 	resolution       = sync.OnceValue(func() time.Duration { return smallestStep(Process) })
 	threadResolution = sync.OnceValue(func() time.Duration {

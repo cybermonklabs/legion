@@ -123,6 +123,13 @@ func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 	// clock counts the save and leaves out the garbage collector's mark workers. Those mark the
 	// whole process's heap, which in a package run holds whatever earlier tests left live, and a
 	// collection lands in a window when it falls due, not because of what the window's save does.
+	// pmdoc's growth tests keep collections out another way (pmdoc's timedWindow): they collect
+	// before each window, stop the collector during it and read the process clock. That holds only
+	// while the heap stays under the 3 GiB memory limit it sets for the window, past which a
+	// collection runs in the window and the window fails with an error; here the heap is what
+	// earlier tests in the package run left live, which this test does not set, plus about 340-350
+	// MiB for each replacement at the largest rung. The process clock it reads also counts every
+	// other goroutine. The thread clock needs no collector settings and leaves both out.
 	// On the process clock the ladder's earlier rungs, 682 to 21,844 blocks, read 26 ms at 3 KiB
 	// against 6.33 s at 127 KiB at a load of about 1,060, where the same test alone at that load
 	// read 21 ms against 968 ms. With 6 GiB kept live beside it and GOGC=5, so that a collection
