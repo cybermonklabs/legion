@@ -26,7 +26,8 @@
 // The edge is recorded by EdgeMiddleware: its lines name port=edge and its samples carry
 // port="edge", so a reader can leave it out, and the mux's own 404 and 405 there, and the
 // refusals the edge's gates mark (NoteQuiet), which anyone on the internet can send at any rate,
-// are counted and write no line.
+// are counted and write no refusal line. The edge's access log (cmd/cipherd), outside this
+// recorder, writes a line of its own for every request the edge answers.
 //
 // The line never holds a secret's value or the refusal's message text: it names the code, and the
 // code is read from the answer (refusalCode), not the words around it.
