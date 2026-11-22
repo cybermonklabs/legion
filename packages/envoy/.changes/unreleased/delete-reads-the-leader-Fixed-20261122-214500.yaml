@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  A session's stop (`DELETE /v1/sessions/<session_id>`, with or without conditions) and the delete
+  of a session's interest now read the record from the bucket stream's leader before they delete
+  it. Before, the read was a direct get, which on a bucket with three copies any copy near enough
+  to current answers. A copy that had not applied a registration made a moment before answered
+  that the record was absent, so the delete deleted nothing (or a conditional stop answered that the
+  entry was deleted) and the record stayed until it expired. `bus.KeyValue.DeleteAtRead` no longer
+  takes a `readable` test: the leader reports every record, a server-written one included, at the
+  sequence it is stored at.
+time: 2026-11-22T21:45:00Z
+custom:
+    Issue: delete-reads-the-leader

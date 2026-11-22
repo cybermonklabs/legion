@@ -14,8 +14,8 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
-// deleteInterest deletes sessionID's interest at the revision it reads (bus.KeyValue.DeleteAtRead,
-// which reads a value that is no row of sessionID again from the stream's leader: rowOf), each
+// deleteInterest deletes sessionID's interest at the revision the bucket stream's leader reports
+// (bus.KeyValue.DeleteAtRead, whose read is never a copy's), each
 // bucket call waiting no longer than ctx (bus.Bounded). A delete ctx abandoned may still land
 // after this answer, and that is safe: it deletes only the revision it read, so a write that landed
 // since is kept. A record the read found absent is left alone, delete and all, so a registration
@@ -28,7 +28,7 @@ func (r *Registry) deleteInterest(ctx context.Context, sessionID string) error {
 	kv, epoch := r.watcher.Handle()
 	revision := r.cache.FenceFor(epoch, sessionID)
 	r.mu.RUnlock()
-	read, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.DeleteAtRead(ctx, sessionID, rowOf(sessionID)) })
+	read, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.DeleteAtRead(ctx, sessionID) })
 	if !answered {
 		return fmt.Errorf("delete %s's interest record: %w", sessionID, err)
 	}
