@@ -560,24 +560,33 @@ func storedOf(t *testing.T, claims []supervise.Claim, token claim.Token) supervi
 	return supervise.Claim{}
 }
 
-// operatorRequest sends one operator request from a goroutine of its own and answers its status on
-// the returned channel, -1 when it got none.
-func operatorRequest(d *daemon, method, path string, body []byte) <-chan int {
-	answered := make(chan int, 1)
+// operatorAnswer is what one operator request was answered: its status, or -1 and the error it
+// ended on.
+type operatorAnswer struct {
+	status int
+	err    error
+}
+
+// operatorRequest sends one operator request through client, under ctx, from a goroutine of its
+// own, and answers what it was answered on the returned channel. A caller whose request must
+// outlast d.client's 10 s gives it a client with no timeout and a ctx that ends when it stops
+// waiting.
+func operatorRequest(ctx context.Context, client *http.Client, d *daemon, method, path string, body []byte) <-chan operatorAnswer {
+	answered := make(chan operatorAnswer, 1)
 	go func() {
-		req, err := http.NewRequest(method, d.base+path, bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, method, d.base+path, bytes.NewReader(body))
 		if err != nil {
-			answered <- -1
+			answered <- operatorAnswer{status: -1, err: err}
 			return
 		}
 		req.Header.Set("Authorization", "Bearer "+testOperatorToken)
-		resp, err := d.client.Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
-			answered <- -1
+			answered <- operatorAnswer{status: -1, err: err}
 			return
 		}
 		resp.Body.Close()
-		answered <- resp.StatusCode
+		answered <- operatorAnswer{status: resp.StatusCode}
 	}()
 	return answered
 }
@@ -599,7 +608,7 @@ func TestRunEndsAnOperatorSpawnInFlightWithTheDrainAndNamesIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	answered := operatorRequest(d, http.MethodPost, "/legion/v1/operator/claims", body)
+	answered := operatorRequest(context.Background(), d.client, d, http.MethodPost, "/legion/v1/operator/claims", body)
 	var spawning claim.Token
 	select {
 	case spawning = <-rt.entered:
@@ -610,7 +619,7 @@ func TestRunEndsAnOperatorSpawnInFlightWithTheDrainAndNamesIt(t *testing.T) {
 	bootSwept(t, logs)
 	took, stopLog := stopWithin(t, d, logs, stopHangGuard(o.stopBudget))
 
-	t.Logf("stopped in %s with the operator's spawn of %s waiting in the runtime; it was answered %d", took, spawning, <-answered)
+	t.Logf("stopped in %s with the operator's spawn of %s waiting in the runtime; it was answered %+v", took, spawning, <-answered)
 	namesDeciding(t, logsStopping(t, stopLog), "supervise.RequestSpawn", spawning)
 	neededNoBudget(t, stopLog)
 	quietStop(t, stopLog)
@@ -652,7 +661,7 @@ func TestRunRecordsAnOperatorSuspensionWhoseProcessExitsWithinTheDrain(t *testin
 	d := startDaemonLogging(t, cfg, fakeRuntime(rt, &built{}), slog.New(slog.NewJSONHandler(logs, nil)))
 	token := d.spawn(api.SpawnRequest{Tree: "LEGION-9", Issue: "LEGION-9", Role: claim.RoleArchitect, Prompt: "Reply ready and wait."})
 	readyClaim(t, d, rt.Runtime, token)
-	answered := operatorRequest(d, http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil)
+	answered := operatorRequest(context.Background(), d.client, d, http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil)
 	select {
 	case <-rt.stopping:
 	case <-time.After(10 * time.Second):
@@ -680,8 +689,8 @@ func TestRunRecordsAnOperatorSuspensionWhoseProcessExitsWithinTheDrain(t *testin
 	}
 	stopLog := logs.String()[mark:]
 
-	if status := <-answered; status != http.StatusOK {
-		t.Errorf("the operator's suspension was answered %d, want 200; the stop logged:\n%s", status, stopLog)
+	if got := <-answered; got.status != http.StatusOK {
+		t.Errorf("the operator's suspension was answered %d (%v), want 200; the stop logged:\n%s", got.status, got.err, stopLog)
 	}
 	if c := storedClaim(t, cfg, token); c.State != supervise.StateSuspended || c.Locator != nil {
 		t.Errorf("the store holds %s with locator %+v, want suspended with none; the stop logged:\n%s", c.State, c.Locator, stopLog)
@@ -848,7 +857,7 @@ func TestAFrameAShimWritesDuringTheDrainWaitsInItsBacklogForTheNextDaemon(t *tes
 	testwait.Eventually(t, "the other claim's shim to connect", func() bool {
 		return d.claim(other).State == string(supervise.StateShimConnected)
 	})
-	answered := operatorRequest(d, http.MethodPost, "/legion/v1/operator/claims/"+string(suspended)+"/suspend", nil)
+	answered := operatorRequest(context.Background(), d.client, d, http.MethodPost, "/legion/v1/operator/claims/"+string(suspended)+"/suspend", nil)
 	select {
 	case <-rt.stopping:
 	case <-time.After(10 * time.Second):
@@ -884,8 +893,8 @@ func TestAFrameAShimWritesDuringTheDrainWaitsInItsBacklogForTheNextDaemon(t *tes
 	case <-time.After(stopBound(stopBudget)):
 		t.Fatalf("run had not returned %s after its context was cancelled; it logged:\n%s", stopBound(stopBudget), logs.String()[mark:])
 	}
-	if status := <-answered; status != http.StatusOK {
-		t.Errorf("the operator's suspension was answered %d, want 200", status)
+	if got := <-answered; got.status != http.StatusOK {
+		t.Errorf("the operator's suspension was answered %d (%v), want 200", got.status, got.err)
 	}
 	quietStop(t, logs.String()[mark:])
 	stoppedSessionOf(t, envoy, suspended, logs.String()[mark:])
@@ -987,7 +996,7 @@ func TestAnOperatorsTreeCloseInFlightAtTheStopStopsTheTreesClaimsOverTheirConnec
 		readyClaim(t, d, rt.Runtime, token)
 		dialShim(t, rec.address, lastLaunch(t, rt.Runtime, token).BootToken)
 	}
-	answered := operatorRequest(d, http.MethodPost, "/legion/v1/operator/claims/"+string(root)+"/close", nil)
+	answered := operatorRequest(context.Background(), d.client, d, http.MethodPost, "/legion/v1/operator/claims/"+string(root)+"/close", nil)
 	select {
 	case <-rt.entered:
 	case <-time.After(10 * time.Second):
@@ -1015,8 +1024,8 @@ func TestAnOperatorsTreeCloseInFlightAtTheStopStopsTheTreesClaimsOverTheirConnec
 	}
 	stopLog := logs.String()[mark:]
 
-	if status := <-answered; status != http.StatusOK {
-		t.Errorf("the operator's close was answered %d, want 200; the stop logged:\n%s", status, stopLog)
+	if got := <-answered; got.status != http.StatusOK {
+		t.Errorf("the operator's close was answered %d (%v), want 200; the stop logged:\n%s", got.status, got.err, stopLog)
 	}
 	rt.mu.Lock()
 	had, stopped := rt.hadConn[worker]

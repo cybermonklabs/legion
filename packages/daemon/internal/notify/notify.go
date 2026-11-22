@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -22,6 +23,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
+// requestTimeout bounds one publish or role lookup (HTTPPublisher.client). The clean stop's read
+// and delete take no bound from it (HTTPPublisher.stops).
 const requestTimeout = 10 * time.Second
 
 // refusalBodyLimit bounds how much of a refused publish's body the error carries: the listener
@@ -178,12 +181,77 @@ type HTTPPublisher struct {
 	baseURL string
 	token   string
 	client  *http.Client
+	// stops sends the clean stop's registry read and session delete (ReadSessionRegistration,
+	// DeleteSession) with no timeout of its own, so the caller's context is their one bound: the
+	// daemon gives both one budget (sessionStop.send in packages/daemon/internal/daemon/daemon.go).
+	// Its transport is its own (stopTransport), so no fixed limit of Go's shared transport, or one
+	// an init sets on it, can end the stop before that context does, and a request of it that
+	// fails takes the connect or TLS handshake it started down with it (stopFailed).
+	stops *http.Client
 }
 
 // New creates a publisher for one Envoy listener. token is the listener's bearer
 // (`envoy_token_file`), sent on every publish; "" sends none, for a listener that requires none.
 func New(baseURL, token string) *HTTPPublisher {
-	return &HTTPPublisher{baseURL: strings.TrimRight(baseURL, "/"), token: token, client: &http.Client{Timeout: requestTimeout}}
+	return &HTTPPublisher{baseURL: strings.TrimRight(baseURL, "/"), token: token,
+		client: &http.Client{Timeout: requestTimeout}, stops: &http.Client{Transport: stopTransport(http.DefaultTransport)}}
+}
+
+// stopTransport is the transport of the clean stop's read and delete: a clone of shared, Go's
+// http.DefaultTransport in production, so it keeps that transport's TLS configuration, protocols
+// and pooling, with everything removed that could end a request before its context does. A limit
+// at or near the stop's budget races the stop's own context, which starts first, and on a loaded
+// machine, whose timers fire late by any amount, the limit can win; Go's own are a 30 s connect
+// and a 10 s TLS handshake, and any package's init can shorten them or set others. So the clone
+// keeps:
+//   - no timeout but the idle timeout, which closes only pooled connections no request uses: no
+//     TLS-handshake, response-header or 100-continue limit (the stop sends no Expect header), and
+//     HTTP/2 settings with no health-check ping, ping limit or write limit;
+//   - no function but the two set here: one dialer with no timeout (DialContext), which makes
+//     every connection, since the dialers a caller could have set in its place (Dial, DialTLS,
+//     DialTLSContext) are dropped, and Go's own proxy choice (http.ProxyFromEnvironment) in place
+//     of whatever function shared names. The proxy CONNECT hooks (OnProxyConnectResponse,
+//     GetProxyConnectHeader), the protocol switches a caller registered (TLSNextProto, so the
+//     clone sets HTTP/2 up itself from its own settings) and HTTP/2's error counter are dropped.
+//
+// The tests read every field of the result by reflection (wantNoFixedLimit), so a field a later
+// Go adds to http.Transport or http.HTTP2Config is judged too. A shared transport of another type
+// than *http.Transport cannot be cloned, and the stop then starts from a transport of Go's own
+// defaults instead.
+//
+// Go dials on a context it detaches from the request's (net/http's getConn: "The dial should
+// proceed even if the request is canceled"), so the stop's context ends its request and not the
+// connect or TLS handshake behind it. With no limit of the transport left to end such a dial,
+// a failed request of the stop ends it itself (stopFailed).
+func stopTransport(shared http.RoundTripper) *http.Transport {
+	t, ok := shared.(*http.Transport)
+	if ok {
+		t = t.Clone()
+	} else {
+		t = &http.Transport{ForceAttemptHTTP2: true, MaxIdleConns: 100, IdleConnTimeout: 90 * time.Second}
+	}
+	t.Proxy = http.ProxyFromEnvironment
+	t.OnProxyConnectResponse, t.GetProxyConnectHeader = nil, nil
+	t.Dial, t.DialTLS, t.DialTLSContext = nil, nil, nil
+	t.DialContext = (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext
+	t.TLSHandshakeTimeout, t.ResponseHeaderTimeout, t.ExpectContinueTimeout = 0, 0, 0
+	t.TLSNextProto = nil
+	if t.HTTP2 != nil {
+		h2 := *t.HTTP2
+		h2.SendPingTimeout, h2.PingTimeout, h2.WriteByteTimeout, h2.CountError = 0, 0, 0, nil
+		t.HTTP2 = &h2
+	}
+	return t
+}
+
+// stopFailed is what the clean stop's read or delete does when its request fails, on its context
+// or any other way: it closes the idle connections of the stop's own transport, which also
+// cancels every dial no request waits for any longer (http.Transport.CloseIdleConnections), so
+// the connect or TLS handshake the failed request started ends with it (stopTransport says why
+// nothing else would end it). A request of another stop still waiting on its own dial keeps it,
+// and the shared transport, which other requests use, is not touched.
+func (p *HTTPPublisher) stopFailed() {
+	p.stops.CloseIdleConnections()
 }
 
 // Publish posts the listener envelope that preserves the outbox row's idempotent delivery key.
@@ -368,7 +436,7 @@ const answerBodyLimit = 1 << 20
 // A 404 is no failure and no error: there is no registration for the stop to name, which is the
 // outcome the stop wanted, and Registered is false. Every other status is an error naming what
 // the listener said, as a refused delete is, and the caller then sends nothing (sessionStop.send
-// in packages/daemon/internal/daemon/daemon.go says why).
+// in packages/daemon/internal/daemon/daemon.go says why). ctx is the read's one bound (stops).
 func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session string) (SessionRegistration, error) {
 	target := fmt.Sprintf("%s/v1/registry/%s?include=unresponsive&view=registration", p.baseURL, url.PathEscape(session))
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
@@ -378,8 +446,9 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 	if p.token != "" {
 		request.Header.Set("Authorization", "Bearer "+p.token)
 	}
-	response, err := p.client.Do(request)
+	response, err := p.stops.Do(request)
 	if err != nil {
+		p.stopFailed()
 		return SessionRegistration{}, fmt.Errorf("read the registration of session %s: %w", session, err)
 	}
 	defer response.Body.Close()
@@ -537,11 +606,14 @@ func unreadAnswer(what, status string, err error) error {
 // (ReadSessionRegistration), and names that one client process, which no comparison of moments
 // can. It is what makes carrying the moment undated safe: where the read answered the ended
 // process's own entry, a relaunch's registration is refused by its own identity, whatever the
-// daemon's clock and the listener's say about the moment. Where the read was answered after the
-// relaunch had registered, the id handed back is the successor's and only the moment keeps that
-// registration — the listener judges both at the revision it deletes, under its own
-// compare-and-swap (session.SessionRegistry.DeleteIf), so what is stored when the delete lands
-// decides it, whatever this daemon knew when it sent it. Against a listener that answers no
+// daemon's clock and the listener's say about the moment. The read answers before any relaunch the
+// daemon starts registers, since the machine starts no process of the claim while its clean stop
+// is in flight (supervise.Machine.awaitSessionStops): answered after the relaunch had registered,
+// the read would hand back the successor's id, only the moment would keep that registration, and
+// a listener clock behind this daemon's stamps it before the moment. The listener judges both at the
+// revision it deletes, under its own compare-and-swap (session.SessionRegistry.DeleteIf), so what
+// is stored when the delete lands decides it, and a delete that lands after the relaunch
+// registered meets the relaunch's own id. Against a listener that answers no
 // client_instance_id at all the id is empty and the moment judges alone, which is the whole of
 // the condition until that listener is upgraded.
 //
@@ -563,7 +635,8 @@ type DeleteConditions struct {
 // registry that holds no record for the session answers 404: it is already gone, which is the
 // outcome asked for, so that is no failure.
 //
-// The two conditions it carries, and why neither alone would do, are on DeleteConditions.
+// The two conditions it carries, and why neither alone would do, are on DeleteConditions. ctx is
+// the delete's one bound (stops).
 func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, conditions DeleteConditions) (SessionDeleted, error) {
 	target := fmt.Sprintf("%s/v1/sessions/%s?if_not_registered_after=%d",
 		p.baseURL, url.PathEscape(session), conditions.NotRegisteredAfter.UnixMilli())
@@ -577,8 +650,9 @@ func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, condi
 	if p.token != "" {
 		request.Header.Set("Authorization", "Bearer "+p.token)
 	}
-	response, err := p.client.Do(request)
+	response, err := p.stops.Do(request)
 	if err != nil {
+		p.stopFailed()
 		return SessionDeleted{}, fmt.Errorf("delete session %s: %w", session, err)
 	}
 	defer response.Body.Close()
