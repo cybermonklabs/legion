@@ -204,8 +204,8 @@ downloaded "$root" shard-2 40
 run_rows "$root" cancelled skipped
 check "fails the step" "$(is "$status" 1)"
 check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
-check "naming the download as cancelled before it completed, and no merged report" \
-  "$(contains "$(error_line)" 'was cancelled before it completed (it concluded cancelled), so this job made no merged report')"
+check "naming the download step as cancelled before it completed, and no merged report" \
+  "$(contains "$(error_line)" "::error::the step \"Download every leg's blob report\" was cancelled before it completed (it concluded cancelled), so this job made no merged report")"
 check "and every leg, since none reached this reading" \
   "$(contains "$(error_line)" 'read no blob report of: shard-1, shard-2, shard-3, shard-4,')"
 check "while it does not say those legs sent no blob" \
@@ -238,7 +238,7 @@ for each in 1 2 3 4; do downloaded "$root" "shard-$each" 30; done
 run_rows "$root" success skipped
 check "fails the step" "$(is "$status" 1)"
 check "naming the selection step and that it did not run" \
-  "$(contains "$(error_line)" "blob report\" did not run (it concluded skipped) after the download succeeded")"
+  "$(contains "$(error_line)" "::error::the step \"Take the newest attempt of each leg's blob report\" did not run (it concluded skipped) after the download succeeded")"
 check "sending the reader to the job's log" \
   "$(contains "$(error_line)" "This job's log shows what stopped that step\.$")"
 check "the table says neither each leg's count nor its blob was read" \
@@ -256,8 +256,8 @@ rm "$root/temp/selected-blobs/rows/shard-2.txt"
 run_rows "$root" success cancelled
 check "fails the step" "$(is "$status" 1)"
 check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
-check "naming the selection as cancelled after the download" \
-  "$(contains "$(error_line)" 'was cancelled before it completed (it concluded cancelled) after the download succeeded')"
+check "naming the selection step as cancelled after the download" \
+  "$(contains "$(error_line)" "::error::the step \"Take the newest attempt of each leg's blob report\" was cancelled before it completed (it concluded cancelled) after the download succeeded")"
 check "naming only the legs whose blob it did not read as such" \
   "$(contains "$(error_line)" 'read no blob report of: shard-3, shard-4, which')"
 check "and, apart, the legs whose count it did not read" \
@@ -278,8 +278,8 @@ for each in 1 2 3 4; do downloaded "$root" "shard-$each" 30; done
 for each in 1 2 3 4; do leg "$root" "shard-$each" 30; done
 run_rows "$root" success cancelled
 check "fails the step" "$(is "$status" 1)"
-check "naming the selection and that this job made no merged report" \
-  "$(contains "$(error_line)" "blob report\" was cancelled before it completed (it concluded cancelled) after the download succeeded, so this job made no merged report")"
+check "naming the selection step and that this job made no merged report" \
+  "$(contains "$(error_line)" "::error::the step \"Take the newest attempt of each leg's blob report\" was cancelled before it completed (it concluded cancelled) after the download succeeded, so this job made no merged report")"
 check "and no leg, since each leg's blob and count was read" \
   "$(is "$(contains "$(error_line)" 'blob report of\|row count of')" false)"
 
@@ -287,8 +287,8 @@ echo "case: an unknown conclusion is named as it was given"
 root=$(fixture empty-conclusion)
 run_rows "$root" "" ""
 check "fails the step" "$(is "$status" 1)"
-check "names the conclusion it was given" \
-  "$(contains "$(error_line)" "did not run to its end (it concluded '')")"
+check "names the download step and the conclusion it was given" \
+  "$(contains "$(error_line)" "::error::the step \"Download every leg's blob report\" did not run to its end (it concluded '')")"
 check "and says nothing of blobs that did not arrive" \
   "$(is "$(contains "$(error_line)" 'no blob report arrived')" false)"
 
