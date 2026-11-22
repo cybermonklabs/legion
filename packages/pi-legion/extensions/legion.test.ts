@@ -2626,7 +2626,9 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       );
 
       expect(result).toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
+      // The answer reads the issue's record for the branch of the claim's step, then signals.
       expect(daemonRequests(worker.requests.slice(before)).map((call) => call.path)).toEqual([
+        "/legion/v1/issues/REPO-43/record",
         "/legion/v1/claims/ready-for-update",
       ]);
       expect(recorded(worker).at(-1)).toEqual({ state: "waiting", count: 0, reported: false });
