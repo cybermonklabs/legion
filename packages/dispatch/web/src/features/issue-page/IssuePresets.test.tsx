@@ -199,8 +199,8 @@ function DialogOverTheRow(): ReactNode {
   ) : null;
 }
 
-// Escape closes the innermost layer. A dialog open over the menu takes it even before its focus
-// has moved in, the frame after it opens. Whether a dialog is open is `useDialog`'s registry's
+// Escape closes the innermost layer. A dialog open over the menu takes it even before its field
+// has the focus, the frame after it opens. Whether a dialog is open is `useDialog`'s registry's
 // answer (`dialogOpen()`, decision 318), the one that decides which dialog the key closes and
 // that Details' drawer asks too, so a dialog's markup does not change it.
 test("below 1280 px, Escape with a dialog open over the menu closes the dialog alone, the focus outside it", async () => {
@@ -223,14 +223,14 @@ test("below 1280 px, Escape with a dialog open over the menu closes the dialog a
     );
     const dialog = () => screen.queryByRole("dialog", { name: "Over the row" });
 
-    // The dialog moves the focus into itself a frame after it opens; with that frame held, the
-    // Escape lands on the menu's item.
+    // The dialog holds the focus itself until its control takes it a frame after it opens; with
+    // that frame held, the Escape lands on the dialog, not on the menu's item.
     const frames = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
     try {
       await user.keyboard("?");
       expect(dialog(), "? drew no dialog").not.toBeNull();
-      expect(document.activeElement, "the dialog took the focus in its first frame").toBe(
-        menuItem("spec")
+      expect(document.activeElement, "the dialog left the focus behind it as it opened").toBe(
+        dialog()
       );
       await user.keyboard("{Escape}");
     } finally {

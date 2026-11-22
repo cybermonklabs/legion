@@ -1,4 +1,4 @@
-import { type RefObject, useEffect, useRef, useState } from "react";
+import { type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { NavigationType, useLocation, useNavigationType } from "react-router-dom";
 
 import { DIALOG_SCOPE, useKeymap, useKeymapScope } from "./keymap";
@@ -68,9 +68,9 @@ const scrollLock = {
   },
 };
 
-// Every open dialog's container. Escape is a `dialog`-scope keymap binding so it works before
-// the deferred initial focus has moved into the dialog (the key then lands on whatever was
-// focused before, such as the document editor); only the innermost open dialog closes. Two
+// Every open dialog's container. Escape is a `dialog`-scope keymap binding so it works wherever
+// the focus is - on the dialog itself in its first frame, on its field after that, or on the page
+// after a press on its text took it there; only the innermost open dialog closes. Two
 // dialogs nested by DOM containment (a picker opened inside an already-open sheet) resolve by
 // containment, the nested one winning regardless of which mounted its effect first. Two dialogs
 // that are siblings - neither containing the other, such as the phone navigation sheet and a
@@ -93,9 +93,9 @@ function innermostOpenDialog(): HTMLElement | null | undefined {
   return innermost;
 }
 
-/** Whether a dialog is open. Its Escape is then its own wherever the focus is: in the frame
- *  before its deferred initial focus has moved in, or after a press on its text took the focus
- *  to the page. A layer under it that answers Escape itself leaves the key to it. */
+/** Whether a dialog is open. Its Escape is then its own wherever the focus is: on the dialog
+ *  itself in the frame before its field takes the focus, or on the page after a press on its
+ *  text took the focus there. A layer under it that answers Escape itself leaves the key to it. */
 export function dialogOpen(): boolean {
   return openDialogs.size > 0;
 }
@@ -114,10 +114,12 @@ export interface DialogHandle<T extends HTMLElement> {
 /**
  * Focus trap, Escape-to-close, focus restoration, and a body scroll lock for an overlay
  * (the search palette, the phone navigation drawer, the phone margin sheet, and the reference
- * picker all use this). While open it pushes the `dialog` keymap scope, which masks every page
- * and global binding, and registers Escape there for the innermost open dialog, whatever
- * element holds focus; a descendant that owns its Escape (the margin Composer dismissing its
- * picker) stops propagation before the dispatcher sees it. Tab trapping listens on the container.
+ * picker all use this). On open the focus moves to the dialog itself at once and to its field a
+ * frame later, so no key typed in between reaches the page behind it. While open it pushes the
+ * `dialog` keymap scope, which masks every page and global binding, and registers Escape there
+ * for the innermost open dialog, whatever element holds focus; a descendant that owns its Escape
+ * (the margin Composer dismissing its picker) stops propagation before the dispatcher sees it.
+ * Tab trapping listens on the container.
  */
 export function useDialog<T extends HTMLElement>({
   initialFocusRef,
@@ -144,26 +146,56 @@ export function useDialog<T extends HTMLElement>({
       : []
   );
 
+  // Where the focus was when the dialog took it as it opened, and whether the dialog was made
+  // focusable to take it.
+  const opener = useRef<HTMLElement | null>(null);
+  const madeFocusable = useRef(false);
+
+  // The focus moves to the dialog itself at once, in the commit that opens it, so a key typed
+  // before its field takes the focus reaches nothing behind it: a Space on the control that
+  // opened it would press that control again (Approve, behind Request changes, would approve the
+  // document). A focus a descendant already took as it mounted (`autoFocus`) stays where it is.
+  // The dialog is made focusable for this alone (`tabindex="-1"`, out of the Tab order) unless it
+  // already is. A layout effect, so this holds whatever update opened the dialog.
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    const active = document.activeElement;
+    if (!open || container === null || container.contains(active)) {
+      return;
+    }
+    opener.current = active instanceof HTMLElement ? active : null;
+    madeFocusable.current = !container.hasAttribute("tabindex");
+    if (madeFocusable.current) {
+      container.tabIndex = -1;
+    }
+    container.focus({ preventScroll: true });
+  }, [open]);
+
   useEffect(() => {
     if (!open) {
       return;
     }
     const container = containerRef.current;
     const previouslyFocused =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      opener.current ??
+      (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     scrollLock.acquire();
 
-    // Deferred a frame so a descendant's own synchronous autofocus (e.g. the composer this
-    // sheet can open around) has already landed before we decide whether to move focus
-    // ourselves — moving it unconditionally here would race that child and steal it back.
+    // The dialog's field takes the focus a frame later, so a descendant's own autofocus (e.g.
+    // the composer this sheet can open around, which focuses in its effect once it is on screen)
+    // has already landed before we decide whether to move focus ourselves - moving it
+    // unconditionally here would race that child and steal it back. Only a focus still on the
+    // dialog itself, or gone from it, is moved. The dialog takes no focus of its own after
+    // that: a press on its text leaves the focus where the browser puts it, as before.
     const initialFocusFrame = window.requestAnimationFrame(() => {
-      if (container?.contains(document.activeElement)) {
-        return;
+      const active = document.activeElement;
+      if (container !== null && (active === container || !container.contains(active))) {
+        (initialFocusRef?.current ?? focusableIn(container)[0])?.focus();
       }
-      const initial =
-        initialFocusRef?.current ??
-        (container === null ? null : (focusableIn(container)[0] ?? container));
-      initial?.focus();
+      if (madeFocusable.current && document.activeElement !== container) {
+        container?.removeAttribute("tabindex");
+        madeFocusable.current = false;
+      }
     });
 
     openDialogs.add(container);
@@ -179,7 +211,12 @@ export function useDialog<T extends HTMLElement>({
         event.preventDefault();
         return;
       }
-      if (event.shiftKey && document.activeElement === first) {
+      // The dialog itself holds the focus in its first frame: Tab goes to its first control and
+      // Shift+Tab to its last, not to the page behind it.
+      if (document.activeElement === container) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && document.activeElement === first) {
         event.preventDefault();
         last.focus();
       } else if (!event.shiftKey && document.activeElement === last) {
@@ -189,10 +226,17 @@ export function useDialog<T extends HTMLElement>({
     };
     container?.addEventListener("keydown", handleTab);
 
+    // A passive effect's cleanup, so the focus goes back after the commit that closes the dialog
+    // has drawn the page under it: a control that commit enables again takes the focus.
     return () => {
       window.cancelAnimationFrame(initialFocusFrame);
       openDialogs.delete(container);
       container?.removeEventListener("keydown", handleTab);
+      if (madeFocusable.current) {
+        container?.removeAttribute("tabindex");
+        madeFocusable.current = false;
+      }
+      opener.current = null;
       scrollLock.release();
       if (previouslyFocused !== null && document.contains(previouslyFocused)) {
         previouslyFocused.focus();

@@ -3175,6 +3175,88 @@ test("a change request sent from the header leaves the focus in the header", asy
   });
 });
 
+/** Holds every animation frame the page asks for until `release`, which hands them to the
+ *  browser's next frame: a loaded machine draws its next frame late, and keys it takes in the
+ *  meantime are handled before that frame. Cancelling a held frame drops it. */
+async function holdFrames(page: Page): Promise<{ release: () => Promise<void> }> {
+  await page.evaluate(() => {
+    const frame = window.requestAnimationFrame.bind(window);
+    const cancel = window.cancelAnimationFrame.bind(window);
+    const held = new Map<number, FrameRequestCallback>();
+    let next = 1_000_000_000;
+    window.requestAnimationFrame = (callback) => {
+      next += 1;
+      held.set(next, callback);
+      return next;
+    };
+    window.cancelAnimationFrame = (id) => {
+      if (!held.delete(id)) cancel(id);
+    };
+    Object.assign(window, {
+      releaseHeldFrames: () => {
+        window.requestAnimationFrame = frame;
+        window.cancelAnimationFrame = cancel;
+        for (const callback of held.values()) frame(callback);
+        held.clear();
+      },
+    });
+  });
+  return {
+    release: () =>
+      page.evaluate(() => {
+        const release: unknown = Reflect.get(window, "releaseHeldFrames");
+        if (typeof release !== "function") throw new Error("the page holds no frames to let go");
+        release();
+      }),
+  };
+}
+
+// Request changes gives its Reason the focus a frame after it opens, and a loaded machine draws
+// that frame late. A key typed into the dialog before that frame presses nothing behind it: the
+// dialog holds the focus itself from the moment it opens. Shift+R opens it from Approve, so a
+// Space that reached Approve would approve the document. The page's frames are held while the row
+// types, then let go.
+// SLOW(>=2s): 2.2 to 2.5 s in three one-worker runs on a dev box: one load after an approval
+// request, Shift+R and the typing with the page's frames held, two frames once they go, and
+// Escape.
+test("a key typed into Request changes in its first frame presses no Approve behind it", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await requestApproval(seeded.specArtifactId, { summary: "Read it." });
+    const reviewed = reviewsSent(page);
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
+    await expectHeaderDrawn(page);
+    const header = issueHeader(page);
+    const approve = header.getByRole("button", { exact: true, name: "Approve" });
+    await expect(approve, "the chip carries no Approve while its request waits").toBeVisible();
+    await approve.focus();
+    await expect(approve).toBeFocused();
+
+    const frames = await holdFrames(page);
+    await page.keyboard.press("Shift+R");
+    const dialog = page.getByRole("dialog", { name: "Request changes" });
+    await expect(dialog, "Shift+R on Approve opened no Request changes").toBeVisible();
+    await page.keyboard.type("One change.");
+    await frames.release();
+    await framesDrawn(page, 2);
+
+    expect(reviewed, "a key typed in Request changes' first frame sent a review").toEqual([]);
+    expect(
+      (await getArtifact(seeded.specArtifactId)).approval?.state,
+      "a key typed in Request changes' first frame answered the request"
+    ).toBe("awaiting");
+    await expect(
+      dialog.getByRole("textbox", { name: "Reason" }),
+      "the frame after Request changes opened gave its Reason no focus"
+    ).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(dialog, "Escape left Request changes open").toHaveCount(0);
+  });
+});
+
 // Approve pressed by Enter on the header's chip keeps the focus while its review is written:
 // it is `aria-disabled` then and a press of it does nothing, so nothing moves the focus off it
 // (decision 223). Once the approval is read the header draws no Approve, and the focus goes to

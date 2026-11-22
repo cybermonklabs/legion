@@ -1,8 +1,8 @@
-import { expect, test } from "bun:test";
-import { render } from "@testing-library/react";
+import { expect, spyOn, test } from "bun:test";
+import { act, render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 
 import { KeymapProvider } from "./KeymapProvider";
 import { useDialog } from "./useDialog";
@@ -82,6 +82,87 @@ test("Escape closes the most recently opened of two sibling (non-nested) open di
     await user.keyboard("{Escape}");
     expect(closed).toEqual({ drawer: 1, nav: 0 });
   } finally {
+    view.unmount();
+  }
+});
+
+/** A control that opens a dialog over itself, as Approve's Shift+R opens Request changes over
+ *  Approve, and counts its own presses. */
+function ControlUnderADialog({ onPress }: { onPress: () => void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button
+        onClick={onPress}
+        onKeyDown={(event) => {
+          if (event.key === "R") setOpen(true);
+        }}
+        type="button"
+      >
+        Approve
+      </button>
+      <Dialog label="Request changes" onClose={() => setOpen(false)} open={open}>
+        <textarea aria-label="Reason" />
+      </Dialog>
+    </>
+  );
+}
+
+// The dialog's field takes the focus a frame after the dialog opens, and a loaded machine draws
+// that frame late. A key typed before it reaches nothing behind the dialog: the dialog holds the
+// focus itself from the commit that opens it. The frame is held here, so the field never takes it.
+test("a key typed in a dialog's first frame presses nothing behind the dialog", async () => {
+  const user = userEvent.setup();
+  let pressed = 0;
+  const view = render(
+    <KeymapProvider>
+      <ControlUnderADialog onPress={() => (pressed += 1)} />
+    </KeymapProvider>
+  );
+  const frames = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+  try {
+    act(() => view.getByRole("button", { name: "Approve" }).focus());
+    await user.keyboard("R");
+    const dialog = view.getByRole("dialog", { name: "Request changes" });
+    await user.keyboard(" a{Enter}");
+    expect(pressed, "a key typed in the dialog's first frame pressed the control under it").toBe(0);
+    expect(document.activeElement, "the dialog left the focus behind it").toBe(dialog);
+  } finally {
+    frames.mockRestore();
+    view.unmount();
+  }
+});
+
+// The frame after it opens, the dialog gives the focus to its first control and is no longer
+// focusable itself, so a press on its text later puts the focus where it did before.
+test("the frame after it opens, a dialog gives the focus to its first control", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <KeymapProvider>
+      <ControlUnderADialog onPress={() => {}} />
+    </KeymapProvider>
+  );
+  const held: FrameRequestCallback[] = [];
+  const frames = spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    held.push(callback);
+    return held.length;
+  });
+  try {
+    act(() => view.getByRole("button", { name: "Approve" }).focus());
+    await user.keyboard("R");
+    const dialog = view.getByRole("dialog", { name: "Request changes" });
+    expect(dialog.getAttribute("tabindex")).toBe("-1");
+    act(() => {
+      for (const callback of held.splice(0)) callback(performance.now());
+    });
+    expect(document.activeElement, "the frame gave the focus to no control of the dialog").toBe(
+      view.getByRole("button", { name: "Request changes" })
+    );
+    expect(dialog.hasAttribute("tabindex"), "the dialog stayed focusable after its frame").toBe(
+      false
+    );
+  } finally {
+    frames.mockRestore();
     view.unmount();
   }
 });
