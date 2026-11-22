@@ -133,8 +133,10 @@ ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # (packages/daemon/internal/leakguard's
 # Source and InstallServed). R5 of dispatch://INFRA-1527 requires the newest
 # `leak-check-v<n>` tag at the time the pin is written, never a number a spec fixed: this is the
-# newest, read with `gh api repos/example-org/deployment/git/refs/tags` at 2026-11-22T16:38:25Z,
-# and a bump reads that list again. The runtime stage exports it as LEGION_LEAK_CHECK_TAG, which
+# newest, read with
+# `gh api --paginate repos/example-org/deployment/git/matching-refs/tags/leak-check-v` at
+# 2026-11-22T16:38:25Z, and a bump reads that list again. The runtime stage exports it as
+# LEGION_LEAK_CHECK_TAG, which
 # is where the launcher and each role's shim read it. Go holds the same tag once more:
 # ghReadsProvenCheck in packages/daemon/cmd/legion/gh_reads.go, the check `legion gh`'s list of
 # reads was proven against, and TestGhReadsAreProvenAgainstThePinnedCheck holds the two equal, so

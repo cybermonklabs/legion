@@ -386,6 +386,20 @@ func noAnswer(env []string) string {
 	return "/bin/false"
 }
 
+// modeArgv is the argv of a call of the shared check at path in one of its modes: `<path> <mode>
+// -- <args>`, and `<path> <mode>` alone for no args. From leak-check-v33 the check refuses, with
+// exit 2, a call of exactly two arguments whose first is a mode word, since that is how a pre-push
+// hook calls it, with a remote's name and its URL; a mode call writes `--` right after the mode
+// word, which the check takes out, and only that one (its README.md, "Modes"). So a mode with one
+// argument needs the `--`, `<mode> --` with none is a call of two arguments too, and the check
+// hands the mode args exactly, a `--` of their own among them.
+func modeArgv(path, mode string, args ...string) []string {
+	if len(args) == 0 {
+		return []string{path, mode}
+	}
+	return append(append(make([]string, 0, 3+len(args)), path, mode, "--"), args...)
+}
+
 // child is one process this package runs: the shared check in one of its shapes, a read of a
 // repository's visibility (gh's REST read; where that is refused for a rate limit, gh's GraphQL
 // read and git's ls-remote; where gh failed on its connection, gh's token answer, curl's REST read

@@ -524,13 +524,9 @@ type ghGuardRecord struct {
 }
 
 // ghGuardRun is the line a recording stand-in check (leakguardtest.Recording) writes for the
-// guard's run of the gh call args: the check's gh-guard mode, `--` and the call's words, or the
-// mode word alone for a call of no words, the call forms leak-check-v33 takes (leakguard's
-// ghGuard).
+// guard's run of the gh call args: the check's gh-guard mode, `--` and the call's words, the call
+// form leak-check-v33 takes (leakguard's modeArgv).
 func ghGuardRun(args []string) string {
-	if len(args) == 0 {
-		return "checked gh-guard\n"
-	}
 	return "checked gh-guard -- " + strings.Join(args, " ") + "\n"
 }
 

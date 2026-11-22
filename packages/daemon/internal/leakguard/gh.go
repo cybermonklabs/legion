@@ -198,19 +198,8 @@ func (g *Guard) ghCall(ctx context.Context, req GhRequest) ([]byte, bool, error)
 // ghGuard runs the shared check in its gh-guard shape over req, and answers the standard input it
 // buffered for the check's second go (askAgain), nil where the check asked for none, and the
 // refusal or setup failure of the check's answer, if any (readStatus).
-//
-// The call is `gh-guard -- <the gh call's words>`, and `gh-guard` alone for a gh call of no words.
-// From leak-check-v33 the check refuses, with exit 2, a call of exactly two arguments whose first
-// is a mode word, since that is how a pre-push hook calls it, with a remote's name and its URL; a
-// mode call writes `--` right after the mode word, which the check takes out (its README.md,
-// "Modes"). So a gh call of one word is `gh-guard -- WORD`, and a gh call of no words cannot be
-// `gh-guard --`, a call of two arguments too. The check takes out only that first `--`, so its
-// gh_guard reads req.Args exactly, a `--` of the gh call's own among them.
 func (g *Guard) ghGuard(ctx context.Context, check sharedRun, req GhRequest) ([]byte, error) {
-	argv := append(make([]string, 0, 3+len(req.Args)), check.path, "gh-guard")
-	if len(req.Args) > 0 {
-		argv = append(append(argv, "--"), req.Args...)
-	}
+	argv := modeArgv(check.path, "gh-guard", req.Args...)
 	status, printed, err := g.run(ctx, child{argv: argv})
 	if err != nil {
 		return nil, sharedNotRun(whatGhCall, err, printed)
