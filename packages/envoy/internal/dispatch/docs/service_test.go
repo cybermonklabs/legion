@@ -6211,15 +6211,29 @@ func waitForDocumentText(t *testing.T, service *Service, artifactID, want string
 	})
 }
 
+// waitForDocumentVersion waits for version number of the document to settle and answers it. A
+// wait that gives up prints the newest version the document held when it last read, so a run that
+// settled the wrong number of versions says which.
 func waitForDocumentVersion(t *testing.T, database *store.Store, artifactID string, number int) model.Version {
 	t.Helper()
-	return testwait.Until(t, fmt.Sprintf("version %d of the document to settle", number), func() (model.Version, bool) {
+	var settled model.Version
+	testwait.Until(t, fmt.Sprintf("version %d of the document to settle", number), func() (string, bool) {
 		version, ok, err := loadDocumentVersion(context.Background(), database, artifactID, number)
 		if err != nil {
 			t.Fatalf("load document version: %v", err)
 		}
-		return version, ok
+		if ok {
+			settled = version
+			return fmt.Sprintf("version %d", version.Number), true
+		}
+		var newest int
+		if err := database.Pool.QueryRow(context.Background(),
+			`select coalesce(max(number), 0) from artifact_versions where artifact_id = $1`, artifactID).Scan(&newest); err != nil {
+			t.Fatalf("read the document's newest version: %v", err)
+		}
+		return fmt.Sprintf("no version %d; the newest the document holds is version %d", number, newest), false
 	})
+	return settled
 }
 
 func loadDocumentVersion(ctx context.Context, database *store.Store, artifactID string, number int) (model.Version, bool, error) {
