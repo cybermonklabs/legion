@@ -717,10 +717,10 @@ type Source interface {
 // next bundle, and one that installed it must mint at that same bundle, with no cached set
 // between the account's change and the role's reach. Under the App's JWT it asks GitHub every
 // time. In token mode the one answer that outlives a call is a finished run of the command no
-// caller took, which runTokenCommand keeps for finishedRunKeep for a caller that comes back
-// (below), so a call within that time may be answered with that run's release. What it read
-// replaces the installation ids the Manager holds for the role, so a mint that follows reaches
-// the installation the read names and an owner no longer listed is looked for again rather than
+// caller took, which runTokenCommand keeps for finishedRunKeep for a caller that comes back, so a
+// call within that time may be answered with that run's release. What it read replaces the
+// installation ids the Manager holds for the role, so a mint that follows reaches the
+// installation the read names and an owner no longer listed is looked for again rather than
 // minted on a stale id.
 //
 // Reads of one App that overlap in time share one read, as concurrent reads of an App's
@@ -741,40 +741,27 @@ type Source interface {
 // GitHub. A caller whose own context ends before the read does gets the context's error alone:
 // GitHub has not answered yet, and no person is waited on.
 //
-// In token mode the call reads under the caller's own context (readInstalledOwners), and every
-// rule of the command's run is runTokenCommand's alone. The run belongs to no caller either: it
-// runs on the Manager's own context, bounded by tokenCommandLimit, so a caller that leaves ends
-// neither the run nor the wait of a caller that joined it. A caller waits for the run at most
-// installationReadLimit, as long as it waited for the shared read before reads in token mode
-// went to runTokenCommand directly. A caller whose context ends, or whose wait reaches that
-// bound, before the run ends is answered ErrCommandPending in a TransientError, which wraps the
-// context's error too, while the command goes on; the boot's key proof reads that answer as
-// pending and spends no attempt on it (internal/daemon's appAttempt), so a grant that waits on a
-// person's approval holds the boot without ending it. A run that finishes with no caller waiting
-// is kept for finishedRunKeep, and the first caller of the scope to come takes it and forgets it
-// (runTokenCommand, forgetRun): the key proof's next attempt gets the release of the run its
-// earlier attempt started, and a grant a person approved is not asked for again.
+// In token mode each call waits for the command's run under its own context for at most
+// installationReadLimit, and runTokenCommand's doc holds every rule of that run.
 //
-// AppLogin in token mode reads the same scope (anyInstallation, mintRequest{role: role}), so a
-// login read joins a run in flight that this call started, or takes a finished run kept for
-// finishedRunKeep and forgets it, and the next call of the role does not get that release but
-// joins another run in flight or runs the command again; a call here does the same to a run a
-// login read started. At the boot the logins read runs before the key proof (internal/daemon's
-// openWorkflow) and passes only once it has taken a run's release for each role, so the key
-// proof never takes a release the logins read was answered with: its first read of each role
-// joins a run in flight or runs the command again.
+// AppLogin in token mode reads the same scope, so a login read and a call here share one run and
+// what is kept of it; anyInstallation says what that means for the boot's key proof.
 func (m *Manager) InstalledOwners(ctx context.Context, role AppRole) ([]string, error) {
-	if app, err := m.app(role); err == nil && app.TokenCommand != "" {
+	app, err := m.app(role)
+	if err != nil {
+		return nil, err
+	}
+	if app.TokenCommand != "" {
 		bounded, cancel := context.WithTimeout(ctx, installationReadLimit)
 		defer cancel()
-		return m.readInstalledOwners(bounded, role)
+		return m.readInstalledOwners(bounded, role, app)
 	}
 	m.mu.Lock()
 	read, joined := m.pendingInstallations[role]
 	if !joined {
 		read = &pendingInstallations{done: make(chan struct{})}
 		m.pendingInstallations[role] = read
-		go m.readSharedInstallations(context.WithoutCancel(ctx), role, read)
+		go m.readSharedInstallations(context.WithoutCancel(ctx), role, app, read)
 	}
 	m.mu.Unlock()
 	select {
@@ -793,13 +780,13 @@ func (m *Manager) InstalledOwners(ctx context.Context, role AppRole) ([]string, 
 // for the command's run, which goes on past it (runTokenCommand).
 const installationReadLimit = time.Minute
 
-// readSharedInstallations makes the read the callers of InstalledOwners share under the App's
-// JWT and hands its answer to every one of them through read. detached carries the values of the
-// context that started it and none of its cancellation.
-func (m *Manager) readSharedInstallations(detached context.Context, role AppRole, read *pendingInstallations) {
+// readSharedInstallations makes the read the callers of InstalledOwners share under app's JWT and
+// hands its answer to every one of them through read. detached carries the values of the context
+// that started it and none of its cancellation.
+func (m *Manager) readSharedInstallations(detached context.Context, role AppRole, app config.GitHubApp, read *pendingInstallations) {
 	bounded, cancel := context.WithTimeout(detached, installationReadLimit)
 	defer cancel()
-	owners, err := m.readInstalledOwners(bounded, role)
+	owners, err := m.readInstalledOwners(bounded, role, app)
 	m.mu.Lock()
 	read.owners, read.err = owners, err
 	delete(m.pendingInstallations, role)
@@ -807,15 +794,12 @@ func (m *Manager) readSharedInstallations(detached context.Context, role AppRole
 	m.mu.Unlock()
 }
 
-// readInstalledOwners is the read itself: under the App's JWT made once for every caller whose
-// call overlaps it (readSharedInstallations), and in token mode made by each caller under its
-// own context, runTokenCommand sharing the command's run among them (InstalledOwners).
-func (m *Manager) readInstalledOwners(ctx context.Context, role AppRole) ([]string, error) {
-	app, err := m.app(role)
-	if err != nil {
-		return nil, err
-	}
+// readInstalledOwners is the read itself of app, role's App: under its JWT made once for every
+// caller whose call overlaps it (readSharedInstallations), and in token mode made by each caller
+// under its own context, runTokenCommand sharing the command's run among them (InstalledOwners).
+func (m *Manager) readInstalledOwners(ctx context.Context, role AppRole, app config.GitHubApp) ([]string, error) {
 	var found map[string]string
+	var err error
 	if app.TokenCommand != "" {
 		released, err := m.runTokenCommand(ctx, app, mintRequest{role: role})
 		if err != nil {

@@ -127,9 +127,12 @@ const reconnectPoll = 20 * time.Millisecond
 // connection before it answers (IsConnected counts a draining connection, and a second read could
 // see a reconnect the first did not), so the version it returns is the one it read. A server that
 // is connected and reports no version is answered as not connected at the deadline, which is all
-// that can be said of it. Every decision on a connection's server version is made on this read:
-// ConnectedRefusal's, and the Envoy stream's consumer cap (internal/bus
-// connectedDefaultsAnUnsetCap).
+// that can be said of it. Every decision this module makes on a connection's server version is
+// made on this read, ConnectedRefusal's and the Envoy stream's consumer cap (internal/bus
+// connectedDefaultsAnUnsetCap), except where internal/bus copies a choice nats.go makes on its own
+// read: the subject of a consumer's create (consumerCreateSubject) and the checks and the discard
+// policy of a bucket's create (createBucketStream). Those read ConnectedServerVersion as nats.go
+// does, an empty answer included, and wait for nothing, since they must pick what nats.go picks.
 func ConnectedVersion(ctx context.Context, conn *nats.Conn) (string, error) {
 	return connectedVersion(ctx, conn)
 }

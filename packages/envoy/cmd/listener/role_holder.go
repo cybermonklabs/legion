@@ -322,11 +322,11 @@ func roleOwnSessionVerdict(registry *store.Registry, role string, claim store.Ro
 // the only reason this function tells them apart. So knowing a live predecessor's session id is
 // not enough to take its role out of the client instance that still runs it.
 //
-// The error is non-nil only with roleHolderUnread, wrapped as the route reports it, naming the
-// read that failed. A key the bucket does not hold is that bucket's word that the session is
-// gone, not a failure; every other read failure takes nothing from a holder. Both reads are
-// bounded by roleHolderReadTimeout within ctx, so the route answers inside the budget its own
-// caller holds.
+// The error is non-nil only with roleHolderUnread, a holderSessionUnread naming the read that
+// failed and the session it read. A key the bucket does not hold is that bucket's word that the
+// session is gone, not a failure; every other read failure takes nothing from a holder. Both
+// reads are bounded by roleHolderReadTimeout within ctx, so the route answers inside the budget
+// its own caller holds.
 func roleSupersessionVerdict(ctx context.Context, sessions *session.SessionRegistry, holder, previous, claimantInstanceID string) (roleSupersession, error) {
 	if previous == "" || holder != previous {
 		_, _, err := liveSessionEntry(ctx, sessions, holder, roleHolderReadTimeout, sessionIsLive)
@@ -334,7 +334,7 @@ func roleSupersessionVerdict(ctx context.Context, sessions *session.SessionRegis
 		case errors.Is(err, nats.ErrKeyNotFound):
 			return roleTakenFromHolder, nil
 		case err != nil:
-			return roleHolderUnread, fmt.Errorf("read role holder liveness: %w", err)
+			return roleHolderUnread, &holderSessionUnread{read: "read role holder liveness", holder: holder, err: err}
 		default:
 			return roleStaysWithHolder, nil
 		}
@@ -344,7 +344,7 @@ func roleSupersessionVerdict(ctx context.Context, sessions *session.SessionRegis
 	case errors.Is(err, nats.ErrKeyNotFound):
 		return roleTakenFromHolder, nil
 	case err != nil:
-		return roleHolderUnread, fmt.Errorf("read role predecessor registration: %w", err)
+		return roleHolderUnread, &holderSessionUnread{read: "read role predecessor registration", holder: holder, err: err}
 	case !sessionIsLive(sessions.EntryState(predecessor)):
 		return roleTakenFromHolder, nil
 	case !session.InstanceMatches(predecessor.ClientInstanceID, claimantInstanceID):
@@ -355,6 +355,20 @@ func roleSupersessionVerdict(ctx context.Context, sessions *session.SessionRegis
 		return roleTakenFromHolder, nil
 	}
 }
+
+// holderSessionUnread is a soft claim's read of the session its standing claim names that did not
+// answer (roleSupersessionVerdict): the holder's liveness, or the declared predecessor's
+// registration. Its text is read's words and the read's own error, which names holder, the
+// session read, so an edge answer gives it in the listener's own words (edgeScope.unresolved).
+type holderSessionUnread struct {
+	read   string
+	holder string
+	err    error
+}
+
+func (e *holderSessionUnread) Error() string { return e.read + ": " + e.err.Error() }
+
+func (e *holderSessionUnread) Unwrap() error { return e.err }
 
 // notGone is the state test of every caller that may act on a session that stopped answering as
 // it acts on one that answers: a session-addressed send, an agent delivery, both reapers

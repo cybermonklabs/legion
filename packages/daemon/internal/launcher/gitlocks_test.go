@@ -249,29 +249,31 @@ func newGatedProc(t *testing.T, pids ...int) *gatedProc {
 	return g
 }
 
-// beforeDeadline is how long a wait that begins now may last: until beforeDeadlineMargin, 30 s,
-// before the test binary's deadline, which leaves a failing row's cleanups and its failure time to
-// run (cleanupBeforeDeadline gives the cleanups their part of it), and 1<<60 ns, about 36 years,
-// under -timeout 0. Each wait for something the sweep or the launcher will do is bounded by it
-// rather than by a fixed span, so a pass or a goroutine that is merely slow on a loaded machine
+// beforeDeadline is how long a wait that begins now may last: testwait.Remaining (#4792), until
+// 30 s before the test binary's deadline, which leaves a failing row's cleanups and its failure
+// time to run (cleanupBeforeDeadline gives the cleanups their part of it), and 1<<60 ns, about 36
+// years, under -timeout 0. Each wait for something the sweep or the launcher will do is bounded by
+// it rather than by a fixed span, so a pass or a goroutine that is merely slow on a loaded machine
 // still passes its row, and one that never comes still fails it, naming what it waited for. One
-// that never comes thus costs the rest of the binary's -timeout. With the margin or less left there
-// is no span a wait could run on, so it fails t there, on one line naming the deadline and the
-// margin, rather than handing back a bound that asks the fact once and blames it. That is main's
-// testwait.Remaining (#4792), which this branch's base predates; it calls t.Fatalf, so it is called
-// on the goroutine running the test.
+// that never comes thus costs the rest of the binary's -timeout. With 30 s or less left there is no
+// span a wait could run on, so it fails t there, on one line naming the deadline and the margin,
+// rather than handing back a bound that asks the fact once and blames it. It calls t.Fatalf, so it
+// is called on the goroutine running the test.
 //
 // Every wait of the package's tests for a fact whose span is not the claim is bounded by it, or by
 // cleanupBeforeDeadline in a cleanup, in the test process and in every process the test binary
 // re-enters alike (a *Helper test, the role stage, role-init, the session-peer stand-ins, the PID 1
-// helpers). A re-entered process is given a -test.timeout that ends reentryMargin before its
-// starter's own deadline (reentry), so beforeDeadline there ends 35 s before the starter's deadline,
-// before the starter's own beforeDeadline. A starter waits for a child to end with no bound of its
-// own, so the child's failure, its cleanups and its alarm all come while the starter still waits
-// (reentry). A child started with too little time for a wait of its own fails at that wait, on the
-// line above, which its starter prints with the rest of what it said. The one re-entry whose argv
-// the test does not write, the session peer's shim (roleShim's `worker-shim`), waits on nothing of
-// its own and hands its agent the deadline its plan carries (peerPlan.End).
+// helpers). The exception is the put-back helper's own waits (TestPutBacksPIDOneHelper), whose
+// margins are ordered among themselves: its waits on the reaper give up 30 s before its deadline
+// (reaperBound) and its wait for a put-back 15 s before it. A re-entered process is given a
+// -test.timeout that ends reentryMargin before its starter's own deadline (reentry), or
+// helperDeadlineGap before it for runAsPIDOne's helpers, so beforeDeadline there ends before the
+// starter's own beforeDeadline. A starter's wait for a child's end ends no sooner than the child's
+// own deadline, so the child's failure, its cleanups and its alarm all come while the starter still
+// waits (reentry). A child started with too little time for a wait of its own fails at that wait,
+// on the line above, which its starter prints with the rest of what it said. The one re-entry whose
+// argv the test does not write, the session peer's shim (roleShim's `worker-shim`), waits on nothing
+// of its own and hands its agent the deadline its plan carries (peerPlan.End).
 //
 // Not hang guards, so not bounded by it: a span that is part of a case's claim, or an answer a
 // re-entered process prints and then goes on from. These are the race cases' two-minute search
@@ -283,21 +285,8 @@ func newGatedProc(t *testing.T, pids ...int) *gatedProc {
 // its time for the generations after it.
 func beforeDeadline(t *testing.T) time.Duration {
 	t.Helper()
-	deadline, ok := t.Deadline()
-	if !ok {
-		return 1 << 60
-	}
-	left := time.Until(deadline)
-	if left <= beforeDeadlineMargin {
-		t.Fatalf("beforeDeadline: the test binary's deadline %s is %s away, less than the %s margin a wait leaves its test to fail in and run its cleanups",
-			deadline.Format(time.RFC3339Nano), left.Round(time.Millisecond), beforeDeadlineMargin)
-	}
-	return left - beforeDeadlineMargin
+	return testwait.Remaining(t)
 }
-
-// beforeDeadlineMargin is how long before the test binary's deadline beforeDeadline ends: what a
-// failing row's cleanups and its failure have left to run in.
-const beforeDeadlineMargin = 30 * time.Second
 
 // cleanupBeforeDeadline is beforeDeadline for a wait in a cleanup: it ends 10 s before the test
 // binary's deadline, so a cleanup that runs after its row gave up at beforeDeadline still has 20 s

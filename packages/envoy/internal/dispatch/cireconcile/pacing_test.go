@@ -14,7 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 )
 
-// head is one open pull request of the mapped repository as the tests below give it: pull
+// head is one open pull request of the harness's repository as the tests below give it: pull
 // request n at a head commit of its own, which is n written as the 40 hex characters a commit
 // has. A test reads the number back out of the URLs the stand-in was asked for (headsAsked), so
 // which heads a pass took, and in what order, is the stand-in's own log rather than the pass's
@@ -105,7 +105,7 @@ func text(t *testing.T, line map[string]any, name string) string {
 // for 26 minutes and the pass held its lease for every one of them.
 func TestAPassEndsOnItsBoundAndTheNextTakesTheCursorUpThere(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	// Forty-five open pull requests are three pages of twenty, twenty and five.
 	h.listHeads(heads(45)...)
 	h.reconciler.PassTimeout = 2 * time.Second
@@ -172,7 +172,7 @@ func TestAPassEndsOnItsBoundAndTheNextTakesTheCursorUpThere(t *testing.T) {
 // that reaches the last page of the order ends there rather than reading the first page again.
 func TestAPageThePassDidNotReachIsReadByTheNextPass(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHeads(heads(45)...)
 	h.reconciler.PassTimeout = 2 * time.Second
 	// The run the first pass never reaches: it is at a head of the third page.
@@ -208,7 +208,7 @@ func TestAPageThePassDidNotReachIsReadByTheNextPass(t *testing.T) {
 // over REST at all.
 func TestTheGapComesFromTheWorkThePassExpects(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8))
 	h.github.refuseChecks(gitHubRepository, head(7).sha)
 	h.github.refuseChecks(gitHubRepository, head(8).sha)
@@ -254,7 +254,7 @@ func TestTheGapComesFromTheWorkThePassExpects(t *testing.T) {
 // floor sits inside is the App's, and this pass is not the only reader the App pays for.
 func TestTheGapNeverGoesBelowTheFloor(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8), head(9), head(10), head(11), head(12))
 	for _, pull := range []fakePull{head(7), head(8), head(9), head(10), head(11), head(12)} {
 		h.github.refuseChecks(gitHubRepository, pull.sha)
@@ -285,7 +285,7 @@ func TestTheGapNeverGoesBelowTheFloor(t *testing.T) {
 // the pace the deployment asked for.
 func TestTheGapNeverGrowsPastTheConfiguredPace(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.refuseChecks(gitHubRepository, headSHA)
 	h.reconciler.Pace = RequestPace
@@ -307,13 +307,13 @@ func TestTheGapNeverGrowsPastTheConfiguredPace(t *testing.T) {
 // A pass with no work expected of it at all paces itself at the floor rather than dividing the
 // bound by it. A cycle whose heads the queries answered whole leaves the Reconciler no REST
 // work to expect and the heads it listed still counted, so the answer for a process that knows
-// of nothing yet is not the one that applies; a mapping emptied after such a cycle leaves no
-// repository to read either, and the arithmetic that spreads the expected work over the bound
-// then divides by zero. A pass panics into nothing -- its loop recovers none of it -- so the
-// process would go down with it.
+// of nothing yet is not the one that applies; a project's default cleared after such a cycle
+// leaves no repository to read either, and the arithmetic that spreads the expected work over
+// the bound then divides by zero. A pass panics into nothing -- its loop recovers none of it --
+// so the process would go down with it.
 func TestAPassWithNoWorkExpectedOfItPacesItselfAtTheFloor(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.reconciler.Pace = RequestPace
 	h.reconciler.PassTimeout = Interval
@@ -325,9 +325,10 @@ func TestAPassWithNoWorkExpectedOfItPacesItselfAtTheFloor(t *testing.T) {
 		t.Fatalf("the first pass knows of %d heads, want the one the query answered: %v", got, h.passLine())
 	}
 
-	// The last mapping is taken away, as unmapping the one repository Dispatch reads does.
-	if _, err := h.pool.Exec(h.ctx, `delete from repo_projects`); err != nil {
-		t.Fatalf("unmap every repository: %v", err)
+	// The last project's default is cleared, as a person clearing the one repository Dispatch
+	// reads does.
+	if _, err := h.pool.Exec(h.ctx, `update projects set default_repo = null`); err != nil {
+		t.Fatalf("clear every project's default repository: %v", err)
 	}
 
 	h.pass()
@@ -348,7 +349,7 @@ func TestAPassWithNoWorkExpectedOfItPacesItselfAtTheFloor(t *testing.T) {
 func TestQueriesGoOneAtATimeInsideGitHubsGraphQLBudget(t *testing.T) {
 	const answersIn = 150 * time.Millisecond
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	// Sixty-one open pull requests are four pages, which is four queries and three waits.
 	h.listHeads(heads(61)...)
 	h.github.everyQueryTakes(answersIn)
@@ -459,7 +460,7 @@ func requireConditional(t *testing.T, h *harness, from int, line map[string]any)
 // to it, which is what the reads of it that did finish before the limit are worth.
 func TestARateLimitLeavesTheCursorAtTheHeadItCutShort(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8), head(9))
 	for _, pull := range []fakePull{head(7), head(8), head(9)} {
 		h.github.refuseChecks(gitHubRepository, pull.sha)
@@ -550,7 +551,7 @@ func (l *boundRecordLimits) Record(ctx context.Context, scope string, wait time.
 // read before GitHub's answer.
 func TestALimitAnsweredAsTheBoundFallsIsALimit(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8))
 	h.github.refuseChecks(gitHubRepository, head(7).sha)
 	h.github.refuseChecks(gitHubRepository, head(8).sha)
@@ -615,7 +616,7 @@ func TestAHeadCutShortKeepsItsETags(t *testing.T) {
 	} {
 		t.Run(cut.name, func(t *testing.T) {
 			h := newHarness(t, reviewerAppID)
-			h.mapRepository(rowRepository)
+			h.seedProjectDefault(rowRepository)
 			h.listHeads(head(7), head(8))
 			h.github.refuseChecks(gitHubRepository, head(7).sha)
 			h.github.refuseChecks(gitHubRepository, head(8).sha)
@@ -661,7 +662,7 @@ func TestAHeadCutShortKeepsItsETags(t *testing.T) {
 // today.
 func TestASecondCycleReadsEveryHeadConditionally(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	// Twenty-five heads are two pages, and every one of them is read over REST, so a pass cut
 	// short between the pages leaves the second page's heads to the pass after it.
 	all := heads(25)
@@ -710,7 +711,7 @@ func TestASecondCycleReadsEveryHeadConditionally(t *testing.T) {
 // a page for that reason, and what it leaves behind is the cursor the next pass takes up.
 func TestAPassCutShortInsideAPageStopsAtTheHeadItWasWriting(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	// One page, so the pass is cut short on the last page of the last repository: the pass that
 	// reaches the end of the order closes the cycle and records that it completed, and this one
 	// must do neither.
@@ -776,17 +777,17 @@ func TestAPassCutShortInsideAPageStopsAtTheHeadItWasWriting(t *testing.T) {
 // order away. The pass's own line and its row say the bound ended it, where a pass that read on
 // to the end of the order would record that it completed.
 func TestABoundThatFallsOnAPagesLastHeadEndsThePassThere(t *testing.T) {
-	// The second mapped repository, which sorts after the first: the pass reaches it only once
-	// it has read the first whole, so a cursor left in the first repository is a cursor the
-	// next pass takes up there.
+	// The second project's default repository, which sorts after the first: the pass reaches it
+	// only once it has read the first whole, so a cursor left in the first repository is a
+	// cursor the next pass takes up there.
 	const (
 		laterRow        = "acme/zinc"
 		laterRepository = "Acme/Zinc"
 		laterID         = 4343
 	)
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
-	h.mapRepository(laterRow)
+	h.seedProjectDefault(rowRepository)
+	h.seedProjectDefault(laterRow)
 	h.github.setRepository(laterRow, laterRepository, laterID)
 	// One page each, so the bound falls on the last head of the first repository's only page.
 	first, later := heads(3), heads(2)
@@ -849,7 +850,7 @@ func TestABoundThatFallsOnAPagesLastHeadEndsThePassThere(t *testing.T) {
 // writes failed to the cycle after.
 func TestABoundThatFallsOnTheLastHeadOfTheOrderIsNoCompletePass(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	all := heads(3)
 	h.listHeads(all...)
 	for _, pull := range all {

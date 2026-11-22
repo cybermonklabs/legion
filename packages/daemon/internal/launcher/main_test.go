@@ -77,8 +77,9 @@ func TestMain(m *testing.M) {
 // -timeout 0 this process has no deadline, and the child is given none either.
 //
 // So a test waits for a child it re-entered to end with no bound of its own (cmd.Wait,
-// CombinedOutput): the child's -test.timeout ends it, its alarm's goroutine dump in its output, and
-// each child of its own that is re-entered ends before it, so its failure, its cleanups and its
+// CombinedOutput), or with one that ends after the child's own deadline (runAsPIDOne's ends 30 s
+// after its helper's): the child's -test.timeout ends it, its alarm's goroutine dump in its output,
+// and each child of its own that is re-entered ends before it, so its failure, its cleanups and its
 // alarm all reach the test while the test still waits. A bound of the test's own there,
 // beforeDeadline say, would give up on the child 25 s before the child's own end and kill it
 // without its report. A wait for something the child does short of its end is an ordinary hang
