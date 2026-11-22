@@ -12,8 +12,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -481,4 +483,48 @@ func TestAStaleChangeRequestTellsItsOwnerOnce(t *testing.T) {
 		strings.Contains(summary, "Then open a new approval request.") {
 		t.Fatalf("the controller's copy says %q, want the controller's own step in place of the owner's", summary)
 	}
+}
+
+// An opening by exemption is no person's approval, and the message every role of the tree reads
+// says so (R23): a gate a version that proposes something closed, and a later version that
+// proposes nothing opened again, tells each phase worker and the root's architect that it opened
+// with no person's approval and why, and the merger's message ends with the step it takes before
+// each merge and each enqueue (D10). An opening by a person's approval still names the person's
+// approval.
+func TestAnOpeningByExemptionTellsEveryRoleNoPersonApprovedIt(t *testing.T) {
+	pool := migratedPool(t)
+	apply := applyFacts(t, pool, specGateEngine())
+	mergingExemptRoot(t, pool, "1111111111111111111111111111111111111111")
+	child := fmt.Sprintf("%s-%d", "LEGION", 611)
+	seedIssue(t, pool, record.Issue{Key: child, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: gatedRoot, Project: "LEGION", Title: "a child under test", Parent: new(gatedRoot), Phase: phase.Testing,
+		Generation: 1, Status: "testing", Rank: "V"})
+	version := func(n int, proposesNothing bool) intake.DispatchArtifact {
+		return intake.DispatchArtifact{Key: gatedRoot, ArtifactID: gateDoc, Kind: intake.DispatchArtifactVersion, Version: n,
+			Mark: record.EventMark{Seq: int64(10 + n)}, ChangeRequest: readOf(n, true, proposesNothing)}
+	}
+
+	apply("v5", version(5, false))
+	apply("v6", version(6, true))
+	apply("v7", version(7, false))
+	apply("approve-v7", stepApproval(gatedRoot, gateDoc, 7, record.EventMark{Seq: 20}))
+
+	exempt := fmt.Sprintf("The design gate of %s opened with no person's approval: version 6 of its change request proposes nothing, "+
+		"so no person approves it. The change request is its spec document (%s). Every step the deployment gates now stands open. "+
+		"A merge waits until the ending condition of the change request holds.", gatedRoot, gateDoc)
+	step := "Before each merge and each enqueue, run `dispatch spec-ending --issue " + gatedRoot + " --head <head>`, " +
+		"and merge or enqueue only when its first line reads `ready`."
+	closed5, closed7 := gateMovedBody(record.DesignStepSpec, gateDoc, 5, false), gateMovedBody(record.DesignStepSpec, gateDoc, 7, false)
+	approved := gateMovedBody(record.DesignStepSpec, gateDoc, 7, true)
+	merger, architect := treeRoleToken(t, gatedRoot, claim.RoleMerger), treeRoleToken(t, gatedRoot, claim.RoleArchitect)
+	assertRoleMessages(t, pool, gatedRoot, []record.RoleMessage{
+		{Role: merger, Body: closed5}, {Role: architect, Body: closed5},
+		{Role: merger, Body: exempt + " " + step}, {Role: architect, Body: exempt},
+		{Role: merger, Body: closed7}, {Role: architect, Body: closed7},
+		{Role: merger, Body: approved}, {Role: architect, Body: approved},
+	})
+	tester := treeRoleToken(t, child, claim.RoleTester)
+	assertRoleMessages(t, pool, child, []record.RoleMessage{
+		{Role: tester, Body: closed5}, {Role: tester, Body: exempt}, {Role: tester, Body: closed7}, {Role: tester, Body: approved},
+	})
 }
