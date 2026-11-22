@@ -193,7 +193,10 @@ func cutsOff(plan []string) bool {
 // and its plan holds at least planned: every attempt but the last was cut off by the budget and
 // waited out, each logged as a transient failure that names the budget, so the probe ran at least
 // the plan's attempts and any more were attempts the box was too slow to answer within the budget.
-func cutOffAttempts(t *testing.T, logged, probe string, n, planned int) {
+// refused, where not empty, is an answer the probe refuses at once even when the budget then cut
+// the attempt off (the pi.agents probe's noAgentsMarker): no waited-out attempt may carry it, so a
+// probe that waits out such an answer fails here by name, however slow the box.
+func cutOffAttempts(t *testing.T, logged, probe string, n, planned int, refused string) {
 	t.Helper()
 	var cut []string
 	for line := range strings.SplitSeq(logged, "\n") {
@@ -207,6 +210,9 @@ func cutOffAttempts(t *testing.T, logged, probe string, n, planned int) {
 	for _, line := range cut {
 		if !strings.Contains(line, "timed out after "+cutOffLimit.String()) {
 			t.Errorf("a transient failure of the %s probe is no cut-off by its %s budget: %s", probe, cutOffLimit, line)
+		}
+		if refused != "" && strings.Contains(line, refused) {
+			t.Errorf("the %s probe waited out an attempt that answered %s, which it refuses at once: %s", probe, refused, line)
 		}
 	}
 }
@@ -466,7 +472,7 @@ func TestTheAgentsProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 			}
 			n := f.attempts(t, "agents")
 			if cut {
-				cutOffAttempts(t, logged.String(), "OMP pi.agents", n, testCase.attempts)
+				cutOffAttempts(t, logged.String(), "OMP pi.agents", n, testCase.attempts, noAgentsMarker)
 				return
 			}
 			if n != testCase.attempts {
@@ -513,7 +519,9 @@ func TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 			}
 			n := f.attempts(t, "session")
 			if cut {
-				cutOffAttempts(t, logged.String(), "OMP session storage setting", n, testCase.attempts)
+				// The session probe judges a cut-off before what the attempt printed, so an
+				// answer the box printed before the budget cut it off is a cut-off too.
+				cutOffAttempts(t, logged.String(), "OMP session storage setting", n, testCase.attempts, "")
 			} else if n != testCase.attempts {
 				t.Errorf("the session-storage probe ran %d times, want %d", n, testCase.attempts)
 			}
