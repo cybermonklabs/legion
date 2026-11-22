@@ -503,9 +503,9 @@ const entriesAtOnce = 16;
  *  It reads `tree`, this machine's `/proc` unless its caller hands another (`ProcTree`).
  *  `runBounded`'s kill hands none. Two rows of `bounded-subprocess.test.ts` hand a directory
  *  they laid out: one holds the kill's cgroup scope with an unknown process in a cgroup other
- *  than the tree's own, so the scope is held where every process of the machine stands in one
- *  cgroup, as in CI's runners and in a pod; the other holds that a read which waits holds no timer
- *  of this process. Those rows are why this is exported. */
+ *  than the tree's own, so the scope is held where no process can be started in another cgroup,
+ *  as in a pod; the other holds that a read which waits holds no timer of this process. Those
+ *  rows are why this is exported. */
 export async function processTableYielding(tree = machineTree): Promise<Listed[] | undefined> {
   if (tree === undefined) return processTable();
   const entries = await readdir(tree.root);
