@@ -122,11 +122,12 @@ func TestAPublishWithAnEndedContextSendsNothing(t *testing.T) {
 
 // publishConfirmed refuses an ended context before it calls publish, a deadline already spent or a
 // cancel with the deadline still ahead, and answers it with the spent-window text wrapping the
-// context's error. It is the only check of the context on the core path (PublishCoreContext reads it
-// nowhere, and ensureConnWithContext returns on a healthy connection without consulting it), so it
-// is pinned on its own, both causes driven directly: publish must not be called at all. The text is
-// pinned because a deployed filter may match it.
-// The control is the same call with a deadline ahead, which publishes, flushes and confirms.
+// context's error, which is ErrWindowEndedBeforePublish as well. It is the only check of the
+// context on the core path (PublishCoreContext reads it nowhere, and ensureConnWithContext returns
+// on a healthy connection without consulting it), so it is pinned on its own, both causes driven
+// directly: publish must not be called at all. The text is pinned because a deployed filter may
+// match it. The control is the same call with a deadline ahead, which publishes, flushes and
+// confirms.
 func TestAPublishConfirmedWithASpentDeadlinePublishesNothing(t *testing.T) {
 	client, err := ConnectOwningStream([]string{testnats.URL(t)})
 	if err != nil {
@@ -155,8 +156,8 @@ func TestAPublishConfirmedWithASpentDeadlinePublishesNothing(t *testing.T) {
 	} {
 		err = client.publishConfirmed(ended.ctx, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, publish)
 		want := `bus: window elapsed before the publish to "` + subject + `" was flushed: ` + ended.err.Error()
-		if err == nil || err.Error() != want || !errors.Is(err, ended.err) {
-			t.Fatalf("publishConfirmed with %s = %v, want %q wrapping %v", ended.name, err, want, ended.err)
+		if err == nil || err.Error() != want || !errors.Is(err, ended.err) || !errors.Is(err, ErrWindowEndedBeforePublish) {
+			t.Fatalf("publishConfirmed with %s = %v, want %q wrapping %v and ErrWindowEndedBeforePublish", ended.name, err, want, ended.err)
 		}
 		if published != 0 {
 			t.Fatalf("publishConfirmed with %s called publish %d times, want none", ended.name, published)
