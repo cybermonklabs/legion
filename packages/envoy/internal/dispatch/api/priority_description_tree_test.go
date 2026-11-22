@@ -22,6 +22,7 @@ import (
 // characters, so the tree holds every character of the description as text, under no mark. Each
 // write stores that tree, and a read without the header carries none.
 func TestAPriorityDescriptionNested4000DeepReadsBackAsATreeOfItsOwnText(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	// 24,001 characters: `*a ` opens one emphasis and ` c*` closes it, 4,000 times each.
 	nested := func(marker string) string {

@@ -232,6 +232,7 @@ func shortWaits(tries []time.Time) (waits []time.Duration, short []string) {
 // The lane is read after each park, once every goroutine of the bubble is blocked (awaitPark),
 // which is when a goroutine that slept a park's wait out on the lane would still be on it.
 func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		rig := newParkRig(t, 2)
 		first := rig.enqueue("parked-first", "session:parked")
@@ -350,6 +351,7 @@ func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
 // bubble blocked, no goroutine serves a lane. A park that held its goroutine (slept its wait out
 // on it) would keep one on every lane it serves.
 func TestManyParkedLanesTryAtMostOncePerRetryMax(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		const lanes = 200
 		rig := newParkRig(t, maxQueuedMentionSends)

@@ -15,6 +15,7 @@ import (
 )
 
 func TestMentionRepliesAddressEachDeliveredTarget(t *testing.T) {
+	t.Parallel()
 	t.Run("different sessions", func(t *testing.T) {
 		const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]},` +
 			`{"session_id":"s2","title":"reviewer","capabilities":["steer"]}]`
@@ -87,6 +88,7 @@ func TestMentionRepliesAddressEachDeliveredTarget(t *testing.T) {
 }
 
 func TestInitialMentionDeliveryDoesNotAppendAfterReplyConsumesPending(t *testing.T) {
+	t.Parallel()
 	sent := []map[string]any{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -165,6 +167,7 @@ func TestInitialMentionDeliveryDoesNotAppendAfterReplyConsumesPending(t *testing
 }
 
 func TestInitialMentionDeliveryReturnsFailedAttemptAfterErrorReplyConsumesPending(t *testing.T) {
+	t.Parallel()
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -241,6 +244,7 @@ func TestInitialMentionDeliveryReturnsFailedAttemptAfterErrorReplyConsumesPendin
 // the answered row owes belongs to the sender the claim names: the one whose claim lapsed pays
 // nothing, or the attempt carries two receipts saying the same thing.
 func TestASenderPastItsLeaseLeavesTheResumedAttemptsReceiptAlone(t *testing.T) {
+	t.Parallel()
 	var handler http.Handler
 	answerTheSend := false
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
@@ -361,6 +365,7 @@ func TestASenderPastItsLeaseLeavesTheResumedAttemptsReceiptAlone(t *testing.T) {
 // attempt the comment's creation opened; an attempt row that named nobody would refuse its own
 // recipient's reply, and the attempt would carry no receipt at all.
 func TestReplyDuringAMentionRetrySendStillRecordsTheDeliveryReceipt(t *testing.T) {
+	t.Parallel()
 	var handler http.Handler
 	answerTheSend := false
 	replies := []int{}
@@ -441,6 +446,7 @@ func TestReplyDuringAMentionRetrySendStillRecordsTheDeliveryReceipt(t *testing.T
 // A client that gives up no longer strands the attempt - a request's own send outlives its
 // connection - so the row a dead sender leaves is written here directly.
 func TestASessionAnswersAnAttemptStrandedBetweenItsSendAndItsSettle(t *testing.T) {
+	t.Parallel()
 	var listenerState struct {
 		sync.Mutex
 		sends int

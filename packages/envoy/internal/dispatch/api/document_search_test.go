@@ -300,6 +300,7 @@ func (f documentSearchFixture) excludingStatements() []documentSearchStatement {
 // leaves out (excludingStatements), which is what every write runs. The filter wraps the arms
 // in a derived table, so it is the shape whose plan could stop reaching the index.
 func TestEveryDocumentArmSearchesTheDocumentSearchIndex(t *testing.T) {
+	t.Parallel()
 	fixture := newDocumentSearchFixture(t)
 	firstKeys := explaintest.NewIndexKeys(fixture.database.Pool)
 	for _, statement := range slices.Concat(fixture.statements(), fixture.excludingStatements()) {
@@ -318,6 +319,7 @@ func TestEveryDocumentArmSearchesTheDocumentSearchIndex(t *testing.T) {
 // arguments, searches no document_search index and does test a tsquery against artifact_versions.
 // Without it a plan assertion that happened to hold for any statement would pass unnoticed.
 func TestMainsDocumentArmSearchesNoDocumentSearchIndex(t *testing.T) {
+	t.Parallel()
 	fixture := newDocumentSearchFixture(t)
 	statement := fixture.statements()[0]
 	plan := planWithoutSeqScans(t, fixture.database, statement.oracle, statement.oracleArgs()...)
@@ -342,6 +344,7 @@ func TestMainsDocumentArmSearchesNoDocumentSearchIndex(t *testing.T) {
 // document keyword arm and in nothing else. Either way the one thing that can move a side is the
 // arm this change rewrote.
 func TestEveryDocumentArmAnswersWhatMainsStatementDoes(t *testing.T) {
+	t.Parallel()
 	fixture := newDocumentSearchFixture(t)
 	ctx := context.Background()
 	for _, statement := range fixture.statements() {

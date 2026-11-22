@@ -150,6 +150,7 @@ func personTheDecisionsReadNames(t *testing.T, handler http.Handler, issueKey, a
 }
 
 func TestOneExpressionDecidesWhoWaits(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	// alice and bob are the two people the test server records as having signed in
 	// (server_test.go); the asks below are all opened by one author session, so the author's

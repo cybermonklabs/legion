@@ -15,6 +15,7 @@ import (
 // each answer 200 for it), or refuse it as a client error, and never 500. The control is an offset
 // of 0, and an offset of 3000000000, whose sum with the limit does not wrap.
 func TestAnOffsetNearTheLargestIntIsNoFaultOfTheRepliesRoute(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	for _, offset := range []string{strconv.Itoa(int(^uint(0) >> 1)), "9223372036854775800"} {
 		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/me/replies?limit=10&offset="+offset, nil, "alice")

@@ -13,6 +13,7 @@ import (
 // a person and to an agent. No route writes the rows now, so the test stores them by SQL, as the
 // last release left them: a project's default, a renamed repository and a plain row.
 func TestRepoProjectsReadAnswersTheStoredRows(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "CORE", "name": "Core",

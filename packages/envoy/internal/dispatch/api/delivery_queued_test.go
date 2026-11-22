@@ -217,6 +217,7 @@ func stoppedAndLive(t *testing.T) *queueingListener {
 // would tell the person their message was thrown away. The receipt the conversation renders
 // carries the same word.
 func TestDirectMessageToAStoppedSessionIsQueued(t *testing.T) {
+	t.Parallel()
 	listener := stoppedAndLive(t)
 	handler, database := newTargetedMessageHandler(t, listener.url)
 
@@ -256,6 +257,7 @@ func TestDirectMessageToAStoppedSessionIsQueued(t *testing.T) {
 // The create answers with the attempt pending, pinned to the session, and the mention sender
 // settles it behind the answer.
 func TestMentionOfAStoppedSessionIsQueuedOnOneSend(t *testing.T) {
+	t.Parallel()
 	listener := stoppedAndLive(t)
 	handler, database := newTargetedMessageHandler(t, listener.url)
 	issue := createInteractionIssue(t, handler, "QUE", "A mention of a stopped session", "before")
@@ -281,6 +283,7 @@ func TestMentionOfAStoppedSessionIsQueuedOnOneSend(t *testing.T) {
 // stopped one is a recipient with a message and a queued attempt of its own, and it is in no
 // exclusion list.
 func TestBroadcastQueuesForAStoppedRecipientAndExcludesItFromNothing(t *testing.T) {
+	t.Parallel()
 	listener := stoppedAndLive(t)
 	handler, _ := newTargetedMessageHandler(t, listener.url)
 
@@ -314,6 +317,7 @@ func TestBroadcastQueuesForAStoppedRecipientAndExcludesItFromNothing(t *testing.
 // The send's own answer decides, not the registry read before it: a session whose entry was still
 // in place when Dispatch resolved it, and whose process had gone by the send, is queued too.
 func TestASendAnsweredStoppedIsQueuedThoughTheRegistryReadFoundItLive(t *testing.T) {
+	t.Parallel()
 	listener := stoppedAndLive(t)
 	handler, database := newTargetedMessageHandler(t, listener.url)
 
@@ -334,6 +338,7 @@ func TestASendAnsweredStoppedIsQueuedThoughTheRegistryReadFoundItLive(t *testing
 // no publisher - NATS disabled and no test hooks - Dispatch cannot queue a targeted message to it
 // either, so the attempt keeps that text.
 func TestASessionTheListenerDoesNotKnowIsStillRefusedByTheSameText(t *testing.T) {
+	t.Parallel()
 	listener := stoppedAndLive(t)
 	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.url, noAgentPublisher: true})
 
@@ -373,6 +378,7 @@ func TestASessionTheListenerDoesNotKnowIsStillRefusedByTheSameText(t *testing.T)
 // accept route must not answer ACCEPT_FAILED, which it answers for an attempt the person was told
 // had failed.
 func TestASessionAcceptsAQueuedAttemptAsItsTurn(t *testing.T) {
+	t.Parallel()
 	listener := stoppedAndLive(t)
 	handler, database := newTargetedMessageHandler(t, listener.url)
 
@@ -402,6 +408,7 @@ func TestASessionAcceptsAQueuedAttemptAsItsTurn(t *testing.T) {
 // The delivery sweep resumes and settles the attempts a dead sender left pending. A queued
 // attempt is not one of them - the listener took its message - so a pass leaves it as it is.
 func TestTheSweepLeavesAQueuedAttemptAlone(t *testing.T) {
+	t.Parallel()
 	listener := stoppedAndLive(t)
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.url})
 	ctx := context.Background()
@@ -444,6 +451,7 @@ func TestTheSweepLeavesAQueuedAttemptAlone(t *testing.T) {
 // because the sweep never saw the request, and the attempt an earlier release opened, whose row
 // carries none. An ordinary send's attempt without the flag is queued.
 func TestTheSweepResumesAStrandedSwitchAsConnectedOnly(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name          string
 		body          string
@@ -516,6 +524,7 @@ func TestTheSweepResumesAStrandedSwitchAsConnectedOnly(t *testing.T) {
 // listener's own reason. Nothing is stored for the session, so nothing applies at an unknown
 // later time.
 func TestTheModelSwitchToAStoppedSessionIsRefusedAndQueuesNothing(t *testing.T) {
+	t.Parallel()
 	listener := stoppedAndLive(t)
 	handler, database := newTargetedMessageHandler(t, listener.url)
 
@@ -558,6 +567,7 @@ func TestTheModelSwitchToAStoppedSessionIsRefusedAndQueuesNothing(t *testing.T) 
 // message asked for one. Each attempt is settled failed with the listener's own reason and the
 // listener stores nothing, so no `/model` line waits for the session to run again.
 func TestARetryOfARefusedSwitchIsRefusedAgainAndQueuesNothing(t *testing.T) {
+	t.Parallel()
 	listener := stoppedAndLive(t)
 	handler, database := newTargetedMessageHandler(t, listener.url)
 
@@ -617,6 +627,7 @@ func TestARetryOfARefusedSwitchIsRefusedAgainAndQueuesNothing(t *testing.T) {
 // request asked, which only the agents route takes; a request that asks it holds any message to a
 // running session, a switch or not.
 func TestTheSwitchRuleCaseByCase(t *testing.T) {
+	t.Parallel()
 	const line = "/model anthropic/claude-x"
 	const person, session = `{"kind":"user","id":"alice"}`, `{"kind":"session","id":"s2"}`
 	for _, row := range []struct {
@@ -913,6 +924,7 @@ func (rig switchRuleRig) sweep(t *testing.T) {
 // session that is running now, the stopped session refuses it, and nothing is stored for it - as
 // it is for the same switch sent afresh.
 func TestARetryOfASwitchAnEarlierReleaseWroteIsRefusedForAStoppedSession(t *testing.T) {
+	t.Parallel()
 	listener := stoppedAndLive(t)
 	handler, database := newTargetedMessageHandler(t, listener.url)
 
@@ -955,6 +967,7 @@ func TestARetryOfASwitchAnEarlierReleaseWroteIsRefusedForAStoppedSession(t *test
 // message a session sent", which plan v5's switch table queues for a stopped session (R6), and
 // no switch: the switch rule holds only the shape a session runs as its turn.
 func TestASwitchLineAnAgentSentForItsPersonIsQueuedForAStoppedSession(t *testing.T) {
+	t.Parallel()
 	listener := stoppedAndLive(t)
 	handler, database := newTargetedMessageHandler(t, listener.url)
 	token := mintPersonalToken(t, handler, "alice", actingTokenName, nil)
@@ -981,6 +994,7 @@ func TestASwitchLineAnAgentSentForItsPersonIsQueuedForAStoppedSession(t *testing
 // it must read as no holder at all and the read must not ask for stopped sessions. A delivery's
 // read of the same session, beside it, finds it.
 func TestTheClaimHoldersLivenessReadNeverAsksForStoppedSessions(t *testing.T) {
+	t.Parallel()
 	listener := stoppedAndLive(t)
 	_, _, deps := newTestServer(t, testServerOptions{envoyURL: listener.url})
 	direct := directServer(deps)
