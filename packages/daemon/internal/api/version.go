@@ -3072,13 +3072,13 @@ package api
 // and #4539, 207 #3993, #4273, #4392, #4432, #4590, #4682, #4723 and #4805, 208 #2230, 209 #4049,
 // #4540 and #4580, 210 #4661, 211 #4611, 212 #3831 and #4771, 213 #4030 and #4553, 214 #4592 and
 // #4596, 215 #4065, and nothing above 215.)
-// 222: the design gate of a spec-source root opens with no person for a version of its change
+// 227: the design gate of a spec-source root opens with no person for a version of its change
 // request that proposes nothing (R23), and its tree lands nothing until Dispatch's ending
 // condition holds at the head that would land (D10). `GET /legion/v1/state` gains, on each
 // issue's `designGate`, `exemptVersion` (the version that opened the gate with no person, null
 // for none) and `rule` (`approval` or `change_request`, the rule the gate started under, which a
 // later registration keeps, R24), and on each `gatedSteps` entry `exemptVersion` and the status
-// `exempt` (api.GateView, api.GatedStepView). A caller below 222 is served the three keys left
+// `exempt` (api.GateView, api.GatedStepView). A caller below 227 is served the three keys left
 // off (shaping.go's withoutGateExemption) and a step in `exempt` without its `status`
 // (withoutExemptStatus), which its schema reads as optional. No request shape moves:
 // `POST /legion/v1/gates/register` takes what it took, and reads Dispatch's change request for
@@ -3088,9 +3088,11 @@ package api
 // the controller (`record.validNoticeKinds`); an outbox payload is decoded strictly, so the way
 // back of this change's migration (`store/migrations/20261122104755_spec_gate_exemption.up.sql`)
 // deletes their unsent rows and the queued `spec_ending_read` rows before a rollback.
-// (This entry takes 222, the lowest number above every number this branch, origin/main and the
-// open heads hold, in a reading of `const DaemonAPIVersion` at each of the 2987 refs under
-// refs/remotes made at 2026-11-22T11:30:51Z: this branch 216, origin/main (f02514268a) 205, and
-// the highest of the heads 221, which two open heads declare. Read the
-// base's own number and every open head again at every forward merge rather than from this line.)
-const DaemonAPIVersion = 222
+// (This entry takes 227, the lowest number above every number this branch, origin/main and the
+// open heads hold, in a reading of `const DaemonAPIVersion` at the head of each of the 445 open
+// pull requests, made between 2026-11-22T15:28:17Z and 15:41:50Z: this branch 216, origin/main
+// 213, and the heads from 222 up: 222 #4661, 223 #4805, 224 #4960, 225 #4580, 226 #4175 and
+// #5017, and nothing above 226. It first took 222, from a reading at 2026-11-22T11:30:51Z, and
+// open heads declared 222 to 226 after it. Read the base's own number and every open head again
+// at every forward merge rather than from this line.)
+const DaemonAPIVersion = 227

@@ -497,7 +497,7 @@ func populatedState(t *testing.T) State {
 					CurrentVersion:  7,
 					ApprovedVersion: &approvedVersion,
 					// The gate started under the rule of a person's approval and no version
-					// opened it with no person (contract 222).
+					// opened it with no person (contract 227).
 					Rule: record.GateRuleApproval.Word(),
 				},
 				// The fixture's deployment gates `root-issues`, which resolves to the one step

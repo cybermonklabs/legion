@@ -2,7 +2,7 @@ kind: Added
 body: |-
   The bundled `dispatch` command gains `dispatch outcomes`, which records and reads the lists of
   outcomes of a pull request head, and `dispatch spec-ending`, which tells whether the change
-  request of an issue may land at a head. The plugin declares daemon API contract 222 in
+  request of an issue may land at a head. The plugin declares daemon API contract 227 in
   `package.json`'s `legion.daemonApiVersion`.
 time: 2026-11-22T12:24:18Z
 custom:

@@ -494,16 +494,16 @@ func valueStripCases() map[string]valueStripCase {
 				Place: 1, Length: 1, Part: "returned", Kind: undeclaredValue, PartPlace: 1, PartLength: 1,
 			}},
 		},
-		// A pod recording 189 and 222 reads a gated step's `status` through its 189 process, which
-		// parses it with an enumeration of the four words before 222 and refuses the whole body for
+		// A pod recording 189 and 227 reads a gated step's `status` through its 189 process, which
+		// parses it with an enumeration of the four words before 227 and refuses the whole body for
 		// `exempt`, so a step in it is served without its `status`, which that reader takes as
 		// optional. Every other step stays as it is. The pod's reading counts only the claims below
 		// shapedAnswersContract (podContracts: a process from 193 on states its own contract), so
-		// the 222 claim is not counted and the pod's 189 process decides both halves; a pod whose
-		// one counted claim is at 222 cannot be built, and a pod at 222 alone is counted as no pod
+		// the 227 claim is not counted and the pod's 189 process decides both halves; a pod whose
+		// one counted claim is at 227 cannot be built, and a pod at 227 alone is counted as no pod
 		// and served whole, which is the `alone` reading. For the same reason the case names no
 		// value that arrived with the field: no pod can record a contract below `status`'s
-		// arrival at 55 beside a counted contract at or above 222.
+		// arrival at 55 beside a counted contract at or above 227.
 		droppedGatedStepStatus: {
 			state: exemptStepState, low: 189, high: specGateContract,
 			carries: func(t *testing.T, body []byte) bool {

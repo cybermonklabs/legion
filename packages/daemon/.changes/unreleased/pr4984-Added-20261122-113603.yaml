@@ -14,10 +14,12 @@ body: |-
   A tree whose gate opened with no person lands nothing until Dispatch's ending condition holds at
   the head that would land. The merger's start waits while it waits. A head move in merging, a
   recorded outcome list (`spec.outcomes_recorded`), and a version or an approval of the root's spec
-  each read it again. The running merger is told when the gate closes or opens for its head, and its
-  start task says to run `dispatch spec-ending` before each merge and each enqueue. The root's
-  architect gets one `spec-ending-waits` notice per reason per head. A released merger is not woken
-  while the recorded reading waits. A refused approval of a stale change request
+  each read it again. The running merger is told when the gate closes or opens for its head, while
+  every other gated step stands open, and its start task says to run `dispatch spec-ending` before
+  each merge and each enqueue. A person's opening of another gated step tells the merger that the
+  merge still waits for the ending condition. The root's architect gets one `spec-ending-waits`
+  notice per reason per head. A released merger is not woken while the recorded reading waits. A
+  refused approval of a stale change request
   (`spec.request_stale`) now reaches the root's architect in one `spec-request-stale` notice, or
   the controller, which names an owner, when no architect holds the tree.
 
@@ -29,9 +31,9 @@ body: |-
   of a version that proposes nothing. Such a root keeps its own acceptance checks, ends its spec in
   a `conclusion` block, and is told what the two new notices ask.
 
-  Daemon API contract 222: `GET /legion/v1/state` gains `designGate.exemptVersion`,
+  Daemon API contract 227: `GET /legion/v1/state` gains `designGate.exemptVersion`,
   `designGate.rule`, each gated step's `exemptVersion` and the gated-step status `exempt`, all left
-  off for a caller below 222. Migration `20261122104755_spec_gate_exemption` adds the two gate
+  off for a caller below 227. Migration `20261122104755_spec_gate_exemption` adds the two gate
   columns, the table `spec_endings` and the outbox kind `spec_ending_read`. Its header carries the way
   back, which deletes the queued rows no earlier release decodes.
 time: 2026-11-22T11:36:03Z

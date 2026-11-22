@@ -2577,7 +2577,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's
   // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
   // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Two bands stand
-  // above 199: the repositories block's at 202, and the spec gate's at 222, which leaves off each
+  // above 199: the repositories block's at 202, and the spec gate's at 227, which leaves off each
   // issue's `designGate.exemptVersion` and `designGate.rule` and each gated step's
   // `exemptVersion`. So the narrowing changes the one block and those keys, and nothing beside.
   const { daemonApiVersion } = z
