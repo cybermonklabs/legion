@@ -738,20 +738,27 @@ func TestEachTickFetchesWithTheTokenFileAsItIsThen(t *testing.T) {
 // A fetch that fails is logged, and the cache stays ready on its last good state: the head it had.
 func TestAFailedFetchKeepsTheCacheReady(t *testing.T) {
 	remote := newRemote(t)
-	opts := testOptions(t, newTestRunner(t, remote))
+	run := newTestRunner(t, remote)
+	opts := testOptions(t, run)
 	opts.Refresh = 50 * time.Millisecond
 	c := start(t, opts)
+	c.ready(t)
+	// Each tick's fetch that succeeds publishes its own lastFetchAt, so the last good state is
+	// read while the next tick's fetch is held: the refresh before it has published, and none
+	// publishes again until the release, which comes once the remote is gone. Read while the ticks
+	// ran, that state was overtaken whenever a fetch landed between the read and the removal.
+	started, release := run.hold()
+	testwait.Receive(t, "the next tick's fetch", started)
 	before := c.ready(t)
 	if err := os.RemoveAll(remote); err != nil {
 		t.Fatal(err)
 	}
+	release()
 
-	deadline := time.Now().Add(testTimeout)
-	for !logged(c.log.all(), "fetch failed; serving the clone as it was: ") {
-		if time.Now().After(deadline) {
-			t.Fatalf("no failed fetch was logged: %q", c.log.all())
-		}
-		time.Sleep(20 * time.Millisecond)
+	if !testwait.Holds(testwait.Bounded(t, 1<<60, testTimeout), testwait.Poll, func() bool {
+		return logged(c.log.all(), "fetch failed; serving the clone as it was: ")
+	}) {
+		t.Fatalf("no failed fetch was logged: %q", c.log.all())
 	}
 	if status, health := c.health(t); status != http.StatusOK || !health.Ready || health.Head != before.Head || health.LastFetchAt != before.LastFetchAt {
 		t.Fatalf("/healthz after a failed fetch answers %d %+v, want ready on %+v", status, health, before)
