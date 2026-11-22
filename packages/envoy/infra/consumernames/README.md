@@ -13,9 +13,10 @@ before it, a logical name has one physical name, its fixed name. A family's reco
 | `daemon/<project key>` | a Legion daemon's `legion-go-<project key>-<kind>`, kind `dispatch`, `github`, `wake` or `ready` | `<fixed name>~<nuid>` | the `intake_consumers` table of that daemon's own database |
 
 Each store holds a sentinel beside its records: the bucket's key `envoy.bucket`, a table's row
-`envoy.sentinel`. Its `cutover` marker reads `done` once `convert` (or, for a daemon store made
-later, `enroll`) has converted the family, and `rolled_back` once `restore --finish` has rolled it
-back. The secrets broker keeps a cutover row for each family beside the markers.
+`envoy.sentinel/<family>` (`envoy.sentinel/dispatch`, `envoy.sentinel/daemon/<project key>`). Its
+`cutover` marker reads `done` once `convert` (or, for a daemon store made later, `enroll`) has
+converted the family, and `rolled_back` once `restore --finish` has rolled it back. The secrets
+broker keeps a cutover row for each family beside the markers.
 
 The commands move every family from the fixed names to fresh ones (the cutover), recover a lost
 bucket, roll every family back to the fixed names, enrol a daemon store made after the cutover,
@@ -75,8 +76,9 @@ store whose database answers that it does not exist.
 
 Each line is read with its surrounding white space cut. A file whose first line is empty is
 refused, naming the flag; the URL is never echoed. Every command opens the URL on the first line.
-Only `envoy-infra streams census` and `cleanup --gone` read the second line, to check the store
-against the one source of its address (below), so a file of one line serves every other command.
+`envoy-infra streams census`, `cleanup --gone` and, for a daemon store whose database answers that
+it does not exist, `status` read the second line, to check the store against the one source of its
+address (below). A file of one line serves every other reading.
 Below, `<store flags>` stands for `--dispatch-database-file` and one `--daemon-database` for each
 daemon:
 
@@ -189,7 +191,7 @@ A daemon store whose database answers SQLSTATE 3D000 (the database does not exis
 by the address rule ([The daemon stores' addresses](#the-daemon-stores-addresses)), with the
 addresses read through the hold's Kubernetes flags. When the server at the address the store's one
 source names answers 3D000, `status` prints the store `gone` and goes on, so a broker cutover row
-that names a deleted project no longer keeps every reading UNKNOWN; no command removes that row.
+that names a deleted project does not keep every reading UNKNOWN; no command removes that row.
 Any other answer the rule finds (an address no one source names, that is not that source's, or
 that another source names too, a server that answers otherwise) keeps the store UNKNOWN, naming
 why: `daemon/P's store answers SQLSTATE 3D000, and the census's rule does not confirm it gone:
@@ -206,10 +208,11 @@ marker. What each means for `convert`:
 | `BLOCKER` line | What it is | What `convert` does with it |
 | --- | --- | --- |
 | `F: its store is missing` | the bucket, or F's `intake_consumers` table, does not exist | `session`: `create-bucket` makes the bucket inside the cutover hold; without it `convert` stops. `dispatch` or `daemon/P`: `convert` stops when F is one of its families, until the database's migration makes the table (Dispatch's `20261121002206_intake_consumers`, the daemon's `20261121001600_intake_consumers`) |
-| `F: its store has no sentinel` | the store holds no sentinel | `session`: `convert` stops. `create-bucket` writes the sentinel into a bucket that holds no key but this hold's barrier; a bucket that holds records and no sentinel is UNKNOWN to it, and `repair-sentinel` stops on a missing sentinel. `dispatch` or `daemon/P`: no stop; `convert` writes the sentinel |
+| `F: its store has no sentinel` | the store holds no sentinel | `session`: `convert` stops. `create-bucket` writes the sentinel into a bucket that holds no key but hold barrier keys, this hold's or another's; a bucket that holds records and no sentinel is UNKNOWN to it, and `repair-sentinel` stops on a missing sentinel. `dispatch` or `daemon/P`: no stop; `convert` writes the sentinel |
 | `session K: its record's last write is a delete marker` | K's record is lost | when K's fixed name is in its set, `convert` gives K no start and stops once every other name is converted, naming `replay --key K`. Run `replay --key K --from SEQ` in the cutover hold before `convert`, and it does not stop on K. The cutover's census is UNKNOWN on any deleted record and removes nothing |
 | `F K: its current NAME is not on ENVOY_NOTIFICATIONS` | the record selects a consumer the stream does not hold | no stop. `replay --key K` clears it: the record then selects no current |
 | `F K: an open KIND (candidate C, old O, owner W, reserved T)` | a creator, `convert` or `replace` left an operation in flight | `convert` settles it first, for a name of its set, and goes on. An open replace whose candidate and old name are both gone, and whose configuration `convert`'s saved set does not hold, is UNKNOWN |
+| `F K: its family's creator refuses the record: WHY` | the record names a consumer outside K's family: its current, a retired name or an open operation's candidate is no `<prefix>~<nuid>` name of K, or its old name is neither such a name nor K's fixed name (`selection.CheckFamily`) | not one of `convert`'s checks; the census and `cleanup` refuse such a record |
 | `F: the fixed name NAME is on ENVOY_NOTIFICATIONS` | a consumer by its fixed name | what `convert` converts. Before a first cutover there is one for each logical name. When `dispatch` is one of its families, `convert` converts both of Dispatch's durables: a `delivery-events` or `delivery-jobs` line missing here means that durable is not on the stream, and if `prepare` does not list it either, `convert` gives it no start, and stops late, unless Dispatch's hold token or its record holds one. The hold token is the `duty_holds` row `delivery-intake-<durable>` of Dispatch's database, whose token ends ` start=<seq>` when it holds one. `prepare` prints only a count, so run `replay --key <durable> --from SEQ` in the cutover hold before `convert` for each durable with no line here: `convert` takes the lowest of every start it knows, so the replay's start never raises another, and it does not stop on that durable |
 
 SEQ, for `replay`, is the first stream sequence the name's fresh consumer is to deliver: a lower one
@@ -307,7 +310,7 @@ status --hold ID` and in each command's refusal.
 Then `convert` saves its set, the hold's record of kind `convert` and key `set`: its first change.
 It runs the held re-read again before its first change to the hub. After that, a stop records the
 set and what `convert` made of it, so `hold release` is refused, and the way out is `convert`'s
-rerun or `hold abort`. Two refusals come only after it has converted names:
+rerun or `hold abort`. Two exits come only after it has converted names:
 
 - a logical name with no safe start, a stop once every other name is converted: `no safe start for
   K (<why>); ...: give each one with consumer-names replay --key <K> --from <seq> --hold ID, then
