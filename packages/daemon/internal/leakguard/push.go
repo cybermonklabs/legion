@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -86,7 +87,8 @@ type PushRequest struct {
 	// Dir is the repository the push is made from, which the shared check and the git commands
 	// that read the records both run in.
 	Dir string
-	// Remote is the remote's name, as git hands it to a pre-push hook ("origin").
+	// Remote is the remote's name, as git hands it to a pre-push hook ("origin"): for a push to a
+	// URL rather than to a remote (`git push <url>`), git hands the URL as typed here.
 	Remote string
 	// URL is the remote's URL, as git hands it to a pre-push hook. The destination repository is
 	// read from it (RepoFromURL).
@@ -153,15 +155,28 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 // pushRecords is everything a push would publish, as records: one per ref name, and for each
 // commit the push would add, one for the author identity, one for the committer identity, one
 // for the message, one for each added or renamed path and one for each added line. A commit
-// reached by two of the push's refs is read once.
+// reached by two of the push's refs is read once. A deletion adds no commit, and a push of
+// deletions alone reads nothing of the repository.
 func (g *Guard) pushRecords(ctx context.Context, req PushRequest) ([]Record, error) {
 	var records []Record
 	read := map[string]bool{}
+	var held []string
+	heldRead := false
 	for _, update := range req.Updates {
 		if ref := update.ref(); ref != "" {
 			records = append(records, RefRecord(ref))
 		}
-		commits, err := g.commits(ctx, req, update)
+		if update.LocalSHA == "" || zeroSHA(update.LocalSHA) {
+			continue
+		}
+		if !heldRead {
+			var err error
+			if held, err = g.heldRemotes(ctx, req); err != nil {
+				return nil, err
+			}
+			heldRead = true
+		}
+		commits, err := g.commits(ctx, req.Dir, held, update)
 		if err != nil {
 			return nil, err
 		}
@@ -180,37 +195,118 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest) ([]Record, err
 	return records, nil
 }
 
-// commits are the commits one update would add to the destination, oldest first: the commits
-// the local side has, less the ones the destination is taken to hold already. It holds every
-// commit on one of the repository's remote-tracking refs (the named remote's, or every remote's
-// where the push names none): a commit there was fetched from the destination, so the push does
-// not publish it. Where the destination has a commit at the ref and the repository has it too,
-// it also holds that commit and everything before it. The remote-tracking refs count for a ref
-// the destination has as much as for a new one. Without them, a forward merge (the default
-// branch merged onto an older tip of the branch) would read every commit of the default branch
-// since that tip, not only the merge and the branch's own commits. A deletion adds no commit.
-func (g *Guard) commits(ctx context.Context, req PushRequest, update Update) ([]string, error) {
-	if update.LocalSHA == "" || zeroSHA(update.LocalSHA) {
+// heldRemotes are the remotes whose remote-tracking refs say what the push's destination holds.
+// Where the push names a remote of the repository, that remote is the one. git hands a pre-push
+// hook the URL where the remote's name goes for a push to a URL (`git push <url>`), and no
+// tracking ref is filed under a URL; for such a push the remotes are each one whose every URL,
+// fetch and push, names the repository the push's URL names on GitHub (RepoFromURL, letter case
+// aside), so that a token in the userinfo, ssh's scp syntax and the https form all name one
+// repository. The URLs on both sides are git's own, after its insteadOf rewriting. A push to a
+// URL that names no repository on GitHub, or one no remote names, holds no remote: none is shown
+// to be the destination, and a remote that is not the destination says nothing of what the
+// destination holds.
+//
+// The URLs are read with `git remote get-url`, which prints a URL and nothing else, and not from
+// `git remote -v`, which writes a blobless clone's filter after its fetch URL.
+func (g *Guard) heldRemotes(ctx context.Context, req PushRequest) ([]string, error) {
+	out, err := g.git(ctx, req.Dir, "remote")
+	if err != nil {
+		return nil, err
+	}
+	// One name a line; a remote's name holds no space, since git refuses a remote whose tracking
+	// refs would have an invalid name.
+	names := strings.Fields(out)
+	if slices.Contains(names, req.Remote) {
+		return []string{req.Remote}, nil
+	}
+	repo := RepoFromURL(req.URL)
+	if repo == "" {
 		return nil, nil
 	}
-	argv := []string{"rev-list", "--reverse", update.LocalSHA, "--not"}
-	held, err := g.holds(ctx, req.Dir, update.RemoteSHA)
+	other := func(url string) bool { return !strings.EqualFold(RepoFromURL(url), repo) }
+	var held []string
+	for _, name := range names {
+		fetch, err := g.git(ctx, req.Dir, "remote", "get-url", "--all", "--", name)
+		if err != nil {
+			return nil, err
+		}
+		push, err := g.git(ctx, req.Dir, "remote", "get-url", "--push", "--all", "--", name)
+		if err != nil {
+			return nil, err
+		}
+		if urls := strings.Fields(fetch + push); len(urls) > 0 && !slices.ContainsFunc(urls, other) {
+			held = append(held, name)
+		}
+	}
+	return held, nil
+}
+
+// commits are the commits one update would add to the destination, oldest first: the commits
+// the local side has, less the ones the destination is taken to hold already. It holds every
+// commit on a remote-tracking ref of the held remotes (heldRemotes): a commit there was fetched
+// from the destination, so the push does not publish it. Where the destination has a commit at
+// the ref and the repository has it too, it also holds that commit and everything before it. The
+// remote-tracking refs count for a ref the destination has as much as for a new one. Without them,
+// a forward merge (the default branch merged onto an older tip of the branch) would read every
+// commit of the default branch since that tip, not only the merge and the branch's own commits.
+//
+// In a shallow repository the walk from a remote-tracking ref stops at a shallow commit, whose
+// parents the repository does not hold, so the destination's commits beneath it read as the
+// push's own: a scan of history the destination has published, refused over a commit it already
+// holds. A commit of the push with parents the repository does not hold is therefore refused
+// rather than read (shallowFloor).
+func (g *Guard) commits(ctx context.Context, dir string, held []string, update Update) ([]string, error) {
+	// --parents writes each commit's parents after it, as the repository holds them: none for a
+	// root commit, and none for a shallow one.
+	argv := []string{"rev-list", "--reverse", "--parents", update.LocalSHA, "--not"}
+	has, err := g.holds(ctx, dir, update.RemoteSHA)
 	if err != nil {
 		return nil, err
 	}
-	if held {
+	if has {
 		argv = append(argv, update.RemoteSHA)
 	}
-	remotes := "--remotes"
-	if req.Remote != "" {
-		remotes += "=" + req.Remote
+	for _, remote := range held {
+		argv = append(argv, "--remotes="+remote)
 	}
-	argv = append(argv, remotes)
-	out, err := g.git(ctx, req.Dir, argv...)
+	out, err := g.git(ctx, dir, argv...)
 	if err != nil {
 		return nil, err
 	}
-	return strings.Fields(out), nil
+	var commits []string
+	for line := range strings.Lines(out) {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) == 1 {
+			if err := g.shallowFloor(ctx, dir, fields[0], held); err != nil {
+				return nil, err
+			}
+		}
+		commits = append(commits, fields[0])
+	}
+	return commits, nil
+}
+
+// shallowFloor is an error where commit, which the repository holds no parent of, is a shallow
+// commit rather than a root commit: its own object names parents, which a fetch with a depth left
+// out. The error names the commit and the fetch that brings its parents in, from the remote the
+// push holds commits of, or the repository's default one where it holds none.
+func (g *Guard) shallowFloor(ctx context.Context, dir, commit string, held []string) error {
+	object, err := g.git(ctx, dir, "cat-file", "commit", commit)
+	if err != nil {
+		return err
+	}
+	header, _, _ := strings.Cut(object, "\n\n")
+	if !strings.HasPrefix(header, "parent ") && !strings.Contains(header, "\nparent ") {
+		return nil
+	}
+	fetch := "git fetch --unshallow"
+	if len(held) > 0 {
+		fetch += " " + held[0]
+	}
+	return fmt.Errorf("commit %s is a shallow commit of this repository, which holds none of its parents, so which of the commits beneath it the destination holds cannot be read; `%s` fetches them, and the push can then be made again", short(commit), fetch)
 }
 
 // holds is whether the repository has the commit sha names: false for a ref the push creates

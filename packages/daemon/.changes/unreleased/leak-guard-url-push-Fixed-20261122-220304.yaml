@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+    The leak guard reads only the commits a push to a URL adds. For `git push <url>` git hands the
+    pre-push hook the URL where a remote's name goes, and the guard held the remote-tracking refs of
+    a remote of that name, which has none, so it read all the history the destination already held:
+    one such push to GitHub ran 83.7 minutes in the guard and was refused over a commit already on
+    main, where the same push to `origin` took 18 s. The guard now holds the tracking refs of each
+    remote whose every URL names the GitHub repository the push's URL names, with a token in the
+    userinfo, ssh's scp syntax and letter case ignored. A URL that no remote names still has every
+    commit read. A push from a shallow repository whose commits run down to a shallow commit is
+    refused at once, naming the commit and the `git fetch --unshallow <remote>` that brings in its
+    parents: the guard read the destination's commits beneath the shallow boundary as the push's
+    own.
+time: 2026-11-22T22:03:04Z
+custom:
+    Issue: leak-guard-url-push
