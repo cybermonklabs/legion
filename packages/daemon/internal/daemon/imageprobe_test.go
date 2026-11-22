@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -189,10 +191,17 @@ func cutsOff(plan []string) bool {
 	return slices.ContainsFunc(plan, func(step string) bool { return strings.HasSuffix(step, "hang") })
 }
 
+// cutOffRan reads, from a waited-out attempt's line, the time the attempt ran before the budget
+// killed it ("timed out after <budget> (ran <seconds> s)", bootgate's ran.killed).
+var cutOffRan = regexp.MustCompile(`timed out after ` + regexp.QuoteMeta(cutOffLimit.String()) + ` \(ran ([0-9.]+) s\)`)
+
 // cutOffAttempts checks a case run under cutOffLimit, where the probe named probe ran n attempts
 // and its plan holds at least planned: every attempt but the last was cut off by the budget and
-// waited out, each logged as a transient failure that names the budget, so the probe ran at least
-// the plan's attempts and any more were attempts the box was too slow to answer within the budget.
+// waited out, each logged as a transient failure that names the budget and ran the whole of it, so
+// the probe ran at least the plan's attempts and any more were attempts the box was too slow to
+// answer within the budget. An attempt the box answered inside the budget is no cut-off, whatever
+// its line says: a probe that waits out an answer and names it a cut-off fails here by name. The
+// time is printed to a tenth of a second, so an attempt the budget ended reads cutOffLimit or more.
 // refused, where not empty, is an answer the probe refuses at once even when the budget then cut
 // the attempt off (the pi.agents probe's noAgentsMarker): no waited-out attempt may carry it, so a
 // probe that waits out such an answer fails here by name, however slow the box.
@@ -208,8 +217,13 @@ func cutOffAttempts(t *testing.T, logged, probe string, n, planned int, refused 
 		t.Errorf("the %s probe ran %d times with %d transient failures, want at least %d times, each but the last waited out:\n%s", probe, n, len(cut), planned, logged)
 	}
 	for _, line := range cut {
-		if !strings.Contains(line, "timed out after "+cutOffLimit.String()) {
+		ran := cutOffRan.FindStringSubmatch(line)
+		if ran == nil {
 			t.Errorf("a transient failure of the %s probe is no cut-off by its %s budget: %s", probe, cutOffLimit, line)
+			continue
+		}
+		if seconds, err := strconv.ParseFloat(ran[1], 64); err != nil || seconds < cutOffLimit.Seconds() {
+			t.Errorf("the %s probe waited out an attempt that ran %s s, under its %s budget, as a cut-off: an answer, not a cut-off: %s", probe, ran[1], cutOffLimit, line)
 		}
 		if refused != "" && strings.Contains(line, refused) {
 			t.Errorf("the %s probe waited out an attempt that answered %s, which it refuses at once: %s", probe, refused, line)
@@ -520,7 +534,8 @@ func TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 			n := f.attempts(t, "session")
 			if cut {
 				// The session probe judges a cut-off before what the attempt printed, so an
-				// answer the box printed before the budget cut it off is a cut-off too.
+				// answer the box printed before the budget cut it off is a cut-off too; an
+				// attempt it answered inside the budget is none (cutOffAttempts reads its time).
 				cutOffAttempts(t, logged.String(), "OMP session storage setting", n, testCase.attempts, "")
 			} else if n != testCase.attempts {
 				t.Errorf("the session-storage probe ran %d times, want %d", n, testCase.attempts)
