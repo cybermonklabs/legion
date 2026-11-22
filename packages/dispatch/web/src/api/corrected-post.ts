@@ -151,7 +151,9 @@ export const CORRECTED_POST_FAMILIES: Readonly<Record<string, FamilyWrite>> = {
    *  hold no comment or message. */
   issue: (answer, post, queryKey) => {
     if (queryKey.length === 2) {
-      return renamedVersionInIssue(answer as IssueDetails, post);
+      return post.renamedVersion === undefined
+        ? undefined
+        : renamedVersionInIssue(answer as IssueDetails, post);
     }
     return queryKey[2] === "references"
       ? markedIssueReferences(answer as IssueReferencesAnswer, post)
@@ -1217,15 +1219,11 @@ function markedEdge(edge: GraphEdge, post: CorrectedPost): GraphEdge | undefined
 
 /** An issue's references read (`["issue", key, "references"]`) once `post` is corrected: each row
  *  of `links` and `linked_from` whose node is the post or a block of it (`markedReferenceLink`);
- *  undefined where none is. An answer from a build before the one-hop read, with no `links`,
- *  holds `members` alone, which are documents, and is left as it is. */
+ *  undefined where none is. */
 function markedIssueReferences(
   answer: IssueReferencesAnswer,
   post: CorrectedPost
 ): IssueReferencesAnswer | undefined {
-  if (answer.links === undefined) {
-    return undefined;
-  }
   const mark = (row: ReferenceLink) => markedReferenceLink(row, post);
   const links = markEach(answer.links, mark);
   const linkedFrom = markEach(answer.linked_from, mark);

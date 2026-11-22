@@ -13,7 +13,13 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { correction, correctionFeed, DELETION, EDITED_AT } from "../__tests__/correction-feed";
+import {
+  correction,
+  correctionFeed,
+  DELETION,
+  EDITED_AT,
+  readAroundAFailedRefetch,
+} from "../__tests__/correction-feed";
 import { graphNode } from "../__tests__/graph-fixture";
 import { messageCorrectionFields } from "../__tests__/message-fixture";
 import { useMarginItems } from "../features/margin/useMarginItems";
@@ -1105,12 +1111,13 @@ test("a delete empties the name of an issue's references row whose node is the p
     const client = new QueryClient();
     client.setQueryData(key, read());
     markCorrectedPost(client, POST_DELETES[kind]);
-    const [post, other] = client.getQueryData<IssueReferences>(key)?.[list] ?? [];
+    const rows = client.getQueryData<IssueReferences>(key)?.[list];
+    const post = rows?.[0];
     expect(
       { deleted_at: post?.node.deleted_at, deleted_by: post?.node.deleted_by, name: post?.name },
       kind
     ).toEqual({ ...DELETION, name: "" });
-    expect(other, kind).toEqual(read()[list]?.[1]);
+    expect(rows?.[1], kind).toEqual(read()[list]?.[1]);
   }
 });
 
@@ -1362,27 +1369,6 @@ test("an answer a read out at a delete lands with the post's words keeps the del
 // issue's references read again, and here that read fails: the answer the tab draws keeps the
 // delete's mark and an empty name, and none of the comment's words.
 test("an issue's references read whose refetch fails after a linking comment's delete keeps the delete's mark, an empty name and none of its words", async () => {
-  const key = ["issue", "CORE-1", "references"];
-  let reads = 0;
-  const fetchReferences = (): Promise<IssueReferences> => {
-    reads += 1;
-    return reads === 1
-      ? Promise.resolve(commentReferences())
-      : Promise.reject(new Error("the read failed"));
-  };
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
-  const feed = correctionFeed(client);
-  const hook = renderHook(
-    () => {
-      useEventFeed();
-      return useQuery({ queryFn: fetchReferences, queryKey: key });
-    },
-    {
-      wrapper: ({ children }: { children: ReactNode }) =>
-        createElement(QueryClientProvider, { client }, children),
-    }
-  );
   const deleted = {
     ...correction("comment", POST, false, {
       issue_key: "OPS-1",
@@ -1391,25 +1377,22 @@ test("an issue's references read whose refetch fails after a linking comment's d
     issue_key: "OPS-1",
     project: "OPS",
   } as DispatchEvent;
-  const row = () => client.getQueryData<IssueReferences>(key)?.linked_from?.[0];
-
-  try {
-    await waitFor(() => expect(hook.result.current.data).toBeDefined());
-    expect(row()?.name).toBe(OLD_WORDS);
-    feed.start();
-    await feed.deliver(deleted, [key]);
-    expect(reads).toBe(2);
-    expect({
-      deleted_at: row()?.node.deleted_at,
-      deleted_by: row()?.node.deleted_by,
-      name: row()?.name,
-    }).toEqual({ ...DELETION, name: "" });
-    expect(JSON.stringify(client.getQueryData(key))).not.toContain(OLD_WORDS);
-  } finally {
-    hook.unmount();
-    feed.restore();
-    client.clear();
-  }
+  const read = await readAroundAFailedRefetch(
+    ["issue", "CORE-1", "references"],
+    commentReferences(),
+    deleted,
+    (cached) => {
+      const row = cached?.linked_from?.[0];
+      return {
+        deleted_at: row?.node.deleted_at,
+        deleted_by: row?.node.deleted_by,
+        name: row?.name,
+      };
+    }
+  );
+  expect(read.before.name).toBe(OLD_WORDS);
+  expect(read.after).toEqual({ ...DELETION, name: "" });
+  expect(read.kept).not.toContain(OLD_WORDS);
 });
 
 // The bound: a correction is kept for the reads out at its arrival of a query whose answer it

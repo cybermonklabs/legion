@@ -1,11 +1,6 @@
 import { expect, test } from "bun:test";
-import { QueryClient, QueryClientProvider, type QueryKey, useQuery } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
-import { createElement, type ReactNode } from "react";
 
-import { correction, correctionFeed } from "../__tests__/correction-feed";
-import { useEventFeed } from "./event-feed";
-import { whoAmIQuery } from "./queries";
+import { correction, readAroundAFailedRefetch } from "../__tests__/correction-feed";
 import type { Artifact, ArtifactVersionText, DispatchEvent, IssueDetails } from "./types";
 
 // The architect's ruling of 2026-11-20 09:18Z on dispatch://INFRA-1523: an accept names the
@@ -76,61 +71,13 @@ function deleteEvent(payload: Record<string, unknown> = {}): DispatchEvent {
 const versionNames = (document: Pick<Artifact, "versions"> | undefined) =>
   document?.versions?.map((version) => version.summary);
 
-/**
- * Caches `answer` under `queryKey` through a read whose every refetch fails, delivers `event` on
- * the page's event feed (`correctionFeed`), and answers the version names `names` reads of the
- * cached answer before the event and after the refetch the event sent has failed, with the whole
- * answer then as text.
- */
-async function namesAfterTheDelete<T>(
-  queryKey: QueryKey,
-  answer: T,
-  event: DispatchEvent,
-  names: (answer: T | undefined) => unknown
-): Promise<{ readonly before: unknown; readonly after: unknown; readonly kept: string }> {
-  let reads = 0;
-  const fetchAnswer = (): Promise<T> => {
-    reads += 1;
-    return reads === 1 ? Promise.resolve(answer) : Promise.reject(new Error("the read failed"));
-  };
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
-  const feed = correctionFeed(client);
-  const hook = renderHook(
-    () => {
-      useEventFeed();
-      return useQuery({ queryFn: fetchAnswer, queryKey });
-    },
-    {
-      wrapper: ({ children }: { children: ReactNode }) =>
-        createElement(QueryClientProvider, { client }, children),
-    }
-  );
-  try {
-    await waitFor(() => expect(hook.result.current.data).toBeDefined());
-    const before = names(client.getQueryData<T>(queryKey));
-    feed.start();
-    await feed.deliver(event, [queryKey]);
-    expect(reads).toBe(2);
-    return {
-      after: names(client.getQueryData<T>(queryKey)),
-      before,
-      kept: JSON.stringify(client.getQueryData(queryKey)),
-    };
-  } finally {
-    hook.unmount();
-    feed.restore();
-    client.clear();
-  }
-}
-
 test("a version a comment's delete renamed takes its new name in the issue's details, whose refetch fails", async () => {
   const issue = {
     artifacts: [documentRead()],
     key: "CORE-1",
     updated_at: "2026-11-19T01:00:00Z",
   } as unknown as IssueDetails;
-  const read = await namesAfterTheDelete(["issue", "CORE-1"], issue, deleteEvent(), (cached) =>
+  const read = await readAroundAFailedRefetch(["issue", "CORE-1"], issue, deleteEvent(), (cached) =>
     versionNames(cached?.artifacts?.[0])
   );
   expect({ after: read.after, before: read.before }).toEqual({
@@ -141,7 +88,7 @@ test("a version a comment's delete renamed takes its new name in the issue's det
 });
 
 test("a version a comment's delete renamed takes its new name in the document's own read, whose refetch fails", async () => {
-  const read = await namesAfterTheDelete(
+  const read = await readAroundAFailedRefetch(
     ["artifact", DOCUMENT],
     documentRead(),
     deleteEvent(),
@@ -168,7 +115,7 @@ test("a version a comment's delete renamed takes its new name in a project docum
     artifact_id: DOCUMENT,
     issue_key: null,
   } as unknown as DispatchEvent;
-  const read = await namesAfterTheDelete(
+  const read = await readAroundAFailedRefetch(
     ["artifact-ref", "CORE/notes"],
     project,
     event,
@@ -197,7 +144,7 @@ test("a version a comment's delete renamed takes its new name in each read of th
     ["artifact", DOCUMENT, "version", 2],
     ["artifact", DOCUMENT, 2],
   ]) {
-    const read = await namesAfterTheDelete(
+    const read = await readAroundAFailedRefetch(
       queryKey,
       version,
       deleteEvent(),

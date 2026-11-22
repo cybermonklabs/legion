@@ -1,8 +1,11 @@
 import { expect, setSystemTime } from "bun:test";
-import type { QueryClient, QueryKey } from "@tanstack/react-query";
-import { act, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider, type QueryKey, useQuery } from "@tanstack/react-query";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
 
+import { useEventFeed } from "../api/event-feed";
 import { liveSocketFor } from "../api/live-socket";
+import { whoAmIQuery } from "../api/queries";
 import { MIN_REFETCH_INTERVAL_MS } from "../api/query-refresh";
 import type { DispatchEvent } from "../api/types";
 import { tick } from "./fake-clock";
@@ -114,4 +117,53 @@ export function correctionFeed(
       if (!fakeClock) setSystemTime();
     },
   };
+}
+
+/**
+ * What `read` reads of the answer the cache holds under `queryKey` before `event` and after the
+ * refetch `event` sends has failed: the query is read once, answering `answer`, by a page that
+ * runs the event feed (`useEventFeed`, on `correctionFeed`), and every later read of it fails.
+ * `kept` is the whole answer the cache holds then, as text, so a row can check that no word of a
+ * deleted post is left in any field. The event must send exactly one refetch of the query.
+ */
+export async function readAroundAFailedRefetch<T, R>(
+  queryKey: QueryKey,
+  answer: T,
+  event: DispatchEvent,
+  read: (answer: T | undefined) => R
+): Promise<{ readonly before: R; readonly after: R; readonly kept: string }> {
+  let reads = 0;
+  const fetchAnswer = (): Promise<T> => {
+    reads += 1;
+    return reads === 1 ? Promise.resolve(answer) : Promise.reject(new Error("the read failed"));
+  };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  const feed = correctionFeed(client);
+  const hook = renderHook(
+    () => {
+      useEventFeed();
+      return useQuery({ queryFn: fetchAnswer, queryKey });
+    },
+    {
+      wrapper: ({ children }: { children: ReactNode }) =>
+        createElement(QueryClientProvider, { client }, children),
+    }
+  );
+  try {
+    await waitFor(() => expect(hook.result.current.data).toBeDefined());
+    const before = read(client.getQueryData<T>(queryKey));
+    feed.start();
+    await feed.deliver(event, [queryKey]);
+    expect(reads).toBe(2);
+    return {
+      after: read(client.getQueryData<T>(queryKey)),
+      before,
+      kept: JSON.stringify(client.getQueryData(queryKey)),
+    };
+  } finally {
+    hook.unmount();
+    feed.restore();
+    client.clear();
+  }
 }
