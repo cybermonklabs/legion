@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useEffect, useRef } from "react";
@@ -23,9 +23,7 @@ import {
   pageOwnWordsRule,
   pageStateText,
 } from "../../../theme/classes";
-import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
-import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import type { OutlineRequest } from "../IssueTree";
 import { artifactsBySlug } from "../issue-artifacts";
@@ -47,6 +45,7 @@ import {
 } from "../page-words";
 import { presetView } from "../presets";
 import { ViewStage } from "../slots/stage";
+import { AppProviders } from "../slots/stage-fixtures";
 import { decisionBehind } from "../tree-keys";
 import { overflowing, wordsScrollSheet } from "../words-scroll-fixtures";
 import { DecisionsFilterBody } from "./DecisionsFilterBody";
@@ -347,26 +346,22 @@ function renderBody(
     const held = main ? <PageChangeMain>{staged}</PageChangeMain> : staged;
     return (
       <MemoryRouter>
-        <QueryClientProvider client={client}>
-          <KeymapProvider>
-            <MarginProvider>
-              <IssueScope />
-              <Where />
-              {/* Inside `NoTooltips`, as the view's slot draws it, so an author is named as the
-                  page names one. */}
-              <NoTooltips>
-                {requests ? (
-                  <OutlineRequestProvider>
-                    <button type="button">Elsewhere</button>
-                    {held}
-                  </OutlineRequestProvider>
-                ) : (
-                  held
-                )}
-              </NoTooltips>
-            </MarginProvider>
-          </KeymapProvider>
-        </QueryClientProvider>
+        <AppProviders client={client}>
+          <IssueScope />
+          <Where />
+          {/* Inside `NoTooltips`, as the view's slot draws it, so an author is named as the
+              page names one. */}
+          <NoTooltips>
+            {requests ? (
+              <OutlineRequestProvider>
+                <button type="button">Elsewhere</button>
+                {held}
+              </OutlineRequestProvider>
+            ) : (
+              held
+            )}
+          </NoTooltips>
+        </AppProviders>
       </MemoryRouter>
     );
   };

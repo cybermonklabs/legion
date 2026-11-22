@@ -29,7 +29,9 @@ import { type SlotsFilled, StageSlot, type ViewSlots } from "./stage";
 /**
  * What the stage's unit tests share (`stage.test.tsx`, `view-decisions-slot.test.tsx`,
  * `view-address.test.tsx`): the page's stage drawn at an address under the page's own providers,
- * the reads it is drawn from, which slot it drew, and where the focus landed.
+ * the reads it is drawn from, which slot it drew, and where the focus landed. What the app
+ * provides above the page (`AppProviders`) is the Decisions body's drawn test's too
+ * (`DecisionsFilterBody.drawn.test.tsx`), so a provider the page comes to need is added once.
  */
 
 /** A navigator that goes nowhere, for a router whose location the case sets itself. */
@@ -70,20 +72,34 @@ function AddressedStage({ filled, held, issue, views }: StageProps): ReactNode {
   );
 }
 
-/** The page's stage (`AddressedStage`) under what the app provides above the page: the query
- *  client, here `client`, the keymap and the margin. Each helper puts its own router around it. */
+/** What the app provides above the page, around `children`: the query client, here `client`,
+ *  the keymap and the margin. Each caller puts its own router around it. */
+export function AppProviders({
+  children,
+  client,
+}: {
+  readonly children: ReactNode;
+  readonly client: QueryClient;
+}): ReactNode {
+  return (
+    <QueryClientProvider client={client}>
+      <KeymapProvider>
+        <MarginProvider>{children}</MarginProvider>
+      </KeymapProvider>
+    </QueryClientProvider>
+  );
+}
+
+/** The page's stage (`AddressedStage`) under what the app provides above the page
+ *  (`AppProviders`). Each helper puts its own router around it. */
 function ProvidedStage({
   client,
   ...stage
 }: StageProps & { readonly client: QueryClient }): ReactNode {
   return (
-    <QueryClientProvider client={client}>
-      <KeymapProvider>
-        <MarginProvider>
-          <AddressedStage {...stage} />
-        </MarginProvider>
-      </KeymapProvider>
-    </QueryClientProvider>
+    <AppProviders client={client}>
+      <AddressedStage {...stage} />
+    </AppProviders>
   );
 }
 
