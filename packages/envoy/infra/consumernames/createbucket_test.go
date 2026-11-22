@@ -85,19 +85,14 @@ func createBucketRun(t *testing.T, ctx context.Context, e env, args ...string) (
 
 // createBucketNotifications makes ENVOY_NOTIFICATIONS, which no client but the held operator
 // creates: inside a buckets-create hold, set and released with its journal complete
-// (mixedBuildProvision's way), so the row is released again when it returns; then, as a listener
-// of the stack, whose grant publishes to it, it publishes messages messages on one agent subject.
+// (operatorInHold), so the row is released again when it returns; then, as a listener of the
+// stack, whose grant publishes to it, it publishes messages messages on one agent subject.
 func createBucketNotifications(t *testing.T, h *stack, messages int) *jetstream.StreamInfo {
 	t.Helper()
 	ctx := context.Background()
-	id := h.heldHold(holdrecord.WorkflowBucketsCreate)
-	_, err := h.records().Admit(ctx, id, holdrecord.Request{Command: holdrecord.Commands(holdrecord.WorkflowBucketsCreate)[0]}, nil)
-	require.NoError(t, err)
-	operator, js := h.operator()
-	h.notificationStream(js)
-	operator.Close()
-	require.NoError(t, h.records().AppendDone(ctx, id, holdrecord.Commands(holdrecord.WorkflowBucketsCreate)[0], nil))
-	require.NoError(t, h.release(id))
+	operatorInHold(t, h, holdrecord.WorkflowBucketsCreate, func(_ *nats.Conn, js jetstream.JetStream) {
+		h.notificationStream(js)
+	})
 
 	nc, err := h.s.Connect(h.s.Cluster.URL(), h.s.ListenerCredential(holdtest.ListenerMachines[0]))
 	require.NoError(t, err)
@@ -198,8 +193,8 @@ func createBucketBackupOf(t *testing.T, n int, sentinel selection.StoreState, re
 		encoded := base64.RawURLEncoding.EncodeToString(value)
 		var retired []string
 		for len(encoded) > 0 {
-			n := min(200, len(encoded))
-			retired, encoded = append(retired, encoded[:n]), encoded[n:]
+			size := min(200, len(encoded))
+			retired, encoded = append(retired, encoded[:size]), encoded[size:]
 		}
 		_, err := store.Write(ctx, fmt.Sprintf("filler-%d", i), selection.Record{Retired: retired}, 0)
 		require.NoError(t, err)
@@ -312,9 +307,9 @@ func TestCreateBucketOutsideHeldIsRefusedNamingThePhase(t *testing.T) {
 
 // create-bucket --replicas 3 on the stack's three servers creates the bucket at three copies and
 // writes its sentinel: it waits for the new stream's leader before the write, where a put right
-// after the create was answered "no responders" (BuildT7.Restore's run of 08:37Z, on an R3 bucket
-// made by selection.CreateSessionBucket). Control: the stream names a leader, three copies, and
-// the sentinel holds the cohort's boundary.
+// after the create was answered "no responders" (as selection.CreateSessionBucket's write right
+// after its create is answered, on three copies). Control: the stream names a leader, three
+// copies, and the sentinel holds the cohort's boundary.
 func TestCreateBucketOnThreeCopiesWritesItsSentinel(t *testing.T) {
 	h := newStack(t)
 	createBucketNotifications(t, h, 0)
@@ -388,8 +383,8 @@ func TestCreateBucketsRerunAdoptsOnlyItsOwnBucket(t *testing.T) {
 			require.True(t, present, "control %s: the bucket was deleted", control.name)
 			require.Equal(t, createBucketKeys(before, id), createBucketKeys(after, id), "control %s: the bucket's keys changed", control.name)
 			entries := createBucketEntries(h.journal(id), createBucketCommand)
-			require.Equal(t, createBucketRefused(holdrecord.WorkflowCutover, createBucketCommand), entries[len(entries)-len(createBucketRefused(holdrecord.WorkflowCutover, createBucketCommand)):],
-				"control %s: its refusal's entries", control.name)
+			refused := createBucketRefused(holdrecord.WorkflowCutover, createBucketCommand)
+			require.Equal(t, refused, entries[len(entries)-len(refused):], "control %s: its refusal's entries", control.name)
 			err := holdrecord.Decide(h.journal(id), holdrecord.Request{Command: "convert"})
 			if holdrecord.Stoppable(holdrecord.WorkflowCutover, createBucketCommand) {
 				require.NoError(t, err, "control %s: its stop ends its intent, and convert is admitted", control.name)
@@ -546,8 +541,8 @@ func TestARecoverysPostcheckFindingStopsItsCompletion(t *testing.T) {
 	require.True(t, h.journal(id).Complete)
 }
 
-// A completed recovery adopted (review H7): create-bucket --after-loss from a backup, killed after
-// its restore and before it completes (its done entry lost), then run again under the same hold.
+// A completed recovery adopted: create-bucket --after-loss from a backup, killed after its restore
+// and before it completes (its done entry lost), then run again under the same hold.
 // The rerun reads the hold's selection record, adopts the bucket by its sentinel, keeps every
 // record the backup holds (a replayed key's among them) and the lower replay_from, restores
 // nothing, passes its postcheck and completes. Controls: a restore over the present bucket is
@@ -712,15 +707,7 @@ func TestACompletedRecoveryAdopted(t *testing.T) {
 		killed, kill := context.WithCancel(ctx)
 		defer kill()
 		dialer := &createBucketCutDialer{cut: kill}
-		e := h.e
-		e.connect = func(context.Context, options) (*nats.Conn, error) {
-			return nats.Connect(h.s.Cluster.URL(), append(h.s.OperatorCredential(), nats.SetCustomDialer(dialer), nats.Name("envoy-infra consumer-names"),
-				nats.MaxReconnects(-1), nats.ReconnectWait(100*time.Millisecond), nats.Timeout(10*time.Second))...)
-		}
-		// The held re-read's report admits no connection but the command's and the auth
-		// service's, which h.run sees to; this run is the test's own.
-		h.closeOperators()
-		code, _, stderr := createBucketRun(t, killed, e, "create-bucket", "--hold", id, "--after-loss", "--backup", dir)
+		code, _, stderr := h.runDialed(killed, dialer, "create-bucket", "--hold", id, "--after-loss", "--backup", dir)
 		require.True(t, dialer.done.Load(), "the restore was never cut\n%s", stderr)
 		require.NotEqual(t, 0, code, stderr)
 
@@ -769,7 +756,7 @@ func leftWith(t *testing.T, rules leftRuleSet) {
 // (leftRuleSet.ownRunOnly) and an UNKNOWN's stop its run's account (leftRuleSet.unknownAsAccount,
 // since run 2's refusal is UNKNOWN), the same refusal records unchanged.
 func TestACreateBucketStopCountsTheBarrierKeyAnEarlierRunPut(t *testing.T) {
-	createBucketRequireStoppable(t, holdrecord.WorkflowCutover, createBucketCommand)
+	requireStoppable(t, holdrecord.WorkflowCutover, createBucketCommand)
 	h := newStack(t)
 	createBucketNotifications(t, h, 0)
 	id := h.prepared(holdrecord.WorkflowCutover)
@@ -813,7 +800,7 @@ func TestACreateBucketStopCountsTheBarrierKeyAnEarlierRunPut(t *testing.T) {
 // under the earlier rule that the key counts once put (leftRuleSet.barrierAfterDelete), the same
 // run's stop names the key.
 func TestARecoveryStopLeavesOutTheBarrierKeyItsDeleteTook(t *testing.T) {
-	createBucketRequireStoppable(t, holdrecord.WorkflowSelectionRecovery, createBucketAfterLossCommand)
+	requireStoppable(t, holdrecord.WorkflowSelectionRecovery, createBucketAfterLossCommand)
 	ctx := context.Background()
 	h := newStack(t)
 	createBucketNotifications(t, h, 3)

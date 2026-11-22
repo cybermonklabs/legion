@@ -59,7 +59,7 @@ func (h *stack) censusCommand(holdID string, extra ...string) (int, string, stri
 // (streamsDeps), with the hold's flags, whose values it does not read. The word runs inside its
 // hold (writerhold.RunHeld): it writes its intent, then its done entry on a clean run or its stop
 // entry otherwise, and its held re-read and postcheck admit no connection to the hub but its own
-// and the auth service's, so this first closes every connection operator opened
+// and the auth service's, so this first closes every connection the rows opened through the stack
 // (closeOperators), as run does: a row connects again after it.
 func (h *stack) censusCommandWith(readers writerhold.CensusReaders, holdID string, extra ...string) (int, string, string) {
 	h.t.Helper()
@@ -83,12 +83,9 @@ const censusStreamID = "the-census-notification-stream"
 // after a clean census, refuses a stream that carries none.
 func censusNotificationStream(t *testing.T, js jetstream.JetStream) {
 	t.Helper()
-	raw, err := json.Marshal(bus.NotificationStreamConfig(1, 0))
-	require.NoError(t, err)
-	var config jetstream.StreamConfig
-	require.NoError(t, json.Unmarshal(raw, &config))
+	config := notificationStreamConfig(t, 1)
 	config.Metadata = map[string]string{selection.StreamIdentityMetadataKey: censusStreamID}
-	_, err = js.CreateStream(t.Context(), config)
+	_, err := js.CreateStream(t.Context(), config)
 	require.NoError(t, err)
 }
 
@@ -109,12 +106,11 @@ func censusDatabaseFile(t *testing.T, pool *pgxpool.Pool) string {
 // the session in its metadata.
 func censusSessionConsumer(t *testing.T, nc *nats.Conn, sessionID, name string, filters []string) {
 	t.Helper()
-	_, err := writeConsumer(t.Context(), nc, notifications, jetstream.ConsumerConfig{
+	makeConsumer(t, nc, jetstream.ConsumerConfig{
 		Durable: name, AckPolicy: jetstream.AckExplicitPolicy, MaxDeliver: -1, MaxAckPending: bus.SessionConsumerMaxAckPending,
 		AckWait: bus.SessionConsumerAckWait, InactiveThreshold: time.Hour, FilterSubjects: filters,
 		Metadata: map[string]string{selection.LogicalMetadataKey: sessionID, bus.SessionIDMetadataKey: sessionID},
-	}, actionCreateConsumer)
-	require.NoError(t, err, "create %s", name)
+	})
 }
 
 // censusListenerDurable creates, as the operator, a listener's push durable name as
@@ -123,11 +119,18 @@ func censusSessionConsumer(t *testing.T, nc *nats.Conn, sessionID, name string, 
 // one at a time.
 func censusListenerDurable(t *testing.T, nc *nats.Conn, durable, name string) {
 	t.Helper()
-	_, err := writeConsumer(t.Context(), nc, notifications, jetstream.ConsumerConfig{
+	makeConsumer(t, nc, jetstream.ConsumerConfig{
 		Durable: name, DeliverSubject: nats.NewInbox(), FilterSubjects: bus.StreamSubjects(), AckPolicy: jetstream.AckExplicitPolicy,
 		Metadata: map[string]string{selection.LogicalMetadataKey: durable},
-	}, actionCreateConsumer)
-	require.NoError(t, err, "create %s", name)
+	})
+}
+
+// daemonConsumer creates, as the operator on nc, a consumer named name of the notification stream
+// carrying logical as its logical name, as a daemon creates one.
+func daemonConsumer(t *testing.T, nc *nats.Conn, name, logical string) {
+	t.Helper()
+	makeConsumer(t, nc, jetstream.ConsumerConfig{Durable: name, FilterSubject: bus.LegionWakeTopic,
+		AckPolicy: jetstream.AckExplicitPolicy, Metadata: map[string]string{selection.LogicalMetadataKey: logical}})
 }
 
 // censusConsumers are the notification stream's consumer names.
@@ -169,11 +172,11 @@ func TestTheCensusReadsTheRecordedSessionConsumers(t *testing.T) {
 	}
 	kept := map[string]string{}
 	for _, sessionID := range []string{"ses_a", "ses_b", "ses_c"} {
-		name := selection.FreshName(sessionBucketPrefix)
+		name := selection.FreshName(sessionFreshPrefix)
 		censusSessionConsumer(t, nc, sessionID, name, agent(sessionID))
 		record := selection.Record{Current: name, Start: 1}
 		if sessionID == "ses_a" {
-			retired := selection.FreshName(sessionBucketPrefix)
+			retired := selection.FreshName(sessionFreshPrefix)
 			censusSessionConsumer(t, nc, sessionID, retired, agent(sessionID))
 			record.Retired = []string{retired}
 			kept[retired] = "the retired name of ses_a, which cleanup deletes and the census keeps until then"
@@ -196,9 +199,9 @@ func TestTheCensusReadsTheRecordedSessionConsumers(t *testing.T) {
 	kept[undeclaredListener] = "the listener durable of a machine no --listener-machine-id names, which its record names"
 	stray := selection.FreshName(durable)
 	censusListenerDurable(t, nc, durable, stray)
-	unrecordedSession := selection.FreshName(sessionBucketPrefix)
+	unrecordedSession := selection.FreshName(sessionFreshPrefix)
 	censusSessionConsumer(t, nc, "ses_b", unrecordedSession, agent("ses_b"))
-	planted := selection.FreshName(sessionBucketPrefix)
+	planted := selection.FreshName(sessionFreshPrefix)
 	censusSessionConsumer(t, nc, "ses_d", planted, []string{"notifications.dispatch.issue.PRIV.>"})
 	_, err = store.Write(ctx, "ses_d", selection.Record{Current: planted, Start: 1}, 0)
 	require.NoError(t, err)
@@ -241,12 +244,10 @@ func TestTheCensusReadsTheRecordedSessionConsumers(t *testing.T) {
 	code, stdout, _ = h.censusCommand(id, flags...)
 	require.Equal(t, 0, code, "the second census: %s", stdout)
 	require.True(t, slices.Contains(strings.Split(strings.TrimSpace(stdout), "\n"), "CLEAN"), stdout)
-	require.Equal(t, writerhold.CommandStreamsCensus+" done", h.lastEntry(id, "").Command+" "+h.lastEntry(id, "").State)
+	last = h.lastEntry(id, "")
+	require.Equal(t, writerhold.CommandStreamsCensus+" done", last.Command+" "+last.State)
 	require.True(t, h.journal(id).Complete, "the clean census's done entry completes the streams-census hold's record")
 }
-
-// sessionBucketPrefix is every fresh session consumer's prefix (bus.SessionConsumerNamePrefix).
-const sessionBucketPrefix = bus.SessionConsumerNamePrefix
 
 // The census reads a listener durable's record key back to the durable it was made from
 // (selection.DurableKey), escapes included, and takes no other key for a durable's: a session id,
@@ -351,6 +352,18 @@ func censusSentinel(t *testing.T, family string, pool *pgxpool.Pool) (selection.
 	state, err := pgFamilyOf(t, family, pool).State(t.Context())
 	require.NoError(t, err)
 	return state, uint64(revision)
+}
+
+// censusRefuseWrites makes pool's intake_consumers rows refuse every insert and update, by a trigger
+// that raises "the row refuses writes": a store whose write fails.
+func censusRefuseWrites(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	_, err := pool.Exec(t.Context(), `create function refuse_writes() returns trigger language plpgsql as $$
+begin
+	raise exception 'the row refuses writes';
+end $$;
+create trigger refuse_writes before insert or update on `+selection.IntakeConsumersTable+` for each row execute function refuse_writes()`)
+	require.NoError(t, err)
 }
 
 // censusHeldOperator is a hub of one server holding ENVOY_NOTIFICATIONS with identity, and the
@@ -773,12 +786,7 @@ func TestTheCensusAnswersTheStoreItChangedBeforeAWriteFailed(t *testing.T) {
 		families = append(families, daemonFamily(project))
 		deployments = append(deployments, censusDeploymentOf(project, pool))
 	}
-	_, err := pools["REFUSED"].Exec(ctx, `create function refuse_writes() returns trigger language plpgsql as $$
-begin
-	raise exception 'the row refuses writes';
-end $$;
-create trigger refuse_writes before insert or update on `+selection.IntakeConsumersTable+` for each row execute function refuse_writes()`)
-	require.NoError(t, err)
+	censusRefuseWrites(t, pools["REFUSED"])
 
 	result, err := ReconcileDaemonStreamIDs(ctx, conn, censusListing(deployments...), families, entries)
 	require.NoError(t, err, "a write that fails after another landed is the result's, not the call's")
@@ -828,12 +836,7 @@ func TestTheCensusPlacesEachDaemonFamilyInOneList(t *testing.T) {
 		}
 		pools[project], entries[project], deployments[project] = pool, entry, censusDeploymentOf(project, pool)
 	}
-	_, err := pools["REFUSED"].Exec(ctx, `create function refuse_writes() returns trigger language plpgsql as $$
-begin
-	raise exception 'the row refuses writes';
-end $$;
-create trigger refuse_writes before insert or update on `+selection.IntakeConsumersTable+` for each row execute function refuse_writes()`)
-	require.NoError(t, err)
+	censusRefuseWrites(t, pools["REFUSED"])
 	dropped := censusDroppedDatabase()
 	entries["GONE"], deployments["GONE"] = censusStoreFileFor(t, "GONE", pools["EQUAL"], dropped, censusInstance), censusDeployment("GONE", dropped, censusInstance)
 	entries["AWAY"], deployments["AWAY"] = censusStoreFileFor(t, "AWAY", pools["EQUAL"], "", censusInstance), censusDeployment("AWAY", censusUnreachableDatabase, censusInstance)
@@ -1037,11 +1040,6 @@ func TestTheRecordedNamesOfEveryFamily(t *testing.T) {
 	conn, err := nats.Connect(url, nats.UserInfo(natscred.ServiceUser, "operator"), nats.CustomInboxPrefix(natsgrant.OperatorInbox))
 	require.NoError(t, err)
 	t.Cleanup(conn.Close)
-	write := func(store selection.Store, logical string, record selection.Record) {
-		t.Helper()
-		_, err := store.Write(ctx, logical, record, 0)
-		require.NoError(t, err, "write %s", logical)
-	}
 	set := func(names ...string) map[string]bool {
 		out := map[string]bool{}
 		for _, name := range names {
@@ -1051,23 +1049,23 @@ func TestTheRecordedNamesOfEveryFamily(t *testing.T) {
 	}
 	fresh := selection.FreshName
 
-	s0, s1, s2 := fresh(bus.SessionConsumerNamePrefix), fresh(bus.SessionConsumerNamePrefix), fresh(bus.SessionConsumerNamePrefix)
-	write(kv, "ses_a", selection.Record{Current: s1, Start: 4, Retired: []string{s0},
+	s0, s1, s2 := fresh(sessionFreshPrefix), fresh(sessionFreshPrefix), fresh(sessionFreshPrefix)
+	writeRecord(t, kv, "ses_a", selection.Record{Current: s1, Start: 4, Retired: []string{s0},
 		Op: &selection.Op{Kind: selection.OpReplace, Candidate: s2, Old: s1, ReservedAt: time.Now()}})
-	s4 := fresh(bus.SessionConsumerNamePrefix)
-	write(kv, "ses_e", selection.Record{Start: 4, Op: &selection.Op{Kind: selection.OpReplace, Old: sessionFixedPrefix + "ses_e", Candidate: s4, ReservedAt: time.Now()}})
+	s4 := fresh(sessionFreshPrefix)
+	writeRecord(t, kv, "ses_e", selection.Record{Start: 4, Op: &selection.Op{Kind: selection.OpReplace, Old: sessionFixedPrefix + "ses_e", Candidate: s4, ReservedAt: time.Now()}})
 	l0, l1 := fresh(bus.ListenerDurable("hub")), fresh(bus.ListenerDurable("hub"))
-	write(kv, selection.DurableKey(bus.ListenerDurable("hub")), selection.Record{Current: l1, Start: 4, Retired: []string{l0}})
+	writeRecord(t, kv, selection.DurableKey(bus.ListenerDurable("hub")), selection.Record{Current: l1, Start: 4, Retired: []string{l0}})
 	dispatchFile, dispatchDB := censusStore(t, familyDispatch, dispatchMigrations...)
 	dispatch := pgFamilyOf(t, familyDispatch, dispatchDB)
 	_, err = dispatch.WriteSentinel(ctx, selection.StoreState{Cutover: selection.CutoverDone}, 0)
 	require.NoError(t, err)
 	d0, d1, d2 := fresh("delivery-events"), fresh("delivery-events"), fresh("delivery-events")
-	write(dispatch, "delivery-events", selection.Record{Current: d1, Start: 4, Retired: []string{d0},
+	writeRecord(t, dispatch, "delivery-events", selection.Record{Current: d1, Start: 4, Retired: []string{d0},
 		Op: &selection.Op{Kind: selection.OpReplace, Candidate: d2, Old: d1, ReservedAt: time.Now()}})
 	daemon, daemonDB := censusDaemonStore(t, "PROJ", daemonMigrations...)
 	w0, w1 := fresh("legion-go-PROJ-wake"), fresh("legion-go-PROJ-wake")
-	write(pgFamilyOf(t, daemonFamily("PROJ"), daemonDB), "legion-go-PROJ-wake", selection.Record{Current: w1, Start: 4, Retired: []string{w0}})
+	writeRecord(t, pgFamilyOf(t, daemonFamily("PROJ"), daemonDB), "legion-go-PROJ-wake", selection.Record{Current: w1, Start: 4, Retired: []string{w0}})
 	empty, emptyDB := censusDaemonStore(t, "EMPTY", daemonMigrations...)
 	noTable, noTableDB := censusDaemonStore(t, "NOTABLE")
 	dropped := censusDroppedDatabase()
@@ -1112,7 +1110,7 @@ func TestTheRecordedNamesOfEveryFamily(t *testing.T) {
 	require.ErrorContains(t, err, "daemon/GONE", "control: a 3D000 away from the Deployment's address")
 	require.ErrorContains(t, err, `states instance "local:postgres:elsewhere"`)
 
-	write(kv, selection.DurableKey("delivery-planted"), selection.Record{Current: fresh("delivery-planted")})
+	writeRecord(t, kv, selection.DurableKey("delivery-planted"), selection.Record{Current: fresh("delivery-planted")})
 	statusPublishKV(t, admin, "ses_a", nil, "DEL")
 	_, _, err = ReadRecordedNames(ctx, conn, listing, families, dispatchFile, []string{daemon})
 	require.ErrorContains(t, err, "ses_a", "control: a deleted session record")
@@ -1128,8 +1126,7 @@ func censusCreateConfig(t *testing.T, nc *nats.Conn, config nats.ConsumerConfig)
 	require.NoError(t, err)
 	var converted jetstream.ConsumerConfig
 	require.NoError(t, json.Unmarshal(raw, &converted))
-	_, err = writeConsumer(t.Context(), nc, notifications, converted, actionCreateConsumer)
-	require.NoError(t, err, "create %s", config.Durable)
+	makeConsumer(t, nc, converted)
 }
 
 // A census whose reader cannot read a declared family's store is UNKNOWN, exit 2, naming the
@@ -1207,9 +1204,7 @@ func TestTheCensusRemovesAStrayDispatchAndDaemonName(t *testing.T) {
 	const wake = "legion-go-PROJ-wake"
 	recordedW, strayW := selection.FreshName(wake), selection.FreshName(wake)
 	for _, name := range []string{recordedW, strayW} {
-		_, err := writeConsumer(ctx, nc, notifications, jetstream.ConsumerConfig{Durable: name, FilterSubject: bus.LegionWakeTopic,
-			AckPolicy: jetstream.AckExplicitPolicy, Metadata: map[string]string{selection.LogicalMetadataKey: wake}}, actionCreateConsumer)
-		require.NoError(t, err, "create %s", name)
+		daemonConsumer(t, nc, name, wake)
 	}
 	daemon, daemonDB := censusDaemonStore(t, "PROJ", daemonMigrations...)
 	h.censusDeploy(censusDeploymentOf("PROJ", daemonDB))
@@ -1273,9 +1268,7 @@ func TestTheCensusLeavesAGoneDaemonsConsumers(t *testing.T) {
 	const wake, ready = "legion-go-GONE-wake", "legion-go-GONE-ready"
 	declared, undeclared := selection.FreshName(wake), selection.FreshName(ready)
 	for name, logical := range map[string]string{declared: wake, undeclared: ready} {
-		_, err := writeConsumer(ctx, nc, notifications, jetstream.ConsumerConfig{Durable: name, FilterSubject: bus.LegionWakeTopic,
-			AckPolicy: jetstream.AckExplicitPolicy, Metadata: map[string]string{selection.LogicalMetadataKey: logical}}, actionCreateConsumer)
-		require.NoError(t, err, "create %s", name)
+		daemonConsumer(t, nc, name, logical)
 	}
 	for _, family := range []string{familySession, daemonFamily("GONE")} {
 		_, err := h.records().PutCutover(ctx, family, selection.CutoverDone, id)

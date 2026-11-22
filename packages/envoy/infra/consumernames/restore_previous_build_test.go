@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -156,7 +157,7 @@ func (rig *restoreRig) deliveredAll(name string, want []uint64, within time.Dura
 	return slices.Compact(got)
 }
 
-// TestRestoreThenThePreviousBuildDeliversEveryMessage (t-7): restore killed after each of its
+// TestRestoreThenThePreviousBuildDeliversEveryMessage: restore killed after each of its
 // phases ends, rerun, at the same target and start, and each delivers every message from its saved
 // start; and after restore and release the previous release's listener (build-dispatch-build.sh
 // --previous-release) adopts the restored fixed name at its start, and every message from that
@@ -171,15 +172,9 @@ func TestRestoreThenThePreviousBuildDeliversEveryMessage(t *testing.T) {
 		starts := map[string]uint64{}
 		want := map[string][]uint64{}
 		var conversions []restoreConversion
-		for _, logical := range slices.Sorted(func(yield func(string) bool) {
-			for _, points := range []map[string]string{restoreKillPrepare, restoreKillFinish} {
-				for logical := range points {
-					if !yield(logical) {
-						return
-					}
-				}
-			}
-		}) {
+		logicals := append(slices.Collect(maps.Keys(restoreKillPrepare)), slices.Collect(maps.Keys(restoreKillFinish))...)
+		slices.Sort(logicals)
+		for _, logical := range logicals {
 			subject := "notifications.agent." + logical
 			seqs := rig.publish(subject, 3)
 			fixed := sessionFixedPrefix + logical

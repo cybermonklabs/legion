@@ -40,12 +40,10 @@ const mixedBuildModeStop = "session consumer naming stops the listener"
 // with the marker gate taken out by an overlay) keeps running after the release and serves a
 // fixed name, s-<id>, to a session that registers.
 //
-// The Dispatch side of this row (envoy-dispatch in both builds across the window, every message as
-// main delivers it, then from each saved start) waits on a Dispatch process harness in this module;
-// the rollback (`fixed` set again, every creator restarted, every message from each saved start)
-// waits on the restore commands (restore.go); the control "a build that falls back to fixed when its
-// marker is missing" waits on the bucket-loss recovery (create-bucket --after-loss) beside a fresh
-// listener. Each is named in MixedBuild's report.
+// This row is the listener's part. The previous release's listener and Dispatch after a rollback
+// are TestRestoreThenThePreviousBuildDeliversEveryMessage (restore_previous_build_test.go). No row
+// yet runs envoy-dispatch in both builds across the window, or a build that falls back to fixed
+// when its marker is missing.
 func TestTheTwoModesAcrossTheWindow(t *testing.T) {
 	mixedBuildPreviousRelease(t)
 

@@ -33,7 +33,7 @@ import (
 // nc as create-bucket does: the create, the new stream's leader (createBucketAwaitLeader), and the
 // sentinel's write sent again while no stream answers it (createBucketFreshWrite).
 // selection.CreateSessionBucket writes it at once, which a fresh stream answers "no responders" on
-// a cluster, one copy or three (runs of 10:09Z and 10:28Z).
+// a cluster, one copy or three.
 func createBucketMakeBucket(t testing.TB, nc *nats.Conn, state selection.StoreState) *selection.KVStore {
 	t.Helper()
 	ctx := context.Background()
@@ -229,14 +229,14 @@ func createBucketLoseBucket(t *testing.T, h *stack) string {
 	return id
 }
 
-// createBucketInHold runs fill as the held operator inside a buckets-create hold, set with its one
-// command admitted, then writes that command's done entry and releases the hold, so the row is
-// released again when it returns.
-func createBucketInHold(t *testing.T, h *stack, fill func(nc *nats.Conn, js jetstream.JetStream)) {
+// operatorInHold runs fill as the held operator inside a hold of w, a workflow of one command
+// (buckets-create, streams-update), set with that command admitted, then writes the command's done
+// entry and releases the hold, so the row is released again when it returns.
+func operatorInHold(t *testing.T, h *stack, w holdrecord.Workflow, fill func(nc *nats.Conn, js jetstream.JetStream)) {
 	t.Helper()
 	ctx := context.Background()
-	id := h.heldHold(holdrecord.WorkflowBucketsCreate)
-	command := holdrecord.Commands(holdrecord.WorkflowBucketsCreate)[0]
+	id := h.heldHold(w)
+	command := holdrecord.Commands(w)[0]
 	_, err := h.records().Admit(ctx, id, holdrecord.Request{Command: command}, nil)
 	require.NoError(t, err)
 	nc, js := h.operator()
@@ -247,7 +247,7 @@ func createBucketInHold(t *testing.T, h *stack, fill func(nc *nats.Conn, js jets
 }
 
 // createBucketBackedBucket makes the selection bucket as a cutover left it, inside a
-// buckets-create hold set and released with its journal complete (createBucketInHold): its
+// buckets-create hold set and released with its journal complete (operatorInHold): its
 // sentinel (Cutover done, Boundary 2), a record, a deleted record (a DEL marker), a purged record
 // (a PURGE marker over a value) and a listener durable's record. The row is released again when it
 // returns.
@@ -258,7 +258,7 @@ func createBucketBackedBucket(t *testing.T, h *stack) map[string]selection.Recor
 		"ses_backed": {Start: 4, Retired: []string{selection.FreshName(sessionFreshPrefix)}},
 		selection.DurableKey(bus.ListenerDurable("hub-a")): {Current: selection.FreshName(bus.ListenerDurable("hub-a")), Start: 2},
 	}
-	createBucketInHold(t, h, func(nc *nats.Conn, js jetstream.JetStream) {
+	operatorInHold(t, h, holdrecord.WorkflowBucketsCreate, func(nc *nats.Conn, js jetstream.JetStream) {
 		store := createBucketMakeBucket(t, nc, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 2, Hold: "the-cutover"})
 		for key, record := range records {
 			_, err := store.Write(ctx, key, record, 0)
@@ -280,7 +280,7 @@ func createBucketBackedBucket(t *testing.T, h *stack) map[string]selection.Recor
 func createBucketHeldSnapshot(t *testing.T, h *stack) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "snapshot")
-	createBucketInHold(t, h, func(held *nats.Conn, _ jetstream.JetStream) {
+	operatorInHold(t, h, holdrecord.WorkflowBucketsCreate, func(held *nats.Conn, _ jetstream.JetStream) {
 		mgr, err := jsm.New(held, jsm.WithTimeout(30*time.Second))
 		require.NoError(t, err)
 		stream, err := mgr.LoadStream(selectionStreamName)
@@ -298,12 +298,12 @@ func createBucketHeldSnapshot(t *testing.T, h *stack) string {
 // record, the DEL and PURGE markers (a deleted record is refused after the recovery as before it)
 // and the listener durable's record come back, the sentinel holds the walked sentinel's boundary
 // and cutover marker in replay mode, the postcheck passes and the hold completes. Controls, each on
-// the walk's path itself (the plan gate's v66 decision), on a hub whose operator user holds exactly
-// Operator(held), each entry it takes away first seen in that grant: the same walk restored by it
-// succeeds, and so it does without the snapshot's STREAM.RESTORE, which the walk's path never
-// sends; without $KV.envoy_session_consumers.> it fails at the load's first put, and without the
-// bucket's STREAM.CREATE at the load's create, each naming the refused subject; and the same loss
-// recovered with no backup brings no record back.
+// the walk's path itself, on a hub whose operator user holds exactly Operator(held), each entry it
+// takes away first seen in that grant: the same walk restored by it succeeds, and so it does
+// without the snapshot's STREAM.RESTORE, which the walk's path never sends; without
+// $KV.envoy_session_consumers.> it fails at the load's first put, and without the bucket's
+// STREAM.CREATE at the load's create, each naming the refused subject; and the same loss recovered
+// with no backup brings no record back.
 func TestTheReleasedOperatorsBackupRestoresTheSelectionBucket(t *testing.T) {
 	ctx := context.Background()
 	h := newStack(t)
@@ -429,15 +429,7 @@ func createBucketKilledRun(t *testing.T, h *stack, id, dir string, dialer *creat
 	run, kill := context.WithCancel(context.Background())
 	defer kill()
 	dialer.cut = kill
-	e := h.e
-	e.connect = func(context.Context, options) (*nats.Conn, error) {
-		return nats.Connect(h.s.Cluster.URL(), append(h.s.OperatorCredential(), nats.SetCustomDialer(dialer), nats.Name("envoy-infra consumer-names"),
-			nats.MaxReconnects(-1), nats.ReconnectWait(100*time.Millisecond), nats.Timeout(10*time.Second))...)
-	}
-	// The held re-read's report admits no connection but the command's and the auth service's,
-	// which h.run sees to; this run is the test's own.
-	h.closeOperators()
-	code, _, stderr := createBucketRun(t, run, e, "create-bucket", "--hold", id, "--after-loss", "--backup", dir)
+	code, _, stderr := h.runDialed(run, dialer, "create-bucket", "--hold", id, "--after-loss", "--backup", dir)
 	require.True(t, dialer.done.Load(), "the run was never cut at its put of %s\n%s", dialer.on, stderr)
 	require.NotEqual(t, 0, code, stderr)
 }
@@ -610,7 +602,7 @@ const createBucketStreamInfo = "$JS.API.STREAM.INFO." + selectionStreamName
 // held snapshot: the answer under a session key, refused once restored, the restored bucket deleted
 // again and the stop naming that. In a present bucket the recovery would adopt (another recovery's
 // sentinel in replay mode): the answer under a session key and under envoy.bucket, each refused
-// with the sentinel unwritten. Control, in each: today's decode (json.Unmarshal into the key's
+// with the sentinel unwritten. Control, in each: a lenient decode (json.Unmarshal into the key's
 // kind) takes the value.
 func TestAValueThatIsNoExactRecordRefusesTheLoad(t *testing.T) {
 	ctx := context.Background()
@@ -638,7 +630,7 @@ func TestAValueThatIsNoExactRecordRefusesTheLoad(t *testing.T) {
 			} else {
 				seq, data = createBucketStoreAnswer(t, released, released, createBucketStreamInfo, c.key)
 			}
-			require.NoError(t, json.Unmarshal(data, c.decoded), "control: today's decode refuses the value under %s", c.key)
+			require.NoError(t, json.Unmarshal(data, c.decoded), "control: a lenient decode refuses the value under %s", c.key)
 			dir := filepath.Join(t.TempDir(), "walk")
 			_, err := kvrecords.Write(ctx, released, selection.SessionBucket, dir)
 			require.NoError(t, err)
@@ -660,7 +652,7 @@ func TestAValueThatIsNoExactRecordRefusesTheLoad(t *testing.T) {
 		createBucketBackedBucket(t, h)
 		released, _ := h.operator()
 		seq, data := createBucketStoreAnswer(t, released, released, createBucketStreamInfo, "ses_forged")
-		require.NoError(t, json.Unmarshal(data, &selection.Record{}), "control: today's decode refuses the value")
+		require.NoError(t, json.Unmarshal(data, &selection.Record{}), "control: a lenient decode refuses the value")
 		h.closeOperators()
 		dir := createBucketHeldSnapshot(t, h)
 
@@ -685,7 +677,7 @@ func TestAValueThatIsNoExactRecordRefusesTheLoad(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			h := newStack(t)
 			createBucketNotifications(t, h, 3)
-			createBucketInHold(t, h, func(nc *nats.Conn, _ jetstream.JetStream) {
+			operatorInHold(t, h, holdrecord.WorkflowBucketsCreate, func(nc *nats.Conn, _ jetstream.JetStream) {
 				store := createBucketMakeBucket(t, nc, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 2, ReplayFrom: 1,
 					BackupSHA256: createBucketNoBackup, Hold: "another-recovery"})
 				_, err := store.Write(ctx, "ses_kept", selection.Record{Start: 2}, 0)
@@ -693,7 +685,7 @@ func TestAValueThatIsNoExactRecordRefusesTheLoad(t *testing.T) {
 			})
 			released, _ := h.operator()
 			seq, data := createBucketStoreAnswer(t, released, released, createBucketStreamInfo, c.key)
-			require.NoError(t, json.Unmarshal(data, c.decoded), "control: today's decode refuses the value under %s", c.key)
+			require.NoError(t, json.Unmarshal(data, c.decoded), "control: a lenient decode refuses the value under %s", c.key)
 			before, _, err := replayLeaderRead(ctx, released, selection.SessionBucket, selection.SentinelKey)
 			require.NoError(t, err)
 			h.closeOperators()
@@ -719,12 +711,7 @@ func TestAValueThatIsNoExactRecordRefusesTheLoad(t *testing.T) {
 func createBucketRequireStop(t *testing.T, h *stack, id, command string, left ...string) {
 	t.Helper()
 	d := h.journal(id)
-	var last holdrecord.Operation
-	for _, op := range d.Ops {
-		if op.Command == command {
-			last = op
-		}
-	}
+	last := lastOf(d, command)
 	require.Equal(t, "stop", last.State, "%s's latest entry", command)
 	for _, want := range left {
 		require.Contains(t, last.Outputs["reason"], want, "%s's stop names what it left", command)
@@ -737,9 +724,9 @@ func createBucketRequireStop(t *testing.T, h *stack, id, command string, left ..
 		"control: with no stop after %s's intent, hold release is admitted", command)
 }
 
-// createBucketRequireStoppable requires that the workflow's table makes command Stoppable, which
-// a row of its stop reads.
-func createBucketRequireStoppable(t *testing.T, w holdrecord.Workflow, command string) {
+// requireStoppable requires that the workflow's table makes command Stoppable, which a row of its
+// stop reads.
+func requireStoppable(t *testing.T, w holdrecord.Workflow, command string) {
 	t.Helper()
 	require.True(t, holdrecord.Stoppable(w, command), "%s is not Stoppable in %s", command, w)
 }
@@ -749,7 +736,7 @@ func createBucketRequireStoppable(t *testing.T, w holdrecord.Workflow, command s
 // journal, and the hold has its way out. Control: the same command's intent with no stop after it
 // leaves hold release refused.
 func TestACreateBucketRefusalAfterItsIntentStops(t *testing.T) {
-	createBucketRequireStoppable(t, holdrecord.WorkflowCutover, createBucketCommand)
+	requireStoppable(t, holdrecord.WorkflowCutover, createBucketCommand)
 	h := newStack(t)
 	createBucketNotifications(t, h, 0)
 	id := h.prepared(holdrecord.WorkflowCutover)
@@ -771,7 +758,7 @@ func TestACreateBucketRefusalAfterItsIntentStops(t *testing.T) {
 // key in the bucket; the hold has its way out. Control: the same command's intent with no stop
 // after it leaves hold release refused.
 func TestARecoveryRefusalAfterItsIntentStops(t *testing.T) {
-	createBucketRequireStoppable(t, holdrecord.WorkflowSelectionRecovery, createBucketAfterLossCommand)
+	requireStoppable(t, holdrecord.WorkflowSelectionRecovery, createBucketAfterLossCommand)
 	h := newStack(t)
 	createBucketNotifications(t, h, 0)
 	id := h.heldHold(holdrecord.WorkflowSelectionRecovery)
@@ -788,7 +775,7 @@ func TestARecoveryRefusalAfterItsIntentStops(t *testing.T) {
 // replay's write of the record with an answer that is no selection.ErrConflict. Control: the same
 // command's intent with no stop after it leaves hold release refused.
 func TestAReplayRefusalAfterItsIntentStops(t *testing.T) {
-	createBucketRequireStoppable(t, holdrecord.WorkflowCutover, replayCommand)
+	requireStoppable(t, holdrecord.WorkflowCutover, replayCommand)
 	ctx := context.Background()
 	h := newStack(t)
 	createBucketNotifications(t, h, 3)

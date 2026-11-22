@@ -33,14 +33,22 @@ func malformedValue(t *testing.T, nc *nats.Conn, key string) []byte {
 // malformedReplyStore stores the server's STREAM.INFO answer of the notification stream under key
 // of the selection bucket, as nc, by naming the key's subject as the request's reply subject, as
 // any principal whose grant holds a JetStream API request can, and answers the value the key then
-// holds.
+// holds (storeStreamInfoAnswer, read on nc).
 func malformedReplyStore(t *testing.T, nc *nats.Conn, key string) []byte {
 	t.Helper()
-	require.NoError(t, nc.PublishRequest("$JS.API.STREAM.INFO."+notifications, "$KV."+selection.SessionBucket+"."+key, nil))
-	require.NoError(t, nc.Flush())
+	return storeStreamInfoAnswer(t, nc, key, func() []byte { return malformedValue(t, nc, key) })
+}
+
+// storeStreamInfoAnswer stores the server's STREAM.INFO answer of the notification stream under key
+// of the selection bucket, as as, by naming the key's subject as the request's reply subject, and
+// answers the value the key then holds, as read reads it, once it holds the answer.
+func storeStreamInfoAnswer(t *testing.T, as *nats.Conn, key string, read func() []byte) []byte {
+	t.Helper()
+	require.NoError(t, as.PublishRequest("$JS.API.STREAM.INFO."+notifications, "$KV."+selection.SessionBucket+"."+key, nil))
+	require.NoError(t, as.Flush())
 	var value []byte
 	require.Eventually(t, func() bool {
-		value = malformedValue(t, nc, key)
+		value = read()
 		return bytes.Contains(value, []byte(`"io.nats.jetstream.api.v1.stream_info_response"`))
 	}, 10*time.Second, 50*time.Millisecond, "the STREAM.INFO answer never reached %s", key)
 	return value
@@ -48,8 +56,8 @@ func malformedReplyStore(t *testing.T, nc *nats.Conn, key string) []byte {
 
 // malformedCase is one malformed value of the selection bucket a row plants: the key it plants
 // under, what status prints for that key, plant (which stores it as nc and answers the value the
-// key then holds), and lenient, which shows that today's decode (json.Unmarshal) takes the value,
-// so a reader on it would act on what it reads.
+// key then holds), and lenient, which shows that a lenient decode (json.Unmarshal) takes the
+// value, so a reader on it would act on what it reads.
 type malformedCase struct {
 	name, key, statusLine string
 	plant                 func(t *testing.T, nc *nats.Conn) []byte
@@ -57,11 +65,11 @@ type malformedCase struct {
 }
 
 // malformedCases are the three malformed values the rows plant, victim being a session key that
-// holds a record and source another: a STREAM.INFO answer under victim, which today's decode reads
-// as an empty record that selects nothing; one under the sentinel, which it reads as an empty store
-// state; and source's well-formed record copied under victim, which shape alone cannot refuse, so
-// only a record that carries its own key lets a reader refuse it (the library's check, which
-// readSelectionValue's body becomes).
+// holds a record and source another: a STREAM.INFO answer under victim, which a lenient decode
+// (json.Unmarshal) reads as an empty record that selects nothing; one under the sentinel, which it
+// reads as an empty store state; and source's well-formed record copied under victim, which shape
+// alone cannot refuse, so only a record that carries its own key lets a reader refuse it (the
+// library's check, selection.DecodeKVValue, which readSelectionValue calls).
 func malformedCases(victim, source string) []malformedCase {
 	recordLine := "record " + familySession + " " + victim + ": UNKNOWN, its value is malformed"
 	return []malformedCase{{
@@ -74,7 +82,7 @@ func malformedCases(victim, source string) []malformedCase {
 		},
 	}, {
 		name: "a STREAM.INFO answer under the sentinel", key: selection.SentinelKey,
-		statusLine: "store " + familySession + " (KV_" + selection.SessionBucket + "): sentinel UNKNOWN, its value is malformed",
+		statusLine: "store " + familySession + " (" + selectionStreamName + "): sentinel UNKNOWN, its value is malformed",
 		plant:      func(t *testing.T, nc *nats.Conn) []byte { return malformedReplyStore(t, nc, selection.SentinelKey) },
 		lenient: func(t *testing.T, value []byte) {
 			var state selection.StoreState
@@ -111,9 +119,9 @@ func malformedRefused(t *testing.T, key string, value []byte) {
 // key, and the bucket's sentinel; a barrier key holding its hold id. It refuses a STREAM.INFO-shaped
 // document, null, an array, a string, nothing at all, data after the object, another key's record,
 // a record carrying no key, an operation without its reserved_at, a sentinel of another family, a
-// barrier holding another hold's id, and a barrier key whose id is two tokens. Control: today's
-// lenient decode (json.Unmarshal) takes every refused value that is one JSON object, so each
-// refusal is the readers' decode's own.
+// barrier holding another hold's id, and a barrier key whose id is two tokens. Control: a lenient
+// decode (json.Unmarshal) takes every refused value that is one JSON object, so each refusal is the
+// readers' decode's own.
 func TestTheStrictDecodeTakesOnlyAnExactValue(t *testing.T) {
 	full := selection.Record{
 		Key: "ses_a", Current: "session~a", Start: 4, Retired: []string{"session~r"},
@@ -169,7 +177,7 @@ func malformedSessions(t *testing.T, nc *nats.Conn, sessions ...string) map[stri
 	store := selection.NewKVStore(selection.ConnRequester{Conn: nc})
 	consumers := map[string]string{}
 	for _, sessionID := range sessions {
-		name := selection.FreshName(sessionBucketPrefix)
+		name := selection.FreshName(sessionFreshPrefix)
 		censusSessionConsumer(t, nc, sessionID, name, bus.SessionConsumerFilters([]string{contracts.LegacyAgentSubject(sessionID)}))
 		_, err := store.Write(t.Context(), sessionID, selection.Record{Current: name, Start: 1}, 0)
 		require.NoError(t, err)
@@ -183,10 +191,10 @@ func malformedSessions(t *testing.T, nc *nats.Conn, sessions ...string) map[stri
 // record copied under another's key), streams census is UNKNOWN, exit 2, naming the session
 // family's store and the key, and removes nothing: both sessions' consumers and a stray
 // listener-hub~<nuid> stay, and its stop entry records only this hold's barrier key, which it put
-// before it read the records. Control: today's decode takes each value (malformedCase.lenient), and
-// a census on it removes a session's consumer or runs complete and removes the stray (shown by an
-// overlay run of today's decode). The copied record is refused by the key rule of the selection
-// package's records (readSelectionValue).
+// before it read the records. Control: a lenient decode (json.Unmarshal) takes each value
+// (malformedCase.lenient), and a census on it removes a session's consumer or runs complete and
+// removes the stray (shown by an overlay run of a lenient decode). The copied record is refused by
+// the key rule of the selection package's records (readSelectionValue).
 func TestTheCensusIsUnknownOnAMalformedSelectionValue(t *testing.T) {
 	for _, c := range malformedCases("ses_b", "ses_a") {
 		t.Run(c.name, func(t *testing.T) {
@@ -227,9 +235,10 @@ func TestTheCensusIsUnknownOnAMalformedSelectionValue(t *testing.T) {
 // For each malformed value (malformedCases), status, with the row released, reports that key
 // UNKNOWN and decodes nothing of it: it prints the key as UNKNOWN (the sentinel's on its store
 // line), still prints the session record that is well formed, and exits 2 naming the key. Control:
-// today's decode takes each value (malformedCase.lenient), and status on it prints the value as a
-// record or a store state and exits 0 (shown by an overlay run of today's decode). The copied
-// record is refused by the key rule of the selection package's records (readSelectionValue).
+// a lenient decode (json.Unmarshal) takes each value (malformedCase.lenient), and status on it
+// prints the value as a record or a store state and exits 0 (shown by an overlay run of a lenient
+// decode). The copied record is refused by the key rule of the selection package's records
+// (readSelectionValue).
 func TestStatusReportsAMalformedSelectionValueUnknown(t *testing.T) {
 	for _, c := range malformedCases("ses_b", "ses_a") {
 		t.Run(c.name, func(t *testing.T) {
@@ -244,15 +253,13 @@ func TestStatusReportsAMalformedSelectionValueUnknown(t *testing.T) {
 			consumers := malformedSessions(t, nc, "ses_a", "ses_b")
 			value := c.plant(t, nc)
 			c.lenient(t, value)
-			_, err = h.records().Admit(ctx, id, holdrecord.Request{Command: censusCommandName}, nil)
-			require.NoError(t, err)
-			require.NoError(t, h.records().AppendDone(ctx, id, censusCommandName, nil))
+			h.censusDone(id)
 			require.NoError(t, h.release(id))
 
 			code, stdout, stderr := h.run(actionStatus, "--dispatch-database-file", "dispatch.url")
 			require.Equal(t, 2, code, "status on a malformed value: %s%s", stdout, stderr)
 			require.Contains(t, stderr, "UNKNOWN")
-			require.Contains(t, stderr, c.key+": its value in KV_"+selection.SessionBucket+" is malformed")
+			require.Contains(t, stderr, c.key+": its value in "+selectionStreamName+" is malformed")
 			require.Contains(t, stdout, c.statusLine)
 			if c.key != "ses_a" {
 				require.Contains(t, stdout, "record "+familySession+" ses_a: current "+consumers["ses_a"]+" (on the stream)", "status printed no well-formed record")
@@ -271,9 +278,9 @@ func TestStatusReportsAMalformedSelectionValueUnknown(t *testing.T) {
 // naming the key, and deletes nothing: ses_a's retired session~<nuid>, which the server holds,
 // stays on the stream and in ses_a's record, and its stop entry records only this hold's barrier
 // key, which it put before the walk (TestACleanupStopNamesTheBarrierKeyItPut).
-// Control: today's decode takes each value (malformedCase.lenient), and cleanup on it deletes that
-// retired name (shown by an overlay run of today's decode). The copied record is refused by the
-// key rule of the selection package's records (readSelectionValue).
+// Control: a lenient decode (json.Unmarshal) takes each value (malformedCase.lenient), and cleanup
+// on it deletes that retired name (shown by an overlay run of a lenient decode). The copied record
+// is refused by the key rule of the selection package's records (readSelectionValue).
 func TestCleanupRefusesAMalformedSelectionValue(t *testing.T) {
 	for _, c := range malformedCases("ses_b", "ses_a") {
 		t.Run(c.name, func(t *testing.T) {
@@ -286,7 +293,7 @@ func TestCleanupRefusesAMalformedSelectionValue(t *testing.T) {
 			_, err := selection.CreateSessionBucket(ctx, nc, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
 			require.NoError(t, err)
 			consumers := malformedSessions(t, nc, "ses_a", "ses_b")
-			retired := selection.FreshName(sessionBucketPrefix)
+			retired := selection.FreshName(sessionFreshPrefix)
 			censusSessionConsumer(t, nc, "ses_a", retired, bus.SessionConsumerFilters([]string{contracts.LegacyAgentSubject("ses_a")}))
 			kv := selection.NewKVStore(selection.ConnRequester{Conn: nc})
 			_, revision, err := kv.Read(ctx, "ses_a")
@@ -323,10 +330,10 @@ func TestCleanupRefusesAMalformedSelectionValue(t *testing.T) {
 // For each malformed value (malformedCases), restore --prepare in a rollback hold is UNKNOWN, exit
 // 2, naming the key, and changes nothing but this hold's barrier key, which it put before it
 // listed the bucket (TestARestorePrepareStopNamesTheBarrierKeyItPut): its stop entry records only
-// that key, and session keyed's record holds no restore. Control: today's decode takes each value
-// (malformedCase.lenient), and restore --prepare on it plans the rollback and writes keyed's
-// restore (shown by an overlay run of today's decode). The copied record is refused by the key
-// rule of the selection package's records (readSelectionValue).
+// that key, and session keyed's record holds no restore. Control: a lenient decode
+// (json.Unmarshal) takes each value (malformedCase.lenient), and restore --prepare on it plans the
+// rollback and writes keyed's restore (shown by an overlay run of a lenient decode). The copied
+// record is refused by the key rule of the selection package's records (readSelectionValue).
 func TestRestorePrepareRefusesAMalformedSelectionValue(t *testing.T) {
 	for _, c := range malformedCases("other", "keyed") {
 		t.Run(c.name, func(t *testing.T) {
