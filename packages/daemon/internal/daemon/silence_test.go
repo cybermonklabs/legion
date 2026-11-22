@@ -421,7 +421,7 @@ func TestSilentPhaseWorkerIsToldToItsArchitect(t *testing.T) {
 
 	architect := mustClaimToken(t, podUpdateIssue, claim.RoleArchitect)
 	topics := publisher.topics()
-	if len(topics) != 1 || topics[0] != notify.RoleTopicPrefix+string(architect) {
+	if len(topics) != 1 || topics[0] != notify.RoleTopic(string(architect)) {
 		t.Fatalf("the notice was published to %v, want the one topic of %s", topics, architect)
 	}
 	lines := loggedLines(t, rig.logs.String(), "a phase worker nothing will prompt was found silent")
@@ -887,7 +887,7 @@ func TestWorkerBackgroundStalledIsToldToItsArchitectOnceAndSentNothing(t *testin
 
 	architect := mustClaimToken(t, podUpdateIssue, claim.RoleArchitect)
 	topics := publisher.topics()
-	if len(topics) != 1 || topics[0] != notify.RoleTopicPrefix+string(architect) {
+	if len(topics) != 1 || topics[0] != notify.RoleTopic(string(architect)) {
 		t.Fatalf("the notice was published to %v, want the one topic of %s", topics, architect)
 	}
 	if sent := conn.Prompts()[before:]; len(sent) != 0 {

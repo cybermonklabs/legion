@@ -62,7 +62,7 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 	ask := record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: "sha-1", Base: "main",
 		Phase: phase.Testing, PullRequest: 86, Why: record.ConflictCheckNotGreen}
 	asked := &record.MergeForward{Head: "sha-1", Base: "main", Phase: phase.Testing, Why: record.ConflictCheckNotGreen, AskedAt: time.Now()}
-	topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleImplementer))
+	topic := notify.RoleTopic(string(mustClaimToken(t, "LEGION-208", claim.RoleImplementer)))
 
 	t.Run("a released implementer is woken, waited for, and told once its session holds the role", func(t *testing.T) {
 		publisher := &holderPublisher{}
@@ -148,7 +148,7 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 		runner, _, pool, logs := mergeForwardRunner(t, publisher, landed)
 		told := record.MergeForwardMessage{Role: claim.RoleTester, Step: record.MergeForwardLanded, Head: "sha-1", Landed: "sha-2",
 			Base: "main", Phase: phase.Testing, PullRequest: 86}
-		tester := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleTester))
+		tester := notify.RoleTopic(string(mustClaimToken(t, "LEGION-208", claim.RoleTester)))
 		enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", told, time.Now().Add(-time.Minute)))
 		id := noticeRowID(t, pool)
 

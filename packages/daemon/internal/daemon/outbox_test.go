@@ -1277,8 +1277,8 @@ func TestOutboxRoleMessageToAClaimNotReleasedIsPublished(t *testing.T) {
 	}
 
 	published := publisher.publishes()
-	if len(published) != 1 || published[0].topic != notify.RoleTopicPrefix+string(token) || published[0].message != "CI settled at head" {
-		t.Fatalf("publishes = %#v, want the one message to %s", published, notify.RoleTopicPrefix+string(token))
+	if len(published) != 1 || published[0].topic != notify.RoleTopic(string(token)) || published[0].message != "CI settled at head" {
+		t.Fatalf("publishes = %#v, want the one message to %s", published, notify.RoleTopic(string(token)))
 	}
 	if left := outboxRows(t, pool); left != 0 {
 		t.Fatalf("outbox rows left = %d, want the message finished", left)

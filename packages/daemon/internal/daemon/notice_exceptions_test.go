@@ -1224,7 +1224,7 @@ func TestANoticeIsKeptWhileItsArchitectsSessionIsUnresponsive(t *testing.T) {
 	}))
 	defer server.Close()
 	refused := func() error {
-		return notify.New(server.URL, "").Publish(context.Background(), notify.RoleTopicPrefix+string(architect),
+		return notify.New(server.URL, "").Publish(context.Background(), notify.RoleTopic(string(architect)),
 			noticeSummary(notice.Kind, row.Issue), notice, record.OutboxKey(row.ID))
 	}
 

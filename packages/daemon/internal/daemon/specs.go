@@ -510,9 +510,9 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 	if c.Role == claim.RoleArchitect && !claim.IsTreeRoot(c.Issue, c.Tree) {
 		owner = "the architect above you is"
 	}
-	fragment := fmt.Sprintf("Legion addressing: your role topic is `%s%s`; %s `%s%s`; "+
-		"the project's controller is `%s%s`; a sibling role on your issue is your topic with the trailing `-<role>` replaced.",
-		notify.RoleTopicPrefix, c.Token, owner, notify.RoleTopicPrefix, architect, notify.RoleTopicPrefix, claim.ControllerToken(project))
+	fragment := fmt.Sprintf("Legion addressing: your role topic is `%s`; %s `%s`; "+
+		"the project's controller is `%s`; a sibling role on your issue is your topic with the trailing `-<role>` replaced.",
+		notify.RoleTopic(string(c.Token)), owner, notify.RoleTopic(string(architect)), notify.RoleTopic(string(claim.ControllerToken(project))))
 	// The agent a launch after a forget starts is a fresh session on a claim that had one: nothing in
 	// it says an earlier session existed, so it would read an empty transcript as a fresh start and
 	// redo work that is already pushed (dispatch://INFRA-714 R8). A session the launcher could not

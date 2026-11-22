@@ -40,7 +40,7 @@ func TestAHookPromptReachesItsRolesOwnTopicAndEndsTheRow(t *testing.T) {
 		t.Fatalf("drain the hook prompt: %v", err)
 	}
 
-	topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleImplementer))
+	topic := notify.RoleTopic(string(mustClaimToken(t, "LEGION-208", claim.RoleImplementer)))
 	published := publisher.publishes()
 	if len(published) != 1 || published[0].topic != topic {
 		t.Fatalf("publishes = %#v, want the one hook prompt to %s", published, topic)
@@ -73,7 +73,7 @@ func TestAHookPromptNoSessionHoldsEndsTheRow(t *testing.T) {
 			ctx := context.Background()
 			publisher := &holderPublisher{keeps: keeps}
 			runner, _, pool := hookRunner(t, publisher)
-			topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleImplementer))
+			topic := notify.RoleTopic(string(mustClaimToken(t, "LEGION-208", claim.RoleImplementer)))
 			publisher.setAbsent(topic)
 			enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", firedHook, time.Now().Add(-time.Minute)))
 
@@ -214,7 +214,7 @@ func TestARelaunchParkedOverALiveProcessHoldsNoRow(t *testing.T) {
 		if err := runner.RunOnce(ctx); err != nil {
 			t.Fatalf("the row's first attempt: %v", err)
 		}
-		topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleImplementer))
+		topic := notify.RoleTopic(string(mustClaimToken(t, "LEGION-208", claim.RoleImplementer)))
 		attempts, delivered := publisher.snapshot()
 		if attempts != 1 || len(delivered) != 1 || delivered[0].topic != topic || delivered[0].message != firedHook.Message("LEGION-208") {
 			t.Fatalf("the first attempt made %d publishes and delivered %+v, want the prompt delivered to %s: the relaunch waits over a live session",
@@ -335,7 +335,7 @@ func keptAcrossTheWake(t *testing.T, payload record.OutboxPayload, role claim.Ro
 	ctx := context.Background()
 	publisher := &holderPublisher{keeps: true}
 	runner, sup, pool := hookRunner(t, publisher)
-	topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", role))
+	topic := notify.RoleTopic(string(mustClaimToken(t, "LEGION-208", role)))
 	publisher.setAbsent(topic)
 	machine := releasedClaim(t, sup, role)
 	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", payload, time.Now().Add(-time.Minute)))
@@ -405,7 +405,7 @@ func parkTheWake(t *testing.T, payload record.OutboxPayload, role claim.Role) *p
 	clock := &heldClock{}
 	sup.deps.Clock = clock
 	sup.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(parkedTurn) }}
-	topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", role))
+	topic := notify.RoleTopic(string(mustClaimToken(t, "LEGION-208", role)))
 	publisher.setAbsent(topic)
 	machine := releasedClaim(t, sup, role)
 	row := mustOutboxRow(t, "LEGION-208", payload, time.Now().Add(-time.Minute))

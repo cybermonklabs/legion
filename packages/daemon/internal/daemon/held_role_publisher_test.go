@@ -45,7 +45,7 @@ func TestTheOutboxPublishesNothingToTheRoleOfAClaimThatDoesNotHoldItsSession(t *
 			t.Fatalf("execute the role message to %s: %v", role, err)
 		}
 	}
-	want := []string{notify.RoleTopicPrefix + string(held), notify.RoleTopicPrefix + noClaim}
+	want := []string{notify.RoleTopic(string(held)), notify.RoleTopic(noClaim)}
 	if got := publisher.topics(); !slices.Equal(got, want) {
 		t.Fatalf("published to %v, want %v: %s and the retired %s record sessions another claim holds, so nothing goes to their roles", got, want, unheld, retired)
 	}
@@ -83,7 +83,7 @@ func TestTheOutboxKeepsNothingForTheRoleOfAClaimThatDoesNotHoldItsSession(t *tes
 	publisher.mu.Lock()
 	published := slices.Clone(publisher.publish)
 	publisher.mu.Unlock()
-	want := notify.RoleTopicPrefix + string(held)
+	want := notify.RoleTopic(string(held))
 	if len(published) != 1 {
 		t.Fatalf("published %d messages, want 1, to %s: %s records a session another claim holds, so nothing goes to its role, kept or not: %+v",
 			len(published), want, unheld, published)
@@ -206,7 +206,7 @@ func TestAForgetWaitsUntilTheListenerNoLongerNamesTheSharedSession(t *testing.T)
 		t.Fatalf("the forget once the listener names no holder of the role = %v, want it admitted", err)
 	}
 	message(92)
-	if got, want := publisher.topics(), []string{notify.RoleTopicPrefix + string(contained)}; !slices.Equal(got, want) {
+	if got, want := publisher.topics(), []string{notify.RoleTopic(string(contained))}; !slices.Equal(got, want) {
 		t.Fatalf("published to %v once the forget went on, want %v", got, want)
 	}
 	if _, still := runner.unheldWarned.Load(contained); still {

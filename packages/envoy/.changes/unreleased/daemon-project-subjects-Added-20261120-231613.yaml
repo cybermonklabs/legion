@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  The public `subjectforms` package also gives a role lane's builders, `RoleProject` and
+  `RoleSubject` (the contracts' own, re-exported unchanged), so the Legion daemon writes a role's
+  topic in the new form, its project first, from the same code the listener reads it with.
+time: 2026-11-20T23:16:13Z
+custom:
+    Issue: daemon-project-subjects

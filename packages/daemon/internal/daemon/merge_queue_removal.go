@@ -218,7 +218,7 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 	} else if waits {
 		return wait.Errorf("%s waits for its %s's released pod to come back", m.what, m.role)
 	}
-	published := r.publish(ctx, notify.RoleTopicPrefix+string(m.token), m.message, m.message, record.OutboxKey(row.ID))
+	published := r.publish(ctx, notify.RoleTopic(string(m.token)), m.message, m.message, record.OutboxKey(row.ID))
 	switch {
 	case published == nil:
 		r.log.Info(m.delivered, m.attributes...)

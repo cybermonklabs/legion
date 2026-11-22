@@ -228,7 +228,7 @@ func (p *liveProof) architectNotices(key, kind string) []listenerPublish {
 		p.t.Fatal(err)
 	}
 	var got []listenerPublish
-	for _, published := range p.notices.acceptedOn(notify.RoleTopicPrefix + string(architect)) {
+	for _, published := range p.notices.acceptedOn(notify.RoleTopic(string(architect))) {
 		var payload struct {
 			Kind   string `json:"kind"`
 			Reason string `json:"reason"`

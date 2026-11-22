@@ -117,9 +117,9 @@ func TestMemoryGuardAKillReportedTwiceIsOneNoteOnTheReportingRolesTopic(t *testi
 	if err := runner.execute(ctx, rows[0]); err != nil {
 		t.Fatalf("run the note's row: %v", err)
 	}
-	const topic = "notifications.role.legion-legion-legion-209-tester"
-	if topic != notify.RoleTopicPrefix+string(token) {
-		t.Fatalf("the tester's topic is %q, want %q", notify.RoleTopicPrefix+string(token), topic)
+	const topic = "notifications.role.LEGION.legion-legion-legion-209-tester"
+	if topic != notify.RoleTopic(string(token)) {
+		t.Fatalf("the tester's topic is %q, want %q", notify.RoleTopic(string(token)), topic)
 	}
 	if got := publisher.topics(); !slices.Equal(got, []string{topic}) {
 		t.Fatalf("the note was published to %q, want once to %q alone", got, topic)
