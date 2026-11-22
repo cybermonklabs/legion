@@ -105,6 +105,12 @@ var (
 	// that refusal's own text and the exchange's do, and names no holder: whoever holds the name
 	// is not this caller's to learn.
 	ErrSessionHeld = errors.New("another identity holds this session name")
+	// ErrRestrictedMember refuses an enrollment that would act for a person Dispatch calls a
+	// restricted member (projectaccess.MemberRestricted): a person an access list admitted from
+	// outside the deployment's sign-in domain. Such a person's machine login enrolls no session,
+	// so none of their agents is released a secret; their login still trades for a token that
+	// names their projects, which is all their agents need. Nothing is written.
+	ErrRestrictedMember = errors.New("a restricted member's machine login enrolls no session, and the broker releases no secret to that person's agents")
 	// ErrProjectsInvalid refuses a list of projects that is no credential's list
 	// (oauthwire.ValidProjects): more than 16 keys, a key that is no Dispatch project key, or one
 	// named twice.
@@ -123,11 +129,12 @@ var (
 	// ErrProjectNotVisible refuses a session naming a project its person may not see, or one
 	// Dispatch does not hold: the two read alike, so a refusal never says whether a project exists.
 	ErrProjectNotVisible = errors.New("the session names a project its person cannot see")
-	// ErrProjectsRequired refuses a session of a restricted member that names no project, a
-	// person's pod among them: such a person sees only the projects that name them, so their
-	// session names which (projectaccess.ErrListRequired). `agent-secrets register`,
-	// `enroll --helper` and `enroll --pod` each read AGENT_SECRETS_PROJECTS, so the one setting
-	// the refusal names is the one each of them reads.
+	// ErrProjectsRequired refuses a session under the sign-in of a person Dispatch calls a
+	// restricted member that names no project: such a person sees only the projects that name
+	// them, so their session names which (projectaccess.ErrListRequired). A restricted member's
+	// machine login and pod login never reach it: they enroll nothing at all
+	// (ErrRestrictedMember). `agent-secrets register` and `enroll --helper` each read
+	// AGENT_SECRETS_PROJECTS, so the one setting the refusal names is the one each of them reads.
 	ErrProjectsRequired = errors.New("a restricted member's session names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on")
 )
 
@@ -274,9 +281,11 @@ type Service struct {
 	Pod PodVerifier
 
 	// Projects asks Dispatch whether a person may see a project and what kind of member they are
-	// (projectaccess.Client, BROKER_PROJECT_ACCESS_URL): Create checks a session's list through it
-	// before its transaction begins. nil on a broker with no such client, which enrolls a session
-	// naming no project as before and refuses one that names any (ErrProjectsUnchecked).
+	// (projectaccess.Client, BROKER_PROJECT_ACCESS_URL). Create asks it, before its transaction
+	// begins, first of the person every enrollment under a person's machine login or pod login acts
+	// for, refusing a restricted member (ErrRestrictedMember), and then checks a session's list
+	// through it. nil on a broker with no such client, which asks nothing, enrolls a session naming
+	// no project as before and refuses one that names any (ErrProjectsUnchecked).
 	Projects projectaccess.Access
 
 	// Sessions binds every enrollment that names a session to the principal its name is held
@@ -707,6 +716,14 @@ func (s *Service) CredentialForKey(ctx context.Context, id, thumbprint string) (
 // a service's), even after the caller's launcher proof was verified, is
 // ErrUnauthenticated.
 //
+// An enrollment that acts for a person — under a person's machine login or pod login — is made
+// only once Dispatch has said that person is no restricted member (checkMember): a restricted
+// member's login enrolls nothing (ErrRestrictedMember), and while Dispatch cannot be asked
+// nothing is enrolled (projectaccess.MemberKindUncheckable). A person's sign-in on a machine is
+// not held to that check; its session is held to the list rule alone (checkProjects), which asks
+// Dispatch the person's member kind for an empty list and whether they may see each project
+// named.
+//
 // An enrollment that names a session also records the principal its grants follow
 // (carryPrincipal), and takes what every predecessor of that name under that principal, or under
 // an account paired with its own (SessionBinder.PairedWith), still holds: its grants, its pending
@@ -775,6 +792,15 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 	if len(in.Projects) == 0 {
 		in.Projects = nil
 	}
+	// The list's own shape is refused before Dispatch is asked anything (checkProjectList); then
+	// the person's member kind (checkMember), and then the list against that person
+	// (checkProjects).
+	if err := checkProjectList(in); err != nil {
+		return Enrollment{}, err
+	}
+	if err := s.checkMember(ctx, cred, in); err != nil {
+		return Enrollment{}, err
+	}
 	if err := s.checkProjects(ctx, in); err != nil {
 		return Enrollment{}, err
 	}
@@ -806,13 +832,60 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 	return Enrollment{}, fmt.Errorf("create enrollment: exhausted retries after concurrent changes to runtime %s", in.RuntimeID)
 }
 
-// checkProjects is Create's rule for the projects a session names, run before any transaction
-// begins so that no call to Dispatch holds a row lock or a pooled connection: the list must be a
-// credential's list (ErrProjectsInvalid); only an enrollment acting for a person names one
-// (ErrProjectsNeedAPerson); a list is taken only where the broker can check it with Dispatch
-// (ErrProjectsUnchecked); and then projectaccess.ListAllowed, the one statement of the rule the
-// token exchange applies too, decides: every project named must be one the person may see
-// (ErrProjectNotVisible), and a restricted member must name at least one (ErrProjectsRequired).
+// checkMember is Create's rule for the person an enrollment acts for, run once every other check
+// of the caller has passed and before any transaction begins, so that no call to Dispatch holds
+// a row lock or a pooled connection (the rule internal/cipher/projectaccess states for every
+// caller). It asks Dispatch what kind of member in.Operator is: a restricted member, a person an
+// access list admitted from outside the deployment's sign-in domain, is ErrRestrictedMember, so
+// that person's agents get no session to be released a secret under, however their machine login
+// was approved and whichever route the launcher reached; a full member, and a person Dispatch
+// holds no row for, enroll as before. Any failure to ask — Dispatch not answering, Dispatch
+// refusing the broker's own account (dispatchread.ErrBrokerRefused), a kind this broker does not
+// know (projectaccess.ErrUnknownMemberKind) — is the *projectaccess.MemberKindUncheckable
+// projectaccess.Restricted returns: a check that cannot decide refuses, and the launcher enrols
+// again.
+//
+// It asks nothing for an enrollment that acts for no person (a service's pod, a machine's own
+// session), for a person's sign-in on a machine, whose person the broker verified against
+// BROKER_SIGNIN_DOMAIN itself when the token exchange minted the credential (such a session is
+// held to checkProjects' list rule alone), and on a broker with no client of Dispatch (Projects
+// nil).
+func (s *Service) checkMember(ctx context.Context, cred Credential, in Enrollment) error {
+	if s.Projects == nil || in.Operator == nil || signInCredential(cred.Subject) {
+		return nil
+	}
+	restricted, err := projectaccess.Restricted(ctx, s.Projects, *in.Operator)
+	switch {
+	case err != nil:
+		return err
+	case restricted:
+		return fmt.Errorf("%w: %s is a restricted member", ErrRestrictedMember, *in.Operator)
+	}
+	return nil
+}
+
+// checkProjectList is Create's rule for the shape of the list a session names, which asks Dispatch
+// nothing and so runs before any question: the list must be a credential's list
+// (ErrProjectsInvalid), and only an enrollment acting for a person names one
+// (ErrProjectsNeedAPerson).
+func checkProjectList(in Enrollment) error {
+	if err := oauthwire.ValidProjects(in.Projects); err != nil {
+		return fmt.Errorf("%w: %v", ErrProjectsInvalid, err)
+	}
+	if len(in.Projects) > 0 && in.Operator == nil {
+		return ErrProjectsNeedAPerson
+	}
+	return nil
+}
+
+// checkProjects is Create's rule for the projects a session names, run once checkProjectList and
+// checkMember have passed and before any transaction begins, so that no call to Dispatch holds a
+// row lock or a pooled connection: a list is taken only where the broker can check it with
+// Dispatch (ErrProjectsUnchecked); and then projectaccess.ListAllowed, the one statement of the
+// rule the token exchange applies too, decides: every project named must be one the person may
+// see (ErrProjectNotVisible), and a restricted member must name at least one
+// (ErrProjectsRequired), which an enrollment meets only where checkMember asked nothing (a
+// person's sign-in) or Dispatch's answer changed between the two reads.
 // An empty list enrolls as before with no client, and with a client whose Dispatch could not be
 // asked the member kind (projectaccess.ErrUnchecked): the session is enrolled, and a line says it
 // was enrolled unchecked. A list Dispatch did not answer for is refused, since taking it
@@ -825,18 +898,13 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 // the project-access error it met.
 //
 // A person's pod (PersonPodLogin) is held to this rule exactly as its person's session is: it acts
-// for its person, so it names its projects, and they are checked against that person. That is
-// what keeps a restricted member's pod to what the member's own session sees, and lets it enrol
-// at all, since such a member must name a project. Its operator is what says so: authorized has
-// already refused an operator to every pod but a live person's pod login's own, so a pod reaches
-// here with an operator only as that, and every other pod, a service's, names no project.
+// for its person, so it names its projects, and they are checked against that person. A
+// restricted member's pod never reaches here: checkMember refuses it first, as it refuses that
+// member's machine login, since a restricted member's login enrolls no session at all. Its
+// operator is what says so: authorized has already refused an operator to every pod but a live
+// person's pod login's own, so a pod reaches here with an operator only as that, and every other
+// pod, a service's, names no project.
 func (s *Service) checkProjects(ctx context.Context, in Enrollment) error {
-	if err := oauthwire.ValidProjects(in.Projects); err != nil {
-		return fmt.Errorf("%w: %v", ErrProjectsInvalid, err)
-	}
-	if len(in.Projects) > 0 && in.Operator == nil {
-		return ErrProjectsNeedAPerson
-	}
 	if s.Projects == nil || in.Operator == nil {
 		if len(in.Projects) > 0 {
 			return fmt.Errorf("%w: this broker holds no client of Dispatch's project access (BROKER_PROJECT_ACCESS_URL)", ErrProjectsUnchecked)

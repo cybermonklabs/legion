@@ -911,10 +911,11 @@ const recordNotFound = "RECORD_NOT_FOUND"
 // `state.Issues[key]` out of it, rather than asking the store a cheaper question of one issue,
 // because the record must equal the record of that issue inside the whole-project body field for
 // field: `waitingLine` and `slot` come from the project's admission, `check` from its open
-// production checks, `gatedSteps` from the deployment's steps and the three memory fields from
-// the tree's draw. None of the six is a fact of the issue's own row. Building the answer from
-// the same value the whole-project body is built from makes that equality hold by construction,
-// and a test holds a later change to it.
+// production checks, `gatedSteps` from the tree's steps (record.TreeSteps: the deployment's, and a
+// criteria row its root registered beside them) and the three memory fields from the tree's draw.
+// None of the six is a fact of the issue's own row. Building the answer from the same value the
+// whole-project body is built from makes that equality hold by construction, and a test holds a
+// later change to it.
 //
 // An issue the daemon holds no record for is a 404 carrying recordNotFound and the sentence the
 // plugin's own `read_record` answers for an unknown issue today

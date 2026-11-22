@@ -10,9 +10,14 @@
  *  file would have to be polled for that line, and a reader that closed the pipe would kill
  *  this process with SIGPIPE if it ever wrote again.
  *
- *  A person types the same three steps against a file, from `packages/dispatch`:
+ *  A person types the same three steps against a file, from `packages/dispatch`. The file holds
+ *  the stack's DATABASE_URL with any password it carries, so it is made for that person alone:
+ *  the subshell sets umask 077 and then execs the harness, so the file is created 0600, the
+ *  shell's own umask is left as it was, and `$!` is the harness. A file an earlier run left is
+ *  removed first, since an existing file keeps its mode:
  *
- *    bun e2e/harness-up.ts > exports.sh &
+ *    rm -f exports.sh
+ *    (umask 077 && exec bun e2e/harness-up.ts > exports.sh) &
  *    …wait for the last line, `export DISPATCH_E2E_REUSE_SERVERS=1`, then `. ./exports.sh`…
  *    bunx playwright test --config e2e/playwright.config.ts --ui
  *    kill "$!"

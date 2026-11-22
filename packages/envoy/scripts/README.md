@@ -909,9 +909,11 @@ in silence:
   `claude-envoy@legion-plugins` prints `SKIPPED`. A pi-envoy in `~/.omp/plugins` or a profile's
   plugin tree that is not the dotfiles' copy, a claude-envoy recorded in `~/.claude` or another
   `CLAUDE_CONFIG_DIR`, a link that does not resolve, a directory the gate may not search, a
-  marketplace entry it cannot read, and a marketplace that names claude-envoy twice print
-  `UNKNOWN`. A session started before a pin moved still runs the plugin it loaded: the gate reads
-  pins and installs, not processes.
+  marketplace entry it cannot read, a marketplace that names claude-envoy twice, and a profile,
+  `HOME`, dotfiles directory or `CLAUDE_CONFIG_DIR` whose name is not UTF-8 print `UNKNOWN`. The
+  gate hands each path to `python3` and `jq` as an argument, and a launcher that reads its
+  arguments as text (a mise shim) changes a name that is not UTF-8. A session started before a pin
+  moved still runs the plugin it loaded: the gate reads pins and installs, not processes.
 
 It prints a line per pin or surface (`PASS`, `GATE SHUT`, `UNKNOWN`, `SKIPPED`, `VM HUB` or
 `NO VM HUB`) and the verdict on the last: `GATE OPEN` (exit 0) only when every pin it read passed
@@ -954,16 +956,23 @@ cannot show that nothing moved, so the gate is read twice, at least the stream's
 (`ENVOY_NOTIFICATIONS`' `max_age`, 72 hours):
 
 ```bash
-packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record first.json [--listener <machine>=<url>]...
+packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record first.json [--listener <machine>=<url>]... [--bus-alias <nats-urls>]...
 # at or after the time the first run names:
-packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record second.json --since first.json [--listener <machine>=<url>]...
+packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record second.json --since first.json [--listener <machine>=<url>]... [--bus-alias <nats-urls>]...
 ```
 
 A listener outside the cluster is read over `https`; `--insecure` takes an `http://` URL, whose
-answer anyone on the way could read or change. Once the hub is not static, `--token-file <path>`
-names where the listener Deployment mounts its projected NATS token, which the Job then connects
-with in place of the seed, and `--inbox-prefix <prefix>` the inbox prefix the listener identity's
-grant subscribes, which every `nats` call of the Job then takes.
+answer anyone on the way could read or change. `--bus-alias <nats-urls>` names another `NATS_URLS`
+that reaches the same NATS servers as the listener Deployment's: a listener container that dials
+it is read as one of the bus's. When Service `envoy-hub`, which `envoy-listener` dials, selects a
+hub's pods in the cluster, the hub's own Service `envoy-nats` reaches the same servers, and the
+hub's session listener `envoy-nats-listener` dials that one, so a reading of such a cluster names
+it: `--bus-alias nats://envoy-nats.envoy.svc.cluster.local:4222`. Give the same `--bus-alias` at
+both readings: a listener the first reading read and the second skips prints `UNKNOWN`. Once the
+hub is not static, `--token-file <path>` names where the listener Deployment mounts its projected
+NATS token, which the Job then connects with in place of the seed, and `--inbox-prefix <prefix>`
+the inbox prefix the listener identity's grant subscribes, which every `nats` call of the Job then
+takes.
 
 What it reads, all of it read-only:
 
@@ -973,11 +982,13 @@ What it reads, all of it read-only:
   `envoy_listener_start_time_seconds`, whose one label, `machine`, is the listener's
   `ENVOY_MACHINE_ID`. The listeners in the cluster are found by what they run, not by name: every
   container, in any namespace, of an image whose path ends `legion/envoy` that runs the image's own
-  entrypoint (`envoy-listener`), on the bus the reading is about, the `NATS_URLS` of the
-  `envoy-listener` Deployment; a listener container on another bus (a load-test stack's, on its own
-  NATS) is named (`SKIP`) and not read. Each is read from its pod's log: a listener logs the two
-  metrics, as `/metrics` serves them, on a `listener legacy subjects` line every minute, and the
-  gate takes the newest of the last five minutes, which must be at most three minutes older than
+  entrypoint (`envoy-listener`), on the bus the reading is about: the `NATS_URLS` of the
+  `envoy-listener` Deployment, or a `NATS_URLS` named with `--bus-alias`. A listener container on
+  another bus (a load-test stack's, on its own NATS) is named (`SKIP`), with its machine and its
+  `NATS_URLS` (any user, password or token in it masked: `user:***@`, `***@`), and not read. Each
+  is read from its pod's log: a listener logs the two metrics, as `/metrics` serves them, on a
+  `listener legacy subjects` line every minute, and the gate takes the newest of the last five
+  minutes, which must be at most three minutes older than
   the reading. The log and not `/metrics`, because the operator may read every listener pod's log
   and may not reach Dispatch's listener's `/metrics`: the API server's pod proxy is refused in
   namespace `dispatch`, and that listener's NetworkPolicy admits its port from Dispatch's own pods
@@ -989,7 +1000,16 @@ What it reads, all of it read-only:
   than counting for that machine. Every listener with its durable on the bus (`listener-<machine>`),
   bound now or not, must be one of those: one that is not prints `UNKNOWN` by name, so a listener
   nobody named, or one offline, asleep or restarting at the reading, is never left out of the count
-  while its durable lasts (7 days unbound).
+  while its durable lasts (7 days unbound); the line says to name it with `--listener` if it runs
+  outside the cluster, or its `NATS_URLS` with `--bus-alias` if it runs in the cluster and dials the
+  bus by another address. A listener container on another bus that serves as the machine of a
+  listener the reading read prints `UNKNOWN`, naming both: that machine's durable can be either's,
+  so the one read does not show what the other counted. So does one whose `ENVOY_MACHINE_ID` is no
+  literal value (set through `valueFrom` or `envFrom`, holding a `$(VAR)` reference Kubernetes
+  expands, or not set), whose machine the gate cannot read; set it as a literal value. A literal
+  machine is read trimmed of white space, as the listener reads it. A listener container that lists
+  `ENVOY_MACHINE_ID` or `NATS_URLS` more than once prints `UNKNOWN`, naming every value: the
+  kubelet takes the last entry of a name, and the gate would read the first.
 - **Over NATS**, from a one-off Job in namespace `envoy` that connects as the in-cluster listener
   does (`lib/legacy-subjects-gate-nats.sh`): who the server says the connection is
   (`$SYS.REQ.USER.INFO`, which the in-cluster listener's static grant refuses, so the gate then
@@ -1040,9 +1060,10 @@ answer that is no JSON object, a listener that is not running or whose newest co
 stale, a build that logs or serves no old-form counter, a reading whose start-time gauge names
 another machine than the one read (or none, outside the cluster), a listener that restarted between
 the readings (its pod's restart count or its start-time gauge moved, or it is a new pod), a
-listener of the first reading that is gone, a start-time gauge served at one reading only, a record
-that cannot be written, and at the second reading: a first reading that did not read every surface,
-a stream that is not the
+listener of the first reading that is gone, a listener on another bus that serves as the machine of
+a listener read or whose `ENVOY_MACHINE_ID` is no literal value, a start-time gauge served at one
+reading only, a record that cannot be written,
+and at the second reading: a first reading that did not read every surface, a stream that is not the
 one the first reading read (its `envoy_stream_id` changed), a stream that does not hold the whole
 window (its first message is younger than the window, less an hour: it was purged or made anew),
 and readings further apart than a listener's durable outlives its listener. A listener read at two
@@ -1064,9 +1085,12 @@ keeps that log in its logging backend after the Job is deleted, as it keeps the 
 which already logs every topic it delivers, so the Job adds no kind of text the namespace does not
 log.
 
-It prints `IDENTITY` (whom the NATS reads ran as), `READ`, `PASS`, `FOUND` (an old-form name a
-first reading found), `GATE SHUT` or `UNKNOWN` per surface, the Job's creation and deletion, and the
-verdict alone on the last line: `GATE OPEN` (exit 0) at a clean second reading, `GATE SHUT` (exit
+It prints `IDENTITY` (whom the NATS reads ran as), `READ`, `SKIP` (a listener container on another
+bus, with its machine), `PASS`, `FOUND` (an old-form name a first reading found), `GATE SHUT` or
+`UNKNOWN` per surface, the Job's creation and deletion, and the
+verdict alone on the last line; no line of a reading prints a URL's user, password or token
+(`user:***@`, `***@` in its place), whether a `NATS_URLS` or a `nats` error naming its server holds
+it. The last line is `GATE OPEN` (exit 0) at a clean second reading, `GATE SHUT` (exit
 1), `UNKNOWN` (exit 3), and at a first reading that read every surface `FIRST READING`, naming its
 `FOUND` count, the stream sequence the second reading reads after, and when to read again (exit 4).
 It writes the reading to `--record` in every case, as a new file in a directory that exists when
@@ -1102,6 +1126,12 @@ it is restored, whether or not the restore succeeded. `DISPATCH_CORPUS_CONTAINER
 `DISPATCH_CORPUS_DATABASE` (default `dispatch_corpus`) name the copy. Run again while the container
 holds the database, it prints the URL and restores nothing; `docker rm -f -v <container>` deletes the
 copy and its data volume.
+
+`corpus-copy.sh` restores the dump with `restore-dispatch-dump.sh <dump-file> [database-name]`,
+which restores one dump on any server: into a database of its own on the server
+`DISPATCH_ADMIN_URL` names (default: `dispatch-pg`'s), after which it prints that database's
+`DATABASE_URL`. The printed URL leaves out any password `DISPATCH_ADMIN_URL` carries, which its
+operator already holds, and keeps the default's fixed dev password `dispatch`.
 
 `search-smoke.sh` prints what a searcher sees for each query in a file
 (`search-smoke-queries.txt` is one): it starts `envoy-dispatch` against the copy, built from this

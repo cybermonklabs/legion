@@ -347,14 +347,15 @@ func main() {
 	// live policy, is registered on it once that first load has answered (LoadPolicy).
 	registry := metrics.New()
 	// The broker's two clients of the Dispatch at BROKER_PROJECT_ACCESS_URL, both nil when it is
-	// unset. Project access is read by the token exchange, an enrollment naming projects, and every
-	// request, release and airlock connection holding a project-tagged secret; the repository
-	// answer is what GET /v1/project-repositories relays to an edge listener, and a broker that
-	// reads none answers every edge listener 503 REPOSITORIES_UNKNOWN. Both present the broker's
-	// own projected ServiceAccount token for Dispatch's audience through one reader, read at call
-	// time, so a rotation needs no restart and the broker has one Dispatch address and one account
-	// there. config.Load holds the two settings to both or neither. Built before the loader, which
-	// serves a tagged secret only when this broker can ask whether its project is private
+	// unset. Project access is read by the token exchange, every enrollment and secret request, an
+	// approval, a release and every airlock connection, so one cache of Dispatch's answers serves
+	// them all; the repository answer is what GET /v1/project-repositories relays to an edge
+	// listener, and a broker that reads none answers every edge listener 503 REPOSITORIES_UNKNOWN.
+	// Both present the broker's own projected ServiceAccount token for Dispatch's audience through
+	// one reader, read at call time, so a rotation needs no restart and the broker has one Dispatch
+	// address and one account there. config.Load holds the two settings to both or neither. Built
+	// before the loader, which serves a tagged secret only when this broker can ask whether its
+	// project is private
 	// (policy.Loader.ProjectChecks).
 	var projectAccess projectaccess.Access
 	var projectRepositories api.ProjectRepositoriesReader
@@ -568,7 +569,7 @@ func main() {
 		slog.Info("project access check", "state", "on", "url", redact.URL(cfg.ProjectAccessURL))
 	} else {
 		slog.Info("project access check", "state", "off",
-			"detail", "BROKER_PROJECT_ACCESS_URL is unset, so a token or a session naming no project is minted and enrolled as before, a person's trade or session naming one is refused, and a secret tagged with a project is refused project-unchecked")
+			"detail", "BROKER_PROJECT_ACCESS_URL is unset, so a token or a session naming no project is minted and enrolled as before, a person's trade or session naming one is refused, a secret tagged with a project is refused project-unchecked, and no enrollment or secret request asks what kind of member its person is")
 	}
 	if cfg.ExchangeK8sAudience == "" && cfg.ExchangeGitHubIssuer == "" && cfg.GoogleOIDCAudience == "" {
 		slog.Info("token exchange", "state", "unconfigured", "detail", "no subject token issuer is set, so no pod, workflow run or machine exchanges")
@@ -770,20 +771,16 @@ func main() {
 	}
 	// The edge's own server, for a deployment that has one, on the socket the boot bound: the
 	// device login's two routes and the health check (api.RegisterEdge), on the same request
-	// deadline and timeouts as the API, since what it serves is the API's own handlers on a
-	// server of its own. Its answers are recorded by answer.EdgeMiddleware: their lines name
-	// port=edge and their samples port="edge", and the mux's own 404 and 405 write no line.
+	// deadline and read and write timeouts as the API, since what it serves is the API's own
+	// handlers on a server of its own, and on an idle timeout above its load balancer's 600-second
+	// keepalive (newEdgeServer). Its answers are recorded by answer.EdgeMiddleware: their refusal
+	// lines name port=edge and their samples port="edge", and the mux's own 404 and 405 write no
+	// refusal line. Every request it answers writes its access-log line (edgeHandler).
 	var edgeServer *http.Server
 	if started.EdgeListener != nil {
 		edgeMux := http.NewServeMux()
 		api.RegisterEdge(edgeMux, deps, api.Edge{URL: cfg.EdgeURL, VerificationURL: cfg.EdgeMachineLoginURL, WorkspaceDomains: cfg.WorkspaceDomains()})
-		edgeServer = &http.Server{
-			Handler:           withRequestDeadline(answer.EdgeMiddleware(edgeMux, answers), requestDeadline),
-			ReadHeaderTimeout: srv.ReadHeaderTimeout,
-			ReadTimeout:       srv.ReadTimeout,
-			WriteTimeout:      srv.WriteTimeout,
-			IdleTimeout:       srv.IdleTimeout,
-		}
+		edgeServer = newEdgeServer(edgeMux, answers, slog.Default(), srv)
 	}
 	// The metrics port's own server, on the socket the boot bound: the scrape of the registry
 	// every metric above is built on, and the NATS auth service's liveness (metricsHandler). Its

@@ -1,0 +1,11 @@
+kind: Added
+custom:
+  Issue: pr3995
+body: |-
+  Every architect's system prompt carries a `Production check: <role>.` or `Production check: off.`
+  line, from the project's `production_check`: after the `Design gate steps:` line for a root
+  architect, and at the end of its addressing for a sub-architect. Where the line names a role, the
+  architect writes one `after_merge` check for the production check in each Verification document
+  it writes while the issue is open. Under `off` it writes none. A production check that finds no
+  `after_merge` check records no result, writes no check, and names the gap in its pull-request
+  comment and its report.

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { refusalCorpus as corpus } from "../../test/refusal-corpus";
 import {
   BROKER_OAUTH_ERROR_CODES,
   isKnownBrokerRefusal,
@@ -10,19 +11,10 @@ import {
 } from "../refusal-text";
 import { BrokerRefusedError } from "../token-errors";
 
-// The broker's refusals as its own OAuth library writes them on the wire: the library's fixed
-// sentence, then the hint, or the broker's `<CODE>: ` ahead of its message. The Go broker's
-// refusal-corpus test writes this file from the broker's library and checks each hint stands in
-// its source, so this list and the broker's sentences cannot drift apart unnoticed (#4140, B1).
-const corpus: string[] = JSON.parse(
-  readFileSync(
-    join(
-      import.meta.dir,
-      "../../../envoy/internal/cipher/oauth/testdata/refusal-descriptions.json"
-    ),
-    "utf8"
-  )
-);
+// The broker's refusals as its own OAuth library writes them on the wire (`test/refusal-corpus`).
+// The Go broker's refusal-corpus test writes that file from the broker's library and checks each
+// hint stands in its source, so this list and the broker's sentences cannot drift apart unnoticed
+// (#4140, B1).
 const sent = { person: "ada@example.com", session: "ses_corpus" };
 
 describe("the broker's refusals as it writes them", () => {

@@ -59,13 +59,12 @@ const (
 // where http.Get would block the row until the package's -timeout.
 var monitorHTTP = &http.Client{Timeout: 2 * time.Second}
 
-// startHubOn runs the hub's image with rig's authorization rendered without its callout, with its
-// monitoring port open, then reconfigures it on config (calloutRig.reconfigure). It returns the
-// client URL and the monitoring endpoint.
-func startHubOn(t *testing.T, rig *calloutRig, config string) (uri, monitor string) {
+// startHubOn runs the hub's image on config with its monitoring port open, on config itself
+// rather than on a configuration a probe could read and then again on config (calloutRig.startOn
+// says why). It returns the client URL and the monitoring endpoint.
+func startHubOn(t *testing.T, config string) (uri, monitor string) {
 	t.Helper()
-	ctr, _ := testnats.StartImageConfig(t, testnats.HubImage, rig.render(t, false), []string{"-js", "-m", "8222"}, false)
-	uri = rig.reconfigure(t, ctr, config)
+	ctr, uri := testnats.StartImageReady(t, testnats.HubImage, config, []string{"-js", "-m", "8222"})
 	monitor, err := ctr.PortEndpoint(context.Background(), "8222/tcp", "http")
 	require.NoError(t, err)
 	return uri, monitor
@@ -84,7 +83,7 @@ type hangOutcome struct {
 // clientsAfterTheHang clients presenting the admitted token, one at a time.
 func hangAReplica(t *testing.T, rig *calloutRig, config string) hangOutcome {
 	t.Helper()
-	uri, monitor := startHubOn(t, rig, config)
+	uri, monitor := startHubOn(t, config)
 	replica := func(server, name string) {
 		conn := connectWhenUp(t, server, rig.serviceSeed, natsgo.Name(name))
 		_, err := conn.QueueSubscribe("$SYS.REQ.USER.AUTH", calloutQueue, func(m *natsgo.Msg) { rig.answer(t, m) })
@@ -135,7 +134,7 @@ type stallOutcome struct {
 // testnats.Proxy, which it freezes for clientStall and then restores.
 func stallAClient(t *testing.T, rig *calloutRig, config string) stallOutcome {
 	t.Helper()
-	uri, monitor := startHubOn(t, rig, config)
+	uri, monitor := startHubOn(t, config)
 	connectWhenUp(t, uri, rig.staticSeed).Close()
 	proxy := testnats.StartProxy(t, uri)
 	conn, err := testnats.ConnectSeed(t, proxy.URL(), rig.staticSeed, natsgo.Name(stalledClient))

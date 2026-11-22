@@ -186,6 +186,8 @@ export const realStackReasons: Record<string, string> = {
     "every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload",
   "issue-page-d.e2e.ts":
     "each row signs in for real and turns the new page on through that login's stored preference, and the view row's counts are the server's coverage, results and block reads of the seeded issue",
+  "issue-page-h.e2e.ts":
+    "the seed's approvals, claim, blockers and pins are the server's own, and one row writes each control's value through Dispatch and reads it back after a reload",
   "issue-page-p.e2e.ts":
     "each row writes the header's issue, its questions and its approval requests through the server and reads back what the header's controls write: the title, the status, the priority, the pin and an approval",
   "issue.e2e.ts":
