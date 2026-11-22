@@ -172,6 +172,37 @@ test("a sheet whose read fails says so with a Retry, and Approve sends nothing u
   }
 });
 
+// An approval counts only for the texts its request names (R22), so the sheet restates the change
+// request at the spec version and the Verification version the request names, never at another
+// version: a Verification document that moved past the version its request names is said so, and
+// Approve sends nothing, since Dispatch would refuse the approval.
+test("a sheet whose Verification document moved past the version its request names says so, and Approve sends nothing", async () => {
+  const read = spyOn(api, "getChangeRequest").mockResolvedValue(changeRequest());
+  restores.push(() => read.mockRestore());
+  const presses: string[] = [];
+  const view = host(
+    <ApprovalSheet
+      coversVerification
+      issueKey={ISSUE}
+      onApprove={() => presses.push("approve")}
+      onClose={() => {}}
+      verificationVersion={1}
+      version={3}
+    />
+  );
+  try {
+    const sheet = await screen.findByRole("dialog", { name: "What this approval covers" });
+    const alert = await within(sheet).findByRole("alert");
+    expect(alert.textContent).toContain("version 1 of the Verification document");
+    expect(alert.textContent).toContain("now at version 2");
+    expect(within(sheet).queryByTestId("approval-sheet-verification-digest")).toBeNull();
+    expect(within(sheet).getByRole("button", { name: "Approve" })).toHaveAttribute("disabled");
+    expect(presses).toEqual([]);
+  } finally {
+    view.unmount();
+  }
+});
+
 /** The issue `ISSUE` as its read answers it, its spec the document `spec-artifact`. */
 function issueRead(): IssueDetails {
   return { key: ISSUE, primary_artifact_id: "spec-artifact" } as IssueDetails;
@@ -267,7 +298,7 @@ function renderCardAt(width: number, read: () => Promise<unknown>) {
       getAskThread={thread(ask)}
     />
   );
-  return { getChangeRequest, sent, view };
+  return { getChangeRequest, getIssue, sent, view };
 }
 
 test("on a phone, the Inbox card's Approve of a spec-source issue opens the sheet, and only the sheet's Approve sends the answer", async () => {
@@ -320,6 +351,32 @@ test("on a wide screen, the Inbox card's Approve sends the answer with no sheet 
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(screen.queryByRole("dialog", { name: "What this approval covers" })).toBeNull();
     expect(getChangeRequest).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("on a phone, a card whose issue cannot be read opens the sheet with a Retry, and reads no other document's version", async () => {
+  const user = userEvent.setup();
+  const { getChangeRequest, getIssue, sent, view } = renderCardAt(PHONE_WIDTH, async () =>
+    changeRequest()
+  );
+  getIssue.mockRejectedValueOnce(new ApiError(500, { code: "INTERNAL", error: "boom" }));
+  try {
+    const card = view.getByTestId("ask-ask-approval");
+    await user.click(await within(card).findByRole("radio", { name: "Approve" }));
+    await user.click(within(card).getByRole("button", { name: "Answer" }));
+    const sheet = await screen.findByRole("dialog", { name: "What this approval covers" });
+    const alert = await within(sheet).findByRole("alert");
+    expect(alert.textContent).toContain("Could not read what this approval covers.");
+    expect(getChangeRequest).not.toHaveBeenCalled();
+    expect(within(sheet).getByRole("button", { name: "Approve" })).toHaveAttribute("disabled");
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+    const again = await screen.findByRole("dialog", { name: "What this approval covers" });
+    await within(again).findByTestId("approval-sheet-digest");
+    expect(getChangeRequest).toHaveBeenCalled();
+    for (const call of getChangeRequest.mock.calls) expect(call).toEqual([ISSUE, 3]);
+    expect(sent).toEqual([]);
   } finally {
     view.unmount();
   }
