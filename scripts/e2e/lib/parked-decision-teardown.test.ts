@@ -36,11 +36,11 @@ const started: number[] = [];
 // writes its own pid file for. Each is registered the moment the test starts it, before the waits
 // that can time out, so an unfinished test body still leaves nothing of the run alive.
 const teardowns: (() => void)[] = [];
-// The bound of the teardown hook: a hang guard, not a verdict. A teardown that ends a broker's
-// session walks every process of the host, and how long that takes is the machine's (two seconds
-// over 17,000 processes at load ~830, past Bun's 5 s hook default on a busier box). #4318 adds this
-// constant to @legion/test-fixtures as hang-guard.ts; once it merges, this local copy gives way to
-// that import.
+// The bound of the teardown hook and of the tmux row: a hang guard, not a verdict. A teardown that
+// ends a broker's session, like the stop the row waits on, walks every process of the host, and how
+// long that takes is the machine's (two seconds over 17,000 processes at load ~830, past Bun's 5 s
+// hook default on a busier box). #4318 adds this constant to @legion/test-fixtures as
+// hang-guard.ts; once it merges, this local copy gives way to that import.
 const HANG_GUARD_MS = 120_000;
 afterAll(() => {
   for (const teardown of teardowns.reverse()) {
@@ -112,13 +112,35 @@ const killSession = (sid: number) => {
     } catch {}
   }
 };
-// until polls real processes, which no fake clock moves, for the condition it names.
-async function until(what: string, ok: () => boolean) {
-  for (let i = 0; i < 100; i++) {
+// until polls real processes, which no fake clock moves, for the condition it names: 100 polls a
+// tenth of a second apart, or, given a DEADLINE (a Date.now() value), until that deadline, so a row
+// decides on the condition itself and the time it allows is the row's, not a count's.
+async function until(what: string, ok: () => boolean, deadline?: number) {
+  for (let i = 0; deadline === undefined ? i < 100 : Date.now() < deadline; i++) {
     if (ok()) return;
     await Bun.sleep(100);
   }
-  throw new Error(`timed out waiting for ${what}`);
+  if (ok()) return;
+  throw new Error(
+    deadline === undefined
+      ? `timed out waiting for ${what}`
+      : `timed out waiting for ${what}: the row's time ran out`
+  );
+}
+
+// detached starts ARGV in a session of its own as a child of a shell that exits at once, and returns
+// its pid. The process is no child of the test, so Bun's cleanup of a row that times out ("killed N
+// dangling processes") does not end it; the row's own teardown does.
+function detached(argv: string[], cwd: string, env: Record<string, string>) {
+  const ran = Bun.spawnSync(
+    ["bash", "-c", 'setsid "$@" </dev/null >/dev/null 2>&1 & echo "$!"', "detached", ...argv],
+    { cwd, env, stdout: "pipe", stderr: "pipe" }
+  );
+  const pid = Number(ran.stdout.toString().trim());
+  if (ran.exitCode !== 0 || !Number.isInteger(pid) || pid <= 0) {
+    throw new Error(`could not start ${argv.join(" ")} detached: ${ran.stderr.toString()}`);
+  }
+  return pid;
 }
 
 // harness runs BODY with the script's `set` line, lib/rig.sh sourced as the script sources it (for
@@ -157,6 +179,16 @@ ${body}`,
 host.test(
   "stops a detached broker's session that outlives tmux kill-server, and nothing it cannot tie to one",
   async () => {
+    // The row decides on the broker session's stop, bounded only by the hang guard: the stop walks
+    // every process of the host and how long it takes is the machine's (a run at load ~1,000 passed
+    // main's 30 s). Its waits end 15 s before the guard, and each step checks the time first, so a
+    // row out of time fails by the name of what it waited for, inside its own time, and Bun's own
+    // timeout, which would end the row's children and leave the body running on to an unhandled
+    // expect, does not come first.
+    const deadline = Date.now() + HANG_GUARD_MS - 15_000;
+    const inTime = (step: string) => {
+      if (Date.now() >= deadline) throw new Error(`the row's time ran out before ${step}`);
+    };
     const work = join(dir, "work");
     const ws = join(work, "ws");
     const home = join(work, "home");
@@ -182,23 +214,19 @@ wait
 
     // A process of the run that no broker started, in a session of its own: the teardown must leave it
     // for cleanup-is-complete's wait to name.
-    const bystander = Bun.spawn(["setsid", "sleep", "303"], {
-      cwd: ws,
-      env: { PATH: process.env.PATH ?? "", LEGION_E2E_RUN: work },
-      stdout: "ignore",
-      stderr: "ignore",
+    const bystander = detached(["sleep", "303"], ws, {
+      PATH: process.env.PATH ?? "",
+      LEGION_E2E_RUN: work,
     });
     // A broker.pid naming a pid whose session holds nothing of the run: a pid the kernel gave to
     // another session leader after the broker ended.
-    const stranger = Bun.spawn(["setsid", "sleep", "304"], {
-      cwd: dir,
-      stdout: "ignore",
-      stderr: "ignore",
-    });
-    started.push(bystander.pid, stranger.pid);
-    writeFileSync(join(stale, "broker.pid"), JSON.stringify({ pid: stranger.pid, domain: "test" }));
-    await until("the bystander and the stranger to lead sessions of their own", () =>
-      [bystander.pid, stranger.pid].every((pid) => alive(pid) && sessionOf(pid) === pid)
+    const stranger = detached(["sleep", "304"], dir, { PATH: process.env.PATH ?? "" });
+    started.push(bystander, stranger);
+    writeFileSync(join(stale, "broker.pid"), JSON.stringify({ pid: stranger, domain: "test" }));
+    await until(
+      "the bystander and the stranger to lead sessions of their own",
+      () => [bystander, stranger].every((pid) => alive(pid) && sessionOf(pid) === pid),
+      deadline
     );
 
     // The run's tmux server, and so every pane, carries what a daemon pane carries and no variable of
@@ -248,39 +276,47 @@ wait
         env,
       }).stdout.toString()
     );
-    await until("the stand-in broker to write broker.pid", () => existsSync(pidFile));
+    await until("the stand-in broker to write broker.pid", () => existsSync(pidFile), deadline);
     const leader: number = JSON.parse(readFileSync(pidFile, "utf8")).pid;
-    await until("the broker and its two members", () => membersOf(leader).length === 3);
+    await until("the broker and its two members", () => membersOf(leader).length === 3, deadline);
     const members = membersOf(leader);
 
     // The pane goes, as cleanup-is-complete's kill-server takes it.
+    inTime("tmux kill-server");
     Bun.spawnSync(["tmux", "-L", "teardown", "kill-server"], { env });
-    await until("the pane to end", () => !alive(panePid));
+    await until("the pane to end", () => !alive(panePid), deadline);
     serverKilled = true;
     // The red half: the broker's whole session outlives the pane, and run_processes, the check's own
     // reading, still names the members, which carry the run's mark.
     expect(members.every(alive)).toBe(true);
+    inTime("run_processes before the stop");
     const before = harness(work, "run_processes || true")
       .stdout.split("\n")
       .filter(Boolean)
       .map(Number);
     expect(before).toContain(leader);
 
+    inTime("stop_agent_daemons");
     const stopped = harness(work, "stop_agent_daemons");
     expect({ code: stopped.code, stderr: stopped.stderr }).toEqual({ code: 0, stderr: "" });
-    await until("every member of the broker's session to end", () => !members.some(alive));
+    await until(
+      "every member of the broker's session to end",
+      () => !members.some(alive),
+      deadline
+    );
     brokerEnded = true;
     // What no broker of the run ties to the run is left alone, and the check still names the one that
     // carries the run's mark.
-    expect(alive(bystander.pid)).toBe(true);
-    expect(alive(stranger.pid)).toBe(true);
+    expect(alive(bystander)).toBe(true);
+    expect(alive(stranger)).toBe(true);
+    inTime("run_processes after the stop");
     const after = harness(work, "run_processes || true")
       .stdout.split("\n")
       .filter(Boolean)
       .map(Number);
-    expect(after).toEqual([bystander.pid]);
+    expect(after).toEqual([bystander]);
   },
-  30_000
+  HANG_GUARD_MS
 );
 
 // The walk reads every process's session from its whole /proc/<pid>/stat: a process names itself,
