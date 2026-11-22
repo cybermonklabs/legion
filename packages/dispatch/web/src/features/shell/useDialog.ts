@@ -107,13 +107,76 @@ interface FocusRecord {
   madeFocusable: boolean;
 }
 
-// Every open dialog's focus record, by its element, from the commit that opens the dialog to the
-// commit that closes it. Two dialogs read each other's here. A dialog that closes in the commit
-// that opens another (the navigation sheet's Search, which closes the sheet and opens the
-// palette) leaves the focus with the new one and hands it its own give-back target. A dialog
-// opened inside another in one commit (the margin sheet and its thread) gives the focus back to
-// that dialog's field.
+// Every open dialog's focus record, by its element. A dialog's layout effect adds its own entry
+// in the commit that opens it, and its layout cleanup deletes it in the commit that closes it;
+// a commit's layout cleanups run before its passive cleanups, so a closing dialog never finds
+// itself here. A record's `giveBackTo` is written as its dialog opens, and by other dialogs only
+// through the three functions below, each in one phase.
 const focusRecords = new Map<HTMLElement, FocusRecord>();
+
+/** Layout phase, by a dialog opening with the focus already inside its element (`container`).
+ *  When the focus is in another open dialog inside `container` whose target is outside
+ *  `container` - a dialog in a child component that opened in the same commit, whose layout
+ *  effect ran first and took the focus - `container` takes that target over, and that dialog
+ *  gives the focus back to `container` instead. Returns the target taken over, or undefined when
+ *  no such dialog holds the focus. */
+function takeOverTargetOfInner(
+  container: HTMLElement,
+  active: Element | null
+): HTMLElement | null | undefined {
+  for (const [inner, record] of focusRecords) {
+    const targetOutside = record.giveBackTo === null || !container.contains(record.giveBackTo);
+    if (
+      inner !== container &&
+      container.contains(inner) &&
+      inner.contains(active) &&
+      targetOutside
+    ) {
+      const target = record.giveBackTo;
+      record.giveBackTo = container;
+      return target;
+    }
+  }
+  return undefined;
+}
+
+/** Frame phase, by a dialog whose frame found the focus in another dialog inside its element:
+ *  every record that gives the focus back to `container` gives it back to `field` instead, so a
+ *  dialog inside it that closes leaves the focus in the dialog that is still open. */
+function giveBackToField(container: HTMLElement, field: HTMLElement): void {
+  for (const record of focusRecords.values()) {
+    if (record.giveBackTo === container) {
+      record.giveBackTo = field;
+    }
+  }
+}
+
+/** Passive cleanup phase, by a closing dialog: the record of the open dialog that holds the
+ *  focus, outside the closing one's element `container`, or undefined. That is a dialog that
+ *  opened in the commit that closes this one, or any older open dialog whose control the reader
+ *  pressed to close this one. It keeps the focus. Its target becomes `giveBackTo`, this dialog's,
+ *  when its own is none or is inside `container`: the commit removed the control that held the
+ *  focus as it opened, or it was a control of the closing dialog. A focus still inside
+ *  `container` has no holder: a dialog that stays mounted when it closes (the margin sheet's
+ *  `aside`, the conversation's thread section) still holds the focus at its cleanup, and an open
+ *  dialog around it is no holder of that focus. */
+function handOverFocus(
+  container: HTMLElement | null,
+  giveBackTo: HTMLElement | null
+): FocusRecord | undefined {
+  const active = document.activeElement;
+  if (container?.contains(active) === true) {
+    return undefined;
+  }
+  const holder = [...focusRecords].find(([other]) => other.contains(active))?.[1];
+  if (
+    holder !== undefined &&
+    (holder.giveBackTo === null || container?.contains(holder.giveBackTo) === true)
+  ) {
+    holder.giveBackTo = giveBackTo;
+  }
+  return holder;
+}
 
 export interface UseDialogOptions {
   /** Element to focus first instead of the container's first focusable descendant. */
@@ -129,8 +192,9 @@ export interface DialogHandle<T extends HTMLElement> {
 /**
  * Focus trap, Escape-to-close, focus restoration, and a body scroll lock for an overlay
  * (the search palette, the phone navigation drawer, the phone margin sheet, and the reference
- * picker all use this). On open the focus moves to the dialog itself at once and to its field a
- * frame later, so no key typed in between reaches the page behind it. While open it pushes the
+ * picker all use this). On open the focus moves at once to the dialog itself, unless it is
+ * already inside the dialog, and to its field a frame later, so no key typed in between reaches a
+ * control outside the dialog. While open it pushes the
  * `dialog` keymap scope, which masks every page and global binding, and registers Escape there
  * for the innermost open dialog, whatever element holds focus; a descendant that owns its Escape
  * (the margin Composer dismissing its picker) stops propagation before the dispatcher sees it.
@@ -161,17 +225,18 @@ export function useDialog<T extends HTMLElement>({
       : []
   );
 
-  // This dialog's entry of `focusRecords`, set in the commit that opens it.
+  // This dialog's record, set by its layout effect in the commit that opens it. It is read through
+  // this ref because the dialog may have no element (no entry in `focusRecords`), and because the
+  // passive cleanup runs after the layout cleanup has deleted the entry.
   const focusRecord = useRef<FocusRecord | null>(null);
 
   // The focus moves to the dialog itself at once, in the commit that opens it, so a key typed
   // before its field takes the focus reaches nothing behind it: a Space on the control that
   // opened it would press that control again (Approve, behind Request changes, would approve the
-  // document). A focus already inside the dialog stays where it is: an element with React's
-  // `autoFocus` attribute took it as it mounted, or Details' drawer became a dialog on a phone
-  // while the focus was in it (`Margin.tsx`). The dialog is made focusable for this alone
-  // (`tabindex="-1"`, out of the Tab order) unless it already is. A layout effect, so this holds
-  // whatever update opened the dialog.
+  // document). A focus already inside the dialog's element stays where it is, for example on an
+  // element with React's `autoFocus` attribute, which took it as it mounted. The dialog is made
+  // focusable for this alone (`tabindex="-1"`, out of the Tab order) unless it already is. A
+  // layout effect, so this holds whatever update opened the dialog.
   useLayoutEffect(() => {
     if (!open) {
       return;
@@ -179,8 +244,7 @@ export function useDialog<T extends HTMLElement>({
     const container = containerRef.current;
     const active = document.activeElement;
     // The focus goes back where it was, unless that was the body: a commit that removed the
-    // control that held the focus as it opened this dialog leaves it there, and a dialog it
-    // closed hands this one its own target (`focusRecords`).
+    // control that held the focus as it opened this dialog leaves it there.
     const record: FocusRecord = {
       giveBackTo: active instanceof HTMLElement && active !== document.body ? active : null,
       madeFocusable: false,
@@ -189,14 +253,25 @@ export function useDialog<T extends HTMLElement>({
     if (container === null) {
       return;
     }
-    focusRecords.set(container, record);
-    if (!container.contains(active)) {
+    const makeFocusable = () => {
       record.madeFocusable = !container.hasAttribute("tabindex");
       if (record.madeFocusable) {
         container.tabIndex = -1;
       }
+    };
+    if (!container.contains(active)) {
+      makeFocusable();
       container.focus({ preventScroll: true });
+    } else {
+      const taken = takeOverTargetOfInner(container, active);
+      if (taken !== undefined) {
+        // The dialog inside now gives the focus back to this element until this dialog's frame
+        // points it at this dialog's field, so the element must take the focus until then.
+        record.giveBackTo = taken;
+        makeFocusable();
+      }
     }
+    focusRecords.set(container, record);
     return () => {
       focusRecords.delete(container);
     };
@@ -207,9 +282,9 @@ export function useDialog<T extends HTMLElement>({
       return;
     }
     const container = containerRef.current;
+    const record = focusRecord.current;
     scrollLock.acquire();
     const stopBeingFocusable = () => {
-      const record = focusRecord.current;
       if (container !== null && record?.madeFocusable === true) {
         container.removeAttribute("tabindex");
         record.madeFocusable = false;
@@ -219,10 +294,11 @@ export function useDialog<T extends HTMLElement>({
     // The dialog's field takes the focus a frame later, so a focus a descendant takes in its own
     // effect lands first and is not taken back: the margin sheet's composer focuses its text box
     // in an effect once it is on screen (`MentionComposer`'s `autoFocus` prop). Only a focus still
-    // on the dialog itself, or gone from it, is moved. A dialog opened inside this one in the same
-    // commit holds the focus instead, and gives it back to this one's field rather than to its
-    // element. The element then stops being focusable, so a press on the dialog's text puts the
-    // focus where the browser puts it, as before this hook took the focus at once.
+    // on the dialog itself, or gone from it, is moved. A focus elsewhere inside it stays, and when
+    // it is in a dialog inside this one, a record that gives the focus back to this element gives
+    // it back to the field instead (`giveBackToField`). Unless the focus is on the element itself,
+    // the element then stops being focusable, so a press on the dialog's text puts the focus on
+    // the page's body, as before this hook took the focus at once.
     const initialFocusFrame = window.requestAnimationFrame(() => {
       if (container === null) {
         return;
@@ -232,14 +308,9 @@ export function useDialog<T extends HTMLElement>({
       if (active === container || !container.contains(active)) {
         field?.focus();
       } else if (field !== undefined) {
-        for (const record of focusRecords.values()) {
-          if (record.giveBackTo === container) {
-            record.giveBackTo = field;
-          }
-        }
+        giveBackToField(container, field);
       }
-      const aTarget = [...focusRecords.values()].some((record) => record.giveBackTo === container);
-      if (document.activeElement !== container && !aTarget) {
+      if (document.activeElement !== container) {
         stopBeingFocusable();
       }
     });
@@ -280,20 +351,8 @@ export function useDialog<T extends HTMLElement>({
       container?.removeEventListener("keydown", handleTab);
       stopBeingFocusable();
       scrollLock.release();
-      const giveBackTo = focusRecord.current?.giveBackTo ?? null;
-      // A dialog that opened in the commit that closes this one holds the focus. It keeps it, and
-      // gives it back where this one would have when its own target is none, or is inside this
-      // closing dialog: the commit removed the control that held the focus, or hid it with this
-      // dialog.
-      const active = document.activeElement;
-      const holder =
-        container?.contains(active) === true
-          ? undefined
-          : [...focusRecords].find(([other]) => other.contains(active))?.[1];
-      if (holder !== undefined) {
-        if (holder.giveBackTo === null || container?.contains(holder.giveBackTo) === true) {
-          holder.giveBackTo = giveBackTo;
-        }
+      const giveBackTo = record?.giveBackTo ?? null;
+      if (handOverFocus(container, giveBackTo) !== undefined) {
         return;
       }
       if (giveBackTo !== null && document.contains(giveBackTo)) {
