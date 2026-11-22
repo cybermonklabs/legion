@@ -15390,6 +15390,32 @@ console.log(JSON.stringify(args));
         );
       }, 20_000);
 
+      // A host busy with a turn as the command ends queues the agent's copy for its next prompt
+      // and fires `message_start` and `message_end` for it then (dispatch://INFRA-5271 review).
+      // The live view holds the report already, keyed on the person's message, so the copy names
+      // that message and the stream leaves it out: the report is drawn once.
+      test("the agent's copy of the report, written by a busy host at its next prompt, adds nothing to the live stream", async () => {
+        const { agent, context, fixture, replied } = await bootShellSession(
+          "shell-command-copy-written",
+          { accept: () => ({ accepted: true, body: "!printf hi" }) }
+        );
+
+        agent.push(directDispatchEnvelope("steer", "shell-command-copy-written"));
+        await replied(1);
+        const copy = fixture.deliveries.at(-1);
+        if (copy === undefined) throw new Error("the agent was handed no copy of the report");
+
+        const message = { ...copy, role: "custom", timestamp: Date.now() + 1 };
+        await fixture.handlers.get("message_start")?.({ message }, context);
+        await fixture.handlers.get("message_end")?.({ message }, context);
+
+        // The report's own frame, once, and no frame of the copy.
+        expect(
+          streamFrames().map((frame) => [frame.message.dispatchMessageId, frame.message.parts])
+        ).toEqual([[DIRECT_MESSAGE_ID, [{ text: "!printf hi\n\n```\nhi\n```", type: "text" }]]]);
+        expect(copy.details).toEqual({ ...LOCAL_ENVOY_NOTICE, dispatchMessageId: DIRECT_MESSAGE_ID });
+      }, 20_000);
+
       test("runs it in the directory the session's context names", async () => {
         const { agent, delivered, replied, replies, work } = await bootShellSession(
           "shell-command-cwd",

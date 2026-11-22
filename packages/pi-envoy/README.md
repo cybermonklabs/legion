@@ -127,10 +127,12 @@ line that holds them: an Envoy message's `message`, or its `summary` when it car
 and a Dispatch message's `body` (`readInboundCard` in `@legion/envoy-client/inbound-card`). Ctrl+O
 shows the rest. Every card the session displays also reaches Dispatch's live view of the session,
 on the agent stream (`@legion/pi-shared/agent-stream`), as a user message that says who sent it
-and holds those words; a card with no such words, such as a Dispatch notification or one of the
-plugin's own notices, shows there whole and verbatim. A card that delivers a Dispatch message to
-the session names that message in its `details` (`dispatchMessageId`) and stays out of the
-stream, since the live view shows the message from Dispatch's store.
+and holds those words, with the card's `note` and `body_note` under them; a card with no such
+words, such as a Dispatch notification, an empty message or one of the plugin's own notices, shows
+there whole and verbatim. A card that delivers a Dispatch message to the session, or the agent's
+copy of a person's `!command` report, names that message in its `details` (`dispatchMessageId`)
+and stays out of the stream, since the live view shows the message from Dispatch's store and the
+report from its own frame.
 
 `envoy_inbox` returns the 50 most recent delivered envelopes as metadata (`event_id`, `at`, `from`,
 and `summary`) for recovery after an interrupt. `envoy_role_get` returns the current holder and

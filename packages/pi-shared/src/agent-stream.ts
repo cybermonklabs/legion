@@ -122,10 +122,11 @@ const ENVOY_CARD = "envoy-message";
 
 /**
  * What an `envoy-message` card's `details` carry when the card delivers a Dispatch message to the
- * session (pi-envoy's `handCard` writes it): that message's id. Dispatch stores every message it
- * delivers to a session for that session, and the live view draws it from that store
- * (`GET /api/v1/agents/{session_id}/messages`), so such a card is not streamed: the page would
- * show the message twice.
+ * session (pi-envoy's `handCard` writes it), or answers one (the agent's copy of a person's
+ * `!command` report, whose frame the stream already carries tagged with that message): that
+ * message's id. Dispatch stores every message it delivers to a session for that session, and the
+ * live view draws it from that store (`GET /api/v1/agents/{session_id}/messages`), or from the
+ * report's own frame, so such a card is not streamed: the page would show the message twice.
  */
 export interface DispatchMessageCardDetails {
   readonly dispatchMessageId: string;
@@ -316,16 +317,22 @@ function fenced(text: string): string {
 
 /**
  * What the live view shows of a card's text (`readInboundCard`): who sent it, then the words they
- * wrote, which the view renders as it renders any message a person or an agent wrote. A card with
- * no such words - a Dispatch event, a structured message, one of the plugin's own notices - is
- * shown whole and verbatim instead, as the terminal shows it: the view renders Markdown, which
- * reads the card's indented TOON as code blocks and joins its lines.
+ * wrote, which the view renders as it renders any message a person or an agent wrote, then each
+ * note the card adds about them (`note`, `body_note`), as the terminal's card shows them. A card
+ * with no such words - a Dispatch event, a structured message, an empty one, one of the plugin's
+ * own notices - is shown whole and verbatim instead, as the terminal shows it: the view renders
+ * Markdown, which reads the card's indented TOON as code blocks and joins its lines.
  */
 function cardText(text: string): string {
   const card = readInboundCard(text);
   const head = card?.from === undefined ? "Envoy message:" : `Envoy message from ${card.from}:`;
   const words = card === undefined || card.dispatch ? undefined : card.words?.text;
-  return `${head}\n\n${words ?? fenced(text)}`;
+  if (words === undefined) return `${head}\n\n${fenced(text)}`;
+  const notes = [
+    ...(card?.note === undefined ? [] : [`note: ${card.note}`]),
+    ...(card?.bodyNote === undefined ? [] : [`body_note: ${card.bodyNote}`]),
+  ];
+  return [head, words, ...notes].join("\n\n");
 }
 
 /** A card's parts: its text (`cardText`), then a placeholder for each picture it carries. */

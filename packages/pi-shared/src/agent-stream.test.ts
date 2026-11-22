@@ -1240,6 +1240,40 @@ describe("an Envoy card the session displays", () => {
     expect(textOf(published[0])).toBe(`Envoy message from ${peer}:\n\nThe review is done.`);
   });
 
+  // The terminal's card shows the agent `renderInbound`'s warning that a body names a session
+  // other than its sender; the person reading the live view reads it under the words too.
+  test("writes the note a card adds under the words it brings", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    const peer = "01a0cccc-dddd-7eee-ffff-0123456789ab";
+    const named = "01a0aaaa-bbbb-7ccc-dddd-eeeeeeeeeeee";
+    publisher.record(
+      SUBJECT,
+      card(10, rendered({ payload: `Ask ${named} about it.`, source_session: peer })),
+      false
+    );
+
+    expect(textOf(published[0])).toBe(
+      [
+        `Envoy message from ${peer}:`,
+        `Ask ${named} about it.`,
+        `note: body names session ${named}; the sender is ${peer}`,
+      ].join("\n\n")
+    );
+  });
+
+  // An empty `message` is no words: drawn as words, it would be a bubble with nothing under its
+  // header, so the card is shown whole as one with no words is.
+  test("shows a card whose message is empty whole and verbatim", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    const empty = rendered({ payload: "", payload_summary: "Nothing here." });
+    expect(empty).toContain('  message: ""');
+    publisher.record(SUBJECT, card(10, empty), false);
+
+    expect(textOf(published[0])).toBe(`Envoy message from agent:\n\n\`\`\`\n${empty}\n\`\`\``);
+  });
+
   // The live view renders a message as Markdown, which reads a card's indented TOON as code
   // blocks and joins its lines, so a card that brings no words of a sender is fenced whole.
   test("shows a Dispatch event's card, and any card with no words of a sender, whole and verbatim", () => {

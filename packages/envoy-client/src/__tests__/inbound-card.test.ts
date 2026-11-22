@@ -113,7 +113,35 @@ describe("readInboundCard", () => {
       card({ source_session: sender, payload: JSON.stringify({ step: 3, done: false }) })
     );
 
-    expect(read).toEqual({ dispatch: false, from: sender, words: undefined });
+    expect(read).toEqual({
+      bodyNote: undefined,
+      dispatch: false,
+      from: sender,
+      note: undefined,
+      words: undefined,
+    });
+  });
+
+  // An empty `message` is no words: a host that drew it would draw a message with nothing in it.
+  test("reads no words from an empty message", () => {
+    const text = card({ source_session: sender, payload: "", payload_summary: "Nothing here." });
+    expect(text).toContain('  message: ""');
+
+    expect(readInboundCard(text)?.words).toBeUndefined();
+  });
+
+  // `renderInbound` warns, beside the words, that a body names a session other than its sender.
+  test("reads the note a card adds about its words", () => {
+    const named = "01a0aaaa-bbbb-7ccc-dddd-eeeeeeeeeeee";
+    const read = readInboundCard(
+      card({ source_session: sender, payload: `Ask ${named} about it.` })
+    );
+
+    expect(read?.bodyNote).toBeUndefined();
+    expect(read).toMatchObject({
+      note: `body names session ${named}; the sender is ${sender}`,
+      words: { text: `Ask ${named} about it.` },
+    });
   });
 
   test("reads a Dispatch message's body, past the card's header", () => {
@@ -159,7 +187,13 @@ describe("readInboundCard", () => {
       })
     );
 
-    expect(read).toEqual({ dispatch: true, from: "dispatch", words: undefined });
+    expect(read).toEqual({
+      bodyNote: undefined,
+      dispatch: true,
+      from: "dispatch",
+      note: undefined,
+      words: undefined,
+    });
   });
 
   // What follows the TOON block is no TOON: the line a card published while the session was away

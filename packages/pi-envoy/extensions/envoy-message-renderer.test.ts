@@ -138,6 +138,16 @@ describe("a collapsed envoy-message card", () => {
     ]);
   });
 
+  // An agent's message whose summary is not its head writes the message on line 12, right after
+  // the twelve lines above the fold: no line is left out before it, so no `…` stands there.
+  test("shows the words with no fold before them when they are the line right after the fold", () => {
+    const lines = card({ source_session: PEER, payload: "Both findings are fixed." }).split("\n");
+    expect(lines.indexOf("  message: Both findings are fixed.")).toBe(12);
+    expect(lines).toHaveLength(13);
+
+    expect(textRows(lines.join("\n"), false)).toEqual(trimmed(lines));
+  });
+
   test("folds a long card that carries no words of a sender at the fold alone", () => {
     const lines = roleHolderMessage(JSON.stringify({ step: 3, done: false })).split("\n");
     expect(lines.length).toBeGreaterThan(12);

@@ -27,8 +27,9 @@ function collapsed(text: string): string {
   const head = lines.slice(0, ENVOY_MESSAGE_COLLAPSED_LINES);
   const words = readInboundCard(text)?.words?.line;
   if (words === undefined || words < ENVOY_MESSAGE_COLLAPSED_LINES) return `${head.join("\n")}\n…`;
+  const skipped = words > ENVOY_MESSAGE_COLLAPSED_LINES ? ["…"] : [];
   const after = words < lines.length - 1 ? ["…"] : [];
-  return [...head, "…", ...lines.slice(words, words + 1), ...after].join("\n");
+  return [...head, ...skipped, ...lines.slice(words, words + 1), ...after].join("\n");
 }
 
 /**

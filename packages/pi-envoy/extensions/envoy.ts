@@ -1770,12 +1770,19 @@ export default function envoyExtension(hostApi: PiApi): void {
             turn.messageId
           );
         }
+        // The agent's copy names the person's message it answers: a host busy with a turn writes
+        // it at its next prompt and fires `message_end` for it then, and the live view already
+        // holds the report above, keyed on that message, so the stream leaves the copy out
+        // (`DispatchMessageCardDetails`).
         if (handed) {
           pi.sendMessage(
             {
               content: shellCommandMessage(report),
               customType: "envoy-message",
-              details: LOCAL_ENVOY_NOTICE,
+              details: {
+                ...LOCAL_ENVOY_NOTICE,
+                ...({ dispatchMessageId: turn.messageId } satisfies DispatchMessageCardDetails),
+              },
               display: true,
             },
             { deliverAs: "nextTurn", triggerTurn: false }
