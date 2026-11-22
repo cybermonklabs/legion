@@ -1,7 +1,10 @@
 import { beforeEach, expect, test } from "bun:test"
+import { generateKeyPairSync } from "node:crypto"
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, relative, resolve } from "node:path"
+import { signedIn, writeSignIn } from "@legion/cipher-client/test/sign-ins"
+import { RETRY_FIRST_WAIT_MS, TRADE_ATTEMPT_MS } from "@legion/cipher-client/token-client"
 import { COMMAND_TIMEOUT_MS } from "@legion/envoy-client/envoy-config"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { JJ_BASE_CHAIN_TIMEOUT_MS, OPEN_ASKS_TIMEOUT_MS } from "../hooks/open-asks-bounds"
@@ -30,9 +33,9 @@ beforeEach(rowStarted)
 async function runHook(
   input: Record<string, unknown>,
   env: Record<string, string> & { readonly HOME: string },
-  options: { readonly preload?: string } = {},
+  options: { readonly preload?: string | readonly string[] } = {},
 ): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }> {
-  const preloading = options.preload === undefined ? [] : ["--preload", options.preload]
+  const preloading = [options.preload ?? []].flat().flatMap((file) => ["--preload", file])
   const run = Bun.spawn(["bun", ...preloading, hookEntry, "open-asks"], {
     env: { PATH: process.env["PATH"] ?? "", ...NO_TRANSPILER_CACHE, ...env },
     stdin: new TextEncoder().encode(JSON.stringify({ cwd: env.HOME, ...input })),
@@ -116,6 +119,56 @@ test("summarises the session's open asks into context and records the session id
     await rm(scratch, { recursive: true, force: true })
   }
 })
+
+// The hook ends its process once its output is out (`endOnceWritten`, session-hook.ts): a summary
+// larger than a pipe holds (64 KiB on Linux) must still arrive whole, its last ask included, so the
+// exit waits until stdout has taken every byte.
+test("a summary larger than a pipe holds arrives whole before the hook ends its process", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-large-"))
+  const asks = Array.from({ length: 1_500 }, (_, index) => ({
+    id: `ask-${index}`,
+    ref: `/issues/LEGION-9#ask-${index}`,
+    question: `Ship part ${index} of the large summary, ${"long ".repeat(10)}?`,
+    kind: "decision",
+    urgency: "med",
+    created_at: "2026-09-14T00:00:00Z",
+    age_seconds: 90,
+    priority: 1,
+    owner: { issue: { key: "LEGION-9", title: "Bundle" } },
+    human_replied: false,
+    last_reply: null,
+    waiting_on: "human",
+  }))
+  const server = Bun.serve({
+    port: 0,
+    fetch: () =>
+      Response.json({
+        session_id: "s-1",
+        as_of: "2026-09-14T00:00:00Z",
+        opened_since: false,
+        count: asks.length,
+        waiting_on_human: asks.length,
+        waiting_on_agent: 0,
+        asks,
+      }),
+  })
+  try {
+    const result = await runHook(hookInput, {
+      HOME: scratch,
+      CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
+      DISPATCH_URL: `http://127.0.0.1:${server.port}`,
+      DISPATCH_TOKEN,
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(Buffer.byteLength(result.stdout)).toBeGreaterThan(64 * 1024)
+    expect(result.stdout.match(/Ship part \d+ of the large summary/g)?.length).toBe(asks.length)
+    expect(result.stdout).toContain("Ship part 1499 of the large summary")
+  } finally {
+    server.stop(true)
+    await rm(scratch, { recursive: true, force: true })
+  }
+}, 60_000)
 
 test("reports an unreachable Dispatch as unavailable, still exits 0, and still records the session id", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-down-"))
@@ -1029,12 +1082,15 @@ const repositoryRoot = resolve(import.meta.dir, "..", "..", "..")
 /** A wait or start the census must hold: the file of the hook's code that made it, its kind, the
  *  program it started, and its declared bound (-1 for a start with none). A bound computed from
  *  another wait's time left is given as `atMost` with that wait as `inside`: the entry must be
- *  made, and end, inside that wait's declared span. */
+ *  made, and end, inside that wait's declared span; a bound drawn at random (a retry's jitter) is
+ *  given as `atMost` alone. A wait the hook's exit must cut, background work the hook does not wait
+ *  for, is marked `cut`: it must not have run to its bound. */
 type CensusEntry = {
   readonly file: string
   readonly kind: string
   readonly command?: string
-} & ({ readonly ms: number } | { readonly atMost: number; readonly inside: CensusEntry })
+  readonly cut?: true
+} & ({ readonly ms: number } | { readonly atMost: number; readonly inside?: CensusEntry })
 
 /** `wait`'s file, from the frame of the hook's code that made it, against the repository's root. */
 function madeIn(wait: TimedWait): string {
@@ -1047,8 +1103,9 @@ function censusKey(entry: CensusEntry): string {
   const bound =
     "ms" in entry
       ? `${entry.ms} ms`
-      : `at most ${entry.atMost} ms inside (${censusKey(entry.inside)})`
-  return `${entry.kind}${entry.command === undefined ? "" : ` ${entry.command}`} ${bound} in ${entry.file}`
+      : `at most ${entry.atMost} ms${entry.inside === undefined ? "" : ` inside (${censusKey(entry.inside)})`}`
+  const cut = entry.cut === true ? ", cut at the exit" : ""
+  return `${entry.kind}${entry.command === undefined ? "" : ` ${entry.command}`} ${bound} in ${entry.file}${cut}`
 }
 
 /**
@@ -1065,12 +1122,13 @@ async function runToItsTimedWaits(
   env: Record<string, string> & { readonly HOME: string },
   expected: readonly CensusEntry[],
   ceilings: { readonly zeroLengthTimers: number; readonly clockReads: number },
+  preloads: readonly string[] = [],
 ): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }> {
   const record = join(scratch, "timed-waits.json")
   const result = await runHook(
     hookInput,
     { ...env, HOOK_TIMED_WAITS: record },
-    { preload: timedWaitsPreload },
+    { preload: [timedWaitsPreload, ...preloads] },
   )
   const recorded = await readFile(record, "utf8").catch((error: unknown) => {
     throw new Error(
@@ -1080,9 +1138,8 @@ async function runToItsTimedWaits(
   })
   // Written by this package's own preload in the hook's process, a step ago.
   const census: Census = JSON.parse(recorded)
-  const counted = census.waits.filter(
-    (wait) => wait.ms !== 0 && (wait.ms > 0 || wait.command !== undefined),
-  )
+  // Every entry but a zero-length one: a start, or a wait with no bound (-1), counts too.
+  const counted = census.waits.filter((wait) => wait.ms !== 0)
   const key = (wait: TimedWait): string => {
     const plain = {
       file: madeIn(wait),
@@ -1098,16 +1155,24 @@ async function runToItsTimedWaits(
         wait.ms > derived.atMost
       )
         continue
-      const parent = counted.find((other) => key(other) === censusKey(derived.inside))
+      const inside = derived.inside
+      const parent =
+        inside === undefined ? undefined : counted.find((other) => key(other) === censusKey(inside))
       if (
-        parent !== undefined &&
-        parent.armedAt <= wait.armedAt &&
-        wait.armedAt + wait.ms <= parent.armedAt + parent.ms
+        inside === undefined ||
+        (parent !== undefined &&
+          parent.armedAt <= wait.armedAt &&
+          wait.armedAt + wait.ms <= parent.armedAt + parent.ms)
       ) {
-        return censusKey(derived)
+        const { cut, ...bare } = derived
+        return censusKey(cut === true && wait.outcome !== "fired" ? { ...bare, cut } : bare)
       }
     }
-    return censusKey(plain)
+    // A wait the row expects cut keeps the mark only while it did not run to its bound.
+    const cut = expected.some(
+      ({ cut, ...bare }) => cut === true && censusKey(bare) === censusKey(plain),
+    )
+    return censusKey(cut && wait.outcome !== "fired" ? { ...plain, cut: true as const } : plain)
   }
   expect(
     counted.map(key).sort(),
@@ -1355,6 +1420,333 @@ test("a hook whose jj and Dispatch answer at once writes its summary with no sta
   }
 }, 60_000)
 
+// The census sees node:child_process's starts only because Bun 1.4.4 starts them through the
+// global Bun.spawn and Bun.spawnSync (`hook-timed-waits.ts`). A Bun that stopped would leave the
+// census blind to them with every row still passing, so this row starts one of each kind under
+// the census and requires it to hold them.
+test("the census sees each child a script starts through node:child_process", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-census-routing-"))
+  const script = join(scratch, "starts.ts")
+  await writeFile(
+    script,
+    [
+      'import { execFile, execFileSync, spawn, spawnSync } from "node:child_process"',
+      'spawnSync("true")',
+      'execFileSync("true")',
+      'await new Promise((done) => spawn("true").on("exit", done))',
+      'await new Promise((done) => execFile("true", () => done(undefined)))',
+      "",
+    ].join("\n"),
+  )
+  const record = join(scratch, "census.json")
+  try {
+    const run = Bun.spawn(["bun", "--preload", timedWaitsPreload, script], {
+      env: {
+        PATH: process.env["PATH"] ?? "",
+        HOME: scratch,
+        HOOK_TIMED_WAITS: record,
+        ...NO_TRANSPILER_CACHE,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const stderr = collected(run.stderr)
+    expect(await exitBeforeTheGuard(run, "the routing script", () => stderr.text())).toBe(0)
+    const census: Census = JSON.parse(await readFile(record, "utf8"))
+    expect(census.waits.map((wait) => `${wait.kind} ${wait.command}`)).toEqual([
+      "Bun.spawnSync true",
+      "Bun.spawnSync true",
+      "Bun.spawn true",
+      "Bun.spawn true",
+    ])
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
+}, 60_000)
+
+/** A stand-in that takes every request and never answers it, as a broker, an issuer or a metadata
+ *  server that hangs does; a request ends only when its caller's own bound ends it. */
+function neverAnswers() {
+  return Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Promise<Response>(() => {}) })
+}
+
+/** A preload that makes the hook's fetches of Google's security token service and IAM Credentials,
+ *  whose addresses a pool identity takes from no variable, wait unanswered until their signal ends
+ *  them, as a service that hangs does; every other fetch is the real one. */
+async function silentGooglePreload(directory: string): Promise<string> {
+  const preload = join(directory, "silent-google.preload.ts")
+  await writeFile(
+    preload,
+    [
+      "const real = globalThis.fetch",
+      "const silent = (input: string | URL | Request, init?: RequestInit) => {",
+      "  const { hostname } = new URL(input instanceof Request ? input.url : String(input))",
+      '  if (hostname !== "sts.googleapis.com" && hostname !== "iamcredentials.googleapis.com") return real(input, init)',
+      "  return new Promise<Response>((_, reject) => {",
+      "    const signal = init?.signal",
+      "    if (signal?.aborted) reject(signal.reason)",
+      '    else signal?.addEventListener("abort", () => reject(signal.reason), { once: true })',
+      "  })",
+      "}",
+      "globalThis.fetch = Object.assign(silent, { preconnect: real.preconnect }) as typeof fetch",
+      "",
+    ].join("\n"),
+  )
+  return preload
+}
+
+/** Every route by which the open-asks hook gets a Dispatch credential with no bearer token set:
+ *  the secrets broker's trade (`dispatch-config.ts:336-352`) for each machine identity
+ *  (`@legion/cipher-client/environment`: kubernetes, metadata, pool, device-login) and for a
+ *  person signed in on the machine. The bearer routes are the rows above: the variable (the read
+ *  and success rows) and the `!` command (the token-command row); a token file or a written token
+ *  is a read of a file, which arms nothing. */
+const BROKER_ROUTES: readonly {
+  readonly name: string
+  readonly env: (scratch: string, silent: string) => Promise<Record<string, string>>
+  readonly preloads?: (scratch: string) => Promise<string[]>
+  readonly expected: readonly CensusEntry[]
+  /** The route's own clock reads (no zero-length timer on any route), with room for four more. */
+  readonly clockReads: number
+}[] = [
+  {
+    name: "a pod's projected token (kubernetes)",
+    env: async (scratch, silent) => ({
+      AGENT_SECRETS_URL: `http://${silent}`,
+      AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+      AGENT_SECRETS_MACHINE_TOKEN_FILE: await projectedTokenFile(scratch),
+    }),
+    clockReads: 8 + 4,
+    expected: [
+      DISPATCH_READ,
+      CREDENTIAL_WAIT,
+      {
+        file: "packages/cipher-client/src/token-client.ts",
+        kind: "AbortSignal.timeout",
+        ms: TRADE_ATTEMPT_MS,
+        cut: true,
+      },
+    ],
+  },
+  {
+    name: "a Compute Engine machine's metadata server (metadata)",
+    env: async (_scratch, silent) => ({
+      AGENT_SECRETS_URL: `http://${silent}`,
+      AGENT_SECRETS_MACHINE_IDENTITY: "metadata",
+      AGENT_SECRETS_MACHINE_AUDIENCE: "example-machine-client-id",
+      GCE_METADATA_HOST: silent,
+    }),
+    clockReads: 5 + 4,
+    expected: [
+      DISPATCH_READ,
+      CREDENTIAL_WAIT,
+      {
+        file: "packages/cipher-client/src/token-client.ts",
+        kind: "AbortSignal.timeout",
+        ms: TRADE_ATTEMPT_MS,
+        cut: true,
+      },
+      // metadata-identity.ts:21's TIMEOUT_MS, which node:http arms for the request (:79) and its socket.
+      {
+        file: "packages/cipher-client/src/metadata-identity.ts",
+        kind: "setTimeout",
+        ms: 10_000,
+        cut: true,
+      },
+      {
+        file: "packages/envoy-client/src/broker-credential.ts",
+        kind: "setTimeout",
+        ms: 10_000,
+        cut: true,
+      },
+    ],
+  },
+  {
+    name: "a workload identity pool (pool)",
+    env: async (scratch, silent) => ({
+      AGENT_SECRETS_URL: `http://${silent}`,
+      AGENT_SECRETS_MACHINE_IDENTITY: "pool",
+      AGENT_SECRETS_MACHINE_TOKEN_FILE: await projectedTokenFile(scratch),
+      AGENT_SECRETS_MACHINE_AUDIENCE: "example-machine-client-id",
+      AGENT_SECRETS_POOL_AUDIENCE:
+        "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/pods/providers/cluster",
+      AGENT_SECRETS_POOL_ACCOUNT: "machine@example.iam.gserviceaccount.com",
+    }),
+    preloads: async (scratch) => [await silentGooglePreload(scratch)],
+    clockReads: 5 + 4,
+    expected: [
+      DISPATCH_READ,
+      CREDENTIAL_WAIT,
+      {
+        file: "packages/cipher-client/src/token-client.ts",
+        kind: "AbortSignal.timeout",
+        ms: TRADE_ATTEMPT_MS,
+        cut: true,
+      },
+      // pool-identity.ts:40's POOL_TIMEOUT_MS, at :191.
+      {
+        file: "packages/cipher-client/src/pool-identity.ts",
+        kind: "AbortSignal.timeout",
+        ms: 20_000,
+        cut: true,
+      },
+    ],
+  },
+  {
+    name: "a device login (device-login)",
+    env: async (scratch, silent) => ({
+      AGENT_SECRETS_URL: `http://${silent}`,
+      AGENT_SECRETS_MACHINE_IDENTITY: "device-login",
+      AGENT_SECRETS_DEVICE_LOGIN_FILE: await deviceLoginFile(scratch, `http://${silent}`),
+    }),
+    clockReads: 16 + 4,
+    expected: [
+      DISPATCH_READ,
+      CREDENTIAL_WAIT,
+      // The device-login route is the one the hook's exit leaves to run (`endOnceWritten`): its
+      // trade holds the login's lock and may yet save a rotated refresh token. So its waits run to
+      // their bounds: the trade's attempt, the refresh's two requests (device-login.ts:114's
+      // BROKER_REQUEST_MS, at :257), the lock's heartbeat (device-login-lock.ts:63) and the
+      // retry's jittered first wait.
+      {
+        file: "packages/cipher-client/src/token-client.ts",
+        kind: "AbortSignal.timeout",
+        ms: TRADE_ATTEMPT_MS,
+      },
+      {
+        file: "packages/cipher-client/src/device-login.ts",
+        kind: "AbortSignal.timeout",
+        ms: TRADE_ATTEMPT_MS / 2,
+      },
+      {
+        file: "packages/cipher-client/src/device-login.ts",
+        kind: "AbortSignal.timeout",
+        ms: TRADE_ATTEMPT_MS / 2,
+      },
+      { file: "packages/cipher-client/src/device-login-lock.ts", kind: "setInterval", ms: 5_000 },
+      {
+        file: "packages/cipher-client/src/token-client.ts",
+        kind: "setTimeout",
+        atMost: RETRY_FIRST_WAIT_MS,
+      },
+    ],
+  },
+  {
+    name: "a person signed in on the machine",
+    env: async (scratch, silent) => {
+      const secret = join(scratch, "client-secret")
+      await writeFile(secret, `${fixtureSecret("client")}\n`, { mode: 0o600 })
+      await writeSignIn(
+        join(scratch, "signins"),
+        await signedIn("ada@example.com", {
+          issuer: `http://${silent}`,
+          client_id: "example-device-client",
+        }),
+      )
+      return {
+        AGENT_SECRETS_URL: `http://${silent}`,
+        AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+        AGENT_SECRETS_MACHINE_TOKEN_FILE: await projectedTokenFile(scratch),
+        AGENT_SECRETS_SIGNIN_ISSUER: `http://${silent}`,
+        AGENT_SECRETS_SIGNIN_CLIENT_ID: "example-device-client",
+        AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE: secret,
+      }
+    },
+    clockReads: 7 + 4,
+    expected: [
+      DISPATCH_READ,
+      CREDENTIAL_WAIT,
+      {
+        file: "packages/cipher-client/src/token-client.ts",
+        kind: "AbortSignal.timeout",
+        ms: TRADE_ATTEMPT_MS,
+        cut: true,
+      },
+      // person-identity.ts:32's ISSUER_TIMEOUT_SECONDS, which openid-client arms for its discovery.
+      {
+        file: "node_modules/.bun/openid-client@6.8.7/node_modules/openid-client/build/index.js",
+        kind: "AbortSignal.timeout",
+        ms: 30_000,
+        cut: true,
+      },
+    ],
+  },
+]
+
+/** A device login for `broker` under `scratch`, as `dispatch login --device` leaves one: a fresh
+ *  P-256 key as base64 PKCS#8 DER, a credential id, a random refresh token, an expiry 30 days on and
+ *  the broker, in a 0600 file (cipher-client's `writeDeviceLoginFile` writes the same). */
+async function deviceLoginFile(scratch: string, broker: string): Promise<string> {
+  const directory = join(scratch, "legion")
+  await mkdir(directory, { recursive: true, mode: 0o700 })
+  const file = join(directory, "device-login.json")
+  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" })
+  await writeFile(
+    file,
+    JSON.stringify({
+      key: privateKey.export({ format: "der", type: "pkcs8" }).toString("base64"),
+      credential_id: "cred-1",
+      refresh_token: fixtureSecret("refresh"),
+      expires_at: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+      broker,
+    }),
+    { mode: 0o600 },
+  )
+  return file
+}
+
+/** A pod's projected token file under `scratch`, random as a real token is. */
+async function projectedTokenFile(scratch: string): Promise<string> {
+  const file = join(scratch, "projected-token")
+  await writeFile(file, `${fixtureSecret("proj")}\n`)
+  return file
+}
+
+// Each broker route at its bound: the broker, the metadata server, the security token service or
+// the issuer the route asks first takes the request and never answers it, so the route waits until
+// its own bound ends it, and the hook goes on to the read. The census must hold exactly the route's
+// starts and waits beside the jj start, its timer and the read's deadline, so a wait added anywhere
+// on that route fails here by name.
+for (const route of BROKER_ROUTES) {
+  test(`a hook whose credential is traded at the broker by ${route.name}, the first service never answering, waits on nothing but that route's bounds`, async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-waits-broker-"))
+    const stateDir = join(scratch, "state")
+    await mkdir(stateDir)
+    const bin = await jjDirectory(
+      scratch,
+      `printf '%s\\n' ${JSON.stringify(join(scratch, "jj-user.toml"))}`,
+    )
+    const silent = neverAnswers()
+    const dispatch = openAsksServer()
+    try {
+      const result = await runToItsTimedWaits(
+        scratch,
+        {
+          HOME: scratch,
+          TMPDIR: scratch,
+          PATH: `${bin}:${process.env["PATH"] ?? ""}`,
+          CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
+          CLAUDE_ENV_FILE: join(scratch, "session-env.sh"),
+          LEGION_STATE_DIR: stateDir,
+          LEGION_ISSUE_TRAILER: "ACME-7",
+          DISPATCH_URL: `http://127.0.0.1:${dispatch.port}`,
+          AGENT_SECRETS_SIGNIN_DIR: join(scratch, "signins"),
+          ...(await route.env(scratch, `127.0.0.1:${silent.port}`)),
+        },
+        [JJ_START, JJ_WAIT, ...route.expected],
+        { zeroLengthTimers: 4, clockReads: route.clockReads },
+        (await route.preloads?.(scratch)) ?? [],
+      )
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toStartWith("Dispatch authored-ask summary")
+    } finally {
+      silent.stop(true)
+      dispatch.stop(true)
+      await rm(scratch, { recursive: true, force: true })
+    }
+  }, 60_000)
+}
+
 /**
  * The wait sites of the hook's code whose call carries no bound the scan traces, each with what
  * bounds it. An entry names its file, a text of the site's first line, and how many unbounded
@@ -1415,7 +1807,7 @@ const REVIEWED_WAIT_SITES: readonly { file: string; text: string; count: number;
       bound:
         "two loops over a NATS connection's statuses: the one at :632 runs in a `void` task no " +
         "caller awaits; the one at :718 is awaited (:742) only in a race with `late`, which " +
-        "AbortSignal.timeout(reconnectMs) (:715) rejects. The open-asks hook opens no NATS connection",
+        "AbortSignal.timeout(reconnectMs) (:714) rejects. The open-asks hook opens no NATS connection",
     },
     {
       file: "packages/cipher-client/src/token-client.ts",
@@ -1442,6 +1834,67 @@ const REVIEWED_WAIT_SITES: readonly { file: string; text: string; count: number;
         "which requestInit merges with the caller's (token-client.ts:321)",
     },
     {
+      file: "packages/claude-envoy/hooks/session-hook.ts",
+      text: "fetch",
+      count: 1,
+      bound:
+        "the fetch handed to the open-asks read's DispatchClient (:319), whose every request is made at dispatch-http.ts:2181 or :2508 under a signal this scan traces to AbortSignal.timeout",
+    },
+    {
+      file: "packages/envoy-client/src/dispatch-http.ts",
+      text: "fetch",
+      count: 1,
+      bound:
+        "DispatchClient's default fetchImpl (:963), called only at :992 for the requests of :2181 and :2508",
+    },
+    {
+      file: "packages/envoy-client/src/session-answers.ts",
+      text: "fetch",
+      count: 1,
+      bound:
+        "the answers mode's DispatchClient (:578), whose requests are made at dispatch-http.ts:2181 and :2508 under the client's own deadline; the open-asks mode does not reach it",
+    },
+    {
+      file: "packages/envoy-client/src/dispatch-commands/context.ts",
+      text: "fetch",
+      count: 1,
+      bound:
+        "the dispatch command's fetchImpl (:316), handed to the same DispatchClient; the open-asks mode does not reach it",
+    },
+    {
+      file: "packages/envoy-client/src/dispatch-cwd.ts",
+      text: "execFile",
+      count: 1,
+      bound: "promisified into execFileAsync (:11), whose one call (:27) is reviewed beside it",
+    },
+    {
+      file: "packages/cipher-client/src/token-client.ts",
+      text: "fetch",
+      count: 1,
+      bound: "the broker client's default fetch (:435), called at :350 under the trade's signal",
+    },
+    {
+      file: "packages/cipher-client/src/device-login.ts",
+      text: "fetch",
+      count: 3,
+      bound:
+        "a device login's default fetch (:377, :449, :680), handed to brokerConfiguration, whose requests are made at :259 under AbortSignal.timeout(BROKER_REQUEST_MS)",
+    },
+    {
+      file: "packages/cipher-client/src/person-identity.ts",
+      text: "fetch",
+      count: 1,
+      bound:
+        "a person sign-in's default fetch (:102), called only at :112 under openid-client's timeout",
+    },
+    {
+      file: "packages/cipher-client/src/pool-identity.ts",
+      text: "fetch",
+      count: 1,
+      bound:
+        "the pool identity's default fetch (:171), called only at :197 under AbortSignal.timeout(POOL_TIMEOUT_MS)",
+    },
+    {
       file: "packages/cipher-client/src/metadata-identity.ts",
       text: "request(",
       count: 1,
@@ -1451,41 +1904,65 @@ const REVIEWED_WAIT_SITES: readonly { file: string; text: string; count: number;
     },
   ]
 
+/** The scan row's own limit, sized to what reading the hook's modules as one program costs, not to
+ *  the package's 60 s: 4.4 to 4.9 s wall, 10 s of CPU and 551 MB on the dev box; 38.6 s wall alone
+ *  and up to 54.7 s beside other rows in a shared two-CPU pod (Legion's review 6011857098). It
+ *  starts no child and cannot hang, so its limit only keeps a slow machine from deciding it. */
+const SCAN_ROW_LIMIT_MS = 300_000
+
 /** claude-envoy's TypeScript settings, which the scan reads the hook's modules with. */
 const packageTsconfig = resolve(import.meta.dir, "..", "tsconfig.json")
 
 // The census sees only waits made through a timer or a process start. So every place the hook's
 // own code (every module of this repository its entry reaches, `hook-wait-sites.ts`) can start a
 // process, fetch, request, open a socket or read a stream, by whatever name it is called, must
-// carry its own bound that the scan traces to a positive `timeout` or to `AbortSignal.timeout`, or
-// be one of the reviewed sites above, each with what bounds it. A new site fails here by file and
+// carry its own bound that the scan traces to a positive `timeout` or to `AbortSignal.timeout`, no
+// larger than the hook's budget where it is a number, or be one of the reviewed sites above, each
+// with what bounds it. A new site fails here by file and
 // line; a reviewed entry whose count of sites changed fails too.
-test("every place the open-asks hook's code can wait on a process, a fetch, a socket or a stream carries a bound the census sees, or a reviewed one", () => {
-  const modules = reachedModules(hookEntry, repositoryRoot)
-  const sites = waitSites(modules, repositoryRoot, packageTsconfig)
-  // The scan read the hook's code: the token command's timed start and the read's fetch are in it.
-  expect(
-    sites.filter((site) => site.boundedBy !== undefined).map((site) => `${site.file} ${site.kind}`),
-  ).toEqual(
-    expect.arrayContaining([
-      "packages/envoy-client/src/envoy-config.ts Bun.spawnSync",
-      "packages/envoy-client/src/dispatch-http.ts fetch",
-    ]),
-  )
-  const unbounded = sites.filter((site) => site.boundedBy === undefined)
-  const reviewedBy = (site: WaitSite) =>
-    REVIEWED_WAIT_SITES.find((entry) => entry.file === site.file && site.text.includes(entry.text))
-  expect(
-    unbounded
-      .filter((site) => reviewedBy(site) === undefined)
-      .map((site) => `${site.file}:${site.line} ${site.kind}: ${site.text}`),
-    `wait sites with no bound the census sees, of ${sites.length} in ${modules.length} modules`,
-  ).toEqual([])
-  expect(
-    REVIEWED_WAIT_SITES.map(
-      (entry) =>
-        `${entry.file}: ${entry.text}: ${unbounded.filter((site) => reviewedBy(site) === entry).length}`,
-    ),
-    "unbounded sites each reviewed entry names",
-  ).toEqual(REVIEWED_WAIT_SITES.map((entry) => `${entry.file}: ${entry.text}: ${entry.count}`))
-})
+test(
+  "every place the open-asks hook's code can wait on a process, a fetch, a socket or a stream carries a bound the census sees, or a reviewed one",
+  async () => {
+    const modules = reachedModules(hookEntry, repositoryRoot)
+    // A bound counts only up to the hook's budget, the timeout hooks.json gives open-asks.
+    const config = JSON.parse(
+      await readFile(resolve(import.meta.dir, "..", "hooks", "hooks.json"), "utf8"),
+    ) as { hooks: Record<string, { hooks: { args?: string[]; timeout?: number }[] }[]> }
+    const budgetSeconds = Object.values(config.hooks)
+      .flat()
+      .flatMap((group) => group.hooks)
+      .find((hook) => hook.args?.at(-1) === "open-asks")?.timeout
+    expect(budgetSeconds).toBeGreaterThan(0)
+    const sites = waitSites(modules, repositoryRoot, packageTsconfig, (budgetSeconds ?? 0) * 1000)
+    // The scan read the hook's code: the token command's timed start and the read's fetch are in it.
+    expect(
+      sites
+        .filter((site) => site.boundedBy !== undefined)
+        .map((site) => `${site.file} ${site.kind}`),
+    ).toEqual(
+      expect.arrayContaining([
+        "packages/envoy-client/src/envoy-config.ts Bun.spawnSync",
+        "packages/envoy-client/src/dispatch-http.ts fetch",
+      ]),
+    )
+    const unbounded = sites.filter((site) => site.boundedBy === undefined)
+    const reviewedBy = (site: WaitSite) =>
+      REVIEWED_WAIT_SITES.find(
+        (entry) => entry.file === site.file && site.text.includes(entry.text),
+      )
+    expect(
+      unbounded
+        .filter((site) => reviewedBy(site) === undefined)
+        .map((site) => `${site.file}:${site.line} ${site.kind}: ${site.text}`),
+      `wait sites with no bound the census sees, of ${sites.length} in ${modules.length} modules`,
+    ).toEqual([])
+    expect(
+      REVIEWED_WAIT_SITES.map(
+        (entry) =>
+          `${entry.file}: ${entry.text}: ${unbounded.filter((site) => reviewedBy(site) === entry).length}`,
+      ),
+      "unbounded sites each reviewed entry names",
+    ).toEqual(REVIEWED_WAIT_SITES.map((entry) => `${entry.file}: ${entry.text}: ${entry.count}`))
+  },
+  SCAN_ROW_LIMIT_MS,
+)

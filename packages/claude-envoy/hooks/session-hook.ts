@@ -611,6 +611,41 @@ async function answersRefresh(session: string, cwd: string): Promise<never> {
   process.exit(0)
 }
 
+/**
+ * Ends the open-asks hook once what it wrote is out. Its work is done when `openAsks` returns, but
+ * a credential it asked the secrets broker for may still be trading in the background, under the
+ * broker client's own bounds (a 30 s attempt, `TRADE_ATTEMPT_MS`; a metadata server's 10 s; a
+ * pool's 20 s), and a process with a pending request or timer does not exit on its own: with a
+ * broker that never answers, the hook ran for 30 s, past the 20 s hooks.json gives it, and Claude
+ * Code would have killed it. Exiting cuts that trade, which writes nothing the next process reads,
+ * except on the device-login route: there the trade holds the login's lock and may yet save a
+ * refresh token the broker rotated, so a hook whose process holds that lock is left to finish as
+ * before. The exit waits until stdout and stderr have taken every byte written to them.
+ */
+async function endOnceWritten(): Promise<void> {
+  // AGENT_SECRETS_DEVICE_LOGIN_FILE (`@legion/cipher-client/device-login-file`): its lock beside it
+  // holds the pid of the process that holds it (`device-login-lock.ts`).
+  const login = configuredValue(process.env["AGENT_SECRETS_DEVICE_LOGIN_FILE"])
+  if (login !== undefined) {
+    let holder = ""
+    try {
+      holder = readFileSync(`${login}.lock`, "utf8")
+    } catch {
+      // No lock: no trade of this login is under way.
+    }
+    if (holder.startsWith(`${process.pid} `)) return
+  }
+  // Ending each stream waits until it has taken every byte: in Bun 1.4.4 an empty write's callback,
+  // `writableLength` and `writableNeedDrain` each let an exit drop the tail of a 300,000-byte write
+  // to a pipe (2 or 3 runs of 5), and `end` lost nothing (5 of 5).
+  for (const stream of [process.stdout, process.stderr]) {
+    const ended = Promise.withResolvers<void>()
+    stream.end(() => ended.resolve())
+    await ended.promise
+  }
+  process.exit(0)
+}
+
 if (mode === "answers-refresh") {
   const [session, cwd] = modeArguments
   if (session === undefined || cwd === undefined) {
@@ -626,5 +661,7 @@ if (mode !== "open-asks" && mode !== "dispatch-first" && mode !== "answers") {
 const text = await Bun.stdin.text()
 if (mode === "answers") await answers(text)
 const input: unknown = JSON.parse(text)
-if (mode === "open-asks") await openAsks(input)
-else dispatchFirst(input)
+if (mode === "open-asks") {
+  await openAsks(input)
+  await endOnceWritten()
+} else dispatchFirst(input)

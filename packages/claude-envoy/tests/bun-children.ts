@@ -1,6 +1,8 @@
 /**
  * The places in this package's tests that start a Bun process with an environment of their own:
- * a `Bun.spawn` or `Bun.spawnSync` whose command's first word is `"bun"`, `process.execPath`, or a
+ * a `Bun.spawn` or `Bun.spawnSync` (in either form, `(argv, options)` or `({ cmd, … })`), or a start
+ * of `node:child_process` (`spawn`, `spawnSync`, `execFile`, `execFileSync`, `fork`, or `exec` of a
+ * string starting `bun `), whose command's first word is `"bun"`, `process.execPath`, or a
  * launcher of this package's `bin/` that execs bun (`bin/dispatch`), named by a `join(…, "bin",
  * "<name>")` there or in the constant it is held in, or a `StdioClientTransport` whose `command`
  * is one of those, with an `env` option. Such a child gets
@@ -31,13 +33,11 @@ export interface BunChild {
   readonly cacheOff: boolean
 }
 
-/** The object literal of `node`'s options: the argument after a command array, or the first. */
+/** The object literal of `node`'s options: its last object literal argument. */
 function optionsOf(
   node: ts.CallExpression | ts.NewExpression,
 ): ts.ObjectLiteralExpression | undefined {
-  const args = node.arguments ?? []
-  const literal = args.find((argument) => ts.isObjectLiteralExpression(argument))
-  return literal as ts.ObjectLiteralExpression | undefined
+  return [...(node.arguments ?? [])].reverse().find(ts.isObjectLiteralExpression)
 }
 
 /** The initializer of `options`'s property `name`, or undefined where it has none. */
@@ -82,13 +82,27 @@ export function bunChildren(file: string): BunChild[] {
   const children: BunChild[] = []
   const visit = (node: ts.Node): void => {
     let options: ts.ObjectLiteralExpression | undefined
-    if (ts.isCallExpression(node) && /^Bun\.spawn(Sync)?$/.test(node.expression.getText(source))) {
+    const callee = ts.isCallExpression(node) ? node.expression.getText(source) : ""
+    if (ts.isCallExpression(node) && /^Bun\.spawn(Sync)?$/.test(callee)) {
+      // `(argv, options)`, or `({ cmd, …options })`.
+      const first = node.arguments[0]
+      if (first !== undefined && ts.isArrayLiteralExpression(first) && isBun(first.elements[0])) {
+        options = optionsOf(node)
+      }
+      if (first !== undefined && ts.isObjectLiteralExpression(first)) {
+        const cmd = property(first, "cmd")
+        if (cmd !== undefined && ts.isArrayLiteralExpression(cmd) && isBun(cmd.elements[0]))
+          options = first
+      }
+    } else if (
+      ts.isCallExpression(node) &&
+      /(^|\.)(spawn|spawnSync|execFile|execFileSync|fork)$/.test(callee)
+    ) {
+      // node:child_process: `(file, args?, options?)`.
+      if (isBun(node.arguments[0])) options = optionsOf(node)
+    } else if (ts.isCallExpression(node) && /(^|\.)(exec|execSync)$/.test(callee)) {
       const command = node.arguments[0]
-      if (
-        command !== undefined &&
-        ts.isArrayLiteralExpression(command) &&
-        isBun(command.elements[0])
-      ) {
+      if (command !== undefined && ts.isStringLiteralLike(command) && /^bun\s/.test(command.text)) {
         options = optionsOf(node)
       }
     }
@@ -102,6 +116,8 @@ export function bunChildren(file: string): BunChild[] {
       children.push({
         line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1,
         text: node.getText(source).split("\n")[0]?.trim().slice(0, 120) ?? "",
+        // `...process.env` hands on the test process's own, which the package's test preload sets
+        // the cache off in (`./no-transpiler-cache-preload.ts`).
         cacheOff: /\bNO_TRANSPILER_CACHE\b|\.\.\.process\.env\b/.test(text),
       })
     }

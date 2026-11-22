@@ -2,7 +2,8 @@
  * A preload for a hook process a row starts (`bun --preload <this file> …`): a census of the timed
  * waits the hook makes, of the processes it starts, and of its turns of the event loop and reads of
  * the clock. It wraps `setTimeout` and `clearTimeout`, `setInterval`, `setImmediate`, `Bun.sleep`,
- * `Bun.sleepSync` and `AbortSignal.timeout`; `Bun.spawn`, `Bun.spawnSync` and `Bun.$`; and
+ * `Bun.sleepSync`, `AbortSignal.timeout` and `Atomics.wait`; `Bun.spawn`, `Bun.spawnSync` and
+ * `Bun.$`; and
  * `Date.now`, `new Date()`, `Date()`, `performance.now`, `process.hrtime` and `Bun.nanoseconds`.
  * When the process exits it writes, to the file `HOOK_TIMED_WAITS` names, a `Census`: one entry per
  * wait above zero and one per start (its kind, its declared bound, when it was made, how it ended,
@@ -208,6 +209,17 @@ if (record !== undefined && record !== "") {
     })
     return signal
   }
+
+  // A thread's block on shared memory: a timed wait of its own, -1 where it has no timeout.
+  const realAtomicsWait = Atomics.wait
+  Atomics.wait = ((...args: unknown[]) => {
+    const timeout = args[3]
+    const bounded = typeof timeout === "number" && Number.isFinite(timeout) && timeout > 0
+    const wait = made("Atomics.wait", bounded ? timeout : -1)
+    const answer: string = Reflect.apply(realAtomicsWait, Atomics, args)
+    wait.outcome = answer === "timed-out" ? "fired" : "ended"
+    return answer
+  }) as typeof Atomics.wait
 
   const realSpawn = Bun.spawn
   Bun.spawn = ((...args: unknown[]) => {

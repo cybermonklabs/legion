@@ -17,7 +17,8 @@
  * signal and is not a site of its own.
  *
  * A site is bounded only by its call's own option, in the object literal it is passed: a `timeout`
- * on a process start that is a positive number (a literal, or a constant one names), or a `signal`
+ * on a process start that is a positive number no larger than the hook's budget (`maxBoundMs`: a
+ * literal, or a constant one names), or a `signal`
  * on a process start, a fetch or an HTTP request that traces to `AbortSignal.timeout`, through
  * `AbortSignal.any`, conditionals, `??`, constants, the fields of a class it is assigned to, the
  * values a function of this repository returns, and a parameter whose every caller passes one.
@@ -66,12 +67,14 @@ export function reachedModules(entry: string, root: string): string[] {
 }
 
 /** The modules whose functions are waits: a `require` or `import()` of one is a site. */
-const WAIT_MODULES = /^(node:)?(child_process|http|https|net|tls|dgram)$/
+const WAIT_MODULES =
+  /^(node:)?(child_process|http|https|net|tls|dgram|dns|dns\/promises|worker_threads)$/
 
 /** The kind of wait a declaration's qualified name is, or undefined where it is none. */
 function waitKind(qualified: string, inLibrary: boolean): string | undefined {
   const name = qualified.replaceAll('"', "")
   if (/^bun\.(spawn|spawnSync)$/.test(name)) return name.replace(/^bun/, "Bun")
+  if (inLibrary && /(^|\.)Atomics\.(wait|waitAsync)$/.test(name)) return "Atomics.wait"
   if (/^bun\.(\$|Shell|ShellPromise)/.test(name)) return "Bun.$"
   if (
     /^(node:)?child_process\.(spawn|spawnSync|exec|execSync|execFile|execFileSync|fork)(\.__promisify__)?$/.test(
@@ -81,6 +84,19 @@ function waitKind(qualified: string, inLibrary: boolean): string | undefined {
     return "child_process"
   }
   if (inLibrary && /(^|\.)fetch$/.test(name)) return "fetch"
+  if (
+    /^(node:)?dns(\/promises)?\.(Resolver\.)?(lookup|lookupService|resolve\w*|reverse)$/.test(name)
+  )
+    return "dns"
+  if (inLibrary && /^(global\.)?(prompt|confirm|alert)$/.test(name)) return "stream read"
+  if (
+    inLibrary &&
+    /(^|\.)(ReadableStream|BunConsumerConvenienceMethods)\.(text|json|bytes|arrayBuffer|blob)$/.test(
+      name,
+    )
+  )
+    return "stream read"
+  if (inLibrary && /(^|\.)Worker(\.__new|\.__constructor)?$/.test(name)) return "worker"
   if (/^(node:)?https?\.(request|get)$/.test(name)) return "http request"
   if (/^(node:)?(net|tls)\.(connect|createConnection|Socket\.__constructor)$/.test(name))
     return "socket"
@@ -95,7 +111,12 @@ function waitKind(qualified: string, inLibrary: boolean): string | undefined {
 
 /** Every wait site of `modules`, read as one program with `tsconfig`'s options, with `root` the
  *  repository's root the files are named against. */
-export function waitSites(modules: readonly string[], root: string, tsconfig: string): WaitSite[] {
+export function waitSites(
+  modules: readonly string[],
+  root: string,
+  tsconfig: string,
+  maxBoundMs: number,
+): WaitSite[] {
   const config = ts.readConfigFile(tsconfig, ts.sys.readFile)
   const options = ts.parseJsonConfigFileContent(config.config, ts.sys, dirname(tsconfig)).options
   const program = ts.createProgram({ rootNames: [...modules], options })
@@ -125,20 +146,52 @@ export function waitSites(modules: readonly string[], root: string, tsconfig: st
     return ""
   }
 
-  // Every call of a function of this repository, by its declaration: a parameter is traced through
-  // the arguments its callers pass.
-  const callsOf = new Map<ts.Node, ts.CallExpression[]>()
+  // The identifiers of the hook's modules by their text, read once: a function's callers, and the
+  // places it is handed on as a value, are found among the identifiers that bear its name.
+  const byName = new Map<string, (ts.Identifier | ts.PrivateIdentifier)[]>()
   for (const source of sources) {
     const visit = (node: ts.Node): void => {
-      if (ts.isCallExpression(node)) {
-        const declaration = declarationOf(node)
-        if (declaration !== undefined && !inLibrary(declaration)) {
-          callsOf.set(declaration, [...(callsOf.get(declaration) ?? []), node])
-        }
-      }
+      if (ts.isIdentifier(node) || ts.isPrivateIdentifier(node))
+        byName.set(node.text, [...(byName.get(node.text) ?? []), node])
       ts.forEachChild(node, visit)
     }
     visit(source)
+  }
+  /** The calls of `owner`, a function of this repository, or undefined where it is also used as a
+   *  value (`[…].map(fn)`, a callback), whose callers the scan cannot list. */
+  const callsOfCache = new Map<ts.Node, ts.CallExpression[] | undefined>()
+  const callsOf = (owner: ts.SignatureDeclaration): ts.CallExpression[] | undefined => {
+    if (callsOfCache.has(owner)) return callsOfCache.get(owner)
+    const named =
+      owner.name !== undefined
+        ? owner.name
+        : ts.isVariableDeclaration(owner.parent) || ts.isPropertyAssignment(owner.parent)
+          ? owner.parent.name
+          : undefined
+    const symbol = named === undefined ? undefined : checker.getSymbolAtLocation(named)
+    let calls: ts.CallExpression[] | undefined = []
+    if (
+      symbol === undefined ||
+      named === undefined ||
+      !(ts.isIdentifier(named) || ts.isPrivateIdentifier(named))
+    )
+      calls = undefined
+    for (const identifier of named !== undefined &&
+    (ts.isIdentifier(named) || ts.isPrivateIdentifier(named))
+      ? (byName.get(named.text) ?? [])
+      : []) {
+      if (calls === undefined || identifier === named || resolvedSymbol(identifier) !== symbol)
+        continue
+      const reference =
+        ts.isPropertyAccessExpression(identifier.parent) && identifier.parent.name === identifier
+          ? identifier.parent
+          : identifier
+      if (ts.isCallExpression(reference.parent) && reference.parent.expression === reference)
+        calls.push(reference.parent)
+      else calls = undefined
+    }
+    callsOfCache.set(owner, calls)
+    return calls
   }
 
   const unwrap = (expression: ts.Expression): ts.Expression => {
@@ -154,7 +207,11 @@ export function waitSites(modules: readonly string[], root: string, tsconfig: st
     return node
   }
   const resolvedSymbol = (node: ts.Node): ts.Symbol | undefined => {
-    const symbol = checker.getSymbolAtLocation(node)
+    // A shorthand `{ signal }` names its value, not the property it makes.
+    const symbol =
+      ts.isShorthandPropertyAssignment(node.parent) && node.parent.name === node
+        ? checker.getShorthandAssignmentValueSymbol(node.parent)
+        : checker.getSymbolAtLocation(node)
     return symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias
       ? checker.getAliasedSymbol(symbol)
       : symbol
@@ -222,7 +279,11 @@ export function waitSites(modules: readonly string[], root: string, tsconfig: st
     if (ts.isCallExpression(node)) {
       const callee = unwrap(node.expression)
       if (ts.isPropertyAccessExpression(callee) && isGlobalAbortSignal(callee.expression)) {
-        if (callee.name.text === "timeout") return true
+        if (callee.name.text === "timeout") {
+          // A deadline above the hook's budget bounds nothing the budget needs.
+          const ms = node.arguments[0] === undefined ? undefined : traceNumber(node.arguments[0])
+          return node.arguments[0] !== undefined && (ms === undefined || ms <= maxBoundMs)
+        }
         if (callee.name.text !== "any") return false
         // The list `any` is given: an array literal, or a constant holding one or a `.filter` of one.
         let list = node.arguments[0] === undefined ? undefined : unwrap(node.arguments[0])
@@ -236,7 +297,11 @@ export function waitSites(modules: readonly string[], root: string, tsconfig: st
           ts.isPropertyAccessExpression(list.expression) &&
           list.expression.name.text === "filter"
         ) {
-          list = unwrap(list.expression.expression)
+          // Only a filter that drops nothing but `undefined` or `null` keeps the timeout in.
+          const keep = list.arguments[0]?.getText().replace(/\s+/g, " ") ?? ""
+          list = /^(Boolean|\(?(\w+)\)? => \2 !==? (undefined|null))$/.test(keep)
+            ? unwrap(list.expression.expression)
+            : undefined
         }
         return (
           list !== undefined &&
@@ -306,8 +371,9 @@ export function waitSites(modules: readonly string[], root: string, tsconfig: st
         return false
       const owner = declaration.parent
       const index = owner.parameters.indexOf(declaration)
-      const calls = callsOf.get(owner) ?? []
+      const calls = callsOf(owner)
       return (
+        calls !== undefined &&
         calls.length > 0 &&
         calls.every((call) => {
           const argument = call.arguments[index] ?? declaration.initializer
@@ -332,7 +398,9 @@ export function waitSites(modules: readonly string[], root: string, tsconfig: st
         }
         ts.forEachChild(inner, visit)
       }
-      visit(declaration.parent)
+      // A private field is written only in its class; a public one can be written anywhere.
+      if (ts.isPrivateIdentifier(node.name)) visit(declaration.parent)
+      else for (const source of sources) visit(source)
       return allTraced(assigned, none, depth)
     }
     return false
@@ -349,13 +417,21 @@ export function waitSites(modules: readonly string[], root: string, tsconfig: st
     const literal =
       index === undefined ? [...args].reverse().find(ts.isObjectLiteralExpression) : args[index]
     if (literal === undefined || !ts.isObjectLiteralExpression(literal)) return undefined
+    let found: ts.Expression | undefined
     for (const property of literal.properties) {
       if (ts.isPropertyAssignment(property) && property.name.getText() === name)
-        return property.initializer
-      if (ts.isShorthandPropertyAssignment(property) && property.name.text === name)
-        return property.name
+        found = property.initializer
+      else if (ts.isShorthandPropertyAssignment(property) && property.name.text === name)
+        found = property.name
+      // A spread after the option whose type can hold it can take it away (`{ timeout, ...opts }`).
+      else if (
+        ts.isSpreadAssignment(property) &&
+        found !== undefined &&
+        checker.getTypeAtLocation(property.expression).getProperty(name) !== undefined
+      )
+        found = undefined
     }
-    return undefined
+    return found
   }
   const boundOf = (
     call: ts.CallExpression | ts.NewExpression,
@@ -373,7 +449,12 @@ export function waitSites(modules: readonly string[], root: string, tsconfig: st
     if (kind !== "fetch" && kind !== "http request") {
       const timeout = ownOption(call, "timeout", index)
       const value = timeout === undefined ? undefined : traceNumber(timeout)
-      if (value !== undefined && value > 0) return "timeout"
+      if (value !== undefined && value > 0 && value <= maxBoundMs) return "timeout"
+    }
+    if (kind === "Atomics.wait") {
+      const timeout = call.arguments?.[3]
+      const value = timeout === undefined ? undefined : traceNumber(timeout)
+      return value !== undefined && value > 0 && value <= maxBoundMs ? "timeout" : undefined
     }
     if (kind === "Bun.$" || kind === "socket") return undefined
     const signal = ownOption(call, "signal", index)
@@ -435,6 +516,25 @@ export function waitSites(modules: readonly string[], root: string, tsconfig: st
     return name !== undefined && WAIT_NAMES.test(name) ? `unresolved ${name}` : undefined
   }
 
+  /** Whether `node` is in a type, or names what an import, export or declaration binds. */
+  const inTypeOrDeclaration = (node: ts.Node): boolean => {
+    for (let at: ts.Node | undefined = node.parent; at !== undefined; at = at.parent) {
+      if (ts.isTypeNode(at) || ts.isImportDeclaration(at) || ts.isExportDeclaration(at)) return true
+      if (ts.isStatement(at)) break
+    }
+    const parent = node.parent
+    return (
+      (ts.isVariableDeclaration(parent) && parent.name === node) ||
+      (ts.isPropertyAssignment(parent) && parent.name === node) ||
+      (ts.isBindingElement(parent) && (parent.name === node || parent.propertyName === node)) ||
+      (ts.isParameter(parent) && parent.name === node) ||
+      ((ts.isPropertyDeclaration(parent) ||
+        ts.isMethodDeclaration(parent) ||
+        ts.isFunctionDeclaration(parent)) &&
+        parent.name === node)
+    )
+  }
+
   const sites: WaitSite[] = []
   for (const source of sources) {
     const file = relative(realRoot, realpathSync(source.fileName))
@@ -473,6 +573,24 @@ export function waitSites(modules: readonly string[], root: string, tsconfig: st
           ts.isStringLiteralLike(specifier) &&
           WAIT_MODULES.test(specifier.text)
         if (loads) site(node, "load of a wait module", undefined)
+        const computed =
+          (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+            (ts.isIdentifier(callee) && callee.text === "require")) &&
+          specifier !== undefined &&
+          !ts.isStringLiteralLike(specifier)
+        if (computed) site(node, "load of a computed module", undefined)
+        // A read of file descriptor 0, the process's stdin.
+        const reader = declarationOf(node)
+        if (
+          reader !== undefined &&
+          /^(node:)?fs(\/promises)?\.(readFileSync|readFile|readSync|read|createReadStream|openSync|open)$|^bun\.file$/.test(
+            qualifiedName(reader).replaceAll('"', ""),
+          ) &&
+          specifier !== undefined &&
+          /^(0|process\.stdin\.fd)$/.test(specifier.getText(source))
+        ) {
+          site(node, "stream read", undefined)
+        }
         if (ts.isPropertyAccessExpression(callee) && callee.name.text === "getReader") {
           const stream = unwrap(callee.expression)
           if (!(ts.isPropertyAccessExpression(stream) && stream.name.text === "body"))
@@ -483,11 +601,33 @@ export function waitSites(modules: readonly string[], root: string, tsconfig: st
         ts.isNewExpression(node) &&
         ts.isIdentifier(node.expression) &&
         node.expression.text === "Response" &&
-        node.arguments?.some((argument) =>
-          /\.(stdout|stderr|stdin)$/.test(argument.getText(source)),
+        node.arguments?.some(
+          (argument) =>
+            /\.(stdout|stderr|stdin)$/.test(argument.getText(source)) ||
+            checker.getTypeAtLocation(argument).getSymbol()?.getName() === "ReadableStream",
         )
       ) {
         site(node, "stream read", undefined)
+      }
+      // A wait handed on as a value (`callIt(Bun.spawnSync)`, `Bun.spawn.call(…)`, `{ fetch }`):
+      // whoever calls it, its call carries no bound the scan can read.
+      const handedOn =
+        (ts.isPropertyAccessExpression(node) ||
+          (ts.isIdentifier(node) &&
+            !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node))) &&
+        !(ts.isCallExpression(node.parent) && node.parent.expression === node) &&
+        !(ts.isNewExpression(node.parent) && node.parent.expression === node) &&
+        !(ts.isTaggedTemplateExpression(node.parent) && node.parent.tag === node) &&
+        !inTypeOrDeclaration(node)
+      if (handedOn) {
+        const symbol = resolvedSymbol(ts.isPropertyAccessExpression(node) ? node.name : node)
+        const declaration = symbol?.valueDeclaration ?? symbol?.declarations?.[0]
+        const kind =
+          declaration === undefined || !inLibrary(declaration)
+            ? undefined
+            : waitKind(qualifiedName(declaration), true)
+        if (kind !== undefined && kind !== "stream read")
+          site(node, `${kind} handed on as a value`, undefined)
       }
       if (
         ts.isPropertyAccessExpression(node) &&
