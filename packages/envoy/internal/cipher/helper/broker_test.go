@@ -647,12 +647,16 @@ func loggedInBroker(t *testing.T, f *fakeBroker, operator string) *Broker {
 	return b
 }
 
-// waitFor polls cond until it is true or 5s pass, whichever comes first, failing the test on
-// timeout. A login's first token poll comes a second after its device authorization (the
-// interval the fake names).
+// waitFor polls cond until it is true, failing the test when the wait gives up: after a minute, or
+// the test binary's own deadline less a second when that is sooner (testwait.Bounded), never after
+// a fixed few seconds. A login's first token poll comes a second after its device authorization
+// (the interval the fake names), and the poll, its round trips and the machine file's two fsyncs
+// all run in the background, so on a loaded box a login that is merely slow takes longer than any
+// short span: a 5 s span failed two tests whose login had not yet been kept, in a run where this
+// package took 475 s at a load average of about 1290. A condition that never holds still fails.
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	if !testwait.Holds(5*time.Second, 5*time.Millisecond, cond) {
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 5*time.Millisecond, cond) {
 		t.Fatal("condition never became true")
 	}
 }
