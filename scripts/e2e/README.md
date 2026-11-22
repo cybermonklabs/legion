@@ -784,7 +784,7 @@ LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM priva
 ```
 
 **Devbox only; CI does not run this script.**
-It runs real Oh My Pi agents and real GitHub Apps, and sees one disposable pull request merged into `sjawhar/legion-smoke` by its own merger:
+It runs real Oh My Pi agents and real GitHub Apps, and sees two disposable pull requests merged into `sjawhar/legion-smoke`, each by its own merger:
 the merge is the merger agent's `gh pr merge --squash --match-head-commit`, under the subject and the empty body it passes itself, and the proof only reads it (`await_merger_merge`), never merging it by hand.
 The run needs:
 
@@ -854,7 +854,7 @@ The agents' model is Anthropic through the configured route:
 No YubiKey touch is required under `key-file` or `box-login`, and no key value enters the script's shell, a pane, an argv, or the transcript, under any route.
 
 The proof human's `gh` has to stay authenticated for the whole run.
-A full run takes about 85 minutes, longer than the one hour a GitHub App installation token lives: the production check after the close now holds a look the first look's own `wake_at` starts before the bound's last look, and the bound moved out with it.
+A full run took about 85 minutes before `spec_source_ending` added one more issue's whole workflow, longer than the one hour a GitHub App installation token lives: the production check after the close now holds a look the first look's own `wake_at` starts before the bound's last look, and the bound moved out with it.
 The devbox shim keeps it authenticated, because it asks for a current token on every call.
 A `GH_TOKEN` exported once does not: it expires partway through, and every later `gh` call, the review-round waits and the teardown's pull request close included, fails with `HTTP 401: Bad credentials`.
 A run started outside the shim exports no `GH_TOKEN` (it outranks any config file) and instead points `GH_CONFIG_DIR` at a private 0700 directory holding gh's `config.yml` (`version: "1"`) and a 0600 `hosts.yml` (`github.com:` with `oauth_token: <token>`, `user: x-access-token` and `git_protocol: https`).
@@ -962,6 +962,24 @@ it fails on any assistant turn or model selection that is not the `anthropic` pr
 It runs after `services-stopped` has stopped the watcher, the daemon and the private tmux server and found no proof process left, since an idle agent takes a turn on the next event the daemon delivers, and before the transcripts are copied and the profile removed.
 It then runs over the copied transcripts too, and fails unless they hold the same turns, sessions and subagents.
 
+`spec_source_ending`, after the status-actor check, proves a change request that proposes nothing.
+The proof human first closes the held-worker and restart roots, which frees an admission slot, and only then names the smoke repository a spec source of the project (`PUT /api/v1/projects/<project>/spec-sources/<owner>/<repo>`):
+each gate registered before then keeps the rule it started under.
+`spec-source-no-proposal-starts-with-no-person` files a root whose spec says it proposes nothing, and its architect registers the gate on its own.
+The gate opens by the change request with no person (`designGate.rule` `change_request`, `exemptVersion` at the current version, no `approvedVersion`), Dispatch reads that version as proposing nothing, the issue holds no approval request, the daemon logs no wait on a person, and the architect holds a `design-approved` notice whose reason starts `no proposal: version`.
+`spec-source-outcome-lists` drives the issue to `merging`:
+the author's outcome list at the pull request's head is the implementer's session's, and the reviewer's own list is the reviewer's.
+The proof tells the reviewer to hold its final list and the architect to hold the conclusion, so that the run sees what each one releases.
+`spec-source-merge-waits-for-the-final-list` reads Dispatch's ending answer at the head as `waiting` for `no_final_list_for_head` and `no_conclusion`, and sees the architect told of both by `spec-ending-waits` notices.
+For 120 s the daemon launches no merger and the pull request stays open.
+The reviewer's final list, recorded empty at that head on the proof's instruction, leaves `no_conclusion` alone, and the merge waits for 60 s more.
+`spec-source-conclusion-releases-the-merge` has the architect write a `no_statement=true` conclusion with one `Evidence:` paragraph.
+The ending answer then reads `ready`, and the merger merges the pull request itself.
+Its session holds a `dispatch spec-ending` read of that head that answered `ready`, and its task says that the gate opened with no person's approval.
+The merge closes the issue, and the smoke main is held and cleaned around it as `merger-merge` holds and cleans it.
+Two negative controls are kept in the evidence:
+the gate's state with a person's approval in place of the exempt version fails the no-person assertion, and the ending answer rewritten as `ready` fails the waiting assertion.
+
 `STAGE3_FROM=held` or `STAGE3_FROM=restart` is a development aid for iterating on the later scenarios against a fresh rig:
 it skips the first issue's workflow (the proof human closes that root, which frees its admission slot as the merge's close would), `restart` also skips the held worker, and the credential and idle-read checks read `STAGE3_PR` (default: the newest smoke pull request).
 `STAGE3_UNTIL` is the other development aid.
@@ -976,7 +994,7 @@ Evidence survives every outcome in `STAGE3_EVIDENCE_DIR` (default a fresh `/tmp/
 A passing run's last three checks stop every process, kill the private tmux server and remove both containers (`services-stopped`), check the model route (`model-turns-through-the-route`), and close every pull request the run still has open on the smoke repository
 — its own, by branch, the daemon's `legion/<project>-*`;
 the proof human's fixture pull request merged in `smoke-main-clean` — before removing the isolated OMP profile and the scratch work directory, the agents' workspaces with it (`cleanup-is-complete`); each shows what it removed gone.
-The proof merges only the pull request its human-merge check merges, so the held-worker and outbox proofs are open when the run reaches here.
+The proof merges only the pull requests that `merger-merge` and `spec-source-conclusion-releases-the-merge` see merged, so the held-worker and outbox proofs are open when the run reaches here.
 A close GitHub refuses fails the check with gh's reason; a close whose branch delete failed is reported as closed with the reason the branch stayed.
 On any exit the `EXIT` trap does the same teardown, except that a failure keeps the scratch work directory and prints its path.
 For a run that did not pass, the trap also closes the run's own pull requests, best effort:

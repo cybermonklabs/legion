@@ -44,6 +44,20 @@ of the base, `jj -R "$LEGION_WORKSPACE" log -r "${default}@origin..@"` as
 `skill://legion-worker/references/default-branch-check.md` lists them, since a branch can hold
 more than five commits; push only the existing issue branch, as the daemon part below says.
 
+## The author's outcome list
+
+A pull request of a spec-source repository needs your outcome list at each head you hand to review. An outcome is one thing that the change makes different for a caller. The repository is a spec source when `dispatch spec-source --action list --project <project>` names it, where `<project>` is the part of the issue key before the dash. A line that ends with ` (off)` names a source that is off. For any other repository, skip this section.
+
+Write the list with one outcome on each line, in one of three forms:
+
+- `(requires <statement-id>) <text>`: an approved statement requires the outcome.
+- `(restored) <text>`: the change restores the outcome for the statement that the issue's conclusion names.
+- `<text>`: no approved statement covers the outcome.
+
+Name a statement only after you read its approved text and find that it requires the outcome: `curl -sS -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/projects/<project>/spec/<o>/<r>/nodes/<statement-id>"`. A statement that this read answers with `404`, or with `"removed": true`, is not an approved statement. When no approved statement covers an outcome, keep it as a plain line. Never write a statement that does not require the outcome, and never write `(restored)` to make it covered. An empty body records an empty list: record one when the change makes no outcome different for a caller.
+
+Record the list after you push the head and before you complete implementing: `dispatch outcomes --issue <issue> --pull-request <o>/<r>#<n> --head <head> --list author --body-file -`, with the list on the lines after it. `<head>` is the commit you pushed, the `head` of your `implement` handoff. The reviewer writes its own list before it reads yours, and Dispatch refuses the reviewer's final list while the pull request has no author's list (`OUTCOME_AUTHOR_LIST_FIRST`). When the reviewer asks for your list at a head, record it at that head.
+
 ## Implementation handoff
 
 Every implementing round records an `implement` handoff on the Dispatch issue, as the daemon part below says: a JSON object with `schemaVersion: 1`, `phase: "implement"`, `issue: "<issue>"`, `head` (the 40-character lower-case commit you pushed as `@-`, as `jj -R "$LEGION_WORKSPACE" log -r @- --no-graph -T commit_id` prints it once the push succeeded), and any of `filesChanged`, `trickyParts`, `deviations`, `openQuestions` and `discoveredComplexity` you record, each a list of strings; and `classSearch`, one entry per finding of every earlier review round, each `{finding, class, command, result}`, required from the first round that follows a review round and `[]` while no review round has happened yet. Nothing stamps any field for you. The handoff carries no evidence: your results are on the issue's checks, where `dispatch results --issue <issue>` reads them. Push the round's code first. Then record the body with `dispatch handoff-write --issue <issue> --phase implement --body-file - <<'EOF'`, the JSON on the lines after it and `EOF` alone on the last line, and report completion: `handoff_complete` reports the record and the head it names, and refuses while that record names no head, while the commit the workspace stands on (`@-`) is not on `legion/<issue>@origin`, and while the head the record names is not that pushed commit. Your completion carries that `head` to the daemon, which takes a completion of an earlier `implement` entry only at the head the record holds. Retro writes no handoff and commits nothing, and its `handoff_complete` carries the rating of the plan where your tool takes one, as the daemon part below says.

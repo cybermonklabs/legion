@@ -10,6 +10,8 @@ Do not request `isolated` work, create a workspace, edit files, or create a comm
 
 ## The merge, step by step
 
+Where your task or a design-gate message says that the gate opened with no person's approval, *The ending condition* below holds each merge and each enqueue of these steps.
+
 1. Verify tester and reviewer cycles completed and retro completed, then read the pull request: `gh pr view <n> --json number,title,url,state,baseRefName,headRefOid,mergeStateStatus,autoMergeRequest`. Its `headRefOid` is the head you merge, and every step below names that same sha; its `title` is the subject you merge under. Every handoff is a record on the Dispatch issue, never a commit, so the merge carries no handoff onto the default branch and there is nothing on the head to read for one. A non-null `autoMergeRequest` is auto-merge already armed on the pull request, which a release before this one may have left there: turn it off with `gh pr merge <n> --disable-auto` before you go on, because GitHub checks the head auto-merge was armed at only while it is being armed and never again when it merges, so an armed pull request whose head moves afterwards merges code no merger ever read.
 2. Read, in one command, the repository's default branch, whether it allows merge commits, its own squash-message setting and whether the base branch has a merge queue, with the base escaped in the same command that reads it (a raw `#` or `%` reads another branch):
 
@@ -77,6 +79,14 @@ Do not request `isolated` work, create a workspace, edit files, or create a comm
 
 You resolve no review thread: the reviewer's approval already judged them, and the merge needs no thread state beyond it.
 
+## The ending condition
+
+A task or a message that reads `The design gate of <tree> opened with no person's approval` says that no person approved the change request of `<tree>`, because it proposes nothing. The merge then waits for the ending condition of that change request instead. It holds when the reviewer recorded its final list of outcomes at the head, and the spec of `<tree>` holds a complete conclusion. An outcome that no approved statement covers also needs a person's approval of the whole spec. Only Dispatch judges the condition.
+
+Run `dispatch spec-ending --issue <tree> --head <head>` immediately before each merge and each enqueue, with the head you are about to merge or enqueue. That is the merge of step 3, the enqueue of step 4, the further enqueue of step 5, each head you read again after a refused merge (step 6), and the new head of a merge forward. Merge or enqueue only when its first line reads `ready`.
+
+When the first line reads `waiting`, merge nothing and enqueue nothing, and do not complete. Each line after it names one reason as `<code>: <detail>`. The reasons are not yours to clear: the daemon tells the architect what each one asks. Wait for the message that the ending condition holds, and then begin again at step 1. A command that fails is not `ready`: merge nothing, and tell the architect with `envoy_publish` to its encoded role token, with the command's output.
+
 ## A closed design gate
 
 The root's design gate holds the merge, and you are one of the phase holders told when it moves. A message reading `The design gate of <tree> closed: version <n> of its <step> document (<id>)` says a new version of one gated document is with its reviewer, so the design this head implements may change: merge nothing, enqueue nothing, and do not complete while the gate is closed. A pull request already in a merge queue comes back out at once, since the queue would merge it under you:
@@ -87,6 +97,8 @@ gh api graphql -f query='mutation($pr:ID!){dequeuePullRequest(input:{id:$pr}){me
 ```
 
 Then wait. The message reading `The design gate of <tree> opened: a person approved version <n> of its <step> document (<id>), and every step the deployment gates now stands open` is what releases the merge, and it comes only once every gated step stands open, so a deployment that gates more than one document sends it for the last of them, and you begin again at step 1, reading the head afresh: it may have moved while you waited. A merger the daemon has not started yet waits for the gate in the daemon's own start row, so a closed gate you are told of is one that closed while you were running.
+
+A gate that opened with no person's approval closes and opens on the ending condition of its change request, for the head you hold. A message reading `The design gate of <tree> closed: the ending condition of its change request does not hold for head <sha>` says that head `<sha>` has no final list of the reviewer, no complete conclusion, or an outcome that no approved statement covers and no person approved. Do as for any closed gate: merge nothing, enqueue nothing, take a queued pull request back out with the command above, and do not complete. The message reading `The design gate of <tree> opened: the ending condition of its change request holds for head <sha>` releases the merge. Begin again at step 1, and run `dispatch spec-ending` at the head you read, as *The ending condition* says, because the head may have moved again.
 
 ## Completion
 

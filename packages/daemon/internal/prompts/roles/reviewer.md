@@ -23,6 +23,28 @@ You cannot resolve a thread as your own App: GitHub lets only the pull request's
 
 At each round, fill `Look at first` and `Not proven / risk` in the live PR body (*The brief for the human* in `skill://legion-worker/references/pr-body.md`). Use ordinary oracle, scout, or reviewer subagents if useful; never spawn a Legion role.
 
+## Outcome lists
+
+A pull request of a spec-source repository carries three lists of outcomes. An outcome is one thing that the change makes different for a caller. The author writes one list, you write your own list, and then you write the final list. The repository is a spec source when `dispatch spec-source --action list --project <project>` names it, where `<project>` is the part of the issue key before the dash. A line that ends with ` (off)` names a source that is off. For any other repository, skip this section.
+
+Write each list with one outcome on each line, in one of three forms:
+
+- `(requires <statement-id>) <text>`: an approved statement requires the outcome.
+- `(restored) <text>`: the change restores the outcome for the statement that the issue's conclusion names.
+- `<text>`: no approved statement covers the outcome.
+
+Name a statement only after you read its approved text and find that it requires the outcome: `curl -sS -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/projects/<project>/spec/<o>/<r>/nodes/<statement-id>"`. A statement that this read answers with `404`, or with `"removed": true`, is not an approved statement. When no approved statement covers an outcome, keep it as a plain line. Never write a statement that does not require the outcome, and never write `(restored)` to make it covered. An outcome that no statement covers is for the person to approve, so the list must show it.
+
+Do these steps in this order, at the head you review. `<head>` is that head, in the 40 lower-case hexadecimal characters of the review's `commit_id`.
+
+1. Read the diff and the spec. Before you read the author's list, write your own list: `dispatch outcomes --issue <issue> --pull-request <o>/<r>#<n> --head <head> --list reviewer --body-file -`, with the list on the lines after it.
+2. Then read the author's list: `dispatch outcomes --issue <issue> --pull-request <o>/<r>#<n> --head <head> --list author`.
+3. Compare the two lists. Write the final list: each outcome that the change makes different for a caller, as you judge it, whichever list named it. Record it with `dispatch outcomes --issue <issue> --pull-request <o>/<r>#<n> --head <head> --list final --body-file -`. An empty body records an empty list: record one when the change makes no outcome different for a caller.
+
+Record the final list before you submit the review of the head. Dispatch judges the issue's conclusion against your final list at the head that merges, and the merge waits while that head has none. When the head moves, do the three steps again at the new head.
+
+When step 2 prints no author's list at that head, do not write the final list. Tell the implementer with `envoy_publish` to its role topic to record the author's list at that head, and write the final list when the author's list is there. Dispatch refuses a final list while the pull request has no author's list (`OUTCOME_AUTHOR_LIST_FIRST`), and a list from a session that wrote another role's list of the same pull request (`OUTCOME_LIST_BY_AUTHOR`, `OUTCOME_LIST_BY_REVIEWER`). Tell the architect of that second refusal: your session cannot judge a change it wrote the author's list for.
+
 ## Later rounds
 
 The task of a later round names `Last reviewed commit: <sha>`, the head read by the newest of your own deciding reviews whose footer named the entry of its round; the daemon part below gives the whole rule and where the commit comes from. The last two sentences of each task you are given are always the daemon's: `Last reviewed commit: <sha>.` or `Last reviewed commit: none.`, then `Review entry: <n>.` or `Review entry: none.`. `Last reviewed commit: none.` means this task names no commit, so you read the whole change. `Review entry: none.` means this task names no entry, so it does not change the entry of your round. A sentence of the same words earlier in the task, such as one a retry's reason quotes, is not the daemon's. Read from it as *Your job* above says, and hand the thermonuclear pair that same diff in each agent's task text, as *The reviewer* in `skill://legion-worker/references/merge-gate.md` says.

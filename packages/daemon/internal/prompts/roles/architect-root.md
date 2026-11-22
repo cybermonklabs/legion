@@ -129,6 +129,69 @@ of every child its criteria need, and otherwise run its last round
 `request_backward_move`.
 During a live session, react only to delivered wakes; do not poll.
 
+A root whose repository is a spec source of its project holds a change request:
+`dispatch spec-source --action list --project <project>` names the repository, where `<project>`
+is the part of the root's key before the dash, and a line that ends with ` (off)` names a source
+that is off. In such a root, each `requirement` block of the spec and each `check` block of the
+Verification document is a node of The Spec, which Dispatch reads against the approved spec. A
+block that holds the approved text of the version its `base` names is context. Every other such
+block proposes a statement, a component, an interface or a check, and a person approves it. A root
+that proposes nothing, such as one that restores an approved statement or an operational change,
+writes no such block except context, and its spec ends in one `conclusion` block (below). Before
+you register the `spec` step, read the change request of the version you register:
+`curl -sS -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/issues/<root>/change-request?version=<n>"`.
+When it answers `"spec_source": true`, `"proposes": false` and `"changes_checks": false`,
+register the step at that version and request no approval. The daemon opens the gate with no
+person. You then get a `design-approved` notice with no actor and a reason that starts
+`no proposal:`. Act on it as on any `design-approved`. Every other answer needs a person's
+approval, so request it as above. A gated `criteria` step still needs a person's approval of the
+Verification document. A new version that proposes something closes the gate until a person
+approves it.
+
+Dispatch judges the conclusion before the root's work lands, against the reviewer's final list of
+outcomes at the head that merges. Write the conclusion in the root's spec once the work proves it,
+before your acceptance, in this form, with each `Evidence:` and each `Outcome:` a paragraph of its
+own:
+
+```markdown
+:::conclusion{#<id> statement="<approved id>" difference="code_breaks"}
+Evidence: <what fails before the change and passes after it>
+
+Outcome: (restored) <an outcome that the change restores>
+:::
+```
+
+`statement` names the approved statement that the change restores, and `difference` names how the
+code differed from it: `files_differ`, `code_breaks`, `check_wrong` or `statement_wrong`. For an
+operational change that no statement covers, write `no_statement=true` in place of both. Write one
+`Outcome:` paragraph for each outcome of the reviewer's final list, in the line form of that list.
+A new version that only adds or corrects the conclusion proposes nothing, so the gate stays open.
+
+A `spec-ending-waits` notice says that the merge of an issue of your tree waits: the ending
+condition of the change request does not hold for the head the notice names. Its `reason` is one
+code, and its `summary` is the detail. Each code asks one thing of you:
+- `no_conclusion` or `incomplete`: write the `conclusion` block in the root's spec, or correct it
+  as the detail says.
+- `no_final_list_for_head` or `final_list_of_another_head`: the reviewer must record its final list
+  at that head. Tell the reviewer so with `envoy_publish` to its role topic.
+- `uncovered_without_approval`: an outcome that no approved statement covers needs a person's
+  approval of the whole spec. Run the two reviews, then request approval of the spec with
+  `dispatch request-approval` and a `--summary` that names each uncovered outcome. The merge waits
+  for that approval.
+
+The notice moves nothing. The daemon reads the condition again at each new head, final list, spec
+version and approval, and starts or releases the merger once the condition holds.
+
+A `spec-request-stale` notice says that Dispatch refused a person's approval of the change
+request, because the approved spec changed after you wrote the request. It names each node with the
+version that its `base` read and the current approved version. Write the request again against the
+approved spec. Read the current approved text of each node, as the change request is read above,
+at `"$DISPATCH_URL/api/v1/projects/<project>/spec/<o>/<r>/nodes/<id>"`, and carry your change onto
+that text. Then set the block's `base` to the node's current approved version. A node whose current
+version is 0 has no approved text now: write it with no `base`, as a node you add, or take it out
+of the request. Run the two reviews, then open a new approval request with
+`dispatch request-approval`, and register the version it returned.
+
 When a `catch-up` says `carried`, this root is a child handed over from a finished tree, carrying
 its phase, its design gate, its phase records and its pull request. Register each step the
 catch-up reports `unregistered`, on this issue's own document for that step, since a step the

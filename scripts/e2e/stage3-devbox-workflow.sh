@@ -306,7 +306,7 @@ nats_urls:
 dispatch_url: http://127.0.0.1:$port_dispatch
 dispatch_token_file: $work/dispatch-token
 # The project's repository is no key of legion.yaml: the PUT below sets $repo as the project's
-# default repository in Dispatch. `production_check: tester` is the word that names the role a merge's production check
+# default repository in Dispatch. 'production_check: tester' is the word that names the role a merge's production check
 # is handed to, written out here rather than left to the default, so the run proves the setting is
 # read; Stage 4b's rig names no key and proves the default.
 projects:
@@ -776,7 +776,7 @@ cat >"$work/instructions.md" <<'EOF'
 This is a throwaway workflow proof. A tree's root architect starts its tree from the task its
 start carries and the daemon's `catch-up` notice, as its role says: it writes the spec in the
 issue's own primary document,
-requests the spec's approval when the design gate policy arms the gate, and registers the gate,
+requests the spec's approval where its role says a person approves it, and registers the gate,
 then waits. Apart from that, do not act until a human Dispatch message targeted at your own session
 gives the next exact proof operation; it arrives in your session as a message to you. A message you
 only find by reading the issue (its events, a search) was sent to another session, even on your
@@ -1431,11 +1431,232 @@ notices_reach_architects_alone() {
   note "$(wc -l <"$evidence/worker-sessions.txt") phase-worker sessions, none holding a workflow notice"
   pass
 }
+
+# ---- a change request that proposes nothing ---------------------------------------------------
+# spec_source_spec is the spec of the spec-source root: the smoke spec's one-file change, which the
+# spec says proposes nothing of The Spec of the smoke repository and makes no outcome different for
+# a caller, so its architect writes no `requirement` or `check` block for it.
+spec_source_spec() {
+  printf '%s\n' "## Summary" "" \
+    "A Legion smoke proof on a spec source. Make one tiny, concrete one-file change in \`$repo\`: add one new Markdown file under \`smoke/\` holding a single line that names this issue." "" \
+    "## The change request" "" \
+    "This change proposes nothing: it adds, changes and removes no statement, component, interface or check of The Spec of \`$repo\`. It is an operational change that no statement covers, and it makes no outcome different for a caller. Write no \`requirement\` block and no \`check\` block for it. Its spec ends in a \`conclusion\` block, written once the work proves it."
+}
+# admission_has_room: the daemon holds fewer issues than its cap, so the next root takes a slot.
+admission_has_room() { daemon_state | jq -e '(.admission.active | length) < .admission.cap' >/dev/null; }
+# opened_with_no_person FILE ISSUE: the state FILE holds shows ISSUE's design gate opened by its
+# change request, with no person: the rule it started under is `change_request`, and the version
+# that opened it is the exempt version at the gate's current version, with no approved version.
+opened_with_no_person() {
+  jq -e --arg issue "$2" '.issues[$issue].designGate as $g
+    | $g.rule == "change_request" and $g.exemptVersion != null and $g.exemptVersion == $g.currentVersion
+      and $g.approvedVersion == null' "$1" >/dev/null
+}
+# exempt_opening_told ISSUE: ISSUE's architect holds a design-approved notice whose reason says
+# that no person approves the version, because it proposes nothing.
+exempt_opening_told() { notice_line "$1" architect "$(notice_needle design-approved "$1")" | grep -qF 'no proposal: version'; }
+# outcome_list_by ISSUE LIST HEAD SESSION: Dispatch holds a LIST outcome list of ISSUE at HEAD that
+# SESSION recorded.
+outcome_list_by() {
+  dispatch_get "issues/$1/outcomes?list=$2&head=$3" |
+    jq -e --arg session "$4" 'any(.[]; .actor.kind == "session" and .actor.id == $session)' >/dev/null
+}
+# outcome_list_at ISSUE LIST HEAD: Dispatch holds any LIST outcome list of ISSUE at HEAD.
+outcome_list_at() { dispatch_get "issues/$1/outcomes?list=$2&head=$3" | jq -e 'length > 0' >/dev/null; }
+# ending_reads FILE HEAD CODES...: the ending answer FILE holds is `waiting` at HEAD, with exactly
+# CODES as its reasons; with no CODES, it is `ready` at HEAD.
+ending_reads() {
+  local file=$1 head=$2
+  shift 2
+  jq -e --arg head "$head" '.head == $head
+    and .state == (if ($ARGS.positional | length) == 0 then "ready" else "waiting" end)
+    and ([.reasons[]?.code] | sort) == ($ARGS.positional | sort)' "$file" --args "$@" >/dev/null
+}
+# ending_waits_for ISSUE HEAD CODES...: Dispatch's ending answer for ISSUE at HEAD, read now into
+# $evidence/spec-source-ending.json, reads as ending_reads says.
+ending_waits_for() {
+  local issue=$1 head=$2
+  shift 2
+  dispatch_get "issues/$issue/change-request/ending?head=$head" >"$evidence/spec-source-ending.json" || return 1
+  ending_reads "$evidence/spec-source-ending.json" "$head" "$@"
+}
+# ending_waits_told ISSUE CODES...: ISSUE's architect holds a spec-ending-waits notice naming each
+# of CODES.
+ending_waits_told() {
+  local issue=$1 lines code
+  shift
+  lines=$(notice_line "$issue" architect "$(notice_needle spec-ending-waits "$issue")")
+  for code in "$@"; do grep -qF -- "$code" <<<"$lines" || return 1; done
+}
+# merger_launches ISSUE counts the daemon's launches of ISSUE's merger claim.
+merger_launches() {
+  jq -R -s --arg claim "$(claim_token "$1" merger)" \
+    '[split("\n")[] | fromjson? | select(.msg == "supervise: launched" and .claim == $claim)] | length' "$evidence/logs/daemon.log"
+}
+# merge_held ISSUE PR: the daemon has launched no merger for ISSUE, and the pull request PR is open.
+merge_held() {
+  [ "$(merger_launches "$1")" = 0 ] && [ "$(timeout 60 gh -R "$repo" pr view "$2" --json state -q .state)" = OPEN ]
+}
+# holds_for SECONDS DESCRIPTION COMMAND... fails the check the first time COMMAND fails within
+# SECONDS of wall time, polled every five seconds: a wait that something does not happen, bounded
+# as until_true bounds a wait that it does.
+holds_for() {
+  local limit=$1 what=$2 started=$SECONDS
+  shift 2
+  note "holding for ${limit}s: $what"
+  while ((SECONDS - started < limit)); do
+    [ ! -s "$evidence/pane-endpoint-violation.txt" ] || fail "ABORT: $(cat "$evidence/pane-endpoint-violation.txt")"
+    "$@" >/dev/null 2>&1 || fail "$what stopped holding after $((SECONDS - started))s"
+    sleep 5
+  done
+}
+# merger_read_the_ending ISSUE HEAD: the merger's session holds a bash call of `dispatch
+# spec-ending` naming HEAD whose result's first line reads `ready` (lib/omp-tool-calls.jq's
+# runs_dispatch, the one rule for an agent's dispatch command).
+merger_read_the_ending() {
+  local text
+  text=$(claim_session_text "$1" merger) || return 1
+  jq -R -s -e -L "$root/scripts/e2e/lib" --arg head "$2" 'include "omp-tool-calls";
+    [split("\n")[] | fromjson? | select(.type == "message")] as $e
+    | [$e[] | select(.message.role == "assistant") | .message.content[]?
+        | select(runs_dispatch("spec-ending") and (bash_command | contains($head))) | .id] as $ids
+    | any($e[] | select(.message.role == "toolResult" and .message.isError != true
+          and (.message.toolCallId as $id | $ids | index($id)));
+        [.message.content[]? | select(.type == "text") | .text] | join("\n") | split("\n") | first == "ready")' <<<"$text" >/dev/null
+}
+
+# spec_source_ending: a root of a spec-source repository whose change request proposes nothing
+# starts with no person and no approval request, and its merge waits for the ending condition of
+# that request (R23, R26): the reviewer's final list of outcomes at the head that merges, and a
+# complete conclusion in the root's spec. The run's earlier roots are closed first, so the new root
+# takes a slot of the two, and the smoke repository is made a spec source of the project only then:
+# each gate registered before it keeps the rule it started under (R24). The proof's instructions
+# hold the reviewer's final list and the architect's conclusion back, so the merge is seen waiting
+# on both, then on the conclusion alone, and released by the last; nothing merges by hand.
+spec_source_ending() {
+  local earlier spec_issue version head spec_pr implementer reviewer leftovers saved_pr=$pr_number
+  begin spec-source-no-proposal-starts-with-no-person
+  for earlier in "$held_issue" "$restart_issue"; do
+    dispatch_status_is "$earlier" "done" >/dev/null || set_status "$earlier" "done"
+  done
+  until_true 300 "the run's earlier roots to give back an admission slot" admission_has_room
+  dispatch_human PUT "projects/$project/spec-sources/$repo" '{"branch":"main"}' >/dev/null
+  dispatch_get "projects/$project/spec-sources" >"$evidence/spec-sources.json"
+  jq -e --arg repo "$repo" 'any(.[]; .repo == $repo and .enabled)' "$evidence/spec-sources.json" >/dev/null ||
+    fail "Dispatch does not list $repo as an enabled spec source of $project: $(jq -c . "$evidence/spec-sources.json")"
+  spec_issue=$(new_issue "Spec-source operational change" "" "$(spec_source_spec)")
+  set_status "$spec_issue" todo
+  architect_registers_gate "$spec_issue" "Stage 3 spec-source proof"
+  wait_for_phase "$spec_issue" planning
+  state_file spec-source-open
+  opened_with_no_person "$evidence/spec-source-open.json" "$spec_issue" ||
+    fail "$spec_issue's design gate did not open by its change request with no person: $(jq -c --arg issue "$spec_issue" '.issues[$issue].designGate' "$evidence/spec-source-open.json")"
+  version=$(jq -er --arg issue "$spec_issue" '.issues[$issue].designGate.exemptVersion' "$evidence/spec-source-open.json")
+  dispatch_get "issues/$spec_issue/change-request?version=$version" >"$evidence/spec-source-change-request.json" ||
+    fail "Dispatch could not read version $version of $spec_issue's change request: $(cat "$evidence/spec-source-change-request.json")"
+  jq -e '.spec_source == true and .proposes == false and .changes_checks == false' "$evidence/spec-source-change-request.json" >/dev/null ||
+    fail "Dispatch reads version $version of $spec_issue's change request as $(jq -c '{spec_source, proposes, changes_checks, proposals, changed_checks, problems}' "$evidence/spec-source-change-request.json"), want a spec source's request that proposes nothing"
+  dispatch_get "issues/$spec_issue/asks?state=all" >"$evidence/spec-source-asks.json"
+  jq -e 'all(.[]; .kind != "approval")' "$evidence/spec-source-asks.json" >/dev/null ||
+    fail "$spec_issue holds an approval request, though its change request proposes nothing: $(jq -c '[.[] | select(.kind == "approval") | {id, state, created_at}]' "$evidence/spec-source-asks.json")"
+  ! jq -R -s -e --arg issue "$spec_issue" 'any(split("\n")[] | fromjson?;
+      .msg == "workflow: root waits on a person and keeps its admission slot" and .issue == $issue)' "$evidence/logs/daemon.log" >/dev/null ||
+    fail "$spec_issue waited on a person at its design gate, though its change request proposes nothing"
+  until_true 180 "the architect of $spec_issue to be told that the gate opened with no person" exempt_opening_told "$spec_issue"
+  # The control: the same state with the gate opened by a person's approval of that version.
+  jq --arg issue "$spec_issue" '.issues[$issue].designGate |= (.approvedVersion = .exemptVersion | .exemptVersion = null)' \
+    "$evidence/spec-source-open.json" >"$evidence/spec-source-open-negative.json"
+  expect_failure gate-opened-by-a-person opened_with_no_person "$evidence/spec-source-open-negative.json" "$spec_issue"
+  opened_with_no_person "$evidence/spec-source-open.json" "$spec_issue" || fail "the no-person assertion did not restore after its negative control"
+  note "$repo is a spec source of $project; $spec_issue's gate opened at version $version by its change request, which proposes nothing: no approval request, no wait on a person, and its architect told no proposal"
+  pass
+
+  begin spec-source-outcome-lists
+  send_agent "$spec_issue" planner "Stage 3 spec-source proof planning: write the minimal plan handoff for the one-file smoke change this issue describes, then call the legion tool's handoff_complete. Do not start another role."
+  wait_for_phase "$spec_issue" implementing
+  wait_for_worker "$spec_issue" implementer
+  send_agent "$spec_issue" implementer "Stage 3 spec-source proof implementation: make the one-file change this issue describes in your $repo workspace, commit it on legion/$spec_issue, open its pull request, and record the implementation handoff. $repo is a spec source of $project, so record the author's outcome list at the head you pushed, as your role's section on the author's outcome list says, before you call the legion tool's handoff_complete. Do not merge."
+  until_true 900 "implementer pull request on legion/$spec_issue" sh -c \
+    "gh -R '$repo' pr list --head 'legion/$spec_issue' --state open --json number | jq -e 'length == 1' >/dev/null"
+  spec_pr=$(gh -R "$repo" pr list --head "legion/$spec_issue" --state open --json number --jq '.[0].number')
+  # The lib's pull-request reads (reviewer_approved_head) read pr_number, which is this scenario's
+  # pull request until its end.
+  pr_number=$spec_pr
+  wait_for_phase "$spec_issue" testing
+  head=$(daemon_state | jq -er --arg issue "$spec_issue" '.issues[$issue].pullRequest.head')
+  implementer=$(issue_worker_session "$spec_issue" implementer)
+  until_true 120 "the implementer's author list of #$spec_pr at head $head" outcome_list_by "$spec_issue" author "$head" "$implementer"
+  wait_for_worker "$spec_issue" tester
+  send_agent "$spec_issue" tester "Stage 3 spec-source proof test: inspect the one-file change of pull request #$spec_pr, run a focused observable check, record the test handoff with verdict pass, then call the legion tool's handoff_complete with verdict pass."
+  wait_for_phase "$spec_issue" reviewing
+  wait_for_worker "$spec_issue" reviewer
+  reviewer=$(issue_worker_session "$spec_issue" reviewer)
+  send_agent "$spec_issue" reviewer "Stage 3 spec-source proof review: review pull request #$spec_pr in $repo as your role says, and approve its head. $repo is a spec source of $project: write your own outcome list, then read the author's, as your role's section on outcome lists says, but do not record the final list in this round. The proof asks for it later, at the head it names. This instruction takes precedence over your role's order for the final list alone."
+  until_true 600 "the review App's approval of #$spec_pr at its head" reviewer_approved_head
+  until_true 600 "$spec_issue to leave reviewing for accepting" issue_phase "$spec_issue" accepting
+  head=$(daemon_state | jq -er --arg issue "$spec_issue" '.issues[$issue].pullRequest.head')
+  until_true 120 "the reviewer's own list of #$spec_pr at head $head" outcome_list_by "$spec_issue" reviewer "$head" "$reviewer"
+  ! outcome_list_at "$spec_issue" final "$head" ||
+    fail "$spec_issue holds a final list at head $head before the proof asked for one: $(dispatch_get "issues/$spec_issue/outcomes?list=final&head=$head" | jq -c .)"
+  send_agent "$spec_issue" architect "Stage 3 spec-source proof acceptance: the reviewer approved pull request #$spec_pr and $spec_issue is in accepting. Read the evidence as your role says and accept it with the legion tool's sign_off now. Do not write the spec's conclusion yet: the proof asks for it later."
+  wait_for_phase "$spec_issue" retro 600
+  if issue_phase "$spec_issue" retro >/dev/null; then
+    wait_for_worker "$spec_issue" implementer
+    send_agent "$spec_issue" implementer "Stage 3 spec-source proof retro: write the retro for pull request #$spec_pr and complete the phase. Do not change the approved implementation."
+  fi
+  wait_for_phase "$spec_issue" merging 1200
+  note "the author's list of #$spec_pr is the implementer's ($implementer) and the reviewer's own list at $head is the reviewer's ($reviewer); no final list stands at $head, and $spec_issue is in merging"
+  pass
+
+  begin spec-source-merge-waits-for-the-final-list
+  head=$(daemon_state | jq -er --arg issue "$spec_issue" '.issues[$issue].pullRequest.head')
+  until_true 300 "the ending condition of $spec_issue to wait at head $head for the final list and the conclusion" \
+    ending_waits_for "$spec_issue" "$head" no_final_list_for_head no_conclusion
+  cp -- "$evidence/spec-source-ending.json" "$evidence/spec-source-ending-no-list.json"
+  until_true 300 "the architect of $spec_issue to be told of each reason" ending_waits_told "$spec_issue" no_final_list_for_head no_conclusion
+  holds_for 120 "no merger of $spec_issue launched and #$spec_pr open while the condition waits" merge_held "$spec_issue" "$spec_pr"
+  # The control: the same answer read as ready, which the waiting assertion refuses.
+  jq '.state = "ready" | .reasons = []' "$evidence/spec-source-ending-no-list.json" >"$evidence/spec-source-ending-negative.json"
+  expect_failure ending-read-ready ending_reads "$evidence/spec-source-ending-negative.json" "$head" no_final_list_for_head no_conclusion
+  ending_reads "$evidence/spec-source-ending-no-list.json" "$head" no_final_list_for_head no_conclusion ||
+    fail "the ending assertion did not restore after its negative control"
+  send_agent "$spec_issue" reviewer "Stage 3 spec-source proof final list: record your final outcome list of pull request #$spec_pr at head $head now, as your role's section on outcome lists says. This issue's spec says the change makes no outcome different for a caller, so record the list with an empty body."
+  until_true 300 "the reviewer's final list of #$spec_pr at head $head" outcome_list_by "$spec_issue" final "$head" "$reviewer"
+  until_true 120 "the ending condition of $spec_issue to wait at head $head for the conclusion alone" \
+    ending_waits_for "$spec_issue" "$head" no_conclusion
+  cp -- "$evidence/spec-source-ending.json" "$evidence/spec-source-ending-no-conclusion.json"
+  holds_for 60 "no merger of $spec_issue launched and #$spec_pr open while the conclusion is missing" merge_held "$spec_issue" "$spec_pr"
+  note "at head $head the merge of #$spec_pr waited, no merger launched, for the final list and the conclusion (the architect told of both), and after the reviewer's final list for the conclusion alone"
+  pass
+
+  begin spec-source-conclusion-releases-the-merge
+  # The merge can follow the conclusion by seconds, so the smoke main is held first, as
+  # merger-merge holds it, until the cleanup below has emptied it.
+  hold_smoke_main
+  send_agent "$spec_issue" architect "Stage 3 spec-source proof conclusion: write the conclusion block in $spec_issue's spec now, as your role says. This is an operational change that no statement covers, so write no_statement=true, one Evidence: paragraph that names what the tester observed at head $head, and no Outcome: paragraph, since the reviewer's final list at that head is empty. Change nothing else in the spec."
+  until_true 600 "the ending condition of $spec_issue to read ready at head $head" ending_waits_for "$spec_issue" "$head"
+  cp -- "$evidence/spec-source-ending.json" "$evidence/spec-source-ending-ready.json"
+  MERGE_WHEN_CLEAN_BOUND=1200 await_merger_merge "$repo" "$spec_pr" --delete-branch
+  merger_read_the_ending "$spec_issue" "$head" ||
+    fail "the merger of $spec_issue merged #$spec_pr without a dispatch spec-ending read of head $head that answered ready"
+  session_contains "$spec_issue" merger "The design gate of $spec_issue opened with no person's approval" ||
+    fail "the merger's task for $spec_issue does not say that its gate opened with no person's approval"
+  wait_for_phase "$spec_issue" "done" 300
+  until_true 60 "the daemon's done status of $spec_issue on the Dispatch board" dispatch_status_is "$spec_issue" "done"
+  clean_smoke_main
+  leftovers=$(smoke_main_leftovers)
+  [ -z "$leftovers" ] || fail "$repo main still carries proof leftovers: $(tr '\n' ' ' <<<"$leftovers")"
+  release_smoke_main
+  pr_number=$saved_pr
+  note "the conclusion made the ending condition ready at $head, and the merger read it ready with dispatch spec-ending before it merged #$spec_pr at $merge_when_clean_commit, which closed $spec_issue"
+  pass
+}
 if [ -z "$until" ]; then
   [ "$from" = restart ] || held_worker
   no_change_close
   restart_scenarios
   [ -n "$from" ] || status_actors
+  spec_source_ending
   notices_reach_architects_alone
 fi
 
