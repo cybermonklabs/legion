@@ -559,9 +559,9 @@ controller is told of that kill, as `memory-guard-kill on <PROJECT>`, under the 
 notice names the program by its executable, with none of its arguments, and its pid, the memory
 it held, the pod's reading and the pod's limit. The controller's session and the pod's other
 processes go on; nothing is held. Each kill is a notice of its own, and a report the launcher
-sends twice is still one notice. The controller's skill tells it not to run the same program
-again unchanged, but to bound its output or send heavy work where the deployment's instructions
-say. An `eval` cell of the controller that answered
+sends twice is still one notice. The notice's own reason tells the controller what to do: not to
+run the same program again unchanged, but to bound its output or send heavy work where the
+deployment's instructions say. An `eval` cell of the controller that answered
 `Kernel died during execution; completion is uncertain` at that moment is that kill.
 
 When an agent's budget runs out (launches that failed, deaths with work outstanding, prompts it

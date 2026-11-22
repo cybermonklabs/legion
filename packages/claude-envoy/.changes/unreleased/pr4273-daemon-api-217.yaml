@@ -1,7 +1,6 @@
 kind: Changed
 body: |-
-    The plugin declares daemon API contract 217, and its copy of the controller's skill reads the
-    `memory-guard-kill on <PROJECT>` wake.
+    The plugin declares daemon API contract 217.
 time: 2026-11-17T05:04:12Z
 custom:
     Issue: pr4273

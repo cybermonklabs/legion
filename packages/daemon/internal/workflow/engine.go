@@ -1835,18 +1835,19 @@ func (e *Engine) controllerMemoryGuardKill(ctx context.Context, tx pgx.Tx, fact 
 }
 
 // The ends of the controller's notes of a process stopped for memory, which it reads in place of
-// a role's (memoryKillGoesOn, memoryKillHeavyWork): the controller has no worker's tools
-// reference, so each note points to its own wakes reference, whose memory-guard-kill section says
-// the same at more length. controllerMemoryKillGoesOn says what goes on after a command of the
-// controller's is stopped, in the guard's note and the kernel's note of a command; it is not true
-// of a process that runs the controller's session, whose note says what happens instead
-// (controllerKernelProtectedKillEnd). controllerMemoryKillRunAgain, what to run in place of the
-// same program, ends both notes of a command.
+// a role's (memoryKillGoesOn, memoryKillHeavyWork). The controller has no worker's tools
+// reference, and its skill has no section for this notice, so each note gives its own brief
+// advice and points to no skill: the skills take no change for this notice
+// (dispatch://INFRA-3368/ask/aa99c6ba-8a58-4830-998c-7f8102f65dd0).
+// controllerMemoryKillGoesOn says what goes on after a command of the controller's is stopped, in
+// the guard's note and the kernel's note of a command; it is not true of a process that runs the
+// controller's session, whose note says what happens instead (controllerKernelProtectedKillEnd).
+// controllerMemoryKillRunAgain, what to run in place of the same program, ends both notes of a
+// command.
 const (
 	controllerMemoryKillGoesOn   = "Your session and the pod's other processes go on. "
 	controllerMemoryKillRunAgain = "Do not run the same program again unchanged: bound its output (a page, a limit, a stream), " +
-		"or send heavy work where your deployment's instructions say. " +
-		"Read skill://legion-controller/references/wakes.md before you run it again."
+		"or send heavy work where your deployment's instructions say."
 )
 
 // controllerKernelProtectedKillEnd is what the controller reads of one of the processes that run
@@ -1862,13 +1863,12 @@ const (
 // budgets after a wait (the daemon's controllerKeeper). Either way the same session starts again,
 // which is all the note says of it. A helper of the agent's may end alone, which is why the note
 // says what follows only of the agent. It never says the session goes on, which the end of the
-// agent's own process makes false, and it points to the controller's wakes reference as the notes
-// of a command do.
+// agent's own process makes false, and it ends with the advice the notes of a command end with,
+// in its own words: bound the output of what runs next, and send heavy work elsewhere.
 const controllerKernelProtectedKillEnd = "It was one of the processes that run your session, not a command you ran. " +
 	"If it was your agent, your turn ended with it, and so did every command it was running. " +
 	"The daemon then starts the same session again, as it does after any exit of your session's process. " +
-	"Bound the output of what you run (a page, a limit, a stream), and send heavy work where your deployment's instructions say. " +
-	"Read skill://legion-controller/references/wakes.md before your next command."
+	"Bound the output of what you run (a page, a limit, a stream), and send heavy work where your deployment's instructions say."
 
 // controllerMemoryGuardNote is the reason of the notice the controller reads when the memory guard
 // of its pod ended one of its programs: which process, how much it held, how near the limit the

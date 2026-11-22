@@ -6900,25 +6900,24 @@ Each kill is a notice of its own, also while the notice of an earlier kill is st
 The notice names the process as the lines do, by its executable's base name or its `comm`, with its pid, its size, the pod's reading and the limit in binary units, and it prints no argument:
 
 ```text
-The launcher's memory guard stopped one of your processes with SIGKILL because your pod was near its memory limit: `<name>` (pid <pid>) held <size> of anonymous memory while the pod's anonymous memory read <reading> of its <limit> limit. Your session and the pod's other processes go on. Do not run the same program again unchanged: bound its output (a page, a limit, a stream), or send heavy work where your deployment's instructions say. Read skill://legion-controller/references/wakes.md before you run it again.
+The launcher's memory guard stopped one of your processes with SIGKILL because your pod was near its memory limit: `<name>` (pid <pid>) held <size> of anonymous memory while the pod's anonymous memory read <reading> of its <limit> limit. Your session and the pod's other processes go on. Do not run the same program again unchanged: bound its output (a page, a limit, a stream), or send heavy work where your deployment's instructions say.
 ```
 
 In a microVM controller pod the guest watch's report carries the kernel's cause, the launcher sends it only on a connection whose answer carried `kernelKills`, and the daemon chooses the note by that cause, as it does for a role (`controllerMemoryGuardKill`).
 For `cause: kernel`, a command of the controller's, the daemon logs `workflow: the controller whose program the pod's kernel stopped is told why`, and the note is:
 
 ```text
-The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. Your session and the pod's other processes go on. Do not run the same program again unchanged: bound its output (a page, a limit, a stream), or send heavy work where your deployment's instructions say. Read skill://legion-controller/references/wakes.md before you run it again.
+The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. Your session and the pod's other processes go on. Do not run the same program again unchanged: bound its output (a page, a limit, a stream), or send heavy work where your deployment's instructions say.
 ```
 
 For `cause: kernel-protected`, one of the processes that run the controller's session, the daemon logs `workflow: the controller is told why the pod's kernel stopped one of the processes that run its session`, and the note is:
 
 ```text
-The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. It was one of the processes that run your session, not a command you ran. If it was your agent, your turn ended with it, and so did every command it was running. The daemon then starts the same session again, as it does after any exit of your session's process. Bound the output of what you run (a page, a limit, a stream), and send heavy work where your deployment's instructions say. Read skill://legion-controller/references/wakes.md before your next command.
+The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. It was one of the processes that run your session, not a command you ran. If it was your agent, your turn ended with it, and so did every command it was running. The daemon then starts the same session again, as it does after any exit of your session's process. Bound the output of what you run (a page, a limit, a stream), and send heavy work where your deployment's instructions say.
 ```
 
 A report with no cause, the guard's, gets the guard's note above.
 
-`skill://legion-controller/references/wakes.md` has the controller's handling of the notice.
 An `eval` cell that answers `Kernel died during execution; completion is uncertain` beside such a notice is that kill: the process stopped was the cell's kernel.
 A notice can be lost in the first three cases of "The report and the note" above, and for a claim that is not the controller's.
 In each case the `ended` line stays in the `controller` container's log.

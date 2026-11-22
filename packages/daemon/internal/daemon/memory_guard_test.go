@@ -145,7 +145,10 @@ func TestMemoryGuardAKillReportedTwiceIsOneNoteOnTheReportingRolesTopic(t *testi
 // The holder applies a kill of the controller's pod as one fact under the kill's own identity, so
 // the same report sent twice is one fact and one controller notice; the outbox's run publishes
 // that notice once, to the project's controller topic, as `memory-guard-kill on LEGION`, and to
-// no other topic. The notice names the process, its pid, its size, the pod's reading and the limit.
+// no other topic. The notice's reason is the guard's note whole: the process, its pid, its size,
+// the pod's reading and the limit, then the advice, with no pointer to the controller's skill,
+// which has no section for this notice
+// (dispatch://INFRA-3368/ask/aa99c6ba-8a58-4830-998c-7f8102f65dd0).
 func TestMemoryGuardAControllerKillReportedTwiceIsOneNoticeOnTheControllerTopic(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -186,10 +189,16 @@ func TestMemoryGuardAControllerKillReportedTwiceIsOneNoticeOnTheControllerTopic(
 	if !ok || notice.Kind != record.MemoryGuardKillNotice || notice.Role != claim.RoleController {
 		t.Fatalf("the published payload is %#v, want a memory-guard-kill notice of the controller", published[0].payload)
 	}
-	for _, part := range []string{"SIGKILL", "`python3` (pid 4242)", "812.40 MiB", "3.13 GiB", "4.00 GiB", "skill://legion-controller/references/wakes.md"} {
-		if !strings.Contains(notice.Reason, part) {
-			t.Fatalf("the notice's reason %q does not name %q", notice.Reason, part)
-		}
+	const reason = "The launcher's memory guard stopped one of your processes with SIGKILL because your pod was near its memory limit: " +
+		"`python3` (pid 4242) held 812.40 MiB of anonymous memory while the pod's anonymous memory read 3.13 GiB of its 4.00 GiB limit. " +
+		"Your session and the pod's other processes go on. " +
+		"Do not run the same program again unchanged: bound its output (a page, a limit, a stream), " +
+		"or send heavy work where your deployment's instructions say."
+	if notice.Reason != reason {
+		t.Fatalf("the notice's reason is %q, want %q", notice.Reason, reason)
+	}
+	if strings.Contains(notice.Reason, "skill://legion-controller") {
+		t.Fatalf("the notice's reason %q points to the controller's skill, which has no section for this notice", notice.Reason)
 	}
 }
 

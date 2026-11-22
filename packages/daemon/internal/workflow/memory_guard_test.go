@@ -164,11 +164,25 @@ func applyControllerKill(t *testing.T, pool *pgxpool.Pool, engine *Engine, token
 	}
 }
 
+// noControllerSkillPointer fails the test when a controller notice among rows points to the
+// controller's skill. That skill has no section for a memory-guard-kill notice, so the notice's
+// own reason is all the controller reads of a kill
+// (dispatch://INFRA-3368/ask/aa99c6ba-8a58-4830-998c-7f8102f65dd0).
+func noControllerSkillPointer(t *testing.T, rows []record.OutboxPayload) {
+	t.Helper()
+	for _, row := range rows {
+		if notice, ok := row.(record.ControllerNotice); ok && strings.Contains(notice.Reason, "skill://legion-controller") {
+			t.Fatalf("the notice's reason %q points to the controller's skill, which has no section for this notice", notice.Reason)
+		}
+	}
+}
+
 // A kill of one of the controller's own processes is told to the project's controller as one
 // controller notice of kind memory-guard-kill, filed under the project key as a tick is. Its
 // reason names the process by its executable alone, with none of its arguments, its pid, its size,
 // the pod's reading and its limit, says that the controller's session goes on and that the same
-// program is not to be run again unchanged, and points to the controller's wakes reference.
+// program is not to be run again unchanged, and points to no skill of the controller's, which has
+// no section for this notice (dispatch://INFRA-3368/ask/aa99c6ba-8a58-4830-998c-7f8102f65dd0).
 // Nothing else is queued. A second kill is a second notice, though the first is still unsent: each
 // is a program the controller lost.
 func TestMemoryGuardAControllerKillIsOneControllerNoticeUnderTheProjectKey(t *testing.T) {
@@ -183,8 +197,7 @@ func TestMemoryGuardAControllerKillIsOneControllerNoticeUnderTheProjectKey(t *te
 		"`python3` (pid 4242) held 812.40 MiB of anonymous memory while the pod's anonymous memory read 3.13 GiB of its 4.00 GiB limit. " +
 		"Your session and the pod's other processes go on. " +
 		"Do not run the same program again unchanged: bound its output (a page, a limit, a stream), " +
-		"or send heavy work where your deployment's instructions say. " +
-		"Read skill://legion-controller/references/wakes.md before you run it again."
+		"or send heavy work where your deployment's instructions say."
 	told := record.ControllerNotice{Kind: record.MemoryGuardKillNotice, Role: claim.RoleController, Reason: reason}
 	if got := noticeRows(t, pool); !reflect.DeepEqual(got, []record.OutboxPayload{told}) {
 		t.Fatalf("notice rows = %+v, want the one controller notice %+v", got, told)
@@ -205,6 +218,7 @@ func TestMemoryGuardAControllerKillIsOneControllerNoticeUnderTheProjectKey(t *te
 		!strings.Contains(next.Reason, "`node` (pid 5151)") {
 		t.Fatalf("the second notice = %+v, want a memory-guard-kill controller notice naming `node` (pid 5151)", got[1])
 	}
+	noControllerSkillPointer(t, got)
 	if rows := outboxRowsOf(t, pool, "LEGION"); rows != 2 {
 		t.Fatalf("the outbox holds %d rows under the project key after two kills, want two", rows)
 	}
@@ -241,13 +255,13 @@ func TestMemoryGuardAControllerKillOfATokenThatIsNotTheControllersIsLoggedAndDro
 // TestAKernelKillOfARolesOwnProcessTellsItsRoleItsSessionWasStopped), each in the controller
 // notice a guard's kill is told in. One of a command (cause kernel) names the process, escaped as
 // the guard's note names it, its size, the pod's memory counter and its limit, says the
-// controller's session goes on and the same program is not to be run again unchanged, and points
-// to the controller's wakes reference. One of the processes that run the controller's session
-// (cause kernel-protected) says it was no command the controller ran, that were it the agent its
-// turn and every command it was running ended with it, and that the daemon starts the same
-// session again; it never says the session goes on, and it points to the wakes reference too. A
-// report of no cause, the guard's of a gVisor controller pod, is still told in the guard's words,
-// and the line logged for each kill names what stopped the process and its cause.
+// controller's session goes on and the same program is not to be run again unchanged. One of the
+// processes that run the controller's session (cause kernel-protected) says it was no command the
+// controller ran, that were it the agent its turn and every command it was running ended with it,
+// and that the daemon starts the same session again; it never says the session goes on. No note
+// points to the controller's skill, which has no section for this notice. A report of no cause,
+// the guard's of a gVisor controller pod, is still told in the guard's words, and the line logged
+// for each kill names what stopped the process and its cause.
 func TestAKernelKillInTheControllersPodTellsTheControllerTheKernelStoppedIt(t *testing.T) {
 	pool := migratedPool(t)
 	var logs bytes.Buffer
@@ -255,8 +269,7 @@ func TestAKernelKillInTheControllersPodTellsTheControllerTheKernelStoppedIt(t *t
 	token := claim.ControllerToken("legion")
 	const kernelLead = "The pod's kernel stopped one of your processes because the pod ran out of memory: "
 	const runAgain = "Do not run the same program again unchanged: bound its output (a page, a limit, a stream), " +
-		"or send heavy work where your deployment's instructions say. " +
-		"Read skill://legion-controller/references/wakes.md before you run it again."
+		"or send heavy work where your deployment's instructions say."
 
 	var told []record.OutboxPayload
 	for i, tc := range []struct {
@@ -274,8 +287,7 @@ func TestAKernelKillInTheControllersPodTellsTheControllerTheKernelStoppedIt(t *t
 			"It was one of the processes that run your session, not a command you ran. " +
 			"If it was your agent, your turn ended with it, and so did every command it was running. " +
 			"The daemon then starts the same session again, as it does after any exit of your session's process. " +
-			"Bound the output of what you run (a page, a limit, a stream), and send heavy work where your deployment's instructions say. " +
-			"Read skill://legion-controller/references/wakes.md before your next command.",
+			"Bound the output of what you run (a page, a limit, a stream), and send heavy work where your deployment's instructions say.",
 			`msg="workflow: the controller is told why the pod's kernel stopped one of the processes that run its session" role=legion-legion-controller pod=pod-controller guard=guard-7f3a sequence=2 pid=4242 cause=kernel-protected`},
 		{shimwire.MemoryKillCauseGuard, "python3",
 			"The launcher's memory guard stopped one of your processes with SIGKILL because your pod was near its memory limit: " +
@@ -291,6 +303,7 @@ func TestAKernelKillInTheControllersPodTellsTheControllerTheKernelStoppedIt(t *t
 		if got := noticeRows(t, pool); !reflect.DeepEqual(got, told) {
 			t.Fatalf("notice rows after the kill of cause %q = %+v\nwant %+v", tc.cause, got, told)
 		}
+		noControllerSkillPointer(t, noticeRows(t, pool))
 		if text := logs.String(); !strings.Contains(text, tc.logged) {
 			t.Fatalf("log = %q, want a line holding %q", text, tc.logged)
 		}
