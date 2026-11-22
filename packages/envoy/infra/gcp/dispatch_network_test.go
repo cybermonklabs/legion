@@ -299,8 +299,9 @@ func TestDispatchNetworkPlanExistingClusterToAnother(t *testing.T) {
 // existingDatabaseInstance, a promoted replica of that instance, say: the component stops
 // registering its DatabaseInstance, Database and User, which the engine then deletes unless the
 // consumer keeps them in state first, and keeps every generated password, so DATABASE_URL keeps
-// the password login dispatch holds. The table holds the network half and the four
-// RandomPasswords same, and the component's own instance, its database and its login delete.
+// the password login dispatch holds and DISPATCH_SERVE_DATABASE_URL the serving login's. The table
+// holds the network half and the five RandomPasswords same, and the component's own instance, its
+// database and its login delete.
 func TestDispatchNetworkPlanOwnInstanceToExistingInstance(t *testing.T) {
 	requireDispatchPlan(t, deriveDispatchPlan(t, dispatchArgs(), existingDatabaseInstanceArgs()), map[dispatchResourceName]string{
 		{networkType, "example-dispatch-network"}:               stepSame,
@@ -310,6 +311,7 @@ func TestDispatchNetworkPlanOwnInstanceToExistingInstance(t *testing.T) {
 		{globalAddressType, "example-dispatch-services"}:        stepSame,
 		{connectionType, "example-dispatch-services"}:           stepSame,
 		{randomPasswordType, "example-dispatch-password"}:       stepSame,
+		{randomPasswordType, "example-dispatch-serve-password"}: stepSame,
 		{randomPasswordType, "example-dispatch-signing-key"}:    stepSame,
 		{randomPasswordType, "example-dispatch-agent-token"}:    stepSame,
 		{randomPasswordType, "example-dispatch-listener-token"}: stepSame,

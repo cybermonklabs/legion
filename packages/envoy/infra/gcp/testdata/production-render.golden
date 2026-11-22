@@ -614,6 +614,15 @@
                             }
                           },
                           {
+                            "name": "DISPATCH_SERVE_DATABASE_URL",
+                            "valueFrom": {
+                              "secretKeyRef": {
+                                "key": "DISPATCH_SERVE_DATABASE_URL",
+                                "name": "example-dispatch-dispatch"
+                              }
+                            }
+                          },
+                          {
                             "name": "DISPATCH_AGENT_TOKEN",
                             "valueFrom": {
                               "secretKeyRef": {
@@ -2200,6 +2209,7 @@
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch",
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$random:index/randomPassword:RandomPassword::example-dispatch-agent-token",
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$random:index/randomPassword:RandomPassword::example-dispatch-password",
+              "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$random:index/randomPassword:RandomPassword::example-dispatch-serve-password",
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$random:index/randomPassword:RandomPassword::example-dispatch-signing-key"
             ],
             "name": "example-dispatch-dispatch",
@@ -2212,7 +2222,7 @@
               },
               "stringData": {
                 "4dabf18193072939515e22adb298388d": "1b47061264138c4ac30d75fd1eb44270",
-                "value": "<secret sha256:20663761654ea5add34a9c2279aae574022ed8279aaf08fbbd9e91c8f46ee924>"
+                "value": "<secret sha256:e3beafe0d8e4d842818aa46b6db578eb968ecc9a7fa41ab32c4ca905249869bb>"
               }
             },
             "parent": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch::example-dispatch",
@@ -2224,6 +2234,7 @@
                 "urns": [
                   "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$random:index/randomPassword:RandomPassword::example-dispatch-agent-token",
                   "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$random:index/randomPassword:RandomPassword::example-dispatch-password",
+                  "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$random:index/randomPassword:RandomPassword::example-dispatch-serve-password",
                   "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$random:index/randomPassword:RandomPassword::example-dispatch-signing-key"
                 ]
               }
@@ -3282,6 +3293,34 @@
             ],
             "custom": true,
             "customTimeouts": {},
+            "name": "example-dispatch-serve-password",
+            "object": {
+              "length": 32,
+              "special": false
+            },
+            "parent": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch::example-dispatch",
+            "propertyDependencies": {
+              "length": {},
+              "special": {}
+            },
+            "provider": "urn:pulumi:s::p::pulumi:providers:random::random-example::",
+            "supportsResultReporting": true,
+            "type": "random:index/randomPassword:RandomPassword",
+            "version": "4.21.2"
+          },
+          "urn": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$random:index/randomPassword:RandomPassword::example-dispatch-serve-password"
+        },
+        {
+          "register": {
+            "acceptResources": true,
+            "acceptSecrets": true,
+            "acceptsByteString": true,
+            "additionalSecretOutputs": [
+              "bcryptHash",
+              "result"
+            ],
+            "custom": true,
+            "customTimeouts": {},
             "name": "example-dispatch-signing-key",
             "object": {
               "length": 64,
@@ -4003,6 +4042,15 @@
                             "valueFrom": {
                               "secretKeyRef": {
                                 "key": "DATABASE_URL",
+                                "name": "example-dispatch-dispatch"
+                              }
+                            }
+                          },
+                          {
+                            "name": "DISPATCH_SERVE_DATABASE_URL",
+                            "valueFrom": {
+                              "secretKeyRef": {
+                                "key": "DISPATCH_SERVE_DATABASE_URL",
                                 "name": "example-dispatch-dispatch"
                               }
                             }
@@ -5603,6 +5651,7 @@
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch",
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$random:index/randomPassword:RandomPassword::example-dispatch-agent-token",
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$random:index/randomPassword:RandomPassword::example-dispatch-password",
+              "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$random:index/randomPassword:RandomPassword::example-dispatch-serve-password",
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$random:index/randomPassword:RandomPassword::example-dispatch-signing-key"
             ],
             "name": "example-dispatch-dispatch",
@@ -5615,7 +5664,7 @@
               },
               "stringData": {
                 "4dabf18193072939515e22adb298388d": "1b47061264138c4ac30d75fd1eb44270",
-                "value": "<secret sha256:20663761654ea5add34a9c2279aae574022ed8279aaf08fbbd9e91c8f46ee924>"
+                "value": "<secret sha256:e3beafe0d8e4d842818aa46b6db578eb968ecc9a7fa41ab32c4ca905249869bb>"
               }
             },
             "parent": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch::example-dispatch",
@@ -5627,6 +5676,7 @@
                 "urns": [
                   "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$random:index/randomPassword:RandomPassword::example-dispatch-agent-token",
                   "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$random:index/randomPassword:RandomPassword::example-dispatch-password",
+                  "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$random:index/randomPassword:RandomPassword::example-dispatch-serve-password",
                   "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$random:index/randomPassword:RandomPassword::example-dispatch-signing-key"
                 ]
               }
@@ -6673,6 +6723,34 @@
             "version": "4.21.2"
           },
           "urn": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$random:index/randomPassword:RandomPassword::example-dispatch-password"
+        },
+        {
+          "register": {
+            "acceptResources": true,
+            "acceptSecrets": true,
+            "acceptsByteString": true,
+            "additionalSecretOutputs": [
+              "bcryptHash",
+              "result"
+            ],
+            "custom": true,
+            "customTimeouts": {},
+            "name": "example-dispatch-serve-password",
+            "object": {
+              "length": 32,
+              "special": false
+            },
+            "parent": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch::example-dispatch",
+            "propertyDependencies": {
+              "length": {},
+              "special": {}
+            },
+            "provider": "urn:pulumi:s::p::pulumi:providers:random::random-example::",
+            "supportsResultReporting": true,
+            "type": "random:index/randomPassword:RandomPassword",
+            "version": "4.21.2"
+          },
+          "urn": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$random:index/randomPassword:RandomPassword::example-dispatch-serve-password"
         },
         {
           "register": {

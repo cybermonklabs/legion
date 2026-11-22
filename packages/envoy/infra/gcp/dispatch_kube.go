@@ -347,7 +347,12 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		return err
 	}
 	dispatchSecretName := s.hostname + "-dispatch"
+	// DATABASE_URL is the owner login's, which the server migrates and grants through, and
+	// DISPATCH_SERVE_DATABASE_URL the serving login's, which every pool of the server connects as.
+	// The server refuses to boot without the second. Both reach the instance through the
+	// cloud-sql-proxy sidecar.
 	databaseURL := pulumi.Sprintf("postgres://dispatch:%s@127.0.0.1:5432/dispatch?sslmode=disable", database.password.Result)
+	serveDatabaseURL := pulumi.Sprintf("postgres://%s:%s@127.0.0.1:5432/dispatch?sslmode=disable", dispatchServeLogin, database.servePassword.Result)
 	// DISPATCH_SIGNING_KEY is the key set auth.ParseSigningKeys reads: the generations' results
 	// in the list's order, one space between them. One generation joins to that result alone,
 	// unchanged, so a deployment already running one key keeps the exact Secret data it has and
@@ -364,7 +369,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// The sign-in client secret is one key of this Secret only where sign-in is on: without the
 	// sign-in inputs signInClientSecret is nil, which refuseDispatchSeedInSecret cannot take, and
 	// the app reads no such variable anyway.
-	dispatchData := pulumi.StringMap{"DATABASE_URL": databaseURL, "DISPATCH_AGENT_TOKEN": database.agentToken.Result, "DISPATCH_SIGNING_KEY": signingKey}
+	dispatchData := pulumi.StringMap{"DATABASE_URL": databaseURL, "DISPATCH_SERVE_DATABASE_URL": serveDatabaseURL, "DISPATCH_AGENT_TOKEN": database.agentToken.Result, "DISPATCH_SIGNING_KEY": signingKey}
 	if s.signInOn {
 		dispatchData["DISPATCH_SIGNIN_CLIENT_SECRET"] = refuseDispatchSeedInSecret(args.SignInClientSecret, dispatch, "signInClientSecret")
 	}
@@ -681,7 +686,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// The app's container alone carries the broker relay and the GitHub App: the listener and the
 	// front door take neither.
 	appEnv := corev1.EnvVarArray{
-		valueEnv("HOME", "/home/envoy"), secretEnv("DATABASE_URL", dispatchSecretName, "DATABASE_URL"), secretEnv("DISPATCH_AGENT_TOKEN", dispatchSecretName, "DISPATCH_AGENT_TOKEN"), secretEnv("DISPATCH_SIGNING_KEY", dispatchSecretName, "DISPATCH_SIGNING_KEY"),
+		valueEnv("HOME", "/home/envoy"), secretEnv("DATABASE_URL", dispatchSecretName, "DATABASE_URL"), secretEnv("DISPATCH_SERVE_DATABASE_URL", dispatchSecretName, "DISPATCH_SERVE_DATABASE_URL"), secretEnv("DISPATCH_AGENT_TOKEN", dispatchSecretName, "DISPATCH_AGENT_TOKEN"), secretEnv("DISPATCH_SIGNING_KEY", dispatchSecretName, "DISPATCH_SIGNING_KEY"),
 	}
 	// The four sign-in variables render together or not at all, in the place they always held, so
 	// a deployment with sign-in on renders what it always rendered (gcp/testdata/dispatch-pod.golden)
