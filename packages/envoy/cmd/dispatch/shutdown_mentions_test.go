@@ -354,7 +354,7 @@ func TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t *testin
 	listener := newHandoverListener(t)
 	database := storetest.Open(t)
 	options := dispatchOptions{SigningKey: "rolling-update-mentions-key", Env: map[string]string{"ENVOY_URL": listener.url}}
-	old := startDispatchProcessWith(t, database.Pool.Config().ConnString(), options)
+	old := startDispatchProcessWith(t, namedDatabaseURL(t, database.Pool.Config().ConnString(), oldProcessApplication), options)
 	old.waitHealthy(t)
 	successor := startDispatchProcessWith(t, database.Pool.Config().ConnString(), options)
 	successor.waitHealthy(t)
@@ -380,7 +380,10 @@ func TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t *testin
 			t.Logf("the old process's output:\n%s", old.Output.String())
 		}
 	})
-	storetest.WaitForLockWaiters(t, holder, 1)
+	// The wait counts the old process's backends alone (oldProcessApplication): the successor's,
+	// on the same database, never end it before the comment the old process has in flight waits
+	// on the lock, which it must before the signal.
+	storetest.WaitForLockWaitersFrom(t, holder, 1, oldProcessApplication)
 
 	old.Terminate(t)
 	old.WaitForOutput(t, `msg="dispatch: shutting down"`)
@@ -419,3 +422,7 @@ func TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t *testin
 		t.Errorf("sends the listener took = %v, want one of each of %v", got, want)
 	}
 }
+
+// oldProcessApplication is the application_name of the old process's connections in the rolling
+// update's row (namedDatabaseURL), which tells them from its successor's.
+const oldProcessApplication = "dispatch-old-process"
