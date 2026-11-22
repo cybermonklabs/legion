@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  What a session was told of its inbound is now the session's own, read from its transcript at
+  every bind (`envoy-inbound-outage`). A session an earlier process told that it receives nothing,
+  and that process ended before it could tell the outage's end (it crashed, was stopped or was
+  relaunched), is told "Envoy inbound restored" by the process that resumes it, at its first
+  accepted registration. After a `/new` during an outage, the new session is told its own outage
+  at its own refused registration and its end once one is accepted, and never the end of the
+  outage the session it left was told; that session's record still ends with the outage notice,
+  so a process that binds it again tells it the end. A registration of the session left whose
+  answer lands after the move tells the session bound now nothing.
+time: 2026-11-20T14:07:49Z
+custom:
+    Issue: pr4617

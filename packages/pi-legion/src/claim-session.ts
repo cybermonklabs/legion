@@ -84,6 +84,13 @@ export function createClaimSession(deps: {
     context: SessionContext
   ) => Promise<{ readonly sessionFile: string; readonly agentId: string }>;
   readonly exitProcess: (code: number) => never;
+  /** Aborted at this pane's `session_shutdown` (`legion.ts`, never for a `task` subagent's
+   *  event): a role claim the boot is still making again (after a 503, or while the session holds
+   *  no relay subject) waits no more and claims no more. */
+  readonly signal: AbortSignal;
+  /** The first wait before a role claim is made again (`claimRoleAgain`); undefined keeps its own.
+   *  A test sets it short. */
+  readonly roleClaimRetryFirstDelayMs: () => number | undefined;
 }): ClaimSession {
   let capability: ClaimCapability | undefined;
   let booting: Promise<void> | undefined;
@@ -131,6 +138,8 @@ export function createClaimSession(deps: {
       // The pane's own bound, read from its environment as both watches of this entry read
       // theirs (`stallLimits` in `extensions/legion.ts`).
       firstTurnBoundMs: claimFirstTurnBoundMs(process.env, logger),
+      signal: deps.signal,
+      roleClaimRetryFirstDelayMs: deps.roleClaimRetryFirstDelayMs(),
       onRoleRegained: onEnvoyRoleRegained,
       log: (line) => console.error(`[legion] ${line}`),
       stopping: "exiting so the daemon launches it again",

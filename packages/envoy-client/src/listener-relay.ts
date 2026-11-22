@@ -56,7 +56,7 @@
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import type { RequestCredential } from "./bearer";
 import { type BrokerSessionName, sessionName } from "./broker-credential";
-import type { InboundUnavailable, RelayHeaders } from "./consumer-delivery";
+import type { RelayHeaders } from "./consumer-delivery";
 import { LoggableError, messageFor } from "./errors";
 import type {
   InboundConnection,
@@ -64,6 +64,7 @@ import type {
   InboundStatus,
   InboundSubscription,
 } from "./inbound-connection";
+import type { InboundUnavailable } from "./inbound-outage";
 import { NATS_MAX_PINGS_OUT, NATS_PING_INTERVAL_MS } from "./nats-connection";
 import { FOLLOW_DEADLINE_MS, TRADE_DEADLINE_MS } from "./nats-credential";
 
@@ -658,7 +659,11 @@ export class ListenerRelay implements InboundConnection {
       // to another session, whose report this is now.
       if (generation !== this.#generation) return;
       if ("failed" in upgrade) {
-        this.#outage.refused(upgrade.error);
+        // The host's report is the session it is bound to now. One that moved on while this
+        // trade was asked for, and has not yet moved the socket (`follow`), is told nothing of
+        // the session it left, as a registration's late answer tells it nothing: the open
+        // `follow` makes under the new session tells that session's own refusal.
+        if (session === sessionName(this.#options.session)) this.#outage.refused(upgrade.error);
         const delay = this.#reopenAfter({ refused: undefined, after: this.#closedWith });
         this.#failed(session, upgrade.failed, delay);
         return;

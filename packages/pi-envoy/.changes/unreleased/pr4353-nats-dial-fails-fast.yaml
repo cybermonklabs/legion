@@ -7,10 +7,8 @@ body: |-
   with its reason and its wait. The refused registration of a session with no relay subject, and
   the "receives nothing" notice, name the NATS failure; and a session this process told it
   receives nothing is told, in the log, the UI and the transcript ("Envoy inbound restored"), once a
-  registration is accepted again, where before the outage notice was the last word it had. The
-  outage is told and ended within one process, not per session: a process that resumes the session
-  after the one that told it is not told its end, and after a `/new` the end is told to the new
-  session. A relay subject, or
+  registration is accepted again, where before the outage notice was the last word it had. A
+  relay subject, or
   the live view's control subject, that a session loses after its start (its NATS connection
   closed for good, or the subscription ended) is opened again by the next heartbeat's pass. Before,
   only the relay's own redial opened it, waiting 15 s after each failed dial, and the live view's

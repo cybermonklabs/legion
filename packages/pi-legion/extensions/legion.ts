@@ -133,6 +133,14 @@ export function setLegionCapabilitySendTimeoutForTests(ms: number | undefined): 
   capabilitySendTimeoutMs = ms ?? CAPABILITY_SEND_TIMEOUT_MS;
 }
 
+// The first wait before a role claim is made again, the pane's and the controller's. Production
+// never sets this, so `claimRoleAgain` keeps its own 1 s; a test sets a short one, since a row that
+// claims again six times would otherwise wait 31 s.
+let roleClaimRetryFirstDelayMs: number | undefined;
+export function setLegionClaimRetryDelayForTests(ms: number | undefined): void {
+  roleClaimRetryFirstDelayMs = ms;
+}
+
 async function persistedTranscript(
   context: CommandContext | SessionContext
 ): Promise<{ readonly sessionFile: string; readonly agentId: string }> {
@@ -395,17 +403,25 @@ export default function legionExtension(pi: PiApi): void {
     log: logger,
   });
 
-  // A root architect's or phase worker's claim, and the operator-launched controller's.
+  // A root architect's or phase worker's claim, and the operator-launched controller's. Both end
+  // at this session's `session_shutdown` (`claimsEnded`, aborted there): a role claim either is
+  // still making again waits no more and claims no more, so no claim lands after the session ended
+  // and none is refused for a session that is gone.
+  const claimsEnded = new AbortController();
   const claimSession = createClaimSession({
     daemon: roleDaemon,
     persistedTranscript,
     exitProcess: (code) => exitProcess(code),
+    signal: claimsEnded.signal,
+    roleClaimRetryFirstDelayMs: () => roleClaimRetryFirstDelayMs,
   });
   const controllerSession = createControllerSession({
     daemon: roleDaemon,
     persistedTranscript,
     pi,
     exitProcess: (code) => exitProcess(code),
+    signal: claimsEnded.signal,
+    roleClaimRetryFirstDelayMs: () => roleClaimRetryFirstDelayMs,
   });
 
   /**
@@ -778,6 +794,9 @@ export default function legionExtension(pi: PiApi): void {
     clearStartupTurn(context.sessionManager.getSessionId());
     // Whatever this session had open is not this watch's business any more.
     stallWatch?.sessionChanged();
+    // A role claim the boot or the controller is still making again makes no more: the session it
+    // claims for ended. A `task` subagent's shutdown ends only the subagent (`subagentEvent`).
+    if (!subagentEvent(context)) claimsEnded.abort();
   });
   // Every provider request of this session passes here, which makes it one of the triggers of the
   // model fallback's return; `ModelFallback.maybeRestore` (src/model-fallback.ts) states the rule.
@@ -1004,7 +1023,17 @@ export default function legionExtension(pi: PiApi): void {
     handler: async (_args, context) => {
       const refusal = envoyPluginRefusal();
       if (refusal !== undefined) throw new Error(refusal);
-      await controllerSession.claim(context);
+      try {
+        await controllerSession.claim(context);
+      } catch (error) {
+        // A claim the session's shutdown ended is no failure to show: the session it claimed for
+        // is gone, and its last claim met the Envoy instance the shutdown took away.
+        if (claimsEnded.signal.aborted) return;
+        throw error;
+      }
+      // A daemon-launched controller's claim that the shutdown ended returns rather than throws
+      // (`claimOnce`): nothing was claimed for this session, so nothing below runs either.
+      if (claimsEnded.signal.aborted) return;
       // The claim is registered, so this session is the controller's: the arming and the
       // doubling levels its branch records are read back here, as session_start reads a worker's.
       restoreModelFallback(context);

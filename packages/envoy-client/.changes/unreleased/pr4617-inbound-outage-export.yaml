@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The outage report moves from `./consumer-delivery` to its own export, `./inbound-outage`:
+  `inboundUnavailable`, `InboundUnavailable`, `inboundUnavailableNoticeText` and
+  `inboundRestoredNoticeText` are imported from there, and `./consumer-delivery` no longer exports
+  them.
+time: 2026-11-21T12:04:03Z
+custom:
+    Issue: pr4617

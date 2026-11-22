@@ -7,8 +7,8 @@
 // servers take theirs from here: Claude Code's (`./envoy-channel-server`) and Codex's
 // (`./codex/codex-server`).
 import type { RequestCredential } from "@legion/envoy-client/bearer"
-import { inboundUnavailable } from "@legion/envoy-client/consumer-delivery"
 import { LoggableError } from "@legion/envoy-client/errors"
+import { inboundUnavailable } from "@legion/envoy-client/inbound-outage"
 import { connectListenerRelay, type RelayOutage } from "@legion/envoy-client/listener-relay"
 import {
   connectNats,

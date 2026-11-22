@@ -6,7 +6,7 @@
 // The claim route writes a takeover record before each try of its claim write (publishTakeover,
 // bus.TakeoverSubject), and a try whose record did not store writes no claim and answers 503
 // (errTakeoverUnrecorded), which the Legion claim boot and controller claim again after
-// (claimRoleAgainOnBusy in packages/pi-shared). A pass of a record reads the previous holder's
+// (claimRoleAgain in packages/pi-shared). A pass of a record reads the previous holder's
 // subject from the acknowledgement floor of its session consumer on and copies each role message of
 // the role under a minted dedupe key of its own (runTakeoverPasses, takenFrameDedupeKey), and writes
 // the record when it changed it or once its last write is takeoverRecordRefresh old; the claim

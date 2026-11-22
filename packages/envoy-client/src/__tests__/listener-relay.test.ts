@@ -26,7 +26,8 @@ import {
   until,
 } from "../../test/relay-socket-fixtures";
 import { standInDeliverSubject } from "../../test/relay-socket-stand-in";
-import { createConsumerDelivery, inboundUnavailable } from "../consumer-delivery";
+import { createConsumerDelivery } from "../consumer-delivery";
+import { inboundUnavailable } from "../inbound-outage";
 import { ListenerRelay, type RelayEnd, relayReopenDelay, relayRun } from "../listener-relay";
 
 const { started, standIn, opened } = relaySocketFixtures("listener-relay");
@@ -584,7 +585,9 @@ describe("a relay socket", () => {
     const asks = { count: 0 };
     const restored = { count: 0 };
     const outage = inboundUnavailable(
-      (why) => told.push(why),
+      (why) => {
+        told.push(why);
+      },
       () => {
         restored.count += 1;
       }

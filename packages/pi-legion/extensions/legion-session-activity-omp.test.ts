@@ -49,7 +49,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 // `bash` settings in the profile, so the pin's own `--mode rpc` defaults decide. The pane takes no NATS
 // delivery of its own here, but it is given a real server all the same: a session receives only
 // what its own consumer holds (dispatch://INFRA-771), so one that can open no relay subject is
-// given no consumer, and its claim boot ends the session rather than running on deaf.
+// given no consumer, and its claim boot never takes its role, claiming it again until NATS answers.
 // LEGION_TEST_OMP names the binary and LEGION_TEST_NATS_URL the server, as in
 // legion-background-subagent-omp.test.ts; a run without them skips, except on GitHub Actions,
 // where the pi-legion job supplies both (`ompNatsGuard`).

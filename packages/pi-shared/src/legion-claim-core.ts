@@ -1,5 +1,5 @@
 import type { LegionRegistration } from "@legion/contracts/legion-api";
-import { messageFor } from "@legion/envoy-client/errors";
+import { isNoRelaySubjectRefusal, messageFor } from "@legion/envoy-client/errors";
 import {
   callReadyWithRetry,
   LegionDaemonApiError,
@@ -26,8 +26,8 @@ export interface LegionClaimHost {
    * claim's task and every notice on. It is the boot's last step and runs after `claims/ready`
    * has answered, at the session's first turn (`onFirstTurn`) or at the bound, whichever comes
    * first — at once where the turn started while ready was still being retried. Throws when the
-   * role cannot be held, which is logged and stops the session; a claim the listener answered
-   * 503 is claimed again instead (`claimRoleAtFirstTurn`). */
+   * role cannot be held, which is logged and stops the session; an answer a later claim cures
+   * (`claimAgainReason`) is claimed again instead (`claimRoleAtFirstTurn`). */
   readonly claimRole: (role: string) => Promise<void>;
   /** Hands the host `started`, the signal to call once the session's first turn has started —
    * whatever started it: the daemon's task, a card, a reminder. It is called as soon as
@@ -55,11 +55,11 @@ export interface LegionClaimHost {
    * session's own `claimFirstTurnBoundMs` (`src/claim-first-turn-bound.ts`), which every host
    * reads from its own environment and which holds the default. */
   readonly firstTurnBoundMs: number;
-  /** The first wait before the role is claimed again after the listener answered the claim 503,
-   * doubled at each retry up to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`. Unset, `ROLE_CLAIM_RETRY_FIRST_DELAY_MS`;
-   * a test sets it short. */
-  readonly roleClaimRetryFirstDelayMs?: number;
-  /** Aborts when the host stops: a claim the listener answered 503 is not made again after it. */
+  /** The first wait before the role is claimed again after an answer a later claim cures
+   * (`claimAgainReason`), doubled at each retry up to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`. Unset,
+   * `ROLE_CLAIM_RETRY_FIRST_DELAY_MS`; a test sets it short. */
+  readonly roleClaimRetryFirstDelayMs?: number | undefined;
+  /** Aborts when the host stops: a claim is not made again after it, and a wait under way ends. */
   readonly signal?: AbortSignal;
   /** Sets the one hook the Envoy heartbeat runs after it re-establishes this session as a role's
    * holder, with why it did (`reclaimed`, `reregistered`). */
@@ -75,10 +75,12 @@ export interface LegionClaimHost {
 /** What the boot answers: the claim step it left to run after it, for a caller that waits on it
  * and for a test that reads when the name was taken. */
 export interface LegionClaimBoot {
-  /** Settles once that step has run — the role claimed, or the refusal logged and the session
-   * stopped — and at once for a boot that stopped before it ever reached the step. It never
-   * rejects: a claim the listener refuses is the host's `stop`, not this promise's failure, and a
-   * claim it answered 503 is claimed again until it lands or is refused. */
+  /** Settles once that step has run — the role claimed, the refusal logged and the session
+   * stopped, or the claim ended by the host's stop (`signal`) with nothing logged and no stop —
+   * and at once for a boot that stopped before it ever reached the step. It never rejects: a
+   * claim the listener refuses is the host's `stop`, not this promise's failure, and an answer a
+   * later claim cures (`claimAgainReason`: the listener's 503, or the session's own refusal for want
+   * of a relay subject) is claimed again until it lands, is refused, or the host stops. */
   readonly claimed: Promise<void>;
 }
 
@@ -214,14 +216,14 @@ function listenForFirstTurn(host: LegionClaimHost): (claim: () => void) => void 
  * bound is a backstop and keeps no process alive for its own sake.
  *
  * A refusal is logged and stops the session, the one failure path every other failure after a
- * registration takes. A claim the listener answered 503 (`listenerAskedToClaimAgain`) is no
- * refusal: the listener wrote no claim and asks for the claim again (`Retry-After`) - every try
- * of its write met a conflict, or the takeover record a claim writes first, for the holder it
- * takes the role from, did not store - so the claim is made again after a wait that starts at
- * `roleClaimRetryFirstDelayMs` and doubles up to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`, with one log
- * line per wait, until it lands or is refused. The session stays up meanwhile: the role's messages
- * wait for it, with the holder the claim would have replaced or on the role's kept lane. The
- * promise answers when the step has run, either way, and never rejects.
+ * registration takes. Two answers are no refusal, because a later claim cures them
+ * (`claimAgainReason`): the listener's 503, and the session's own refusal because it holds no relay
+ * subject yet. The claim is made again after a wait that starts at `roleClaimRetryFirstDelayMs`
+ * and doubles up to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`, with one log line per wait, until it lands,
+ * is refused, or the host stops (`signal`). The session stays up meanwhile and its first turn
+ * runs: the role's messages wait for it, with the holder the claim would have replaced or on the
+ * role's kept lane, and no wait ends the process. The promise answers when the step has run,
+ * either way, and never rejects.
  */
 function claimRoleAtFirstTurn(
   host: LegionClaimHost,
@@ -234,9 +236,10 @@ function claimRoleAtFirstTurn(
     if (ran) return;
     ran = true;
     clearTimeout(bound);
+    host.signal?.removeEventListener("abort", stopped);
     void (async () => {
       try {
-        await claimRoleAgainOnBusy(() => host.claimRole(role), role, {
+        await claimRoleAgain(() => host.claimRole(role), role, {
           log: host.log,
           firstDelayMs: host.roleClaimRetryFirstDelayMs,
           signal: host.signal,
@@ -247,49 +250,67 @@ function claimRoleAtFirstTurn(
       done.resolve();
     })();
   };
+  // The host stopped before the step ran: the bound's timer goes with it, and the step answers
+  // having claimed nothing, so no claim is made for a session the host ended.
+  const stopped = (): void => {
+    if (ran) return;
+    ran = true;
+    clearTimeout(bound);
+    done.resolve();
+  };
   const bound = setTimeout(claim, host.firstTurnBoundMs);
   bound.unref?.();
+  if (host.signal?.aborted) stopped();
+  else host.signal?.addEventListener("abort", stopped, { once: true });
   firstTurn(claim);
   return done.promise;
 }
 
-/** The first wait before a claim the listener answered 503 is made again, and the longest. */
+/** The first wait before a claim a later claim cures is made again, and the longest. */
 const ROLE_CLAIM_RETRY_FIRST_DELAY_MS = 1_000;
 const ROLE_CLAIM_RETRY_MAX_DELAY_MS = 30_000;
 
 /**
- * Makes `claim`, a claim of Envoy role `role`, and makes it again while the listener answers it
- * 503 (`listenerAskedToClaimAgain`): the listener wrote no claim - every try of its write met a
- * conflict, or the takeover record a claim writes first did not store - and asks for the claim
- * again. The wait starts at `firstDelayMs` (`ROLE_CLAIM_RETRY_FIRST_DELAY_MS` unset) and doubles up
- * to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`, with one `log` line per wait naming the attempt the listener
- * answered and its answer; the timer is unref'd, so it holds no process open. Any other failure is
- * thrown at once, for the caller to stop on. An aborted `signal` - the host stopping - ends the
- * waiting with the last 503 thrown and claims no more, so no claim after a stop makes a session the
- * host ended live again. With `maxAttempts`, the 503 of the last attempt is thrown, for a claim a
- * person is waiting on to fail where they see it.
+ * Makes `claim`, a claim of Envoy role `role`, and makes it again while its answer is one a later
+ * claim cures (`claimAgainReason`): the listener's 503, or the session's own refusal because it
+ * holds no relay subject yet. The wait starts at `firstDelayMs` (`ROLE_CLAIM_RETRY_FIRST_DELAY_MS`
+ * unset) and doubles up to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`, with one `log` line per wait naming the
+ * attempt, why it is made again, and the answer; the timer is unref'd, so it holds no process
+ * open. Any other failure is thrown at once, for the caller to stop on. An aborted `signal` - the
+ * host stopping - ends the waiting with the last answer thrown and claims no more, so no claim
+ * after a stop makes a session the host ended live again. With `maxAttempts`, the answer of the
+ * last attempt is thrown, for a claim a person is waiting on to fail where they see it.
  */
-export async function claimRoleAgainOnBusy(
+export async function claimRoleAgain(
   claim: () => Promise<void>,
   role: string,
   options: {
     readonly log: (line: string) => void;
     readonly firstDelayMs?: number | undefined;
     readonly signal?: AbortSignal | undefined;
-    /** The most claims made, the first included; the 503 of the last is thrown. Unset, no bound. */
+    /** The most claims made, the first included; the answer of the last is thrown. Unset, no bound. */
     readonly maxAttempts?: number | undefined;
   }
 ): Promise<void> {
+  // A host that stopped before the first claim claims nothing: there is no answer yet to throw.
+  if (options.signal?.aborted) {
+    throw new Error(`claim of Envoy role ${role} was not made: the host stopped first`);
+  }
   let wait = options.firstDelayMs ?? ROLE_CLAIM_RETRY_FIRST_DELAY_MS;
   for (let attempt = 1; ; attempt++) {
     try {
       await claim();
       return;
     } catch (error) {
-      if (!listenerAskedToClaimAgain(error) || options.signal?.aborted) throw error;
+      const reason = claimAgainReason(error);
+      if (reason === undefined || options.signal?.aborted) throw error;
       if (options.maxAttempts !== undefined && attempt >= options.maxAttempts) throw error;
+      const why =
+        reason === "busy"
+          ? "was answered 503"
+          : "was refused before the listener was asked, because this session holds no relay subject yet,";
       options.log(
-        `claim of Envoy role ${role} was answered 503 at attempt ${attempt}, so nothing was claimed; claiming it again in ${wait} ms: ${messageFor(error)}`
+        `claim of Envoy role ${role} ${why} at attempt ${attempt}, so nothing was claimed; claiming it again in ${wait} ms: ${messageFor(error)}`
       );
       const waited = Promise.withResolvers<void>();
       const timer = setTimeout(waited.resolve, wait);
@@ -307,13 +328,39 @@ export async function claimRoleAgainOnBusy(
   }
 }
 
+/** Why a role claim's failure is one a later claim cures (`claimAgainReason`). */
+export type ClaimAgainReason = "busy" | "no-relay";
+
+/**
+ * Why `error`, a role claim's failure, is one a later claim cures; undefined for every other
+ * failure. Two are:
+ * - `busy`, the listener's 503 (`listenerAskedToClaimAgain`): it wrote no claim - every try of its
+ *   write met a conflict, or the takeover record a claim writes first, for the holder it takes the
+ *   role from, did not store - and asks for the claim again (`Retry-After`).
+ * - `no-relay`, the session's own refusal before the listener was asked, because it holds no relay
+ *   subject yet (`isNoRelaySubjectRefusal`): its NATS connection is not open. pi-envoy dials NATS
+ *   again on its own, and each claim of a session it has not yet established runs a pass of its
+ *   own that dials again (`establishForBridge`), so a later claim finds the subject once NATS
+ *   answers.
+ */
+export function claimAgainReason(error: unknown): ClaimAgainReason | undefined {
+  if (listenerAskedToClaimAgain(error)) return "busy";
+  if (isNoRelaySubjectRefusal(error)) return "no-relay";
+  return undefined;
+}
+
+/** Whether a later claim cures `error`, a role claim's failure (`claimAgainReason`). */
+export function claimAgainCures(error: unknown): boolean {
+  return claimAgainReason(error) !== undefined;
+}
+
 /**
  * Whether `error` is the listener's 503 to a role claim: an `EnvoyApiError` whose status is 503.
  * It is read by its name and status, not by class, because it crosses plugin bundles: pi-envoy
  * throws it from its own copy of envoy-client, behind the role-claim bridge, and pi-legion runs
  * this boot from another copy.
  */
-export function listenerAskedToClaimAgain(error: unknown): boolean {
+function listenerAskedToClaimAgain(error: unknown): boolean {
   if (!(error instanceof Error) || error.name !== "EnvoyApiError" || !("details" in error)) {
     return false;
   }

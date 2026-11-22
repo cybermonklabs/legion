@@ -1,0 +1,20 @@
+kind: Added
+body: |-
+  `inboundUnavailable`'s report takes `recordRead(told)`, for the record of the session the host
+  binds, and from then the report is that session's: a told record is taken up, so the next
+  accepted registration tells the end of an outage an earlier process, or this one before it moved
+  away, told the session; a record that is not told leaves the session untold, so its own refusal
+  tells it, and it is never told the end of an outage another session was told. A host's `tell`
+  may return a promise that settles once the outage notice was shown: a notice that could not be
+  shown leaves the session untold, so the outage's next refusal tells it again, and no end is told
+  for it, and an end accepted while the notice is still being shown is told once it was. The
+  host's log is the process's, not the bound session's: `tell`'s `again` says the log already said
+  the outage began, and an optional third callback, `outageEnded`, is called at once at the first
+  accepted registration after the log said an outage began, whichever session is bound by then,
+  or after a told record was taken up, whatever the session was shown.
+  `NoRelaySubjectError` is named `NoRelaySubjectError`, and `isNoRelaySubjectRefusal` (`./errors`)
+  tells it by that name, following its `cause` chain, across the copies of this package each plugin
+  bundles.
+time: 2026-11-20T14:07:49Z
+custom:
+    Issue: pr4617
