@@ -14,10 +14,12 @@
 # (`codex plugin marketplace add`, `codex plugin add`); reads that release's provenance and checks
 # that the tree Codex installed is the attested tarball (C0); and runs the command the outside
 # person is told to run, `codex --no-daemon -m gpt-5.5 "<prompt>"`, in a tmux pane, as the public
-# leg runs Oh My Pi, with no hook-trust bypass. It reads each screen of the interactive start and
-# answers the two first-run ones as he is told to: "Hooks need review" with "Trust all and
-# continue", "Meet GPT-6 Sol" with "Use existing model"; a screen it does not expect holds the run,
-# and the rows read UNKNOWN naming it. Codex runs against outside-agent-codex-model.ts beside this
+# leg runs Oh My Pi, with no hook-trust bypass, in a folder that is a git repository, and with no
+# approval policy, sandbox mode or folder trust of its own. It reads each screen and answers those
+# he is told how to answer: "Trust this folder?" with "Trust and continue", "Hooks need review"
+# with "Trust all and continue", "Meet GPT-6 Sol" with "Use existing model", and Codex's approval
+# of the plugin's envoy_send with "Always allow"; a screen it does not expect holds the run, and the
+# rows read UNKNOWN naming it. Codex runs against outside-agent-codex-model.ts beside this
 # file, a keyless stand-in model that speaks the Responses API and plays one scripted turn per run.
 # Codex 0.171.0 with gpt-6.2-sol runs no tool at all, which is why the model name is gpt-5.5: with
 # it, 0.171.0 lists the plugin's tools behind `tool_search`, and the stand-in finds them there.
@@ -178,7 +180,8 @@ ran="ran: @openai/codex@$codex_version, -m $codex_model on the stand-in model"
 # The answers to the interactive start's two first-run screens the outside person is told to give,
 # and the control runs that answer otherwise (OUTSIDE_CODEX_FIRST_START): "no-trust" leaves the
 # plugin's hooks untrusted, so no session record, registration or delivery comes (C1, C4, C5);
-# "new-model" takes GPT-6 Sol, so the session lists no plugin tool (C2, C3).
+# "new-model" takes GPT-6 Sol, so the session lists no plugin tool (C2, C3). The folder trust and
+# the envoy_send approval have one answer, in answer_screen.
 first_start=${OUTSIDE_CODEX_FIRST_START:-op3}
 hooks_choice='Trust all and continue'
 model_choice='Use existing model'
@@ -190,6 +193,9 @@ esac
 [ "$first_start" = op3 ] ||
   control_note="; a control run (OUTSIDE_CODEX_FIRST_START=$first_start): '$hooks_choice' and '$model_choice'"
 screens=''
+# When the leg allowed the plugin's envoy_send at Codex's approval prompt, in Unix seconds: C5's
+# clock starts there if that was after the model's send.
+send_allowed_at=''
 
 # --- The scratch directory and its cleanup: every background child and every Codex's tmux server,
 # stopped and waited for, then the directory. ---
@@ -313,6 +319,12 @@ market_dir="$work/market"
 data_dir="$codex_home/plugins/data/codex-envoy-$market"
 mkdir -p "$codex_home" "$market_dir/.agents/plugins" "$work/session"
 session_dir=$(cd "$work/session" && pwd -P)
+# The folder Codex starts in is a git repository, as a project checkout where the outside person
+# starts his Codex is: there its first start asks whether to trust the folder.
+if ! git init -q --template= "$session_dir" >"$work/git-init.log" 2>&1 </dev/null; then
+  all_unknown "git init of the session folder failed: $(text_of "$work/git-init.log")"
+  finish
+fi
 checkout_commit=$(git -C "$checkout" rev-parse HEAD 2>/dev/null </dev/null) || checkout_commit=''
 if [ "$source" = checkout ]; then
   say "building the plugin from ${checkout_commit:-$checkout} (a development run)"
@@ -425,11 +437,12 @@ if [ -z "$ready_port" ]; then
   finish
 fi
 model_port=$ready_port
-printf '%s\n' "model = \"$codex_model\"" "model_provider = \"$market\"" 'approval_policy = "never"' \
-  'sandbox_mode = "danger-full-access"' "[model_providers.$market]" \
+# The model and the stand-in's provider alone: no approval policy, sandbox mode or folder trust of
+# the leg's own, so Codex runs with what the outside person's configuration gives him, and asks
+# what it asks him.
+printf '%s\n' "model = \"$codex_model\"" "model_provider = \"$market\"" "[model_providers.$market]" \
   'name = "outside-e2e stand-in"' "base_url = \"http://127.0.0.1:$model_port/v1\"" \
-  'wire_api = "responses"' 'requires_openai_auth = false' "[projects.\"$session_dir\"]" \
-  'trust_level = "trusted"' >"$codex_home/config.toml"
+  'wire_api = "responses"' 'requires_openai_auth = false' >"$codex_home/config.toml"
 
 # --- The plugin's install, from the local marketplace, after the configuration: `codex plugin
 # marketplace add` and `codex plugin add` write their own tables into config.toml
@@ -673,13 +686,42 @@ EOF
   done
   return 1
 }
+# answer_screen RUN DEADLINE: answers the screen RUN's pane shows when it is one the outside person
+# is told how to answer: the folder trust question of a first start in a git repository ("Trust
+# and continue"), the two first-run screens ("Hooks need review" with hooks_choice, "Meet GPT-6
+# Sol" with model_choice), and the approval Codex asks before the plugin's envoy_send runs
+# ("Always allow", so it asks once). It takes the entry, then waits for the screen to go, so no
+# screen is answered twice, and adds the screen and its answer to `screens`. Status 0 when it
+# answered one, 2 when the pane shows none of them, and 1, with `drive_problem` naming the screen,
+# when the entry is not taken or the screen does not go by DEADLINE.
+answer_screen() {
+  local run=$1 mark title choice
+  case $(codex_pane "$run") in
+    *'Trust this folder?'*) mark='Trust this folder?' title='Folder access' choice='Trust and continue' ;;
+    *'Hooks need review'*) mark='Hooks need review' title=$mark choice=$hooks_choice ;;
+    *'Meet GPT-6 Sol'*) mark='Meet GPT-6 Sol' title=$mark choice=$model_choice ;;
+    *'Allow the envoy MCP server to run tool "envoy_send"?'*)
+      mark='Allow the envoy MCP server to run tool "envoy_send"?' title=$mark choice='Always allow' ;;
+    *) return 2 ;;
+  esac
+  if ! choose "$run" "$choice" "$2"; then
+    drive_problem="the screen '$title' offered no '$choice', or drew no move toward it, in time: $(screen_text "$(codex_pane "$run")")"
+    return 1
+  fi
+  case $mark in Allow*) send_allowed_at=$(now) ;; esac
+  screens="${screens:+$screens; }$run: $title -> $choice"
+  while [ "$(now)" -lt "$2" ]; do
+    case $(codex_pane "$run") in *"$mark"*) sleep 1 ;; *) return 0 ;; esac
+  done
+  drive_problem="the screen '$title' stayed after '$choice' was taken: $(screen_text "$(codex_pane "$run")")"
+  return 1
+}
 # drive RUN SECONDS: waits up to SECONDS for RUN's turn to begin (the stand-in model logs the tools
-# of its first request), answering the interactive start's screens as the outside person is told
-# to: "Hooks need review" with hooks_choice, "Meet GPT-6 Sol" with model_choice. Adds each screen
-# and its answer to `screens`. False, with `drive_problem` naming the screen, when another screen
-# holds the start, a screen lacks its entry, or Codex ends first.
+# of its first request), answering the interactive start's screens (answer_screen). False, with
+# `drive_problem` naming the screen, when another screen holds the start, a screen's answer is not
+# taken, or Codex ends first.
 drive() {
-  local run=$1 deadline screen='' title choice
+  local run=$1 deadline screen=''
   drive_problem=''
   deadline=$(($(now) + $2))
   while [ "$(now)" -lt "$deadline" ]; do
@@ -689,31 +731,11 @@ drive() {
       return 1
     fi
     screen=$(codex_pane "$run")
-    title=''
-    case $screen in
-      *'Hooks need review'*) title='Hooks need review' choice=$hooks_choice ;;
-      *'Meet GPT-6 Sol'*) title='Meet GPT-6 Sol' choice=$model_choice ;;
-    esac
-    if [ -n "$title" ]; then
-      if ! choose "$run" "$choice" "$deadline"; then
-        drive_problem="the screen '$title' offered no '$choice', or drew no move toward it, within $2 s: $(screen_text "$(codex_pane "$run")")"
-        return 1
-      fi
-      screens="${screens:+$screens; }$run: $title -> $choice"
-      # The screen goes once the choice is taken. It is never answered twice: the leg waits for it
-      # to go, within the start's own bound.
-      while [ "$(now)" -lt "$deadline" ]; do
-        case $(codex_pane "$run") in *"$title"*) sleep 1 ;; *) break ;; esac
-      done
-      case $(codex_pane "$run") in *"$title"*)
-        drive_problem="the screen '$title' stayed after '$choice' was taken, until $2 s from the start: $(screen_text "$(codex_pane "$run")")"
-        return 1
-        ;;
-      esac
-    fi
+    answer_screen "$run" "$deadline"
+    [ "$?" -ne 1 ] || return 1
     sleep 1
   done
-  drive_problem="Codex's turn did not begin within $2 s, held by a screen this leg does not expect: $(screen_text "$screen")"
+  drive_problem="Codex's turn did not begin within $2 s, held by a screen this leg does not expect: $(screen_text "$(codex_pane "$run")")"
   return 1
 }
 # session_of SECONDS: sets `session_found` to the session id of the record the plugin's
@@ -744,20 +766,41 @@ logged() {
     esac
   done <"$work/model.log"
 }
-# finish_run RUN SECONDS: waits up to SECONDS for RUN's turn to end (the stand-in model logs its
-# end), then stops its Codex, which the interactive start leaves open; sets `run_end`.
+# turn_read RUN STEP...: whether the stand-in model logged one of STEPs for RUN, or a tools line
+# naming no plugin tool RUN calls, after which its turn makes no call the rows read.
+turn_read() {
+  local run=$1 step tools
+  shift
+  for step in "$@"; do [ -z "$(logged "$run" "$step")" ] || return 0; done
+  tools=$(logged "$run" tools)
+  [ -n "$tools" ] || return 1
+  [ -n "$(json_field dispatch "$tools")" ] || return 0
+  [ "$run" = main ] && [ -z "$(json_field send "$tools")" ]
+}
+# finish_run RUN SECONDS STEP...: waits up to SECONDS for the lines RUN's rows read (turn_read),
+# answering the screens its turn shows on the way (answer_screen), then stops its Codex, which the
+# interactive start leaves open; sets `run_end`. No other line ends the wait: Codex sends requests
+# that are not the turn's (0.171.0 sends one that offers apply_patch alone).
 finish_run() {
-  local deadline
-  deadline=$(($(now) + $2))
-  while [ -z "$(logged "$1" end)" ] && codex_alive "$1" && [ "$(now)" -lt "$deadline" ]; do sleep 1; done
-  if [ -n "$(logged "$1" end)" ]; then
-    run_end="the turn of $1 ended"
-  elif codex_alive "$1"; then
-    run_end="the turn of $1 had not ended within $2 s"
+  local run=$1 seconds=$2 deadline
+  shift 2
+  drive_problem=''
+  deadline=$(($(now) + seconds))
+  while ! turn_read "$run" "$@" && codex_alive "$run" && [ "$(now)" -lt "$deadline" ]; do
+    answer_screen "$run" "$deadline"
+    [ "$?" -ne 1 ] || break
+    sleep 1
+  done
+  if turn_read "$run" "$@"; then
+    run_end="the turn of $run logged what its rows read"
+  elif [ -n "$drive_problem" ]; then
+    run_end=$drive_problem
+  elif codex_alive "$run"; then
+    run_end="the turn of $run had not logged what its rows read within $seconds s; its screen: $(screen_text "$(codex_pane "$run")")"
   else
-    run_end="Codex $1 ended before its turn did"
+    run_end="Codex $run ended before its turn did"
   fi
-  codex_stop "$1"
+  codex_stop "$run"
 }
 
 # --- The main run: C1 to C5. The probe's receiver listens first, as the session C5 sends to. ---
@@ -803,7 +846,7 @@ if [ -n "$listed" ]; then
   control_answer=$(probe send "$peer-foreign" "$control_text")
   inbound_sent_at=$(now)
   inbound_answer=$(probe send "$session" "$inbound_text")
-  finish_run main $((main_seconds - ($(now) - started)))
+  finish_run main $((main_seconds - ($(now) - started))) sent wait-ended
   main_end=$run_end
 elif [ -z "$main_problem" ] && codex_alive main; then
   # Running with no session to send to: never listed, or no record filed. No message can
@@ -841,7 +884,7 @@ if refuses "$refused_origin"; then
   if drive edge-refused "$start_seconds"; then
     session_of "$list_seconds"
     refused_session=$session_found
-    finish_run edge-refused "$short_seconds"
+    finish_run edge-refused "$short_seconds" whoami
     refused_end=$run_end
   else
     codex_stop edge-refused
@@ -858,7 +901,7 @@ if [ -n "$inside" ]; then
     say "codex --no-daemon inside (DISPATCH_URL $inside)"
     codex_start inside "DISPATCH_URL=$inside"
     if drive inside "$start_seconds"; then
-      finish_run inside "$short_seconds"
+      finish_run inside "$short_seconds" whoami
       inside_end=$run_end
     else
       codex_stop inside
@@ -866,7 +909,7 @@ if [ -n "$inside" ]; then
     fi
   fi
 fi
-ran="$ran; first-start screens: ${screens:-none}${control_note}"
+ran="$ran; screens answered: ${screens:-none}${control_note}"
 
 # --- The rows. ---
 tools_line=$(logged main tools)
@@ -1047,12 +1090,19 @@ else
   read_at=$(json_field at "$received_line")
   send_at=$(json_field at "$send")
   case $read_at$send_at in '' | *[!0-9]*) read_at='' ;; esac
+  # The send waits at Codex's approval prompt until the leg allows it, as it waits for the outside
+  # person: the clock starts at the later of the two.
+  from="the model's send"
+  if [ -n "$read_at" ] && [ -n "$send_allowed_at" ] && [ $((send_allowed_at * 1000)) -gt "$send_at" ]; then
+    send_at=$((send_allowed_at * 1000))
+    from="the leg allowed the model's send at Codex's prompt"
+  fi
   if [ -z "$read_at" ] || [ -z "$send_at" ]; then
     row C5 "$want5" "the probe read the message from $session, at times the logs do not give" UNKNOWN
   elif [ $(((read_at - send_at) / 1000)) -gt "$outbound_bound" ]; then
-    row C5 "$want5" "the probe read the message $(((read_at - send_at) / 1000)) s after the model's send" FAIL
+    row C5 "$want5" "the probe read the message $(((read_at - send_at) / 1000)) s after $from" FAIL
   else
-    row C5 "$want5" "the probe's session $receiver read it from $session $(((read_at - send_at) / 1000)) s after the model's send" PASS
+    row C5 "$want5" "the probe's session $receiver read it from $session $(((read_at - send_at) / 1000)) s after $from" PASS
   fi
 fi
 

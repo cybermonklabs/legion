@@ -19,7 +19,10 @@
  *  Codex lists the plugin's tools either in the request's `tools` (a `namespace` tool named
  *  `mcp__envoy` holding `dispatch`, `envoy_send` and the rest) or, for a model whose tools Codex
  *  defers (0.171.0 with `-m gpt-5.5`, measured), behind a `tool_search` tool: then the model first
- *  calls `tool_search_call` and finds them in the next request's `tool_search_output`.
+ *  calls `tool_search_call` and finds them in the next request's `tool_search_output`. A request
+ *  that lists tools, none of them `tool_search`, the shell or a plugin tool, and holds no
+ *  `tool_search_output` is not the turn's (0.171.0's interactive start sends one 107 ms in that
+ *  offers `apply_patch` alone): it is answered with a message and logs nothing.
  *
  *  It appends one line of compact JSON to the log for each thing the leg judges, every value a
  *  plain word (no quote, backslash or control character), so the leg reads it with `json_field`:
@@ -31,7 +34,8 @@
  *    {"run","step":"wait-ended","waits"}       the sleeps ran out with no message
  *    {"run","step":"send","at"}                the moment it called envoy_send
  *    {"run","step":"sent","ok","detail"}       that call's output
- *    {"run","step":"end"}
+ *    {"run","step":"end"}                      the turn's last answer; the leg reads the lines
+ *                                              above, never this one, as the turn's end
  *  `at` is this machine's clock in Unix ms. It holds no credential and prints no secret. */
 
 import { appendFileSync, readFileSync } from "node:fs";
@@ -195,8 +199,16 @@ export function nextTurn(
     dispatch ??= findTool(item.tools, "dispatch");
     send ??= findTool(item.tools, "envoy_send");
   }
-  const offersSearch =
-    Array.isArray(body.tools) && (body.tools as Item[]).some((tool) => tool.type === "tool_search");
+  const listed = Array.isArray(body.tools) ? (body.tools as Item[]) : undefined;
+  const offersSearch = listed?.some((tool) => tool.type === "tool_search") ?? false;
+  // A request that lists tools, none of them tool_search, the shell or a plugin tool, and holds no
+  // tool_search_output is not the turn's: 107 ms into an interactive turn, 0.171.0 sends one that
+  // offers apply_patch alone. It is answered with a message and logs nothing, so the leg waits on
+  // for the turn's own lines.
+  const offersShell = listed?.some((tool) => tool.name === "exec_command") ?? false;
+  const offersPlugin = dispatch !== undefined || send !== undefined;
+  if (listed !== undefined && !offersSearch && !offersShell && !offersPlugin && !searched)
+    return { items: [message(`outside-e2e: not the turn of ${run}`, n)], log };
   if (dispatch === undefined && !searched && offersSearch) {
     return {
       items: [

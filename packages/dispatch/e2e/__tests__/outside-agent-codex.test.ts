@@ -51,6 +51,10 @@ const release = "5.0.1";
  *  directory; a run of the leg whose cleanup took minutes (the deletion of a tree of 80 879
  *  entries) went unseen before this row. */
 const exitAfterRows = 60_000;
+/** The screens a run that passes answers, as each row's evidence names them: the folder trust of a
+ *  first start in a git repository, the two first-run screens, and the envoy_send approval. */
+const answeredScreens =
+  'screens answered: main: Folder access -> Trust and continue; main: Hooks need review -> Trust all and continue; main: Meet GPT-6 Sol -> Use existing model; main: Allow the envoy MCP server to run tool "envoy_send"? -> Always allow';
 
 interface Whoami {
   readonly exit: number;
@@ -117,6 +121,10 @@ interface CodexScenario {
   /** The first-run menus draw each move late, 2.5 s after the keys, as a slow machine's Codex can:
    *  a key sent before the last move is drawn is one move more. */
   readonly slowScreens?: boolean;
+  /** Each run's model log holds an `end` line right after its tools, and its turn goes on 3 s
+   *  later, as the stand-in model logged one for the request Codex 0.171.0 sends 107 ms into an
+   *  interactive turn (it offers apply_patch alone) before that request was ignored. */
+  readonly endBeforeTurn?: boolean;
 }
 
 /** Where the real provenance helper is: the stand-in imports its tree comparison. */
@@ -193,6 +201,7 @@ const seen = ["ENVOY_URL", "DISPATCH_URL", "HOME", "AGENT_SECRETS_MACHINE_IDENTI
 writeFileSync(join(state, "exec-" + run + ".json"), JSON.stringify({
   argv,
   cwd: process.cwd(),
+  config: readFileSync(config, "utf8"),
   env: Object.fromEntries(seen.map((name) => [name, process.env[name] ?? null])),
 }));
 // The pane: what the stand-in tmux shows of it, and the keys it was sent.
@@ -226,6 +235,17 @@ const forever = () => new Promise(() => {});
 if (scenario.unexpectedScreen) {
   show(["Do you trust the files in this folder?", "", "› 1. Yes, continue", "  2. No, quit"]);
   await forever();
+}
+// A first start in a git repository asks whether to trust the folder, unless config.toml already
+// trusts it, and keeps the answer there.
+const cwd = process.cwd();
+if (existsSync(join(cwd, ".git")) && !readFileSync(config, "utf8").includes('[projects."' + cwd + '"]')) {
+  const answer = await menu("  Folder access\\n  " + cwd + "\\n  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings.", ["Trust and continue", "Back to Agent Command Center"]);
+  if (answer !== "Trust and continue") {
+    show(["Agent Command Center"]);
+    await forever();
+  }
+  appendFileSync(config, '\\n[projects."' + cwd + '"]\\ntrust_level = "trusted"\\n');
 }
 let hooksRun = true;
 let newModel = false;
@@ -262,6 +282,10 @@ if (newModel || !plugin) {
 }
 const until = async (file) => { while (!existsSync(join(state, file))) await Bun.sleep(25); };
 log({ step: "tools", dispatch: "mcp__envoy.dispatch", send: "mcp__envoy.envoy_send" });
+if (scenario.endBeforeTurn) {
+  log({ step: "end" });
+  await Bun.sleep(3000);
+}
 const wanted = (scenario.whoami ?? {})[run] ?? (run === "inside" ? { exit: 2 } : { exit: 0 });
 log({
   step: "whoami",
@@ -282,15 +306,27 @@ if (run === "main") {
   // sleeps until the leg stops it.
   if (!hooksRun) await forever();
   await until("send-attempted");
+  if (scenario.endBeforeTurn) await Bun.sleep(3000);
   // The PostToolUse hook puts what reached the session into the turn: only a trusted hook runs.
   if (existsSync(join(state, "control"))) log({ step: "control", at: Date.now() });
   if (existsSync(join(state, "inbound"))) {
     log({ step: "inbound", at: Date.now(), waits: 1 });
     log({ step: "send", at: Date.now() });
-    if (!scenario.sendFails && !scenario.outboundDropped) {
+    // Codex asks before the plugin's envoy_send runs, unless the configuration lets every tool run
+    // (approval_policy = "never") or keeps an earlier "Always allow".
+    const settings = readFileSync(config, "utf8");
+    let allowed = true;
+    if (!settings.includes('approval_policy = "never"') && !settings.includes("[mcp_servers.envoy.tools.envoy_send]")) {
+      const answer = await menu('  Allow the envoy MCP server to run tool "envoy_send"?', ["Allow", "Allow for this session", "Always allow", "Cancel"]);
+      if (answer === "Always allow") appendFileSync(config, '\\n[mcp_servers.envoy.tools.envoy_send]\\napproval = "always"\\n');
+      allowed = answer !== "Cancel";
+      show(["› " + argv.at(-1), "", "• Called envoy.envoy_send"]);
+    }
+    const fails = scenario.sendFails || !allowed;
+    if (!fails && !scenario.outboundDropped) {
       writeFileSync(join(state, "outbound"), JSON.stringify({ text: plan.outbound, from: session, to: plan.outboundTo }));
     }
-    log({ step: "sent", ok: !scenario.sendFails, detail: scenario.sendFails ? "tool call error: Envoy is not ready" : "delivered to " + plan.outboundTo });
+    log({ step: "sent", ok: !fails, detail: scenario.sendFails ? "tool call error: Envoy is not ready" : allowed ? "delivered to " + plan.outboundTo : "tool call cancelled" });
   } else {
     log({ step: "wait-ended", waits: plan.waitCalls });
   }
@@ -570,11 +606,18 @@ writeFileSync(join(prefix, "node_modules", ".package-lock.json"), ${JSON.stringi
   return { code, stdout, stderr, state, inside, listener, loginHome, outlived };
 }
 
-/** The leg's run of `run`, as the stand-in codex recorded it. */
+/** The leg's run of `run`, as the stand-in codex recorded it as it started: its arguments, its
+ *  folder and whether that is a git repository, config.toml then, and its environment. */
 function execOf(
   run: CodexRun,
   name: string
-): { argv: string[]; env: Record<string, string | null> } {
+): {
+  argv: string[];
+  cwd: string;
+  git: boolean;
+  config: string;
+  env: Record<string, string | null>;
+} {
   return JSON.parse(readFileSync(join(run.state, `exec-${name}.json`), "utf8"));
 }
 
@@ -652,10 +695,9 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
       );
       expect(rows.get("C0")?.got).toContain("npm audit signatures: the attestation is verified");
       expect(rows.get("C0")?.got).toContain("holds the device login");
-      // The first start answered as the outside person is told to, and no later start asked again.
-      expect(rows.get("C1")?.got).toContain(
-        "first-start screens: main: Hooks need review -> Trust all and continue; main: Meet GPT-6 Sol -> Use existing model"
-      );
+      // The screens answered as the outside person is told to: the folder trust, the two first-run
+      // screens and the envoy_send approval, each once; no later start asked again.
+      expect(rows.get("C1")?.got).toContain(answeredScreens);
       expect(rows.get("C2")?.got).toContain(`at ${run.inside} it exited 2`);
       expect(rows.get("C4")?.got).toContain("example-peer-foreign answered 404");
       expect(rows.get("C5")?.got).toContain("read it from codex-thread-main");
@@ -689,6 +731,10 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
         AGENT_SECRETS_PROJECTS: "EXAMPLE",
         DISPATCH_TOKEN: null,
       });
+      // Codex ran with the outside person's configuration: the leg set no approval policy,
+      // sandbox mode or folder trust of its own, and the folder it started in is a git repository.
+      expect(main.config).not.toMatch(/approval_policy|sandbox_mode|trust_level/);
+      expect(main.git).toBe(true);
       expect(execOf(run, "edge-refused").env.ENVOY_URL).toBe("http://127.0.0.1:1");
       expect(execOf(run, "inside").env.DISPATCH_URL).toBe(run.inside);
     },
@@ -921,9 +967,20 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
       expect({ verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
         verdicts: Object.fromEntries(codexRows.map((name) => [name, "PASS"])),
       });
-      expect(rowOf(run, "C1").row?.got).toContain(
-        "first-start screens: main: Hooks need review -> Trust all and continue; main: Meet GPT-6 Sol -> Use existing model"
-      );
+      expect(rowOf(run, "C1").row?.got).toContain(answeredScreens);
+      expect(run.code).toBe(0);
+    },
+    // The run, a bounded child under the Codex run's bound.
+    rowLimit("codexRun")
+  );
+
+  test(
+    "a line the rows do not read ends no run: with an end logged before each turn's calls, the turn's own lines still come and C2-C6 pass",
+    async () => {
+      const run = await codexStandInRun({ endBeforeTurn: true });
+      expect({ verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
+        verdicts: Object.fromEntries(codexRows.map((name) => [name, "PASS"])),
+      });
       expect(run.code).toBe(0);
     },
     // The run, a bounded child under the Codex run's bound.
@@ -1104,6 +1161,58 @@ describe("the Codex leg's provenance reads", () => {
       only_installed: "extra.txt",
     });
   });
+
+  test(
+    "attestation downloads the release's tarball and reads whether it is the bytes the registry's integrity names",
+    async () => {
+      const served = Buffer.from("the release's tarball, as the registry serves it");
+      const good = `sha512-${new Bun.CryptoHasher("sha512").update(served).digest("base64")}`;
+      // The same integrity with one character changed: the tarball is not its bytes.
+      const bad = `${good.slice(0, 10)}${good[10] === "A" ? "B" : "A"}${good.slice(11)}`;
+      let named = good;
+      const registry = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: (request) =>
+          new URL(request.url).pathname === "/release.tgz"
+            ? new Response(served)
+            : Response.json({
+                dist: { integrity: named, tarball: new URL("/release.tgz", request.url).href },
+              }),
+      });
+      const read = async () => {
+        const file = join(scratch("tarball-file"), "release.tgz");
+        const ran = await runBounded({
+          argv: ["bun", provenanceHelper, "attestation", "@sjawhar/codex-envoy", "5.0.1", file],
+          bound: "short",
+          env: {
+            PATH: process.env.PATH ?? "",
+            HOME: scratch("home"),
+            OUTSIDE_NPM_REGISTRY: `http://127.0.0.1:${registry.port}`,
+          },
+          from: import.meta.url,
+        });
+        return { answer: JSON.parse(ran.stdout), written: readFileSync(file, "utf8") };
+      };
+      try {
+        expect(await read()).toEqual({
+          answer: { status: 200, integrity: good, tarball_matches: true, provenance: false },
+          written: served.toString(),
+        });
+        named = bad;
+        expect((await read()).answer).toEqual({
+          status: 200,
+          integrity: bad,
+          tarball_matches: false,
+          provenance: false,
+        });
+      } finally {
+        registry.stop(true);
+      }
+    },
+    // The two reads, one after another, each a bounded child under the short bound.
+    rowLimit("short", "short")
+  );
 });
 
 describe("the Codex leg's stand-in model, on the requests Codex sends it", () => {
@@ -1161,6 +1270,17 @@ describe("the Codex leg's stand-in model, on the requests Codex sends it", () =>
     expect(whoami.log).toEqual([
       { step: "tools", dispatch: "mcp__envoy.dispatch", send: "mcp__envoy.envoy_send" },
     ]);
+    // 107 ms into an interactive turn, 0.171.0 sends a request that offers apply_patch alone and
+    // holds the prompt twice. It is not the turn's: it is answered with a message and logs
+    // nothing, no tools and no end, so the leg waits on for the turn's own lines.
+    const side = nextTurn(
+      plan,
+      { input: [prompt("main"), prompt("main")], tools: [{ name: "apply_patch", type: "custom" }] },
+      3,
+      logged,
+      1000
+    );
+    expect(side).toMatchObject({ items: [{ type: "message" }], log: [] });
     const said = `Session th-1 acts for ${person}: issues you create without an assignee are assigned to ${person}. It may write project EXAMPLE and no other.\n[exit 0]`;
     input = [
       ...input,

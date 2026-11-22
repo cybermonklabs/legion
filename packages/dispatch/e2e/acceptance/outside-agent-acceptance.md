@@ -303,21 +303,27 @@ is, so the Codex agent trades the same login and no second one is approved. The 
   --codex-out`), for a development run, whose C0 reads UNKNOWN, so it never passes the gate;
 - runs the command the outside person is told to run, `codex --no-daemon -m gpt-5.5 "<prompt>"`,
   three times, each in a tmux pane of its own as P4 runs Oh My Pi, with no hook-trust bypass and
-  never `codex exec`, with `approval_policy = "never"` and `sandbox_mode = "danger-full-access"`,
+  never `codex exec`, in a folder that is a git repository, with no approval policy, sandbox mode
+  or folder trust of the leg's own (its `config.toml` names the stand-in model's provider alone),
   under `env -i`, that HOME, the `CODEX_HOME` and the outside person's settings alone: the main run
   (C1-C5), a run with `ENVOY_URL` at `http://127.0.0.1:1`, a port no process but root's can listen
   on, read to refuse a connection before and after the run (C6), and a run with `DISPATCH_URL` at
-  `OUTSIDE_INSIDE_DISPATCH_URL` (C2's control). It reads each screen of the interactive start and
-  answers the two first-run ones as the outside person is told to: "Hooks need review" with
-  "Trust all and continue", and "Meet GPT-6 Sol" with "Use existing model". It moves the menu one
-  entry at a time toward the entry that reads so, each move once the screen shows the last one,
-  and takes it. Codex keeps both answers, so the later runs ask neither. Any other screen that
-  holds the start for `OUTSIDE_CODEX_START_SECONDS` (default 90) makes the run's rows UNKNOWN,
-  naming the screen's text. `OUTSIDE_CODEX_FIRST_START=no-trust` or
+  `OUTSIDE_INSIDE_DISPATCH_URL` (C2's control). It reads each screen and answers those the outside
+  person is told how to answer: "Trust this folder?" (the folder's first start) with "Trust and
+  continue", "Hooks need review" with "Trust all and continue", "Meet GPT-6 Sol" with "Use
+  existing model", and, at the model's first `envoy_send`, `Allow the envoy MCP server to run tool
+  "envoy_send"?` with "Always allow". It moves the menu one entry at a time toward the entry that
+  reads so, each move once the screen shows the last one, takes it, and waits for the screen to
+  go. Codex keeps each answer in `config.toml`, so no later run asks it again. Any other screen
+  that holds the start for `OUTSIDE_CODEX_START_SECONDS` (default 90) makes the run's rows
+  UNKNOWN, naming the screen's text. `OUTSIDE_CODEX_FIRST_START=no-trust` or
   `new-model` is a control run that answers "Continue without trusting" or "Try new model" instead:
   with the hooks untrusted no session record, registration or delivery comes, so C1, C4 and C5 do
   not pass; with the new model the session lists no plugin tool, so C2 and C3 do not pass. Each
-  row's evidence names the screens and the answers, and a control run;
+  row's evidence names the screens and the answers, and a control run. Each run is stopped once
+  the model's log holds the lines its rows read (the main run's `sent` or `wait-ended`, the other
+  two runs' `whoami`), or once its turn lists no plugin tool, within its bound; no other line ends
+  it;
 - runs the installed release's own entry from a terminal, `bun <root>/dist/dispatch.js whoami`,
   with the host `codex` and a terminal session of its own, under that HOME and those settings (C7).
 
@@ -342,7 +348,7 @@ name, and the plugin's version, its integrity at the registry and the root Codex
 | C2 | `dispatch whoami` through the plugin's `dispatch` tool names the Codex session, the test person as owner and the scratch project, and no other session for the credential; and the same call with `DISPATCH_URL` at `OUTSIDE_INSIDE_DISPATCH_URL` does not name that person and project. The plugin refusing its own configuration (`dispatch config: ...`, as a release without the device login refuses `AGENT_SECRETS_MACHINE_IDENTITY=device-login`) reads FAIL. Without the input, or where the inside origin answers the same, C2 reads UNKNOWN: its PASS would not tell the edge from the inside origin. The command's whoami prints no scopes; C3 reads them on the comment the tool writes, and P3 on the same login's token. |
 | C3 | `dispatch comment` through the tool on the scratch issue exits 0, and the probe reads that comment on the issue, its author an agent of the test person, in the scratch project, as the Codex session, with no scope. A refusal (exit 1), or exit 0 with no such comment or another author, reads FAIL. |
 | C4 | The probe sends the session `outside-e2e codex-in <nonce>` through the edge, and a model request holds it within 20 s: the plugin's PostToolUse hook puts it there. The control: before that the probe sends `<peer>-foreign`, the session outside the project of row P6, another message, which the edge answers 404 and which no request ever holds. That message reaching the session reads FAIL, and so does the session's own message never reaching it; a control send answered otherwise than 404 reads UNKNOWN. |
-| C5 | The model's `envoy_send` reaches the probe's receiver, a session of the project that opened its relay socket first, within 10 s, sent as the Codex session. An error from the tool, nothing received, or another sender reads FAIL. |
+| C5 | The model's `envoy_send` reaches the probe's receiver, a session of the project that opened its relay socket first, within 10 s, sent as the Codex session. The 10 s count from the model's send, or from the leg's "Always allow" at Codex's approval prompt where that came later, as the send waits for the outside person there. An error from the tool, nothing received, or another sender reads FAIL. |
 | C6 | With `ENVOY_URL` at `http://127.0.0.1:1`, which refuses a connection before and after the run, `dispatch whoami` through the tool still names the test person and the project: the `dispatch` tool works while Envoy cannot be reached. It is read only once C2's whoami passed; a port that did not refuse reads UNKNOWN. |
 | C7 | The installed release's own entry, `bun <root>/dist/dispatch.js whoami`, run from a terminal under P2's login with the outside person's settings, the host `codex` and a terminal session of its own, names the test person and the scratch project: the entry the outside person's install text logs in with. A release with no such entry, one whose entry refuses its configuration, or one that names another person or project reads FAIL. |
 
