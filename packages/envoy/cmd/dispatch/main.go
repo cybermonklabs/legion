@@ -1977,17 +1977,17 @@ const searchFillDeferredLine = "dispatch: the keyword fill is deferred; this pro
 // SQL, so they are fixed here and never read from input.
 var searchFillTables = [...]string{"search_text_versions", "search_text_versions_fill"}
 
-// The bounds of each read of searchFillTableRows. Each read sets lock_timeout and
+// The three bounds of each read of searchFillTableRows. Each read sets lock_timeout and
 // statement_timeout in a transaction of its own, so Postgres itself ends a read that waits for a
-// lock on its table (55P03, after searchFillTableLockTimeout) or that runs on for another reason
-// (57014, after searchFillTableStatementTimeout), and no wait is left at the server once the boot
-// moves on. searchFillTableReadTimeout is the client's own bound, for a server that answers
-// nothing; pgx then closes the connection and asks the server to cancel the statement. It also
-// covers taking a connection, which can mean dialling one, so it sits 4 s past the statement
-// timeout: a slow dial still leaves the server's own errors to end the read. The reads run one
-// after the other before the server listens, so the boot waits at most searchFillTableLockTimeout
-// for each table a lock holds, and at most searchFillTableReadTimeout for each table whatever
-// happens.
+// lock on its table (55P03, after searchFillTableLockTimeout) or that runs on for any reason
+// (57014, after searchFillTableStatementTimeout), and no read is left running at the server once
+// the boot moves on. searchFillTableReadTimeout is the client's own deadline for each table, for a
+// server that answers nothing: pgx then closes the connection and asks the server to cancel the
+// statement. It also covers taking a connection from the pool, a dial or a wait for a free one
+// included, so it sits 4 s past the statement timeout: a slow dial still leaves the server's own
+// errors to end the read. The two reads run one after the other before the server listens, so
+// they delay the boot by at most twice searchFillTableReadTimeout in all; a lock on a table alone
+// delays it by about searchFillTableLockTimeout for that table.
 const (
 	searchFillTableLockTimeout      = 5 * time.Second
 	searchFillTableStatementTimeout = 6 * time.Second
@@ -2018,9 +2018,11 @@ func searchFillTableRows(ctx context.Context, pool *store.Pool) []any {
 }
 
 // searchFillTableHoldsRow reads whether table holds a row by
-// `select exists(select 1 from public.<table>)`, which stops at the first row and reads no
-// column, so a filled table costs the read no more than an empty one. It reads in a read-only
-// transaction of its own that first sets the bounds above, local to that transaction.
+// `select exists(select 1 from public.<table>)`, which reads no column and stops at the first
+// visible row; it may scan dead rows before that one, which searchFillTableStatementTimeout bounds.
+// It reads in a read-only transaction of its own that first sets the bounds above, local to that
+// transaction. The read takes ACCESS SHARE on the table for its statement: row writes go on beside
+// it, but a TRUNCATE or another statement that wants ACCESS EXCLUSIVE waits behind it.
 func searchFillTableHoldsRow(ctx context.Context, pool *store.Pool, table string) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, searchFillTableReadTimeout)
 	defer cancel()
