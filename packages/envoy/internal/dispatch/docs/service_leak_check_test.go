@@ -32,7 +32,11 @@ var leakCheckReported = regexp.MustCompile(`still alive after (\S+)\n`)
 // test (TestLeakCheckChild) and reads the check's exit code, its lines and how long it waited:
 //   - one service shut down and then held for longer than leakWaitBudget, counted from the
 //     check's own start (leakCheckStarted) and not from the test's end, so the database drops
-//     storetest.Run waits for in between cannot shorten it: the check waits it out and passes;
+//     storetest.Run waits for in between cannot shorten it: the check says at leakWaitBudget what
+//     it is waiting for, waits it out and passes;
+//   - one service shut down and held 5 s, in a child whose tests end later than its -test.timeout
+//     less leakCheckMargin: the check still gives it leakWaitBudget, since the binary's alarm has
+//     stopped by then (m.Run stops it before TestMain's check runs), and passes;
 //   - one service never shut down: the check fails it by the name of the test that built it, and
 //     no later than leakWaitBudget allows, far sooner than the child's deadline, at which a
 //     shut-down service would be given up on.
@@ -42,13 +46,18 @@ func TestTheLeakCheckWaitsForAShutDownServiceAndFailsOneNeverShutDown(t *testing
 	}
 	for _, test := range []struct {
 		child    string
+		timeout  string
 		wantExit int
 		want     []string
 		// reportedWithin, when set, bounds how long the check waited before it reported.
 		reportedWithin time.Duration
 	}{
-		{child: "shut-down-held", wantExit: 0, want: []string{"docs: 1 services built, 0 still alive after"}},
-		{child: "never-shut-down", wantExit: 1, want: []string{
+		{child: "shut-down-held", timeout: "3m", wantExit: 0, want: []string{
+			"docs: the service built by docs.TestLeakCheckChild was shut down and is still reachable after 30s; waiting for it to be collected until",
+			"docs: 1 services built, 0 still alive after",
+		}},
+		{child: "shut-down-near-the-timeout", timeout: "40s", wantExit: 0, want: []string{"docs: 1 services built, 0 still alive after"}},
+		{child: "never-shut-down", timeout: "3m", wantExit: 1, want: []string{
 			"docs: 1 services built, 1 still alive after",
 			"docs: a service built by docs.TestLeakCheckChild is still alive and was never shut down",
 			"docs: a service still alive fails this run",
@@ -58,7 +67,7 @@ func TestTheLeakCheckWaitsForAShutDownServiceAndFailsOneNeverShutDown(t *testing
 			t.Parallel()
 			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 			defer cancel()
-			child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestLeakCheckChild$", "-test.timeout=3m")
+			child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestLeakCheckChild$", "-test.timeout="+test.timeout)
 			child.Env = append(os.Environ(), leakCheckChildEnv+"="+test.child)
 			output, err := child.CombinedOutput()
 			exit := 0
@@ -123,6 +132,18 @@ func TestLeakCheckChild(t *testing.T) {
 			t.Fatalf("shutdown document service: %v", err)
 		}
 		holdFromTheCheck(service, leakWaitBudget+5*time.Second)
+	case "shut-down-near-the-timeout":
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Fatalf("shutdown document service: %v", err)
+		}
+		// End the test 2 s after the binary's -test.timeout less leakCheckMargin, so the check
+		// starts past that instant, then hold the service 5 s into the check.
+		limit, ok := testTimeout()
+		if !ok {
+			t.Fatalf("the child runs with no -test.timeout, so its check has no deadline to start past")
+		}
+		time.Sleep(time.Until(binaryStarted.Add(limit - leakCheckMargin + 2*time.Second)))
+		holdFromTheCheck(service, 5*time.Second)
 	case "never-shut-down":
 		leakCheckHeld = service
 	default:

@@ -30,8 +30,12 @@ const leakWaitBudget = 30 * time.Second
 // leakWaitStep is how long the report sleeps between the pairs of collections it forces.
 const leakWaitStep = 250 * time.Millisecond
 
-// leakCheckMargin is what the wait for shut-down services leaves of the binary's deadline, so the
-// report is written before the binary's timeout panics.
+// leakCheckMargin is how long before the binary's -test.timeout runs out the wait for shut-down
+// services gives up, unless that would give them less than leakWaitBudget (leakCheckDeadline).
+// The binary's own alarm cannot end the wait: m.Run stops it before it returns, and TestMain runs
+// this check after (stopAlarm in testing's M.Run). What ends a binary still running then is the go
+// command, which kills it at -timeout plus a minute (testKillTimeout in cmd/go/internal/test), and
+// either end of the wait comes before that.
 const leakCheckMargin = 30 * time.Second
 
 // binaryStarted is when this test binary began, from which its -test.timeout counts.
@@ -84,7 +88,8 @@ func buildingTest() string {
 }
 
 // liveService is a service a weak pointer still resolves: the test that built it, and whether
-// that service was shut down (Shutdown stops it accepting work first, on every path).
+// that service was shut down. Shutdown sets stopping on each path it returns by, once its rooms'
+// workers have drained, so one whose context ran out counts as shut down too.
 type liveService struct {
 	test     string
 	shutDown bool
@@ -103,19 +108,31 @@ func liveServices() (built int, live []liveService) {
 	return len(builtServices), live
 }
 
-// leakCheckDeadline is when the wait for shut-down services gives up: leakCheckMargin before the
-// binary's -test.timeout runs out, and no end when there is no timeout, as testwait's waits have
-// none then.
-func leakCheckDeadline() (time.Time, bool) {
+// testTimeout is the binary's -test.timeout, and false when it has none.
+func testTimeout() (time.Duration, bool) {
 	timeout := flag.Lookup("test.timeout")
 	if timeout == nil {
-		return time.Time{}, false
+		return 0, false
 	}
 	limit, ok := timeout.Value.(flag.Getter).Get().(time.Duration)
-	if !ok || limit <= 0 {
+	return limit, ok && limit > 0
+}
+
+// leakCheckDeadline is when the wait for shut-down services gives up, for a check that began at
+// start: leakCheckMargin before the binary's -test.timeout runs out, or leakWaitBudget after start
+// when that is later, so no service is given less than leakWaitBudget however close to its
+// timeout the binary's tests ended. With no timeout there is no end, as testwait's waits have none
+// then.
+func leakCheckDeadline(start time.Time) (time.Time, bool) {
+	limit, ok := testTimeout()
+	if !ok {
 		return time.Time{}, false
 	}
-	return binaryStarted.Add(limit - leakCheckMargin), true
+	deadline := binaryStarted.Add(limit - leakCheckMargin)
+	if budgetEnds := start.Add(leakWaitBudget); deadline.Before(budgetEnds) {
+		deadline = budgetEnds
+	}
+	return deadline, true
 }
 
 // reportLeakedServices forces collections until no service the tests built is still reachable,
@@ -125,14 +142,17 @@ func leakCheckDeadline() (time.Time, bool) {
 // still alive then means a test built a service and never shut it down, so that service, its rooms
 // and their documents stayed in memory for the rest of the binary's life, and the lines after the
 // count name the tests to fix, each by a t.Cleanup that shuts the service it built down. A service
-// that was shut down is waited for until it is collected, or until the binary's deadline is near
-// (leakCheckDeadline): one still reachable then is held by something after its shutdown.
+// that was shut down is waited for until it is collected, or until the deadline (leakCheckDeadline,
+// never sooner than leakWaitBudget): one still reachable then is held by something after its
+// shutdown. Each shut-down service still reachable at leakWaitBudget is named once then, with how
+// long the wait may go on, so a long wait says what it waits for.
 func reportLeakedServices() bool {
 	close(leakCheckStarted)
 	start := time.Now()
-	deadline, bounded := leakCheckDeadline()
+	deadline, bounded := leakCheckDeadline(start)
 	var built int
 	var live []liveService
+	told := false
 	for {
 		// Twice: the first collection can leave a service reachable from a finalizer it queued.
 		runtime.GC()
@@ -143,6 +163,10 @@ func reportLeakedServices() bool {
 		}
 		if neverShutDown(live) && time.Since(start) >= leakWaitBudget {
 			break
+		}
+		if !told && time.Since(start) >= leakWaitBudget {
+			told = true
+			tellWaiting(live, deadline, bounded)
 		}
 		if bounded && !time.Now().Before(deadline) {
 			break
@@ -173,4 +197,17 @@ func neverShutDown(live []liveService) bool {
 		}
 	}
 	return false
+}
+
+// tellWaiting names each of live, every one shut down, as still reachable after leakWaitBudget, and
+// says until when the check waits for it to be collected.
+func tellWaiting(live []liveService, deadline time.Time, bounded bool) {
+	until := "with no end, since the binary has no -test.timeout"
+	if bounded {
+		until = "until " + deadline.Format(time.RFC3339)
+	}
+	for _, service := range live {
+		fmt.Fprintf(os.Stderr, "docs: the service built by %s was shut down and is still reachable after %s; waiting for it to be collected %s\n",
+			service.test, leakWaitBudget, until)
+	}
 }
