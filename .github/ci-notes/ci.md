@@ -1635,6 +1635,16 @@ where one filter had to cover both: a change to a shell script, to packages/clau
 to bun.lock ran 1,083 s (median) of Go tests that could not see it. Fail-open with typecheck
 and test, for the reason #the-fail-open-jobs-and-what-they-buy-while-changes-is-broken gives.
 
+It is two jobs of .github/workflows/ci-job-daemon-go.yaml, which run at the same time:
+daemon-go-race runs the race step, and daemon-go runs the rest. The two steps share no
+package, so nothing orders them, and in one job their times added up: over the 158 green
+daemon-go jobs of ci.yaml runs on 2026-11-22 (13:46Z to 18:10Z) the race step took 26.8 min
+at the median and the plain step 12.0, after 1.4 min of setup, for a job of 41.0 min. At the
+same time, the race job alone sets the wall time, and the second runner costs the 1.4 min of
+setup it repeats. Splitting does no test less work: the race step's time is internal/daemon's
+(1,352 s of the step's 1,422 s in run 45048924209), and that package's tests are where the
+rest of it is.
+
 ## Why the three plugin pack tests are a job of their own
 
 The three tests of the daemon's Go suite that .github/scripts/ci_job_reads.py's
