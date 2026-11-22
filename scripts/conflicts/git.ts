@@ -22,20 +22,23 @@ export async function run(cmd: string[], accept: (code: number) => boolean): Pro
 export const success = (code: number) => code === 0;
 const anyExit = () => true;
 
-/** A local clone of the measured repository, every call `git --git-dir <gitDir> …`. */
+/** A local clone of the measured repository, every call but its first clone
+ * `<program> --git-dir <gitDir> …`, where `program` is the git the caller names: `git` on PATH
+ * unless it names another. */
 export class GitRepo {
   constructor(
     readonly gitDir: string,
-    readonly url: string
+    readonly url: string,
+    readonly program = "git"
   ) {}
 
   private git(args: string[], accept: (code: number) => boolean = success): Promise<Exit> {
-    return run(["git", "--git-dir", this.gitDir, ...args], accept);
+    return run([this.program, "--git-dir", this.gitDir, ...args], accept);
   }
 
   async ensure(): Promise<void> {
     if (!existsSync(this.gitDir)) {
-      await run(["git", "clone", "--bare", "-q", this.url, this.gitDir], success);
+      await run([this.program, "clone", "--bare", "-q", this.url, this.gitDir], success);
     }
     await this.git([
       "fetch",

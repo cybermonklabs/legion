@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { gitBinary } from "@legion/test-fixtures/version-control-tools";
 import { analysePullRequest, classifyFixes, resolveFixes } from "../analyse.ts";
 import { GitRepo } from "../git.ts";
 import {
@@ -18,28 +19,45 @@ const ABSENT = "0123456789abcdef0123456789abcdef01234567";
 const CHANGELOG = "packages/x/CHANGELOG.md";
 const directories: string[] = [];
 
+/** The git binary every row runs, for its own commits and the code under test's reads alike: the
+ * one `git` on PATH runs (`gitBinary`), read once, at the first row that asks. A machine's own
+ * wrapper can head PATH and add hooks of its own: the dotfiles git shim gives each commit hooks
+ * that refuse it where the shim cannot read its term list, which failed every row. */
+let binary: Promise<string> | undefined;
+function realGit(): Promise<string> {
+  binary ??= mkdtemp(join(tmpdir(), "conflicts-analyse-git-")).then((dir) => {
+    directories.push(dir);
+    return gitBinary(dir);
+  });
+  return binary;
+}
+
 afterAll(async () => {
   await Promise.all(directories.map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
-/** A throwaway work tree whose git runs with a fixed identity, no user config, and a clock that
- * advances one minute per command, so commit oids and dates are reproducible. */
+/** A throwaway work tree whose git (`realGit`) runs with a fixed identity, no user config, and a
+ * clock that advances one minute per command, so commit oids and dates are reproducible. */
 class Scratch {
   private tick = 0;
 
-  private constructor(readonly dir: string) {}
+  private constructor(
+    readonly dir: string,
+    readonly program: string
+  ) {}
 
   static async create(): Promise<Scratch> {
+    const program = await realGit();
     const dir = await mkdtemp(join(tmpdir(), "conflicts-analyse-"));
     directories.push(dir);
-    const scratch = new Scratch(dir);
+    const scratch = new Scratch(dir, program);
     await scratch.git(["init", "-q", "-b", "main"]);
     return scratch;
   }
 
   async git(args: string[], accept: number[] = [0]): Promise<string> {
     const date = `${1_798_000_000 + 60 * this.tick++} +0000`;
-    const proc = Bun.spawn(["git", ...args], {
+    const proc = Bun.spawn([this.program, ...args], {
       cwd: this.dir,
       stdin: "ignore",
       stdout: "pipe",
@@ -121,7 +139,7 @@ class Scratch {
   }
 
   repo(): GitRepo {
-    return new GitRepo(join(this.dir, ".git"), "file:///nonexistent");
+    return new GitRepo(join(this.dir, ".git"), "file:///nonexistent", this.program);
   }
 }
 

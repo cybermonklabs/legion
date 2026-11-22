@@ -8,9 +8,10 @@
  *  remove. */
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gitBinary } from "@legion/test-fixtures/version-control-tools";
 
 import {
   copyLeg,
@@ -143,8 +144,9 @@ export interface Checkout {
   readonly apart: string;
 }
 
-function git(dir: string, ...args: string[]): string {
-  const ran = Bun.spawnSync(["git", "-C", dir, "-c", "init.defaultBranch=main", ...args], {
+/** Runs `git`, the git binary itself (`gitBinary`), in `dir` with a home of the checkout's own. */
+function runGit(git: string, dir: string, ...args: string[]): string {
+  const ran = Bun.spawnSync([git, "-C", dir, "-c", "init.defaultBranch=main", ...args], {
     env: {
       PATH: process.env.PATH ?? "",
       HOME: dir,
@@ -159,22 +161,24 @@ function git(dir: string, ...args: string[]): string {
   return ran.stdout.toString().trim();
 }
 
-function checkout(scratch: Scratch): Checkout {
+function checkout(scratch: Scratch, git: string): Checkout {
   const dir = scratch("checkout");
-  git(dir, "init", "-q", "--template=");
-  git(dir, "commit", "-q", "--allow-empty", "-m", "held");
-  const held = git(dir, "rev-parse", "HEAD");
-  git(dir, "commit", "-q", "--allow-empty", "-m", "built");
-  const built = git(dir, "rev-parse", "HEAD");
-  const apart = git(dir, "commit-tree", `${held}^{tree}`, "-p", held, "-m", "apart");
+  runGit(git, dir, "init", "-q", "--template=");
+  runGit(git, dir, "commit", "-q", "--allow-empty", "-m", "held");
+  const held = runGit(git, dir, "rev-parse", "HEAD");
+  runGit(git, dir, "commit", "-q", "--allow-empty", "-m", "built");
+  const built = runGit(git, dir, "rev-parse", "HEAD");
+  const apart = runGit(git, dir, "commit-tree", `${held}^{tree}`, "-p", held, "-m", "apart");
   return { dir, held, built, apart };
 }
 
-/** A PATH of the text tools, the few more the stand-in run reads with, and the stand-ins of
- *  `agent-secrets`, `agent-secrets-helper` and `gh`, which keep their state in `state`. The `gh`
- *  stand-in runs `publicCommand` as the workflow's run. */
-function standInPath(scratch: Scratch, state: string, publicCommand: string): string {
-  const bin = textToolPath(scratch, ["git", "base64", "sh", "printenv", "cp", "bun"]);
+/** A PATH of the text tools, the few more the stand-in run reads with, the git binary itself
+ *  (`git`, from `gitBinary`, so no wrapper a machine puts first on PATH answers for it), and the
+ *  stand-ins of `agent-secrets`, `agent-secrets-helper` and `gh`, which keep their state in
+ *  `state`. The `gh` stand-in runs `publicCommand` as the workflow's run. */
+function standInPath(scratch: Scratch, state: string, publicCommand: string, git: string): string {
+  const bin = textToolPath(scratch, ["base64", "sh", "printenv", "cp", "bun"]);
+  symlinkSync(git, join(bin, "git"));
   // The helper's one duty here is its socket, which the leg waits for; Bun makes it.
   script(
     join(bin, "agent-secrets-helper"),
@@ -509,7 +513,8 @@ export async function prepareStandIn(
     join(state, "sweep-verdict"),
     `${standIns.sweep?.verdict ?? "PASS: every read refused"}\n`
   );
-  const repo = checkout(scratch);
+  const git = await gitBinary(scratch("git"));
+  const repo = checkout(scratch, git);
   const inputs = scratch("inputs");
   const leg = copyLeg(scratch, tailnetLeg);
   const legDir = leg.slice(0, leg.lastIndexOf("/"));
@@ -598,7 +603,7 @@ exit ${standIns.publicExit ?? 0}
       `#!/bin/sh\nexec curl -q -sS -X POST '${dispatch.origin}/_remove' -o /dev/null\n`
     );
     const env = {
-      PATH: standInPath(scratch, state, publicLegCommand),
+      PATH: standInPath(scratch, state, publicLegCommand, git),
       HOME: scratch("home"),
       ...(process.env.TMPDIR === undefined ? {} : { TMPDIR: process.env.TMPDIR }),
       OUTSIDE_ALLOW_HTTP: "1",

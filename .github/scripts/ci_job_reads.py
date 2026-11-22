@@ -2773,7 +2773,7 @@ GATES = [
     gate("test", "test", runs=[
         script_run("scripts/e2e/lib/held-port.test.ts", 'const build = Bun.spawnSync(["go", "build", "-o", listener, "./cmd/listener"], {',
                    at("test", "bun test scripts/e2e/lib"), ENVOY, ["./cmd/listener"], mode="build"),
-        script_run("scripts/e2e/lib/nats-image.test.ts", 'const build = Bun.spawnSync(["go", "build", "-o", floor, "./natsversion/cmd/natsfloor"], {',
+        script_run("scripts/e2e/lib/nats-image.test.ts", '["go", "build", "-buildvcs=false", "-o", floor, "./natsversion/cmd/natsfloor"],',
                    at("test", "bun test scripts/e2e/lib"), ENVOY, ["./natsversion/cmd/natsfloor"], mode="build"),
     ], reads=CLAUDE_ENVOY_BUILD + SCRIPT_TEST_READS + GUIDE_LAYOUT_READS + reads(
         ("scripts/third-party-notices.test.ts", at("test", "Test third-party notices")),
@@ -2930,7 +2930,9 @@ GATES = [
 
     gate("conflicts_script", "conflicts-script", reads=reads(
         ("scripts/conflicts/**", f"{at('conflicts-script', 'Lint the conflict measurement script')}, typecheck (tsc -p scripts/conflicts) "
-                                 "and test (__tests__/ and __fixtures__/); its modules import only one another, node: and bun:"),
+                                 "and test (__tests__/ and __fixtures__/); its modules import one another, node: and bun:, "
+                                 "and its analyse test @legion/test-fixtures"),
+        (TEST_FIXTURES_SRC, "scripts/conflicts/__tests__/analyse.test.ts imports @legion/test-fixtures/version-control-tools"),
     ) + biome(at("conflicts-script", "Lint the conflict measurement script")) + bun_job("conflicts-script")),
 
     gate("broker_client", "broker-client", reads=reads(

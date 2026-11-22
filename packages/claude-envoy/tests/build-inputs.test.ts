@@ -3,6 +3,7 @@ import { existsSync } from "node:fs"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
+import { gitBinary } from "@legion/test-fixtures/version-control-tools"
 
 const packageRoot = resolve(import.meta.dir, "..")
 const repoRoot = resolve(packageRoot, "..", "..")
@@ -101,21 +102,23 @@ async function buildInputPathspecs(): Promise<string[]> {
 // release.yaml's $CLAUDE_ENVOY_VERSION_ARGS carries its package and content paths, so the list
 // must match every file the build reads or a release would publish a build from a source no
 // version was bumped for. Git does the matching, in a scratch repository holding an empty file at
-// each path, so the workspace's own git or jj state plays no part.
+// each path, so the workspace's own git or jj state plays no part, and it is the git binary that
+// `git` on PATH runs (`gitBinary`), so no wrapper a machine puts first on PATH answers instead.
 test("scripts/build-inputs.txt matches every file the build reads", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-build-inputs-"))
   try {
     const probes = await filesTheBuildReads(join(scratch, "build"))
     const pathspecs = await buildInputPathspecs()
     const repository = join(scratch, "repository")
+    const git = await gitBinary(scratch)
     const env = { PATH: process.env["PATH"] ?? "", HOME: scratch, GIT_CONFIG_NOSYSTEM: "1" }
-    await run(["git", "init", "--quiet", repository], scratch, env)
+    await run([git, "init", "--quiet", repository], scratch, env)
     for (const probe of probes) {
       await mkdir(join(repository, dirname(probe)), { recursive: true })
       await writeFile(join(repository, probe), "")
     }
     const listed = new Set(
-      (await run(["git", "ls-files", "--others", "-z", "--", ...pathspecs], repository, env))
+      (await run([git, "ls-files", "--others", "-z", "--", ...pathspecs], repository, env))
         .split("\0")
         .filter((path) => path !== ""),
     )

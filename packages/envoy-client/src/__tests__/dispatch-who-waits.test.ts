@@ -3,6 +3,7 @@ import { readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { gitBinary } from "@legion/test-fixtures/version-control-tools";
 import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 
@@ -645,12 +646,14 @@ interface OldRuleHit {
  *  less the paths no reader is sent to and this file, whose allowlist quotes each sentence it
  *  allows a second time. Only a path that is a regular file on disk is read: in a jj workspace
  *  git's index follows the parent commit, so a file the working copy deleted is still listed
- *  (`.github/scripts/ci_filter_coverage.py`'s `repo_files` keeps the same two listings). */
-function oldRuleFiles(): string[] {
+ *  (`.github/scripts/ci_filter_coverage.py`'s `repo_files` keeps the same two listings). `git` is
+ *  the git binary itself (`gitBinary`), so no wrapper a machine puts first on PATH answers the
+ *  listing in its place. */
+function oldRuleFiles(git: string): string[] {
   const listed = new Set<string>();
   for (const extra of [[], ["--others", "--exclude-standard"]]) {
     const listing = Bun.spawnSync(
-      ["git", "ls-files", "-z", ...extra, "--", ...OLD_RULE_ROOTS, ":(glob)**/AGENTS.md"],
+      [git, "ls-files", "-z", ...extra, "--", ...OLD_RULE_ROOTS, ":(glob)**/AGENTS.md"],
       { cwd: REPO_ROOT, stdout: "pipe", stderr: "pipe" }
     );
     if (!listing.success) throw new Error(`git ls-files failed: ${listing.stderr.toString()}`);
@@ -723,8 +726,8 @@ function oldRuleHitsIn(source: string, text: string): OldRuleHit[] {
   return [...hits.values()];
 }
 
-test("no text states the old rule: a question reaches the project's default assignee, never nobody", () => {
-  const files = oldRuleFiles();
+test("no text states the old rule: a question reaches the project's default assignee, never nobody", async () => {
+  const files = oldRuleFiles(await gitBinary(makeDirectory("git")));
   expect(files.length, "the scan read nothing").toBeGreaterThan(0);
 
   const hits = files.flatMap((source) => {

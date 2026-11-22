@@ -147,6 +147,16 @@ itself, whose tests import its sources by relative path.
   names on `process.env` itself, and hands `versionControlNames` to `restoreEnvironment` so the next
   file finds its own again.
 
+- A suite that means git or jj itself runs the binary that `git` or `jj` on `PATH` runs,
+  `gitBinary(dir)` or `jjBinary(dir)` (`@legion/test-fixtures/version-control-tools`), by its
+  path, and hands that path to the code under test as well (an argument, or a directory of its own
+  first on the child's `PATH`), never the bare name. A developer's machine and a Legion pod put
+  their own wrappers of these tools first on `PATH`, and a wrapper's hooks and checks then decide
+  the row: the dotfiles git shim gives every commit hooks that refuse it where the shim cannot read
+  its term list, which failed every row of `scripts/conflicts/__tests__/analyse.test.ts`. A suite
+  that needs other behaviour of a tool puts a stand-in of its own first on the `PATH` it hands the
+  child, as `daemon-pane.test.ts` in `packages/pi-legion/scripts/skill-scenarios` does for gh.
+
 - Take a port from the kernel: bind port 0, read back the port the listener reports, and hold that
   listener from the moment it binds, so nothing else on the machine can take the port between the
   question and the row that asks it (`stubBroker` in

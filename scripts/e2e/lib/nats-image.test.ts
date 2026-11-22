@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gitBinary } from "@legion/test-fixtures/version-control-tools";
 
 // The listener and the Legion daemon refuse a nats-server below the floor packages/envoy/natsversion
 // holds (every 2.10 among them), so whatever starts a NATS server for them must start one the floor
@@ -25,9 +26,14 @@ function hubImage(): string {
   return found[1];
 }
 
+/** The git binary that `git` on PATH runs (`gitBinary`), so no wrapper a machine puts first on
+ *  PATH answers in git's place. It is read in TMPDIR, which no checkout holds and where it writes
+ *  nothing. */
+const git = await gitBinary(tmpdir());
+
 /** git's stdout in the checkout, NUL-separated names split; any exit but those allowed throws. */
 function gitNames(args: string[], allowed: number[] = [0]): string[] {
-  const result = Bun.spawnSync(["git", ...args], { cwd: root, stderr: "pipe" });
+  const result = Bun.spawnSync([git, ...args], { cwd: root, stderr: "pipe" });
   if (!allowed.includes(result.exitCode)) {
     throw new Error(`git ${args.join(" ")} exited ${result.exitCode}: ${result.stderr.toString()}`);
   }
@@ -91,16 +97,17 @@ const knownDrivers = [
 /**
  * natsversion's own rule, built once from packages/envoy/natsversion/cmd/natsfloor: the scanner
  * asks it whether the floor takes a version rather than hold a copy of the rule, so the floor the
- * listener and the daemon refuse a server by is the one this scan holds every pin to.
+ * listener and the daemon refuse a server by is the one this scan holds every pin to. It is built
+ * with `-buildvcs=false`: nothing reads its version stamp, and the stamp is `git status` run by
+ * whichever `git` is first on PATH, so a wrapper there decided whether the build ran.
  */
 const floorDir = mkdtempSync(join(tmpdir(), "natsfloor-"));
 afterAll(() => rmSync(floorDir, { recursive: true, force: true }));
 const floor = join(floorDir, "natsfloor");
-const build = Bun.spawnSync(["go", "build", "-o", floor, "./natsversion/cmd/natsfloor"], {
-  cwd: join(root, "packages/envoy"),
-  stdout: "pipe",
-  stderr: "pipe",
-});
+const build = Bun.spawnSync(
+  ["go", "build", "-buildvcs=false", "-o", floor, "./natsversion/cmd/natsfloor"],
+  { cwd: join(root, "packages/envoy"), stdout: "pipe", stderr: "pipe" }
+);
 if (build.exitCode !== 0) {
   throw new Error(`go build ./natsversion/cmd/natsfloor exited ${build.exitCode}: ${build.stderr}`);
 }

@@ -1308,6 +1308,7 @@ conflicts_script:
   - *bun_install
   - *biome
   - 'scripts/conflicts/**'
+  - 'packages/test-fixtures/src/**'
 # why: .github/ci-notes/ci.md#sessions_script-the-session-message-wait-suites-own-job-the-suite
 sessions_script:
   - *ci_router
