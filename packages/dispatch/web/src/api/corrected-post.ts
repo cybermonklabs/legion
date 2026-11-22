@@ -261,7 +261,6 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
   projects: "the projects",
   "references questions": "which asks a source cites, by id (census C.15)",
   related: "issues related by their words, printed by owner label alone (census C.15)",
-  "repo-projects": "the project each repository maps to",
   signins: "the reader's sign-ins",
   subscribers: "who follows an issue, a document or an ask",
   "user-agent-state": "the reader's read mark, pin and Clear per session",
