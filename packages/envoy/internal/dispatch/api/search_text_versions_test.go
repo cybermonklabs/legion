@@ -338,10 +338,20 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 	backlog := seedKeywordBacklog(t, server.database, server.deps.Events, 4000)
 	last := backlog[len(backlog)-1].ID
 	issue := createInteractionIssue(t, server.handler, "TEST", "Rotate the signing keys", "# Rotation\n")
+	// The fill is held back at its cursor (textversions.HoldFillBack) from before it starts until
+	// the answers read below has turned slow, so its first batch waits at the cursor row until
+	// then. Let run from the start, a fill on a fast machine writes the whole backlog in less than
+	// the 800 ms an answers read needs to turn slow (sessionanswers.SlowRead), and is caught up,
+	// with nothing left to pause, before the read is slow.
+	fillHold, _ := textversionstest.BeginTransaction(t, server.database)
+	defer func() { _ = fillHold.Rollback(context.Background()) }()
+	if err := textversions.HoldFillBack(t.Context(), fillHold); err != nil {
+		t.Fatalf("hold the fill back at its cursor: %v", err)
+	}
 	fill := startKeywordFill(t, server)
-	fill.AwaitLine(t, keywordBatchLine, time.Minute)
+	waitForDatabaseLocks(t, fillHold, 1)
 	if cursor := textversionstest.Cursor(t, server.database); cursor >= last {
-		t.Fatalf("the fill's first batch took the cursor to %d, the backlog's last event %d: it is not catching up as the lock starts", cursor, last)
+		t.Fatalf("the fill held back at its cursor stands at %d, the backlog's last event %d: it is not catching up as the lock starts", cursor, last)
 	}
 
 	holder, _ := textversionstest.BeginTransaction(t, server.database)
@@ -357,6 +367,9 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 		return server.latency.Slow(time.Now())
 	})
 	batchesWhenSlow := len(fill.Lines(t, keywordBatchLine))
+	if err := fillHold.Rollback(t.Context()); err != nil {
+		t.Fatalf("let the fill go on from its cursor: %v", err)
+	}
 	fill.AwaitLine(t, keywordPausedLine, 30*time.Second)
 	var batchesBeforePause int
 	for _, msg := range fill.Lines(t, "") {
