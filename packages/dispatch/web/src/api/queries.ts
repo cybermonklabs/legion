@@ -116,6 +116,24 @@ export const issueResultsQuery = (key: string) =>
     queryFn: () => api.getIssueResults(key),
   });
 
+/** The change request of version `version` of the issue's spec
+ *  (`GET /api/v1/issues/{key}/change-request?version=`), which the approval sheet restates before
+ *  a person approves and the approved change request reads its nodes from after. Under the
+ *  issue's key, as the coverage is. */
+export const changeRequestQuery = (key: string, version: number) =>
+  queryOptions({
+    queryKey: ["issue", key, "change-request", version],
+    queryFn: () => api.getChangeRequest(key, version),
+  });
+
+/** One node of the approved spec of `repo` in `project`, each version with the approval that wrote
+ *  it (`GET /api/v1/projects/{key}/spec/{owner}/{repo}/nodes/{id}`). */
+export const specNodeQuery = (project: string, repo: string, id: string) =>
+  queryOptions({
+    queryKey: ["spec-node", project, repo, id],
+    queryFn: () => api.getSpecNode(project, repo, id),
+  });
+
 /** Everyone who worked one issue, running or not (`GET /api/v1/issues/{key}/collaborators`).
  *  The Collaborators tab and the composer's "Not running" options read this one entry, so a tab
  *  read within the shell's `staleTime` opens the picker with no request of its own, and what

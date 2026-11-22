@@ -14,6 +14,7 @@ import {
   ApiError,
   api,
   apiErrorMessage,
+  isSpecChangeRefusal,
   isSpecFormRefusal,
   type WriteBounds,
   type WriteMethod,
@@ -30,6 +31,7 @@ import type {
   CreateCommentInput,
 } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import type { ApprovalCovered } from "../doc/ApprovalSheet";
 import {
   approvalRefusalKey,
   type FormRefusalPress,
@@ -40,6 +42,7 @@ import {
   useFormRefusal,
   useRefusalSurface,
 } from "../doc/form-refusals";
+import { specChangeRefusalText } from "../doc/spec-change-refusals";
 import { isViewer } from "../refs/actor";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { answerAskInput } from "./answer-ask";
@@ -69,6 +72,10 @@ interface UseAskAnswerFormOptions {
   onAnswered?: (id: string) => void;
   /** Opens the form for an answer the viewer may change, instead of its completion record. */
   initiallyChanging?: boolean;
+  /** Called in place of sending an Approve of an approval request, with what the request covers:
+   *  it sends the Approve by calling `approve`, or never sends it. A phone's approval sheet stands
+   *  here (`useApprovalSheet`). Absent, an Approve is sent at once. */
+  confirmApprove?: (covered: ApprovalCovered, approve: () => void) => void;
 }
 
 /** A failed answer, as the card shows it. */
@@ -127,6 +134,8 @@ interface ClarificationPress extends AskPress {
  * breaks the form of The Spec. For that one the card shows Dispatch's own words, which name each
  * text (`ApiError.refusal`), with its own next step: Dispatch's names Request changes, which the
  * card has already picked, so the card's names the press that is left (`CARD_FORM_NEXT_STEP`).
+ * An approval the approved spec refuses (`isSpecChangeRefusal`) shows Dispatch's words and each
+ * node the refusal names: the request must be written again before an approval of it can pass.
  * An answer the reader stopped may have been saved, and the card's Retry makes that very press
  * again (`retryLast`). Any other failure may pass on a retry.
  */
@@ -139,6 +148,9 @@ function answerFailure(answer: {
     return { message: stopped, retryable: true };
   }
   const { error } = answer;
+  if (isSpecChangeRefusal(error)) {
+    return { message: specChangeRefusalText(error), retryable: false };
+  }
   if (error instanceof ApiError) {
     switch (error.code) {
       case "ASK_ANSWER_CHANGED":
@@ -193,6 +205,7 @@ export function useAskAnswerForm({
   initialThreadUpdatedAt,
   initiallyChanging = false,
   onAnswered,
+  confirmApprove,
 }: UseAskAnswerFormOptions) {
   const queryClient = useQueryClient();
   const viewer = useQuery(whoAmIQuery()).data?.login;
@@ -558,6 +571,20 @@ export function useAskAnswerForm({
       isQuestionShapedAnswer(trimmedAnswer)
     ) {
       setQuestionChoice(true);
+      return;
+    }
+    const approval = displayedAsk.approval;
+    if (isApproval && selected.includes("Approve") && confirmApprove !== undefined) {
+      // The text as it stands at the press, which the sheet's Approve sends. The request names
+      // its documents, the one it was asked on first; a Dispatch older than the list names one.
+      const text = answerText;
+      confirmApprove(
+        {
+          documents: approval === undefined ? [] : (approval.documents ?? [approval]),
+          issueKey: displayedAsk.issue_key,
+        },
+        () => sendAnswer(text)
+      );
       return;
     }
     sendAnswer(answerText);

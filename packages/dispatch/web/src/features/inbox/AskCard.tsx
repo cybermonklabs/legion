@@ -50,6 +50,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
+import { useApprovalSheet } from "../doc/ApprovalSheet";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -232,6 +233,9 @@ export function AskCard({
   unread,
   currentReplyId,
 }: AskCardProps): ReactNode {
+  // On a phone, the sheet that restates what an approval of a change request covers stands before
+  // the card's Approve is sent (R22).
+  const approvalSheet = useApprovalSheet();
   const {
     answerFailure,
     answerFieldId,
@@ -280,6 +284,7 @@ export function AskCard({
     initialThreadUpdatedAt,
     initiallyChanging: mode === "change",
     onAnswered,
+    confirmApprove: approvalSheet.confirm,
   });
   const [ownWordsOpen, setOwnWordsOpen] = useState(false);
   const [handlesOpen, setHandlesOpen] = useState(false);
@@ -1044,6 +1049,7 @@ export function AskCard({
         routeHolder={threadQuery.data?.route_holder ?? null}
         routeStatus={threadQuery.data?.route_status ?? null}
       />
+      {approvalSheet.sheet}
     </article>
   );
 }

@@ -15,6 +15,8 @@ import {
   REFERENCE_TARGETS_MAX,
   retryNoRoute,
   type Sleep,
+  type SpecChangeProblem,
+  type SpecRequestStaleNode,
   sleep,
 } from "@legion/contracts";
 
@@ -91,6 +93,8 @@ interface ErrorPayload {
   candidates?: readonly ErrorCandidate[];
   changes_reason?: string;
   refusal?: string;
+  statements?: readonly SpecRequestStaleNode[];
+  problems?: readonly SpecChangeProblem[];
 }
 
 export class ApiError extends Error {
@@ -112,6 +116,13 @@ export class ApiError extends Error {
    *  apart (`next_step`): a page that names a next step of its own shows it after these words.
    *  The message is the whole refusal, as Dispatch wrote it. Undefined on every other refusal. */
   readonly refusal: string | undefined;
+  /** The stale nodes a refusal of the approved spec names (`SPEC_REQUEST_STALE`): each with the
+   *  version the request read and the approved spec's current one. Undefined on a refusal that
+   *  names none. */
+  readonly statements: readonly SpecRequestStaleNode[] | undefined;
+  /** The faults another refusal of the approved spec names: each node with the rule it breaks.
+   *  Undefined on a refusal that names none. */
+  readonly problems: readonly SpecChangeProblem[] | undefined;
 
   constructor(status: number, payload: ErrorPayload, retryAfterMs?: number) {
     super(payload.error ?? `Dispatch request failed (${status})`);
@@ -123,6 +134,8 @@ export class ApiError extends Error {
     this.retryAfterMs = retryAfterMs;
     this.changesReason = payload.changes_reason;
     this.refusal = payload.refusal;
+    this.statements = payload.statements;
+    this.problems = payload.problems;
   }
 }
 
@@ -400,6 +413,29 @@ export function isCapExceeded(error: unknown): error is ApiError {
 // breaks, so a page shows those words; the same document is refused again until it changes.
 export function isSpecFormRefusal(error: unknown): error is ApiError {
   return error instanceof ApiError && error.code === "SPEC_FORM";
+}
+
+/** The refusals of a person's approval that the approved spec gives (R22): the request is stale
+ *  against it, a node breaks its rules, a check changes without the Verification document, a parent
+ *  is missing, a node supports itself, or the approval has no request of the version. Each names
+ *  what it refuses for (`ApiError.statements`, `ApiError.problems`) and is given again however often
+ *  the same approval is sent, until the request is written again. */
+const SPEC_CHANGE_REFUSALS: Readonly<Record<string, true>> = {
+  APPROVAL_REQUEST_REQUIRED: true,
+  SPEC_CHECKS_NOT_INCLUDED: true,
+  SPEC_LOOP: true,
+  SPEC_NODE_INVALID: true,
+  SPEC_PARENT_MISSING: true,
+  SPEC_REQUEST_STALE: true,
+};
+
+/** Whether `error` is one of the refusals of the approved spec (`SPEC_CHANGE_REFUSALS`). */
+export function isSpecChangeRefusal(error: unknown): error is ApiError {
+  return (
+    error instanceof ApiError &&
+    error.code !== undefined &&
+    Object.hasOwn(SPEC_CHANGE_REFUSALS, error.code)
+  );
 }
 
 // The server refusing a write because its text holds a decision block, which nobody can answer
@@ -1276,6 +1312,25 @@ export class DispatchApiClient {
    *  plan document - so a reader draws its answer rather than judging again. */
   getIssueCoverage(key: string) {
     return this.read("/api/v1/issues/{key}/coverage", { key });
+  }
+
+  /** `GET /api/v1/issues/{key}/change-request?version=`: what version `version` of the issue's
+   *  spec proposes against its repository's approved spec, each node with its text and the
+   *  approved text it replaces or removes, and the digest a person's approval of that version
+   *  pins. */
+  getChangeRequest(key: string, version: number) {
+    return this.read("/api/v1/issues/{key}/change-request", { key }, { version });
+  }
+
+  /** `GET /api/v1/projects/{key}/spec/{owner}/{repo}/nodes/{id}`: one node of the approved spec of
+   *  `repo` (`owner/name`) in `project`, each version and removal oldest first, with the approval
+   *  that wrote it. */
+  getSpecNode(project: string, repo: string, id: string) {
+    return this.read("/api/v1/projects/{key}/spec/{owner}/{repo}/nodes/{id}", {
+      id,
+      key: project,
+      ...repoParams(repo),
+    });
   }
 
   /** `GET /api/v1/priorities`: every live priority in rank order, each with the work that

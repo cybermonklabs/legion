@@ -17,6 +17,7 @@ import { ActivityTab } from "../activity/ActivityTab";
 import { ArtifactDocument } from "../artifacts/ArtifactDocument";
 import { ArtifactRoutePanel } from "../artifacts/ArtifactRoutePanel";
 import { ConversationTab } from "../conversation/ConversationTab";
+import { ApprovedChangeRequest } from "../doc/ApprovedChangeRequest";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { outsideAskCard } from "../inbox/ask-card";
 import { PlanTab } from "../plan/PlanTab";
@@ -477,6 +478,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       >
         {activatedTabs.spec && !(artifactRoute !== undefined && !isPrimaryArtifactRoute) ? (
           <div className="space-y-4">
+            <ApprovedChangeRequest issueKey={issueKey} spec={spec} />
             <ArtifactDocument
               artifact={spec}
               askId={askId}

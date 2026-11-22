@@ -5,6 +5,7 @@ import {
   api,
   type CreateArtifactReviewInput,
   isCapExceeded,
+  isSpecChangeRefusal,
   isSpecFormRefusal,
 } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
@@ -49,6 +50,7 @@ import { focusOnDocument } from "../shell/roving";
 import { useDialog } from "../shell/useDialog";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useApprovalSheet } from "./ApprovalSheet";
 import {
   approvalRefusalKey,
   type FormRefusalPress,
@@ -59,6 +61,7 @@ import {
   useFormRefusal,
   useRefusalSurface,
 } from "./form-refusals";
+import { specChangeRefusalText } from "./spec-change-refusals";
 
 /**
  * Each colour the chip, its two actions and its two dialogs draw inside `NoTooltips`, the new
@@ -437,12 +440,17 @@ export function ApprovalChip({
   const submitGuard = useSubmitGuard();
   const tooltips = useTooltips();
   const page = usePageWords();
+  // On a phone, the sheet that restates what an approval of a change request covers stands before
+  // the approval is sent (R22).
+  const approvalSheet = useApprovalSheet();
 
   const review = useKeyedWrite({
     // A form refusal of Approve shows under the actions, and Dispatch refuses the same document
-    // again until its text changes, so the shell's corner offers no Retry for it. Every other
-    // refusal is the corner's, with Retry and Discard.
-    inline: ({ input }, refusal) => input.state === "approved" && isSpecFormRefusal(refusal),
+    // again until its text changes, so the shell's corner offers no Retry for it. A refusal of the
+    // approved spec is the same: it is given again until the request is written again. Every
+    // other refusal is the corner's, with Retry and Discard.
+    inline: ({ input }, refusal) =>
+      input.state === "approved" && (isSpecFormRefusal(refusal) || isSpecChangeRefusal(refusal)),
     // The press carries the document it reviews: the indicator names it, the route takes its id,
     // and the reads made again are its own, from the press rather than from the render the write
     // runs under. A refusal of its form is kept for that document's request too.
@@ -593,16 +601,28 @@ export function ApprovalChip({
                 if (review.isPending) {
                   return;
                 }
-                submitGuard.guard(() => {
-                  // Each press is answered on its own: the refusal of the last one goes with it.
-                  setFormRefusal(formRefusalKey, undefined);
-                  if (page !== null) setSentReview("approved");
-                  review.mutate({
-                    artifact,
-                    at: pressOn(refusalSurface, approval.latest_version),
-                    input: { state: "approved" },
+                const send = () =>
+                  submitGuard.guard(() => {
+                    // Each press is answered on its own: the refusal of the last one goes with it.
+                    setFormRefusal(formRefusalKey, undefined);
+                    if (page !== null) setSentReview("approved");
+                    review.mutate({
+                      artifact,
+                      at: pressOn(refusalSurface, approval.latest_version),
+                      input: { state: "approved" },
+                    });
                   });
-                });
+                // The open request names its documents; with none open, Approve approves this
+                // document's latest version.
+                approvalSheet.confirm(
+                  {
+                    documents: approval.documents ?? [
+                      { artifact_id: artifact.id, version: approval.latest_version },
+                    ],
+                    issueKey: artifact.issue_key,
+                  },
+                  send
+                );
               }}
               ref={approveButton}
               type="button"
@@ -646,6 +666,20 @@ export function ApprovalChip({
           {formRefusal.message}
         </p>
       ) : null}
+      {/* A refusal of the approved spec: Dispatch's words and what it names, under the actions. */}
+      {variant === "header" &&
+      showActions &&
+      review.isError &&
+      review.variables?.input.state === "approved" &&
+      isSpecChangeRefusal(review.error) ? (
+        <p
+          className={`basis-full min-w-0 text-sm whitespace-pre-line [overflow-wrap:anywhere] ${page === null ? dangerText : ON_PAGE.failure}`}
+          role="alert"
+        >
+          {specChangeRefusalText(review.error)}
+        </p>
+      ) : null}
+      {approvalSheet.sheet}
       {reviewsOpen ? (
         <ReviewsDialog artifactId={artifact.id} onClose={() => setReviewsOpen(false)} />
       ) : null}
