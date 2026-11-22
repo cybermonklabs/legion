@@ -9,6 +9,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
+import type { LookupFunction } from "node:net";
 import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -139,18 +140,38 @@ test("a metadata server that refuses is an error naming the variable that names 
 
 // GCE_METADATA_HOST is a host, like a NATS server's setting, and a host's text cannot be told from
 // a secret pasted there, so a text names the server by the variable and the failure by its class.
+// A pasted name is looked up by a stand-in resolver that fails as the system's does for a name it
+// cannot find (measured on Bun 1.4.4: a DNSException `getaddrinfo ENOTFOUND <host>`, with that
+// code and syscall), so the row asks no DNS server and its verdict is the naming, not how fast the
+// machine's DNS answers.
+// A host with user info fails on the loopback, where no name is looked up.
 test.each([
-  `${randomBytes(9).toString("hex")}.invalid`,
-  `operator:${randomBytes(9).toString("hex")}@127.0.0.1:1`,
-])("a metadata host of %p is named in no error", async (pasted) => {
-  const source = metadataIdentity("example-audience", {
-    [METADATA_HOST_VAR]: pasted,
-  } as NodeJS.ProcessEnv);
+  [`${randomBytes(9).toString("hex")}.invalid`, 1],
+  [`operator:${randomBytes(9).toString("hex")}@127.0.0.1:1`, 0],
+] as const)("a metadata host of %p is named in no error", async (pasted, lookups) => {
+  const asked: string[] = [];
+  const lookup: LookupFunction = (hostname, _options, callback) => {
+    asked.push(hostname);
+    const unresolved = Object.assign(new Error(`getaddrinfo ENOTFOUND ${hostname}`), {
+      name: "DNSException",
+      code: "ENOTFOUND",
+      syscall: "getaddrinfo",
+      hostname,
+      errno: 4,
+    });
+    process.nextTick(() => callback(unresolved, "", 0));
+  };
+  const source = metadataIdentity(
+    "example-audience",
+    { [METADATA_HOST_VAR]: pasted } as NodeJS.ProcessEnv,
+    { lookup }
+  );
   const refusal = await source.read().then(
     () => undefined,
     (error: unknown) => error
   );
   if (!(refusal instanceof Error)) throw new Error("the metadata server answered");
+  expect(asked).toHaveLength(lookups);
   expect(refusal.message).toStartWith(
     `the metadata server ${METADATA_HOST_VAR} names could not be reached: `
   );

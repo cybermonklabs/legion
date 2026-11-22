@@ -18,11 +18,25 @@
 {{- if eq $i 1}}
 <h2 class="others">Other requests waiting for you</h2>
 {{- end}}
+{{- if $r.Unanswered}}
+<article class="record" id="record-{{$r.ID}}">
+<h2>Request <code>{{$r.ID}}</code></h2>
+<p class="note">{{$r.Unanswered}}</p>
+</article>
+{{- else}}
 <article class="record" id="record-{{$r.ID}}">
 <h2>{{if $r.MachineLogin}}Machine login for {{end}}{{range $j, $name := $r.Identifiers}}{{if $j}}, {{end}}<code>{{$name}}</code>{{end}}</h2>
 <dl>
 <dt>{{if $r.MachineLogin}}Host{{else}}Secrets{{end}}</dt>
 <dd>{{range $j, $name := $r.Identifiers}}{{if $j}}, {{end}}<code>{{$name}}</code>{{end}}</dd>
+{{- range $r.Projects}}
+<dt>Project of <code>{{.Secret}}</code></dt>
+<dd><code>{{.Project}}</code>, {{if .Private}}private, {{if .Named}}which the session names{{else}}which the session does not name{{end}}{{else}}public{{end}}</dd>
+{{- end}}
+{{- with $r.SessionProjects}}
+<dt>Projects the session names</dt>
+<dd>{{range $j, $p := .}}{{if $j}}, {{end}}<code>{{$p}}</code>{{end}}</dd>
+{{- end}}
 {{- with $r.Enrollment}}
 <dt>Requested by (verified by the broker)</dt>
 <dd>a {{.Kind}} enrollment, operator {{if .Operator}}<strong>{{.Operator}}</strong>{{else}}none{{end}}, runtime <code>{{.RuntimeID}}</code>{{if .Slot}}, slot <code>{{.Slot}}</code>{{end}}</dd>
@@ -69,6 +83,7 @@
 <p class="note">Only {{$r.Approver}} may decide this request, and you are signed in as {{$.Login}}. <a href="/approve/{{$r.ID}}?switch=1">Sign in as someone else</a></p>
 {{- end}}
 </article>
+{{- end}}
 {{- end}}
 {{- with .ApproveAll}}
 <form method="post" action="/approve" class="all">

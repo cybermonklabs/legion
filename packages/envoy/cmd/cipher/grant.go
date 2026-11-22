@@ -132,9 +132,10 @@ func inSession(dir string) bool {
 
 // cmdGrantRevoke implements "grant revoke GRANT_ID". Inside a session it is the session's own
 // revoke, which `agent-secrets revoke` makes too (revokeAsSession): the broker ends only a grant
-// of the enrollment that signs and refuses any other NOT_YOURS. So a session ends the grant its
-// use command was given, and so does every session that signs as the same broker identity, such
-// as each session of a person who ran `agent-secrets login`. Outside a session it is the
+// of the enrollment that signs and refuses any other NOT_YOURS, or answers it as an unknown grant
+// (NOT_FOUND) when it is a private project's grant the signing session does not name. So a session
+// ends the grant its use command was given, and so does every session that signs as the same broker
+// identity, such as each session of a person who ran `agent-secrets login`. Outside a session it is the
 // operator's revoke, as Dispatch's Live grants page does it: the operator's revoke of a grant a
 // session got automatically also withholds those secrets from that session, so it asks before it
 // gets them again. One run never tries both routes.

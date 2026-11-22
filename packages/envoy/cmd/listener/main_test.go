@@ -120,7 +120,7 @@ func TestStartingGateLogsEachRefusedRequest(t *testing.T) {
 
 func TestHealthz_Starting_Returns200WithJSON(t *testing.T) {
 	var state atomic.Pointer[listenerDeps]
-	handler := healthzHandler(&state)
+	handler := healthzHandler(&state, nil)
 
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/healthz", nil))
@@ -153,7 +153,7 @@ func TestDependencyHealthStatus(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rr := httptest.NewRecorder()
-			writeDependencyHealth(rr, "session kv", errors.New("probe failed"), tc.terminal)
+			writeDependencyHealth(rr, "session kv", errors.New("probe failed"), tc.terminal, nil)
 			if rr.Code != tc.statusCode {
 				t.Fatalf("status code = %d, want %d", rr.Code, tc.statusCode)
 			}
@@ -173,7 +173,7 @@ func TestFullMux_StartingState(t *testing.T) {
 	var state atomic.Pointer[listenerDeps]
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", healthzHandler(&state))
+	mux.HandleFunc("/healthz", healthzHandler(&state, nil))
 
 	mux.Handle("/v1/", newStartingGate("v1", logging.NewWithWriter("test", io.Discard)))
 
@@ -2480,7 +2480,6 @@ func TestASettingNATSCannotChangeOnTheListenerDurableIsRefused(t *testing.T) {
 // bucket included, which a listener mounting the GitHub route opens first.
 func TestARefusedDurableStopsTheListenerAtOnce(t *testing.T) {
 	client := setupTestNATS(t)
-	t.Cleanup(client.Close)
 	consumer := "listener-refused-durable-startup"
 	config := natsgo.ConsumerConfig{Durable: consumer, DeliverSubject: natsgo.NewInbox()}
 	applyListenerConsumerPolicy(&config, bus.StreamSubjects())
@@ -4309,7 +4308,6 @@ func TestTopicPrefix(t *testing.T) {
 
 func TestCheckSelfHealth_HealthyReturnsNil(t *testing.T) {
 	client := setupTestNATS(t)
-	defer client.Close()
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open registry: %v", err)
@@ -4616,6 +4614,7 @@ func TestRunSelfHealthMonitor_MovesADeadInterestRegistryToTheLiveConnection(t *t
 	if err != nil {
 		t.Fatalf("connect registry: %v", err)
 	}
+	t.Cleanup(registryConn.Close)
 	registry, err := store.Open(t.Context(), registryConn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
@@ -4674,6 +4673,7 @@ func TestRunSelfHealthMonitor_RebuildsTerminalWatcher(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect watcher: %v", err)
 	}
+	t.Cleanup(watcherConn.Close)
 	sessions, err := session.OpenSessionRegistry(t.Context(), watcherConn,
 		session.WithSessionReplicas(1),
 		session.WithSessionTTL(time.Minute))
@@ -5030,7 +5030,13 @@ func monitorUntilRecovered(t *testing.T, what string, wait, interval time.Durati
 	<-done
 }
 
-// setupTestNATS starts a NATS server dedicated to this test, which ends with it.
+// setupTestNATS starts a NATS server dedicated to this test, which ends with it, and a bus client
+// on it, which the test's cleanup closes before the server's. A bus client reconnects forever, so
+// one left open goes on dialing the server's address after the test, from this test binary, and
+// reaches whatever server later holds that port: the clients of
+// TestHealthzAnswersUnhealthyWhileTheInterestWatcherIsDead and
+// TestHealthzReportsARoleClaimViewThatCompletesNoScanDegraded reached the test servers of other
+// packages' binaries minutes after their tests had ended.
 func setupTestNATS(t *testing.T) *bus.Client {
 	t.Helper()
 	_, uri := testnats.Start(t)
@@ -5038,6 +5044,7 @@ func setupTestNATS(t *testing.T) *bus.Client {
 	if err != nil {
 		t.Fatalf("bus connect: %v", err)
 	}
+	t.Cleanup(client.Close)
 	return client
 }
 
@@ -5144,7 +5151,7 @@ func TestHealthzAnswersUnhealthyWhileTheInterestWatcherIsDead(t *testing.T) {
 	state.Store(&listenerDeps{client: client, registry: registry, sessions: sessions, caches: []listenerCache{{name: "interest", cache: registry}, {name: "session", cache: sessions}}, consumer: "listener-healthz-interest"})
 	get := func() (int, map[string]any) {
 		recorder := httptest.NewRecorder()
-		healthzHandler(&state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		healthzHandler(&state, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		var body map[string]any
 		_ = json.Unmarshal(recorder.Body.Bytes(), &body)
 		return recorder.Code, body

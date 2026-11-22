@@ -110,7 +110,7 @@ func RefuseScriptGH(gh string) error {
 // with no config-id beside it as a legacy file jj would migrate into the configuration it reads
 // (internal/workspace, disarmLegacyConfig), and on a jj before 0.38 that file is the repository's
 // live configuration, the one `jj config set --repo` writes Legion's own
-// git.abandon-unreachable-commits into. The worker image's jj is 0.45; this holds the host's jj,
+// git.abandon-unreachable-commits into. The worker image's jj is 0.46; this holds the host's jj,
 // which the tmux runtime runs, to the same layout.
 var minimumJJ = [2]int{0, 38}
 

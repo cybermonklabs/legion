@@ -1,0 +1,75 @@
+{
+  "id": 30,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 13,
+  "type": "ask.answered",
+  "actor": {
+    "kind": "user",
+    "id": "alice@example.com"
+  },
+  "notify": true,
+  "created_at": "2026-10-16T14:48:54.518592Z",
+  "payload": {
+    "anchor": null,
+    "answer": {
+      "at": "2026-10-16T14:48:54.536201873Z",
+      "id": "b4",
+      "selected": [
+        "lorem i"
+      ],
+      "text": null,
+      "user": "alice@example.com"
+    },
+    "approval": {
+      "artifact_id": "4ea7c7c8-c108-4565-a672-7ff8b3da12e8",
+      "name": "lorem i",
+      "requested_version": 5,
+      "version": 5
+    },
+    "approval_artifact": {
+      "project": "ACME",
+      "slug": "lore",
+      "name": "lorem i",
+      "primary": true
+    },
+    "artifact_id": null,
+    "author": {
+      "id": "01a14374-cfa9-7543-a55a-bad410b85d58",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor si",
+        "host": "lor",
+        "machine": "lorem ipsum dolor si",
+        "session_title": "lorem ipsum dolor sit amet"
+      },
+      "owner": "alice@example.com"
+    },
+    "block_id": null,
+    "created_at": "2026-10-16T07:00:47.569207Z",
+    "edited_at": null,
+    "id": "c4a441ea-213d-4525-9147-75e74dbaa3bc",
+    "issue_key": "ACME-1",
+    "kind": "approval",
+    "multiple": false,
+    "opened_event_id": 29,
+    "options": [
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsu",
+        "id": "b2",
+        "label": "lorem i"
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor si",
+        "id": "b3",
+        "label": "lorem ipsum dol"
+      }
+    ],
+    "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum ",
+    "referenced_by_count": 0,
+    "revision": 1,
+    "state": "answered",
+    "urgency": "high"
+  }
+}

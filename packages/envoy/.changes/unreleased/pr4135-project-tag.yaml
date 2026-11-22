@@ -1,0 +1,19 @@
+kind: Added
+body: |-
+  A secret can belong to a Dispatch project: the broker reads its `dispatch-project` tag, one
+  project key as written (`^[A-Z][A-Z0-9]{1,9}$`), into the policy, and the policy releases a
+  secret of a private project only to a credential that names that project. A credential that
+  names another project, or none, is denied `project-not-named`, before owner and tier are read;
+  a tag naming a key Dispatch holds no project for is denied to everyone, `project-missing`,
+  which a session is told as `project-not-named` so a refusal never says whether a project
+  exists. A secret of a public project, and a private one the credential names, is decided by
+  owner and tier as before. The loader refuses a tag that is no project key
+  (`project-malformed`, an empty tag and `none` included) and, on a broker with no client of
+  Dispatch's project access, any tagged secret (`project-unchecked`), which it could not tell
+  from a private project's. A secret with no tag reads as before, and its line of the policy
+  version is unchanged, so no deployed version moves; tagging a secret moves the version, so the
+  broker checks each live grant of it again at its next use, and ends the grants the policy now
+  refuses.
+time: 2026-11-16T02:09:14Z
+custom:
+    Issue: pr4135

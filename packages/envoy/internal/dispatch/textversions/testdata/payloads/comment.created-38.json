@@ -1,0 +1,47 @@
+{
+  "id": 216973,
+  "issue_key": null,
+  "artifact_id": "4ccac351-8df9-44b8-98a7-7c88c271d8e6",
+  "project": "ACME",
+  "seq": 5,
+  "type": "comment.created",
+  "actor": {
+    "kind": "user",
+    "id": "alice@example.com"
+  },
+  "notify": true,
+  "created_at": "2026-11-05T22:30:53.81704Z",
+  "payload": {
+    "id": "82668eb6-09a4-452c-9873-26d435120a5c",
+    "body": "lorem ipsum dolor sit amet l",
+    "turn": "agent",
+    "anchor": null,
+    "ask_id": "0e4e4224-7b6c-4d0a-ab2d-de8c66a5c577",
+    "author": {
+      "id": "alice@example.com",
+      "kind": "user"
+    },
+    "mentions": [],
+    "reply_to": null,
+    "resolved": false,
+    "ask_state": "open",
+    "edited_at": null,
+    "issue_key": null,
+    "created_at": "2026-11-05T22:30:53.829501Z",
+    "deliveries": [],
+    "suggestion": null,
+    "artifact_id": "4ccac351-8df9-44b8-98a7-7c88c271d8e6",
+    "project_key": "ACME",
+    "reply_block": null,
+    "resolved_at": null,
+    "resolved_by": null,
+    "ask_question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem i",
+    "artifact_name": "",
+    "artifact_slug": "lorem ipsum dolor sit amet lorem ip",
+    "thread_logins": [
+      "alice@example.com"
+    ],
+    "ask_waiting_on": "agent",
+    "suppress_route": false
+  }
+}

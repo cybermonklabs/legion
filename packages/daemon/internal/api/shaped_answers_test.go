@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -494,6 +495,35 @@ func valueStripCases() map[string]valueStripCase {
 				Place: 1, Length: 1, Part: "returned", Kind: undeclaredValue, PartPlace: 1, PartLength: 1,
 			}},
 		},
+		// A pod recording pauseContract and cachesSourceContract is served the repository-cache-room
+		// row without its `source`: `caches` arrived at cachesSourceContract, and the pod's 178
+		// process parses `source` with an enum of `configuration` and `boot`. The pod's process at
+		// cachesSourceContract states its contract in its header and is in no pod's reckoning
+		// (podContracts), so this pod is read by its 178 process alone, the reader the strip is for,
+		// and a pod whose every claim records cachesSourceContract is served this daemon's own body.
+		// Every other field of that row stays, and so does every row of another source, whose word
+		// the 178 process admits. The field is older than the floor, so the case names no value
+		// that arrived with it.
+		droppedCapabilitySource: {
+			state: populatedState, low: pauseContract, high: cachesSourceContract,
+			carries: func(t *testing.T, body []byte) bool {
+				return slices.ContainsFunc(capabilityRowsServed(t, body), func(row map[string]any) bool {
+					return row["source"] == cachesSource
+				})
+			},
+			stays: func(t *testing.T, whole, mixed []byte) {
+				want := capabilityRowsServed(t, withoutCachesSources(t, whole))
+				if served := capabilityRowsServed(t, mixed); !reflect.DeepEqual(served, want) {
+					t.Errorf("the {%d, %d} pod is served the capability rows %v, want %v: the strip takes the word the pod's %d process refuses and nothing else",
+						pauseContract, cachesSourceContract, served, want, pauseContract)
+				}
+			},
+			// One capability row whose source is a word no row declares.
+			undeclaredState: State{Capabilities: []CapabilityState{{
+				Name: string(capabilities.RepositoryCacheRoom), Status: capabilities.StatusOpen,
+				Detail: "a cache ran out of room", Source: undeclaredValue,
+			}}},
+		},
 	}
 }
 
@@ -682,6 +712,19 @@ func waitsServed(t *testing.T, body []byte) map[string]waitServed {
 	return waits
 }
 
+// capabilityRowsServed is every row of a served body's capability report, in its order, decoded
+// as a plugin's reader sees it.
+func capabilityRowsServed(t *testing.T, body []byte) []map[string]any {
+	t.Helper()
+	var state struct {
+		Capabilities []map[string]any `json:"capabilities"`
+	}
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatalf("decode the state %s: %v", body, err)
+	}
+	return state.Capabilities
+}
+
 // mixedPodClaims is the pod at statePodAddr holding one claim at low, one at high and one that
 // records no contract at all, beside a claim of another pod.
 func mixedPodClaims(low, high int) []supervise.Claim {
@@ -701,9 +744,8 @@ var keysAddedAfterTheFloor = []string{
 	`"backwardMoves"`, `"claimsToRefresh"`,
 }
 
-// keysOfThisContract is the three keys this change's own contract adds, which
-// shapedAnswersContract serves down: the state's own `lowestPluginContract` and the two of each
-// claim view's round report.
+// keysOfThisContract is the three keys shapedAnswersContract added and serves down: the state's
+// own `lowestPluginContract` and the two of each claim view's round report.
 var keysOfThisContract = []string{`"lowestPluginContract"`, `"updateState"`, `"wake"`}
 
 // A claim that holds no process is in no pod's reckoning: suspending, failing or retiring a claim

@@ -116,8 +116,9 @@ async function externalCredential(): Promise<string> {
   return path;
 }
 
-/** The pool source over the two stand-ins, federating this machine's projected token. */
-async function poolAt(sts: string, iam: string) {
+/** The pool source over the two stand-ins, federating this machine's projected token, its calls
+ *  made through `fetchImpl` where one is given. */
+async function poolAt(sts: string, iam: string, fetchImpl?: typeof fetch) {
   return poolIdentity({
     subject: projectedToken(await externalCredential(), "AGENT_SECRETS_MACHINE_TOKEN_FILE"),
     audience: POOL_AUDIENCE,
@@ -125,6 +126,7 @@ async function poolAt(sts: string, iam: string) {
     tokenAudience: CLIENT_ID,
     securityTokenServiceUrl: `${sts}/v1/token`,
     iamCredentialsUrl: iam,
+    fetch: fetchImpl,
   });
 }
 
@@ -292,15 +294,33 @@ test("the security token service and IAM Credentials are named only where their 
 });
 
 // A request that got no answer is named by its error's class, since the runtime's message repeats
-// the host it was handed, and no error keeps another as its cause.
+// the host it was handed, and no error keeps another as its cause. A name that does not resolve is
+// answered by a stand-in fetch that throws what Bun's own fetch throws for one (measured on Bun
+// 1.4.4: a TypeError `getaddrinfo ENOTFOUND <host>`, with that code and syscall), so the row asks
+// no resolver and its verdict is the naming, not how fast the machine's DNS answers. A refused
+// connection is the runtime's own, on the loopback, where no name is looked up.
 test("a service that does not answer is named by the class of the failure, with no cause", async () => {
   const host = `${randomBytes(9).toString("hex")}.invalid`;
+  const asked: string[] = [];
+  const unresolved = (async (input: string | URL | Request): Promise<Response> => {
+    asked.push(String(input));
+    throw Object.assign(new TypeError(`getaddrinfo ENOTFOUND ${host}`), {
+      code: "ENOTFOUND",
+      syscall: "getaddrinfo",
+      hostname: host,
+      errno: 4,
+    });
+  }) as typeof fetch;
   const iam = stubService(minting);
-  const refusal = await refusalOf(async () => (await poolAt(`http://${host}`, iam.url)).read());
+  const refusal = await refusalOf(async () =>
+    (await poolAt(`http://${host}`, iam.url, unresolved)).read()
+  );
+  expect(asked).toEqual([`http://${host}/v1/token`]);
   expect(refusal?.message).toBe(
     `trade this machine's credential at the security token service http://${host}/v1/token: no answer: getaddrinfo ENOTFOUND`
   );
   expect(refusal?.cause).toBeUndefined();
+  expect(iam.posted).toHaveLength(0);
   const sts = stubService(federating);
   const lost = await refusalOf(async () => (await poolAt(sts.url, "http://127.0.0.1:1")).read());
   expect(lost?.message).toBe(

@@ -1,0 +1,33 @@
+{
+  "kind": "ask",
+  "id": "1332e96f-cd37-4d4b-9acf-fe7200335499",
+  "issue_key": "ACME-1",
+  "title_or_body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dol",
+  "options": [
+    {
+      "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit a",
+      "id": "b2",
+      "label": "lorem ipsum dolor sit"
+    },
+    {
+      "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor",
+      "id": "b3",
+      "label": "lorem ipsum dolor sit "
+    },
+    {
+      "description": "lorem ipsum dolor sit amet lorem ipsum dolor ",
+      "id": "b4",
+      "label": "lorem ipsum dol"
+    }
+  ],
+  "answer": {
+    "at": "2026-10-17T07:00:52.141822927Z",
+    "id": "b5",
+    "selected": [],
+    "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsu",
+    "user": "alice@example.com"
+  },
+  "spec_artifact_id": null,
+  "spec_version": null,
+  "body_truncated": null
+}

@@ -13,6 +13,7 @@ import { resetDraftStorage } from "../features/inbox/draft-store";
 import { resetOutstandingAnswers } from "../features/inbox/outstanding-answers";
 import { resetReplyDrafts } from "../features/inbox/reply-drafts";
 import { resetPinState } from "../features/issue/pin-write";
+import { resetRowReferenceReadings } from "../features/issue-page/row-references";
 import { resetTimestampTick } from "../features/refs/Timestamp";
 import { resetWriteStorage } from "../features/writes/write-storage";
 import { type Writes, watchWriteStores } from "../features/writes/write-store";
@@ -197,6 +198,14 @@ afterEach(resetReachability);
 // `<Timestamp>` would tick. `clearTimeout` clears a timer of either clock (measured on Bun 1.4.4),
 // so this reset needs no place relative to the clock restore below.
 afterEach(resetTimestampTick);
+// Each text a row reads is kept in one module-level cache (`row-references.ts`), and so is the id of
+// each list of keys it was read against. A rerun of the file keeps both with the module: a row that
+// counts the readings it makes found its texts read by the run before and counted fewer reads than
+// it made (19 of 20 reruns of one seed failed). Each row starts with neither. The reset runs before
+// each row as well as after it, because a file's own `afterEach` that throws skips every later
+// `afterEach` of that row, this preload's included (the hook order below).
+beforeEach(resetRowReferenceReadings);
+afterEach(resetRowReferenceReadings);
 
 // A fake clock a test installed is put back here as well as in that test's own `finally` or its
 // file's `afterEach`, because Bun keeps it across files: a test that installs it and then fails

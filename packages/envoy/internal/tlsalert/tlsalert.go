@@ -2,12 +2,12 @@
 // any point of the connection: proof that a peer took the connection and answered, as against a
 // dial that reached nothing.
 //
-// The daemon module keeps the same reading in packages/daemon/internal/tlsalert once #4574
-// merges; until then its internal/cipher' daemonSideFault reads an alert by a rule of its
-// own, the "remote error" Op alone. The two packages are copies, not one package imported twice,
-// for the reason packages/envoy/internal/testtmp gives: Go's internal rule keeps each module from
-// importing the other's. Whichever lands first, a change to the reading here is a change to the
-// daemon's, wherever the daemon reads it.
+// The daemon module keeps the same file at packages/daemon/internal/tlsalert/tlsalert.go. The
+// daemon reads every TLS alert through that copy's In, internal/cipher's daemonSideFault included.
+// The two are copies, not one package imported twice, for the reason
+// packages/envoy/internal/testtmp gives: Go's internal rule keeps each module from importing the
+// other's. Change one and change the other, except this package comment and the paragraph of
+// In's comment that names its callers, which each module writes for itself.
 package tlsalert
 
 import (
@@ -28,7 +28,7 @@ import (
 // can hold a refused dial ahead of the alert.
 //
 // Its callers word an alert as the peer answering: agent-secrets' peerAnswered (a broker that
-// answered but the exchange failed), internal/cipher/secrets' transportFailure (an upstream a mint
+// answered but the exchange failed), internal/cipher/secrets' TransportFailure (an upstream a mint
 // called that answered), and internal/redact's tlsFailure (the class "TLS failed").
 func In(err error) bool {
 	switch err := err.(type) {

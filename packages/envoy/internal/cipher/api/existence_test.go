@@ -46,16 +46,23 @@ func readAnswer(t *testing.T, req *http.Request) answerRead {
 	if len(got.id()) != 32 {
 		t.Fatalf("%s %s = %d %s carries no answer id; want an answer the broker wrote", req.Method, req.URL.Path, got.status, got.body)
 	}
+	return answerOf(t, got.status, got.body)
+}
+
+// answerOf is status and body as requireSameAnswers compares them: a JSON body with its answer_id
+// taken out, and any other body as it is. Headers are not compared.
+func answerOf(t *testing.T, status int, body []byte) answerRead {
+	t.Helper()
 	var fields map[string]any
-	if err := json.Unmarshal(got.body, &fields); err != nil {
-		return answerRead{status: got.status, body: string(got.body)}
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return answerRead{status: status, body: string(body)}
 	}
 	delete(fields, "answer_id")
 	normal, err := json.Marshal(fields)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return answerRead{status: got.status, body: string(normal)}
+	return answerRead{status: status, body: string(normal)}
 }
 
 // requireSameAnswers fails t unless every answer in answers, keyed by what its call named, is the

@@ -243,7 +243,7 @@ export class FakeNats implements ChannelConnection {
   }
 
   /** nats.js reports a status event: `reconnect`, say. */
-  emitStatus(type: string): void {
+  emitStatus(type: ChannelConnectionStatus["type"]): void {
     this.statuses.push({ type })
     this.statusWaiter?.resolve()
   }

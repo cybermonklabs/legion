@@ -272,18 +272,17 @@ func TestZeroRenamesAliasNoOwnerAndServeTheRecordedRepository(t *testing.T) {
 // pair's to included, resolves to itself. OwnerAliases keys one alias for each pair that
 // resolves, and none for a pair inside one owner, which moves nothing between installations.
 //
-// What the rule reads is the repositories Dispatch maps to the project, one at a time, so each
-// case runs twice: as the project's mapping gives it, and with one more repository of the owner
-// the pair moved the repository away from served beside it. Both must answer the same. The
-// second is the state of the production failure this rule replaces: adding sjawhar/oh-my-pi to
-// the project's mapping made sjawhar an owner of the project, an owner test read that as the
-// pair's old owner being the project's own, and the pair stopped resolving while 47 trees could
-// not push.
+// What the rule reads is whether the project serves each repository, one at a time, so each case
+// runs twice: as served, and with one more repository of the owner the pair moved the repository
+// away from served beside it. Both must answer the same. The second is the state of the
+// production failure this rule replaces: serving sjawhar/oh-my-pi as well made sjawhar an owner
+// of the project, an owner test read that as the pair's old owner being the project's own, and
+// the pair stopped resolving while 47 trees could not push.
 //
-// The served set is all this rule reads, so the mapping states the issue names collapse here to
-// four: M1, M2 and M4 all serve the pair's to alone, M3 serves its from, M5 serves both and M0
-// serves neither. The daemon's own twelve cases drive those states through the mapping that
-// builds those sets.
+// The served set is all this rule reads, so the states the issue names (M0 to M5) collapse here
+// to four: M1, M2 and M4 all serve the pair's to alone, M3 serves its from, M5 serves both and M0
+// serves neither. The daemon's own tests drive those states through the installation answers
+// that build those sets.
 func TestOwnerAliasesAndServingOverAConfiguredRename(t *testing.T) {
 	transfer := MustRename("sjawhar/legion", "CyberMonkLabs/legion")
 	for _, tc := range []struct {

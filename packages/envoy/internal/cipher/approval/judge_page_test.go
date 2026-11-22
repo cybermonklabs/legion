@@ -153,7 +153,7 @@ func TestThePageOffersNoDecisionWhileTheJudgeHolds(t *testing.T) {
 		t.Errorf("ApplyDecision by %s while the judge holds = %v; want requests.ErrJudgeHolds", ada, err)
 	}
 
-	if err := r.machine.LogJudged(t.Context(), p.recordID, judgeModel, map[string]any{"verdict": "deny", "error": "the model did not answer"}); err != nil {
+	if _, err := r.machine.LogJudged(t.Context(), p.recordID, judgeModel, map[string]any{"verdict": "deny", "error": "the model did not answer"}); err != nil {
 		t.Fatalf("the hand-over: %v", err)
 	}
 	if form := decisionForm(t, b.Page(t, p.recordID).Body, p.recordID); form == nil {

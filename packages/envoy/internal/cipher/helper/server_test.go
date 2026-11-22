@@ -951,7 +951,7 @@ func TestRegisterRejectsAPeerWhosePIDChangedDuringTheAncestryWalk(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp := r.srv.register(context.Background(), peer, os.Getpid(), "", false, 0, 0)
+	resp := r.srv.register(context.Background(), peer, os.Getpid(), "", nil, false, 0, 0)
 	if resp.OK || resp.Code != CodeUnidentified {
 		t.Fatalf("a peer no longer matching the pid the ancestry walk resolved must be refused, not handed the root session: %+v", resp)
 	}
@@ -968,7 +968,7 @@ func TestRegisterRejectsAPeerWhosePIDChangedBeforeAdopting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp := r.srv.register(context.Background(), peer, victim.Process.Pid, "", false, 0, 0)
+	resp := r.srv.register(context.Background(), peer, victim.Process.Pid, "", nil, false, 0, 0)
 	if resp.OK || resp.Code != CodeUnidentified {
 		t.Fatalf("a peer no longer matching an unclaimed pid must be refused, not adopted: %+v", resp)
 	}

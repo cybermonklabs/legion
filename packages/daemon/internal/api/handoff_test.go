@@ -52,8 +52,8 @@ func (t handoffTokens) ReadToken(_ context.Context, role appauth.AppRole, owner 
 }
 
 // InstalledOwners is the owner accounts each App is installed on, which the controller's gh
-// bundle reads from GitHub at every build (appauth.OwnerInstallations): the two accounts these
-// harnesses' project serves repositories under.
+// bundle reads at every build (appauth.OwnerInstallations): the two accounts these harnesses'
+// project serves repositories under.
 func (handoffTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
 	return []string{"acme", "sjawhar"}, nil
 }

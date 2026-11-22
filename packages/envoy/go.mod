@@ -21,6 +21,7 @@ require (
 	github.com/aws/smithy-go v1.28.6
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/docker/docker v28.5.2+incompatible
+	github.com/docker/go-connections v0.6.0
 	github.com/go-jose/go-jose/v4 v4.1.5
 	github.com/go-logr/logr v1.4.4
 	github.com/go-logr/stdr v1.2.2
@@ -94,7 +95,6 @@ require (
 	github.com/cpuguy83/dockercfg v0.3.2 // indirect
 	github.com/dgraph-io/ristretto v0.2.0 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
-	github.com/docker/go-connections v0.6.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/ebitengine/purego v0.10.0 // indirect

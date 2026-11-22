@@ -117,7 +117,7 @@ func TestAPermissionTheServerRefusesIsLoggedAtError(t *testing.T) {
 // the raw protocol lines in then to it; it returns the server's URL.
 func fakeServer(t *testing.T, then string) string {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := testnats.ListenLoopback()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +296,7 @@ type proxy struct {
 // dropProxy is a proxy to upstream, closed with t.
 func dropProxy(t *testing.T, upstream string) *proxy {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := testnats.ListenLoopback()
 	if err != nil {
 		t.Fatal(err)
 	}

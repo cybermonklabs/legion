@@ -1,14 +1,17 @@
 // packages/envoy/internal/cipher/proxy/bound.go
 // One request on a bound host: the proxyrules.Request it is read as, the one (name, slot) pair of
 // the grant it is handled for, the real value behind that pair, the decision and the swap
-// (proxyrules.Decide and proxyrules.Rewrite, which decide and swap everything here), what goes
-// upstream, and the line the call logs.
+// (proxyrules.Decide and proxyrules.Rewrite, which decide and swap everything here, with a private
+// project's Slack check beside them for a Limited name, slack.go), what goes upstream, and the
+// line the call logs.
 package proxy
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"errors"
+	"io"
 	"maps"
 	"net"
 	"net/http"
@@ -270,17 +273,18 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// The three names the decision compares are ASCII lower-cased, as the entry's hosts
 		// are: host names are case-insensitive and the model compares them exactly, so a
 		// client that wrote "API.example.com" in one of the three is not a mismatch. The fold
-		// is fold.ASCII, ASCII-only for the reason the airlock package gives.
+		// is fold.ASCII, ASCII-only for the reason the proxyrules package gives.
 		SNI:        fold.ASCII(sniOf(r)),
 		HostHeader: fold.ASCII(hostHeaderOf(r.Host)),
 		Method:     r.Method,
 		Path:       r.URL.Path,
 		Headers:    headersOf(r.Header),
 		Query:      r.URL.RawQuery,
-		// The body is never read and never changed. The airlock swaps headers alone, so
-		// nothing here depends on the body; reading one would mean holding every upload a
-		// command makes in the broker's memory before it could be forwarded, and the proxy
-		// streams instead.
+		// The decision never reads the body. The airlock swaps headers alone, so nothing it
+		// decides depends on the body; reading one would mean holding every upload a command
+		// makes in the broker's memory before it could be forwarded, and the proxy streams
+		// instead. The one body this function reads is a Limited name's, which slackPostAllowed
+		// below reads, bounded, to tell which Slack channel it posts to.
 		Body: "",
 	}
 
@@ -366,6 +370,13 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if secret.Limited && kind != "" {
+		// A Limited name is spent only on a Slack post, which is a header swap. An entry of
+		// another kind signs or exchanges what it carries, which slackPostAllowed has no
+		// reading of, so it carries nothing rather than go out unchecked.
+		s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeChannelNotAllowed, channelNotAllowed+": the entry of this secret is of kind "+kind+", not a header swap")
+		return
+	}
 
 	grant := proxyrules.Grant{Secret: chosen.name, Placeholder: placeholder}
 	// refused answers a request the decision will not carry, and reports that it did. The
@@ -411,7 +422,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		header, rawQuery = signed, signedQuery
 	} else {
 		// The swap first, and the decision only to explain a refusal. Decide and Rewrite take
-		// the one decision (airlock.check), which is deterministic and has no side effect, so
+		// the one decision (proxyrules.check), which is deterministic and has no side effect, so
 		// Rewrite answers nil for exactly the requests Decide refuses: running it first costs
 		// an allowed swap - the commonest request the proxy serves - one decision rather than
 		// two, and leaves the refusal, the order its reasons are reported in and the 403
@@ -428,6 +439,18 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		header = headerOf(rewritten.Headers)
+		if secret.Limited {
+			// A private project's grant of a project-channels secret
+			// (requests.AirlockSecret.Limited): the swap allowed the request, and
+			// slackPostAllowed decides whether it is a post this grant may make. What it read is
+			// what goes upstream, byte for byte, so the post Slack reads is the one checked.
+			body, why := slackPostAllowed(r, secret.Channels)
+			if why != "" {
+				s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeChannelNotAllowed, channelNotAllowed+": "+why)
+				return
+			}
+			r.Body, r.ContentLength = io.NopCloser(bytes.NewReader(body)), int64(len(body))
+		}
 	}
 	// Headers of the proxy itself, which belong to this connection and not to the service. The
 	// swap and the signature have already run, so a header the entry names keeps its value and

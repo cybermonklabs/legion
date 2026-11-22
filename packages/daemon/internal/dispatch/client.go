@@ -86,20 +86,6 @@ func (c *HTTPClient) GetIssue(ctx context.Context, key string) (Issue, error) {
 	return response.issue(), nil
 }
 
-// ListRepoProjects reads GET /api/v1/settings/repo-projects: every project's repository mappings,
-// which the caller filters to its own project.
-func (c *HTTPClient) ListRepoProjects(ctx context.Context) ([]RepoProject, error) {
-	var response []repoProjectResponse
-	if err := c.request(ctx, http.MethodGet, "/api/v1/settings/repo-projects", nil, &response); err != nil {
-		return nil, err
-	}
-	mappings := make([]RepoProject, 0, len(response))
-	for _, mapping := range response {
-		mappings = append(mappings, RepoProject{Repo: mapping.Repo, Project: mapping.Project, Default: mapping.Default})
-	}
-	return mappings, nil
-}
-
 // WebhookAppInstalled reads GET /api/v1/github/app-installation/{owner}/{repo}: whether
 // Dispatch's GitHub App, the one GitHub sends repo's webhook events through to Envoy, is installed
 // on repo (owner/name). A Dispatch older than the route answers 404, an *Error Missing reports.
@@ -308,9 +294,11 @@ func (c *HTTPClient) ArtifactSlugs(ctx context.Context, key string) ([]string, e
 // /api/v1/issues/{key}/artifacts, as the daemon's own session, and returns the slug Dispatch filed
 // it under, which a link to it names (dispatch://<key>/artifact/<slug>). The body holds only
 // fields Dispatch's JSON upload reads (its jsonArtifactUpload), since its decoder refuses any
-// other. It names no token, so it is a first upload: Dispatch refuses a name the issue already
-// holds 400 PRECONDITION_REQUIRED, and the outbox uploads only a name the issue lists no
-// document under (messageArtifact).
+// other. It names no token, so it is meant as a first upload, and the outbox uploads only a name
+// the issue lists no document under (messageArtifact). Since legion-envoy-v32.36.1 Dispatch stores
+// an upload naming no token over a name the issue already holds, as it did before it began to ask
+// for one, and counts it (envoy_dispatch_document_replacements_unguarded_total); a token behind
+// the live document is still refused 409 PRECONDITION_FAILED.
 func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content string) (string, error) {
 	var response struct {
 		Artifact struct {
@@ -675,12 +663,6 @@ func (c *claimResponse) unread() bool {
 // holder is the claim as Claim.Holder writes it.
 func (c *claimResponse) holder() string {
 	return c.claim().Holder()
-}
-
-type repoProjectResponse struct {
-	Repo    string `json:"repo"`
-	Project string `json:"project"`
-	Default bool   `json:"default"`
 }
 
 type issueEventResponse struct {

@@ -4,6 +4,7 @@ import { afterEach, expect, jest, spyOn, test } from "bun:test"
 import { writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { forgetBrokerClients } from "@legion/envoy-client/broker-credential"
+import { NATS_DIAL_TOKEN_DROPPED } from "@legion/envoy-client/nats-connection"
 import {
   type BrokerNatsCredential,
   brokerNatsCredential,
@@ -300,6 +301,68 @@ test("a channel server's start waits through a broker that refuses connections, 
     warn.mockRestore()
   }
 }, 90_000)
+
+test("a first dial whose broker token the hub refuses twice drops it, presents the next one traded, and says so", async () => {
+  // The dials share the keeper's count of the token's refusals (`connectNats`' `hooks.credential`),
+  // so the dial drops a token the hub refused twice, as the keeper does on an open connection. The
+  // waits between the dials are recorded, not slept: each waits only for a live token.
+  const minted: string[] = []
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () => {
+      const token = fixtureSecret("channel")
+      minted.push(token)
+      return Response.json({
+        access_token: token,
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 900,
+      })
+    },
+  })
+  servers.push(server)
+  const home = makeDirectory()
+  const tokenFile = join(home, "token")
+  await writeFile(tokenFile, `${fixtureSecret("machine")}\n`)
+  const credential = brokerNatsCredential(
+    {
+      HOME: home,
+      AGENT_SECRETS_URL: `http://127.0.0.1:${server.port}`,
+      AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+      AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
+    },
+    "ses_channel_refused_twice",
+  )
+  const fake = fakeDial()
+  let refusals = 0
+  const dial = async (options: ConnectionOptions): Promise<NatsConnection> => {
+    if (refusals < 2) {
+      refusals += 1
+      throw new NatsError("'Authorization Violation'", ErrorCode.AuthorizationViolation)
+    }
+    return fake.dial(options)
+  }
+  const warnings: string[] = []
+  const opened = await dialChannelNats(
+    {
+      natsUrls: ["nats://nats.test:4222"],
+      natsServersSetting: "ENVOY_NATS_URL",
+      natsCredential: { kind: "broker", broker: credential },
+    },
+    "claude-envoy-channel-ses_channel_refused_twice",
+    (text) => warnings.push(text),
+    dial,
+    undefined,
+    undefined,
+    { delay: () => credential.ready(), random: () => 0 },
+  )
+  opened.stop()
+  // The start's token, and the one traded at the drop, which the third dial presented.
+  expect(minted).toHaveLength(2)
+  expect(fake.presented).toEqual(minted.slice(1))
+  expect(warnings.filter((text) => text.includes(NATS_DIAL_TOKEN_DROPPED))).toHaveLength(1)
+}, 15_000)
 
 test("dialChannelNats runs no keeper and no follow for a connection with no broker token", async () => {
   // The clock is the row's: moved an hour on, every timer the start left behind has fired.

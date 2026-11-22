@@ -10,11 +10,14 @@
 # comment is public on the pull request's page from the moment it is posted. A hit is reported as
 # `title:<line>`, `body:<line>`, `branch:<line>`, `commits:<line>`, `comment:<id>:<line>`,
 # `review:<id>:<line>` or `review-comment:<id>:<line>` (the id GitHub gives that issue comment,
-# review or review comment), never its text.
+# review or review comment), never its text. That run reads the third rule's form for a pull
+# request's own text too (PRIVATE_NAME_BARE_HOSTS=yes): a host that ends in `.internal`, which a
+# run over the tree passes (check-private-names.sh's header says why).
 #
-# Then it holds the pull request's new text to check-private-names.sh's rules 6 and 7 (an issue key
-# of the deployment's own projects, and a Dispatch link), from a cutoff it derives at each run: the
-# section "THE ISSUE-KEY RULE" below says how, and which text. A hit there is reported as
+# Then it holds the pull request's new text to check-private-names.sh's rule 6 (an issue key of the
+# deployment's own projects), from a cutoff it derives at each run: the section "THE ISSUE-KEY
+# RULE" below says how, and which text. No rule refuses a Dispatch link for being one; a name,
+# term or issue key in it is still refused. A hit there is reported as
 # `title:<line>`, `body:<line>`, `<kind>:<id>:<line>`, `commit:<sha>:<line>` for a
 # commit's message, `commit:<sha>:<path>:<line>` for a line a commit adds, or
 # `files:<path>:<line>` for a line of the pull request's net diff, which is read in place of a
@@ -31,7 +34,9 @@
 # the pull request: its number, and the base and head sha the run checks, which is the head the
 # event names rather than whatever head the pull request has by the time a route is read, since a
 # push can land while the job runs and gets a run of its own. A payload without one is refused.
-# The rest it reads with gh (GH_TOKEN, GITHUB_REPOSITORY). The title, body and branch name come
+# The rest it reads with gh (GH_TOKEN, GITHUB_REPOSITORY), each call through gh-read.sh's
+# gh_wait_reset, which waits out a spent API budget within the JOB_TIMEOUT_MINUTES both jobs that
+# run this script set, and fails by name past it. The title, body and branch name come
 # from the pull request route as the pull request has them now, not from the payload: ci.yaml's
 # `pr-title` job checks at a push and can finish long after a later edit's pr-title.yaml run, and
 # both carry pr-title on the head, so a check of the push's own text would report a pass over
@@ -64,6 +69,8 @@ set -euo pipefail
 event=${GITHUB_EVENT_PATH:?GITHUB_EVENT_PATH must name the pull request event payload}
 repository=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must name the repository as owner/repo}
 script_dir=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=.github/scripts/gh-read.sh
+source "$script_dir/gh-read.sh"
 text=$(mktemp -d)
 work=$(mktemp -d)
 trap 'rm -rf "$text" "$work"' EXIT
@@ -77,7 +84,7 @@ number=$(jq -er '.number' "$pull")
 base=$(jq -er '.base.sha' "$pull")
 head=$(jq -er '.head.sha' "$pull")
 live="$work/live.json"
-gh api "repos/$repository/pulls/$number" > "$live"
+gh_wait_reset gh api "repos/$repository/pulls/$number" > "$live"
 if ! jq -e '(.title | type == "string") and (.head.ref | type == "string")' "$live" > /dev/null 2>&1; then
   echo "::error::the pull request route answered no title and head branch for #$number" >&2
   exit 1
@@ -95,7 +102,8 @@ fi
 # that parameter, and asks for the largest page GitHub serves; `--paginate` then reads every page
 # it creates, printing one JSON object per page, each repeating total_commits.
 compare_json="$work/compare.json"
-gh api "repos/$repository/compare/$base...$head?per_page=100" --paginate > "$compare_json"
+gh_wait_reset gh api "repos/$repository/compare/$base...$head?per_page=100" --paginate \
+  > "$compare_json"
 total_commits=$(jq -s '.[0].total_commits // empty' "$compare_json")
 if ! [[ $total_commits =~ ^[0-9]+$ ]]; then
   echo "::error::the compare route's answer for $base...$head names no whole-number" \
@@ -129,7 +137,7 @@ read_list() {
   local kind=$1 route=$2 page=1 id trust association body
   mkdir "$text/$kind"
   while :; do
-    gh api "repos/$repository/$route?per_page=100&page=$page" > "$work/answer"
+    gh_wait_reset gh api "repos/$repository/$route?per_page=100&page=$page" > "$work/answer"
     if ! jq -e 'type == "array"' "$work/answer" > /dev/null 2>&1; then
       echo "::error::page $page of the $route route is not a list, so its ${kind}s cannot be" \
         "checked" >&2
@@ -172,7 +180,7 @@ done
 # temporary directory, and an item as <kind>:<id>.
 kind_pattern="($(IFS='|'; echo "${kinds[*]}"))"
 status=0
-"$script_dir/check-private-names.sh" "$text/title" "$text/body" "$text/branch" "$text/commits" \
+PRIVATE_NAME_BARE_HOSTS=yes "$script_dir/check-private-names.sh" "$text/title" "$text/body" "$text/branch" "$text/commits" \
   "${kinds[@]/#/$text/}" 2>&1 | sed -E -e "s|$text/||g" -e "s#(^|[:=])$kind_pattern/([0-9]+)#\\1\\2:\\3#g" \
   > "$work/report" || status=$?
 cat "$work/report"
@@ -187,11 +195,11 @@ if [ "$status" -ne 0 ] && grep -q -E "(^|[:=])$kind_pattern:[0-9]+:" "$work/repo
   echo "    Never re-run an older run: it checks the commits of the head its own event named, and"
   echo "    its check lands on that head, not the current one."
 fi
-# THE ISSUE-KEY RULE (check-private-names.sh's rules 6 and 7: an issue key of the deployment's own
-# projects, and a Dispatch link), over new text only. Its cutoff is derived, never typed: the
-# commit that added .github/issue-key-cutoff to the base branch is the one that told every worker
-# to keep keys and links out of this repository's text (skills/legion-worker/references/
-# pr-body.md), and the cutoff is the publish time of the earliest legion-v* release whose commit
+# THE ISSUE-KEY RULE (check-private-names.sh's rule 6: an issue key of the deployment's own
+# projects), over new text only. Its cutoff is derived, never typed: the commit that added
+# .github/issue-key-cutoff to the base branch is the one that told every worker to keep keys out
+# of this repository's text (skills/legion-worker/references/pr-body.md), and the cutoff is the
+# publish time of the earliest legion-v* release whose commit
 # contains it, found at a cost that does not grow with the releases (below). No such commit, or no
 # such release yet, and the rule is inactive; a history or a release GitHub does not answer is
 # UNKNOWN, and refused. Once active, a
@@ -206,9 +214,9 @@ fi
 # pull request's, so it also holds the lines of its commits dated before the cutoff: a pull request
 # opened after the cutoff that holds a forward merge is read whole, those older lines included.
 # That exception errs toward reading more, and each of those lines lands on main as new text
-# anyway. A key or a link that the new commits also remove is carried over, not new: a line edited
-# around a link it already held (whatever punctuation now follows it), a file moved with its keys,
-# or a line one commit removes and a later one puts back, passes (THE DIFF READING below). A diff
+# anyway. A key that the new commits also remove is carried over, not new: a line edited around a
+# key it already held (whatever punctuation now follows it), a file moved with its keys, or a line
+# one commit removes and a later one puts back, passes (THE DIFF READING below). A diff
 # GitHub's REST answer does not hold whole (a file that adds lines with no patch, which GitHub
 # leaves out for a large file, or a list short of the diff's totals) is read from git instead, and
 # only a diff neither holds whole is UNKNOWN, and refused. The branch name is not read by this
@@ -219,8 +227,8 @@ fi
 key_status=0
 cutoff_file=.github/issue-key-cutoff
 base_ref=$(jq -r '.base.ref // "main"' "$live")
-gh api "repos/$repository/commits?path=$cutoff_file&sha=$base_ref&per_page=100" --paginate \
-  > "$work/cutoff-commits"
+gh_wait_reset gh api "repos/$repository/commits?path=$cutoff_file&sha=$base_ref&per_page=100" \
+  --paginate > "$work/cutoff-commits"
 skill_commit=$(jq -s -r '[.[][]] | last | .sha // empty' "$work/cutoff-commits")
 cutoff=''
 if [ -z "$skill_commit" ]; then
@@ -267,7 +275,8 @@ else
     first_tag='' first_published=''
     while IFS= read -r tag; do
       # A tag can exist before its release does, and a draft is no release: either is skipped.
-      if ! gh api "repos/$repository/releases/tags/$tag" > "$work/release" 2> "$work/gh-error"; then
+      if ! gh_wait_reset --stderr "$work/gh-error" \
+        gh api "repos/$repository/releases/tags/$tag" > "$work/release"; then
         if grep -q -F '(HTTP 404)' "$work/gh-error"; then continue; fi
         unknown "GitHub did not answer for the release of $tag ($(head -n 1 "$work/gh-error"))"
         break
@@ -310,42 +319,28 @@ elif [ -n "$cutoff" ]; then
   # <stage>/count. GitHub's REST answer is read first. Where it does not hold the whole diff, git
   # reads the same diff from the pull request's head, which it never truncates. Then carry.awk
   # (written below) writes each entry's added lines at their line numbers in the new file, every
-  # other line empty, with each issue-key-shaped word or Dispatch link that a removed line also
-  # holds blanked as <carried>: one removed occurrence carries one added one. The pool is every new
-  # commit's removed lines together, across their files and commits, so a key moved, a line
-  # re-worded around its link, or a line one commit removes and a later one puts back (as `jj split`
-  # divides a move) is not new text, and a second copy of it is; the net diff, read for a merge, is
-  # its own pool. A link's token ends before a sentence's trailing `.`, `,`, `;` or `:`, so changing
-  # the punctuation after it adds nothing. carry.awk runs under LC_ALL=C, so it reads bytes and
-  # folds the case of ASCII letters alone, as its words and its link scheme are defined: in a UTF-8
-  # locale gawk's tolower folds a dotted capital I to an i, where rule 7's grep -i does not.
-  link_scheme='dispatch'':''//'
+  # other line empty, with each issue-key-shaped word that a removed line also holds blanked as
+  # <carried>: one removed occurrence carries one added one. The pool is every new commit's removed
+  # lines together, across their files and commits, so a key moved, a line re-worded around its
+  # key, or a line one commit removes and a later one puts back (as `jj split` divides a move) is
+  # not new text, and a second copy of it is; the net diff, read for a merge, is its own pool.
+  # carry.awk runs under LC_ALL=C, so it reads bytes, as its words are defined.
   : > "$work/git-error"
   cat > "$work/carry.awk" <<'AWK'
-# scan <line> <collect>: in collect mode, counts each key-shaped word and link of the line as one
-# the diff removes; else the line with each one a removed occurrence carries blanked, and the
-# count of those none carries in `uncarried`. A key-shaped word is an upper-case run, a "-" and
-# digits, with an ASCII character that is no letter or digit (or the line's edge) on either side.
+# scan <line> <collect>: in collect mode, counts each key-shaped word of the line as one the diff
+# removes; else the line with each one a removed occurrence carries blanked, and the count of
+# those none carries in `uncarried`. A key-shaped word is an upper-case run, a "-" and digits, with
+# an ASCII character that is no letter or digit (or the line's edge) on either side, so a key in a
+# Dispatch link is one too.
 # Every other character, a non-ASCII letter or mark among them, counts as a letter, so this finds
 # a word only where the sixth rule's locale-aware [^[:alnum:]] boundary finds a key too: a removed
 # word that rule would not read as a key never carries an added one it would. The cost runs the
 # safe way: a key beside non-ASCII punctuation (a curly quote, a no-break space) is no word here,
-# so it is never carried and rule 6 reads it as new. A link is the scheme, in ASCII letters of any
-# case, and what follows it up to a blank, a quote or a bracket, less any `.`, `,`, `;` or `:` that
-# ends it, which stays in the line as written.
-function scan(line, collect,    out, i, n, c, prev, j, k, tok, sl) {
-  out = ""; n = length(line); i = 1; sl = length(scheme)
+# so it is never carried and rule 6 reads it as new.
+function scan(line, collect,    out, i, n, c, prev, j, k, tok) {
+  out = ""; n = length(line); i = 1
   while (i <= n) {
     c = substr(line, i, 1)
-    if (tolower(substr(line, i, sl)) == scheme) {
-      j = i + sl
-      while (j <= n && index(stops, substr(line, j, 1)) == 0) j++
-      while (j > i + sl && index(".,;:", substr(line, j - 1, 1)) > 0) j--
-      tok = scheme substr(line, i + sl, j - i - sl)
-      if (take(tok, collect)) out = out "<carried>"; else out = out substr(line, i, j - i)
-      i = j
-      continue
-    }
     prev = (i == 1) ? "" : substr(line, i - 1, 1)
     if (index(upper, c) > 0 && (prev == "" || index(apart, prev) > 0)) {
       j = i
@@ -373,7 +368,6 @@ function take(tok, collect) {
   return 0
 }
 BEGIN {
-  stops = " \t\r\"<>()[]`" sprintf("%c", 39)
   upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"; digits = "0123456789"
   # apart: the ASCII characters that are no letter or digit, the one set that bounds a word.
   apart = ""
@@ -543,7 +537,7 @@ AWK
   carry_stages() {
     local stage
     for stage in "$@"; do printf '%s\t%s\n' "$stage" "$(< "$stage/count")"; done > "$work/stages"
-    LC_ALL=C awk -v stages="$work/stages" -v scheme="$link_scheme" -f "$work/carry.awk"
+    LC_ALL=C awk -v stages="$work/stages" -f "$work/carry.awk"
   }
   # place_stage <stage> <part>: each staged entry's added lines under <part>/<path>: in $keyed when
   # the path is new text (an added file, or a renamed or copied one whose path holds a word its old
@@ -560,7 +554,7 @@ AWK
       case $file_status in
         added) dest="$keyed/$part/$name" ;;
         renamed | copied)
-          if [ "$(OLD_PATH=$old NEW_PATH=$name LC_ALL=C awk -v mode=path -v scheme="$link_scheme" -f "$work/carry.awk")" = carried ]; then
+          if [ "$(OLD_PATH=$old NEW_PATH=$name LC_ALL=C awk -v mode=path -f "$work/carry.awk")" = carried ]; then
             dest="$lines_only/$part/$name"
           else
             dest="$keyed/$part/$name"
@@ -610,7 +604,8 @@ AWK
     fi
     stage="$work/stage-$short"
     mkdir "$stage"
-    gh api "repos/$repository/commits/$sha?per_page=100" --paginate > "$work/commit-$short"
+    gh_wait_reset gh api "repos/$repository/commits/$sha?per_page=100" --paginate \
+      > "$work/commit-$short"
     files=$(jq -s '[.[].files[]] | length' "$work/commit-$short")
     listed=$(jq -s '[.[].files[] | .changes] | add // 0' "$work/commit-$short")
     total=$(jq -s '.[0].stats.total // -1' "$work/commit-$short")
@@ -642,7 +637,8 @@ AWK
   if [ "$merges" -gt 0 ]; then
     stage="$work/stage-net"
     mkdir "$stage"
-    gh api "repos/$repository/pulls/$number/files?per_page=100" --paginate > "$work/pr-files-pages"
+    gh_wait_reset gh api "repos/$repository/pulls/$number/files?per_page=100" --paginate \
+      > "$work/pr-files-pages"
     jq -s '{files: [.[][]]}' "$work/pr-files-pages" > "$work/pr-files"
     files=$(jq '.files | length' "$work/pr-files")
     listed=$(jq '[.files[] | .changes] | add // 0' "$work/pr-files")
@@ -670,7 +666,7 @@ AWK
       place_stage "$stage" net
     fi
   fi
-  # Two runs of rules 6 and 7: one over the title, body, items, commit messages and the files the
+  # Two runs of rule 6: one over the title, body, items, commit messages and the files the
   # new commits (or the net diff) add, or rename to a path with a word its old path lacks, whose
   # paths are new text too; one over the lines they add to files they only change, whose paths are
   # not.

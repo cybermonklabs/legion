@@ -57,6 +57,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # The server the suite creates its own session-store database on, and drops again: the
       # login is the image's superuser, since the test's first statement is a CREATE DATABASE.
       LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable

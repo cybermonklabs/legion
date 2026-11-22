@@ -49,7 +49,6 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 	}
 	namesNone := map[string]Fact{
 		"ChildAdoption":            ChildAdoption{Tree: issue, Children: []AdoptedChild{{Issue: issue}}},
-		"RepoMappingChanged":       RepoMappingChanged{},
 		"DispatchConsumerPosition": DispatchConsumerPosition{},
 		"ControllerTick":           ControllerTick{},
 		"EntrySweep":               EntrySweep{},

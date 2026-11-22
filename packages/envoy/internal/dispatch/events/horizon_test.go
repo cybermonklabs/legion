@@ -745,7 +745,8 @@ func TestHorizonResetDiscardsAnObservationInFlight(t *testing.T) {
 // snapshot can predate an event committed just before the call, and with its A at or below H it
 // leaves no gap (Gap), so a reader would arm no re-read and the event would wait for the next
 // notification however long that takes. Whatever Safe returns, an event committed before the call
-// must be at or below H or keep a gap open.
+// must be at or below H or keep a gap open. The test lets the observation in flight end only once
+// the call has parked on it, so the call always finds it in flight, however slowly it gets there.
 func TestHorizonSafeWaitsOutAnObservationInFlightBeforeTheCall(t *testing.T) {
 	database := storetest.Open(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -757,13 +758,21 @@ func TestHorizonSafeWaitsOutAnObservationInFlightBeforeTheCall(t *testing.T) {
 		t.Fatalf("Await on a quiet log = %d, %v; want %d", safe, err, first)
 	}
 
+	// The stale observation's caller runs it, so only the call below parks.
+	parked := make(chan struct{}, 1)
+	horizon.afterObservationParked = func() {
+		select {
+		case parked <- struct{}{}:
+		default:
+		}
+	}
 	gated.armed.Store(true)
 	stale := make(chan error, 1)
 	go func() {
 		_, err := horizon.Safe(ctx)
 		stale <- err
 	}()
-	<-gated.observed // the stale observation has read the log and committed
+	receiveBeforeTheDeadline(t, "the stale observation to read the log and commit", gated.observed)
 	id := commitHorizonEvent(ctx, t, database)
 	type result struct {
 		safe int64
@@ -774,16 +783,12 @@ func TestHorizonSafeWaitsOutAnObservationInFlightBeforeTheCall(t *testing.T) {
 		safe, err := horizon.Safe(ctx)
 		called <- result{safe, err}
 	}()
-	select {
-	case got := <-called:
-		t.Fatalf("Safe = %d, %v while the observation in flight before the call is held", got.safe, got.err)
-	case <-time.After(100 * time.Millisecond): // let the call reach the observation in flight
-	}
+	receiveBeforeTheDeadline(t, "the call to park on the stale observation in flight", parked)
 	close(gated.release)
-	if err := <-stale; err != nil {
+	if err := receiveBeforeTheDeadline(t, "the Safe that ran the stale observation to return", stale); err != nil {
 		t.Fatalf("Safe that ran the stale observation: %v", err)
 	}
-	got := <-called
+	got := receiveBeforeTheDeadline(t, "the Safe called while the stale observation was in flight to return", called)
 	if got.err != nil {
 		t.Fatalf("Safe after committing id %d: %v", id, got.err)
 	}
@@ -800,45 +805,579 @@ func TestHorizonSafeWaitsOutAnObservationInFlightBeforeTheCall(t *testing.T) {
 
 // Every reader of a process calls Safe; concurrent calls must share observations, since each one
 // costs a round trip and a transaction id. Callers that arrive while one is in flight wait it out
-// and share the next.
+// and share the next, whether they reach it while it runs or only after it has ended.
 func TestHorizonConcurrentSafeCallsShareAnObservation(t *testing.T) {
 	database := storetest.Open(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := t.Context()
 	counting := &countingHorizonDB{HorizonDB: database.Pool, entered: make(chan struct{}), release: make(chan struct{})}
 	horizon := NewHorizon(counting)
 
 	const callers = 8
-	// Every caller but the one running the observation parks on it, and the test waits for all
-	// of them to be parked before it lets that observation end: a caller still on its way would
-	// find no observation in flight and run one of its own, which is the very thing this test
-	// says must not happen. Waiting on the parking itself is what the run's own machinery
-	// reports; a sleep long enough on an idle machine is not long enough on a loaded one.
+	// The first caller's observation is held in flight, and every other caller calls only once it
+	// is, so each of them must wait it out and take the next. The test waits for all of them to
+	// be parked on it before it lets it end: a caller that called only after the next one had
+	// ended would rightly run a third. Waiting on the parking itself is what the run's own
+	// machinery reports; a sleep long enough on an idle machine is not long enough on a loaded
+	// one.
 	parked := make(chan struct{}, callers)
 	horizon.afterObservationParked = func() { parked <- struct{}{} }
 	errs := make(chan error, callers)
-	for range callers {
+	safe := func() {
+		_, err := horizon.Safe(ctx)
+		errs <- err
+	}
+	go safe()
+	receiveBeforeTheDeadline(t, "the first caller's observation to reach the database", counting.entered)
+	for range callers - 1 {
+		go safe()
+	}
+	for i := range callers - 1 {
+		receiveBeforeTheDeadline(t, fmt.Sprintf("Safe call %d of the %d later ones to park on the held observation", i+1, callers-1), parked)
+	}
+	close(counting.release)
+	for i := range callers {
+		if err := receiveBeforeTheDeadline(t, fmt.Sprintf("Safe call %d of %d to return", i+1, callers), errs); err != nil {
+			t.Fatalf("concurrent Safe: %v", err)
+		}
+	}
+	// The held observation, and one more that the late callers share: the first of them to reach
+	// the lock again runs it, and each of the others joins it in flight or, when it has already
+	// ended, takes it as it stands, in whatever order the scheduler wakes them.
+	if observations := counting.batches.Load(); observations != 2 {
+		t.Fatalf("%d concurrent Safe calls ran %d observations, want 2: the one in flight when %d of them called, and the next, which those %d share", callers, observations, callers-1, callers-1)
+	}
+}
+
+// heldScriptedHorizonDB is a scriptedHorizonDB that counts the observations it is asked for and
+// holds the first, once entered closes, until release closes.
+func heldScriptedHorizonDB(script ...scriptedObservation) (db *scriptedHorizonDB, observations *atomic.Int32, entered, release chan struct{}) {
+	observations = &atomic.Int32{}
+	entered, release = make(chan struct{}), make(chan struct{})
+	db = &scriptedHorizonDB{script: script, observed: func() {
+		if observations.Add(1) == 1 {
+			close(entered)
+			<-release
+		}
+	}}
+	return db, observations, entered, release
+}
+
+// A caller that waited out an observation and wakes only after the next one has ended takes that
+// one as it ended, since it started after the call, and runs none of its own. The test holds six
+// of the seven late callers in the parking hook, before they wait on the observation in flight,
+// until the seventh has run the next observation to its end, so each of the six wakes to find it
+// ended, however the scheduler wakes them.
+func TestHorizonCallersThatWakeAfterTheNextObservationEndedTakeIt(t *testing.T) {
+	ctx := t.Context()
+	const callers = 8
+	var script []scriptedObservation
+	for i := range callers {
+		script = append(script, scriptedObservation{newest: 8, xmin: uint64(101 + i), xid: uint64(101 + i), selfProves: true})
+	}
+	db, observations, entered, release := heldScriptedHorizonDB(script...)
+	horizon := NewHorizon(db)
+	// A caller that wakes late and runs an observation of its own can park on another's, so the
+	// hook may run more than once per caller; parked holds every such call.
+	parked := make(chan struct{}, 2*callers)
+	late := make(chan struct{})
+	var parks atomic.Int32
+	horizon.afterObservationParked = func() {
+		parked <- struct{}{}
+		if parks.Add(1) < callers-1 {
+			<-late
+		}
+	}
+	errs := make(chan error, callers)
+	safe := func() {
+		_, err := horizon.Safe(ctx)
+		errs <- err
+	}
+	go safe()
+	receiveBeforeTheDeadline(t, "the first caller's observation to reach the database", entered)
+	for range callers - 1 {
+		go safe()
+	}
+	for i := range callers - 1 {
+		receiveBeforeTheDeadline(t, fmt.Sprintf("Safe call %d of the %d later ones to park on the held observation", i+1, callers-1), parked)
+	}
+	close(release)
+	// The first caller's answer, and that of the late caller the hook let through, which ran the
+	// next observation: once both are in, that observation has ended.
+	for i := range 2 {
+		if err := receiveBeforeTheDeadline(t, fmt.Sprintf("answer %d of 2 before the held callers wake: the first caller's and the next observation's runner's", i+1), errs); err != nil {
+			t.Fatalf("Safe: %v", err)
+		}
+	}
+	close(late)
+	for i := range callers - 2 {
+		if err := receiveBeforeTheDeadline(t, fmt.Sprintf("Safe call %d of the %d woken after the next observation had ended to return", i+1, callers-2), errs); err != nil {
+			t.Fatalf("Safe of a caller that woke after the next observation had ended: %v", err)
+		}
+	}
+	if got := observations.Load(); got != 2 {
+		t.Fatalf("%d Safe calls, %d of them woken after the next observation had ended, ran %d observations, want 2", callers, callers-2, got)
+	}
+}
+
+// A caller whose context is live takes no ended observation that its runner's cancellation
+// abandoned, even one that started after the call: it runs one of its own and returns that one's
+// answer, not a cancellation that is not its own.
+func TestHorizonACallerThatWokeLateTakesNoOtherCallersCancellation(t *testing.T) {
+	ctx := t.Context()
+	db, observations, entered, release := heldScriptedHorizonDB(
+		scriptedObservation{newest: 8, xmin: 101, xid: 101, selfProves: true},
+		scriptedObservation{err: context.Canceled},
+		scriptedObservation{newest: 8, xmin: 103, xid: 103, selfProves: true},
+	)
+	horizon := NewHorizon(db)
+	parked, late := make(chan struct{}), make(chan struct{})
+	horizon.afterObservationParked = func() {
+		close(parked)
+		<-late
+	}
+	first := make(chan error, 1)
+	go func() {
+		_, err := horizon.Safe(ctx)
+		first <- err
+	}()
+	receiveBeforeTheDeadline(t, "the first caller's observation to reach the database", entered)
+	waiter := make(chan error, 1)
+	go func() {
+		_, err := horizon.Safe(ctx)
+		waiter <- err
+	}()
+	receiveBeforeTheDeadline(t, "the second caller to park on the held observation", parked)
+	close(release)
+	if err := receiveBeforeTheDeadline(t, "the Safe that ran the first observation to return", first); err != nil {
+		t.Fatalf("Safe that ran the first observation: %v", err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := horizon.Safe(cancelled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Safe on a cancelled context = %v, want its own cancellation", err)
+	}
+	close(late)
+	if err := receiveBeforeTheDeadline(t, "the Safe of the caller that woke late to return", waiter); err != nil {
+		t.Fatalf("Safe of the caller that woke late = %v, want the answer of an observation of its own", err)
+	}
+	if got := observations.Load(); got != 3 {
+		t.Fatalf("ran %d observations, want 3: the one waited out, the cancelled one and the late caller's own", got)
+	}
+}
+
+// Await asks observe again past the observation it took before, so a caller can join an
+// observation numbered above that one which its runner's cancellation then abandons. Callers whose
+// contexts are live wait that one out too and share the next, even one that wakes only after the
+// next has ended.
+func TestHorizonCallersOfAnAbandonedObservationShareTheNext(t *testing.T) {
+	ctx := t.Context()
+	runnerCtx, cancelRunner := context.WithCancel(ctx)
+	defer cancelRunner()
+	db, observations, entered, release := heldScriptedHorizonDB(
+		scriptedObservation{err: context.Canceled},
+		scriptedObservation{newest: 8, xmin: 102, xid: 102, selfProves: true},
+		scriptedObservation{newest: 8, xmin: 103, xid: 103, selfProves: true},
+	)
+	horizon := NewHorizon(db)
+	runner := make(chan error, 1)
+	go func() {
+		_, _, err := horizon.observe(runnerCtx, 0)
+		runner <- err
+	}()
+	receiveBeforeTheDeadline(t, "the runner's observation to reach the database", entered)
+	// The second caller to park is held before it waits, until the first has run the next
+	// observation to its end.
+	parked := make(chan struct{}, 2)
+	late := make(chan struct{})
+	var parks atomic.Int32
+	horizon.afterObservationParked = func() {
+		parked <- struct{}{}
+		if parks.Add(1) == 2 {
+			<-late
+		}
+	}
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			_, _, err := horizon.observe(ctx, 0)
+			errs <- err
+		}()
+	}
+	for i := range 2 {
+		receiveBeforeTheDeadline(t, fmt.Sprintf("caller %d of 2 to park on the runner's observation", i+1), parked)
+	}
+	cancelRunner()
+	close(release)
+	if err := receiveBeforeTheDeadline(t, "the runner's observe to return its cancellation", runner); !errors.Is(err, context.Canceled) {
+		t.Fatalf("observe whose context ended = %v, want its own cancellation", err)
+	}
+	if err := receiveBeforeTheDeadline(t, "the observe of the caller that ran the next observation to return", errs); err != nil {
+		t.Fatalf("observe of the caller that ran the next observation: %v", err)
+	}
+	close(late)
+	if err := receiveBeforeTheDeadline(t, "the observe of the caller that woke after the next observation had ended to return", errs); err != nil {
+		t.Fatalf("observe of the caller that woke after the next observation had ended: %v", err)
+	}
+	if got := observations.Load(); got != 2 {
+		t.Fatalf("ran %d observations, want 2: the abandoned one and the next, which both callers share", got)
+	}
+}
+
+// A Safe call that read the count while an observation was in flight, and looks for one only
+// after another caller has run the next one to its end, takes that one, since it started after the
+// call, and runs none of its own. The test holds the call in the boundary hook, after it read the
+// count, until the other caller has its answer.
+func TestHorizonACallerThatLooksLateAfterItsBoundaryTakesTheObservationThatEndedMeanwhile(t *testing.T) {
+	ctx := t.Context()
+	db, observations, entered, release := heldScriptedHorizonDB(
+		scriptedObservation{newest: 8, xmin: 101, xid: 101, selfProves: true},
+		scriptedObservation{newest: 8, xmin: 102, xid: 102, selfProves: true},
+		scriptedObservation{newest: 8, xmin: 103, xid: 103, selfProves: true},
+	)
+	horizon := NewHorizon(db)
+	first := make(chan error, 1)
+	go func() {
+		_, err := horizon.Safe(ctx)
+		first <- err
+	}()
+	receiveBeforeTheDeadline(t, "the first caller's observation to reach the database", entered)
+	counted, late := make(chan struct{}), make(chan struct{})
+	var boundaries atomic.Int32
+	horizon.afterObservationBoundary = func() {
+		if boundaries.Add(1) == 1 {
+			close(counted)
+			<-late
+		}
+	}
+	parked := make(chan struct{}, 1)
+	horizon.afterObservationParked = func() { parked <- struct{}{} }
+	held := make(chan error, 1)
+	go func() {
+		_, err := horizon.Safe(ctx)
+		held <- err
+	}()
+	receiveBeforeTheDeadline(t, "the held call to read the count at its boundary", counted)
+	other := make(chan error, 1)
+	go func() {
+		_, err := horizon.Safe(ctx)
+		other <- err
+	}()
+	receiveBeforeTheDeadline(t, "the other call to park on the first observation", parked)
+	close(release)
+	if err := receiveBeforeTheDeadline(t, "the Safe that ran the first observation to return", first); err != nil {
+		t.Fatalf("Safe that ran the first observation: %v", err)
+	}
+	if err := receiveBeforeTheDeadline(t, "the Safe that ran the next observation to return", other); err != nil {
+		t.Fatalf("Safe that ran the next observation: %v", err)
+	}
+	close(late)
+	if err := receiveBeforeTheDeadline(t, "the Safe held after its boundary to return", held); err != nil {
+		t.Fatalf("Safe held after its boundary: %v", err)
+	}
+	if got := observations.Load(); got != 2 {
+		t.Fatalf("ran %d observations, want 2: the one in flight at both later calls, and the next, which the call held after its boundary takes", got)
+	}
+}
+
+// A Safe call answers from an observation recorded in the generation it returns H of, never from
+// one a Reset discarded: that one's record is gone, so its answer is the H of 0 that the Reset
+// left, with no gap open, and an event of the new log committed before the call is neither at or
+// below H nor kept above it by a gap, so its reader would arm no re-read for it. The old log was
+// observed through event 8, then the log was reset and its new event 1 committed before the calls.
+// The test holds one call after its boundary while another runs the next observation, which sees
+// the new event 1, and runs the Reset once that call has its answer, or while its observation is
+// in flight. The run with no Reset is the control: the held call takes the observation that ended
+// meanwhile and runs none of its own.
+func TestHorizonACallerAcrossAResetAnswersFromAnObservationOfTheNewGeneration(t *testing.T) {
+	const newEvent = 1
+	for _, c := range []struct {
+		name string
+		// reset is whether the Reset runs, and inFlight whether it runs while the other call's
+		// observation is in flight rather than once that call has its answer.
+		reset, inFlight bool
+		// other and held are the H the other call and the held call answer. observations is how
+		// many observations run in all, and the number of the newest the current generation
+		// recorded: the old log's, the other call's and, after a Reset, one of the new generation.
+		other, held  int64
+		observations int32
+	}{
+		{name: "no Reset", other: 8, held: 8, observations: 2},
+		{name: "Reset after the other call has its answer", reset: true, other: 8, held: newEvent, observations: 3},
+		{name: "Reset while the other call's observation is in flight", reset: true, inFlight: true, other: newEvent, held: newEvent, observations: 3},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := t.Context()
+			var observations atomic.Int32
+			entered, release := make(chan struct{}), make(chan struct{})
+			db := &scriptedHorizonDB{
+				script: []scriptedObservation{
+					{newest: 8, xmin: 101, xid: 101, selfProves: true}, // the old log
+					{newest: newEvent, xmin: 102, xid: 102, selfProves: true},
+					{newest: newEvent, xmin: 103, xid: 103, selfProves: true},
+				},
+				observed: func() {
+					if observations.Add(1) == 2 && c.inFlight {
+						close(entered)
+						<-release
+					}
+				},
+			}
+			horizon := NewHorizon(db)
+			if safe, err := horizon.Safe(ctx); err != nil || safe != 8 {
+				t.Fatalf("Safe on the old log = %d, %v; want 8", safe, err)
+			}
+			counted, late := make(chan struct{}), make(chan struct{})
+			var boundaries atomic.Int32
+			horizon.afterObservationBoundary = func() {
+				if boundaries.Add(1) == 1 {
+					close(counted)
+					<-late
+				}
+			}
+			type answer struct {
+				safe int64
+				gap  Gap
+				err  error
+			}
+			call := func(answers chan<- answer) {
+				safe, err := horizon.Safe(ctx)
+				answers <- answer{safe, horizon.Gap(), err}
+			}
+			// check reports a call's answer and goes on, so a run shows each call's.
+			check := func(who string, got answer, want int64) {
+				t.Helper()
+				switch {
+				case got.err != nil:
+					t.Errorf("Safe of %s: %v", who, got.err)
+				case got.safe < newEvent && got.gap == GapNone:
+					t.Errorf("Safe of %s = %d with no gap open, though event %d committed before the call: a reader would never re-read for it", who, got.safe, newEvent)
+				case got.safe != want:
+					t.Errorf("Safe of %s = %d, want %d", who, got.safe, want)
+				}
+			}
+			held, other := make(chan answer, 1), make(chan answer, 1)
+			go call(held)
+			receiveBeforeTheDeadline(t, "the held call to read the count at its boundary", counted)
+			go call(other)
+			if c.inFlight {
+				receiveBeforeTheDeadline(t, "the other call's observation to reach the database", entered)
+				horizon.Reset()
+				close(release)
+			}
+			check("the other call", receiveBeforeTheDeadline(t, "the other call to return", other), c.other)
+			if c.reset && !c.inFlight {
+				horizon.Reset()
+			}
+			close(late)
+			check("the call held after its boundary", receiveBeforeTheDeadline(t, "the call held after its boundary to return", held), c.held)
+			if got := observations.Load(); got != c.observations {
+				t.Errorf("ran %d observations, want %d", got, c.observations)
+			}
+			horizon.mu.Lock()
+			recorded := horizon.recorded
+			horizon.mu.Unlock()
+			if recorded != uint64(c.observations) {
+				t.Errorf("the newest observation this generation recorded is %d, want %d", recorded, c.observations)
+			}
+		})
+	}
+}
+
+// A caller after a Reset takes no ended observation whose record the Reset discarded: Reset
+// forgets the one that ended before it, and one in flight across it does not stand as the newest
+// ended observation once it ends, so the caller runs one of the new generation instead. Were
+// either kept, a caller would be handed an observation whose record is gone, which Safe would
+// discard before it looked again. The run with no Reset is the control: the caller takes the
+// observation that ended and runs none of its own.
+func TestHorizonACallerAfterAResetTakesNoObservationTheResetDiscarded(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		// reset is whether the Reset runs, and inFlight whether it runs while the first
+		// observation is in flight rather than once it has ended.
+		reset, inFlight bool
+		// number and generation are the observation the later caller answers, and observations
+		// how many ran in all.
+		number, generation uint64
+		observations       int32
+	}{
+		{name: "no Reset", number: 1, generation: 0, observations: 1},
+		{name: "Reset after the first observation ended", reset: true, number: 2, generation: 1, observations: 2},
+		{name: "Reset while the first observation is in flight", reset: true, inFlight: true, number: 2, generation: 1, observations: 2},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := t.Context()
+			var observations atomic.Int32
+			entered, release := make(chan struct{}), make(chan struct{})
+			db := &scriptedHorizonDB{
+				script: []scriptedObservation{
+					{newest: 8, xmin: 101, xid: 101, selfProves: true},
+					{newest: 1, xmin: 102, xid: 102, selfProves: true},
+				},
+				observed: func() {
+					if observations.Add(1) == 1 && c.inFlight {
+						close(entered)
+						<-release
+					}
+				},
+			}
+			horizon := NewHorizon(db)
+			type answer struct {
+				number, generation uint64
+				err                error
+			}
+			first := make(chan answer, 1)
+			go func() {
+				number, generation, err := horizon.observe(ctx, 0)
+				first <- answer{number, generation, err}
+			}()
+			if c.inFlight {
+				receiveBeforeTheDeadline(t, "the first observation to reach the database", entered)
+				horizon.Reset()
+				close(release)
+			}
+			// The first observation answers the generation it started in, which a Reset while it
+			// was in flight has since left: that is what tells Safe to discard it.
+			if got := receiveBeforeTheDeadline(t, "the first observation to end", first); got.err != nil || got.number != 1 || got.generation != 0 {
+				t.Fatalf("observe of the first observation = observation %d of generation %d, %v; want observation 1 of generation 0", got.number, got.generation, got.err)
+			}
+			if c.reset && !c.inFlight {
+				horizon.Reset()
+			}
+			number, generation, err := horizon.observe(ctx, 0)
+			if err != nil || number != c.number || generation != c.generation {
+				t.Errorf("observe after the first observation ended = observation %d of generation %d, %v; want observation %d of generation %d", number, generation, err, c.number, c.generation)
+			}
+			if got := observations.Load(); got != c.observations {
+				t.Errorf("ran %d observations, want %d", got, c.observations)
+			}
+		})
+	}
+}
+
+// A caller that waited out an observation takes the next one that ended with an answer, even when
+// an observation of another caller, abandoned by that caller's cancellation, ended after it.
+func TestHorizonALateCallerTakesTheNextObservationPastAnotherCallersCancellation(t *testing.T) {
+	ctx := t.Context()
+	db, observations, entered, release := heldScriptedHorizonDB(
+		scriptedObservation{newest: 8, xmin: 101, xid: 101, selfProves: true},
+		scriptedObservation{newest: 8, xmin: 102, xid: 102, selfProves: true},
+		scriptedObservation{err: context.Canceled},
+		scriptedObservation{newest: 8, xmin: 104, xid: 104, selfProves: true},
+	)
+	horizon := NewHorizon(db)
+	// The second caller to park is held before it waits, until the first has run the next
+	// observation and a third caller's cancelled one has ended.
+	parked := make(chan struct{}, 2)
+	late := make(chan struct{})
+	var parks atomic.Int32
+	horizon.afterObservationParked = func() {
+		parked <- struct{}{}
+		if parks.Add(1) == 2 {
+			<-late
+		}
+	}
+	first := make(chan error, 1)
+	go func() {
+		_, err := horizon.Safe(ctx)
+		first <- err
+	}()
+	receiveBeforeTheDeadline(t, "the first caller's observation to reach the database", entered)
+	errs := make(chan error, 2)
+	for range 2 {
 		go func() {
 			_, err := horizon.Safe(ctx)
 			errs <- err
 		}()
 	}
-	<-counting.entered
-	for range callers - 1 {
-		select {
-		case <-parked:
-		case <-ctx.Done():
-			t.Fatalf("only some of the %d concurrent Safe calls reached the observation in flight: %v", callers, ctx.Err())
+	for i := range 2 {
+		receiveBeforeTheDeadline(t, fmt.Sprintf("caller %d of 2 to park on the first observation", i+1), parked)
+	}
+	close(release)
+	if err := receiveBeforeTheDeadline(t, "the Safe that ran the first observation to return", first); err != nil {
+		t.Fatalf("Safe that ran the first observation: %v", err)
+	}
+	if err := receiveBeforeTheDeadline(t, "the Safe that ran the next observation to return", errs); err != nil {
+		t.Fatalf("Safe that ran the next observation: %v", err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := horizon.Safe(cancelled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Safe on a cancelled context = %v, want its own cancellation", err)
+	}
+	close(late)
+	if err := receiveBeforeTheDeadline(t, "the Safe of the caller that woke after the cancelled observation ended to return", errs); err != nil {
+		t.Fatalf("Safe of the caller that woke after the cancelled observation ended: %v", err)
+	}
+	if got := observations.Load(); got != 3 {
+		t.Fatalf("ran %d observations, want 3: the one waited out, the next, which both late callers share, and the cancelled caller's own", got)
+	}
+}
+
+// Await looks next for an observation numbered above every one that had ended when it last read
+// the gap. One its gap check already counted tells it nothing new: taking it after a backoff
+// would only leave the gap as it was and cost a second backoff before the observation that can
+// prove anything. The test has Await join the first observation, numbered above its count, and
+// holds it in the parking hook, before it waits on that one, until another caller has run the
+// next to its end. An older transaction holds both, so Await's gap check reads both, held, and it
+// backs off once; the third observation then proves them.
+func TestHorizonAwaitBacksOffOnceForObservationsItsGapCheckRead(t *testing.T) {
+	ctx := t.Context()
+	db, observations, entered, release := heldScriptedHorizonDB(
+		scriptedObservation{newest: 8, xmin: 100, xid: 101},
+		scriptedObservation{newest: 8, xmin: 100, xid: 102}, // transaction 100 still runs
+		scriptedObservation{newest: 8, xmin: 103, xid: 103, selfProves: true},
+	)
+	horizon := NewHorizon(db)
+	var pauses []time.Duration
+	horizon.pause = func(_ context.Context, d time.Duration) { pauses = append(pauses, d) }
+	counted, looks := make(chan struct{}), make(chan struct{})
+	var boundaries atomic.Int32
+	horizon.afterObservationBoundary = func() {
+		if boundaries.Add(1) == 1 {
+			close(counted)
+			<-looks
 		}
 	}
-	close(counting.release)
-	for range callers {
-		if err := <-errs; err != nil {
-			t.Fatalf("concurrent Safe: %v", err)
+	parked, late := make(chan struct{}), make(chan struct{})
+	var parks atomic.Int32
+	horizon.afterObservationParked = func() {
+		if parks.Add(1) == 1 {
+			close(parked)
+			<-late
 		}
 	}
-	if observations := counting.batches.Load(); observations >= callers {
-		t.Fatalf("%d concurrent Safe calls ran %d observations, want fewer", callers, observations)
+	var safe int64
+	awaited := make(chan error, 1)
+	go func() {
+		var err error
+		safe, err = horizon.Await(ctx)
+		awaited <- err
+	}()
+	receiveBeforeTheDeadline(t, "Await to read the count at its boundary", counted) // 0: it looks only once the first observation is in flight
+	first := make(chan error, 1)
+	go func() {
+		_, err := horizon.Safe(ctx)
+		first <- err
+	}()
+	receiveBeforeTheDeadline(t, "the first caller's observation to reach the database", entered)
+	close(looks)
+	receiveBeforeTheDeadline(t, "Await to park on the first observation", parked)
+	close(release)
+	if err := receiveBeforeTheDeadline(t, "the Safe that ran the first observation to return", first); err != nil {
+		t.Fatalf("Safe that ran the first observation: %v", err)
+	}
+	if _, err := horizon.Safe(ctx); err != nil {
+		t.Fatalf("Safe that ran the second observation: %v", err)
+	}
+	close(late)
+	if err := receiveBeforeTheDeadline(t, "Await to return", awaited); err != nil || safe != 8 {
+		t.Fatalf("Await = %d, %v; want 8", safe, err)
+	}
+	if got := observations.Load(); got != 3 {
+		t.Fatalf("ran %d observations, want 3", got)
+	}
+	if want := []time.Duration{horizonBackoffMin}; !slices.Equal(pauses, want) {
+		t.Fatalf("Await paused %v, want %v: after its one backoff it took again the second observation, which its gap check had already read", pauses, want)
 	}
 }
 

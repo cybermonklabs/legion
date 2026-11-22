@@ -5,7 +5,9 @@ package gcp_test
 import (
 	"errors"
 	"fmt"
+	"net"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -15,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 const (
@@ -83,11 +86,13 @@ func (d drained) closedBy(from time.Time, bound time.Duration) bool {
 // cluster requires configured routes").
 func drainARoute(t *testing.T, r *clusteredHubRender, binary, natsConf, subject string) drained {
 	t.Helper()
-	b := r.newHubServer(t, r.release+"-1", binary, natsConf, reservePorts(t, 3))
+	// Both servers listen at one loopback address of the test's own (hubServer.host).
+	host := testport.LoopbackIP().String()
+	b := r.newHubServer(t, r.release+"-1", binary, natsConf, host, reservePortsOn(t, host, 3))
 	b.peers = []*hubServer{b}
 	b.start(t)
-	proxy := testnats.StartProxy(t, fmt.Sprintf("nats://127.0.0.1:%d", b.route), testnats.ProxyRate(routeRate))
-	a := r.newHubServer(t, r.release+"-0", binary, natsConf, reservePorts(t, 3))
+	proxy := testnats.StartProxy(t, "nats://"+net.JoinHostPort(b.host, strconv.Itoa(b.route)), testnats.ProxyRate(routeRate))
+	a := r.newHubServer(t, r.release+"-0", binary, natsConf, host, reservePortsOn(t, host, 3))
 	a.routeURLs = []string{proxy.URL()}
 	a.start(t)
 	within(t, 30*time.Second, "A routes to B", func() error {

@@ -25,8 +25,8 @@ import (
 // account had an installation of its own, so `legion gh` on sjawhar/tools picked the sjawhar
 // directory, which was minted on another owner's installation, and GitHub refused it.
 func TestTheBundleReachesEveryOwnerTheAppIsInstalledOn(t *testing.T) {
-	repos := projectRepos("cybermonklabs/legion", "sjawhar/oh-my-pi", "sjawhar/tools")
-	credential := GitHubCredential(sourceOf(ownerTokens{}, installedOnOwners("cybermonklabs", "sjawhar")), repos,
+	served := servesOneOf("cybermonklabs/legion", "sjawhar/oh-my-pi", "sjawhar/tools")
+	credential := GitHubCredential(sourceOf(ownerTokens{}, installedOnOwners("cybermonklabs", "sjawhar")), served,
 		ghrepo.MustRenames(legionRename), nil, nil, quietBundleLog())
 	bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("sjawhar/oh-my-pi"))
 	if err != nil {

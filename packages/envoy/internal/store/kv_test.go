@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -3598,7 +3599,7 @@ func (h *holdAfter) release() {
 // the URL to connect to.
 func stallingProxy(t *testing.T, target, trigger string, budget int, hold time.Duration) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
