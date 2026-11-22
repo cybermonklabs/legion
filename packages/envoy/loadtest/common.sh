@@ -1,13 +1,17 @@
 # shellcheck shell=bash
-# common.sh: what run-step.sh, run-series.sh and stack.sh share (README.md). They source it. Not
-# executable.
+# common.sh: what run-step.sh, run-series.sh and stack.sh share (README.md). They source it, and so
+# do cluster.sh, vm.sh, restart-step.sh and the suites' test-lib.sh. Not executable.
 #
 # die MESSAGE prints MESSAGE, prefixed with the script's name, and exits 1. note MESSAGE prints
 # MESSAGE with the same prefix and goes on. usage prints the script's header comment, from its
 # second line to its `set -euo` line, and exits 2. abs_file FLAG FILE prints FILE's absolute path
 # and dies, naming FLAG, when FILE is not a file. sha256_of FILE prints FILE's sha256, and
 # joined_sha256 FILE... the sha256 of the files' concatenation (stack.sh's builds, replay.sh's
-# parts).
+# parts). proc_start PID prints a process's start time, proc_ended PID START says whether the
+# process that started then has ended, and proc_wait_ended PID START UNTIL waits until it has, or
+# until a time (cluster.sh's waits, restart-step.sh's). proc_threads_stopped PID says whether every
+# thread of a process is stopped or has ended, the one reading of a stop that cluster.sh's freeze
+# and test-lib.sh's end_tree share.
 #
 # resolve_paths sets SRC to LOADTEST_SRC (default: the checkout holding this file) and ROOT to
 # LOADTEST_ROOT (default ${TMPDIR:-/tmp}/dispatch-loadtest, created), both as physical paths, and
@@ -82,6 +86,118 @@ joined_sha256() { cat -- "$@" | sha256sum | cut -d' ' -f1; }
 usage() {
   sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2
   exit 2
+}
+
+# proc_start_into NAME PID: PID's start time (field 22 of /proc/PID/stat) assigned to shell
+# variable NAME, or an empty assignment when PID has left the table. A read that fails while the
+# entry exists fails. Assigning in this shell lets callers distinguish a failed read even when a
+# low descriptor limit makes command substitution report an empty successful result. NAME is
+# reached through a nameref, so it must not be one of this function's own locals (pid, stat,
+# fields, proc_start_into_out). A nameref, not `printf -v "$NAME"`: shellcheck takes a `printf -v`
+# of a name it cannot read, in a file sourced inside a subshell, for a change to `$!` in that
+# subshell, and flags every later `$!` of the sourcing script (SC2031).
+proc_start_into() {
+  local -n proc_start_into_out=$1
+  local pid=$2 stat fields
+  proc_start_into_out=''
+  if ! read -r stat 2>/dev/null <"/proc/$pid/stat"; then
+    [ ! -e "/proc/$pid" ] || return 1
+    return 0
+  fi
+  read -r -a fields <<<"${stat##*) }" || return 1
+  proc_start_into_out=${fields[19]:-}
+  [ -n "$proc_start_into_out" ] || return 1
+}
+
+# proc_start PID: the process's start time (field 22 of /proc/PID/stat, read after the command
+# name, which may hold spaces), so a pid the kernel reused for another process is told apart. For a
+# pid that has left the table -- its /proc entry gone -- it prints nothing and succeeds. Any other
+# read that fails -- an entry there with no stat read from it, for want of a file descriptor, say --
+# fails, so no caller takes a read it could not make for a process that has gone.
+proc_start() {
+  local start
+  proc_start_into start "$1" || return
+  printf '%s\n' "$start"
+}
+
+# proc_ended PID START: whether the process that PID named when it started at START (proc_start)
+# has ended. It returns 0 when PID has left the table, names a process that started at another
+# time, names a zombie whose task directory lists no thread but its main one -- that process has
+# ended, and only its parent can reap it -- or reads dead (X): its parent is reaping it, from the
+# moment the parent claims it until its entry goes, a window a loaded machine can hold open. A zombie main thread with another thread still listed is
+# a process still ending, not one that has ended: SIGKILL ends each thread when the kernel next runs
+# it, often the main one first, and the others still hold the process's files, its ports and its
+# locks until they too have gone. It returns 1 while the process has not ended, and 2 when its
+# /proc entry is there and could not be read -- for want of a file descriptor, say -- which says
+# nothing either way: only an entry that is gone is a process that has gone, and the caller names a
+# read it could not make rather than take it for an end. A START that was never read is no process.
+proc_ended() {
+  local stat fields task
+  [ -n "$2" ] || return 0
+  if ! read -r stat 2>/dev/null <"/proc/$1/stat"; then
+    [ -e "/proc/$1" ] || return 0
+    return 2
+  fi
+  read -r -a fields <<<"${stat##*) }" && [ -n "${fields[19]:-}" ] || return 2
+  [ "${fields[19]}" = "$2" ] || return 0
+  case ${fields[0]} in
+  X) return 0 ;;
+  Z) ;;
+  *) return 1 ;;
+  esac
+  # Any thread listed but the main one is a process still ending. A task directory that could not
+  # be read leaves its pattern unmatched, which is an answer only once the entry itself has gone.
+  for task in "/proc/$1"/task/*; do
+    if [ "$task" = "/proc/$1/task/*" ]; then
+      [ -e "/proc/$1" ] || return 0
+      return 2
+    fi
+    [ "${task##*/}" = "$1" ] || return 1
+  done
+  return 0
+}
+
+# proc_wait_ended PID START UNTIL: proc_ended asked every 0.1 s until it answers 0 or 2, or until
+# the clock (EPOCHSECONDS) has passed UNTIL; its last answer is the status: 0 the process has
+# ended, 1 it had not by UNTIL, 2 its /proc entry is there and could not be read.
+proc_wait_ended() {
+  local rc
+  while :; do
+    rc=0
+    proc_ended "$1" "$2" || rc=$?
+    ((rc == 1 && EPOCHSECONDS <= $3)) || return "$rc"
+    sleep 0.1
+  done
+}
+
+# proc_threads_stopped PID: every thread of PID, read once, is stopped -- its state T or t (stopped,
+# or held by a tracer) -- or has ended -- Z or X, a thread that forks nothing. A child that ends
+# after its parent is stopped stays a zombie, which never reads T, and a process whose main thread
+# has left reads Z while its other threads still run, which is why each thread is read. It returns
+# 0 then, and 1 when a thread still runs, when a thread that is there cannot be read, or when no
+# thread was listed: a task directory that cannot be read, or an entry that has gone, which only the
+# entry tells apart, so its caller asks that. A thread that has left since the directory was read
+# has ended. The reads are the shell's own, so a caller can ask at the moment a SIGSTOP is sent:
+# cluster.sh's proc_stopped, before the disk watcher's freeze reads a process's children, and
+# test-lib.sh's stop_process, before end_tree reads them.
+proc_threads_stopped() {
+  local task stat running=unread
+  for task in "/proc/$1"/task/*; do
+    [ "$task" != "/proc/$1/task/*" ] || break
+    [ "$running" = yes ] || running=no
+    # A failed read takes the branch after ||: bash gives a brace group whose own redirection
+    # fails the status 1 without applying a `!` in front of it.
+    { read -r stat <"$task/stat"; } 2>/dev/null || {
+      [ ! -e "$task" ] || running=yes
+      continue
+    }
+    stat=${stat##*) }
+    case ${stat%% *} in
+    T | t | Z | X) ;;
+    *) running=yes ;;
+    esac
+  done
+  [ "$running" = no ]
 }
 
 resolve_paths() {

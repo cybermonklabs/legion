@@ -721,7 +721,7 @@ func generatorStep(t *testing.T, root, name string, f, share float64, role strin
 }
 
 // loopGenerator is the generator role a loop-series fixture records. vm.sh gives every step of
-// the deployment one (-generator-role vm-<host>, vm/vm.sh:2545), and the void rule voids a step
+// the deployment one (-generator-role vm-<host>, vm/vm.sh's run_step), and the void rule voids a step
 // of that series whose files show nothing of its generator (curves.go markVoid), so a fixture
 // meant to be judged carries the role and the sampler series behind it.
 const loopGenerator = "vm-gen"
@@ -1131,7 +1131,7 @@ func TestCurvesFailACgroupJSONThatDidNotSampleDispatch(t *testing.T) {
 // The rule read the role and left a step that carried none alone, so a starved generator was
 // never void unless the run recorded which machine it ran on, and "not void" was a claim about a
 // machine the step's files hold nothing about (dispatch://INFRA-988). The deployment records the
-// role for every step it runs (vm/vm.sh:2545), so a step of this series without one was not run
+// role for every step it runs (vm/vm.sh's run_step), so a step of this series without one was not run
 // the way the series runs steps.
 func TestCurvesVoidAStepThatRecordedNoGenerator(t *testing.T) {
 	root := t.TempDir()

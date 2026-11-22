@@ -1,0 +1,50 @@
+kind: Fixed
+body: |-
+  The load test's stops wait for what they end, and say what they could not end. An end is the
+  process's state: its `/proc` entry gone, a zombie with no thread but its main one, which
+  holds no port and which a machine whose PID 1 reaps nothing keeps in its table for ever, or a
+  process that reads dead (X), which its parent is reaping.
+  `vm/vm.sh`'s kills on the load machine -- a step's profiling tunnel, its `loadgen run` and the
+  stub embedder -- return only once the process has ended there, waiting up to
+  `REMOTE_GONE_SECONDS` after the SIGKILL, where they returned as soon as the signal was sent; a
+  kill that cannot show its process ended, still running at that bound or behind an ssh that did
+  not reach the machine or timed out, returns 1, names it and keeps its pid file. A kill after a
+  start whose ssh this pod did not see return first waits, up to that bound, for the start to
+  record its pid, and names the part as not shown gone when no record comes.
+  Each pid file on the load machine now holds the process's start time beside its pid, read with
+  that machine's shell alone, so no awk is needed there, and silently under dash as under bash.
+  A kill signals no process whose start differs from the one recorded: that pid is another
+  process's now, so the recorded one has ended, and the kill names the pid and the command that
+  holds it now, and removes the file. A start the kill cannot read while the pid's entry is
+  there is named, and nothing is signalled. A start script that could not read its own process's
+  start records `-` in its place, and a kill refuses that pid by name, signalling nothing. A file
+  of the pid alone, which the driver before this one wrote, is ended and waited for as before, so
+  a deployment it started needs nothing done.
+  A step whose earlier tunnel or earlier `loadgen run` is not shown gone is refused, and an `up`
+  whose earlier stub embedder is not shown gone stops, rather than starting another beside it.
+  A step stopped by `INT` or `TERM` names each part it did not show gone -- a kill that ran out,
+  and a part whose start or stop the signal cut short -- and says only of the rest that they are
+  ended.
+  `cluster/cluster.sh`'s stop of a daemon fails, naming it and keeping its pidfile, while the
+  daemon or any process of its process group is still running 10 s after its TERM, and `down`
+  then goes on with its delete and fails; its read of the group is held to that bound. A step
+  shell, and a command of a run, that has ended and that nothing reaps is gone to the disk
+  watcher, the wait on the runner job and the heartbeat, which then stops renewing the lock.
+  `kube` and `kube_for` run `kubectl` under `timeout --foreground`, so the `kubectl` stays in its
+  caller's process group, where a daemon's stop sends its TERM and waits. The stop of a step's
+  disk watcher stops each process of the watcher's tree and sees it stopped, every thread of it,
+  or a zombie, before it reads that process's children, so a child forked while the stop was
+  pending is not missed; the walk has one deadline, so a tree of many processes it cannot see
+  stopped holds it no longer than one. A process it cannot see stopped, and a children file it
+  cannot read, is named, and every process found still gets the SIGKILL; each process it froze gets a
+  line saying whether it was sent the SIGKILL, had gone, was held by another process, or could
+  not be read. The stop then waits
+  until each process of the act has ended, every thread of it, naming one that has not. A
+  process whose `/proc` entry is there and cannot be read is never taken for one that has ended,
+  and the stop's signals need no file descriptor, so a descriptor limit (`ulimit -n 4`) neither
+  stops them nor reads as an answer.
+  `restart-step.sh` counts the listener it kills as down only once every thread of it has gone,
+  and fails, naming it, on a `/proc` entry it cannot read, or on a start it cannot read, which it
+  then does not kill; when the script fails, its SIGTERM goes to its own step's `loadgen run`, by
+  its pid, and no longer to every process of that command line, another run's included, and a
+  step that has already ended is sent nothing.
