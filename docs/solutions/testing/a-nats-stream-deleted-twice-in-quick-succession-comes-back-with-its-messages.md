@@ -59,19 +59,27 @@ mirrors a bucket the server had filled with the old stream's messages.
 `error creating store for stream` is a second race in the same cleanup, and one delete is enough
 for it. After `fileStore.Delete` returns, `stream.stop` removes the account's `streams` directory
 and then the account's directory from another goroutine (`server/stream.go` 5286-5293 at v2.10.29,
-unchanged through v2.15.0). `os.Remove` only removes an empty directory, so the goroutine removes
-anything only when the deleted stream was the account's last and `.<stream>` is already gone. A
+8926-8931 at v2.15.1; v2.15.3 removed that goroutine, nats-io/nats-server 68144dbd65b5).
+`os.Remove` only removes an empty directory, so the goroutine removes anything only when the
+deleted stream was the account's last and `.<stream>` is already gone. A
 create that arrives before it runs can lose `streams` between `os.MkdirAll` finding it and making
 `streams/<stream>` inside it. The server logs `Stream create failed for '<account> > <stream>':
 could not create storage directory - mkdir .../streams/<stream>: no such file or directory` and
 answers `error creating store for stream`. It hit `internal/store` on 2026-09-23, while its tests
 reset one shared account by deleting both of its buckets, and `internal/kvwatch`'s
 `TestAWatchOfTheOldStreamDoesNotReplaceANewerOne` on 2026-10-03, which deletes and recreates the
-only bucket on a server of its own. On a loaded devbox it did not reproduce at the server's own
-timing: no failure in 6,600 creates, nor in 556 runs of that test. A v2.10.29 built from the
-module cache with a random delay of up to 2 ms before that goroutine's `os.Remove`, and up to 1 ms
-inside the create's `os.MkdirAll`, failed 312 of 1,000 creates; with one more stream kept in the
-account it failed none of 1,000.
+only bucket on a server of its own, and the daemon's
+`TestCreateStreamRefusesAStreamThatIsNotEmpty` in CI on 2026-11-22. On a loaded devbox it did not
+reproduce at the server's own timing: no failure in 6,600 creates, nor in 556 runs of that test. A
+v2.10.29 built from the module cache with a random delay of up to 2 ms before that goroutine's
+`os.Remove`, and up to 1 ms inside the create's `os.MkdirAll`, failed 312 of 1,000 creates; with
+one more stream kept in the account it failed none of 1,000.
+
+A failed create makes it worse: `addStream` stops the stream it could not give a store with the
+delete flag (`server/stream.go` 1128-1130 at v2.15.1), which starts one more such goroutine, so a
+create retried on this answer can meet a fresh cleanup at every attempt. With the cleanup held
+200 ms and the create's `os.MkdirAll` widened by 500 ms, Envoy's 10-second retry failed its test
+on every attempt.
 
 ## Reproducing the double delete without load
 
@@ -110,22 +118,38 @@ account, so it renames as it should.
 
 That keeps another test's deletes away, not a test's own. A test that deletes a bucket and creates
 it again in the same account meets the single-delete race whenever that bucket was the account's
-only stream, and no API says when the server's cleanup goroutine has run, so it creates the bucket
-again with `testnats.RecreateKeyValue`. That retries the create on exactly `error creating store
-for stream` and fails the test on any other answer.
+only stream, so it creates the bucket again with `testnats.RecreateKeyValue`. That waits for the
+fact the race turns on, the cleanup goroutine having returned, and then creates once; any error
+fails the test. The servers run in the test process, so the goroutine is in the process's own
+goroutine dump (`runtime.Stack`), ending in `created by
+github.com/nats-io/nats-server/v2/server.(*stream).stop`, the one goroutine `stream.stop` starts,
+until it returns.
+
+The store directory cannot stand in for that fact. An empty `streams` directory is both what a
+cleanup still to run removes and what one that ran before `.<stream>`'s removal finished leaves for
+good. On a host nats-server v2.15.1, 100 rounds of create, publish 3 and delete of an account's only
+stream: once the goroutine had returned, the account's directory was gone in 4, an empty `streams`
+directory stayed in 71 and an entry was still in it in 25, so a wait for the directory to go would
+have waited out its deadline in 96. The goroutine was still listed when the delete answered in 7 of
+the 100.
 
 The Legion daemon's `packages/daemon/internal/testnats` keeps one account and empties it instead:
 its `URL(t)` deletes every stream on the shared server before handing it to a test, so the reset's
-last delete always empties the account's `streams` directory, and the test's first create meets the
-single-delete race. The daemon's tests create their streams with that package's
-`testnats.CreateStream`, which retries on exactly the same answer. It is a copy, not a shared
-helper: each module's `testnats` is an `internal` package the other module cannot import, and the
-two speak different clients (nats.go's `JetStreamContext` in Envoy, its `jetstream` package in the
-daemon) whose `APIError`s are different types. Against the widened v2.10.29 above, 1,000 resets each
-followed by a bare create failed 73 creates, every one `error creating store for stream`; through
-`CreateStream`'s retry none of 1,000 failed, 89 of them passing on a later attempt. The daemon's
-`internal/intake` tests on that server failed 6 of 10 runs before, each on that answer, and none of
-10 after. On the stock `nats:2.10` the daemon's helper runs, the bare create failed none of 2,000.
+last delete always empties the account's `streams` directory. Its server is a container or a
+process of its own, so the reset reads the server's goroutines from its monitoring endpoint
+(`/stacksz`) and hands the server over only once none is a cleanup; `testnats.DeleteStream` deletes
+and waits the same way for a test's own delete. Each copy refuses a dump that lists no goroutine of
+nats-server's `server` package, which a reader blind to the server would return, and which would
+otherwise read as no cleanup. They are copies, not a shared helper: each module's `testnats` is an
+`internal` package the other module cannot import. Forced on v2.15.1 (the daemon's server under
+strace with the cleanup's two `unlinkat` calls of `streams` held 100 ms each and each stream
+directory's `mkdirat` 500 ms, by path; Envoy's in-process server built from a module copy whose
+cleanup sleeps 200 ms and whose store `os.MkdirAll` waits 500 ms between the parent and its own
+`mkdir`), the daemon's `TestCreateStreamRefusesAStreamThatIsNotEmpty` failed two subtests with
+`err_code=10049` at the create before the wait and passed with it, and Envoy's
+`TestARewatchOntoARecreatedBucketKeepsTheCopyUntilTheReadCompletes` failed `recreate KV bucket
+kvwatch-test: nats: error creating store for stream` with the retry and with the wait taken out,
+and passed with the wait.
 
 One test still deletes a name twice, and the double-delete race cannot fail it:
 `internal/kvwatch`'s `TestARewatchOntoABucketRestoredWithAnOlderStreamRefillsTheCache` deletes

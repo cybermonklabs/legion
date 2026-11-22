@@ -44,35 +44,61 @@ func TestWaitForJetStreamRetriesTheOperationUntilItIsReady(t *testing.T) {
 	}
 }
 
-// A create right after a stream delete can meet nats-server still removing the account's streams
-// directory, and is answered with the store failure; RecreateKeyValue tries it again. Every other
-// answer is the test's own failure and must not be retried into a slower one or a pass.
-func TestRetryStreamStoreFailureRetriesOnlyTheStoreFailure(t *testing.T) {
-	storeFailure := &natsgo.APIError{Code: 500, ErrorCode: streamCreateErrorCode, Description: streamStoreFailed}
-	t.Run("store failure", func(t *testing.T) {
-		attempts := 0
-		err := retryStreamStoreFailure(func() error {
-			attempts++
-			if attempts < 3 {
-				return storeFailure
+// The wait before a recreate reads this process's goroutines and counts each one nats-server's
+// stream.stop started, and refuses a dump that holds no goroutine of nats-server's server package:
+// such a reader would count no cleanup whatever a server ran, and every wait would pass at once.
+// The records are runtime.Stack's, with the cleanup's record as nats-server 2.15.1 shows it while
+// its removal is held in the unlink (the forcing in the pull request that added this row).
+func TestTheCleanupWaitCountsStreamStopsGoroutinesAndRefusesAForeignDump(t *testing.T) {
+	const (
+		serving = "goroutine 1 [select, 3 minutes]:\n" +
+			"github.com/nats-io/nats-server/v2/server.(*Server).WaitForShutdown(...)\n" +
+			"\t/home/runner/work/nats-server/server/server.go:2701\n" +
+			"main.main()\n" +
+			"\t/home/runner/work/nats-server/main.go:139 +0x2a5"
+		cleanup = "goroutine 4120 [syscall]:\n" +
+			"syscall.Syscall(0x107, 0xffffffffffffff9c, 0xc0004d2a80, 0x0)\n" +
+			"\t/usr/local/go/src/syscall/syscall_linux.go:73 +0x25\n" +
+			"os.Remove({0xc0004d2a50, 0x3e})\n" +
+			"\t/usr/local/go/src/os/file_unix.go:363 +0x52\n" +
+			"github.com/nats-io/nats-server/v2/server.(*stream).stop.func1()\n" +
+			"\t/home/runner/work/nats-server/server/stream.go:8929 +0x2f\n" +
+			"created by github.com/nats-io/nats-server/v2/server.(*stream).stop in goroutine 4093\n" +
+			"\t/home/runner/work/nats-server/server/stream.go:8927 +0x8f6"
+		foreign = "goroutine 1 [running]:\n" +
+			"main.main()\n" +
+			"\t/src/main.go:9 +0x1d"
+	)
+	for _, row := range []struct {
+		name    string
+		dump    string
+		want    int
+		refused bool
+	}{
+		{name: "a server with no cleanup", dump: serving + "\n\n", want: 0},
+		{name: "a server running one", dump: serving + "\n\n" + cleanup + "\n", want: 1},
+		{name: "a server running two", dump: cleanup + "\n\n" + serving + "\n\n" + cleanup + "\n", want: 2},
+		{name: "a dump of no nats-server", dump: foreign + "\n", refused: true},
+		{name: "an empty answer", dump: "", refused: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			cleanups, err := cleanupsIn([]byte(row.dump))
+			if row.refused {
+				if err == nil {
+					t.Fatalf("cleanupsIn read %d cleanups and no error from a dump with no nats-server goroutine, want it refused", len(cleanups))
+				}
+				return
 			}
-			return nil
+			if err != nil || len(cleanups) != row.want {
+				t.Fatalf("cleanupsIn = %d cleanups, %v; want %d and no error", len(cleanups), err, row.want)
+			}
+			for _, record := range cleanups {
+				if !strings.Contains(record, "(*stream).stop.func1()") {
+					t.Errorf("cleanupsIn answered a record that is not the cleanup's:\n%s", record)
+				}
+			}
 		})
-		if err != nil || attempts != 3 {
-			t.Fatalf("err = %v after %d attempts, want nil after 3", err, attempts)
-		}
-	})
-	t.Run("any other error", func(t *testing.T) {
-		other := &natsgo.APIError{Code: 500, ErrorCode: streamCreateErrorCode, Description: "insufficient storage resources available"}
-		attempts := 0
-		err := retryStreamStoreFailure(func() error {
-			attempts++
-			return other
-		})
-		if err != other || attempts != 1 {
-			t.Fatalf("err = %v after %d attempts, want %v after 1", err, attempts, other)
-		}
-	})
+	}
 }
 
 // The package's tests share one server, and each gets it as a fresh container was: a stream and its

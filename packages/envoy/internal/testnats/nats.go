@@ -30,6 +30,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1168,52 +1169,96 @@ func waitForJetStream(t testing.TB, check func(context.Context) error) {
 	}
 }
 
-// nats-server answers a stream create it could not make a file store for with streamStoreFailed,
-// under the stream-create error code; RecreateKeyValue retries that answer for up to
-// recreateTimeout.
-const (
-	streamStoreFailed     = "error creating store for stream"
-	streamCreateErrorCode = natsgo.ErrorCode(10049)
-	recreateTimeout       = 10 * time.Second
-)
-
 // RecreateKeyValue creates the KV bucket config names in place of one the test has just deleted,
-// and returns it.
+// once nats-server has finished with the account's directories after that delete, and returns it.
 //
-// nats-server answers a stream delete before it is done with the account's directories: a
-// goroutine of its own then removes the account's streams directory, which it can only do once
-// that directory is empty, so only when the deleted stream was the account's last (stream.go,
-// stop, v2.10 through v2.15). A create that arrives before that goroutine has run can lose the
-// directory between making it and making its stream's own inside it: the server logs "could not
-// create storage directory - mkdir .../streams/<stream>: no such file or directory" and answers
-// the create "error creating store for stream". No API says when the goroutine has run, so the
-// create is retried on exactly that answer, every retryInterval; any other error fails the test
-// at once.
+// nats-server 2.15.1 answers a stream delete before it is done with those directories: the delete
+// starts a goroutine (server/stream.go:8926-8931, in stream.stop) that removes the account's
+// streams directory and then the account's own, each only if it is empty, so only when the deleted
+// stream was the account's last and the deleted store's own removal (filestore.go:12246) has run.
+// A create that comes before that goroutine has run can lose the streams directory between
+// os.MkdirAll finding it and making the stream's directory inside it (filestore.go:438-440): the
+// server logs "could not create storage directory - mkdir .../streams/<stream>: no such file or
+// directory" and answers the create "error creating store for stream", err_code 10049
+// (jetstream_api.go:1630-1636). The directories cannot say when the goroutine has run: an empty
+// streams directory is both what a goroutine still to run removes and what one that ran before the
+// store's removal finished leaves for good. The goroutine itself is the fact, and the servers this
+// package starts run in this process, so it is in this process's own goroutines until it returns
+// (streamCleanedUp). nats-server 2.15.3 starts no such goroutine (nats-io/nats-server
+// 68144dbd65b5), and there the wait returns at its first read. Any error fails the test at once.
 func RecreateKeyValue(t testing.TB, js natsgo.JetStreamContext, config *natsgo.KeyValueConfig) natsgo.KeyValue {
 	t.Helper()
-	var kv natsgo.KeyValue
-	err := retryStreamStoreFailure(func() error {
-		var err error
-		kv, err = js.CreateKeyValue(config)
-		return err
-	})
+	streamCleanedUp(t)
+	kv, err := js.CreateKeyValue(config)
 	if err != nil {
 		t.Fatalf("recreate KV bucket %s: %v", config.Bucket, err)
 	}
 	return kv
 }
 
-// retryStreamStoreFailure runs create again while it fails with the server's stream store
-// failure, for up to recreateTimeout, and returns its last error.
-func retryStreamStoreFailure(create func() error) error {
-	deadline := time.Now().Add(recreateTimeout)
+// streamCleanup ends the record of a goroutine stream.stop started in a goroutine dump
+// (runtime.Stack), followed by " in goroutine <id>". The removal of the account's directories
+// after a delete is the one goroutine stream.stop starts (server/stream.go:8740-8938).
+const streamCleanup = "created by github.com/nats-io/nats-server/v2/server.(*stream).stop"
+
+// serverFrame begins each frame of nats-server's own server package in such a dump. A dump with
+// none holds no running server, and would show no cleanup whatever a server held.
+const serverFrame = "github.com/nats-io/nats-server/v2/server."
+
+// streamCleanedUp waits, until testDeadline, for this process to run no goroutine stream.stop
+// started (RecreateKeyValue says why), and fails t naming the ones left when it does not.
+func streamCleanedUp(t testing.TB) {
+	t.Helper()
+	bound := boundOf(t)
 	for {
-		err := create()
-		var apiErr *natsgo.APIError
-		storeFailed := errors.As(err, &apiErr) && apiErr.ErrorCode == streamCreateErrorCode && apiErr.Description == streamStoreFailed
-		if !storeFailed || time.Now().After(deadline) {
-			return err
+		cleanups, err := cleanupsIn(goroutines())
+		if err != nil {
+			t.Fatalf("read this process's goroutines to wait for nats-server's cleanup after a stream delete: %v", err)
 		}
-		time.Sleep(retryInterval)
+		if len(cleanups) == 0 {
+			return
+		}
+		if bound.over() {
+			t.Fatalf("nats-server still runs %d cleanups of an account's directories after a stream delete at %s, short of the test's deadline:\n%s",
+				len(cleanups), bound, strings.Join(cleanups, "\n\n"))
+		}
+		time.Sleep(bound.step(10 * time.Millisecond))
 	}
+}
+
+// goroutines is the goroutine dump of this process, every goroutine's stack (runtime.Stack).
+func goroutines() []byte {
+	buf := make([]byte, 1<<20)
+	for {
+		if n := runtime.Stack(buf, true); n < len(buf) {
+			return buf[:n]
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+}
+
+// cleanupsIn answers the record of each goroutine stream.stop started in dump, a goroutine dump
+// as runtime.Stack writes it: records apart by a blank line, each ending in the line that names
+// what created it. It refuses a dump that holds no goroutine of nats-server's server package.
+func cleanupsIn(dump []byte) ([]string, error) {
+	var cleanups []string
+	servers := 0
+	for record := range strings.SplitSeq(string(dump), "\n\n") {
+		if !strings.HasPrefix(record, "goroutine ") {
+			continue
+		}
+		if strings.Contains(record, serverFrame) {
+			servers++
+		}
+		for line := range strings.SplitSeq(record, "\n") {
+			if line == streamCleanup || strings.HasPrefix(line, streamCleanup+" ") {
+				cleanups = append(cleanups, record)
+				break
+			}
+		}
+	}
+	if servers == 0 {
+		return nil, fmt.Errorf("the dump (%d bytes) lists no goroutine of nats-server's server package, so it cannot show a cleanup either", len(dump))
+	}
+	return cleanups, nil
 }

@@ -55,23 +55,25 @@ the same function, whatever the call is called. 23 delete sites; one was unprote
 
 | Class | Delete sites | Where |
 | --- | --- | --- |
-| retried by `testnats.RecreateKeyValue` | 10 | `kvwatch/kvwatch_test.go:297,335,561,638,701,830`; `kvwatch/repair_test.go:114` through its callers at `:156`→`:159` and `:258`→`:260`; `store/interest_markers_test.go:303,416`; `store/kv_test.go:2003` |
+| guarded by `testnats.RecreateKeyValue` (then a retry, since a wait for the cleanup goroutine) | 10 | `kvwatch/kvwatch_test.go:297,335,561,638,701,830`; `kvwatch/repair_test.go:114` through its callers at `:156`→`:159` and `:258`→`:260`; `store/interest_markers_test.go:303,416`; `store/kv_test.go:2003` |
 | a fresh account per subtest, so the delete finds nothing | 1 | `bus/stream_config_test.go:453` |
 | another stream stays in the account | 2 | `kvwatch/kvwatch_test.go:851` (the keeper at `:816`); `cmd/listener/main_test.go:4565`, recreated at `:4599` while the notification stream and role bucket stay |
 | the name is never put back — the absence *is* the test's subject | 7 | `kvwatch/end_test.go:227`; `cistore/burst_test.go:940`; `store/kv_test.go:2041`; `cmd/listener/main_test.go:4463`; `store/interest_markers_test.go:460,480,532` |
 | deleted only in `t.Cleanup`, so nothing follows it | 2 | `bus/kv_key_test.go:36,160` |
 | the rig's own cleanup | 1 | `testnats/nats.go:227` |
 
-Two ways to be safe, and they are not equal. `RecreateKeyValue` **survives** the window by retrying
-`ErrCode 10049`. Keeping another stream in the account **removes** it: the cleanup still runs and
-its `os.Remove` is a no-op while another stream's directory is there. Prefer removing the window;
-when you do, give the extra stream a name and a comment saying why it exists, because it protects by
-a side effect and the next tidier will delete an unexplained bucket.
+Two ways to be safe. `RecreateKeyValue` once only **survived** the window, by retrying
+`ErrCode 10049`; it now waits until the cleanup goroutine has returned, which removes the window for
+its one create. Keeping another stream in the account removes it for every create there: the
+cleanup still runs and its `os.Remove` is a no-op while another stream's directory is there. Prefer
+removing the window; when you keep a stream for it, give the extra stream a name and a comment
+saying why it exists, because it protects by a side effect and the next tidier will delete an
+unexplained bucket.
 
 Do not reach for a retry without reading which error it matches. A losing *restore* answers
 `ErrCode 10062` (`restore failed: …`) on the end-of-data request, decoded as raw JSON rather than as
-a `nats.APIError`, so `retryStreamStoreFailure`'s 10049 match would have caught nothing while the
-sweep's sentence claimed the window was shut.
+a `nats.APIError`, so the old retry's 10049 match would have caught nothing while the sweep's
+sentence claimed the window was shut.
 
 ## Evidence
 

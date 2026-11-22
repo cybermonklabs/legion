@@ -27,6 +27,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -42,6 +44,8 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
 	"github.com/testcontainers/testcontainers-go/wait"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // Image is the NATS server image the daemon's NATS tests use: ghcr.io/cybermonklabs/legion/ci, the
@@ -120,8 +124,11 @@ func Main(m *testing.M) int {
 // empty with CreateStream: a deleted stream's store can outlive the delete that answered, and a
 // purged one carries no message into the next test, though it does carry its sequence. The purge,
 // below, states the mechanism and names the source lines; the comments elsewhere in this package
-// point to it rather than stating it again. Last, the reset arms the leak check (leakcheck.go),
-// which fails t at its end for a client connection t left open on the server.
+// point to it rather than stating it again. The reset then waits until the server is done with the
+// account's directories after those deletes, and after any the previous test made itself, so the
+// test's first create cannot lose its stream's directory to them (DeleteStream). Last, the reset
+// arms the leak check (leakcheck.go), which fails t at its end for a client connection t left open
+// on the server.
 func URL(t testing.TB) string {
 	t.Helper()
 	if !mainRuns {
@@ -203,6 +210,9 @@ func URL(t testing.TB) string {
 			t.Fatalf("empty the NATS server of stream %s: %v", name, err)
 		}
 	}
+	// Wait out the server's cleanup after these deletes and after any the previous test made of
+	// its own: a test's first create must not meet it (DeleteStream says how it can).
+	cleanedUp(t)
 	info, err := js.AccountInfo(t.Context())
 	if err != nil {
 		t.Fatalf("read the NATS server's account after emptying it: %v", err)
@@ -404,27 +414,120 @@ func Connect(t testing.TB, url string, options ...nats.Option) *nats.Conn {
 	return conn
 }
 
-// nats-server answers a stream create it could not make a file store for with streamStoreFailed,
-// under the stream-create error code; CreateStream retries that answer for up to createTimeout.
-const (
-	streamStoreFailed     = "error creating store for stream"
-	streamCreateErrorCode = jetstream.ErrorCode(10049)
-	createTimeout         = 10 * time.Second
-)
+// DeleteStream deletes stream name from the server URL gave t, and returns once nats-server has
+// finished with the account's directories, so a create that follows cannot lose its stream's
+// directory to the delete. It fails t when either cannot be done.
+//
+// nats-server 2.15.1 answers a stream delete before it is done with those directories: the delete
+// starts a goroutine (server/stream.go:8926-8931, in stream.stop) that removes the account's
+// streams directory and then the account's own, each only if it is empty, so only when the deleted
+// stream was the account's last and the deleted store's own removal (filestore.go:12246) has run.
+// A create that comes before that goroutine has run can lose the streams directory between
+// os.MkdirAll finding it and making the stream's directory inside it (filestore.go:438-440): the
+// server logs "could not create storage directory - mkdir .../streams/<stream>: no such file or
+// directory" and answers the create "error creating store for stream", err_code 10049
+// (jetstream_api.go:1630-1636). The directories cannot say when the goroutine has run: an empty
+// streams directory is both what a goroutine still to run removes and what one that ran before
+// the store's removal finished leaves for good, and on a 2.15.1 server the second is the common
+// end. The goroutine itself is the fact, and the server lists it on its monitoring endpoint's
+// /stacksz until it returns (cleanedUp). nats-server 2.15.3 starts no such goroutine
+// (nats-io/nats-server 68144dbd65b5), and there the wait returns at its first read.
+func DeleteStream(t testing.TB, js jetstream.JetStream, name string) {
+	t.Helper()
+	// A cleanup of the test that deletes its stream runs after t's context is cancelled.
+	if err := js.DeleteStream(context.WithoutCancel(t.Context()), name); err != nil {
+		t.Fatalf("delete stream %s: %v", name, err)
+	}
+	cleanedUp(t)
+}
+
+// streamCleanup ends the record of a goroutine stream.stop started in a goroutine dump of
+// nats-server 2.15.1 (runtime.Stack, which /stacksz serves), followed by " in goroutine <id>".
+// The removal of the account's directories after a delete is the one goroutine stream.stop starts
+// (server/stream.go:8740-8938).
+const streamCleanup = "created by github.com/nats-io/nats-server/v2/server.(*stream).stop"
+
+// serverFrame begins each frame of nats-server's own server package in such a dump. A dump with
+// none is not the server's, and would show no cleanup whatever the server held.
+const serverFrame = "github.com/nats-io/nats-server/v2/server."
+
+// cleanedUp waits until the shared server lists no goroutine stream.stop started (DeleteStream
+// says why), for as long as the test binary's deadline leaves, less a second to report in, and
+// fails t naming what it read last when that does not happen.
+func cleanedUp(t testing.TB) {
+	t.Helper()
+	bound := time.Duration(math.MaxInt64)
+	if test, ok := t.(*testing.T); ok {
+		bound = testwait.Bounded(test, bound, time.Second)
+	}
+	var pending []string
+	var err error
+	started := time.Now()
+	if testwait.Holds(bound, testwait.Poll, func() bool {
+		pending, err = streamCleanups()
+		return err == nil && len(pending) == 0
+	}) {
+		return
+	}
+	if err != nil {
+		t.Fatalf("read the NATS server's goroutines to wait for its cleanup after a stream delete: %v", err)
+	}
+	t.Fatalf("the NATS server still runs %d cleanups of an account's directories after a stream delete, %s on:\n%s",
+		len(pending), time.Since(started).Round(time.Millisecond), strings.Join(pending, "\n\n"))
+}
+
+// streamCleanups reads the shared server's goroutines from its monitoring endpoint's /stacksz and
+// answers the record of each one stream.stop started (cleanupsIn).
+func streamCleanups() ([]string, error) {
+	response, err := monitorClient.Get(monitorURL + "/stacksz")
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET %s/stacksz answered %s", monitorURL, response.Status)
+	}
+	dump, err := io.ReadAll(response.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read %s/stacksz: %w", monitorURL, err)
+	}
+	cleanups, err := cleanupsIn(dump)
+	if err != nil {
+		return nil, fmt.Errorf("GET %s/stacksz: %w", monitorURL, err)
+	}
+	return cleanups, nil
+}
+
+// cleanupsIn answers the record of each goroutine stream.stop started in dump, a goroutine dump
+// as runtime.Stack writes it: records apart by a blank line, each ending in the line that names
+// what created it. It refuses a dump that holds no goroutine of nats-server's server package.
+func cleanupsIn(dump []byte) ([]string, error) {
+	var cleanups []string
+	servers := 0
+	for record := range strings.SplitSeq(string(dump), "\n\n") {
+		if !strings.HasPrefix(record, "goroutine ") {
+			continue
+		}
+		if strings.Contains(record, serverFrame) {
+			servers++
+		}
+		for line := range strings.SplitSeq(record, "\n") {
+			if line == streamCleanup || strings.HasPrefix(line, streamCleanup+" ") {
+				cleanups = append(cleanups, record)
+				break
+			}
+		}
+	}
+	if servers == 0 {
+		return nil, fmt.Errorf("the dump (%d bytes) lists no goroutine of nats-server's server package, so it cannot show a cleanup either", len(dump))
+	}
+	return cleanups, nil
+}
 
 // CreateStream creates the stream config describes on js, a client of the server URL has emptied
-// for t, and returns it.
-//
-// nats-server answers a stream delete before it is done with the account's directories: a
-// goroutine of its own then removes the account's streams directory, which it can only do once
-// that directory is empty, so only when the deleted stream was the account's last (stream.go,
-// stop, v2.10 through v2.15). URL's reset deletes every stream, so its last delete always empties
-// the account, and the test's first create can arrive before that goroutine has run. Such a create
-// can lose the directory between making it and making its stream's own inside it: the server logs
-// "could not create storage directory - mkdir .../streams/<stream>: no such file or directory" and
-// answers the create "error creating store for stream". No API says when the goroutine has run, so
-// the create is retried on exactly that answer, every 50 ms; any other error fails the test at
-// once.
+// for t, and returns it. URL hands the server over only once nats-server is done with the
+// account's directories after every delete before it (DeleteStream), so a create that fails is
+// the test's own failure.
 //
 // The stream the create answers is read once and must be empty; the purge in URL says how a
 // create can come back holding an earlier stream's store. A stream handed to a test holding an
@@ -433,12 +536,7 @@ const (
 // for, the row took its stream at consumer_lag_test.go:30 and read the count at :50.
 func CreateStream(t testing.TB, js jetstream.JetStream, config jetstream.StreamConfig) jetstream.Stream {
 	t.Helper()
-	var stream jetstream.Stream
-	err := retryStreamStoreFailure(func() error {
-		var err error
-		stream, err = js.CreateStream(t.Context(), config)
-		return err
-	})
+	stream, err := js.CreateStream(t.Context(), config)
 	if err != nil {
 		t.Fatalf("create stream %s: %v", config.Name, err)
 	}
@@ -494,21 +592,6 @@ func assertCreatedEmpty(t testing.TB, stream jetstream.Stream, name string) {
 	}
 	t.Fatalf("stream %s is not empty at its create, holding %s (most probably the store of a stream of this name that a delete left in place; the purge in URL says how that happens)",
 		name, strings.Join(held, "; "))
-}
-
-// retryStreamStoreFailure runs create again while it fails with the server's stream store
-// failure, for up to createTimeout, and returns its last error.
-func retryStreamStoreFailure(create func() error) error {
-	deadline := time.Now().Add(createTimeout)
-	for {
-		err := create()
-		var apiErr *jetstream.APIError
-		storeFailed := errors.As(err, &apiErr) && apiErr.ErrorCode == streamCreateErrorCode && apiErr.Description == streamStoreFailed
-		if !storeFailed || time.Now().After(deadline) {
-			return err
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
 }
 
 // hostConfig caps a NATS test container at one CPU and 512 MiB, as every container the

@@ -1969,9 +1969,7 @@ func TestAnIssueMovedWhileBootListsIsStillAdmitted(t *testing.T) {
 // says would ever reach it. Boot refuses instead, naming the stream, before the API answers.
 func TestRunRefusesToBootWithoutTheNotificationStream(t *testing.T) {
 	natsURL := workflowNATS(t)
-	if err := workflowJetStream(t, natsURL).DeleteStream(context.Background(), "ENVOY_NOTIFICATIONS"); err != nil {
-		t.Fatalf("delete the notification stream: %v", err)
-	}
+	testnats.DeleteStream(t, workflowJetStream(t, natsURL), "ENVOY_NOTIFICATIONS")
 	cfg := workflowConfig(t, natsURL)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

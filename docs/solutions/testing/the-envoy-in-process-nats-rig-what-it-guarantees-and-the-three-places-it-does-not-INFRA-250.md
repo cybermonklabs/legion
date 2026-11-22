@@ -41,9 +41,10 @@ comment. **Green here means no NATS container, not no container.**
 
 nats-server moves a deleted stream's directory aside and removes it from a goroutine.
 
-- **Window B, guarded:** a create of the same name landing while that removal runs fails with
-  `error creating store for stream` (`ErrCode 10049`). `testnats.RecreateKeyValue` retries exactly
-  this.
+- **Window B, guarded:** a create landing in an account whose last stream was just deleted, before
+  the server's cleanup goroutine has removed the account's emptied directories, fails with
+  `error creating store for stream` (`ErrCode 10049`). `testnats.RecreateKeyValue` waits until the
+  process runs no goroutine `stream.stop` started, then creates once.
 - **Window A, unguarded:** a *second* delete of the same name before the goroutine has run leaves
   the files where they are **while answering success**, and the next create of that name recovers
   the deleted stream's messages. No error, wrong data.
@@ -58,8 +59,9 @@ A retry is also the wrong instrument for a **restore**: a losing restore answers
 docs/solutions/architecture-patterns/derive-a-refusals-condition-from-what-the-caller-depends-on-not-from-the-mechanism-that-broke-it-INFRA-249.md:
 a condition written around the mechanism that broke catches that mechanism and lets the next one
 through. Here the caller's requirement is *the directory the create writes into is not being
-removed* — which is why keeping another stream in the account closes the window, while matching an
-error code only survives it.
+removed* — which is why keeping another stream in the account, or waiting until the cleanup
+goroutine has returned (`RecreateKeyValue`), closes the window, while matching an error code only
+survives it.
 
 ## 3. There are two `testnats` packages, with opposite contracts
 
