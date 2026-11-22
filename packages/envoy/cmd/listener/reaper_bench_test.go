@@ -102,12 +102,12 @@ func benchmarkReap(b *testing.B, n int) {
 	isAlive := func(id string) (bool, error) { return sessionMayBeLive(sessions, id) }
 	b.ReportAllocs()
 	for b.Loop() {
-		reaped, err := registry.Reap(isAlive, 10*time.Minute)
+		sweep, err := registry.Reap(isAlive, 10*time.Minute)
 		if err != nil {
 			b.Fatalf("Reap: %v", err)
 		}
-		if reaped != 0 {
-			b.Fatalf("Reap removed %d interests of live sessions", reaped)
+		if sweep != (store.InterestSweep{}) {
+			b.Fatalf("Reap changed the interests of live sessions: %+v", sweep)
 		}
 	}
 }

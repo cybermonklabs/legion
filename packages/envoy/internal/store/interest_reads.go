@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 
 	"github.com/nats-io/nats.go"
@@ -119,6 +120,18 @@ func (r *Registry) MatchAllMachines(topic string) []Interest {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.matchLocked(func(visit func(string)) { r.index.matchAllMachines(topic, visit) })
+}
+
+// MatchStopped returns the cached stopped rows (Interest.Stopped) whose topics match topic: the
+// released sessions a message on topic is for, which the listener's fan-out reports a wake for
+// rather than delivers to. A stopped row names no listener, so the subject index files it under
+// the empty machine id, which no listener has (ENVOY_MACHINE_ID is required), and the walk reads
+// that tree alone; a row there that is not stopped is left out.
+func (r *Registry) MatchStopped(topic string) []Interest {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return slices.DeleteFunc(r.matchLocked(func(visit func(string)) { r.index.match("", topic, visit) }),
+		func(item Interest) bool { return !item.Stopped })
 }
 
 // matchLocked collects the cached interests walk visits, once each (oncePerKey): a session's

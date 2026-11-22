@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"time"
@@ -12,61 +13,88 @@ import (
 
 const (
 	// InterestReapGrace is the grace window the listener passes to StartReaper: a dead
-	// session's interest stays at least this long after its row's last write, plus
-	// InterestRefreshAge.
+	// session's interest row stands as it is at least this long after its last write, plus
+	// InterestRefreshAge, before the reaper stops it.
 	InterestReapGrace = 10 * time.Minute
 	// InterestRefreshAge is the most an interest row's UpdatedAt may lag its session's last
 	// heartbeat: a writer may skip rewriting an unchanged row younger than this, and must
 	// rewrite it once it reaches this age. Reap adds it to the grace window, so a skipped
 	// rewrite never shortens the grace a paused session gets after its last heartbeat.
 	InterestRefreshAge = 5 * time.Minute
+	// StoppedInterestRetention is the session's life as Envoy counts it: how long after the last
+	// write of a session's row the reaper keeps the subscriptions of that session once it has
+	// stopped. It is the known-session record's retention too (session.KnownSessionRetention is
+	// this value), so a session Envoy still knows, whose messages a send still queues, still has
+	// its subscriptions when it comes back; both outlast the 72 hours the stream keeps a message.
+	// A Legion pod's idle release, whose backstop wakes it within the hour, is well inside it.
+	StoppedInterestRetention = 30 * 24 * time.Hour
 )
 
-// InterestReapAllowance is the age past which Reap deletes a dead session's interest: grace, the
-// window the row's session is given after its last write, plus InterestRefreshAge, the most that
-// write may lag the session's last heartbeat. A row exactly that old is kept. The session cache
-// keeps a departed session's last heartbeat for session.LastSeenMemory (2 hours) unless the
-// listener sets another retention (session.WithLastSeenRetention), which outlasts this allowance,
-// so every row the reaper can still hold has one.
+// InterestReapAllowance is the age past which Reap stops a dead session's interest row: grace,
+// the window the row's session is given after its last write, plus InterestRefreshAge, the most
+// that write may lag the session's last heartbeat. A row exactly that old is left as it is. The
+// session cache keeps a departed session's last heartbeat for session.LastSeenMemory (2 hours)
+// unless the listener sets another retention (session.WithLastSeenRetention), which outlasts this
+// allowance, so every row the reaper has not stopped yet has one.
 func InterestReapAllowance(grace time.Duration) time.Duration {
 	return grace + InterestRefreshAge
 }
 
-// Reap deletes the interests of sessions that are gone and whose UpdatedAt is past the grace
-// window plus InterestRefreshAge (InterestReapAllowance); a row exactly that old is kept. It
-// collects the interests past the allowance from the cache under its read lock, asking nothing of
-// any session there, and only then asks live of each, outside every lock. live answers from the
-// session's own record (the listener's reads the session's key in the session bucket when its
-// cache does not hold it): a session missing from a session copy that is reading its bucket
-// again, or has not read it yet, is not gone. live's error is a read that did not answer, and
-// keeps the interest for the next pass, as does an interest written again since it was collected.
+// InterestSweep is what one pass of Reap did: Reaped, the rows it deleted, and Stopped, the rows
+// it stopped, keeping their sessions' subscriptions (stopInterest).
+type InterestSweep struct {
+	Reaped  int
+	Stopped int
+}
+
+// Reap stops the interest rows of sessions that are gone and whose UpdatedAt is past the grace
+// window plus InterestRefreshAge (InterestReapAllowance), and deletes the rows whose sessions'
+// life is over: a stopped row, or one not stopped yet, whose UpdatedAt is past
+// StoppedInterestRetention. A row exactly that old is kept as it is. A row it stops keeps the
+// session's subscriptions (keptTopics) for its next registration, and one with none to keep is
+// deleted instead, as every such row was before a row could be stopped.
+//
+// A stopped row routes nothing: it names no listener (Interest.MachineID), so no listener's
+// Match fans a topic out to it and every listener answers for the session's inbox, as for a
+// session with no row. Its UpdatedAt is left as the session's own last write, so the life of the
+// subscriptions is counted from the session's last registration and not from the pass.
+//
+// It collects the rows due from the cache under its read lock, asking nothing of any session
+// there, and only then asks live of each, outside every lock. live answers from the session's own
+// record (the listener's reads the session's key in the session bucket when its cache does not
+// hold it): a session missing from a session copy that is reading its bucket again, or has not
+// read it yet, is not gone. live's error is a read that did not answer, and keeps the row for the
+// next pass, as does a row written again since it was collected.
 // A role claim is intentionally not an interest: it remains available for its holder to
 // re-register after a listener restart, and the role delivery path drops it if that holder never
 // becomes live again.
 //
-// A candidate is deleted at exactly the revision the copy holds for it when the delete is sent
-// (reapInterest), so a write that lands after the re-read is kept: the delete fails with
-// JetStream's wrong last sequence (10071, nats.ErrKeyExists), and the candidate counts as
-// skipped. Where the copy holds no revision for it, the row and the revision come from the
-// bucket instead, and the delete is made only for the very row this pass judged.
-func (r *Registry) Reap(live func(sessionID string) (bool, error), graceWindow time.Duration) (int, error) {
+// A delete is made at exactly the revision the copy holds for the row when it is sent
+// (reapInterest), and a stop at the revision the bucket answers for the row the pass judged
+// (stopInterest), so a write that lands after the re-read is kept: the bucket refuses the delete
+// or the write with JetStream's wrong last sequence (10071, nats.ErrKeyExists), and the candidate
+// is counted nowhere.
+func (r *Registry) Reap(live func(sessionID string) (bool, error), graceWindow time.Duration) (InterestSweep, error) {
 	now := r.now().UnixMilli()
 	allowanceMs := InterestReapAllowance(graceWindow).Milliseconds()
+	lifeMs := StoppedInterestRetention.Milliseconds()
 
 	type candidate struct {
 		sessionID string
 		updatedAt int64
+		stopped   bool
 	}
 	r.mu.RLock()
 	var candidates []candidate
 	for sid, item := range r.cache.All() {
-		if now-item.UpdatedAt > allowanceMs {
-			candidates = append(candidates, candidate{sessionID: sid, updatedAt: item.UpdatedAt})
+		age := now - item.UpdatedAt
+		if age > allowanceMs && (!item.Stopped || age > lifeMs) {
+			candidates = append(candidates, candidate{sessionID: sid, updatedAt: item.UpdatedAt, stopped: item.Stopped})
 		}
 	}
 	r.mu.RUnlock()
 
-	reaped := 0
+	var sweep InterestSweep
 	for _, c := range candidates {
 		alive, err := live(c.sessionID)
 		if err != nil {
@@ -76,22 +104,36 @@ func (r *Registry) Reap(live func(sessionID string) (bool, error), graceWindow t
 		if alive {
 			continue
 		}
-		if item, ok := r.Cached(c.sessionID); !ok || item.UpdatedAt != c.updatedAt {
+		item, ok := r.Cached(c.sessionID)
+		if !ok || item.UpdatedAt != c.updatedAt || item.Stopped != c.stopped {
 			continue // removed, or written again, since it was collected
 		}
-		deleted, err := r.reapInterest(context.Background(), c.sessionID, c.updatedAt)
+		// A row past the session's life is deleted, and so is one holding no subscription to
+		// keep, through the one delete a pass has always made (reapInterest); every other row is
+		// stopped. A row stored under a key NATS refuses a write to (an earlier build's, which no
+		// session can register under again, bus.ErrRefused) keeps nothing for anyone, so a stop
+		// the bucket refuses for its key is that same delete.
+		var deleted, stopped bool
+		if now-c.updatedAt > lifeMs || len(keptTopics(c.sessionID, item.Topics)) == 0 {
+			deleted, err = r.reapInterest(context.Background(), c.sessionID, c.updatedAt)
+		} else if stopped, err = r.stopInterest(context.Background(), c.sessionID, c.updatedAt); errors.Is(err, bus.ErrRefused) {
+			deleted, err = r.reapInterest(context.Background(), c.sessionID, c.updatedAt)
+		}
 		if errors.Is(err, bus.ErrRefused) {
 			r.logger().Warn("reaper skipped an interest it cannot delete", slog.Int("key_bytes", len(c.sessionID)), slog.String("error", err.Error()))
 			continue
 		}
 		if err != nil {
-			return 0, err
+			return InterestSweep{}, err
 		}
 		if deleted {
-			reaped++
+			sweep.Reaped++
+		}
+		if stopped {
+			sweep.Stopped++
 		}
 	}
-	return reaped, nil
+	return sweep, nil
 }
 
 // reapInterest deletes sessionID's interest, which this pass judged past its allowance at
@@ -133,6 +175,51 @@ func (r *Registry) reapInterest(ctx context.Context, sessionID string, judged in
 		revision = read
 	}
 	return r.deleteInterestAt(ctx, sessionID, revision)
+}
+
+// stopInterest stops sessionID's interest row, which this pass judged past its allowance at
+// judged, its UpdatedAt when the pass collected it, and reports whether the bucket took the
+// write: the row the bucket holds is written again naming no listener, marked stopped, its topics
+// cut to the session's subscriptions (keptTopics), and its UpdatedAt and directory left as they
+// are. Its caller sends a row with no subscription to keep to reapInterest instead.
+//
+// The row is read from the bucket with its revision (getWithRevision), and only the row this pass
+// judged is written, under that revision: a row the bucket answers with another UpdatedAt, one
+// already stopped, or one that keeps nothing is not the row the pass judged; a key the bucket
+// holds no row for is already gone; and a row this build cannot decode is not the row the pass
+// judged either. Each is left as the bucket holds it, and none is counted. A write since the read
+// makes JetStream refuse this one (putInterestAt), and the row that won is kept, counted nowhere.
+// The one bucket read is the cost of building the stopped row from the row the bucket holds
+// rather than a copy that may trail it, and a session is stopped once.
+func (r *Registry) stopInterest(ctx context.Context, sessionID string, judged int64) (bool, error) {
+	item, revision, err := r.getWithRevision(ctx, sessionID, true)
+	switch {
+	case errors.Is(err, nats.ErrKeyNotFound), errors.Is(err, ErrMalformedInterest):
+		return false, nil
+	case err != nil:
+		return false, err
+	case item.UpdatedAt != judged || item.Stopped:
+		return false, nil
+	}
+	kept := keptTopics(sessionID, item.Topics)
+	if len(kept) == 0 {
+		return false, nil
+	}
+	item.MachineID = ""
+	item.Topics = kept
+	item.Stopped = true
+	buf, err := json.Marshal(item)
+	if err != nil {
+		return false, err
+	}
+	written, epoch, stored, err := r.putInterestAt(ctx, sessionID, buf, revision)
+	if err != nil || !stored {
+		return false, err
+	}
+	r.mu.Lock()
+	r.cache.Put(r.watcher, epoch, sessionID, item, written)
+	r.mu.Unlock()
+	return true, nil
 }
 
 // RoleClaimSweep is what one pass of ReapRoleClaims did: Reaped, the claims it released or
@@ -319,16 +406,17 @@ func (r *Registry) ReapRoleClaims(ctx context.Context, isAlive func(string) bool
 // a channel closed once it has returned: a pass in flight when ctx ends finishes first. A pass
 // lists the bucket through watchers whose consumers nats.go creates and deletes, so the listener's
 // shutdown waits for it before it drains NATS (kvwatch.Watcher.End says what a drain does to such
-// a delete). Each pass logs how many interests it reaped and how long it took (elapsed_ms).
+// a delete). Each pass logs how many interests it reaped, how many it stopped, and how long it
+// took (elapsed_ms).
 func (r *Registry) StartReaper(ctx context.Context, live func(sessionID string) (bool, error), interval, graceWindow time.Duration) <-chan struct{} {
 	return everyInterval(ctx, interval, func() {
 		started := time.Now()
-		count, err := r.Reap(live, graceWindow)
+		sweep, err := r.Reap(live, graceWindow)
 		if err != nil {
 			r.logger().Error("reaper cycle failed", slog.String("error", err.Error()))
 			return
 		}
-		r.logger().Info("reaper cycle", slog.Int("reaped", count), slog.Int64("elapsed_ms", time.Since(started).Milliseconds()))
+		r.logger().Info("reaper cycle", slog.Int("reaped", sweep.Reaped), slog.Int("stopped", sweep.Stopped), slog.Int64("elapsed_ms", time.Since(started).Milliseconds()))
 	})
 }
 

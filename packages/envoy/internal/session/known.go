@@ -22,8 +22,10 @@ import (
 // change or clean stop: the envoy_known_sessions bucket's TTL, and the window a record's own
 // last_seen is read against (KnownSessions.Get). It is well past the 72 hours Envoy keeps a
 // session's messages, so a suspended Legion session that resumes under the same id is still known
-// when its queued messages are delivered.
-const KnownSessionRetention = 30 * 24 * time.Hour
+// when its queued messages are delivered. It is the session's life, which the interest reaper
+// keeps a stopped session's subscriptions for as well (store.StoppedInterestRetention), so the
+// two are one value.
+const KnownSessionRetention = store.StoppedInterestRetention
 
 // KnownSessionRefreshAge is how young a stored record must be for a write of the same content to
 // be skipped (KnownSessions.RecordWithin): a session heartbeats every 90 seconds, so an unchanged

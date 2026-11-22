@@ -1,4 +1,4 @@
-// Wake reports for Legion's released issue pods: the two wakes only this listener sees, and the
+// Wake reports for Legion's released issue pods: the three wakes only this listener sees, and the
 // liveness signal that says its silence means "nothing to report" rather than "nothing reporting".
 
 package main
@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log/slog"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -33,6 +34,15 @@ const (
 	// Envoy direct message, or a person's answer, comment or message a Dispatch claim routes to
 	// that session.
 	wakeKindAgent = "agent_message"
+	// wakeKindFollowed is a message on a topic a session that is gone follows: one its row keeps
+	// while the session is stopped (store.Interest.Stopped), or one its row still names while that
+	// row is this listener's and the session's record is gone, the minutes between a release's
+	// clean stop and the reaper's stop of the row. The Legion daemon resumes the released claim
+	// of that session, as for an agent message, and the session's own consumer hands it the
+	// message once it registers again. It names the session and the message's topic, and is
+	// raised at most once for each session and topic in each followedWakeInterval across every
+	// listener (reportFollowedWakes, followedWakeID).
+	wakeKindFollowed = "followed_topic"
 	// wakeKindReady is this listener saying it is alive and reporting, published at its start and
 	// every listenerReadyInterval after it. The daemon releases no pod unless it has read one
 	// within its own window, because without a positive signal "the listener sends no reports"
@@ -76,7 +86,9 @@ type wakeReport struct {
 	Kind    string `json:"kind"`
 	Role    string `json:"role,omitempty"`
 	Session string `json:"session,omitempty"`
-	At      int64  `json:"at"`
+	// Topic is the topic of the message a followed-topic report was raised for.
+	Topic string `json:"topic,omitempty"`
+	At    int64  `json:"at"`
 }
 
 // roleWakeInterval is the interval the sweep's repeated wake report of a role is named by
@@ -138,31 +150,49 @@ func wakeReportEnvelope(logger *logging.Logger, report wakeReport, eventID, dedu
 // carries, and the role and agent reports of one message carry the same name whichever attempt the
 // daemon reads).
 func publishWakeReport(lifetime context.Context, client *bus.Client, logger *logging.Logger, report wakeReport) {
+	publishWakeReportUnder(lifetime, client, logger, report, "")
+}
+
+// publishWakeReportUnder is publishWakeReport, and for a key that is not empty it stores the
+// report under that key as its Nats-Msg-Id and its dedupe key, with an event id made from it
+// (keyedEventID), so every listener that raises one report under one key stores one message and
+// the daemon reads one fact. A report the stream already held under the key counts as stored,
+// and is logged as already stored rather than published.
+func publishWakeReportUnder(lifetime context.Context, client *bus.Client, logger *logging.Logger, report wakeReport, key string) {
 	if client == nil {
 		return
 	}
 	report.At = contracts.NowMillis()
-	eventID := id.New()
-	item, ok := wakeReportEnvelope(logger, report, eventID, "legion.wake."+eventID)
+	eventID, dedupeKey := id.New(), key
+	if key == "" {
+		dedupeKey = "legion.wake." + eventID
+	} else {
+		eventID = keyedEventID(key)
+	}
+	item, ok := wakeReportEnvelope(logger, report, eventID, dedupeKey)
 	if !ok {
 		return
 	}
 	ctx, cancel := context.WithTimeout(lifetime, wakeReportBudget)
 	defer cancel()
 	for attempt, wait := 1, wakeReportRetry; ; attempt++ {
-		if err := publishWithinBudget(ctx, client, item); err == nil {
-			logger.Info("legion wake report published", slog.String("kind", report.Kind),
-				slog.String("role", report.Role), slog.String("session", report.Session), slog.Int("attempts", attempt))
+		if duplicate, err := publishWithinBudget(ctx, client, item, key); err == nil {
+			line := "legion wake report published"
+			if duplicate {
+				line = "legion wake report was already stored"
+			}
+			logger.Info(line, slog.String("kind", report.Kind), slog.String("role", report.Role),
+				slog.String("session", report.Session), slog.String("topic", report.Topic), slog.Int("attempts", attempt))
 			return
 		} else if ctx.Err() != nil || errors.Is(err, bus.ErrPublishDenied) {
 			logger.Warn("legion wake report not published", slog.String("kind", report.Kind),
-				slog.String("role", report.Role), slog.String("session", report.Session),
+				slog.String("role", report.Role), slog.String("session", report.Session), slog.String("topic", report.Topic),
 				slog.Int("attempts", attempt), slog.String("error", err.Error()))
 			return
 		} else {
 			logger.Warn("legion wake report not published; retrying until the bus takes it",
-				slog.String("kind", report.Kind), slog.String("role", report.Role),
-				slog.String("session", report.Session), slog.Int("attempts", attempt), slog.String("error", err.Error()))
+				slog.String("kind", report.Kind), slog.String("role", report.Role), slog.String("session", report.Session),
+				slog.String("topic", report.Topic), slog.Int("attempts", attempt), slog.String("error", err.Error()))
 		}
 		select {
 		case <-ctx.Done():
@@ -176,11 +206,16 @@ func publishWakeReport(lifetime context.Context, client *bus.Client, logger *log
 }
 
 // publishWithinBudget makes one publish attempt, bounded by wakeReportAttempt and by what is
-// left of the report's whole budget.
-func publishWithinBudget(budget context.Context, client *bus.Client, item contracts.Envelope) error {
+// left of the report's whole budget, under key as its Nats-Msg-Id when key is not empty, and
+// reports whether the stream already held a message under that key.
+func publishWithinBudget(budget context.Context, client *bus.Client, item contracts.Envelope, key string) (bool, error) {
 	ctx, cancel := context.WithTimeout(budget, wakeReportAttempt)
 	defer cancel()
-	return client.PublishWithin(ctx, item)
+	if key == "" {
+		return false, client.PublishWithin(ctx, item)
+	}
+	ack, err := client.PublishStoredAck(ctx, bus.LegionWakeTopic, item, key)
+	return ack.Duplicate, err
 }
 
 // sweptRoleWakeID is the message id and the dedupe key of the sweep's wake report of role at now:
@@ -236,15 +271,23 @@ const wakeReportsInFlight = 64
 
 // wakeReporter publishes wake reports off the paths that raise them: under the listener's own
 // lifetime, so the shutdown ends every retry still running, and no more than
-// wakeReportsInFlight at a time.
+// wakeReportsInFlight at a time. It remembers the keys of the keyed reports it raised
+// (reportKeyed), each for followedWakeInterval, so a burst of messages that name one key costs one
+// report rather than one goroutine each.
 type wakeReporter struct {
 	lifetime context.Context
 	client   *bus.Client
 	slots    chan struct{}
+	// now is the clock the remembered keys are aged on: time.Now, which a test replaces.
+	now func() time.Time
+	mu  sync.Mutex
+	// raised is each key this reporter raised a report under, with when it raised it.
+	raised map[string]time.Time
 }
 
 func newWakeReporter(lifetime context.Context, client *bus.Client) *wakeReporter {
-	return &wakeReporter{lifetime: lifetime, client: client, slots: make(chan struct{}, wakeReportsInFlight)}
+	return &wakeReporter{lifetime: lifetime, client: client, slots: make(chan struct{}, wakeReportsInFlight),
+		now: time.Now, raised: map[string]time.Time{}}
 }
 
 // report publishes one report off the caller's path. The caller is writing a 404 the report
@@ -255,18 +298,60 @@ func (r *wakeReporter) report(logger *logging.Logger, report wakeReport) {
 	if r == nil || r.client == nil {
 		return
 	}
-	select {
-	case r.slots <- struct{}{}:
-	default:
-		logger.Warn("legion wake report dropped: too many are already retrying",
-			slog.String("kind", report.Kind), slog.String("role", report.Role),
-			slog.String("session", report.Session), slog.Int("inFlight", wakeReportsInFlight))
+	if !r.takeSlot(logger, report) {
 		return
 	}
 	go func() {
 		defer func() { <-r.slots }()
 		publishWakeReport(r.lifetime, r.client, logger, report)
 	}()
+}
+
+// reportKeyed is report for a report stored under key (publishWakeReportUnder), which every
+// listener raising the same report names the same way. A key this reporter raised a report under
+// within followedWakeInterval raises nothing again; a report dropped for want of a slot is not
+// remembered, so the next message that names its key raises it.
+func (r *wakeReporter) reportKeyed(logger *logging.Logger, report wakeReport, key string) {
+	if r == nil || r.client == nil {
+		return
+	}
+	now := r.now()
+	r.mu.Lock()
+	for raised, at := range r.raised {
+		if now.Sub(at) >= followedWakeInterval {
+			delete(r.raised, raised)
+		}
+	}
+	if _, seen := r.raised[key]; seen {
+		r.mu.Unlock()
+		return
+	}
+	r.raised[key] = now
+	r.mu.Unlock()
+	if !r.takeSlot(logger, report) {
+		r.mu.Lock()
+		delete(r.raised, key)
+		r.mu.Unlock()
+		return
+	}
+	go func() {
+		defer func() { <-r.slots }()
+		publishWakeReportUnder(r.lifetime, r.client, logger, report, key)
+	}()
+}
+
+// takeSlot takes one of the reporter's wakeReportsInFlight slots for report, or logs the report
+// dropped and reports false when every slot is taken.
+func (r *wakeReporter) takeSlot(logger *logging.Logger, report wakeReport) bool {
+	select {
+	case r.slots <- struct{}{}:
+		return true
+	default:
+		logger.Warn("legion wake report dropped: too many are already retrying",
+			slog.String("kind", report.Kind), slog.String("role", report.Role),
+			slog.String("session", report.Session), slog.String("topic", report.Topic), slog.Int("inFlight", wakeReportsInFlight))
+		return false
+	}
 }
 
 // reportRoleWake reports that a message was published to role and no live session held it. The

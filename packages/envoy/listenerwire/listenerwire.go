@@ -369,13 +369,22 @@ type DeleteSessionResponse struct {
 }
 
 // Interest is one session's persisted Envoy topic subscriptions, as the listener's interest bucket
-// stores it (internal/store) and its interest routes answer it (InterestRow).
+// stores it (internal/store) and its interest routes answer it (InterestRow). A row is the
+// session's subscriptions for the session's life, not for one of its processes (store.Interest).
 type Interest struct {
-	SessionID string   `json:"session_id"`
+	SessionID string `json:"session_id"`
+	// MachineID is the listener the session last registered through, which fans its topics out
+	// and owns its delivery. A stopped row names none, so no listener routes its topics and every
+	// listener answers for its inbox, as for a session with no row at all.
 	MachineID string   `json:"machine_id"`
 	Dir       string   `json:"dir"`
 	Topics    []string `json:"topics"`
 	UpdatedAt int64    `json:"updated_at"`
+	// Stopped says the row's session was gone when the interest reaper found the row past its
+	// grace: the row keeps the session's subscriptions for its next registration, which clears
+	// the mark, and its UpdatedAt is still the session's last write, which its life is counted
+	// from. Left out of a row that is not stopped, so a live row encodes as it always has.
+	Stopped bool `json:"stopped,omitempty"`
 }
 
 // InterestRow is one persisted interest as GET /v1/interests/ and GET /v1/interests/<session_id>

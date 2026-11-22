@@ -411,6 +411,11 @@ func (r *Registry) putInterestAt(ctx context.Context, sessionID string, value []
 // session runs, so for it the stored value stands: a role claim carries the claiming listener's
 // machine id and no directory (SetRoleWithPrevious), and claiming a role must not clear the
 // row's Cwd.
+//
+// A stopped row (Interest.Stopped) is merged into as any other, which is how a session that
+// resumes gets its subscriptions back without naming them: its first registration's topics, and
+// a role claim's lane, join the kept topics, the row names the listener the write came through
+// again, and the mark is cleared, since a session that registers or claims is no longer stopped.
 func mergeForUpsert(cur Interest, getErr error, item Interest, now int64, plan InterestPlan) (Interest, error) {
 	if getErr != nil && !errors.Is(getErr, nats.ErrKeyNotFound) && !errors.Is(getErr, ErrMalformedInterest) {
 		return Interest{}, getErr
@@ -422,6 +427,7 @@ func mergeForUpsert(cur Interest, getErr error, item Interest, now int64, plan I
 	item.MachineID = first(requested.MachineID, cur.MachineID)
 	item.Dir = first(requested.Dir, cur.Dir)
 	item.UpdatedAt = now
+	item.Stopped = false
 	stored := item.Topics
 	if len(plan.Withheld) > 0 {
 		stored = slices.DeleteFunc(slices.Clone(stored), func(topic string) bool { return slices.Contains(plan.Withheld, topic) })

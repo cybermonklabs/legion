@@ -2689,7 +2689,7 @@ func validSuperviseOp(op SuperviseOp) bool {
 // vocabulary a start's WakeKind is held to.
 func validWakeKind(kind string) bool {
 	switch kind {
-	case pods.WakeDelivery, pods.WakeChecks, pods.WakeRoleMessage, pods.WakeAgentMessage, pods.WakeBackstop, pods.WakePause:
+	case pods.WakeDelivery, pods.WakeChecks, pods.WakeRoleMessage, pods.WakeAgentMessage, pods.WakeFollowedTopic, pods.WakeBackstop, pods.WakePause:
 		return true
 	default:
 		return false

@@ -63,6 +63,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		DesignNewsReconcile{},
 		SuperviseRequest{Op: "pause_stop", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Pause: 7},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wake", WakeKind: pods.WakeChecks},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a followed topic's wake", WakeKind: pods.WakeFollowedTopic},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, WakeKind: pods.WakePause, Pause: 7},
 		GateSeed{ArtifactID: "artifact-208", Version: 4},
 		LingerClose{Generation: 7},
