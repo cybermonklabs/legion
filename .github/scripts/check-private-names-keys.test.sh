@@ -117,7 +117,7 @@ as_merge() {
   mv "$work/compare.next" "$work/compare"
 }
 # pr_files <status> <path> <patch> [...]: the pull request's files route, one page holding those
-# files (a patch of "-" is none at all), and the pull request route's totals to match them.
+# files (a patch of "-" is none at all), and the pull request's totals to match them.
 pr_files() {
   local list='[]' additions
   while [ $# -gt 0 ]; do

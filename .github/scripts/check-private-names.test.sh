@@ -434,6 +434,8 @@ check "scans the file" "$(contains "$out" '(1 files under docs/notes\.md)')"
 echo "case: a pull request's title, body, branch name and commits, which reach main and its release notes"
 run_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 check "a clean title, body and commits pass" "$(is "$status" 0)"
+check "reads it all in one GraphQL call" "$(is "$(< "$work/calls")" "$(grep '^graphql PrText ' "$work/calls")")"
+check "and that is the only call" "$(is "$(wc -l < "$work/calls")" 1)"
 
 run_pr_text "fix(dispatch): keep the inbox order ($key-7)" "Refs LEGION-7" "fix: keep the order"
 check "a title naming a deployment issue key fails" "$(is "$status" 1)"
@@ -508,13 +510,15 @@ check "that same commit, on the run's own head, fails" "$(is "$status" 1)"
 check "names its line" "$(contains "$out" 'commits:6: names the private deployment repository')"
 check "does not print the key" "$(is "$(contains "$out" "$key")" false)"
 
-echo "case: a commit list the compare route cut short, and one spread over pages"
+echo "case: a commit list GitHub cut short, and one spread over pages"
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 jq -c '.total_commits = 300' "$work/compare" > "$work/compare.next"
 mv "$work/compare.next" "$work/compare"
 run_pr_text
 check "a list shorter than the route's own total fails loudly" "$(is "$status" 1)"
 check "names both counts" "$(contains "$out" 'reports 300 commits .* but listed 1')"
+check "says the compare route read it once GitHub's GraphQL comparison came back short" \
+  "$(contains "$out" 'listed 1 of its 300 commits, so the compare route reads them instead')"
 
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 second_commit=$(pr_commit "$(printf 'fix: keep the order\n\nCo-authored-by: A <a@%s%s.example>\n' "$company" "$labs")")
@@ -522,9 +526,48 @@ jq -c '.total_commits = 2' "$work/compare" > "$work/compare.next"
 jq -nc --argjson second "$second_commit" '{total_commits: 2, commits: [$second]}' >> "$work/compare.next"
 mv "$work/compare.next" "$work/compare"
 run_pr_text
-check "a commit on the compare route's second page naming the company fails" "$(is "$status" 1)"
+check "a commit on the comparison's second page naming the company fails" "$(is "$status" 1)"
 check "names its line, counting the first page's commit" "$(contains "$out" 'commits:8: names the company')"
 check "counts both pages' commits as the whole list" "$(is "$(contains "$out" 'but listed')" false)"
+check "reads the comparison's second page by its cursor" \
+  "$(contains "$(< "$work/calls")" '^graphql PrText .*"commitsAfter":"1"')"
+check "and from GraphQL alone" "$(is "$(contains "$(< "$work/calls")" '^api ')" false)"
+
+echo "case: a comparison GitHub's GraphQL API lists short of its total, as it does past 1000 commits"
+# GitHub's GraphQL comparison stops at 1000 commits and says no more follow while its total counts
+# them all (pull request 4673 of this repository on 2026-11-22: 1000 of 1458). The compare route
+# serves them all.
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+jq -c '.total_commits = 2' "$work/compare" > "$work/compare.next"
+jq -nc --argjson second "$second_commit" '{total_commits: 2, commits: [$second]}' >> "$work/compare.next"
+mv "$work/compare.next" "$work/compare"
+echo 1 > "$work/cut.commits"
+run_pr_text
+check "a commit past GraphQL's cut naming the company still fails" "$(is "$status" 1)"
+check "names its line" "$(contains "$out" 'commits:8: names the company')"
+check "says the compare route read them instead" \
+  "$(contains "$out" '^check-pr-text: GitHub.s GraphQL comparison of main with event-head-sha listed 1 of its 2 commits, so the compare route reads them instead')"
+check "reads the compare route from the event's base to its head" \
+  "$(contains "$(< "$work/calls")" '^api repos/example/repo/compare/base-sha...event-head-sha?per_page=100 --paginate$')"
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+touch "$work/compare-gone"
+run_pr_text
+check "a comparison GraphQL does not answer is read from the compare route: passes" "$(is "$status" 0)"
+check "says so" \
+  "$(contains "$out" '^check-pr-text: GitHub.s GraphQL API answered no comparison of main with event-head-sha, so the compare route reads its commits instead')"
+# A total above 1000 goes to the compare route after the first page: the pages GraphQL would serve
+# after it cannot make the list whole.
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+jq -c --argjson second "$second_commit" '[range(1000) as $i | .commits[0]] + [$second]
+  | [range(0; length; 100) as $i | .[$i:$i + 100]][] | {total_commits: 1001, commits: .}' \
+  "$work/compare" > "$work/compare.next"
+mv "$work/compare.next" "$work/compare"
+run_pr_text
+check "a 1001st commit naming the company fails" "$(is "$status" 1)"
+check "names its line" "$(contains "$out" 'commits:5003: names the company')"
+check "reads one page of the comparison, then the compare route" \
+  "$(is "$(grep -c '^graphql PrText ' "$work/calls") $(grep -c '^api repos/example/repo/compare/' "$work/calls")" '1 1')"
+check "says why" "$(contains "$out" 'listed 100 of its 1001 commits, so the compare route reads them instead')"
 
 echo "case: a compare answer the script cannot check against a total"
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
@@ -561,9 +604,12 @@ jq -c '.[1].body = null' "$work/reviews.1" > "$work/reviews.next" && mv "$work/r
 items 301 "A nit on this line." > "$work/review-comments.1"
 run_pr_text
 check "a clean set of comments, reviews (one with no body) and review comments passes" "$(is "$status" 0)"
-check "reads every issue comment" "$(contains "$(< "$work/calls")" '^api repos/example/repo/issues/7/comments?per_page=100&page=1$')"
-check "reads every review" "$(contains "$(< "$work/calls")" '^api repos/example/repo/pulls/7/reviews?per_page=100&page=1$')"
-check "reads every review comment" "$(contains "$(< "$work/calls")" '^api repos/example/repo/pulls/7/comments?per_page=100&page=1$')"
+check "reads them in one GraphQL call" "$(is "$(grep -c '^graphql PrText ' "$work/calls")" 1)"
+check "asks for the issue comments" "$(contains "$(< "$work/calls")" '^graphql PrText .*"comments":true')"
+check "asks for the reviews" "$(contains "$(< "$work/calls")" '^graphql PrText .*"reviews":true')"
+check "asks for the review threads, each with its review comments" \
+  "$(contains "$(< "$work/calls")" '^graphql PrText .*"threads":true')"
+check "makes no REST call" "$(is "$(contains "$(< "$work/calls")" '^api ')" false)"
 
 clean_pr
 items 101 "Looks good." 102 "$(printf 'Line one.\nAs %s Labs found.\n' "$company_proper")" > "$work/comments.1"
@@ -677,28 +723,118 @@ items 1101 "fine" 1102 "$company_proper Labs" > "$work/comments.2"
 run_pr_text
 check "a comment on the second page naming the company fails" "$(is "$status" 1)"
 check "names it" "$(contains "$out" 'comment:1102:1: names the company')"
-check "stops at the short second page" \
-  "$(is "$(contains "$(< "$work/calls")" 'issues/7/comments?per_page=100&page=3')" false)"
+check "reads the second page by its cursor" \
+  "$(contains "$(< "$work/calls")" '^graphql PrText .*"comments":true.*"commentsAfter":"1"')"
+check "stops at the second page, which says none follow" "$(is "$(grep -c '^graphql PrText ' "$work/calls")" 2)"
+check "asks the second round for the comments alone" \
+  "$(contains "$(sed -n 2p "$work/calls")" '"commits":false,"history":false,"comments":true,"reviews":false,"threads":false')"
 
 clean_pr
 jq -nc --argjson author "$app" '[range(1; 101) | {id: (2000 + .), body: "fine"} + $author]' > "$work/reviews.1"
 run_pr_text
-check "a full first page of reviews and an empty second pass" "$(is "$status" 0)"
-check "reads the second page after a full first" \
-  "$(contains "$(< "$work/calls")" '^api repos/example/repo/pulls/7/reviews?per_page=100&page=2$')"
+check "a full first page of reviews with no second passes" "$(is "$status" 0)"
+check "reads it in one call, GitHub saying no more follow" "$(is "$(grep -c '^graphql PrText ' "$work/calls")" 1)"
+items 2101 "fine" 2102 "Blocking: see $key-7." > "$work/reviews.2"
+run_pr_text
+check "a review on the second page naming a deployment issue key fails" "$(is "$status" 1)"
+check "names it" "$(contains "$out" 'review:2102:1: names the private deployment repository')"
+
+clean_pr
+jq -nc --argjson author "$app" '[range(1; 101) | {id: (3000 + .), body: "fine"} + $author]' > "$work/review-comments.1"
+items 3101 "fine" 3102 "$(printf 'Nit.\n\nthe %s repository\n' "$repo")" > "$work/review-comments.2"
+run_pr_text
+check "a review comment in a review thread on the second page of threads fails" "$(is "$status" 1)"
+check "names it" "$(contains "$out" 'review-comment:3102:3: names the private deployment repository')"
+check "reads the second page of threads by its cursor" \
+  "$(contains "$(< "$work/calls")" '^graphql PrText .*"threadsAfter":"1"')"
+
+clean_pr
+jq -nc --argjson author "$app" --arg body "$company_proper Labs" \
+  '[[range(1; 102) | {id: (4000 + .), body: (if . == 101 then $body else "fine" end)} + $author]]' \
+  > "$work/review-comments.1"
+run_pr_text
+check "the 101st review comment of one review thread naming the company fails" "$(is "$status" 1)"
+check "names it" "$(contains "$out" 'review-comment:4101:1: names the company')"
+check "reads that thread's comments past its first 100 by the thread's id" \
+  "$(contains "$(< "$work/calls")" '^graphql ThreadComments {"thread":"thread-1-0","after":"1"}$')"
+check "and names none of the first 100" "$(is "$(contains "$out" 'review-comment:40[0-9][0-9]:')" false)"
+
+clean_pr
+jq -nc --argjson author "$app" '[range(1; 101) | {id: (5000 + .), body: "fine"} + $author]' > "$work/comments.1"
+items 5101 "$company_proper Labs" > "$work/comments.2"
+jq -nc --argjson author "$app" '[range(1; 101) | {id: (6000 + .), body: "fine"} + $author]' > "$work/reviews.1"
+items 6101 "Blocking: see $key-7." > "$work/reviews.2"
+run_pr_text
+check "two lists with a second page each fail on both pages' items" \
+  "$(is "$(contains "$out" 'comment:5101:1: names the company')$(contains "$out" 'review:6101:1: names the private')" truetrue)"
+check "read in one second round for both" "$(is "$(grep -c '^graphql PrText ' "$work/calls")" 2)"
+
+echo "case: a list GitHub's GraphQL API answers short of its total is refused by name"
+clean_pr
+jq -nc --argjson author "$app" '[range(1; 101) | {id: (1000 + .), body: "fine"} + $author]' > "$work/comments.1"
+items 1101 "$company_proper Labs" > "$work/comments.2"
+echo 1 > "$work/cut.comments"
+run_pr_text
+check "issue comments that stop short of their total fail" "$(is "$status" 1)"
+check "names the list and both counts" \
+  "$(contains "$out" "^::error::GitHub's GraphQL API reports 101 issue comments of #7 but listed 100, so not every one can be checked")"
+clean_pr
+jq -nc --argjson author "$app" '[range(1; 101) | {id: (2000 + .), body: "fine"} + $author]' > "$work/reviews.1"
+items 2101 "fine" > "$work/reviews.2"
+echo 1 > "$work/cut.reviews"
+run_pr_text
+check "reviews that stop short fail" "$(is "$status" 1)"
+check "names them" "$(contains "$out" "^::error::GitHub's GraphQL API reports 101 reviews of #7 but listed 100")"
+clean_pr
+jq -nc --argjson author "$app" '[range(1; 101) | {id: (3000 + .), body: "fine"} + $author]' > "$work/review-comments.1"
+items 3101 "fine" > "$work/review-comments.2"
+echo 1 > "$work/cut.threads"
+run_pr_text
+check "review threads that stop short fail" "$(is "$status" 1)"
+check "names them" "$(contains "$out" "^::error::GitHub's GraphQL API reports 101 review threads of #7 but listed 100")"
+clean_pr
+jq -nc --argjson author "$app" '[[range(1; 102) | {id: (4000 + .), body: "fine"} + $author]]' > "$work/review-comments.1"
+echo 1 > "$work/cut.thread"
+run_pr_text
+check "a review thread's comments that stop short fail" "$(is "$status" 1)"
+check "names the thread and both counts" \
+  "$(contains "$out" "^::error::GitHub's GraphQL API reports 101 comments in review thread 1 of #7 but listed 100")"
+
+echo "case: a read GitHub's GraphQL API does not answer is refused by name"
+clean_pr
+jq -nc --argjson author "$app" '[range(1; 101) | {id: (1000 + .), body: "fine"} + $author]' > "$work/comments.1"
+items 1101 "$company_proper Labs" > "$work/comments.2"
+echo 2 > "$work/graphql-fails"
+run_pr_text
+check "a second round that fails is refused" "$(is "$status" 1)"
+check "names the read and gh's message" \
+  "$(contains "$out" "^::error::GitHub's GraphQL API did not answer the PrText read of #7 (gh: Something went wrong while executing your query.), so its text cannot be checked")"
+check "scans nothing" "$(is "$(contains "$out" 'comment:1101')" false)"
+clean_pr
+jq -nc --argjson author "$app" '[[range(1; 102) | {id: (4000 + .), body: "fine"} + $author]]' > "$work/review-comments.1"
+echo 2 > "$work/graphql-fails"
+run_pr_text
+check "a review thread's later page that fails is refused" "$(is "$status" 1)"
+check "names the read" "$(contains "$out" "^::error::GitHub's GraphQL API did not answer the ThreadComments read of #7")"
+clean_pr
+touch "$work/base-gone"
+run_pr_text
+check "a pull request whose base branch GitHub answers none for is refused" "$(is "$status" 1)"
+check "names the marker's history it could not read" \
+  "$(contains "$out" "^::error::GitHub's GraphQL API answered no page 1 of the commits on main that touch .github/issue-key-cutoff")"
 
 echo "case: a comment list the script cannot read whole"
 clean_pr
 printf '{"message": "Not Found"}\n' > "$work/review-comments.1"
 run_pr_text
-check "an answer that is not a list fails" "$(is "$status" 1)"
-check "names the route" "$(contains "$out" 'pulls/7/comments route is not a list')"
+check "an answer that is no page of review threads fails" "$(is "$status" 1)"
+check "names the list" "$(contains "$out" "^::error::GitHub's GraphQL API answered no page 1 of the review threads of #7")"
 
 clean_pr
 items 101 "fine" > "$work/comments.1"
-jq -c '.[0].id = "101"' "$work/comments.1" > "$work/comments.next" && mv "$work/comments.next" "$work/comments.1"
+jq -c '.[0].id = "IC_kwDOexample"' "$work/comments.1" > "$work/comments.next" && mv "$work/comments.next" "$work/comments.1"
 run_pr_text
-check "an item whose id is not a whole number fails" "$(is "$status" 1)"
+check "an item whose id is GraphQL's node id, not a whole number, fails" "$(is "$status" 1)"
 check "names the cause" "$(contains "$out" 'whose id is not a whole number')"
 
 clean_pr

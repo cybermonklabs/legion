@@ -162,70 +162,170 @@ GREP
 
 # write_pr_text <title> <body> <commit message> [branch] [author email] [committer email]: writes
 # the fixture check-pr-text.sh reads as CI runs it. A pull_request event payload carries the head
-# the run checks (its base and head sha, and its one commit); the stand-in `gh` answers the pull
-# request route with the title, body and branch name the pull request has now (`$work/pull`, the
-# event's own unless a case rewrites it); and it answers the compare route for exactly that
-# base...head with that commit (message, author and committer) in the route's own JSON shape, so
-# the real `.commits[] | .commit.message, …`
-# filter that feeds the required check runs for real, rather than a filter the stub fakes. It
-# matches that URL whole and refuses a call without --paginate, so losing either paging token
-# fails every case below instead of passing on a list GitHub cut short at 250 commits. It answers
-# the pull request's three comment routes (issue comments, reviews and review comments), which
-# report no total, one page of 100 at a time: page N of each is `$work/<route>.N` (`comments`,
-# `reviews` or `review-comments`), and a page no case wrote is an empty list, as GitHub answers past
-# the last. The stub also answers the pull request's own commits route, which reads whatever head
-# the pull request has by then: the same commit, until the mid-run-push case appends a later one
-# that names a private thing. A case rewrites `$work/compare` (one JSON object per page, as
-# `gh api --paginate` prints them), `$work/pr-commits` or a comment route's pages, then calls
-# run_pr_text, which runs the script and sets `out` and `status`; the stub logs each call it
-# answers to `$work/calls`. For the issue-key rule it answers four routes more, each from a file a
-# case writes and otherwise as GitHub answers a repository with no such record: the commits that
-# touch the cutoff marker on the pull request's base branch, whichever it is
-# (`$work/cutoff-commits`, else none, so the rule is inactive); one
-# release by its tag (`$work/release.<tag>`, else a 404 as gh prints it, and a file holding
-# `HTTP 500` a server error); one commit's files (`$work/commit.<sha>`, else a refusal); and the
-# pull request's files (`$work/pr-files`, one JSON list a page as `gh api --paginate` prints
-# them, else a refusal; read without --paginate, also a refusal). The repository's history and
-# tags, which the rule reads with git, are a bare repository under `$work/remote`, which
-# run_pr_text names as GITHUB_SERVER_URL.
+# the run checks (its base and head sha, and its one commit). The stand-in `gh` stands in for
+# GitHub's GraphQL server for the script's two queries (`gh api graphql --input -`: PrText, and
+# ThreadComments for a review thread's comments past its first 100). It answers only the fields a
+# round asks for (each `@include` flag), in GraphQL's own shapes, so the real filters that feed the
+# required check run for real, rather than filters the stub fakes; it refuses a read of another
+# repository or pull request, or one not sent as --input -. The files it answers from keep the
+# REST shapes the cases write. The pull request as it is now is `$work/pull` (the event's own
+# unless a case rewrites it): title, body, head.ref, base.ref, created_at, changed_files,
+# additions and deletions. The comparison of the base branch with the head the query names comes
+# from `$work/compare` (one REST compare page a JSON object, as `gh api --paginate` prints them:
+# each a GraphQL page, the first's total_commits the totalCount) when that head is the event's,
+# and from `$work/pr-commits`, whatever head the pull request has by then, when it is not: a run
+# that asked for the pull request's head rather than the event's would read the later commit the
+# mid-run-push case appends there. The issue comments, reviews and review threads come a page of
+# 100 at a time: page N of each is `$work/<list>.N` (`comments`, `reviews` or `review-comments`;
+# each item in the REST shape, its id GraphQL's fullDatabaseId), the totalCount is the items of
+# every page a case wrote, a next page follows while page N+1 exists, and page N's cursor is "N".
+# An item of a `review-comments` page is a review thread holding that one comment or, when the
+# item is a list, those comments, 100 a page. A page that is not a list is answered as it is. The
+# commits on the base branch that touch the cutoff marker come with PrText too
+# (`$work/cutoff-commits`, else none, so the rule is inactive). `$work/cut.<list>` (commits,
+# history, comments, reviews, threads, or thread for each thread's comments) holding N makes page
+# N say no more follow while the totalCount still counts every page, as GitHub's comparison does at
+# 1000 commits; `$work/base-gone` answers no base branch, `$work/compare-gone` no comparison, and
+# `$work/graphql-fails` holding N fails the Nth GraphQL call as gh fails on an answer that carries
+# an error. The REST routes it answers are the ones the script still reads, each from a file a case
+# writes and otherwise as GitHub answers a repository with no such record: the compare route, for
+# a comparison GraphQL answered short, matched whole for the event's own base...head and refused
+# without --paginate (losing either paging token would pass on a list GitHub cut short at 250
+# commits), from `$work/compare`; and, for the issue-key rule, one release by its tag
+# (`$work/release.<tag>`, else a 404 as gh prints it, and a file holding `HTTP 500` a server
+# error), one commit's files (`$work/commit.<sha>`, else a refusal) and the pull request's files
+# (`$work/pr-files`, one JSON list a page as `gh api --paginate` prints them, else a refusal; read
+# without --paginate, also a refusal). Any other call is refused. A case rewrites those files, then
+# calls run_pr_text, which runs the script and sets `out` and `status`; the stub logs each call it
+# answers to `$work/calls`, a GraphQL call as `graphql <operation> <variables>`. The repository's
+# history and tags, which the rule reads with git, are a bare repository under `$work/remote`,
+# which run_pr_text names as GITHUB_SERVER_URL.
 mkdir -p "$work/bin"
 cat > "$work/bin/gh" <<'GH'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >> "$PR_TEXT_TEST_DIR/calls"
-# page <route> <url>: the page of a comment route the url's `page=N` asks for.
-page() {
-  local file="$PR_TEXT_TEST_DIR/$1.${2##*&page=}"
-  if [ -e "$file" ]; then cat "$file"; else echo '[]'; fi
-}
+dir=$PR_TEXT_TEST_DIR
+if [ "$1 $2" = "api graphql" ]; then
+  [ "$*" = "api graphql --input -" ] || { echo "graphql read not sent as --input -: $*" >&2; exit 3; }
+  request=$(cat)
+  operation=$(jq -r '.operationName' <<< "$request")
+  variables=$(jq -c '.variables' <<< "$request")
+  printf 'graphql %s %s\n' "$operation" "$variables" >> "$dir/calls"
+  if [ -e "$dir/graphql-fails" ] && [ "$(grep -c '^graphql ' "$dir/calls")" -eq "$(< "$dir/graphql-fails")" ]; then
+    echo '{"data": null, "errors": [{"message": "Something went wrong while executing your query."}]}'
+    echo 'gh: Something went wrong while executing your query.' >&2
+    exit 1
+  fi
+  if [ "$operation" = PrText ] && [ "$(jq -c '[.owner, .repo, .number]' <<< "$variables")" != '["example","repo",7]' ]; then
+    echo '{"data": {"repository": null}, "errors": [{"type": "NOT_FOUND", "message": "Could not resolve to a PullRequest."}]}'
+    echo 'gh: Could not resolve to a PullRequest.' >&2
+    exit 1
+  fi
+  # The fixtures go to jq as files: a list of 1000 commits is longer than one argument may be.
+  answer_dir=$(mktemp -d)
+  trap 'rm -rf "$answer_dir"' EXIT
+  # pages <list>: the pages a case wrote for that list, <list>.1, <list>.2, …, as one JSON list.
+  pages() {
+    local n=1
+    while [ -e "$dir/$1.$n" ]; do cat "$dir/$1.$n"; n=$((n + 1)); done | jq -s '.'
+  }
+  for list in comments reviews review-comments; do pages "$list" > "$answer_dir/$list"; done
+  cuts='{}'
+  for list in commits history comments reviews threads thread; do
+    if [ -e "$dir/cut.$list" ]; then
+      cuts=$(jq -c --arg list "$list" --argjson n "$(< "$dir/cut.$list")" '.[$list] = $n' <<< "$cuts")
+    fi
+  done
+  if [ "$(jq -r '.head' <<< "$variables")" = "$(jq -r '.pull_request.head.sha' "$dir/event.json")" ]; then
+    jq -s '.' "$dir/compare" > "$answer_dir/compare"
+  else
+    jq -s '[{total_commits: (.[0] | length), commits: .[0]}]' "$dir/pr-commits" > "$answer_dir/compare"
+  fi
+  echo '[[]]' > "$answer_dir/history"
+  if [ -e "$dir/cutoff-commits" ] && [ "$(jq -r '.marker' <<< "$variables")" = .github/issue-key-cutoff ]; then
+    jq -c '[.]' "$dir/cutoff-commits" > "$answer_dir/history"
+  fi
+  jq -n --argjson v "$variables" --arg operation "$operation" --slurpfile pull "$dir/pull" \
+    --slurpfile compare "$answer_dir/compare" --slurpfile history "$answer_dir/history" \
+    --slurpfile comments "$answer_dir/comments" --slurpfile reviews "$answer_dir/reviews" \
+    --slurpfile threads "$answer_dir/review-comments" --argjson cut "$cuts" \
+    --argjson base_gone "$([ -e "$dir/base-gone" ] && echo true || echo false)" \
+    --argjson compare_gone "$([ -e "$dir/compare-gone" ] && echo true || echo false)" '
+    def item: {fullDatabaseId: (.id | if type == "number" then tostring else . end), body,
+      authorAssociation: .author_association,
+      author: (if .user == null then null else {__typename: .user.type, login: .user.login} end)};
+    def commit: {oid: .sha, message: .commit.message, author: (.commit.author | {name, email}),
+      committer: (.commit.committer | {name, email, date}), parents: {totalCount: (.parents // [] | length)}};
+    # page($pages; $after; $cut; $total; f): the page after cursor $after of $pages, each node
+    # mapped by f.
+    def page($pages; $after; $cut; $total; f):
+      (if $after == null then 1 else ($after | tonumber) + 1 end) as $n
+      | ($pages[$n - 1] // []) as $nodes
+      | {totalCount: $total,
+         pageInfo: {hasNextPage: ($n < ($pages | length) and ($cut == null or $n < $cut)), endCursor: "\($n)"},
+         nodes: (if ($nodes | type) == "array" then [$nodes[] | f] else $nodes end)};
+    def total($pages): [$pages[] | if type == "array" then length else 0 end] | add // 0;
+    def hundreds: [range(0; ([length, 1] | max); 100) as $i | .[$i:$i + 100]];
+    def thread_comments: if type == "array" then . else [.] end;
+    $compare[0] as $compare | $history[0] as $history | $comments[0] as $comments
+    | $reviews[0] as $reviews | $threads[0] as $threads
+    | ($threads | to_entries | map((.key + 1) as $n | .value
+      | if type == "array" then
+          [to_entries[] | .key as $i | .value | thread_comments as $all
+            | {id: "thread-\($n)-\($i)", comments: page($all | hundreds; null; $cut.thread; $all | length; item)}]
+        else . end)) as $thread_pages
+    | if $operation == "ThreadComments" then
+        ($v.thread | capture("^thread-(?<n>[0-9]+)-(?<i>[0-9]+)$")? // null) as $t
+        | if $t == null then {data: {node: null}} else
+            ($threads[($t.n | tonumber) - 1][$t.i | tonumber] | thread_comments) as $all
+            | {data: {node: {comments: page($all | hundreds; $v.after; $cut.thread; $all | length; item)}}}
+          end
+      else
+        $pull[0] as $pull
+        | {data: {repository: {pullRequest: (
+            (if $v.full then {title: $pull.title, body: ($pull.body // ""), headRefName: $pull.head.ref,
+                baseRefName: ($pull.base.ref // "main"), createdAt: $pull.created_at,
+                changedFiles: $pull.changed_files, additions: $pull.additions, deletions: $pull.deletions}
+              else {} end)
+            + {baseRef: (if $base_gone then null else
+                (if $v.commits then {compare: (if $compare_gone then null else
+                    {commits: page([$compare[] | .commits]; $v.commitsAfter; $cut.commits;
+                      $compare[0].total_commits; commit)} end)} else {} end)
+                + (if $v.history then {target: {history: page($history; $v.historyAfter; $cut.history;
+                    total($history); {oid: .sha})}} else {} end)
+              end)}
+            + (if $v.comments then {comments: page($comments; $v.commentsAfter; $cut.comments; total($comments); item)}
+              else {} end)
+            + (if $v.reviews then {reviews: page($reviews; $v.reviewsAfter; $cut.reviews; total($reviews); item)}
+              else {} end)
+            + (if $v.threads then {reviewThreads: page($thread_pages; $v.threadsAfter; $cut.threads; total($threads); .)}
+              else {} end)
+          )}}}
+      end'
+  exit
+fi
+printf '%s\n' "$*" >> "$dir/calls"
 # The compare route is the event's own base...head, matched whole: base-sha...event-head-sha as
 # write_pr_text writes the event, or a real commit's id where a case sets one for git to read.
-compare_route="api repos/example/repo/compare/$(jq -r '.pull_request.base.sha' "$PR_TEXT_TEST_DIR/event.json")"
-compare_route+="...$(jq -r '.pull_request.head.sha' "$PR_TEXT_TEST_DIR/event.json")?per_page=100"
+compare_route="api repos/example/repo/compare/$(jq -r '.pull_request.base.sha' "$dir/event.json")"
+compare_route+="...$(jq -r '.pull_request.head.sha' "$dir/event.json")?per_page=100"
 if [ "$1 $2" = "$compare_route" ]; then
   [[ " $* " == *" --paginate "* ]] || { echo "compare route read without --paginate: $*" >&2; exit 3; }
-  cat "$PR_TEXT_TEST_DIR/compare"
+  cat "$dir/compare"
   exit 0
 fi
 case "$1 $2" in
-  "api repos/example/repo/issues/7/comments?per_page=100&page="[1-9]*) page comments "$2" ;;
-  "api repos/example/repo/pulls/7/reviews?per_page=100&page="[1-9]*) page reviews "$2" ;;
-  "api repos/example/repo/pulls/7/comments?per_page=100&page="[1-9]*) page review-comments "$2" ;;
-  "api repos/example/repo/pulls/7/commits") cat "$PR_TEXT_TEST_DIR/pr-commits" ;;
-  "api repos/example/repo/pulls/7") cat "$PR_TEXT_TEST_DIR/pull" ;;
-  "api repos/example/repo/commits?path=.github/issue-key-cutoff&sha="*"&per_page=100")
-    if [ -e "$PR_TEXT_TEST_DIR/cutoff-commits" ]; then cat "$PR_TEXT_TEST_DIR/cutoff-commits"; else echo '[]'; fi ;;
   "api repos/example/repo/releases/tags/"*)
-    file="$PR_TEXT_TEST_DIR/release.${2#repos/example/repo/releases/tags/}"
+    file="$dir/release.${2#repos/example/repo/releases/tags/}"
     if [ ! -e "$file" ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
     if grep -q -x 'HTTP 500' "$file"; then echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi
     cat "$file" ;;
   "api repos/example/repo/pulls/7/files?per_page=100")
     [[ " $* " == *" --paginate "* ]] || { echo "files route read without --paginate: $*" >&2; exit 3; }
-    if [ -e "$PR_TEXT_TEST_DIR/pr-files" ]; then cat "$PR_TEXT_TEST_DIR/pr-files"; else echo "no files answer" >&2; exit 3; fi ;;
+    if [ -e "$dir/pr-files" ]; then cat "$dir/pr-files"; else echo "no files answer" >&2; exit 3; fi ;;
   "api repos/example/repo/commits/"*"?per_page=100")
     sha=${2#repos/example/repo/commits/}
     sha=${sha%%\?*}
-    if [ -e "$PR_TEXT_TEST_DIR/commit.$sha" ]; then cat "$PR_TEXT_TEST_DIR/commit.$sha"; else echo "no such commit: $sha" >&2; exit 3; fi ;;
+    if [ -e "$dir/commit.$sha" ]; then cat "$dir/commit.$sha"; else echo "no such commit: $sha" >&2; exit 3; fi ;;
   *) echo "unexpected gh call: $*" >&2; exit 3 ;;
 esac
 GH
@@ -250,7 +350,8 @@ write_pr_text() {
     > "$work/event.json"
   jq '.pull_request' "$work/event.json" > "$work/pull"
   rm -f "$work"/comments.* "$work"/reviews.* "$work"/review-comments.* "$work/cutoff-commits" \
-    "$work"/release.* "$work"/commit.* "$work/pr-files"
+    "$work"/release.* "$work"/commit.* "$work/pr-files" "$work"/cut.* "$work/base-gone" \
+    "$work/compare-gone" "$work/graphql-fails"
 }
 run_pr_text() {
   if [ $# -gt 0 ]; then write_pr_text "$@"; fi
