@@ -182,6 +182,9 @@ func (e *edgeRepositories) read(ctx context.Context, project string) ([]string, 
 	e.mu.Lock()
 	e.answers[project] = repositoryAnswer{repositories: *answer.Repositories, readAt: e.now()}
 	e.mu.Unlock()
+	// A good read ends the project's run of failed refresh reads, whoever made it: a
+	// registration's read keeps an answer as a refresh's does (noteRefresh).
+	e.noteRefresh(project, nil)
 	return *answer.Repositories, nil
 }
 
@@ -201,20 +204,24 @@ func (e *edgeRepositories) readFresh(ctx context.Context, projects []string) ([]
 
 // refresh reads the answer of every project the edge serves again. A read that fails keeps the
 // last answer, which ages out at edgeRepositoryAnswerLife, and a run of failed reads of a project
-// is logged when it starts and when it ends (noteRefresh).
+// is logged when it starts and when a good read of the project, a refresh's or a registration's,
+// ends it (noteRefresh).
 func (e *edgeRepositories) refresh(ctx context.Context) {
 	_, errs := e.readEach(ctx, e.projects)
 	for i, err := range errs {
-		e.noteRefresh(e.projects[i], err)
+		if err != nil {
+			e.noteRefresh(e.projects[i], err)
+		}
 	}
 }
 
-// noteRefresh logs what a refresh's read of project, which ended with err, starts or ends: a WARN
-// for a failed read that starts a run of them, an INFO for a good read that ends one, and nothing
-// for any other read, so a broker that stays away logs two lines per project, not one at every
-// refresh. The WARN names when the project's sessions lose their GitHub events (withheld_from):
-// the last answer decides them until it is edgeRepositoryAnswerLife old, so a failed read withholds
-// nothing while a fresh answer stands, and with no answer read they are withheld from the read on.
+// noteRefresh logs what a read of project, which ended with err, starts or ends: a WARN for a
+// refresh's failed read that starts a run of them, an INFO for a good read (read, whoever asked
+// it) that ends one, and nothing for any other read, so a broker that stays away logs two lines per
+// project, not one at every refresh. The WARN names when the project's sessions lose their GitHub
+// events (withheld_from): the last answer decides them until it is edgeRepositoryAnswerLife old,
+// so a failed read withholds nothing while a fresh answer stands, and with no answer read they are
+// withheld from the read on.
 func (e *edgeRepositories) noteRefresh(project string, err error) {
 	e.mu.Lock()
 	failed, failing := e.unread[project]
@@ -310,10 +317,10 @@ func (e *edgeRepositories) relayVerdict(projects []string, subject string, data 
 	}
 	repositories, complete := e.standing(projects)
 	if repositoryNamed(repositories, owner, name) {
-		return framePasses()
+		return frameVerdict{action: framePass, answered: true}
 	}
 	if complete {
-		return frameDrops(withheldNotInProject)
+		return frameVerdict{action: frameDrop, reason: withheldNotInProject, answered: true}
 	}
 	return frameAnswerUnknownVerdict()
 }

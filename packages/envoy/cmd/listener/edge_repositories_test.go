@@ -22,8 +22,10 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -736,6 +738,39 @@ func TestARunOfGiveBacksEndsWhenAFreshAnswerRelaysTheEvent(t *testing.T) {
 	}
 }
 
+// A drop that no repository answer decided does not end a run of give-backs: a GitHub event whose
+// payload names no repository is dropped not_in_project whatever the answer says, so it ends no run
+// and logs no end line, and the given-back event's next give-back starts no new run. Control: with
+// the run ended at every drop, as at e263b68294, the no-repository event writes the end line, the
+// next give-back writes a second WARN, and the row fails.
+func TestADropNoAnswerDecidedLeavesARunOfGiveBacksOpen(t *testing.T) {
+	const gaveBack, decided = "edge listener gave a withheld GitHub event back to the server", "edge listener decides the session's GitHub events by a fresh repository answer again"
+	const sessionID = "ses_edge_gap_unnamed_drop"
+	rig := newEdgeRigServing(t, []string{"PRIV"})
+	event := giveBackWithheldEvent(t, rig, sessionID, func(bucket natsgo.KeyValue, sessionID string) error {
+		_, err := bucket.Put(sessionID, []byte(`{"machine_id":7}`))
+		return err
+	})
+	subject := contracts.GithubRepositoryPrefix("acme", "pub") + ".pr.unnamed"
+	item := listenerTestEnvelope(subject, "edge-github-"+id.New())
+	item.Source = "github"
+	item.Payload = `{"kind":"pr","action":"opened"}`
+	if _, err := rig.harness.client.JS().Publish(subject, marshalListenerEnvelope(t, item)); err != nil {
+		t.Fatalf("store a GitHub event that names no repository: %v", err)
+	}
+	// The given-back event, the unnamed one, then the given-back event twice more: by its last
+	// delivery the one before it was given back.
+	testwait.Eventually(t, "the given-back event to be delivered twice more after the unnamed event", func() bool {
+		return event.consumer().Delivered.Consumer >= event.before+4
+	})
+	if lines := edgeLogLines(rig.harness.logs.String(), "INFO", decided); len(lines) != 0 {
+		t.Errorf("a drop of an event that names no repository logged %d lines ending the run, want 0: no answer decided it", len(lines))
+	}
+	if lines := edgeLogLines(rig.harness.logs.String(), "WARN", gaveBack); len(lines) != 1 {
+		t.Fatalf("the give-backs around a drop no answer decided logged %d WARN lines, want 1: the run goes on:\n%s", len(lines), rig.harness.logs.String())
+	}
+}
+
 // nakAcker is a pulled message's answers whose NakWithDelay ends with err.
 type nakAcker struct{ err error }
 
@@ -937,22 +972,7 @@ func TestAnEdgeRefreshReadsEachProjectOnItsOwn(t *testing.T) {
 func TestAnEdgeRefreshLogsARunOfFailedReadsOnceAndItsEnd(t *testing.T) {
 	const failed, again = "edge listener could not read its project's repositories", "edge listener read its project's repositories again"
 	var refusing atomic.Bool
-	transport := edgeBrokerTransport(func(request *http.Request) (*http.Response, error) {
-		if refusing.Load() {
-			return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader(`{"error":"unavailable"}`)), Request: request}, nil
-		}
-		body := fmt.Sprintf(`{"project":%q,"repositories":["acme/pub"]}`, request.URL.Query().Get("project"))
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
-	})
-	newReader := func() (*edgeRepositories, *cmdtest.LockedBuffer, *listenerClock) {
-		logs := &cmdtest.LockedBuffer{}
-		clock := &listenerClock{now: time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)}
-		reader := newEdgeRepositories("http://broker.example", listenerBrokerAccount(edgeAccountToken), []string{"PRIV"},
-			newEdgeWithheldCounter(metrics.New()), logging.NewWithWriter("test", logs))
-		reader.client = &http.Client{Transport: transport}
-		reader.now = clock.Now
-		return reader, logs, clock
-	}
+	newReader := func() (*edgeRepositories, *cmdtest.LockedBuffer, *listenerClock) { return refusableReader(&refusing) }
 
 	reader, logs, clock := newReader()
 	answered := clock.Now()
@@ -1001,6 +1021,58 @@ func TestAnEdgeRefreshLogsARunOfFailedReadsOnceAndItsEnd(t *testing.T) {
 	requireLoggedTime(t, warnings[0], "withheld_from", freshClock.Now())
 }
 
+// refusableReader is the edge's repository reader of PRIV on a clock of its own, logging to logs,
+// whose broker answers 503 while refusing holds and PRIV's answer of acme/pub otherwise.
+func refusableReader(refusing *atomic.Bool) (reader *edgeRepositories, logs *cmdtest.LockedBuffer, clock *listenerClock) {
+	logs = &cmdtest.LockedBuffer{}
+	clock = &listenerClock{now: time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)}
+	reader = newEdgeRepositories("http://broker.example", listenerBrokerAccount(edgeAccountToken), []string{"PRIV"},
+		newEdgeWithheldCounter(metrics.New()), logging.NewWithWriter("test", logs))
+	reader.client = &http.Client{Transport: edgeBrokerTransport(func(request *http.Request) (*http.Response, error) {
+		if refusing.Load() {
+			return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader(`{"error":"unavailable"}`)), Request: request}, nil
+		}
+		body := fmt.Sprintf(`{"project":%q,"repositories":["acme/pub"]}`, request.URL.Query().Get("project"))
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})}
+	reader.now = clock.Now
+	return reader, logs, clock
+}
+
+// A good read of a project ends its run of failed refresh reads whoever makes it: a registration's
+// read (readFresh) keeps an answer as a refresh's does, so it writes the run's end line, and when
+// that answer ages out while the refreshes still fail, the next failed refresh starts a new run
+// whose WARN names that answer's age-out as withheld_from. Control: with the run ended only by a
+// refresh's good read, as at e263b68294, the registration's good read logs nothing, the next failed
+// refresh logs no WARN, and the row fails.
+func TestAGoodRegistrationReadEndsARunOfFailedRefreshes(t *testing.T) {
+	const failed, again = "edge listener could not read its project's repositories", "edge listener read its project's repositories again"
+	var refusing atomic.Bool
+	reader, logs, clock := refusableReader(&refusing)
+	refusing.Store(true)
+	reader.refresh(t.Context())
+
+	clock.Advance(edgeRepositoryRefresh)
+	refusing.Store(false)
+	answered := clock.Now()
+	if repositories, err := reader.readFresh(t.Context(), []string{"PRIV"}); err != nil || !slices.Equal(repositories, []string{"acme/pub"}) {
+		t.Fatalf("UNKNOWN: the registration's read of PRIV answered %v, %v; want [acme/pub]", repositories, err)
+	}
+	ends := edgeLogLines(logs.String(), "INFO", again)
+	if len(ends) != 1 || ends[0]["failed_reads"] != float64(1) {
+		t.Errorf("a registration's good read after one failed refresh logged %d lines ending the run (%v), want 1 with failed_reads 1", len(ends), ends)
+	}
+
+	refusing.Store(true)
+	clock.Advance(edgeRepositoryRefresh)
+	reader.refresh(t.Context())
+	warnings := edgeLogLines(logs.String(), "WARN", failed)
+	if len(warnings) != 2 {
+		t.Fatalf("a failed refresh after a registration's good read logged %d WARN lines in all, want 2: the good read ended the first run:\n%s", len(warnings), logs.String())
+	}
+	requireLoggedTime(t, warnings[1], "withheld_from", answered.Add(edgeRepositoryAnswerLife))
+}
+
 // A session whose interest in a repository that left its projects cannot be removed is logged
 // once, when its removals start failing, however many refresh passes they fail at, and the
 // removal that then succeeds is logged as every removal is. Here a removal fails because its pass
@@ -1037,6 +1109,93 @@ func TestAnEdgePruneLogsARunOfFailedRemovalsOnce(t *testing.T) {
 	}
 	if row := bucketInterestRow(t, rig.harness.client, sessionID); slices.Contains(row.Topics, two) {
 		t.Fatalf("the pass that logged the removal left %s on %s's row: %v", two, sessionID, row.Topics)
+	}
+}
+
+// A relay socket logs a run of GitHub frames it answers nak for want of a fresh repository answer
+// once, when the run starts, however often the relay delivers them again (1 s, 2 s ... 30 s
+// apart), and once more when a fresh answer decides a GitHub frame of its session again, here by
+// withholding one whose repository the answer does not name. Control: with a line at each nak, as at
+// e263b68294, three naks log three lines and the row fails.
+func TestARelaySocketLogsARunOfAnswerUnknownNaksOnceAndItsEnd(t *testing.T) {
+	const ended = "listener: the relay socket decides its session's GitHub frames by a fresh repository answer again"
+	_, uri := testnats.Start(t)
+	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("connect bus: %v", err)
+	}
+	t.Cleanup(client.Close)
+	var refusing atomic.Bool
+	reader, _, _ := refusableReader(&refusing)
+	logs := &cmdtest.LockedBuffer{}
+	const session = "ses_edge_socket_naks"
+	socket := &relaySocket{sockets: &relaySockets{client: client, logger: logging.NewWithWriter("test", logs)}, session: session,
+		admitted: ciphertoken.Caller{Projects: []string{"PRIV"}}, repositories: reader}
+	frame := func(repository string) *natsgo.Msg {
+		owner, name, _ := strings.Cut(repository, "/")
+		subject := contracts.GithubRepositoryPrefix(owner, name) + ".pr"
+		item := listenerTestEnvelope(subject, "socket-"+repository)
+		item.Source = "github"
+		item.Payload = fmt.Sprintf(`{"kind":"pr","action":"opened","repo":%q}`, repository)
+		return &natsgo.Msg{Subject: "relay." + session, Reply: bus.RelayReplyPrefix + "m1.n1." + session + ".t1",
+			Header: natsgo.Header{relayHeaderSubject: []string{subject}}, Data: marshalListenerEnvelope(t, item)}
+	}
+	naks := func() int {
+		count := 0
+		for _, line := range edgeLogLines(logs.String(), "INFO", "listener: the relay socket") {
+			if line["answer"] == relayReplyNak {
+				count++
+			}
+		}
+		return count
+	}
+
+	for range 3 {
+		socket.forward(1, frame("acme/pub"))
+	}
+	if got := naks(); got != 1 {
+		t.Fatalf("three naks of a GitHub frame while the replica has no fresh answer logged %d lines, want 1, when the run began:\n%s", got, logs.String())
+	}
+	if _, err := reader.readFresh(t.Context(), []string{"PRIV"}); err != nil {
+		t.Fatalf("UNKNOWN: read PRIV's answer: %v", err)
+	}
+	socket.forward(1, frame("acme/other"))
+	lines := edgeLogLines(logs.String(), "INFO", ended)
+	if len(lines) != 1 || lines[0]["session_id"] != session || lines[0]["given_back"] != float64(3) {
+		t.Fatalf("a GitHub frame a fresh answer decided after three naks logged %d lines ending the run (%v), want 1 naming %s with given_back 3:\n%s",
+			len(lines), lines, session, logs.String())
+	}
+}
+
+// A run of failed removals that ends with no removal is logged too: here the repository comes back
+// to the session's projects while its removals fail, so the next pass finds nothing leaving and
+// writes the run's end line, naming why it ended. The new answer is read by a refresh with no prune
+// before it, so no removal succeeds between. Control: with a run ended silently when nothing is left
+// to remove, as at e263b68294, the pass logs no end line and the row fails.
+func TestAnEdgePruneLogsTheEndOfARunWhenTheRepositoryComesBack(t *testing.T) {
+	const failed, ended = "edge listener could not remove the interests of a repository that left the session's projects", "edge listener no longer removes the interests of a repository that left the session's projects"
+	rig := newEdgeRigServing(t, []string{"PRIV"})
+	const sessionID, two = "ses_edge_prune_comes_back", "notifications.github.acme.two.>"
+	requireStatus(t, rig.subscribe(t, rig.personToken(sessionID, "PRIV"), sessionID, "notifications.github.acme.pub.>", two), http.StatusOK, "the registration")
+	rig.repositories.answer("PRIV", "acme/pub")
+	rig.tick(t)
+	done, cancel := context.WithCancel(t.Context())
+	cancel()
+	pruneEdgeInterests(done, rig.deps, "test-machine")
+	if lines := edgeLogLines(rig.harness.logs.String(), "WARN", failed); len(lines) != 1 {
+		t.Fatalf("UNKNOWN: the failed removal logged %d WARN lines, want 1:\n%s", len(lines), rig.harness.logs.String())
+	}
+
+	rig.repositories.answer("PRIV", "acme/pub", "acme/two")
+	rig.reader.refresh(t.Context())
+	pruneEdgeInterests(t.Context(), rig.deps, "test-machine")
+	lines := edgeLogLines(rig.harness.logs.String(), "INFO", ended)
+	if len(lines) != 1 || lines[0]["session_id"] != sessionID || lines[0]["why"] != "the repository is the session's again" {
+		t.Fatalf("a pass that found acme/two back in %s's projects after its removals failed logged %d lines ending the run (%v), want 1 naming the session and why:\n%s",
+			sessionID, len(lines), lines, rig.harness.logs.String())
+	}
+	if row := bucketInterestRow(t, rig.harness.client, sessionID); !slices.Contains(row.Topics, two) {
+		t.Fatalf("UNKNOWN: %s's row lost %s, which came back, so a removal happened: %v", sessionID, two, row.Topics)
 	}
 }
 

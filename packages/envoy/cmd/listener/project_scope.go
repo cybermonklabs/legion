@@ -998,9 +998,20 @@ func pruneEdgeInterests(ctx context.Context, d *listenerDeps, machineID string) 
 	d.repositories.mu.Lock()
 	failing := d.repositories.unremoved
 	d.repositories.mu.Unlock()
-	unremoved := map[string]bool{}
+	unremoved, listed := map[string]bool{}, map[string]bool{}
+	// ended logs the end of sessionID's run of failed removals that no removal ended, and why.
+	ended := func(sessionID, why string) {
+		logger.Info("edge listener no longer removes the interests of a repository that left the session's projects, after its removals failed",
+			slog.String("session_id", sessionID), slog.String("why", why))
+	}
 	for _, item := range items {
+		if failing[item.SessionID] {
+			listed[item.SessionID] = true
+		}
 		if item.MachineID != machineID {
+			if failing[item.SessionID] {
+				ended(item.SessionID, "the session's interests are another listener's")
+			}
 			continue
 		}
 		projects, admitted := d.consumers.admissions.of(item.SessionID)
@@ -1022,6 +1033,9 @@ func pruneEdgeInterests(ctx context.Context, d *listenerDeps, machineID string) 
 			}
 		}
 		if len(leaving) == 0 {
+			if failing[item.SessionID] {
+				ended(item.SessionID, "the repository is the session's again")
+			}
 			continue
 		}
 		removeCtx, cancel := context.WithTimeout(ctx, sendRequestBudget)
@@ -1030,7 +1044,7 @@ func pruneEdgeInterests(ctx context.Context, d *listenerDeps, machineID string) 
 			cancel()
 			unremoved[item.SessionID] = true
 			if !failing[item.SessionID] {
-				logger.Warn("edge listener could not remove the interests of a repository that left the session's projects; every refresh tries again while the session holds them, and logs the removal once one succeeds",
+				logger.Warn("edge listener could not remove the interests of a repository that left the session's projects; every refresh tries again while the session holds them, and the end of the run is logged, a removal's line or one saying why no removal is needed",
 					slog.String("session_id", item.SessionID), slog.Any("topics", leaving), slog.String("error", err.Error()))
 			}
 			continue
@@ -1040,6 +1054,11 @@ func pruneEdgeInterests(ctx context.Context, d *listenerDeps, machineID string) 
 		d.consumers.refollow(ctx, d, item.SessionID)
 		logger.Info("edge listener removed the interests of a repository that left the session's projects",
 			slog.String("session_id", item.SessionID), slog.Any("topics", removed))
+	}
+	for sessionID := range failing {
+		if !listed[sessionID] {
+			ended(sessionID, "the session's interest record is gone")
+		}
 	}
 	d.repositories.mu.Lock()
 	d.repositories.unremoved = unremoved

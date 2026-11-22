@@ -1205,7 +1205,8 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		// entry that could not be marked has the event given back to the server, as takeOverFrame
 		// gives back a frame whose copy did not store, so a redelivery marks the entry and a move
 		// or a restart before the session's next frame still sends the mark.
-		switch verdict := m.edgeWithholds(sessionID, msg); verdict.action {
+		verdict := m.edgeWithholds(sessionID, msg)
+		switch verdict.action {
 		case frameHold:
 			// A frame of a session this replica admitted no registration of is left
 			// unacknowledged, for the consumer to deliver it again once the session registers
@@ -1224,7 +1225,7 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			m.acknowledgeWithheld(sessionID, msg, verdict.reason)
 			continue
 		case frameDrop:
-			m.endGiveBacks(sessionID, msg.Subject)
+			m.endGiveBacks(sessionID, verdict)
 			m.acknowledgeWithheld(sessionID, msg, verdict.reason)
 			continue
 		}
@@ -1242,7 +1243,7 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 				}
 			}
 		}
-		m.endGiveBacks(sessionID, msg.Subject)
+		m.endGiveBacks(sessionID, verdict)
 		if err := m.publishFrame(ctx, run, msg, streamID, gap, gapReason, owed); err != nil {
 			if ctx.Err() != nil {
 				return relayEnded
@@ -1417,14 +1418,15 @@ func (m *sessionRelays) giveBackWithheld(sessionID string, msg bus.SessionMessag
 	}
 }
 
-// endGiveBacks ends sessionID's run of give-backs (givenBack) once a GitHub event of the session,
-// subject being the subject its message was stored on, is decided otherwise than by a give-back: a
-// fresh repository answer relays it or drops it, so the session's GitHub events are no longer
-// withheld for want of an answer, and a give-back in a later outage starts a run of its own and
-// logs it. Any other frame says nothing of the session's GitHub events and ends no run, and a
-// listener that is no edge gives nothing back.
-func (m *sessionRelays) endGiveBacks(sessionID, subject string) {
-	if m.repositories == nil || !strings.HasPrefix(subject, contracts.GithubTopicPrefix) {
+// endGiveBacks ends sessionID's run of give-backs (givenBack) once a fresh repository answer decides
+// a GitHub event of the session, verdict being the edge's decision on the event: an answer that
+// relays it or drops it (frameVerdict.answered) means the session's GitHub events are no longer
+// withheld for want of an answer, and a give-back in a later outage starts a run of its own and logs
+// it. Any other verdict says nothing of the answer and ends no run: a frame that is no GitHub event,
+// and a drop of an event that names no repository or whose envelope is no GitHub event's. A
+// listener that is no edge gives nothing back and decides nothing so.
+func (m *sessionRelays) endGiveBacks(sessionID string, verdict frameVerdict) {
+	if !verdict.answered {
 		return
 	}
 	m.repositoryGapsMu.Lock()
