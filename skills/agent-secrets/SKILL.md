@@ -83,7 +83,7 @@ After a grant the client writes `agent-secrets: <names> from <source>` to stderr
   `REQUEST_PENDING` names a waiting request of this session that shares a name with this one.
 - **2**: a usage error, such as no `AGENT_SECRETS_URL` or no `--`.
 - **75**: the request is still undecided when `--wait` runs out, and nothing ran. The message gives the `agent-secrets status <request_id>` that reads it.
-- **77**: the request was denied; the message gives the broker's reason when it recorded one. Final: ask for none of it again, and try no name of your own. The exceptions: on a message that says `ask again with --reason`, ask again with `--reason`; on one that names `AGENT_SECRETS_PROJECTS`, tell who starts your session; on `requester-group-unread`, ask again later.
+- **77**: the request was denied; the message gives the broker's reason when it recorded one. Final: ask for none of it again, and try no name of your own. The exceptions: on a message that says `ask again with --reason`, ask again with `--reason`; on `requester-group-unread`, ask again later.
 
 ## Where a name comes from
 

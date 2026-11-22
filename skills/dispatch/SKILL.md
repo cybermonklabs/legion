@@ -59,7 +59,7 @@ A claim (or `dispatch issue-update --route session:<your id>`, `--route ''` to r
 
 - One issue per deliverable, its content the issue's document.
 - A message replies to a person or tells them what they must know now.
-- Text a person must read to decide belongs in the spec. An artifact is a real file; markdown uploads as `.md` whatever its local name, never `.txt`. An upload notifies nobody: link it from a comment or ask.
+- Text a person must read to decide belongs in the spec. An artifact is a real file; markdown uploads as `.md` whatever its local name, never `.txt`. An upload notifies nobody; an ask that links it reaches the person.
 
 ## Architecture components
 

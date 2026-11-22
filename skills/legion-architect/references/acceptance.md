@@ -98,10 +98,8 @@ message, for a person to resolve it, with the options resolved and could not.
 
 ## The close
 
-The merge closes the issue (`done`); where its tree does not linger, only once every issue beneath
-it has left the workflow, other than one the daemon holds at `admitted` under an accepted
-ancestor. The production check after the close is not yours. A root's close lingers the tree for
-`linger_hours`.
+The merge closes the issue (`done`). The production check after the close is not yours. A root's
+close lingers the tree for `linger_hours`.
 
 ## Hand-over at a root's linger
 

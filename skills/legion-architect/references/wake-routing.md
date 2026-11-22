@@ -3,9 +3,7 @@
 Read this when a wake reaches you. A wake about an issue reaches its own architect while that
 architect holds its role, else the nearest one above that does. A `child-status` or `child-closed`,
 and a `worker-died` or `worker-stalled` about a child's own architect, reach the architect above the
-child. Your role prompt describes each notice except `worker-stalled`, `worker-silent`,
-`worker-background-stalled`, `volume-near-full`, `session-lost`, `session-forgotten`,
-`child-release-stalled` and `child-not-recorded`; this table says what to do. "Section N" is that
+child. Your role prompt describes most notices; this table says what to do. "Section N" is that
 section of `skill://legion-architect`. Where a row says to ask a person, a child's own architect
 sends the question to the architect above it.
 
@@ -31,7 +29,6 @@ sends the question to the architect above it.
 | `worker-stalled` | The daemon relaunched or queued the turn, retries its relaunch, let a suspension already waiting for the claim run instead, or failed the claim. Judge from the reason whether the work needs a decision of yours. Tell the controller of a stop the runtime did not confirm. |
 | `worker-silent` | The daemon already sent the work again; start nothing. Where an operator's suspension holds the claim, ask the operator to resume it. |
 | `worker-background-stalled` | Read what the session waits on: a missing surface or a person needs your decision, a long build does not. |
-| `session-lost`, `session-forgotten` | The worker runs a fresh agent that has read none of its own earlier turns; nothing is held, so start nothing. |
 | `held` | No `reason`: answer the `worker-died` that comes with it. `reason: "escalated"`: the controller has it; start nothing. |
 | `message-refused` | Post what a person still needs yourself. Where Dispatch refused the status itself, ask a person to set it. |
 | `status-reasserted` | A session outside the tree wrote a status on the root, and the daemon set it back. Ask a person when it reads as a wish to stop the tree. |
@@ -41,9 +38,8 @@ sends the question to the architect above it.
 ## A capped pull request
 
 A `pr-blocked` reason reads `<n> rounds counted, <m> conflict rounds not counted`: judge the cap by
-`<n>`. `<n>` counts the reviews that requested changes, less the conflict rounds. Read what every
-counted round found, choose one, act on it, and post the rounds you read and the choice as a
-`dispatch comment`:
+`<n>`. Requests for changes are what it counts. Read what every counted round found, choose one, act
+on it, and post the rounds you read and the choice as a `dispatch comment`:
 
 - **Narrow**: the change is sound but each round finds more around it. Tell the implementer and the
   reviewer which checks the next round answers, dropping no requirement. A correctness finding or

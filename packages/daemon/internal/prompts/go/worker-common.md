@@ -31,11 +31,10 @@ Before your turn's first commit, run `jj -R "$LEGION_WORKSPACE" log -r @ --no-gr
 it prints `true`, run `jj -R "$LEGION_WORKSPACE" new @-`. If it prints `false`, first read the
 change id of `@` with `jj -R "$LEGION_WORKSPACE" log -r @ --no-graph -T 'change_id.short()'`, then
 run `jj -R "$LEGION_WORKSPACE" new @-` too, never `jj new`: `@` can hold another role's edits, since
-a role whose phase ends leaves them there. `jj new @-` sets that change aside: an idle release keeps
-it, a pod replacement that does not keep the volume deletes the disk, and the update round's read of
-unpushed work counts the change only while a bookmark points at it (below). A planner whose issue
-moved back from implementing starts as its role part says instead, never with `jj new @-`. Before
-you take back a path, read its diff in that change:
+a role whose phase ends leaves them there. `jj new @-` sets that change aside, and the update
+round's read of unpushed work counts the change only while a bookmark points at it (below). A
+planner whose issue moved back from implementing starts as its role part says instead, never with
+`jj new @-`. Before you take back a path, read its diff in that change:
 `jj -R "$LEGION_WORKSPACE" diff -r <change id> <path>` (`--name-only` in place of `<path>` lists
 every path the change holds). Take back only a path whose every hunk is yours, an edit you made
 yourself in this turn or an earlier one of your own, with
@@ -43,14 +42,12 @@ yourself in this turn or an earlier one of your own, with
 hunks of the path to the path as `@` holds it. For a path that also holds another role's hunks, put
 your own hunks back by hand. Tell the architect the change id and every path you did not take back
 with `jj squash`, each path whose hunks you put back by hand included. The squash that takes the
-last path the change holds empties it, and jj abandons it, so a head no longer piles up each turn.
-Leave a change that still holds another role's hunks as it is, point a bookmark at it with
-`jj -R "$LEGION_WORKSPACE" bookmark set aside/<change id> -r <change id>`, which the issue branch's
-push does not carry, and tell the architect that bookmark. A role the architect tells that the
-change holds its paths takes them back as above in its next turn that holds its phase, since outside
-its phase a role writes nothing in the workspace but the forward merge a merge-forward message asks
-of the implementer. When its squash empties the change, jj abandons the change but moves its
-`aside/` bookmark to the change's parent: delete it with
+last path the change holds empties it, and jj abandons it. Leave a change that still holds another
+role's hunks as it is, point a bookmark at it with
+`jj -R "$LEGION_WORKSPACE" bookmark set aside/<change id> -r <change id>`, and tell the architect
+that bookmark. A role the architect tells that the change holds its paths takes them back as above
+in its next turn that holds its phase. When its squash empties the change, jj abandons the change
+but moves its `aside/` bookmark to the change's parent: delete it with
 `jj -R "$LEGION_WORKSPACE" bookmark delete aside/<change id>`. An `aside/` bookmark belongs to its
 change and to no phase, so deleting it changes no phase's bookmark. Never `jj describe` or
 `jj split` the working-copy commit you found at the turn's start: it can hold another role's edits,

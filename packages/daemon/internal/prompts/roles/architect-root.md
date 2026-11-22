@@ -92,17 +92,15 @@ wait.
 Act on neither the place nor the wait.
 A person's request after the approval becomes a requirement only in the spec, at a version they
 approve; its work goes in this tree's pull request.
-Approval is pinned to the spec version: any new version closes the gate until it is approved, except
-the version a human's own answer to a decision block writes when that answer is the whole change
-since the version they approved, and a version whose text is exactly the text of the version they
-approved with no decision block in it decided since, such as an accidental edit undone exactly:
-Dispatch records an `approved` review in their name at that version, the daemon reopens the gate and
-sends `design-approved`, and you request nothing. When the spec does not read Approved at such a
-version, request approval as after any change. After a close and a reopen, Dispatch records the same
-review at a version with the approved text and the questions the close withdrew opened again, but
-your root's re-admission after the close cleared its gate: register each step and request approval
-as at any start. A request of a version already approved is answered `already approved at version
-<N>`, and registering that version opens the gate and sends `design-approved`.
+Approval is pinned to the spec version: any new version closes the gate until it is approved,
+except the version a human's own answer to a decision block writes when that answer is the whole
+change since the version they approved, and a version whose text is exactly the text of the
+version they approved with no decision block in it decided since, such as an accidental edit
+undone exactly: Dispatch records an `approved` review in their name at that version, the daemon
+reopens the gate and sends `design-approved`, and you request nothing. When the spec does not
+read Approved at such a version, request approval as after any change.
+After a close and a reopen, your root's re-admission cleared its gate: register each step as at
+any start.
 Each step records its own document: the `spec` step the issue's primary document, the `criteria`
 step its Verification document, and the `decisions` step its decisions document. So
 `register_gate` names the step and that step's own document, by id and version, one call for each

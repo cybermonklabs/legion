@@ -17,11 +17,11 @@ Holding no slot is no fault by itself.
 
 ## `admission.held`: what nothing starts
 
-Every issue the record holds in the workflow that is in neither `admission.active` nor `admission.waiting`, with one word for why nothing of it runs and `heldBy`, the issues that hold it. The daemon starts none of them by itself, except the members a root's linger close hands over as roots of their own: name them in the day's report and take nothing for them.
+Every issue the record holds in the workflow that is in neither `admission.active` nor `admission.waiting`, with one word for why nothing of it runs and `heldBy`, the issues that hold it. The daemon starts none of them by itself: name them in the day's report and take nothing for them.
 
 | Word | Meaning | What ends it |
 |---|---|---|
-| `tree_closed` | Its tree's root is `done`, or still lingering after it left the workflow | An architect's `release_children` of the live tree its Dispatch parent reaches, where that release is accepted, or a `done` root's linger close, which hands it over as a root of its own |
+| `tree_closed` | Its tree's root is `done`, or still lingering after it left the workflow | An architect's `release_children` of the live tree its Dispatch parent reaches, where that release is accepted, or a `done` root's linger close |
 | `tree_parked` | Its tree was parked and the linger ran out | A `todo` on the root; your own hold, the parked-root walk decides |
 | `label_off` | A root whose `legion` label is off | A person's label |
 | `ancestry` | Its Dispatch chain reaches another live root: that tree's unreleased work | That tree's architect releasing it or its parent, or the chain leaving that tree |

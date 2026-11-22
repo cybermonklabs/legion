@@ -11,6 +11,8 @@ A Legion pane installs both plugins; any other session has only the skills of `@
 
 - Write a skill as [`writing-agent-skills`](https://github.com/sjawhar/dotfiles/blob/main/plugins/sjawhar/skills/writing-agent-skills/SKILL.md) says: its `description`, and how long a `SKILL.md` and each reference may be.
 
+- The `SKILL.md` body holds the routing, and the rules the model would not follow by default.
+
 - A procedure is numbered steps, with no narrative.
 
 - Detail goes in `references/`, one level deep.

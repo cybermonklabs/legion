@@ -4,5 +4,4 @@ custom:
 body: |-
   The forward merge makes the merge beside the working copy and puts the working copy on top of it,
   so another role's write stays on disk and out of the merge: the implementer squashes only its
-  resolutions into the merge, pushes it, and leaves any other write, undescribed, for the next role
-  that commits to set aside; when one path holds both, it pushes nothing and tells the architect.
+  resolutions into the merge and pushes it.
