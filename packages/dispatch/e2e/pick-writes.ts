@@ -70,7 +70,7 @@ export async function holdIssuePatches(page: Page, issueKey: string): Promise<He
     try {
       // The hold is the row's whole point: the save stays out at least this long, and until the
       // row lets it go, so the next pick, reload or read happens while it is out.
-      await Promise.all([sleep(PICK_HOLD_MS), released.promise]);
+      await Promise.all([heldUntil(patch.arrivedAt + PICK_HOLD_MS), released.promise]);
       await route.fallback();
       forwarded.push(patch.body);
     } catch {
@@ -81,6 +81,21 @@ export async function holdIssuePatches(page: Page, issueKey: string): Promise<He
     }
   });
   return { forwarded, holding: () => holding, release: () => released.resolve(), sent };
+}
+
+/** Resolves once `Date.now()` reads `until` or later: the clock a `HeldPatch` records its window
+ *  in, so a hold of `PICK_HOLD_MS` reads as at least that long to every row that checks it. A
+ *  timer alone does not promise that. Node runs a timer on the event loop's cached monotonic
+ *  millisecond, taken when the loop's turn began, so a `sleep(ms)` started late in a busy turn
+ *  ends up to a few milliseconds before `Date.now()` has moved `ms`: board.e2e.ts's row "a card
+ *  dragged to another priority lane" read a hold of 2,999 ms against 3,000 on both tries of
+ *  merge-group job 137072084417. */
+async function heldUntil(until: number): Promise<void> {
+  for (let left = until - Date.now(); left > 0; left = until - Date.now()) {
+    // What is left of the hold by Date.now(), the clock the row reads it back on; the loop
+    // sleeps again for the few milliseconds a timer that ended early still owes.
+    await sleep(left);
+  }
 }
 
 /** Waits until no save of `held` is held and the tab keeps no write for a reload to send: every
