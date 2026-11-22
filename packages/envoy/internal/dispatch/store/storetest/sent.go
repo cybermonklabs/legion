@@ -168,7 +168,8 @@ const (
 
 // copyEnd is the kind of the mark a CopyDone or a CopyFail leaves among the messages waiting when
 // it is sent before the server's CopyInResponse is read: where copy-in will end (copyIn). The
-// server answers neither.
+// server answers neither. It is left only while a message waiting may still start a copy
+// (copyMayStart).
 const copyEnd byte = 'c'
 
 // sent is one message a connection sent that the server answers, waiting for that answer: its
@@ -330,7 +331,8 @@ func (c *sendingConn) lose(what string) {
 // everything before the next Sync has no effect. In copy-in the server ignores a Sync and a Flush,
 // and a CopyDone or a CopyFail ends it; any other message ends the copy and the connection
 // (refused). A CopyDone or a CopyFail sent before the server's CopyInResponse is read is kept as
-// the mark where copy-in will end (copyIn).
+// the mark where copy-in will end (copyIn), while a message waiting may still start a copy
+// (copyMayStart); one sent when none may is one the server ignores, and leaves no mark.
 func (c *sendingConn) sentMessage(kind byte, body []byte) {
 	if c.discarding {
 		if kind != 'S' {
@@ -352,7 +354,7 @@ func (c *sendingConn) sentMessage(kind byte, body []byte) {
 	}
 	switch kind {
 	case 'c', 'f':
-		if len(c.waiting) > 0 {
+		if c.copyMayStart() {
 			c.waiting = append(c.waiting, sent{kind: copyEnd})
 		}
 	case 'P':
@@ -416,6 +418,21 @@ func (c *sendingConn) sentMessage(kind byte, body []byte) {
 		}
 		c.waiting = append(c.waiting, sent{kind: kind, function: call.Function})
 	}
+}
+
+// copyMayStart is whether a message waiting may still be answered with a CopyInResponse: an
+// Execute, or a simple query the server has not refused. Once none may, a CopyDone or a CopyFail
+// the client sends ends no copy, and the server ignores it. pgx's CopyFrom sends its CopyDone after
+// it reads the server's refusal of the COPY, and that refusal's ReadyForQuery may not have been
+// read yet: the refused query still waits, but no copy will start for it, and a mark there would
+// be left at the head of the messages waiting, where the next statement's answers would meet it.
+func (c *sendingConn) copyMayStart() bool {
+	for _, waiting := range c.waiting {
+		if waiting.kind == 'E' || (waiting.kind == 'Q' && !waiting.refused) {
+			return true
+		}
+	}
+	return false
 }
 
 // answer reads one whole message from the server and pairs it with the oldest message sent that

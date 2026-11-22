@@ -520,8 +520,9 @@ func TestSentStatementsIgnoreTheSyncsCopyInIgnores(t *testing.T) {
 }
 
 // A refusal ends a copy, and the recorder forgets it: pgx's own CopyFrom into a table that does not
-// exist, whose data and CopyDone pgx sends before it reads the refusal, and an extended COPY FROM
-// whose data the server refuses before the client's CopyDone. In each the copy is recorded as
+// exist, whose data pgx sends before it reads the refusal and whose CopyDone it sends before or
+// after, as its reads fall (TestSentStatementsLeaveNoCopyEndAfterTheRefusal), and an extended COPY
+// FROM whose data the server refuses before the client's CopyDone. In each the copy is recorded as
 // refused, and the select after it on the same connection as run, with nothing the recorder could
 // not read.
 func TestSentStatementsForgetACopyTheServerRefuses(t *testing.T) {
@@ -597,6 +598,51 @@ func TestSentStatementsForgetACopyTheServerRefuses(t *testing.T) {
 			if ran != 1 || refused != 1 || len(sent.Blind()) != 0 {
 				t.Fatalf("recorded the select after the copy %d run and %d statements refused, blind %v; want 1, 1 (the copy) and nothing it could not read",
 					ran, refused, sent.Blind())
+			}
+		})
+	}
+}
+
+// A CopyDone the client sends once no copy can start leaves no mark. pgx's CopyFrom sends its
+// CopyDone after it reads the server's refusal of the COPY, and whether the refusal's
+// ReadyForQuery reached the recorder before that CopyDone is timing. Each order is fed here to a
+// recorder on no network connection: a simple COPY refused, its refusal and ReadyForQuery read
+// together and the CopyDone sent between them, and an extended COPY whose Parse is refused, with
+// the CopyDone sent between the refusal and the ReadyForQuery of the Sync. The select after it must
+// be recorded as run, and the simple COPY as refused once, with nothing the recorder could not read.
+func TestSentStatementsLeaveNoCopyEndAfterTheRefusal(t *testing.T) {
+	const copying, after = "copy no_such_table from stdin", "select 1"
+	refusal := &pgproto3.ErrorResponse{Severity: "ERROR", SeverityUnlocalized: "ERROR", Code: "42P01", Message: `relation "no_such_table" does not exist`}
+	ready := &pgproto3.ReadyForQuery{TxStatus: 'I'}
+	ending := []pgproto3.FrontendMessage{&pgproto3.CopyData{Data: []byte("1\n")}, &pgproto3.CopyDone{}}
+	for _, scenario := range []struct {
+		name    string
+		start   []pgproto3.FrontendMessage
+		between bool
+		refused int
+	}{
+		{name: "a simple COPY, its refusal and ReadyForQuery read before the CopyDone", start: []pgproto3.FrontendMessage{&pgproto3.Query{String: copying}}, refused: 1},
+		{name: "a simple COPY, the CopyDone sent between its refusal and ReadyForQuery", start: []pgproto3.FrontendMessage{&pgproto3.Query{String: copying}}, between: true, refused: 1},
+		{name: "an extended COPY, the CopyDone sent between its refusal and ReadyForQuery", start: []pgproto3.FrontendMessage{&pgproto3.Parse{Query: copying}, &pgproto3.Bind{}, &pgproto3.Execute{}, &pgproto3.Sync{}}, between: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			sent, conn := fed(startup(), encoded[pgproto3.BackendMessage](t, ready), 1)
+			conn.readWritten(encoded(t, scenario.start...))
+			if scenario.between {
+				conn.readAnswered(encoded[pgproto3.BackendMessage](t, refusal))
+				conn.readWritten(encoded(t, ending...))
+				conn.readAnswered(encoded[pgproto3.BackendMessage](t, ready))
+			} else {
+				conn.readAnswered(encoded[pgproto3.BackendMessage](t, refusal, ready))
+				conn.readWritten(encoded(t, ending...))
+			}
+			conn.readWritten(encoded[pgproto3.FrontendMessage](t, &pgproto3.Parse{Query: after}, &pgproto3.Bind{}, &pgproto3.Execute{}, &pgproto3.Sync{}))
+			conn.readAnswered(encoded[pgproto3.BackendMessage](t, &pgproto3.ParseComplete{}, &pgproto3.BindComplete{},
+				&pgproto3.DataRow{Values: [][]byte{[]byte("1")}}, &pgproto3.CommandComplete{CommandTag: []byte("SELECT 1")}, ready))
+			ran, refused := counted(sent, 0, after)
+			if ran != 1 || refused != scenario.refused || len(sent.Blind()) != 0 {
+				t.Fatalf("recorded the select after the copy %d run and %d statements refused, blind %v; want 1, %d and nothing it could not read",
+					ran, refused, sent.Blind(), scenario.refused)
 			}
 		})
 	}
