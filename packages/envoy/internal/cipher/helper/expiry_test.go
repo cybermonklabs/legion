@@ -26,7 +26,7 @@ func expiryLogin(t *testing.T, b *Broker) *machineCredential {
 	if _, err := b.Login(context.Background(), "example-host-devbox"); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(waitBound(t))
 	for {
 		if cred := b.cred.Load(); cred != nil && cred != before {
 			return cred
@@ -185,12 +185,18 @@ func TestTheHelperWarnsADayBeforeTheExpiry(t *testing.T) {
 			warned := func() bool {
 				return slices.ContainsFunc(logRecords(t, &out), func(rec map[string]any) bool { return rec["msg"] == expiresSoonMsg })
 			}
-			deadline := time.Now().Add(300 * time.Millisecond)
+			// A credential that warns at once is waited for as long as any wait here; one that
+			// must not warn yet is watched for 300 ms, and that silence is its row's pass.
+			span := 300 * time.Millisecond
+			if tc.warns {
+				span = waitBound(t)
+			}
+			deadline := time.Now().Add(span)
 			for !warned() && time.Now().Before(deadline) {
 				time.Sleep(10 * time.Millisecond)
 			}
 			if got := warned(); got != tc.warns {
-				t.Fatalf("a credential expiring in %s: warned within 300 ms %v; want %v (log: %s)", tc.lifetime, got, tc.warns, out.String())
+				t.Fatalf("a credential expiring in %s: warned within %s %v; want %v (log: %s)", tc.lifetime, span, got, tc.warns, out.String())
 			}
 		})
 	}

@@ -189,7 +189,7 @@ func TestALoginPastTheBoundEndsItsDeviceAuthorizationAndAnswersUnknown(t *testin
 		defer r.fake.mu.Unlock()
 		return r.fake.deviceAuthEnded == 1
 	}
-	waitUpTo(t, 5*time.Second, ended, "the broker never saw the device authorization's request end; the bound must end it")
+	waitUntil(t, ended, "the broker never saw the device authorization's request end; the bound must end it")
 }
 
 // TestAStoppingHelperAnswersItsBrokerCallBeforeServeReturns: the helper stops (the Serve context
@@ -224,8 +224,8 @@ func TestAStoppingHelperAnswersItsBrokerCallBeforeServeReturns(t *testing.T) {
 	r.cancel()
 	select {
 	case <-r.served:
-	case <-time.After(10 * time.Second):
-		t.Fatal("Serve did not return within 10 s of its context ending")
+	case <-time.After(waitBound(t)):
+		t.Fatal("Serve did not return after its context ended")
 	}
 	// Serve has returned, so the answer must already be on the connection: read what is there now,
 	// without waiting for more. A Serve that returned before the answer was written leaves nothing.
@@ -246,7 +246,7 @@ func TestAStoppingHelperAnswersItsBrokerCallBeforeServeReturns(t *testing.T) {
 		t.Fatalf("Serve returned before the helper answered: nothing was on the connection (%d, %v)", n, readErr)
 	}
 	// The helper closed the connection before Serve returned, so the rest, if any, ends at once.
-	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(waitBound(t))); err != nil {
 		t.Fatal(err)
 	}
 	rest, err := io.ReadAll(conn)
@@ -307,7 +307,7 @@ func TestUnregisterAnswersBeforeItsRevokeEnds(t *testing.T) {
 	gate, open := testGate(t)
 	child := sleeper(t)
 	r.callerPID.Store(int64(child.Process.Pid))
-	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	reg := r.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t)})
 	if !reg.OK || reg.State != "enrolled" || reg.EnrollmentID == "" {
 		t.Fatalf("register: %+v", reg)
 	}
@@ -326,7 +326,7 @@ func TestUnregisterAnswersBeforeItsRevokeEnds(t *testing.T) {
 		defer r.fake.mu.Unlock()
 		return r.fake.revokeAttempts == 1
 	}
-	waitUpTo(t, 5*time.Second, held, "unregister answered, but its revoke never reached the broker")
+	waitUntil(t, held, "unregister answered, but its revoke never reached the broker")
 	if _, deletes, _ := r.fake.snapshot(); len(deletes) != 0 {
 		t.Fatalf("a DELETE landed while the fake held every DELETE: %v", deletes)
 	}
@@ -336,7 +336,7 @@ func TestUnregisterAnswersBeforeItsRevokeEnds(t *testing.T) {
 		_, deletes, _ := r.fake.snapshot()
 		return len(deletes) == 1
 	}
-	testwait.Holds(5*time.Second, testwait.Poll, revoked)
+	testwait.Holds(waitBound(t), testwait.Poll, revoked)
 	if _, deletes, _ := r.fake.snapshot(); len(deletes) != 1 || deletes[0] != reg.EnrollmentID {
 		t.Fatalf("the revoke after unregister deleted %v once the broker let it; want %s", deletes, reg.EnrollmentID)
 	}

@@ -87,7 +87,7 @@ func rawCall(t *testing.T, sock, line string) Response {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(waitBound(t)))
 	if _, err := conn.Write([]byte(line + "\n")); err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func rawCall(t *testing.T, sock, line string) Response {
 // grant lasts until the session ends.
 func TestSignRequestSignsTheLifetimeItIsAsked(t *testing.T) {
 	r := startRig(t, "")
-	if reg := r.call(t, Request{Op: "register", WaitSeconds: 5}); !reg.OK || reg.State != "enrolled" {
+	if reg := r.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t)}); !reg.OK || reg.State != "enrolled" {
 		t.Fatalf("register: %+v", reg)
 	}
 	for _, lifetime := range []*int{new(120), nil} {
@@ -132,7 +132,7 @@ func TestABrokerBeforeTheSessionKindStillEnrollsEverySession(t *testing.T) {
 	r.fake.refuseKinds = map[string]bool{"session": true}
 	r.fake.mu.Unlock()
 
-	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	reg := r.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t)})
 	if !reg.OK || reg.State != "enrolled" {
 		t.Fatalf("register against a broker before the session kind: %+v", reg)
 	}

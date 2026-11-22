@@ -173,8 +173,8 @@ func TestPinnedPeerReportsExit(t *testing.T) {
 		if !ok {
 			t.Fatal("WaitExit returned false for an exited process")
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("WaitExit did not observe the exit within 3 s")
+	case <-time.After(waitBound(t)):
+		t.Fatal("WaitExit did not observe the exit")
 	}
 	if got := peer.PID(); got != 0 {
 		t.Fatalf("a dead pinned process must read as pid 0, got %d", got)
@@ -197,7 +197,7 @@ func TestWaitExitStops(t *testing.T) {
 		if ok {
 			t.Fatal("WaitExit must return false when stopped")
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(waitBound(t)):
 		t.Fatal("WaitExit ignored stop")
 	}
 }
@@ -245,7 +245,7 @@ func TestCallRoundTrip(t *testing.T) {
 		_, _ = bufio.NewReader(conn).ReadBytes('\n')
 		_, _ = conn.Write([]byte(`{"ok":true,"proof":"p","enrollment_id":"e"}` + "\n"))
 	}()
-	resp, err := Call(sock, Request{Op: "sign", Method: "GET", URL: "https://x/v1/enrollments/self"}, 2*time.Second)
+	resp, err := Call(sock, Request{Op: "sign", Method: "GET", URL: "https://x/v1/enrollments/self"}, waitBound(t))
 	if err != nil || !resp.OK || resp.Proof != "p" || resp.EnrollmentID != "e" {
 		t.Fatalf("round trip: %+v %v", resp, err)
 	}

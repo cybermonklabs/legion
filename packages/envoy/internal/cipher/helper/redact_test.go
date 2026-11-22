@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -46,7 +45,7 @@ func TestABrokerCallErrorNamesNoCredentialTheURLCarries(t *testing.T) {
 		{"http://ada@corp.example:hunter2pw%40127.0.0.1:1", np},
 	} {
 		t.Run(row.base, func(t *testing.T) {
-			b := &Broker{URL: cipheraddr.New(row.base), HTTP: &http.Client{Timeout: 5 * time.Second}}
+			b := &Broker{URL: cipheraddr.New(row.base), HTTP: &http.Client{Timeout: waitBound(t)}}
 			_, _, err := b.Renew(context.Background(), s)
 			if err == nil {
 				t.Fatal("renew against a broker that never answers succeeded")

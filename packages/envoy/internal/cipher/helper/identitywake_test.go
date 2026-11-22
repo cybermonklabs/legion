@@ -114,10 +114,10 @@ func TestADroppedCredentialInIdentityModeIsTradedAgainAtOnce(t *testing.T) {
 		t.Fatal("the refused enrolment answered no error")
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(waitBound(t))
 	for !b.HasCredential() {
 		if time.Now().After(deadline) {
-			t.Fatalf("the helper held no credential 5 s after the drop; it traded %d times, want the drop to wake the trade loop rather than leave every register answering NO_CREDENTIAL until the token's own renewal", trades()-first)
+			t.Fatalf("the helper held no credential after the drop; it traded %d times, want the drop to wake the trade loop rather than leave every register answering NO_CREDENTIAL until the token's own renewal", trades()-first)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

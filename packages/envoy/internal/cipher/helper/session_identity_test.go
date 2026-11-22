@@ -99,7 +99,7 @@ func (r *rig) revokes(t *testing.T) []string {
 func TestANamedSessionEnrolsUnderItsSessionID(t *testing.T) {
 	r := startRig(t, "")
 	id := testSessionID
-	resp := r.call(t, Request{Op: "register", WaitSeconds: 10, SessionID: &id})
+	resp := r.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t), SessionID: &id})
 	if !resp.OK || resp.State != "enrolled" {
 		t.Fatalf("register --session-id: %+v", resp)
 	}
@@ -132,7 +132,7 @@ func TestTheEnrolmentOfANamedSessionStatesItsSessionID(t *testing.T) {
 			// SO_PEERPIDFD (gVisor) identifies no peer at all, and what is under test here is
 			// the enrolment body, not how the helper learns who called it.
 			r.callerPID.Store(int64(os.Getpid()))
-			req := Request{Op: "register", WaitSeconds: 10}
+			req := Request{Op: "register", WaitSeconds: waitSeconds(t)}
 			if tc.sessionID != "" {
 				id := tc.sessionID
 				req.SessionID = &id
@@ -159,7 +159,7 @@ func TestTheEnrolmentOfANamedSessionStatesItsSessionID(t *testing.T) {
 func TestAnUnnamedSessionIsUnchanged(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "sessions.json")
 	r := startRig(t, state)
-	resp := r.call(t, Request{Op: "register", WaitSeconds: 10})
+	resp := r.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t)})
 	if !resp.OK || resp.State != "enrolled" {
 		t.Fatalf("register: %+v", resp)
 	}
@@ -234,7 +234,7 @@ func TestARebootGivesTheResumedSessionItsIdentityBack(t *testing.T) {
 	}
 
 	id := testSessionID
-	resp := r.call(t, Request{Op: "register", WaitSeconds: 10, SessionID: &id})
+	resp := r.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t), SessionID: &id})
 	if !resp.OK || resp.EnrollmentID != "enr-before" {
 		t.Fatalf("the resumed session got %+v, want the enrollment it had, enr-before", resp)
 	}
@@ -310,7 +310,7 @@ func TestASecondProcessMayNotTakeALiveSessionsIdentity(t *testing.T) {
 	child := sleeper(t)
 	r.callerPID.Store(int64(child.Process.Pid))
 	id := testSessionID
-	first := r.call(t, Request{Op: "register", WaitSeconds: 10, SessionID: &id})
+	first := r.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t), SessionID: &id})
 	if !first.OK {
 		t.Fatalf("first register: %+v", first)
 	}
@@ -324,7 +324,7 @@ func TestASecondProcessMayNotTakeALiveSessionsIdentity(t *testing.T) {
 	// And the same refusal for a second root that registered unnamed and then asks for the name.
 	third := sleeper(t)
 	r.callerPID.Store(int64(third.Process.Pid))
-	unnamed := r.call(t, Request{Op: "register", WaitSeconds: 10})
+	unnamed := r.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t)})
 	if !unnamed.OK {
 		t.Fatalf("second root register: %+v", unnamed)
 	}
@@ -340,14 +340,13 @@ func TestASecondProcessMayNotTakeALiveSessionsIdentity(t *testing.T) {
 // the pid-derived enrollment it held for those few seconds, before any grant exists to lose.
 func TestASessionNamedAfterItStartedEnrolsUnderThatName(t *testing.T) {
 	r := startRig(t, "")
-	first := r.call(t, Request{Op: "register", WaitSeconds: 10})
+	first := r.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t)})
 	if !first.OK || first.EnrollmentID == "" {
 		t.Fatalf("register: %+v", first)
 	}
 	id := testSessionID
 	// No WaitSeconds: naming the session revokes its old enrollment before it enrols under the
-	// new name, two broker round trips, and Call's own read deadline is 10 s — a register that
-	// waits that long server-side races it and times out under load. Poll instead.
+	// new name, two broker round trips, and the waits below follow each of them.
 	named := r.call(t, Request{Op: "register", SessionID: &id})
 	if !named.OK || named.RuntimeID != SessionRuntimeID(testSessionID) {
 		t.Fatalf("naming the session: %+v", named)
@@ -377,7 +376,7 @@ func TestAnUnnamedSessionIsStillRevokedWhenItEnds(t *testing.T) {
 	child := sleeper(t)
 	pid := child.Process.Pid
 	r.callerPID.Store(int64(pid))
-	resp := r.call(t, Request{Op: "register", WaitSeconds: 10})
+	resp := r.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t)})
 	r.callerPID.Store(0)
 	if !resp.OK || resp.EnrollmentID == "" {
 		t.Fatalf("register: %+v", resp)
@@ -396,7 +395,7 @@ func TestANamedSessionThatEndsIsKeptForTheGraceThenRevoked(t *testing.T) {
 	pid := child.Process.Pid
 	r.callerPID.Store(int64(pid))
 	id := testSessionID
-	resp := r.call(t, Request{Op: "register", WaitSeconds: 10, SessionID: &id})
+	resp := r.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t), SessionID: &id})
 	r.callerPID.Store(0)
 	if !resp.OK || resp.EnrollmentID == "" {
 		t.Fatalf("register: %+v", resp)
@@ -423,7 +422,7 @@ func TestTheRecordsFileIsOwnerOnlyUnderAnOwnerOnlyDirectory(t *testing.T) {
 	state := filepath.Join(dir, "sessions.json")
 	r := startRig(t, state)
 	id := testSessionID
-	if resp := r.call(t, Request{Op: "register", WaitSeconds: 10, SessionID: &id}); !resp.OK {
+	if resp := r.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t), SessionID: &id}); !resp.OK {
 		t.Fatalf("register: %+v", resp)
 	}
 	waitFor(t, func() bool { _, err := os.Stat(state); return err == nil })
@@ -473,7 +472,7 @@ func TestARecordWhoseKeyWillNotReadStillGivesTheSessionAnIdentity(t *testing.T) 
 
 	r := startRig(t, state)
 	id := testSessionID
-	resp := r.call(t, Request{Op: "register", WaitSeconds: 10, SessionID: &id})
+	resp := r.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t), SessionID: &id})
 	if !resp.OK || resp.State != "enrolled" || resp.EnrollmentID == "" {
 		t.Fatalf("a session whose recorded key will not read must still enrol: %+v", resp)
 	}

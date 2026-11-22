@@ -43,7 +43,7 @@ func lapseRig(t *testing.T, failRevokes int) (*rig, string, string) {
 	r.fake.revokeFailFirst = failRevokes
 	r.fake.renewGate = gate
 	r.fake.mu.Unlock()
-	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	reg := r.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t)})
 	if !reg.OK || reg.State != "enrolled" {
 		t.Fatalf("register: %+v", reg)
 	}
@@ -69,7 +69,7 @@ func revoked(r *rig, id string) bool {
 // handed-off revoke's first try follows at once, and the 200 ms sleep before the fault is cleared
 // makes that try fail too. Either way the id lands on the handed-off revoke's next try, 2 s later,
 // although no test asserts which try lands it. The helper fails the test when no attempt comes
-// within 5 s: nothing handed the id on.
+// before waitBound passes: nothing handed the id on.
 func endSessionThenReleaseRevokes(t *testing.T, r *rig, reg *Registry, sess *Session) {
 	t.Helper()
 	r.fake.mu.Lock()
@@ -79,7 +79,7 @@ func endSessionThenReleaseRevokes(t *testing.T, r *rig, reg *Registry, sess *Ses
 	if sess.peer != nil {
 		sess.peer.Close()
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(waitBound(t))
 	for {
 		r.fake.mu.Lock()
 		n := r.fake.revokeAttempts
@@ -129,7 +129,7 @@ func TestAProofInvalidRenewKeepsTheEnrollment(t *testing.T) {
 	r.fake.renewRefusalCode = "PROOF_INVALID"
 	r.fake.renewGate = gate
 	r.fake.mu.Unlock()
-	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	reg := r.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t)})
 	if !reg.OK || reg.State != "enrolled" {
 		t.Fatalf("register: %+v", reg)
 	}
@@ -145,7 +145,7 @@ func TestAProofInvalidRenewKeepsTheEnrollment(t *testing.T) {
 	release() // answered 401 PROOF_INVALID; the gate stays open for the retry
 
 	sess := r.srv.Registry.Get(os.Getpid())
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(waitBound(t))
 	for {
 		posts, deletes, renews := r.fake.snapshot()
 		if st := sess.snapshot(); st.State != "enrolled" || st.EnrollmentID != id || sess.lapsed() != "" || len(deletes) != 0 || len(posts) != 1 {
@@ -199,7 +199,7 @@ func TestALapsedEnrollmentStopsSigningWhileItsRevokeRetries(t *testing.T) {
 	r.fake.mu.Lock()
 	r.fake.revokeFailFirst = 0
 	r.fake.mu.Unlock()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(waitBound(t))
 	for {
 		if id := r.srv.Registry.Get(os.Getpid()).identity().EnrollmentID; id != "" && id != lapsed {
 			break
@@ -226,7 +226,7 @@ func TestASessionThatEndsWhileItsLapsedRevokeRetriesStillRevokesIt(t *testing.T)
 	r, lapsed, _ := lapseRig(t, failAlways)
 	sess := r.srv.Registry.Get(os.Getpid())
 	endSessionThenReleaseRevokes(t, r, r.srv.Registry, sess)
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(waitBound(t))
 	for !revoked(r, lapsed) {
 		if time.Now().After(deadline) {
 			t.Fatal("the handed-off revoke never revoked the lapsed id")
@@ -248,7 +248,7 @@ func TestRegisterWaitWaitsForTheReEnrollmentAfterALapse(t *testing.T) {
 	r.fake.enrollGate = gate
 	r.fake.revokeFailFirst = 0 // the lapsed id's next revoke lands; the re-enrollment then waits at the gate
 	r.fake.mu.Unlock()
-	replies := registerWaitBlocked(t, r, nil)
+	replies := registerWaitBlocked(t, r, nil, waitSeconds(t))
 	open()
 	freshEnrollment(t, replies, lapsed)
 }
@@ -270,7 +270,7 @@ func TestASecondLapseWaitsAgainAndRevokesBothLapsedIDs(t *testing.T) {
 	r.fake.refuseRenewNext = 1                // and that renew is refused whenever the gate lets it through
 	r.fake.renewGate = renewGate
 	r.fake.mu.Unlock()
-	replies := registerWaitBlocked(t, r, nil)
+	replies := registerWaitBlocked(t, r, nil, waitSeconds(t))
 	r.fake.mu.Lock()
 	r.fake.revokeFailFirst = 0 // the first lapsed id's revoke lands, and the session enrolls again
 	r.fake.mu.Unlock()
@@ -281,14 +281,14 @@ func TestASecondLapseWaitsAgainAndRevokesBothLapsedIDs(t *testing.T) {
 	r.fake.enrollGate = enrollGate // the third enrollment gets the fake's 900 s default lease
 	r.fake.mu.Unlock()
 	releaseRenew() // the second lapse
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(waitBound(t))
 	for !revoked(r, second) {
 		if time.Now().After(deadline) {
 			t.Fatal("the second lapsed id was never revoked")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	replies = registerWaitBlocked(t, r, nil)
+	replies = registerWaitBlocked(t, r, nil, waitSeconds(t))
 	releaseEnroll()
 	third := freshEnrollment(t, replies, first, second)
 
@@ -321,7 +321,7 @@ func TestARenewThatFailsTransientlyKeepsTheLease(t *testing.T) {
 	r.fake.renewFail = 1
 	r.fake.renewGate = first
 	r.fake.mu.Unlock()
-	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	reg := r.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t)})
 	if !reg.OK || reg.State != "enrolled" {
 		t.Fatalf("register: %+v", reg)
 	}
@@ -350,7 +350,7 @@ func TestARenewThatFailsTransientlyKeepsTheLease(t *testing.T) {
 				when, st.State, st.EnrollmentID, sess.lapsed(), deletes, enrolls, id)
 		}
 	}
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(waitBound(t))
 	for renews() < 2 {
 		kept("until the retry arrives")
 		if time.Now().After(deadline) {
@@ -377,18 +377,20 @@ func TestARenewThatFailsTransientlyKeepsTheLease(t *testing.T) {
 	}
 }
 
-// registerWaitBlocked starts a `register --wait 10` from this process for sessionID — nil for a
-// register that names none — against the rig's one session, and returns its answer's channel
-// once the call is blocked in registerReply's select. The call answering first fails the test: a
-// register that waits must not answer before the enrollment it waits for has reached the session.
-func registerWaitBlocked(t *testing.T, r *rig, sessionID *string) <-chan registerAnswer {
+// registerWaitBlocked starts a `register --wait` of wait seconds from this process for sessionID
+// — nil for a register that names none — against the rig's one session, and returns its answer's
+// channel once the call is blocked in registerReply's select. The call answering first fails the
+// test: a register that waits must not answer before the enrollment it waits for has reached the
+// session. The call gives up at waitBound, past any wait asked for here.
+func registerWaitBlocked(t *testing.T, r *rig, sessionID *string, wait int) <-chan registerAnswer {
 	t.Helper()
 	replies := make(chan registerAnswer, 1)
+	deadline := waitBound(t)
 	go func() {
-		resp, err := Call(r.sock, Request{Op: "register", WaitSeconds: 10, SessionID: sessionID}, 20*time.Second)
+		resp, err := Call(r.sock, Request{Op: "register", WaitSeconds: wait, SessionID: sessionID}, deadline)
 		replies <- registerAnswer{resp, err}
 	}()
-	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
+	if !testwait.Holds(waitBound(t), 10*time.Millisecond, func() bool {
 		if blockedInRegisterReply() {
 			return true
 		}
@@ -420,7 +422,7 @@ func freshEnrollment(t *testing.T, replies <-chan registerAnswer, stale ...strin
 			t.Fatalf("register --wait in a lapsed session: %+v (%v); want a fresh enrollment, none of %q", got.resp, got.err, stale)
 		}
 		return got.resp.EnrollmentID
-	case <-time.After(15 * time.Second):
+	case <-time.After(waitBound(t)):
 		t.Fatal("register --wait never answered after the re-enrollment was released")
 	}
 	return ""
@@ -430,8 +432,8 @@ func freshEnrollment(t *testing.T, replies <-chan registerAnswer, stale ...strin
 // Server.registerReply, which is where a register call waits for its session to enroll. It finds
 // that goroutine by name in the goroutine dump, a "[select" header over a ").registerReply("
 // frame, so a rename of registerReply must be made here too. A name that no longer matches never
-// lets the test pass: TestRegisterWaitWaitsForTheReEnrollmentAfterALapse then fails after about
-// 10 s.
+// lets the test pass: TestRegisterWaitWaitsForTheReEnrollmentAfterALapse then fails once that
+// register's wait runs out.
 func blockedInRegisterReply() bool {
 	for _, g := range goroutinetest.Traces() {
 		header, _, _ := strings.Cut(g, "\n")

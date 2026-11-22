@@ -337,7 +337,7 @@ func TestANamedRecordWithNoEnrollmentIsStillParked(t *testing.T) {
 	// And the session coming back takes it: the broker's idempotent enroll answers that key
 	// under that runtime id with whatever row it already has.
 	id := testSessionID
-	if resp := r.call(t, Request{Op: "register", WaitSeconds: 10, SessionID: &id}); !resp.OK {
+	if resp := r.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t), SessionID: &id}); !resp.OK {
 		t.Fatalf("register: %+v", resp)
 	}
 	sess := r.srv.Registry.Get(os.Getpid())
@@ -596,7 +596,7 @@ func TestTheAncestryWinnerIsRefusedToAPeerWhosePIDChanged(t *testing.T) {
 	key := parkedRecord(t, state)
 	r := startRig(t, state)
 	seedEnrollment(r.fake, "enr-before", thumbprintOf(t, key), SessionRuntimeID(testSessionID))
-	if root := r.call(t, Request{Op: "register", WaitSeconds: 5}); !root.OK { // this test process
+	if root := r.call(t, Request{Op: "register", WaitSeconds: waitSeconds(t)}); !root.OK { // this test process
 		t.Fatalf("register root: %+v", root)
 	}
 	victim := sleeper(t) // a child of this process, so inside that root's tree
@@ -744,7 +744,7 @@ func TestATransientRenewFailureDoesNotCostTheInheritedEnrollment(t *testing.T) {
 	r.fake.mu.Unlock()
 
 	id := testSessionID
-	if resp := r.call(t, Request{Op: "register", SessionID: &id, WaitSeconds: 5}); !resp.OK {
+	if resp := r.call(t, Request{Op: "register", SessionID: &id, WaitSeconds: waitSeconds(t)}); !resp.OK {
 		t.Fatalf("register: %+v", resp)
 	}
 	sess := r.srv.Registry.Get(os.Getpid())
@@ -798,7 +798,7 @@ func TestAWakeRaisedBeforeThisEnrollmentDoesNotEnrollAgain(t *testing.T) {
 		if !again {
 			t.Fatal("a rename's wake must send the session to the enroll, not end its loops")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(waitBound(t)):
 		t.Fatal("a rename's wake did not reach the renew loop")
 	}
 }
@@ -989,7 +989,7 @@ func TestARegisterWaitingWhenItsSessionRetiresIsNotASuccess(t *testing.T) {
 	}
 	r.srv.Registry.Add(sess) // live and unenrolled, so the wait does not return at once
 	done := make(chan Response, 1)
-	go func() { done <- r.srv.registerReply(sess, 5*time.Second) }()
+	go func() { done <- r.srv.registerReply(sess, time.Hour) }() // only the retire below can end this wait
 	// Retire it while the reply is mid-wait; Remove closes its stop, which wakes the wait.
 	r.srv.Registry.Remove(sess)
 	select {
@@ -997,7 +997,7 @@ func TestARegisterWaitingWhenItsSessionRetiresIsNotASuccess(t *testing.T) {
 		if resp.OK || resp.Code != CodeNotASession {
 			t.Fatalf("a register whose session retired mid-wait got %+v, want NOT_A_SESSION", resp)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(waitBound(t)):
 		t.Fatal("registerReply did not return after its session retired")
 	}
 }
