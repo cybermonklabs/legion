@@ -303,6 +303,12 @@ func newAgentToken() (string, [sha256.Size]byte, error) {
 	return plaintext, sha256.Sum256([]byte(plaintext)), nil
 }
 
+// rowScanner is the one method a pgx.Row and a pgx.Rows share, so one scan function reads a row
+// from either.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
 func scanAgentToken(row rowScanner) (model.AgentToken, error) {
 	var token model.AgentToken
 	if err := row.Scan(&token.ID, &token.Name, &token.Prefix, &token.Scopes, &token.CreatedAt, &token.LastUsedAt, &token.RevokedAt); err != nil {

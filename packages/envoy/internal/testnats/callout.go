@@ -2,6 +2,7 @@ package testnats
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -81,6 +82,30 @@ type StaticUser struct {
 // no curve key, so the server sends its requests in the clear: the control a test of the sealing
 // starts.
 func CalloutConfig(keys CalloutKeys, static ...StaticUser) string {
+	return calloutConfig(keys, nil, static)
+}
+
+// CalloutAccounts is a hub's two accounts as a private render lays them out (plan C's t-c-29,
+// whose render is cybermonklabs/legion#4851's accounts block in packages/envoy/infra/core, a module
+// this one cannot import): JetStream holds JetStream and no client, and Clients holds every user
+// the configuration names, the auth service's among them, runs the auth callout, and imports from
+// JetStream each of Services as a service and each of Streams as a stream. Streamed are the
+// services of Services whose responses come as a stream rather than one reply.
+type CalloutAccounts struct {
+	JetStream, Clients          string
+	Services, Streamed, Streams []string
+}
+
+// CalloutAccountsConfig is CalloutConfig in accounts' layout: the same users, grants and
+// auth_callout block, with every user in accounts.Clients, which the callout names in place of
+// the global account, and JetStream on in accounts.JetStream alone.
+func CalloutAccountsConfig(keys CalloutKeys, accounts CalloutAccounts, static ...StaticUser) string {
+	return calloutConfig(keys, &accounts, static)
+}
+
+// calloutConfig is CalloutConfig, with every user in the global account when accounts is nil, and
+// in accounts' layout otherwise.
+func calloutConfig(keys CalloutKeys, accounts *CalloutAccounts, static []StaticUser) string {
 	users := []string{
 		userEntry(keys.ServicePublic, []string{"$SYS._INBOX.>"}, []string{"$SYS.REQ.USER.AUTH"}),
 	}
@@ -93,19 +118,70 @@ func CalloutConfig(keys CalloutKeys, static ...StaticUser) string {
 	if keys.XKeyPublic != "" {
 		xkey = fmt.Sprintf("\n    xkey: %q", keys.XKeyPublic)
 	}
-	return fmt.Sprintf(`jetstream {}
+	// The callout block, naming the account every admitted user is placed in.
+	callout := func(account string) string {
+		return fmt.Sprintf("  auth_callout {\n    issuer: %q\n    account: %q\n    auth_users: [ %s ]%s\n  }",
+			keys.IssuerPublic, account, strings.Join(authUsers, ", "), xkey)
+	}
+	if accounts == nil {
+		return fmt.Sprintf(`jetstream {}
 authorization {
   timeout: %d
   users = [
     %s
   ]
-  auth_callout {
-    issuer: %q
-    account: "$G"
-    auth_users: [ %s ]%s
+%s
+}
+`, CalloutAuthTimeout, strings.Join(users, "\n    "), callout("$G"))
+	}
+	var exports, imports []string
+	for _, service := range accounts.Services {
+		export := fmt.Sprintf("{ service: %q }", service)
+		if slices.Contains(accounts.Streamed, service) {
+			export = fmt.Sprintf("{ service: %q, response_type: stream }", service)
+		}
+		exports = append(exports, export)
+		imports = append(imports, fmt.Sprintf("{ service: { account: %q, subject: %q } }", accounts.JetStream, service))
+	}
+	for _, stream := range accounts.Streams {
+		exports = append(exports, fmt.Sprintf("{ stream: %q }", stream))
+		imports = append(imports, fmt.Sprintf("{ stream: { account: %q, subject: %q } }", accounts.JetStream, stream))
+	}
+	return fmt.Sprintf(`jetstream {}
+accounts {
+  %q {
+    jetstream: enabled
+    exports: [
+      %s
+    ]
+  }
+  %q {
+    users = [
+      %s
+    ]
+    imports: [
+      %s
+    ]
   }
 }
-`, CalloutAuthTimeout, strings.Join(users, "\n    "), keys.IssuerPublic, strings.Join(authUsers, ", "), xkey)
+authorization {
+  timeout: %d
+%s
+}
+`, accounts.JetStream, strings.Join(exports, "\n      "), accounts.Clients, strings.Join(users, "\n      "),
+		strings.Join(imports, "\n      "), CalloutAuthTimeout, callout(accounts.Clients))
+}
+
+// GrantedUsersConfig is the configuration of a server with JetStream whose whole authorization is
+// users, each nkey user held to its grant's allow lists as a hub renders a static user: a client
+// that names none of them is refused, since the configuration names no no_auth_user. A subscribe
+// entry may carry a queue group after a space, as a grant writes one.
+func GrantedUsersConfig(users ...StaticUser) string {
+	entries := make([]string, len(users))
+	for i, user := range users {
+		entries[i] = userEntry(user.NKey, user.Publish, user.Subscribe)
+	}
+	return fmt.Sprintf("jetstream {}\nauthorization {\n  users = [\n    %s\n  ]\n}\n", strings.Join(entries, "\n    "))
 }
 
 // userEntry is one nkey user of a configuration, with its grant.
@@ -128,6 +204,15 @@ func StartWithCallout(t testing.TB, keys CalloutKeys, static ...StaticUser) (url
 	t.Helper()
 	_, url = StartWithCalloutServer(t, keys, static...)
 	return url
+}
+
+// StartWithCalloutAccounts runs, in this process, the server CalloutAccountsConfig describes, shut
+// down when the test ends, and returns its client URL once it admits the service's own user.
+func StartWithCalloutAccounts(t testing.TB, keys CalloutKeys, accounts CalloutAccounts, static ...StaticUser) (url string) {
+	t.Helper()
+	server := start(t, CalloutAccountsConfig(keys, accounts, static...), []string{"-js"})
+	awaitSeed(t, server.URL(), keys.ServiceSeed)
+	return server.URL()
 }
 
 // StartWithCalloutServer runs the server StartWithCallout runs and returns it with its client URL,

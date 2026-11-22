@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
 
 // The reads the guard makes when gh's REST read of a visibility fails on its connection to GitHub
@@ -103,8 +104,15 @@ func ghTransportFailure(status int, printed, slug string) *transportError {
 // the real gh took 0.72 to 0.88 s on 2026-11-18. A gh whose TLS handshake cannot finish takes far
 // longer to fail: about 42 s in the busy one-CPU pod, which is longer than the whole bound some
 // callers give a read (`legion gh` gives the shared check's own read 15 s). Stopping gh sooner leaves
-// the rest of the caller's bound to curl. It is a variable so that a test can shorten it.
+// the rest of the caller's bound to curl. It is a variable so that a test can shorten it, and so
+// that cmd/legion's tests, whose `legion gh` runs this read on a stand-in gh, can give it their own
+// deadline (programbound): a stand-in slower than 8 s, as a loaded machine can make one, is stopped
+// here and the read goes on to curl.
 var ghReadBound = 8 * time.Second
+
+func init() {
+	programbound.Register(&ghReadBound, &curlBound)
+}
 
 // curlReserve is how much of a caller's bound the guard keeps for the curl read when it bounds gh's
 // REST read (ghReadContext): 5 s. In the pod where gh could not finish a handshake, curl answered
@@ -116,7 +124,7 @@ var curlReserve = 5 * time.Second
 // curlReserve or less, gh runs under ctx alone, as it did before this bound: what time there is is
 // the caller's, and a stop is the caller's.
 func ghReadContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	bound := ghReadBound
+	bound := programbound.Of(&ghReadBound)
 	if deadline, ok := ctx.Deadline(); ok {
 		left := time.Until(deadline) - curlReserve
 		if left <= 0 {
@@ -210,8 +218,10 @@ func (g *Guard) readWithoutGh(ctx context.Context, slug string, unreached *trans
 // curlBound is the longest the curl read runs, its token read included (Guard.curlVisibility). In
 // the pod where every gh call failed its TLS handshake, curl answered GitHub's REST API in under a
 // second. A curl read that takes longer than this leaves the rest of the caller's bound to
-// ls-remote.
-const curlBound = 20 * time.Second
+// ls-remote. It is a variable so that cmd/legion's tests, whose `legion gh` runs this read on a
+// stand-in curl, can give it their own deadline (programbound): a stand-in slower than 20 s is
+// stopped here, and the read goes on to ls-remote.
+var curlBound = 20 * time.Second
 
 // curlMargin is how much sooner than its read's deadline curl's --max-time ends, so that curl
 // stops itself and says why before the deadline kills it.
@@ -245,7 +255,7 @@ const curlProgram = "/usr/bin/curl"
 // errNoCurlRead. A curl that its own bound stops is a *transportError. A curl or a token read that
 // the caller's bound stops is the *stoppedError run answers.
 func (g *Guard) curlVisibility(ctx context.Context, slug string) (Visibility, error) {
-	bounded, cancel := context.WithTimeout(ctx, curlBound)
+	bounded, cancel := context.WithTimeout(ctx, programbound.Of(&curlBound))
 	defer cancel()
 	deadline, _ := bounded.Deadline()
 	if _, ok := curlTime(deadline); !ok {

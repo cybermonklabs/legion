@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"math"
 	"net"
 	"net/http"
@@ -159,10 +160,11 @@ func (s *scripted) tokenRequests() []sentRequest {
 	return tokens
 }
 
-// The replies of a GitHub that lists one installation, acme's 7, and mints its token.
+// The replies of a GitHub that lists one installation, acme's 7, holding contents at write, and
+// mints its token with what a profile of contents at read asks for.
 var (
-	installed   = reply{status: http.StatusOK, body: `[{"id":7,"account":{"login":"acme"}}]`}
-	tokenMinted = reply{status: http.StatusCreated, body: `{"token":"token-7","expires_at":"2026-11-14T13:00:00Z"}`}
+	installed   = reply{status: http.StatusOK, body: `[{"id":7,"account":{"login":"acme"},"permissions":{"contents":"write","metadata":"read"}}]`}
+	tokenMinted = reply{status: http.StatusCreated, body: `{"token":"token-7","expires_at":"2026-11-14T13:00:00Z","permissions":{"contents":"read"}}`}
 )
 
 // answered is a reply of status with a body that names no rate limit, and header.
@@ -170,15 +172,19 @@ func answered(status int, header http.Header) reply {
 	return reply{status: status, header: header, body: `{"message":"no"}`}
 }
 
-// mintGitHub mints acme's token from up under retry, as a release of a github-app secret does.
-func mintGitHub(ctx context.Context, t *testing.T, up *scripted, retry *secrets.Retry, narrowing *secrets.GitHubNarrowing) (secrets.Minted, error) {
+// mintGitHub mints acme's token from up under retry, as a release of a github-app profile does,
+// for scope, or for a profile of contents at read on acme (readScope) where scope is nil.
+func mintGitHub(ctx context.Context, t *testing.T, up *scripted, retry *secrets.Retry, scope *secrets.GitHubScope) (secrets.Minted, error) {
 	t.Helper()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
 	}
+	if scope == nil {
+		scope = readScope("acme")
+	}
 	return secrets.GitHubApp{Base: up.server.URL, HTTP: up.server.Client(), Retry: retry}.Mint(ctx, secrets.MintRequest{
-		Type: "github-app", Value: githubAppValue(t, "1", key), GitHubOwners: []string{"acme"}, GitHubNarrowing: narrowing,
+		Type: "github-app", Value: githubAppValue(t, "1", key), GitHub: scope,
 	})
 }
 
@@ -302,7 +308,7 @@ func TestMintCallRetriesWhatItsClassifierRetries(t *testing.T) {
 	})
 	t.Run("a stored value the minter refuses", func(t *testing.T) {
 		retry, _, _ := testRetry(atTheTop)
-		_, err := secrets.GitHubApp{Retry: retry}.Mint(t.Context(), secrets.MintRequest{Value: "not json"})
+		_, err := secrets.GitHubApp{Retry: retry}.Mint(t.Context(), secrets.MintRequest{Value: "not json", GitHub: readScope("acme")})
 		if secrets.MintErrorClass(err) != "stored-value" || secrets.MintAttempts(err) != 0 {
 			t.Fatalf("Mint of a value that is no JSON = %v (%d attempts); want stored-value and no attempt", err, secrets.MintAttempts(err))
 		}
@@ -342,7 +348,7 @@ func TestMintCallRetriesATransportFailure(t *testing.T) {
 	retry, clock, registry := testRetry(atTheTop)
 	up := newScripted(t, installed, tokenMinted)
 	minted, err := secrets.GitHubApp{Base: up.server.URL, HTTP: &http.Client{Transport: &failingFirst{}}, Retry: retry}.
-		Mint(t.Context(), secrets.MintRequest{Type: "github-app", Value: githubAppValue(t, "1", key), GitHubOwners: []string{"acme"}})
+		Mint(t.Context(), secrets.MintRequest{Type: "github-app", Value: githubAppValue(t, "1", key), GitHub: readScope("acme")})
 	if err != nil || !strings.Contains(minted.Value, "token-7") {
 		t.Fatalf("Mint after a transport failure = %q, %v; want acme's token", minted.Value, err)
 	}
@@ -366,6 +372,10 @@ func TestMintCallTriesACancelledContextOnce(t *testing.T) {
 			return
 		}
 		tokenCalls.Add(1)
+		// Every token request carries a body (secrets' accessTokensBody), and the server notices
+		// the client hang up, which ends r.Context(), only once the handler has read the body
+		// whole; unread, the handler would wait out its own ten seconds.
+		_, _ = io.Copy(io.Discard, r.Body)
 		cancel()
 		select {
 		case <-r.Context().Done():
@@ -379,7 +389,7 @@ func TestMintCallTriesACancelledContextOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = secrets.GitHubApp{Base: server.URL, HTTP: server.Client(), Retry: retry}.
-		Mint(ctx, secrets.MintRequest{Type: "github-app", Value: githubAppValue(t, "1", key), GitHubOwners: []string{"acme"}})
+		Mint(ctx, secrets.MintRequest{Type: "github-app", Value: githubAppValue(t, "1", key), GitHub: readScope("acme")})
 	if tokenCalls.Load() != 1 || secrets.MintAttempts(err) != 1 || !strings.Contains(err.Error(), "was cancelled before it answered") {
 		t.Fatalf("Mint under a context cancelled mid-call = %v after %d token calls (%d attempts); want one attempt, named cancelled", err, tokenCalls.Load(), secrets.MintAttempts(err))
 	}
@@ -480,18 +490,20 @@ func TestMintCallEndsWhenTheDeadlineIsShorterThanTheWait(t *testing.T) {
 	}
 }
 
-// TestMintCallSendsItsBodyAgain: a retried call sends the body it sent first, whole: a narrowed
-// token request's access_tokens body.
+// TestMintCallSendsItsBodyAgain: a retried call sends the body it sent first, whole: a profile's
+// token request's access_tokens body, naming its repositories and its permissions.
 func TestMintCallSendsItsBodyAgain(t *testing.T) {
 	retry, _, _ := testRetry(atTheTop)
-	narrowed := reply{status: http.StatusCreated, body: `{"token":"token-7","expires_at":"2026-11-14T13:00:00Z","repository_selection":"selected","repositories":[{"name":"proofs"}]}`}
-	up := newScripted(t, installed, answered(http.StatusServiceUnavailable, nil), narrowed)
-	if _, err := mintGitHub(t.Context(), t, up, retry, &secrets.GitHubNarrowing{Owner: "acme", Repositories: []string{"proofs"}}); err != nil {
-		t.Fatalf("Mint of a narrowed token after a 503: %v", err)
+	scoped := reply{status: http.StatusCreated, body: `{"token":"token-7","expires_at":"2026-11-14T13:00:00Z","permissions":{"contents":"read","metadata":"read"},"repository_selection":"selected","repositories":[{"name":"proofs"}]}`}
+	up := newScripted(t, installed, answered(http.StatusServiceUnavailable, nil), scoped)
+	scope := readScope("acme")
+	scope.Repositories = []string{"acme/proofs"}
+	if _, err := mintGitHub(t.Context(), t, up, retry, scope); err != nil {
+		t.Fatalf("Mint of a token naming a repository after a 503: %v", err)
 	}
 	tokens := up.tokenRequests()
-	if len(tokens) != 2 || tokens[0].body != `{"repositories":["proofs"]}` || tokens[1].body != tokens[0].body {
-		t.Fatalf("the token requests sent %+v; want the narrowing's body twice", tokens)
+	if len(tokens) != 2 || tokens[0].body != `{"repositories":["proofs"],"permissions":{"contents":"read","metadata":"read"}}` || tokens[1].body != tokens[0].body {
+		t.Fatalf("the token requests sent %+v; want the scope's body twice", tokens)
 	}
 }
 
@@ -509,7 +521,7 @@ func TestGoogleMintersRetryA503AndAnswerInvalidGrantAtOnce(t *testing.T) {
 			BaseURL: up.server.URL, HTTP: up.server.Client(), Source: brokerSource(),
 			Accounts: map[string]string{"GCP_FLEET": serviceAccountEmail}, Retry: retry,
 		}
-		return minter.Mint(t.Context(), secrets.MintRequest{Name: "GCP_FLEET", Type: "google-service-account", Value: serviceAccountValue})
+		return minter.Mint(t.Context(), secrets.MintRequest{Name: "GCP_FLEET", Source: "GCP_FLEET", Type: "google-service-account", Value: serviceAccountValue})
 	}
 	for _, tc := range []struct {
 		name       string

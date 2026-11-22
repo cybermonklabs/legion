@@ -90,9 +90,9 @@ func TestALookupGitHubFailedToAnswerIsAskedAgainAtTheNextPass(t *testing.T) {
 	h.pass()
 
 	// The failure is skipped as every failure the pass cannot read as an answer is: named at
-	// WARN and counted in mappings_skipped, and never as a repository without the App.
+	// WARN and counted in defaults_skipped, and never as a repository without the App.
 	line := h.passLine()
-	if got := number(t, line, "mappings_skipped"); got != 1 {
+	if got := number(t, line, "defaults_skipped"); got != 1 {
 		t.Errorf("the pass GitHub failed reports %d repositories skipped, want 1: %v", got, line)
 	}
 	if got := number(t, line, "repositories_without_app"); got != 0 {
@@ -116,7 +116,7 @@ func TestALookupGitHubFailedToAnswerIsAskedAgainAtTheNextPass(t *testing.T) {
 	if got := number(t, line, "heads"); got != 1 {
 		t.Errorf("the pass after the failure read %d heads, want the repository's one: %v", got, line)
 	}
-	if got := number(t, line, "mappings_skipped"); got != 0 {
+	if got := number(t, line, "defaults_skipped"); got != 0 {
 		t.Errorf("the pass after the failure reports %d repositories skipped, want none: %v", got, line)
 	}
 	settled := h.settlement(settlements, "after the pass after GitHub failed the lookup")
@@ -127,10 +127,10 @@ func TestALookupGitHubFailedToAnswerIsAskedAgainAtTheNextPass(t *testing.T) {
 
 // The answer held about a repository is forgotten with the cycle that no longer covers it, as
 // the ETags of a head the order has left are: what the Reconciler keeps follows the
-// repositories mappings and issues name now, not every one an issue has ever named.
+// repositories project defaults and issues name now, not every one an issue has ever named.
 func TestTheAnswerHeldAboutARepositoryTheOrderHasLeftIsForgotten(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.issueInRepository(uninstalledRow)
 	h.listHead()
 

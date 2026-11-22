@@ -459,7 +459,7 @@ func TestControllerPodMemoryGuardEndsEachKindOfCommand(t *testing.T) {
 				}
 			}
 		}
-		if !gone(frame.PID) {
+		if !gone(t, frame.PID) {
 			t.Fatalf("%s (pid %d) still runs after the guard ended it", c.what, frame.PID)
 		}
 		pod.setCounter(counterLow)

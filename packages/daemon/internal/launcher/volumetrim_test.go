@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"slices"
 	"sort"
@@ -2920,7 +2921,7 @@ func linkProcEntry(t *testing.T, root string, pid int) {
 
 // TestVolumeTrimHandleHelper is the test binary re-executed as another process of the pod: it
 // opens the directory its case names, takes the `flock` a role's tool takes on it, says so and
-// waits to be killed.
+// waits to be killed, holding the handle and the lock until then.
 func TestVolumeTrimHandleHelper(t *testing.T) {
 	plan := os.Getenv(volumeTrimHandleEnv)
 	if plan == "" {
@@ -2941,6 +2942,12 @@ func TestVolumeTrimHandleHelper(t *testing.T) {
 		os.Exit(2)
 	}
 	time.Sleep(trimHandleHold)
+	// The handle is used after the sleep so that it stays reachable through it. An *os.File
+	// nothing reaches is closed by its finaliser at the holder's next garbage collection, which
+	// lets go of the lock and takes the descriptor these cases are about out of /proc: the sweep
+	// then reads no hold on the root and deletes the entries under it (guardHeldFile,
+	// volumeguard_test.go, holds its opener's file for the same reason).
+	runtime.KeepAlive(handle)
 	os.Exit(0)
 }
 
