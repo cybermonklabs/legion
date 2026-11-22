@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
-import { BROKER_VARIABLES } from "@legion/broker-client/environment"
-import { METADATA_HOST_VAR } from "@legion/broker-client/metadata-identity"
+import { BROKER_VARIABLES } from "@legion/cipher-client/environment"
+import { METADATA_HOST_VAR } from "@legion/cipher-client/metadata-identity"
+import { ENVOY_INBOUND_VAR } from "@legion/envoy-client/envoy-settings"
 import { NATS_AUTH_VAR } from "@legion/envoy-client/nats-credential"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
@@ -539,11 +540,12 @@ test("the Codex manifest starts the server in the plugin's own directory, as the
 // `HOME`, `PATH` and a few more it passes every server (README.md, "Codex hands a plugin's server
 // only `HOME`, `PATH`…"). A Codex session given `NATS_AUTH=broker` in its environment, with
 // NATS_AUTH missing from the list, dialled NATS with no credential, and a pool pod's trade threw
-// for want of AGENT_SECRETS_POOL_*. The list is taken from the code's own names, so a variable the
-// broker path comes to read fails this row until the manifest names it.
+// for want of AGENT_SECRETS_POOL_*; one given `ENVOY_INBOUND=listener` with it missing would dial
+// NATS rather than the listener's relay socket. The list is taken from the code's own names, so a
+// variable the broker path comes to read fails this row until the manifest names it.
 test("the Codex manifest names every variable the broker-token path reads", () => {
   const passedToEveryServer = new Set(["HOME"])
-  const read = [NATS_AUTH_VAR, ...BROKER_VARIABLES, METADATA_HOST_VAR].filter(
+  const read = [NATS_AUTH_VAR, ENVOY_INBOUND_VAR, ...BROKER_VARIABLES, METADATA_HOST_VAR].filter(
     (name) => !passedToEveryServer.has(name),
   )
   const listed = new Set<string>(codexPlugin.mcpServers.envoy.env_vars)
@@ -956,7 +958,8 @@ test("an envoy.json that turns Envoy off opens no NATS connection and calls no l
       join(configDirectory, "envoy.json"),
       JSON.stringify({ envoy: { enabled: false } }),
     )
-    const broker = new FakeNatsServer()
+    // An address of its own (fakeHost): the count below is the one a stray client inflates.
+    const broker = new FakeNatsServer({ host: "127.86.0.2" })
     stopBroker = () => broker.stop()
     const listenerCalls: string[] = []
     listener = Bun.serve({
@@ -1210,7 +1213,8 @@ test("a refused NATS seed leaves the listener tools on, opens no NATS connection
     await mkdir(configDirectory)
     const calls: string[] = []
     listener = recordingListener(calls)
-    const broker = new FakeNatsServer()
+    // An address of its own (fakeHost): the count below is the one a stray client inflates.
+    const broker = new FakeNatsServer({ host: "127.86.0.3" })
     stopBroker = () => broker.stop()
     const file = join(configDirectory, "envoy.json")
     await writeFile(

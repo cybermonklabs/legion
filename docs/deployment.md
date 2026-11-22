@@ -452,7 +452,7 @@ minted from Dispatch's Settings → Agent tokens
 
 The agent-secrets helper holds a credential of its own: the machine login a person approves for
 `agent-secrets machine login`. The helper spends that credential on the broker's own routes
-(`packages/envoy/internal/broker/helper/broker.go`) and asks the broker for no Dispatch token. The
+(`packages/envoy/internal/cipher/helper/broker.go`) and asks the broker for no Dispatch token. The
 broker can exchange such a login's access token for one (`docs/kubernetes.md`, "The Dispatch
 identity the broker can issue"), and nothing on this box does that at this release.
 `dispatch://INFRA-267` is where the daemon and its workers get Dispatch tokens of their own, a dev
@@ -743,10 +743,9 @@ provider_keys:
   every commit the pane makes in its own workspace, after the `Omp-Session:` and `Legion-Role:`
   lines every pane's commits carry, so a squash landing that branch carries the issue key in its
   message. A `git commit` gets the session and role lines from the pane's `git`, and no issue line.
-  A pane stamps the commit when its launch's repository is one of the names, whatever Dispatch
-  maps to the project (Settings → Repositories → Projects).
-  Boot checks each name against that mapping alone and says once, naming the name and the
-  project, that the mapping does not hold it, which catches a typo.
+  A pane stamps the commit when its launch's repository is one of the names.
+  The daemon compares the list with nothing at boot, so a misspelled name stamps no commit and no
+  line says so: compare the list with the repositories `legion state` lists.
   A pane of a repository the key does not name is told no key and its commits carry the session
   and role lines alone, as does a commit the pane's shell makes in any other jj repository.
   The variable the pane is told is the runtime's own, so a spec, a `pane_env` and a

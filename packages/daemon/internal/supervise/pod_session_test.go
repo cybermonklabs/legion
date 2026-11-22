@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
+	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
@@ -119,12 +119,12 @@ func (r *renewalTimers) fire() {
 // clientRegistrar is the daemon's Registrar over the agent-secrets client's own renewer, as the
 // daemon's adapter wires it, on the test's renewal timers.
 type clientRegistrar struct {
-	client *agentsecrets.Client
+	client *cipher.Client
 	timers *renewalTimers
 }
 
 func (c clientRegistrar) KeepPodSession(ctx context.Context, s PodSession) (func(), error) {
-	return c.client.KeepPodSession(ctx, agentsecrets.PodSessionRenewal{
+	return c.client.KeepPodSession(ctx, cipher.PodSessionRenewal{
 		PodUID: s.PodUID, Session: s.Session, Thumbprint: s.Thumbprint, Generation: int64(s.Generation), Token: s.Token, After: c.timers.after, Bound: s.Bound,
 	})
 }
@@ -155,7 +155,7 @@ func TestANewIncarnationsFirstWriteFollowsTheOldOnesLastWrite(t *testing.T) {
 	h := newHarness(t)
 	h.withSecrets()
 	timers := &renewalTimers{}
-	h.deps.Registrar = clientRegistrar{client: &agentsecrets.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile}, timers: timers}
+	h.deps.Registrar = clientRegistrar{client: &cipher.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile}, timers: timers}
 	h.start(h.store.load(h.token))
 	h.conn.SetAgentSecretsToken(testIdentity.PodToken)
 	inPod := func(generation uint64) fake.SpawnResult {

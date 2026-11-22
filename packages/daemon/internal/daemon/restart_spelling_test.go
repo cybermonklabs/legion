@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -22,10 +23,10 @@ import (
 
 // A live issue whose record keeps a shared clone's spelling of its repository (acme/widgets) is
 // heard after a restart in GitHub's spelling (Acme/Widgets), which Envoy's subjects carry and NATS
-// matches case-sensitively, even once the mapping no longer names the repository: the record keeps
-// GitHub's spelling beside its own, so the boot subscribes from the database, not from a read a
-// restart forgets. The workspace keeps the clone's spelling.
-func TestARestartStillHearsAnUnmappedRepositoryInGitHubsSpelling(t *testing.T) {
+// matches case-sensitively, even when nothing the restarted daemon has read names the repository:
+// the record keeps GitHub's spelling beside its own, so the boot subscribes from the database, not
+// from a read a restart forgets. The workspace keeps the clone's spelling.
+func TestARestartStillHearsARecordsRepositoryInGitHubsSpelling(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := projectRecords{Store: record.NewStore(), project: "LEGION"}
@@ -50,15 +51,16 @@ func TestARestartStillHearsAnUnmappedRepositoryInGitHubsSpelling(t *testing.T) {
 
 	// The upgrade's boot fills the record from Dispatch and GitHub.
 	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-301", ResolvedRepo: "acme/widgets"}}}
-	if err := backfillRepositories(ctx, pool, records, client, "LEGION", state,
+	if _, _, err := backfillRepositories(ctx, pool, records, client, "LEGION", state,
 		newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), ghrepo.Renames{}, quietLogger()); err != nil {
 		t.Fatal(err)
 	}
 
-	// The next boot: the mapping serves zeta/tools alone, and this daemon has read nothing of GitHub.
+	// The next boot: the repository state holds zeta/tools alone, and this daemon has read nothing
+	// of GitHub for acme/widgets.
 	restarted := &workflowRuntime{pool: pool, records: records, repositories: newRepositories("LEGION", ghrepo.Renames{}),
 		defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), log: quietLogger()}
-	restarted.repositories.set([]mappedRepository{{Repo: ghrepo.MustParse("zeta/tools"), Default: true}}, nil)
+	restarted.repositories.fill(ghrepo.MustParse("zeta/tools"))
 	if repo, _, err := restarted.issueRepository(ctx, "LEGION-301"); err != nil || repo.String() != "acme/widgets" {
 		t.Fatalf("LEGION-301 works %s, %v; want the clone's acme/widgets", repo, err)
 	}
@@ -99,8 +101,9 @@ func TestARestartStillHearsAnUnmappedRepositoryInGitHubsSpelling(t *testing.T) {
 
 // A record written before the record carried GitHub's spelling of its repository is named at boot
 // from one read of GitHub, before GitHub intake subscribes, so it is heard in GitHub's spelling; a
-// repository GitHub cannot read refuses the boot, naming the issue, rather than subscribing in a
-// spelling its events are not published under.
+// repository GitHub cannot read leaves the record as it is, the log naming the issue, and the
+// boot goes on hearing nothing for it, rather than subscribing in a spelling its events are not
+// published under (INFRA-4401 D11).
 func TestTheBootNamesARecordWithNoGitHubSpellingBeforeSubscribing(t *testing.T) {
 	ctx := context.Background()
 	seed := func(t *testing.T) (*workflowRuntime, projectRecords) {
@@ -123,7 +126,7 @@ func TestTheBootNamesARecordWithNoGitHubSpellingBeforeSubscribing(t *testing.T) 
 		w, records := seed(t)
 		github := newNamedGitHub(t, map[string]string{"acme/widgets": "Acme/Widgets@main"})
 		w.defaultBranches = newDefaultBranches(roleTokens{}, w.repositories, github.url, defaultBranchTTL, time.Now)
-		if err := backfillRepositories(ctx, w.pool, records, &listingDispatch{}, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, quietLogger()); err != nil {
+		if _, _, err := backfillRepositories(ctx, w.pool, records, &listingDispatch{}, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, quietLogger()); err != nil {
 			t.Fatal(err)
 		}
 		got := recordedIssue(t, w, "LEGION-301")
@@ -143,12 +146,20 @@ func TestTheBootNamesARecordWithNoGitHubSpellingBeforeSubscribing(t *testing.T) 
 		w, records := seed(t)
 		github := newNamedGitHub(t, map[string]string{})
 		w.defaultBranches = newDefaultBranches(roleTokens{}, w.repositories, github.url, defaultBranchTTL, time.Now)
-		err := backfillRepositories(ctx, w.pool, records, &listingDispatch{}, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, quietLogger())
-		if err == nil || !strings.HasPrefix(err.Error(), "name the repository of LEGION-301: ") {
-			t.Fatalf("backfill = %v, want a refusal naming LEGION-301", err)
+		var logs strings.Builder
+		_, left, err := backfillRepositories(ctx, w.pool, records, &listingDispatch{}, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, slog.New(slog.NewTextHandler(&logs, nil)))
+		if err != nil || !left || !strings.Contains(logs.String(), "issue=LEGION-301 repo=acme/widgets cause=\"the read of acme/widgets from GitHub failed: ") {
+			t.Fatalf("backfill = left %t, %v, logging:\n%s\nwant LEGION-301 left, logged with the failed read, and no error", left, err, logs.String())
 		}
 		if got := recordedIssue(t, w, "LEGION-301"); got.GitHubRepo != "" {
-			t.Fatalf("LEGION-301 named %q after a refused read", got.GitHubRepo)
+			t.Fatalf("LEGION-301 named %q after a failed read", got.GitHubRepo)
+		}
+		heard, err := w.heardAtBoot(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(heard) != 0 {
+			t.Fatalf("heard %v, want nothing: a record with no GitHub spelling is passed by", repositoryNames(heard))
 		}
 	})
 }

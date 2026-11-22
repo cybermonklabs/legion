@@ -385,26 +385,19 @@ export function setGatedSteps(
   );
 }
 
-/** Maps `repo` (`owner/name`) to a project, as the Settings page does; `default: true` makes it the
- *  project's default repository. */
-export function putRepoProject(
-  repo: string,
-  input: Body<"/api/v1/settings/repo-projects/{owner}/{repo}", "put">,
-  login = "alice"
+/** `PUT /api/v1/projects/{key}/default-repository`: sets `project`'s default repository
+ *  (`owner/name`), as the Settings page's Projects table does, or clears it with `null`. An issue
+ *  of the project resolves to it when neither the issue nor an issue above it names a repository.
+ *  The call is a person's by default; the route refuses a project-scoped credential. */
+export function putProjectDefaultRepository(
+  project: string,
+  repo: string | null,
+  options: ApiOptions = {}
 ) {
   return put(
-    "/api/v1/settings/repo-projects/{owner}/{repo}",
-    { body: input, params: repoParams(repo) },
-    { login }
-  );
-}
-
-/** Removes `repo`'s mapping, as the Settings page's Delete does. */
-export function deleteRepoProject(repo: string, login = "alice") {
-  return del(
-    "/api/v1/settings/repo-projects/{owner}/{repo}",
-    { body: {}, params: repoParams(repo) },
-    { login }
+    "/api/v1/projects/{key}/default-repository",
+    { body: { repo }, params: { key: project } },
+    options
   );
 }
 
@@ -416,6 +409,12 @@ export async function mintAgentToken(name: string, login: string): Promise<strin
 
 export function getIssue(key: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}", { params: { key } }, options);
+}
+
+/** `GET /api/v1/issues/{key}/decisions`: the issue's decision records, each with whether it
+ *  waits for the reader's review and the Keep a person recorded. */
+export function getIssueDecisions(key: string, options: ApiOptions = {}) {
+  return get("/api/v1/issues/{key}/decisions", { params: { key } }, options);
 }
 
 /** `GET /api/v1/issues/{key}/events`: the issue's events in the server's order.
@@ -671,6 +670,28 @@ export function createIssueArtifact(
   return post("/api/v1/issues/{key}/artifacts", { body: input, params: { key: issue } }, options);
 }
 
+/** Uploads bytes as an issue artifact through the multipart form the file picker posts. The JSON
+ *  body `createIssueArtifact` sends carries text only, so an image can only be seeded this way,
+ *  and `request` sends JSON alone, so the form goes out as its own fetch. */
+export async function uploadIssueFile(
+  issue: string,
+  input: { bytes: Uint8Array<ArrayBuffer>; contentType: string; name: string },
+  login = "alice"
+): Promise<Result<"/api/v1/issues/{key}/artifacts", "post">> {
+  const form = new FormData();
+  form.append("name", input.name);
+  form.append("file", new Blob([input.bytes], { type: input.contentType }), input.name);
+  const response = await fetch(
+    new URL(routeUrl("/api/v1/issues/{key}/artifacts", { key: issue }), baseUrl),
+    { body: form, headers: await userHeaders(login), method: "POST" }
+  );
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`upload ${input.name} to ${issue} failed: ${response.status} ${text}`);
+  }
+  return (await response.json()) as Result<"/api/v1/issues/{key}/artifacts", "post">;
+}
+
 /** `GET /api/v1/issues/{key}/artifacts`: every artifact the issue holds, as the Documents tab's
  *  own `["artifacts", key]` read lists them, each with its role and its versions. */
 export function listIssueArtifacts(issue: string, options: ApiOptions = {}) {
@@ -731,6 +752,29 @@ export function resolveAsk(
   options: ApiOptions = {}
 ) {
   return post("/api/v1/asks/{id}/resolve", { body: input, params: { id } }, options);
+}
+
+/** A person declining to answer an ask, with the note they leave (c-decisions). */
+export function declineAsk(
+  id: string,
+  input: Body<"/api/v1/asks/{id}/decline", "post">,
+  options: ApiOptions = {}
+) {
+  return post("/api/v1/asks/{id}/decline", { body: input, params: { id } }, options);
+}
+
+/** A person keeping one decision as its text reads now (`getIssueDecisions`'s `text_sha256`). */
+export function keepDecision(
+  artifact: string,
+  block: string,
+  textSha256: string,
+  options: ApiOptions = {}
+) {
+  return post(
+    "/api/v1/artifacts/{id}/blocks/{block_id}/keep",
+    { body: { text_sha256: textSha256 }, params: { block_id: block, id: artifact } },
+    options
+  );
 }
 
 export function createComment(

@@ -162,10 +162,11 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 	noString := nulRow{unread, `json: unknown field "note"`}
 	noBody := nulRow{unread, ""}
 	rows := map[string]nulRow{
-		"/":                    noBody,
-		"GET /legion/v1/state": noBody,
-		"GET /healthz":         noBody,
-		"GET /readyz":          noBody,
+		"/":                                  noBody,
+		"GET /legion/v1/state":               noBody,
+		"GET /legion/v1/issues/{key}/record": noBody,
+		"GET /healthz":                       noBody,
+		"GET /readyz":                        noBody,
 
 		"POST /legion/v1/claims/register":                        reads("bootToken"),
 		"POST /legion/v1/claims/ready":                           reads("sessionId"),
@@ -189,7 +190,7 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/phase/retry":                            reads("issue"),
 		"POST /legion/v1/signoff":                                reads("issue"),
 		"POST /legion/v1/roots/close":                            reads("reason"),
-		"POST /legion/v1/children/park":                          reads("issue"),
+		"POST /legion/v1/children/park":                          noBody,
 		"POST /legion/v1/children/rerun":                         reads("issue"),
 		"POST /legion/v1/operator/claims":                        reads("tree"),
 		"GET /legion/v1/operator/claims":                         noBody,

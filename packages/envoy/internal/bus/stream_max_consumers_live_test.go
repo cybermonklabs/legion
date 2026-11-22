@@ -46,11 +46,14 @@ var liveServerArgs = []string{"-js", "--store_dir", "/data"}
 const olderServerDeployedCap = 1000
 
 // liveServerEnvironment is the environment the starts below read (WithEnvironment): the opt-in to
-// a NATS server that is not this machine's, and nothing else. A container's client URL is a
-// mapped port on the Docker host, which is this machine on a CI runner and whatever DOCKER_HOST
-// names anywhere else, and a start refuses every URL it cannot read as this machine's
-// (LocalNATSURL, refuseRemoteNATS). Handing the environment also keeps a NATS_NKEY_SEED the run
-// happens to hold out of a connect to a server that wants no credential.
+// a NATS server that is not this machine's, and nothing else. A container's client URL is the port
+// Docker publishes (testnats.ImageURL): on a loopback address of the container's own when the
+// Docker daemon is this machine (a unix socket, as on a CI runner), and otherwise at the daemon's
+// host, which is the machine DOCKER_HOST names, or the gateway through which a test running in a
+// container reaches the host's daemon. A start refuses every URL it cannot read as this machine's
+// (LocalNATSURL, refuseRemoteNATS) unless the environment opts in. Handing the environment also
+// keeps a NATS_NKEY_SEED the run happens to hold out of a connect to a server that wants no
+// credential.
 func liveServerEnvironment(key string) (string, bool) {
 	if key == AllowRemoteEnvVar {
 		return "1", true
@@ -174,7 +177,7 @@ func TestAnUncappedStreamIsCappedOnTheHubsServerAndLeftAloneOnTheOlderOneWhereAL
 			}
 			t.Cleanup(client.Close)
 
-			heldFor(t, js, Stream, "the consumer cap", 6, func(info *nats.StreamInfo) bool {
+			heldFor(t, []*Client{client}, js, Stream, "the consumer cap", 6, func(info *nats.StreamInfo) bool {
 				return info.Config.MaxConsumers == deployed
 			})
 			// The cap above is unchanged whether the keeper sent nothing or sent a raise this

@@ -8,7 +8,10 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -24,6 +27,9 @@ const testInstance = "example-project:us-central1:example-instance"
 // testProofTimeout bounds the proof dial of a test whose upstream answers at once, so it only has
 // to be long enough never to end a dial a loaded machine is slow to complete.
 const testProofTimeout = 10 * time.Second
+
+// testWriterAudience is a workload identity provider's full resource name, with placeholder ids.
+const testWriterAudience = "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/legion-session-writer/providers/example-cluster"
 
 // upstream is the database end of a test: a real local listener, so the bytes the proxy copies
 // really cross a connection and a test can read them.
@@ -74,13 +80,14 @@ func (u *upstream) next(t *testing.T) net.Conn {
 	}
 }
 
-// fakeDialer stands in for the Cloud SQL connector: it records what the proxy asked of it and
-// hands back a real connection to the test's upstream listener.
+// fakeDialer stands in for the Cloud SQL connector: it records what the proxy asked of it, and the
+// signer each build was given, and hands back a real connection to the test's upstream listener.
 type fakeDialer struct {
 	addr string
 
 	mu        sync.Mutex
 	instances []string
+	signers   []Signer
 	err       error
 	closed    int
 }
@@ -122,8 +129,21 @@ func (f *fakeDialer) failWith(err error) {
 	f.err = err
 }
 
-// build is the Config.NewDialer a test passes: the proxy gets this very fake.
-func (f *fakeDialer) build(context.Context, string) (Dialer, error) { return f, nil }
+// build is the Config.NewDialer a test passes: the proxy gets this very fake, and each build
+// records the signer it was given.
+func (f *fakeDialer) build(_ context.Context, signer Signer) (Dialer, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.signers = append(f.signers, signer)
+	return f, nil
+}
+
+// built is the signer of every build so far, in the order they were made.
+func (f *fakeDialer) built() []Signer {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.signers)
+}
 
 // socketPath is this package's socket path: a socket named session.sock in a directory of the
 // test's own, placed by TMPDIR and falling back to /tmp for the socket path's length alone, so
@@ -318,7 +338,7 @@ func (s *stallingDialer) closeCount() int {
 	return s.closed
 }
 
-func (s *stallingDialer) build(context.Context, string) (Dialer, error) { return s, nil }
+func (s *stallingDialer) build(context.Context, Signer) (Dialer, error) { return s, nil }
 
 // A proof dial the instance never answers ends at ProofTimeout, however long the start's own
 // context lives: Start refuses with the instance and the bound named, the dial's deadline still
@@ -394,7 +414,7 @@ func TestStartRefusesAnAccountThatIsNoServiceAccountEmail(t *testing.T) {
 		Instance:                  testInstance,
 		ImpersonateServiceAccount: login,
 		ProofTimeout:              testProofTimeout,
-		NewDialer: func(context.Context, string) (Dialer, error) {
+		NewDialer: func(context.Context, Signer) (Dialer, error) {
 			built++
 			return nil, errors.New("the dialer factory was called")
 		},
@@ -408,6 +428,96 @@ func TestStartRefusesAnAccountThatIsNoServiceAccountEmail(t *testing.T) {
 	}
 	if _, err := os.Lstat(socket); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("a Start with no service account's email left something at the socket path: %v", err)
+	}
+}
+
+// A writer token is named whole, with its audience and its file, and only with the service account
+// it impersonates: a half-named one, or one without the account, would sign in with no credential
+// or with the pod's own where the deployment named the launcher's. An audience that is no
+// provider's full resource name, and a token file that is no absolute path, are refused too. Each
+// refusal names the fields, before Start binds anything or builds a dialer.
+func TestStartRefusesAWriterTokenNamedByHalfOrWithoutItsAccount(t *testing.T) {
+	const account = "legion-sessions@example-project.iam.gserviceaccount.com"
+	const needsTokenFile = "sessionproxy: WriterAudience needs WriterTokenFile, the file of the token it is the audience of"
+	const needsAudience = "sessionproxy: WriterTokenFile needs WriterAudience, the audience of the token it holds"
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	byID := strings.Replace(testWriterAudience, "/projects/123456789012/", "/projects/example-project/", 1)
+	for _, tc := range []struct {
+		name                         string
+		account, audience, tokenFile string
+		want                         string
+	}{
+		{"an audience without its token file", account, testWriterAudience, "", needsTokenFile},
+		{"a token file without its audience", account, "", tokenFile, needsAudience},
+		{"an audience alone", "", testWriterAudience, "", needsTokenFile},
+		{"a token file alone", "", "", tokenFile, needsAudience},
+		{
+			"a writer token without the account", "", testWriterAudience, tokenFile,
+			"sessionproxy: WriterAudience and WriterTokenFile need ImpersonateServiceAccount: the writer token signs in only by impersonating that service account",
+		},
+		{
+			"the project's id in place of its number", account, byID, tokenFile,
+			fmt.Sprintf("sessionproxy: WriterAudience %q is not a workload identity provider's full resource name, %s", byID, ompsessions.WriterAudienceForm),
+		},
+		{
+			"a token file by a relative path", account, testWriterAudience, "session-writer/token",
+			`sessionproxy: WriterTokenFile "session-writer/token" is not an absolute path`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			socket := socketPath(t)
+			built := 0
+			_, err := Start(context.Background(), Config{
+				Socket:                    socket,
+				Instance:                  testInstance,
+				ImpersonateServiceAccount: tc.account,
+				WriterAudience:            tc.audience,
+				WriterTokenFile:           tc.tokenFile,
+				ProofTimeout:              testProofTimeout,
+				NewDialer: func(context.Context, Signer) (Dialer, error) {
+					built++
+					return nil, errors.New("the dialer factory was called")
+				},
+			})
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("Start = %v, want %q", err, tc.want)
+			}
+			if built != 0 {
+				t.Fatalf("a refused Start called its dialer factory %d times", built)
+			}
+			if _, err := os.Lstat(socket); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("a refused Start left something at the socket path: %v", err)
+			}
+		})
+	}
+}
+
+// A proxy that the writer token signs in gives its dialer factory the account, the audience and
+// the token file together: a factory given the account alone would impersonate it with the pod's
+// own credentials. Its start line names the account and says that the launcher's writer token
+// signs in. The line names no token, and not the token file either.
+func TestStartGivesItsDialerTheAccountAndTheWriterToken(t *testing.T) {
+	const account = "legion-sessions@example-project.iam.gserviceaccount.com"
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	up := newUpstream(t)
+	dialer := &fakeDialer{addr: up.listener.Addr().String()}
+	socket := socketPath(t)
+	var logged strings.Builder
+	proxy := startConfigured(context.Background(), t, up, Config{
+		Socket: socket, NewDialer: dialer.build, Log: &logged,
+		ImpersonateServiceAccount: account, WriterAudience: testWriterAudience, WriterTokenFile: tokenFile,
+	})
+	if err := proxy.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	want := Signer{Account: account, WriterAudience: testWriterAudience, WriterTokenFile: tokenFile}
+	if got := dialer.built(); !slices.Equal(got, []Signer{want}) {
+		t.Fatalf("the dialer factory was given %+v, want %+v once", got, want)
+	}
+	line := fmt.Sprintf("sessionproxy: serving %s on %s as %s with the launcher's writer token\n", testInstance, socket, account)
+	if got := logged.String(); got != line {
+		t.Fatalf("the proxy logged %q, want only %q", got, line)
 	}
 }
 
@@ -568,6 +678,186 @@ func TestEachConnectionDialsItsOwnUpstream(t *testing.T) {
 	_ = second.Close()
 	if err := proxy.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+}
+
+// requirePeerReads skips a test on a system where the proxy reads no connection's peer.
+func requirePeerReads(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("the proxy reads a connection's peer (SO_PEERCRED) on Linux alone")
+	}
+}
+
+// A connection that Admit refuses gets nothing: the proxy closes it with nothing written back and
+// dials no upstream for it, so it costs no credential work. The proxy logs one line for it, which
+// names the instance, the pid and the command of the process that connected, and Admit's reason.
+func TestAConnectionAdmitRefusesIsClosedWithoutADial(t *testing.T) {
+	requirePeerReads(t)
+	up := newUpstream(t)
+	dialer := &fakeDialer{addr: up.listener.Addr().String()}
+	socket := socketPath(t)
+	var logged strings.Builder
+	asked := make(chan Peer, 1)
+	proxy := startConfigured(context.Background(), t, up, Config{
+		Socket: socket, NewDialer: dialer.build, Log: &logged,
+		Admit: func(peer Peer) error {
+			asked <- peer
+			return errors.New("not the generation's agent")
+		},
+	})
+
+	client, err := net.Dial("unix", socket)
+	if err != nil {
+		t.Fatalf("dial the proxy: %v", err)
+	}
+	defer client.Close()
+	if err := client.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set a read deadline: %v", err)
+	}
+	buf := make([]byte, 64)
+	n, err := client.Read(buf)
+	if n != 0 {
+		t.Fatalf("the proxy wrote %q to a connection Admit refused", buf[:n])
+	}
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("the refused client's read: %v, want EOF", err)
+	}
+	// Close returns once every connection's serve has ended, so the log is whole after it.
+	if err := proxy.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if got := dialer.dials(); got != 1 {
+		t.Fatalf("the proxy dialed the upstream %d times, want only Start's proof dial: a refused connection costs no dial", got)
+	}
+	if peer := admitted(t, asked); peer.PID != os.Getpid() {
+		t.Fatalf("Admit was given the pid %d, want this test's own %d", peer.PID, os.Getpid())
+	}
+	comm, err := os.ReadFile("/proc/self/comm")
+	if err != nil {
+		t.Fatalf("read this test's command: %v", err)
+	}
+	want := fmt.Sprintf("sessionproxy: refused a connection to %s from pid %d (%q): not the generation's agent",
+		testInstance, os.Getpid(), strings.TrimSuffix(string(comm), "\n"))
+	var refusals []string
+	for _, line := range strings.Split(logged.String(), "\n") {
+		if strings.Contains(line, "refused") {
+			refusals = append(refusals, line)
+		}
+	}
+	if !slices.Equal(refusals, []string{want}) {
+		t.Fatalf("the proxy logged the refusals %q, want one line %q; the whole log is %q", refusals, want, logged.String())
+	}
+}
+
+// peerHelperEnv names the socket that TestSessionProxyPeerHelper connects to, in a test's child
+// process.
+const peerHelperEnv = "LEGION_SESSIONPROXY_TEST_PEER_SOCKET"
+
+// TestSessionProxyPeerHelper is a child process of a test. It connects to the socket that
+// peerHelperEnv names and holds the connection until its stdin ends, so it is still the socket's
+// peer while the proxy reads that peer. In a test run of its own it does nothing.
+func TestSessionProxyPeerHelper(t *testing.T) {
+	socket := os.Getenv(peerHelperEnv)
+	if socket == "" {
+		return
+	}
+	conn, err := net.Dial("unix", socket)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dial %s: %v\n", socket, err)
+		os.Exit(2)
+	}
+	_, _ = io.Copy(io.Discard, os.Stdin)
+	_ = conn.Close()
+	os.Exit(0)
+}
+
+// Admit is given the process that made the connection, as the kernel recorded it: the pid and
+// user id of this test's own process when it connects, and those of a child process when the child
+// connects. The launcher decides on that pid, so a proxy that gave Admit another pid, its own
+// above all, would let Admit take a process for one it never was.
+func TestAdmitIsGivenTheProcessThatConnects(t *testing.T) {
+	requirePeerReads(t)
+	// serve starts a proxy whose Admit records each peer it is given and admits it.
+	serve := func(t *testing.T) (string, *upstream, <-chan Peer) {
+		t.Helper()
+		up := newUpstream(t)
+		socket := socketPath(t)
+		asked := make(chan Peer, 1)
+		proxy := startConfigured(context.Background(), t, up, Config{
+			Socket: socket, NewDialer: (&fakeDialer{addr: up.listener.Addr().String()}).build,
+			Admit: func(peer Peer) error {
+				asked <- peer
+				return nil
+			},
+		})
+		t.Cleanup(func() {
+			if err := proxy.Close(); err != nil {
+				t.Errorf("Close: %v", err)
+			}
+		})
+		return socket, up, asked
+	}
+
+	t.Run("this test's process", func(t *testing.T) {
+		socket, up, asked := serve(t)
+		client, err := net.Dial("unix", socket)
+		if err != nil {
+			t.Fatalf("dial the proxy: %v", err)
+		}
+		defer client.Close()
+		if peer, want := admitted(t, asked), (Peer{PID: os.Getpid(), UID: os.Getuid()}); peer != want {
+			t.Fatalf("Admit was given %+v, want this test's own process %+v", peer, want)
+		}
+		// An admitted connection is served as any other.
+		writeAll(t, client, "startup packet")
+		server := up.next(t)
+		defer server.Close()
+		if got := readString(t, server, len("startup packet")); got != "startup packet" {
+			t.Fatalf("the upstream read %q", got)
+		}
+	})
+
+	t.Run("a child process", func(t *testing.T) {
+		socket, up, asked := serve(t)
+		self, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		child := exec.Command(self, "-test.run=^TestSessionProxyPeerHelper$")
+		child.Env = append(os.Environ(), peerHelperEnv+"="+socket)
+		child.Stdout, child.Stderr = os.Stderr, os.Stderr
+		hold, err := child.StdinPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := child.Start(); err != nil {
+			t.Fatalf("start the child: %v", err)
+		}
+		defer func() {
+			_ = hold.Close()
+			if err := child.Wait(); err != nil {
+				t.Errorf("the child: %v", err)
+			}
+		}()
+		if peer, want := admitted(t, asked), (Peer{PID: child.Process.Pid, UID: os.Getuid()}); peer != want {
+			t.Fatalf("Admit was given %+v, want the child's process %+v (this test's own pid is %d)", peer, want, os.Getpid())
+		}
+		_ = up.next(t).Close()
+	})
+}
+
+// admitted is the next peer that the proxy's Admit was given. It waits as long as a loaded machine
+// can take to start a child process that connects.
+func admitted(t *testing.T, asked <-chan Peer) Peer {
+	t.Helper()
+	select {
+	case peer := <-asked:
+		return peer
+	case <-time.After(30 * time.Second):
+		t.Fatal("Admit was not asked about the connection")
+		return Peer{}
 	}
 }
 

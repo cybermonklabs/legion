@@ -425,6 +425,10 @@ func (c *stubConn) BundleWorkspace(context.Context, string, time.Duration) (runt
 	return runtime.WorkspaceBundle{}, errors.New("the stream stub bundles no workspace")
 }
 
+func (c *stubConn) WorkspaceWork(context.Context, string, time.Duration) (runtime.WorkspaceWork, error) {
+	return runtime.WorkspaceWork{}, errors.New("the stream stub reads no workspace")
+}
+
 func (c *stubConn) AgentSecretsEnrollment(context.Context, string) error {
 	return errors.New("the stream stub does not enroll agent secrets")
 }

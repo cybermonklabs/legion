@@ -384,7 +384,7 @@ func (s *server) operator(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		given, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if !s.operatorSet || !bearer || !secureBearerEqual(s.operatorHash, given) {
-			writeJSON(w, http.StatusForbidden, errorBody(invalidOperatorToken))
+			s.refuse(w, r, http.StatusForbidden, invalidOperatorToken)
 			return
 		}
 		next(w, r)
@@ -401,29 +401,29 @@ func secureBearerEqual(expected [sha256.Size]byte, given string) bool {
 // is paused it creates and launches nothing (refusedWhilePaused).
 func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	var req SpawnRequest
-	if !s.readBody(w, r, &req, nil) || !requireFields(w,
+	if !s.readBody(w, r, &req, nil) || !s.requireFields(w, r,
 		field{"tree", req.Tree}, field{"issue", req.Issue}, field{"role", string(req.Role)},
 	) {
 		return
 	}
 	for _, key := range []field{{"tree", req.Tree}, {"issue", req.Issue}} {
 		if !claim.IsIssueKey(key.value) {
-			writeJSON(w, http.StatusBadRequest, errorBody(fmt.Sprintf("%s %q is not an issue key", key.name, key.value)))
+			s.refuse(w, r, http.StatusBadRequest, fmt.Sprintf("%s %q is not an issue key", key.name, key.value))
 			return
 		}
 	}
 	if !claim.IsRole(req.Role) {
-		writeJSON(w, http.StatusBadRequest, errorBody(fmt.Sprintf("role %q is not a role", req.Role)))
+		s.refuse(w, r, http.StatusBadRequest, fmt.Sprintf("role %q is not a role", req.Role))
 		return
 	}
 	token, err := claim.NewToken(s.project, req.Issue, req.Role)
 	if err != nil {
-		s.operatorFailure(w, "spawn", token, err)
+		s.operatorFailure(w, r, "spawn", token, err)
 		return
 	}
 	ctx, decided := s.decision(r, token)
 	defer decided()
-	if s.stopped(w, "spawn") {
+	if s.stopped(w, r, "spawn") {
 		return
 	}
 	c := supervise.Claim{
@@ -434,28 +434,28 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Tree == req.Issue && req.Role == claim.RoleArchitect {
 		if _, err := s.trees.OpenOperatorTreeLifecycle(ctx, s.project, req.Tree, s.drawExperiments(req.Tree)); errors.Is(err, treelifecycle.ErrCleanupReserved) {
-			writeJSON(w, http.StatusConflict, errorBody(fmt.Sprintf("operator tree %s is waiting for durable cleanup: %v", req.Tree, err)))
+			s.refuse(w, r, http.StatusConflict, fmt.Sprintf("operator tree %s is waiting for durable cleanup: %v", req.Tree, err))
 			return
 		} else if err != nil {
-			s.operatorFailure(w, "spawn", token, err)
+			s.operatorFailure(w, r, "spawn", token, err)
 			return
 		}
 	}
 	m, created, err := s.supervisor.Create(ctx, c, req.Prompt)
 	if err != nil {
-		s.operatorFailure(w, "spawn", token, err)
+		s.operatorFailure(w, r, "spawn", token, err)
 		return
 	}
 	// The operator is waiting on this answer, so the wake pacing never holds this launch
 	// (supervise's reserveWake): one person's spawn is not the wave the pacing exists for, and a
 	// route that answered with a claim parked launching would read as a daemon that did nothing.
 	if err := m.Handle(ctx, supervise.RequestSpawn{Claim: token, Exempt: true}); err != nil {
-		s.operatorFailure(w, "spawn", token, err)
+		s.operatorFailure(w, r, "spawn", token, err)
 		return
 	}
 	if req.Task != "" {
 		if err := m.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: req.Task}); err != nil {
-			s.operatorFailure(w, "deliver", token, err)
+			s.operatorFailure(w, r, "deliver", token, err)
 			return
 		}
 	}
@@ -464,7 +464,7 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusCreated
 	}
 	s.operatorDone(r, token)
-	writeJSON(w, status, s.operatorAnswer(ctx, m.Claim()))
+	s.writeUnparsedAnswer(w, r, status, s.operatorAnswer(ctx, m.Claim()))
 }
 
 // drawExperiments draws the tree-unit experiments the project declares for tree, for the open
@@ -495,7 +495,7 @@ func (s *server) claimRequest(request string, event func(http.ResponseWriter, *h
 		token := claim.Token(r.PathValue("token"))
 		m, ok := s.supervisor.Machine(token)
 		if !ok {
-			writeJSON(w, http.StatusNotFound, errorBody("no claim "+string(token)))
+			s.refuse(w, r, http.StatusNotFound, "no claim "+string(token))
 			return
 		}
 		ev, ok := event(w, r, m.View().Claim)
@@ -511,7 +511,7 @@ func (s *server) claimRequest(request string, event func(http.ResponseWriter, *h
 			status = http.StatusAccepted
 		}
 		s.operatorDone(r, token)
-		writeJSON(w, status, s.operatorAnswer(r.Context(), m.View().Claim))
+		s.writeUnparsedAnswer(w, r, status, s.operatorAnswer(r.Context(), m.View().Claim))
 	}
 }
 
@@ -528,7 +528,7 @@ func (s *server) claimEvent(w http.ResponseWriter, r *http.Request, m *supervise
 	case errors.Is(err, supervise.ErrSuspendHeld):
 		return true, true
 	case err != nil:
-		s.operatorFailure(w, request, token, err)
+		s.operatorFailure(w, r, request, token, err)
 		return false, false
 	}
 	return false, true
@@ -544,7 +544,7 @@ func (s *server) postClaimEvent(w http.ResponseWriter, r *http.Request, m *super
 	request string, ev supervise.Event) (posted bool, err error) {
 	ctx, decided := s.decision(r, token)
 	defer decided()
-	if s.stopped(w, request) {
+	if s.stopped(w, r, request) {
 		return false, nil
 	}
 	return true, m.Handle(ctx, ev)
@@ -554,7 +554,7 @@ func (s *server) postClaimEvent(w http.ResponseWriter, r *http.Request, m *super
 // claim but the controller's (refusedWhilePaused).
 func (s *server) deliverEvent(w http.ResponseWriter, r *http.Request, c supervise.Claim) (supervise.Event, bool) {
 	var req DeliverRequest
-	if !s.readBody(w, r, &req, nil) || !requireFields(w, field{"task", req.Task}) {
+	if !s.readBody(w, r, &req, nil) || !s.requireFields(w, r, field{"task", req.Task}) {
 		return nil, false
 	}
 	if s.refusedWhilePaused(w, r, "deliver", c) {
@@ -603,24 +603,24 @@ func (s *server) forgetSession(w http.ResponseWriter, r *http.Request) {
 	if !s.readBody(w, r, &req, nil) {
 		return
 	}
-	if !requireFields(w, field{"session", req.Session}) {
+	if !s.requireFields(w, r, field{"session", req.Session}) {
 		return
 	}
 	token := claim.Token(r.PathValue("token"))
 	m, ok := s.supervisor.Machine(token)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, errorBody("no claim "+string(token)))
+		s.refuse(w, r, http.StatusNotFound, "no claim "+string(token))
 		return
 	}
 	c := m.Claim()
 	if !c.HoldsSession(req.Session) {
-		writeJSON(w, http.StatusConflict, errorBody(fmt.Sprintf(
-			"forget-session refused: %s records session %s; pass --session %s to start fresh", c.Token, c.Session, c.Session)))
+		s.refuse(w, r, http.StatusConflict, fmt.Sprintf(
+			"forget-session refused: %s records session %s; pass --session %s to start fresh", c.Token, c.Session, c.Session))
 		return
 	}
 	if !forgettable(c.State) {
-		writeJSON(w, http.StatusConflict, errorBody(fmt.Sprintf(
-			"forget-session refused: %s is %s; suspend, fail, or retire it before starting fresh", c.Token, c.State)))
+		s.refuse(w, r, http.StatusConflict, fmt.Sprintf(
+			"forget-session refused: %s is %s; suspend, fail, or retire it before starting fresh", c.Token, c.State))
 		return
 	}
 	if s.beforeForgetSessionHandle != nil {
@@ -628,18 +628,18 @@ func (s *server) forgetSession(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, decided := s.decision(r, token)
 	defer decided()
-	if s.stopped(w, "forget-session") {
+	if s.stopped(w, r, "forget-session") {
 		return
 	}
 	if err := m.Handle(ctx, supervise.RequestForgetSession{Claim: token, Session: req.Session}); err != nil {
-		s.operatorFailure(w, "forget-session", token, err)
+		s.operatorFailure(w, r, "forget-session", token, err)
 		return
 	}
 	s.log.Info("api: operator forgot session", "claim", token, "session", c.Session, "sessionFile", c.SessionFile)
 	s.operatorDone(r, token)
 	view := s.operatorAnswer(ctx, m.Claim())
 	view.ForgottenSession, view.ForgottenSessionFile = c.Session, c.SessionFile
-	writeJSON(w, http.StatusOK, view)
+	s.writeUnparsedAnswer(w, r, http.StatusOK, view)
 }
 
 func forgettable(state supervise.ClaimState) bool {
@@ -659,7 +659,7 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 	token := claim.Token(r.PathValue("token"))
 	m, ok := s.supervisor.Machine(token)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, errorBody("no claim "+string(token)))
+		s.refuse(w, r, http.StatusNotFound, "no claim "+string(token))
 		return
 	}
 	var req RetryRequest
@@ -686,7 +686,7 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 	s.operatorDone(r, token)
 	view := s.operatorAnswer(r.Context(), m.Claim())
 	view.PhaseNotRestarted = notRestarted
-	writeJSON(w, status, view)
+	s.writeUnparsedAnswer(w, r, status, view)
 }
 
 // retryStart starts a claim that is running nothing: one that failed or retired, whatever retired
@@ -707,7 +707,7 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 	if failedOrRetired(c.State) {
 		if status, refusal, restarted := s.restartWorkedPhase(r, token, c, fresh); restarted {
 			if refusal != "" {
-				writeJSON(w, status, errorBody(refusal))
+				s.refuse(w, r, status, refusal)
 				return 0, false
 			}
 			return status, true
@@ -846,7 +846,7 @@ func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 	token := claim.Token(r.PathValue("token"))
 	root, ok := s.supervisor.Machine(token)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, errorBody("no claim "+string(token)))
+		s.refuse(w, r, http.StatusNotFound, "no claim "+string(token))
 		return
 	}
 	c := root.Claim()
@@ -859,27 +859,27 @@ func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 	claims, err := s.supervisor.Claims(ctx)
 	if err != nil {
 		s.logFailure("api: read the claims of a tree the operator closes", "tree", c.Tree, "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorBody(fmt.Sprintf("closed nothing: the daemon could not read the claims of tree %s", c.Tree)))
+		s.refuse(w, r, http.StatusInternalServerError, fmt.Sprintf("closed nothing: the daemon could not read the claims of tree %s", c.Tree))
 		return
 	}
 	defer s.decisions.begin(treeOthers(claims, c.Tree, token))()
-	if s.stopped(w, "close") {
+	if s.stopped(w, r, "close") {
 		return
 	}
 	if err := root.Handle(ctx, supervise.RequestOperatorClose{Claim: token}); err != nil {
-		s.operatorFailure(w, "close", token, err)
+		s.operatorFailure(w, r, "close", token, err)
 		return
 	}
 	lifecycle, cleanup, err := s.trees.ReserveOperatorTreeCleanup(ctx, s.project, c.Tree)
 	if err != nil {
 		s.logFailure("api: reserve cleanup of an operator-closed tree", "tree", c.Tree, "error", err)
-		writeJSON(w, http.StatusConflict, errorBody(fmt.Sprintf("closed %s's root claim, but its durable tree cleanup could not be reserved: %v. Retry legion claims close once that is resolved", c.Tree, err)))
+		s.refuse(w, r, http.StatusConflict, fmt.Sprintf("closed %s's root claim, but its durable tree cleanup could not be reserved: %v. Retry legion claims close once that is resolved", c.Tree, err))
 		return
 	}
 	claims, err = s.supervisor.Claims(ctx)
 	if err != nil {
 		s.logFailure("api: read the claims of a tree the operator closed", "tree", c.Tree, "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorBody(fmt.Sprintf("closed %s's root claim %s, but the daemon could not read the tree's other claims to stop them", c.Tree, token)))
+		s.refuse(w, r, http.StatusInternalServerError, fmt.Sprintf("closed %s's root claim %s, but the daemon could not read the tree's other claims to stop them", c.Tree, token))
 		return
 	}
 	others := treeOthers(claims, c.Tree, token)
@@ -903,19 +903,19 @@ func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(unstopped) > 0 {
-		writeJSON(w, http.StatusInternalServerError, errorBody(fmt.Sprintf("closed %s's root claim %s, but these claims of the tree were not stopped: %s. Stop each now with legion claims stop, then close again: the tree's durable cleanup waits for every claim of it",
-			c.Tree, token, strings.Join(unstopped, "; "))))
+		s.refuse(w, r, http.StatusInternalServerError, fmt.Sprintf("closed %s's root claim %s, but these claims of the tree were not stopped: %s. Stop each now with legion claims stop, then close again: the tree's durable cleanup waits for every claim of it",
+			c.Tree, token, strings.Join(unstopped, "; ")))
 		return
 	}
 	if cleanup {
 		if err := s.trees.CleanupReservedTree(ctx, s.project, c.Tree, lifecycle.Epoch, s.releaser); err != nil {
 			s.logFailure("api: cleanup an operator-closed tree", "tree", c.Tree, "error", err)
-			writeJSON(w, http.StatusInternalServerError, errorBody(fmt.Sprintf("closed %s's claims, but durable resource cleanup is pending: %v. Retry legion claims close after the reported cleanup error is resolved", c.Tree, err)))
+			s.refuse(w, r, http.StatusInternalServerError, fmt.Sprintf("closed %s's claims, but durable resource cleanup is pending: %v. Retry legion claims close after the reported cleanup error is resolved", c.Tree, err))
 			return
 		}
 	}
 	s.operatorDone(r, token)
-	writeJSON(w, http.StatusOK, s.operatorAnswer(ctx, root.Claim()))
+	s.writeUnparsedAnswer(w, r, http.StatusOK, s.operatorAnswer(ctx, root.Claim()))
 }
 
 // operatorDone logs the one Info line every operator request on a claim that succeeded writes: its
@@ -962,7 +962,7 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 	claims, err := s.supervisor.Claims(r.Context())
 	if err != nil {
 		s.logRequestFailure(r, err, "api: read the claims")
-		writeJSON(w, http.StatusInternalServerError, errorBody("the daemon could not read its claims"))
+		s.refuse(w, r, http.StatusInternalServerError, "the daemon could not read its claims")
 		return
 	}
 	sort.Slice(claims, func(i, j int) bool { return claims[i].Token < claims[j].Token })
@@ -978,18 +978,18 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 	if s.podUpdateRounds != nil {
 		rounds = s.podUpdateRounds()
 	}
-	writeJSON(w, http.StatusOK, OperatorClaims{Claims: views, PodUpdateRounds: &rounds})
+	s.writeUnparsedAnswer(w, r, http.StatusOK, OperatorClaims{Claims: views, PodUpdateRounds: &rounds})
 }
 
 // operatorFailure answers an operator request its machine did not take: 409 with the machine's
 // reason when the claim's state does not allow it, and otherwise a 500 that says what failed — the
 // operator is the one who has to act on a launch the runtime refused.
-func (s *server) operatorFailure(w http.ResponseWriter, request string, token claim.Token, err error) {
+func (s *server) operatorFailure(w http.ResponseWriter, r *http.Request, request string, token claim.Token, err error) {
 	var refused *supervise.RefusedError
 	if errors.As(err, &refused) {
-		writeJSON(w, http.StatusConflict, errorBody(refused.Error()))
+		s.refuse(w, r, http.StatusConflict, refused.Error())
 		return
 	}
 	s.logFailure("api: an operator request failed", "request", request, "claim", token, "error", err)
-	writeJSON(w, http.StatusInternalServerError, errorBody(fmt.Sprintf("%s %s: %v", request, token, err)))
+	s.refuse(w, r, http.StatusInternalServerError, fmt.Sprintf("%s %s: %v", request, token, err))
 }

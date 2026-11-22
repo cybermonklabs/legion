@@ -1,6 +1,11 @@
 // Package tlsalert is the daemon's one reading of a TLS alert, the far side's or the client's own,
 // at any point of the connection: an answer that ends the connection and that no wait fixes, as
 // against a network that is not there yet, which the next attempt can find.
+// Its twin is packages/envoy/internal/tlsalert: a change to the reading here is a change there.
+//
+// The two are copies, not one package imported twice, for the reason
+// packages/daemon/internal/testtmp gives. Only this package comment and the paragraph of In's
+// comment that names its callers are each module's own.
 package tlsalert
 
 import (
@@ -23,7 +28,7 @@ import (
 // Three of its callers keep an alert out of the failures they wait out: internal/store's
 // OpenRetryable (the start's attempts to open its store), internal/natsauth's Unreachable (a NATS
 // that is not up yet) and internal/dispatch's TransportRefusal (a failure of Dispatch's transport
-// no wait fixes). internal/agentsecrets' daemonSideFault still waits an alert out, but on the
+// no wait fixes). internal/cipher's daemonSideFault still waits an alert out, but on the
 // token login's long schedule, a fault on the daemon's own side, in place of the short one of a
 // broker out of reach.
 func In(err error) bool {

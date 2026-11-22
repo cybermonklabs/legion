@@ -218,3 +218,84 @@ func TestLazyVerifierVerifiesOnceItsIssuerIsDiscovered(t *testing.T) {
 		t.Fatalf("Verify of a token for another audience: err = %v, want ErrAudience", err)
 	}
 }
+
+// Issues picks a lazy verifier's tokens by their iss claim alone, before its issuer is discovered
+// and while the issuer cannot be read, and reads nothing from the issuer to do it: a server that
+// trusts two issuers sends a token to the one it is for, which then answers it as unchecked
+// rather than the other refusing it. Google's scheme-less spelling is Google's
+// (TestGooglesSchemelessIssuerIsGooglesOwn holds the same rule after discovery).
+func TestALazyVerifierPicksItsTokensBeforeItsIssuerIsRead(t *testing.T) {
+	issuer := oidctest.New(t)
+	signing := issuer.PublishKey(t, "signing-key")
+	issuer.FailDiscovery(http.StatusServiceUnavailable)
+	verifier := NewLazyVerifier(issuer.URL(), testAudience)
+	other := issuer.Claims(testSubject, testAudience)
+	other["iss"] = "https://other.example"
+
+	if !verifier.Issues(issuer.Mint(t, signing, issuer.Claims(testSubject, testAudience))) {
+		t.Fatal("Issues of a token of the verifier's own issuer = false before discovery, want true")
+	}
+	if verifier.Issues(issuer.Mint(t, signing, other)) {
+		t.Fatal("Issues of another issuer's token = true, want false")
+	}
+	google := NewLazyVerifier(GoogleIssuer, testAudience)
+	for _, iss := range []string{GoogleIssuer, googleSchemelessIssuer} {
+		claims := issuer.Claims(testSubject, testAudience)
+		claims["iss"] = iss
+		if !google.Issues(issuer.Mint(t, signing, claims)) {
+			t.Fatalf("Issues of a token naming %q, for a verifier of Google = false, want true", iss)
+		}
+	}
+	if got := issuer.DiscoveryRequests(); got != 0 || verifier.Discovered() || google.Discovered() {
+		t.Fatalf("Issues read the discovery document %d times (discovered: %t, %t), want none", got, verifier.Discovered(), google.Discovered())
+	}
+}
+
+// VerifyGoogleIdentity fails with ErrIssuerUnavailable until the issuer is discovered, and reads
+// the token's address as Verifier.VerifyGoogleIdentity does after.
+func TestALazyVerifierVerifiesAGoogleIdentityOnceItsIssuerIsDiscovered(t *testing.T) {
+	issuer := oidctest.New(t)
+	signing := issuer.PublishKey(t, "signing-key")
+	issuer.FailDiscovery(http.StatusServiceUnavailable)
+	verifier := NewLazyVerifier(issuer.URL(), testAudience)
+	clock := newTestClock()
+	verifier.discovery.now = clock.Now
+	claims := issuer.Claims(testSubject, testAudience)
+	claims["email"], claims["email_verified"] = "example-sink@example-project.iam.gserviceaccount.com", true
+	token := issuer.Mint(t, signing, claims)
+
+	if _, err := verifier.VerifyGoogleIdentity(context.Background(), token); !errors.Is(err, ErrIssuerUnavailable) {
+		t.Fatalf("VerifyGoogleIdentity before discovery: err = %v, want ErrIssuerUnavailable", err)
+	}
+	issuer.FailDiscovery(0)
+	clock.advance(discoveryRetrySpacing)
+	got, err := verifier.VerifyGoogleIdentity(context.Background(), token)
+	if err != nil || got.Email != claims["email"] || !got.EmailVerified {
+		t.Fatalf("VerifyGoogleIdentity once the issuer answers: %+v, %v; want the address, verified", got, err)
+	}
+}
+
+// DiscoveredVerifier hands a Verifier a caller built itself where a LazyVerifier is taken: it is
+// discovered already, verifies with that Verifier and reads no discovery document, and a nil
+// Verifier stays nil, an unconfigured verifier.
+func TestADiscoveredVerifierReadsNothing(t *testing.T) {
+	if DiscoveredVerifier(nil) != nil {
+		t.Fatal("DiscoveredVerifier(nil) is not nil")
+	}
+	issuer := oidctest.New(t)
+	signing := issuer.PublishKey(t, "signing-key")
+	keys, err := NewKeys(context.Background(), issuer.URL())
+	if err != nil {
+		t.Fatalf("NewKeys: %v", err)
+	}
+	before := issuer.DiscoveryRequests()
+	issuer.FailDiscovery(http.StatusServiceUnavailable)
+	verifier := DiscoveredVerifier(NewWithKeys(issuer.URL(), testAudience, keys))
+	claims, err := verifier.Verify(context.Background(), issuer.Mint(t, signing, issuer.Claims(testSubject, testAudience)))
+	if err != nil || claims.Subject != testSubject || !verifier.Discovered() {
+		t.Fatalf("Verify = %+v, %v (discovered: %t); want %s and a discovered verifier", claims, err, verifier.Discovered(), testSubject)
+	}
+	if got := issuer.DiscoveryRequests(); got != before {
+		t.Fatalf("the discovery document was read %d more times, want none", got-before)
+	}
+}

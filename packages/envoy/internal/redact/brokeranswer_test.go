@@ -2,7 +2,7 @@
 //
 // Which OAuth error answer a printer of the broker's refusals takes as the broker's own words:
 // never one that Class or Masked holds, which is another server's answer this package has already
-// printed as its class. Tested through brokeraddr.Address's Error and Cause, which is how every
+// printed as its class. Tested through cipheraddr.Address's Error and Cause, which is how every
 // broker client reaches redact.Error and redact.Cause. Every secret here is made up.
 
 package redact_test
@@ -15,7 +15,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/sjawhar/envoy/brokeraddr"
+	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -40,7 +40,7 @@ func foreignAnswer() *oauth2.RetrieveError {
 // alone. The broker's own answer beside the same address still prints its code and description
 // whole: the control.
 func TestAnAnswerUnderClassIsNotTheBrokersOwn(t *testing.T) {
-	addr := brokeraddr.New("https://broker.example")
+	addr := cipheraddr.New("https://broker.example")
 	issuer := "https://" + "tokuser9f3" + ":" + answerSecret + "@issuer.example"
 	for name, held := range map[string]error{
 		"Class":  redact.Class(foreignAnswer()),

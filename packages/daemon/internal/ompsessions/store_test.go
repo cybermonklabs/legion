@@ -68,6 +68,74 @@ func TestValidInstanceIsTheConnectorsRule(t *testing.T) {
 	}
 }
 
+// testWriterAudience is a workload identity provider's full resource name, with placeholder ids.
+const testWriterAudience = "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/legion-session-writer/providers/example-cluster"
+
+// A writer audience is valid exactly when it is a provider's full resource name whole: the IAM
+// host after `//`, the project's number, the one location Google takes, and a pool id and a
+// provider id of 4 to 32 characters of [a-z0-9-] that do not start with Google's reserved `gcp-`.
+// Anything else would be an audience Google's security token service refuses at every
+// generation's first dial, or a token minted for another audience than the provider's.
+func TestValidWriterAudienceIsAProvidersFullResourceName(t *testing.T) {
+	pool := func(id string) string {
+		return "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/" + id + "/providers/example-cluster"
+	}
+	provider := func(id string) string {
+		return "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/legion-session-writer/providers/" + id
+	}
+	for _, tc := range []struct {
+		audience string
+		want     bool
+	}{
+		{testWriterAudience, true},
+		{pool("pool"), true},
+		{pool(strings.Repeat("p", 32)), true},
+		{provider("0-9a"), true},
+		{provider(strings.Repeat("9", 32)), true},
+		{"", false},
+		{" " + testWriterAudience, false},
+		{testWriterAudience + " ", false},
+		{testWriterAudience + "\n", false},
+		{"\t" + testWriterAudience, false},
+		{strings.Replace(testWriterAudience, "/providers/", "/providers /", 1), false},
+		{strings.Replace(testWriterAudience, "legion-session-writer", "Legion-Session-Writer", 1), false},
+		{strings.Replace(testWriterAudience, "example-cluster", "Example-Cluster", 1), false},
+		{strings.Replace(testWriterAudience, "//iam.googleapis.com/", "//IAM.googleapis.com/", 1), false},
+		{strings.Replace(testWriterAudience, "workloadIdentityPools", "workloadidentitypools", 1), false},
+		{strings.Replace(testWriterAudience, "//iam.googleapis.com/", "//sts.googleapis.com/", 1), false},
+		{strings.Replace(testWriterAudience, "//iam.googleapis.com/", "//iam.example.com/", 1), false},
+		{strings.Replace(testWriterAudience, "//iam.googleapis.com/", "https://iam.googleapis.com/", 1), false},
+		{strings.TrimPrefix(testWriterAudience, "//"), false},
+		{strings.TrimPrefix(testWriterAudience, "/"), false},
+		{"principal:" + testWriterAudience, false},
+		{testWriterAudience + "/", false},
+		{testWriterAudience + "/extra", false},
+		{strings.Replace(testWriterAudience, "/projects/", "/projects/123/projects/", 1), false},
+		{strings.Replace(testWriterAudience, "123456789012", "example-project", 1), false},
+		{strings.Replace(testWriterAudience, "123456789012", "12345678901a", 1), false},
+		{strings.Replace(testWriterAudience, "123456789012", "", 1), false},
+		{strings.Replace(testWriterAudience, "/locations/global/", "/locations/us-central1/", 1), false},
+		{strings.TrimSuffix(testWriterAudience, "/providers/example-cluster"), false},
+		{pool("abc"), false},
+		{pool(strings.Repeat("p", 33)), false},
+		{pool("legion_session_writer"), false},
+		{pool("legion.session.writer"), false},
+		{pool("gcp-legion"), false},
+		{pool(""), false},
+		{provider("abc"), false},
+		{provider(strings.Repeat("p", 33)), false},
+		{provider("example_cluster"), false},
+		{provider("gcp-cluster"), false},
+		{provider(""), false},
+	} {
+		t.Run(tc.audience, func(t *testing.T) {
+			if got := ValidWriterAudience(tc.audience); got != tc.want {
+				t.Errorf("ValidWriterAudience(%q) = %t, want %t", tc.audience, got, tc.want)
+			}
+		})
+	}
+}
+
 // Oh My Pi's client takes the socket whole as the URL's `path` parameter and ignores the host; the
 // login, which holds an `@`, is percent-encoded in the userinfo and survives net/url's own parser.
 func TestAgentURLNamesTheSocketAndSurvivesARoundTrip(t *testing.T) {

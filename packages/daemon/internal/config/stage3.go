@@ -24,6 +24,13 @@ import (
 
 // DesignGate is the word `gates.design` took before it took a list of steps, and which it still
 // accepts in place of one: `root-issues` for the single step spec, `off` for no step at all.
+//
+// The steps a word names are the ones every root must register, which is not every step a root
+// can be held on. Under `root-issues` a root's architect may also register its Verification
+// document as the step criteria, and from then on that root's tree is held on it as on the spec
+// (record.TreeSteps); a root that registers none is held on the spec alone. Under `off` no step
+// holds a tree: a registration records spec whatever step it names, and a criteria row kept
+// from a deployment that gated spec holds nothing.
 type DesignGate string
 
 const (
@@ -57,11 +64,15 @@ type Gates struct {
 	Design []record.DesignStep
 }
 
-// Steps is the design-gate steps the deployment gates, in the order it named them. The daemon
-// keeps one gate record for each step, and every reader of the gate asks this list
-// (classify.RequiredSteps). A nil list is the unset field, which gates the single step spec as
-// the gate did before a deployment could name a list, so a Config built without its Gates field
-// gates rather than waves through; a non-nil empty list is `off` and gates no step.
+// Steps is the design-gate steps the deployment gates, in the order it named them: the steps
+// every root must register before its tree works. The daemon keeps one gate record for each step
+// a root registers, and every reader of the gate asks this list through record.TreeSteps, so a
+// list that names spec and not criteria also holds a tree on criteria once its root's architect
+// registers the Verification document as that step: a tree can be gated on one step more than
+// this list names, never fewer. A nil list is the unset field, which gates the single step spec
+// as the gate did before a deployment could name a list, so a Config built without its Gates
+// field gates rather than waves through; a non-nil empty list is `off` and gates no step, and no
+// step joins it.
 func (g Gates) Steps() []record.DesignStep {
 	if g.Design == nil {
 		return DesignGateRootIssues.Steps()
@@ -71,18 +82,17 @@ func (g Gates) Steps() []record.DesignStep {
 
 // Project is a Dispatch project prefix's configuration: the Slack channels whose @-mentions reach
 // its controller, and whether a merge that closes one of its issues opens a production check at
-// all. Dispatch's mapping (Settings → Repositories → Projects) names the project's default
-// repository and the repositories the daemon prepares before an issue names one. The daemon reads
-// that mapping at boot and when it changes, never this file.
+// all. It names no repository: the daemon takes each issue's repository from Dispatch, which
+// resolves it from the issue, its ancestors or the project, and never from this file.
 type Project struct {
 	// SlackChannels are `slack_channels`, the Slack channel ids whose app mentions the project's
 	// controller subscribes to, in the file's order; nil when the file names none.
 	SlackChannels []string
 	// CommitIssueTrailerRepos are `commit_issue_trailer_repos`, the repositories whose commits a
 	// pane stamps with the issue key, in the file's order, and nil when the file names none. A
-	// pane stamps the commit when its launch's repository is one of these names. The boot checks
-	// each name against Dispatch's mapping for this project alone, which catches a typo. That
-	// mapping decides no reach: an issue may name any repository.
+	// pane stamps the commit when its launch's repository is one of these names. The load checks
+	// each name's shape and refuses two names of one repository; nothing compares them with
+	// anything at boot, since a project works in each repository both role Apps reach.
 	CommitIssueTrailerRepos []ghrepo.Repository
 	// Memory is `memory`, the project's per-tree memory setting; its zero value is off, which a
 	// file that names no block leaves.
@@ -206,7 +216,7 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 	var unknown unknownKeyError
 	if errors.As(err, &unknown) {
 		if unknown.name == "repo" {
-			return Project{}, nil, fmt.Errorf(`Unknown key %q: Dispatch holds the project's repository mapping (Settings → Repositories → Projects)`, key+".repo")
+			return Project{}, nil, fmt.Errorf(`Unknown key %q: the daemon takes each issue's repository from Dispatch, which resolves it from the issue, its ancestors or the project`, key+".repo")
 		}
 		// The shipped loader's own words (validateProjectEntry, config.ts).
 		return Project{}, nil, fmt.Errorf(`Unknown key %q`, key+"."+unknown.name)

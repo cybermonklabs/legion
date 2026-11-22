@@ -532,7 +532,7 @@ func TestAnIssuePodsSessionURLNamesTheSocketAsTheRoleSeesIt(t *testing.T) {
 	if err := os.MkdirAll(bound, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	proxy, clientURL, err := m.startSession(context.Background(), generation, bound)
+	proxy, clientURL, err := m.startSession(context.Background(), shimwire.LauncherStart{Generation: generation}, nil, bound)
 	if err != nil {
 		t.Fatalf("startSession: %v; the launcher's log: %s", err, m.stderr)
 	}

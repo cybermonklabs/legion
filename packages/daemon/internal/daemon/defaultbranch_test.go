@@ -118,7 +118,7 @@ func TestDefaultBranchesKeepsNoRefusal(t *testing.T) {
 }
 
 // Named is a repository as GitHub names it, read with its default branch and kept the same TTL,
-// whatever spelling it was asked by: Dispatch's mapping is lowercased, and GitHub's events carry
+// whatever spelling it was asked by: Dispatch's resolution may be lowercased, and GitHub's events carry
 // GitHub's spelling. Kept is the last read the daemon made, however old, and asks GitHub nothing:
 // what the workflow records an issue with inside its transaction, once the read was made.
 func TestDefaultBranchesNamesTheRepositoryAndKeepsTheLastRead(t *testing.T) {

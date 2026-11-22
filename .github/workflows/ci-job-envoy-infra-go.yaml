@@ -46,6 +46,7 @@ jobs:
     # 28 s) come to 1265 s, about 21 minutes, and half again is 1898 s, the 32 minutes here.
     timeout-minutes: 32
     env:
+      JOB_TIMEOUT_MINUTES: 32 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       TESTCONTAINERS_RYUK_DISABLED: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -55,6 +56,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/infra/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # go-envoy-infra, under the key .github/workflows/ci-caches.yaml's envoy-infra job fills: the
       # runner's architecture, the Go version and the hash of the files that choose the module

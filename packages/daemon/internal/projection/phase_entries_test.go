@@ -62,7 +62,7 @@ func TestProjectShowsThePhaseEntryAndTheEntryTheRoleWasGiven(t *testing.T) {
 			Session: "ses_implementer_60", GivenEntry: 5},
 	}
 
-	got, err := Project(context.Background(), nil, store, project, nil, nil, claims, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: project, Claims: claims, Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestProjectShowsARootsArchitectHandshake(t *testing.T) {
 		architect("LEGION-100", 1, supervise.EntryHandshake{}, nil),
 	}
 
-	got, err := Project(context.Background(), nil, store, project, nil, nil, claims, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: project, Claims: claims, Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestARootCarriesItsArchitectHandshakeOfThisRunInEveryPhase(t *testing.T) {
 			"LEGION-110": {row("LEGION-110", claim.RoleImplementer, 1)},
 		},
 	}
-	got, err := Project(context.Background(), nil, store, project, nil, nil, []supervise.Claim{
+	got, err := Project(context.Background(), Inputs{Store: store, Project: project, Claims: []supervise.Claim{
 		// The root waiting on a person after its architect's first turn registered its gate.
 		held("LEGION-70", claim.RoleArchitect, 1, architects(1, 2)),
 		// The root its architect accepts, whose numbers are the architect's too.
@@ -258,7 +258,7 @@ func TestARootCarriesItsArchitectHandshakeOfThisRunInEveryPhase(t *testing.T) {
 		held("LEGION-90", claim.RoleImplementer, 1, implementers),
 		held("LEGION-100", claim.RoleImplementer, 1, implementers),
 		held("LEGION-110", claim.RoleImplementer, 1, implementers),
-	}, nil, nil, projectedAt)
+	}, Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}

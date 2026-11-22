@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { readErrorCode } from "@legion/broker-client/error-text";
+import { readErrorCode } from "@legion/cipher-client/error-text";
 import { holdSecret } from "@legion/contracts/held-secrets";
 
 /** Whether `value` can go in a header as one bearer: no whitespace and no control character. A

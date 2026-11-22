@@ -96,7 +96,7 @@ export async function setSignIns(signIns: readonly FakeSignIn[]): Promise<void> 
 /** Whether the fake broker's RFC 8414 metadata names RFC 8628's device grant, which is what
  *  Dispatch reads to decide whether to serve the machine-code page. It is served until a row
  *  turns it off, and `resetFakeBroker` turns it back on. Dispatch holds its own read of that
- *  document for `deviceGrantTTL` (packages/envoy/internal/dispatch/agentsecrets/client.go), so a
+ *  document for `deviceGrantTTL` (packages/envoy/internal/dispatch/cipher/client.go), so a
  *  row that changes it waits for the page to follow rather than expecting the next load to.
  *  Skipped the same way `setPendingCredentialRequests` is. */
 export async function setBrokerDeviceGrant(served: boolean): Promise<void> {

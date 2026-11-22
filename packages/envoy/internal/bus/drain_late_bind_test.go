@@ -144,6 +144,7 @@ func TestCloseDoesNotInstallABindThatFinishesAfterStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
+	t.Cleanup(client.Close)
 
 	const subject = "notifications.role.close-after-bind"
 	client.subscriptionsMu.Lock()

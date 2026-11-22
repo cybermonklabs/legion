@@ -52,7 +52,7 @@
 // A caller that needs a token for an account no --token names, or for a pod of its own choosing,
 // asks the loopback-only control route POST <issuer URL>/_dev/mint, whose body names the subject,
 // the audience and, when it matters, the pod uid, and whose answer is {"token": "…"}. The browser
-// suite's request seeder (internal/broker/brokertest/requestseed) enrolls each of its pods that
+// suite's request seeder (internal/cipher/ciphertest/requestseed) enrolls each of its pods that
 // way, since every pod needs a uid of its own.
 //
 // Once every file is written it logs "issuer listening url=<issuer URL>", the value
@@ -79,7 +79,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/sjawhar/envoy/internal/broker/machine"
+	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 

@@ -120,6 +120,9 @@ export interface ReopenServerOptions {
   readonly args?: readonly string[]
   /** The hub's nonce, which a seed or a broker token signs. */
   readonly nonce?: string
+  /** The loopback address the hub and its gate listen on (fake-nats-server.ts's fakeHost), else
+   *  one of the hub's own that the fake picks. */
+  readonly brokerHost?: string
   /** The host's variables and the credential's, given the server's state directory. */
   readonly env: (stateDirectory: string) => Readonly<Record<string, string>>
   /** Writes what the server reads before it registers into its state directory (a Codex
@@ -174,19 +177,24 @@ export interface ReopenServer {
  *  once it has written its first stderr line (`awaitRegistration`). */
 export async function startReopenServer(options: ReopenServerOptions): Promise<ReopenServer> {
   const relay = deliverSubject(options.sessionId)
-  const broker = new FakeNatsServer(options.nonce === undefined ? {} : { nonce: options.nonce })
-  // Each carried client's owner: the owner of the connection from its port to the gate's, not of
-  // any socket on its port, since Linux gives one ephemeral port to connects to other destinations
-  // too. The lookup starts as the gate carries the connection, which can close before a scan of
-  // every process reaches its holder: so it reads the server's fds first, in milliseconds, and
-  // scans only for another holder.
+  const broker = new FakeNatsServer({
+    ...(options.nonce === undefined ? {} : { nonce: options.nonce }),
+    ...(options.brokerHost === undefined ? {} : { host: options.brokerHost }),
+  })
+  // Each carried client's owner: the owner of the connection from its port to the gate's address
+  // and port, not of any socket on its port, since Linux gives one ephemeral port to connects to
+  // other destinations too. The gate listens on the hub's own loopback address (fakeHost), not
+  // 127.0.0.1, so the lookup is given that address. The lookup starts as the gate carries the
+  // connection, which can close before a scan of every process reaches its holder: so it reads the
+  // server's fds first, in milliseconds, and scans only for another holder.
   const owners = new Map<number, Promise<string>>()
   let serverPid: number | undefined
-  const gate = natsGate(Number(new URL(broker.url).port), (leg) => {
+  const gate = natsGate(broker.url, (leg) => {
     const expected = serverPid === undefined ? {} : { expected: serverPid }
-    owners.set(leg.clientPort, socketOwner(leg.clientPort, gatePort, expected))
+    owners.set(leg.clientPort, socketOwner(leg.clientPort, gateEnd, expected))
   })
-  const gatePort = Number(new URL(gate.url).port)
+  const gateUrl = new URL(gate.url)
+  const gateEnd = { host: gateUrl.hostname, port: Number(gateUrl.port) }
   if (options.gateOpen !== false) gate.open()
   const requests: string[] = []
   const sessions: string[] = []

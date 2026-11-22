@@ -69,6 +69,11 @@ const (
 	TypeLauncherBundle        = "launcher_bundle"
 	TypeLauncherBundleResult  = "launcher_bundle_result"
 	TypeLauncherRestored      = "launcher_restored"
+	// The workspace read: the daemon asking one role's shim whether the workspace every role of
+	// its issue shares holds work that no branch or tag on origin holds, and the shim's answer.
+	// It is a jj query and not a bundle, so the answer is small and crosses on one line.
+	TypeWorkspaceWork       = "workspace-work"
+	TypeWorkspaceWorkResult = "workspace-work-result"
 	// The launcher's memory guard reports each process it ended, unasked, so the daemon can tell
 	// that process's role why it is gone (INFRA-3557). The settings the guard runs by travel the
 	// other way, on the launcher_hello_ack (LauncherMemoryGuard).
@@ -611,6 +616,13 @@ type LauncherStart struct {
 	Files         map[string]string `json:"files,omitempty"`
 	ResumeFile    string            `json:"resumeFile,omitempty"`
 	ResumeSession string            `json:"resumeSession,omitempty"`
+	// AgentExecutable is the agent's executable as /proc/<pid>/exe reads it once any start
+	// wrapper has exec'd it: an absolute path, such as the image's /opt/omp/bin/omp. Argv cannot
+	// say it, because a deployment's setup wraps the agent in `/bin/sh -c <script> legion-start`.
+	// The daemon fills it for an Oh My Pi launch, and a launcher with a session writer token
+	// knows the agent's process by it (internal/launcher's sessionPeer). It is empty for a
+	// Claude Code launch, whose agent writes no session itself.
+	AgentExecutable string `json:"agentExecutable,omitempty"`
 }
 
 // GenerationDir is the directory under a launcher's private directory that holds one generation's
@@ -883,6 +895,36 @@ type BundleWorkspaceResult struct {
 	At        time.Time         `json:"at"`
 }
 
+// WorkspaceWork asks the shim whether the workspace it runs in holds work that no branch or tag
+// on origin holds: a read, which moves no bytes of the work and writes only jj's snapshot of the
+// working copy. The daemon names the issue whose workspace it asks about and the budget, never a
+// command or a path: the shim reads the one workspace its environment names, which is that
+// issue's, with the jj it already works with.
+type WorkspaceWork struct {
+	ID        string `json:"id"`
+	Issue     string `json:"issue"`
+	TimeoutMs int    `json:"timeoutMs"`
+}
+
+// MaxWorkspaceWorkCommits is the most work commits one WorkspaceWorkResult lists. Twenty ids are
+// enough for a person to find the work, and they keep the answer one short line whatever the
+// workspace holds; Count says how many there are in all.
+const MaxWorkspaceWorkCommits = 20
+
+// WorkspaceWorkResult answers WorkspaceWork: the commit the working copy sits on (Head), whether
+// that commit holds a change (Changed), the first MaxWorkspaceWorkCommits work commits and how
+// many there are in all (Count). It always fits one line, so it crosses the shim's lane with no
+// rpc_chunk sequence.
+type WorkspaceWorkResult struct {
+	ID      string   `json:"id"`
+	OK      bool     `json:"ok"`
+	Error   string   `json:"error,omitempty"`
+	Head    string   `json:"head,omitempty"`
+	Changed bool     `json:"changed"`
+	Commits []string `json:"commits,omitempty"`
+	Count   int      `json:"count"`
+}
+
 // LauncherBundle is one slice of a saved workspace bundle on its way to the launcher of the pod
 // that replaces a released one. The launcher has no rpc_chunk lane of its own, so the slicing is
 // the frame's: Payload is the Index-th LauncherBundlePayloadBytes of the whole body
@@ -1025,6 +1067,8 @@ func (LauncherStop) FrameType() string                 { return TypeLauncherStop
 func (LauncherStopResult) FrameType() string           { return TypeLauncherStopResult }
 func (BundleWorkspace) FrameType() string              { return TypeBundleWorkspace }
 func (BundleWorkspaceResult) FrameType() string        { return TypeBundleWorkspaceResult }
+func (WorkspaceWork) FrameType() string                { return TypeWorkspaceWork }
+func (WorkspaceWorkResult) FrameType() string          { return TypeWorkspaceWorkResult }
 func (LauncherBundle) FrameType() string               { return TypeLauncherBundle }
 func (LauncherBundleResult) FrameType() string         { return TypeLauncherBundleResult }
 func (LauncherRestored) FrameType() string             { return TypeLauncherRestored }
@@ -1176,6 +1220,16 @@ func (f BundleWorkspaceResult) MarshalJSON() ([]byte, error) {
 	return marshalFrame(TypeBundleWorkspaceResult, plain(f))
 }
 
+func (f WorkspaceWork) MarshalJSON() ([]byte, error) {
+	type plain WorkspaceWork
+	return marshalFrame(TypeWorkspaceWork, plain(f))
+}
+
+func (f WorkspaceWorkResult) MarshalJSON() ([]byte, error) {
+	type plain WorkspaceWorkResult
+	return marshalFrame(TypeWorkspaceWorkResult, plain(f))
+}
+
 func (f LauncherBundle) MarshalJSON() ([]byte, error) {
 	type plain LauncherBundle
 	return marshalFrame(TypeLauncherBundle, plain(f))
@@ -1255,9 +1309,10 @@ func (f Compact) Validate() error {
 	return nil
 }
 
-// issueKeyShape is a Dispatch issue key, the one shape an issue has. The shim puts the issue into
-// a revset (`remote_bookmarks(exact:"legion/<issue>")`), so a frame whose issue is not one is
-// refused here rather than quoted into a command.
+// issueKeyShape is a Dispatch issue key, the one shape an issue has. The shim puts a bundle's
+// issue into a revset (`remote_bookmarks(exact:"legion/<issue>")`), so a frame whose issue is not
+// one is refused here rather than quoted into a command; a workspace read's issue is held to the
+// same shape, since it names the issue whose workspace is read.
 var issueKeyShape = regexp.MustCompile(`^[A-Z][A-Z0-9]*-[0-9]+$`)
 
 // Validate refuses a bundle request the shim would refuse. The daemon is its only sender.
@@ -1287,6 +1342,38 @@ func (f BundleWorkspaceResult) Validate() error {
 		return fmt.Errorf("%w: bundle-workspace-result carries no head", ErrMalformedFrame)
 	case f.OK && f.SizeBytes != len(f.Bundle):
 		return fmt.Errorf("%w: bundle-workspace-result says %d bytes and carries %d", ErrMalformedFrame, f.SizeBytes, len(f.Bundle))
+	}
+	return nil
+}
+
+// Validate refuses a workspace read the shim would refuse. The daemon is its only sender.
+func (f WorkspaceWork) Validate() error {
+	switch {
+	case f.ID == "":
+		return fmt.Errorf("%w: workspace-work carries no id", ErrMalformedFrame)
+	case !issueKeyShape.MatchString(f.Issue):
+		return fmt.Errorf("%w: workspace-work issue %q is not an issue key", ErrMalformedFrame, f.Issue)
+	case f.TimeoutMs <= 0:
+		return fmt.Errorf("%w: workspace-work timeoutMs is %d", ErrMalformedFrame, f.TimeoutMs)
+	}
+	return nil
+}
+
+// Validate refuses a workspace read's answer the daemon could not act on: one answering no
+// request, a refusal with no reason, a reading with no working-copy commit, more commits than
+// MaxWorkspaceWorkCommits, or a count below the commits it lists.
+func (f WorkspaceWorkResult) Validate() error {
+	switch {
+	case f.ID == "":
+		return fmt.Errorf("%w: workspace-work-result carries no id", ErrMalformedFrame)
+	case !f.OK && f.Error == "":
+		return fmt.Errorf("%w: workspace-work-result refuses without a reason", ErrMalformedFrame)
+	case f.OK && f.Head == "":
+		return fmt.Errorf("%w: workspace-work-result carries no head", ErrMalformedFrame)
+	case len(f.Commits) > MaxWorkspaceWorkCommits:
+		return fmt.Errorf("%w: workspace-work-result lists %d commits, limit %d", ErrMalformedFrame, len(f.Commits), MaxWorkspaceWorkCommits)
+	case f.Count < len(f.Commits):
+		return fmt.Errorf("%w: workspace-work-result counts %d commits and lists %d", ErrMalformedFrame, f.Count, len(f.Commits))
 	}
 	return nil
 }
@@ -1786,6 +1873,10 @@ func Decode(line []byte) (Frame, error) {
 		return decodeInto[BundleWorkspace](trimmed)
 	case TypeBundleWorkspaceResult:
 		return decodeInto[BundleWorkspaceResult](trimmed)
+	case TypeWorkspaceWork:
+		return decodeInto[WorkspaceWork](trimmed)
+	case TypeWorkspaceWorkResult:
+		return decodeInto[WorkspaceWorkResult](trimmed)
 	case TypeLauncherBundle:
 		return decodeInto[LauncherBundle](trimmed)
 	case TypeLauncherBundleResult:

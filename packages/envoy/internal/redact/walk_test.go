@@ -23,7 +23,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/sjawhar/envoy/brokeraddr"
+	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -59,10 +59,10 @@ type walkRow struct {
 // names that route, id and all, so the check for the id can see it.
 func TestNoAccessorCopiesACallsURLIntoAnotherLine(t *testing.T) {
 	const base = "http://127.0.0.1:1"
-	addresses := map[string]brokeraddr.Address{
-		"the address":                          brokeraddr.New(base),
-		"another clean address":                brokeraddr.New("https://other-broker.example"),
-		"an address that carries a credential": brokeraddr.New("http://" + "walkuser" + ":" + walkSecret + "@127.0.0.1:1"),
+	addresses := map[string]cipheraddr.Address{
+		"the address":                          cipheraddr.New(base),
+		"another clean address":                cipheraddr.New("https://other-broker.example"),
+		"an address that carries a credential": cipheraddr.New("http://" + "walkuser" + ":" + walkSecret + "@127.0.0.1:1"),
 	}
 	addr, dirty := addresses["the address"], addresses["an address that carries a credential"]
 	issuer := "https://" + "walkuser" + ":" + walkSecret + "@issuer.example"
@@ -151,7 +151,7 @@ func TestNoAccessorCopiesACallsURLIntoAnotherLine(t *testing.T) {
 
 // walkAccessors passes err, row's error or a wrap of it, through every accessor that can copy its
 // text into another line, beside each of addresses, and checks what each prints.
-func walkAccessors(t *testing.T, row walkRow, addresses map[string]brokeraddr.Address, err error) {
+func walkAccessors(t *testing.T, row walkRow, addresses map[string]cipheraddr.Address, err error) {
 	t.Helper()
 	errorLine := row.class
 	switch {
@@ -187,7 +187,7 @@ func walkAccessors(t *testing.T, row walkRow, addresses map[string]brokeraddr.Ad
 	for what, text := range printed {
 		for name, a := range addresses {
 			got := a.Words(text)
-			if a.Clean() && got != text || !a.Clean() && got != brokeraddr.WordsNotPrinted {
+			if a.Clean() && got != text || !a.Clean() && got != cipheraddr.WordsNotPrinted {
 				t.Errorf("Words beside %s of %s's %q = %q", name, what, text, got)
 			}
 			words["Words beside "+name+" of "+what] = got

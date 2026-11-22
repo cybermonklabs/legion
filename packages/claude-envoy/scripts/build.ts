@@ -19,7 +19,7 @@
 // buildBundles and buildLegionPlugin report reading; a file this script reads by path or
 // imports from outside the listed packages (.bun-version, scripts/third-party-notices.ts, the
 // scripts it runs) is listed by hand.
-import { cp, mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises"
+import { chmod, cp, lstat, mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { thirdPartyNotices } from "../../../scripts/third-party-notices"
 import { PHASE_HOOK_TOOL_NAME } from "../src/legion-phase-hook"
@@ -404,13 +404,16 @@ async function buildOut(out: string): Promise<void> {
 }
 
 /** What the Codex plugin, `@sjawhar/codex-envoy`, takes from `codex/`: its npm
- *  manifest, its plugin manifest, its hooks and its README. It is a package of its own because
- *  Codex's plugin rules and Claude Code's cannot both hold in one directory: Codex's validator
- *  (`validate_plugin.py` of the `plugin-creator` skill Codex installs) refuses a manifest that
- *  names its hooks file, so its hooks must sit at `hooks/hooks.json`, which is also where Claude
- *  Code reads its own, and an npm install of a plugin reads the package's root, never a
- *  subdirectory. Measured on Codex CLI 0.154.0 and Claude Code 2.1.325. */
-const CODEX_SOURCES = [".codex-plugin", "hooks", "package.json", "README.md"] as const
+ *  manifest, its plugin manifest, its hooks, its README, and `bin/dispatch`, the `dispatch`
+ *  command a terminal runs (the manifest's npm `bin`), since the plugin's `dispatch` tool ends a
+ *  command after 120 s and `dispatch login --device` waits longer for a person's approval. It is
+ *  a package of its own because Codex's plugin rules and Claude Code's cannot both hold in one
+ *  directory: Codex's validator (`validate_plugin.py` of the `plugin-creator` skill Codex
+ *  installs) refuses a manifest that names its hooks file, so its hooks must sit at
+ *  `hooks/hooks.json`, which is also where Claude Code reads its own, and an npm install of a
+ *  plugin reads the package's root, never a subdirectory. Measured on Codex CLI 0.154.0 and
+ *  Claude Code 2.1.325. */
+const CODEX_SOURCES = [".codex-plugin", "bin", "hooks", "package.json", "README.md"] as const
 
 /** Each skill Claude Code may not load on its own (`disable-model-invocation: true`) and what
  *  Codex shows for it. Codex's validator refuses that field; Codex's own form of it is the skill's
@@ -489,6 +492,21 @@ export async function buildCodexPlugin(out: string, dist?: string): Promise<void
   }
   if (dist === undefined) await buildBundles(join(out, "dist"))
   else await cp(dist, join(out, "dist"), { recursive: true })
+  // The pack keeps each file's mode as the disk has it, and the copies and writes above take the
+  // source's mode and the builder's umask: a build under umask 0002, which a systemd user unit
+  // runs with, ships group-writable files. Every entry of `out` is shipped, so each loses group and
+  // other write; every user keeps read, and search on each directory and execute on each file the
+  // owner can run. The published modes are then the same whoever builds.
+  for (const path of [
+    out,
+    ...(await readdir(out, { recursive: true })).map((entry) => join(out, entry)),
+  ]) {
+    const entry = await lstat(path)
+    if (entry.isSymbolicLink()) continue
+    const mode = entry.mode & 0o7777
+    const runnable = entry.isDirectory() || (mode & 0o100) !== 0
+    await chmod(path, (mode & ~0o022) | 0o444 | (runnable ? 0o111 : 0))
+  }
 }
 
 const USAGE =

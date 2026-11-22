@@ -1,0 +1,5 @@
+kind: Fixed
+body: The session proxy uses cloud.google.com/go/cloudsqlconn v1.27.0 (was v1.25.4). Its proactive IAM refresh probe now sends a PostgreSQL v3 StartupMessage (GoogleCloudPlatform/cloud-sql-go-connector#1167), which fixes the intermittent IAM sign-in failure with SQLSTATE 08P01 under managed connection pooling (GoogleCloudPlatform/cloud-sql-proxy#2553). The built-in client metrics that cloudsqlconn v1.26.0 turned on by default stay off (WithBuiltInMetrics(false)), so the proxy reads no metadata server for their labels, exports nothing to Cloud Monitoring, and its account needs no new role.
+time: 2026-11-20T12:12:33.787400454Z
+custom:
+    Issue: pr4495

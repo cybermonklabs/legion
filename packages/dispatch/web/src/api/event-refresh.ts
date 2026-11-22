@@ -1,5 +1,5 @@
 import { askProject } from "../features/inbox/list-row";
-import { buildDispatchReference } from "../features/refs/routes";
+import { buildDispatchReference, DECISIONS_DOCUMENT_SLUG } from "../features/refs/routes";
 import { issueProject } from "../lib/issue-key";
 import {
   agentMessagesQuery,
@@ -958,30 +958,37 @@ function documentTargets(event: DispatchEvent, viewer: string | undefined): Refr
 }
 
 function ownerTargets(event: DispatchEvent, viewer: string | undefined): RefreshTarget[] {
-  if (
-    event.type === "project.created" ||
-    event.type === "project.updated" ||
-    event.type === "settings.repo_project.updated"
-  ) {
+  if (event.type === "project.created" || event.type === "project.updated") {
     if (event.project === undefined) {
       throw new Error("project event is missing its project");
     }
     return [
       { queryKey: projectsKey },
       { queryKey: ["project", event.project] },
-      { queryKey: ["issues", "project", event.project] },
-      { queryKey: ["repo-projects"] },
-      // The project list carries no default assignee: a new project's is in the defaults read
-      // alone, which the Settings table reads it from and was answered before it existed.
       ...(event.type === "project.created"
-        ? [{ queryKey: projectDefaultAssigneesQuery().queryKey }]
-        : []),
-      // A mapping write can change the repository every issue of its project resolves to (a new
-      // default, one removed or moved away), which the issue header reads from the issue's
-      // detail. The detail's key names no project, so every loaded detail refreshes; mapping
-      // writes are rare settings changes.
-      ...(event.type === "settings.repo_project.updated" ? [{ queryKey: ["issue"] }] : []),
+        ? [
+            { queryKey: ["issues", "project", event.project] },
+            // The project list carries no default assignee: a new project's is in the defaults
+            // read alone, which the Settings table reads it from and was answered before it
+            // existed.
+            { queryKey: projectDefaultAssigneesQuery().queryKey },
+          ]
+        : [
+            // An update can change the project's default repository. Each issue of the project
+            // that names no repository, and whose parent issues name none, resolves to it, and
+            // every issue list and issue detail shows `resolved_repo`. Not every key of those
+            // reads names a project, so every loaded list and detail reads again. A project
+            // changes only when a person or a daemon changes one of its settings, which is rare.
+            { queryKey: ["issues"] },
+            { queryKey: ["issue"] },
+          ]),
     ];
+  }
+  // A retained event: no build writes it now, and the events an earlier build stored stay as
+  // history. A project's default repository is on the project now, so it changes nothing that a
+  // page reads.
+  if (event.type === "settings.repo_project.updated") {
+    return [];
   }
   // The Settings table always, and the Inbox, issue, document and Reply-thread reads of a question
   // the move carries: a project's default is the last step of the chain that decides who a
@@ -1175,6 +1182,15 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     } else {
       // An uploaded document is an `attached_to` edge into its issue.
       targets.push(referencePanel(issueReference));
+      // An issue's decisions.md sends this event alone on its first upload, no version, and the
+      // outline and the margin beside the spec read the decisions under events alone
+      // (`EVENT_FRESH`), so without this they draw none of them until a reload. The server names
+      // that document by its role, which it writes as it creates the row; a server built before
+      // roles sends none, and names it by its slug alone.
+      const { role, slug } = event.payload.artifact;
+      if (role === "decisions" || (role === undefined && slug === DECISIONS_DOCUMENT_SLUG)) {
+        targets.push({ exact: true, queryKey: ["decisions", key] });
+      }
     }
     return targets;
   }
@@ -1585,7 +1601,7 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * event refreshes: those whose key holds an address it changes the words under, on a comment's
  * edit (its body), an ask's edit (its question) and a document's new version (its blocks' words),
  * and none on any other event. The issue page's names reads are kept fresh by events
- * (`useIssueTree`'s `EVENT_FRESH`), never by their age, and a names read's key is the set of
+ * (`reference-target.ts`'s `EVENT_FRESH`), never by their age, and a names read's key is the set of
  * addresses it names, so a page that comes to hold another set reads again under a key of its
  * own: only a change of words under the same address needs a rule.
  * An issue's write that changes its title (`issue.updated` naming `title` among its changes, or

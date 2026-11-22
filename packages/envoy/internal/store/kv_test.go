@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -438,6 +439,30 @@ func TestMergeForUpsertKeepsTheStoredMachineIDForARequestThatCarriesNone(t *test
 	}
 	if result.MachineID != "machine-first" {
 		t.Errorf("MachineID = %q, want the stored machine-first", result.MachineID)
+	}
+}
+
+// A plan's Withheld topics leave the stored row, and every other stored topic is kept beside the
+// plan's own: the write merges into the row it read, less what the caller's rule withheld.
+func TestMergeForUpsertTakesAPlansWithheldTopicsOutOfTheStoredRow(t *testing.T) {
+	cur := Interest{
+		SessionID: "ses_withheld",
+		MachineID: "m1",
+		Topics:    []string{"notifications.agent.ses_withheld", "notifications.github.acme.other.issues", "notifications.team.kept"},
+	}
+	item := Interest{SessionID: "ses_withheld", MachineID: "m1"}
+	plan := InterestPlan{
+		Topics:   []string{"notifications.agent.ses_withheld", "notifications.team.added"},
+		Withheld: []string{"notifications.github.acme.other.issues"},
+	}
+
+	result, err := mergeForUpsert(cur, nil, item, 303, plan)
+	if err != nil {
+		t.Fatalf("mergeForUpsert returned unexpected error: %v", err)
+	}
+	want := []string{"notifications.agent.ses_withheld", "notifications.team.added", "notifications.team.kept"}
+	if !slices.Equal(result.Topics, want) {
+		t.Errorf("Topics = %v, want %v: the withheld topic out, the stored and the planned ones in", result.Topics, want)
 	}
 }
 
@@ -3598,7 +3623,7 @@ func (h *holdAfter) release() {
 // the URL to connect to.
 func stallingProxy(t *testing.T, target, trigger string, budget int, hold time.Duration) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}

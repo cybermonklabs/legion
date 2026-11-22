@@ -472,7 +472,7 @@ pass
 
 begin build
 go -C "$root/packages/daemon" test -c -tags e2e -o "$work/stage4a.test" ./internal/runtime/sandbox
-go -C "$root/packages/envoy" build -o "$work/agent-secrets" ./cmd/agent-secrets
+go -C "$root/packages/envoy" build -o "$work/agent-secrets" ./cmd/cipher
 note "built the e2e harness and agent-secrets from the checkout"
 # previous-layout's fixture: the previous release's own Stage 4a harness (LEGION_E2E_PREVIOUS_IMAGE's revision), with testdata/previouslayout's
 # one test added, built from an archive of that commit so no worktree or branch is made. That

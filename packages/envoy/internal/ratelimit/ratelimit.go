@@ -20,7 +20,7 @@ type Limit struct {
 
 // RetryAfterSeconds is the Retry-After a refusal names for wait: its whole seconds, rounded up,
 // and at least 1, since 0 would invite an immediate retry the bucket would refuse again. The
-// broker's own 429s (internal/broker/api), Dispatch's refusal of an introspection it would not
+// broker's own 429s (internal/cipher/api), Dispatch's refusal of an introspection it would not
 // make (internal/dispatch/api) and the listener's refusal of a broker token it would not check
 // pass their bucket's Every, how long one request takes to come back. The listener's refusal of
 // a sender past its limit (cmd/listener) passes the wait until the sender's bucket holds one

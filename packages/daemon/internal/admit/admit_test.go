@@ -1004,6 +1004,11 @@ func TestReadmissionClearsTheGenerationOfEveryIssueOfTheTree(t *testing.T) {
 		if err := records.PutGate(context.Background(), tx, record.DesignGate{Issue: "LEGION-CHILD", ArtifactID: "artifact-child", LatestVersion: 2}); err != nil {
 			t.Fatalf("seed the child's gate: %v", err)
 		}
+		// What the child's holders took of the old generation's gate goes with that gate.
+		if err := records.RaiseTold(context.Background(), tx, "LEGION-CHILD", record.AudienceHolder,
+			[]record.NewsItem{{Step: record.DesignStepSpec, To: 2}}, fixedNow); err != nil {
+			t.Fatalf("seed what the child's holder took: %v", err)
+		}
 		if err := records.PutPhase(context.Background(), tx, record.PhaseRow{Issue: "LEGION-CHILD", Role: claim.RoleImplementer, Claim: "implementer-claim", HandoffCommit: "abc123", Rounds: 2, Verdict: "pass"}); err != nil {
 			t.Fatalf("seed the child's handoff: %v", err)
 		}
@@ -1028,6 +1033,13 @@ func TestReadmissionClearsTheGenerationOfEveryIssueOfTheTree(t *testing.T) {
 		}
 		if len(gates) != 0 {
 			t.Errorf("the child kept the last generation's design gate: %#v", gates)
+		}
+		told, err := records.TreeTold(context.Background(), tx, "LEGION-LINGER")
+		if err != nil {
+			t.Fatalf("read what the tree's holders took: %v", err)
+		}
+		if len(told) != 0 {
+			t.Errorf("the child kept what its holder took of the last generation's gate: %#v", told)
 		}
 		phases, err := records.Phases(context.Background(), tx, "LEGION-CHILD")
 		if err != nil {
@@ -1135,7 +1147,10 @@ func TestCapturedDispatchTodoEventAdmitsAndProjectsActiveSlot(t *testing.T) {
 			return false
 		}
 		defer tx.Rollback(context.Background())
-		state, err := projection.Project(context.Background(), tx, record.NewStore(), "CAPTURE", nil, nil, nil, nil, nil, time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC))
+		state, err := projection.Project(context.Background(), projection.Inputs{
+			Tx: tx, Store: record.NewStore(), Project: "CAPTURE",
+			Now: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC),
+		})
 		if err != nil {
 			return false
 		}

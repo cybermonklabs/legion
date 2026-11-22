@@ -75,7 +75,7 @@ its deployment names a broker.
 
 [The Secrets Broker's documentation](https://cybermonklabs.github.io/legion/broker/) ·
 [a walkthrough video of one request](https://cybermonklabs.github.io/legion/broker/walkthrough/) ·
-[install `agent-secrets` and give a machine access](packages/envoy/cmd/agent-secrets/README.md#install)
+[install `agent-secrets` and give a machine access](packages/envoy/cmd/cipher/README.md#install)
 
 [![The secrets broker's approval page for one secret request: the secret, the enrollment the broker verified asked, the reason, how long the grant lasts, the approver, and Approve and Deny buttons](docs/site/public/media/broker/credential-request.png)](https://cybermonklabs.github.io/legion/broker/walkthrough/)
 
@@ -113,7 +113,7 @@ bun run docs:dev
 | Path | What it holds |
 | --- | --- |
 | `packages/daemon/` | The Legion daemon and the `legion` CLI, in Go, with the role prompts the binary embeds, and the worker image's Dockerfile. |
-| `packages/envoy/` | Go: the Envoy listener, Dispatch's server (`cmd/dispatch`), the Secrets Broker (`cmd/broker`) and its `agent-secrets` clients. |
+| `packages/envoy/` | Go: the Envoy listener, Dispatch's server (`cmd/dispatch`), the Secrets Broker (`cmd/cipherd`) and its `agent-secrets` clients. |
 | `packages/dispatch/` | Dispatch's web app, in React, which Dispatch's server serves. |
 | `packages/proof-editor/` | Dispatch's document editor, copied from [proof-sdk](https://github.com/EveryInc/proof-sdk). |
 | `packages/contracts/` | The event contracts and the Dispatch specs the `dispatch` command is built from, which the packages share, and the Go code generated from them. |

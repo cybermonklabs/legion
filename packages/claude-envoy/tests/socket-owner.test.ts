@@ -55,16 +55,21 @@ const TABLE = [
   "",
 ].join("\n")
 
+/** The far end asked for: port 4222 of 127.0.0.1, the gate's. */
+const GATE = { host: "127.0.0.1", port: 4222 }
+
 test("a row is the connection from the local port to that port of 127.0.0.1, in a state ss lists by default", () => {
   // Not ITS_PEER, whose ports are the other way round; not the listening or TIME-WAIT socket,
   // which `ss -t` leaves out with no state filter; not a socket on 54321 to another destination.
-  expect(connectionRows(TABLE, 54321, 4222)).toEqual([{ row: THE_CONNECTION.trim(), inode: "111" }])
-  expect(connectionRows(TABLE, 4222, 54321).map((each) => each.inode)).toEqual(["222"])
-  expect(connectionRows(TABLE, 54321, 443)).toEqual([])
-  expect(connectionRows(TABLE, 8080, 4222)).toEqual([])
+  expect(connectionRows(TABLE, 54321, GATE)).toEqual([{ row: THE_CONNECTION.trim(), inode: "111" }])
+  expect(
+    connectionRows(TABLE, 4222, { host: "127.0.0.1", port: 54321 }).map((each) => each.inode),
+  ).toEqual(["222"])
+  expect(connectionRows(TABLE, 54321, { ...GATE, port: 443 })).toEqual([])
+  expect(connectionRows(TABLE, 8080, GATE)).toEqual([])
   // A dial the gate has not accepted yet is listed, as `ss -t` lists it.
   const dialing = [HEADER, row(0, "0100007F:D431", "0100007F:107E", "02", "777"), ""].join("\n")
-  expect(connectionRows(dialing, 54321, 4222).map((each) => each.inode)).toEqual(["777"])
+  expect(connectionRows(dialing, 54321, GATE).map((each) => each.inode)).toEqual(["777"])
 })
 
 test("a /proc/net/tcp6 row is read by the port after its last colon, its addresses IPv4-mapped", () => {
@@ -87,7 +92,7 @@ test("a /proc/net/tcp6 row is read by the port after its last colon, its address
     ),
     "",
   ].join("\n")
-  expect(connectionRows(table, 54321, 4222).map((each) => each.inode)).toEqual(["666"])
+  expect(connectionRows(table, 54321, GATE).map((each) => each.inode)).toEqual(["666"])
 })
 
 interface StandInProcess {
@@ -136,8 +141,10 @@ test("the owner is the holder of the connection's inode that ss names first, the
     { pid: 200, comm: "bash", fds: { "0": "/dev/null", "3": "socket:[111]" } },
     { pid: 1000, comm: "sleep", fds: { "1": "pipe:[9]", "3": "socket:[111]" } },
   ])
-  expect(await socketOwner(54321, 4222, { proc })).toBe("sleep pid=1000")
-  expect(await socketOwner(4222, 54321, { proc })).toBe("nats-server pid=300")
+  expect(await socketOwner(54321, GATE, { proc })).toBe("sleep pid=1000")
+  expect(await socketOwner(4222, { host: "127.0.0.1", port: 54321 }, { proc })).toBe(
+    "nats-server pid=300",
+  )
 })
 
 test("the process the caller expects is the owner when it holds the connection, and is read before any scan", async () => {
@@ -147,13 +154,15 @@ test("the process the caller expects is the owner when it holds the connection, 
     { pid: 9000, comm: "sleep", fds: { "3": "socket:[111]" } },
   ])
   // A scan would name the higher pid, as `ss` does.
-  expect(await socketOwner(54321, 4222, { proc, expected: 200 })).toBe("bun pid=200")
-  expect(await socketOwner(54321, 4222, { proc })).toBe("sleep pid=9000")
+  expect(await socketOwner(54321, GATE, { proc, expected: 200 })).toBe("bun pid=200")
+  expect(await socketOwner(54321, GATE, { proc })).toBe("sleep pid=9000")
   // One that does not hold it, or is no process, leaves the owner to the scan.
-  expect(await socketOwner(54321, 4222, { proc, expected: 300 })).toBe("sleep pid=9000")
-  expect(await socketOwner(54321, 4222, { proc, expected: 77 })).toBe("sleep pid=9000")
+  expect(await socketOwner(54321, GATE, { proc, expected: 300 })).toBe("sleep pid=9000")
+  expect(await socketOwner(54321, GATE, { proc, expected: 77 })).toBe("sleep pid=9000")
   // It is not the owner of a connection the tables do not list.
-  expect(await socketOwner(54321, 443, { proc, expected: 200 })).toBe("unknown (no connection)")
+  expect(await socketOwner(54321, { ...GATE, port: 443 }, { proc, expected: 200 })).toBe(
+    "unknown (no connection)",
+  )
 })
 
 test(
@@ -167,7 +176,7 @@ test(
     ])
     const tcp = join(proc, "net", "tcp")
     expect(await Bun.spawn(["mkfifo", tcp]).exited).toBe(0)
-    const owner = socketOwner(54321, 4222, { proc, expected: 200 })
+    const owner = socketOwner(54321, GATE, { proc, expected: 200 })
     const writer = await open(tcp, "w")
     await rm(join(proc, "200", "fd", "3"))
     await writer.writeFile(TABLE)
@@ -185,8 +194,8 @@ test("of the sockets on one local port, the owner is the connection's, not a hig
     { pid: 8500, comm: "broker", fds: { "7": "socket:[555]" } },
     { pid: 8800, comm: "dispatch-head", fds: { "7": "socket:[666]" } },
   ])
-  expect(await socketOwner(54321, 4222, { proc })).toBe("bun pid=200")
-  expect(await socketOwner(54321, 443, { proc })).toBe("unknown (no connection)")
+  expect(await socketOwner(54321, GATE, { proc })).toBe("bun pid=200")
+  expect(await socketOwner(54321, { ...GATE, port: 443 }, { proc })).toBe("unknown (no connection)")
 })
 
 test("a holder whose pid is below every pid of the scan's first batches is found", async () => {
@@ -198,7 +207,7 @@ test("a holder whose pid is below every pid of the scan's first batches is found
     { pid: 3, comm: "bash", fds: { "3": "socket:[111]" } },
     { pid: 9, comm: "sleep", fds: { "3": "socket:[111]" } },
   ])
-  expect(await socketOwner(54321, 4222, { proc, batchSize: 2 })).toBe("sleep pid=9")
+  expect(await socketOwner(54321, GATE, { proc, batchSize: 2 })).toBe("sleep pid=9")
 })
 
 test("a connection on /proc/net/tcp6 has its owner named too", async () => {
@@ -224,20 +233,55 @@ test("a connection on /proc/net/tcp6 has its owner named too", async () => {
     { pid: 41, comm: "bun", fds: { "9": "socket:[777]" } },
     { pid: 900, comm: "other", fds: { "9": "socket:[778]" } },
   ])
-  expect(await socketOwner(54321, 4222, { proc })).toBe("bun pid=41")
+  expect(await socketOwner(54321, GATE, { proc })).toBe("bun pid=41")
+})
+
+test("a connection to a port of another loopback address is told from one to that port of 127.0.0.1", async () => {
+  // A gate of these rows listens on a loopback address of its own on Linux (fake-nats-server.ts's
+  // fakeHost), here 127.86.2.1: the kernel writes it 0102567F. From the same local port, a
+  // connection to the same port of 127.0.0.1, held by a higher pid, is another connection.
+  const otherGate = { host: "127.86.2.1", port: 4222 }
+  const tcp = [HEADER, THE_CONNECTION, row(7, "0100007F:D431", "0102567F:107E", "01", "888"), ""]
+  const tcp6 = [
+    HEADER,
+    row(
+      0,
+      "0000000000000000FFFF00000100007F:D431",
+      "0000000000000000FFFF00000102567F:107E",
+      "01",
+      "889",
+    ),
+    "",
+  ]
+  expect(connectionRows(tcp.join("\n"), 54321, otherGate).map((each) => each.inode)).toEqual([
+    "888",
+  ])
+  expect(connectionRows(tcp6.join("\n"), 54321, otherGate).map((each) => each.inode)).toEqual([
+    "889",
+  ])
+  const proc = await standInProc({ tcp: tcp.join("\n"), tcp6: EMPTY }, [
+    { pid: 200, comm: "bun", fds: { "3": "socket:[888]" } },
+    { pid: 9000, comm: "other", fds: { "3": "socket:[111]" } },
+  ])
+  expect(await socketOwner(54321, otherGate, { proc })).toBe("bun pid=200")
+  expect(await socketOwner(54321, GATE, { proc })).toBe("other pid=9000")
+  // A host that is no IPv4 address is named, never read as no connection.
+  expect(await socketOwner(54321, { host: "localhost", port: 4222 }, { proc })).toBe(
+    "unknown (localhost is not an IPv4 address)",
+  )
 })
 
 test("what no process this user can read holds is unknown, naming the rows read", async () => {
   const proc = await standInProc({ tcp: TABLE, tcp6: EMPTY }, [
     { pid: 300, comm: "nats-server", fds: { "3": "socket:[222]" } },
   ])
-  expect(await socketOwner(54321, 4222, { proc })).toBe(`unknown (${THE_CONNECTION.trim()})`)
-  expect(await socketOwner(8080, 4222, { proc })).toBe("unknown (no connection)")
+  expect(await socketOwner(54321, GATE, { proc })).toBe(`unknown (${THE_CONNECTION.trim()})`)
+  expect(await socketOwner(8080, GATE, { proc })).toBe("unknown (no connection)")
 })
 
 test("a table that cannot be read is named in the unknown, never read as no connection", async () => {
   const proc = await standInProc({ tcp6: EMPTY }, [])
-  const owner = await socketOwner(54321, 4222, { proc })
+  const owner = await socketOwner(54321, GATE, { proc })
   expect(owner).toStartWith(`unknown (no connection; cannot read ${join(proc, "net", "tcp")}: `)
   expect(owner).toContain("ENOENT")
 })
@@ -246,11 +290,11 @@ test("a table that cannot be read is named in the unknown, never read as no conn
 test.skipIf(process.platform !== "linux")(
   "a live connection's owner is named from this machine's /proc, by a process whose PATH finds no ss",
   async () => {
-    const listener = Bun.listen({
-      hostname: "127.0.0.1",
-      port: 0,
-      socket: { data() {} },
-    })
+    // A loopback address other than 127.0.0.1, as the reopen rows' gate listens on Linux
+    // (fake-nats-server.ts's fakeHost): the kernel writes it in its own byte order.
+    const host = "127.86.1.7"
+    const listener = Bun.listen({ hostname: host, port: 0, socket: { data() {} } })
+    const far = JSON.stringify({ host, port: listener.port })
     // Another process dials and names its own connection's owner twice, by a scan and as the
     // process it expects: the owner to tell from this one, which holds the accepted end, and from
     // any other socket that shares the client's port. It starts with a PATH of one directory
@@ -258,9 +302,9 @@ test.skipIf(process.platform !== "linux")(
     // when PATH is empty or unset.
     const lookup = `
       import { socketOwner } from ${JSON.stringify(join(import.meta.dir, "socket-owner.ts"))}
-      const socket = await Bun.connect({ hostname: "127.0.0.1", port: ${listener.port}, socket: { data() {} } })
-      const scanned = await socketOwner(socket.localPort, ${listener.port})
-      const expected = await socketOwner(socket.localPort, ${listener.port}, { expected: process.pid })
+      const socket = await Bun.connect({ hostname: ${JSON.stringify(host)}, port: ${listener.port}, socket: { data() {} } })
+      const scanned = await socketOwner(socket.localPort, ${far})
+      const expected = await socketOwner(socket.localPort, ${far}, { expected: process.pid })
       console.log(JSON.stringify([scanned, expected]))
       socket.end()
     `

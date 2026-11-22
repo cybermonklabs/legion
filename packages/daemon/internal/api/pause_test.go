@@ -85,15 +85,20 @@ func newPauseHarness(t *testing.T, cfg config.Config) *pauseHarness {
 // whose pause service is svc; nil is a daemon with no workflow, which has none.
 func (h *pauseHarness) serveWith(svc PauseService) {
 	h.t.Helper()
+	h.handler = NewServer("127.0.0.1", 8437, h.pauseOptions(svc)).Handler
+}
+
+// pauseOptions is the daemon serveWith serves: the harness's store, machines and boot tokens,
+// with svc as its pause service. placePodCallers starts from it too.
+func (h *pauseHarness) pauseOptions(svc PauseService) Options {
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
-	options := Options{
+	return Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject,
 		OperatorToken: testOperatorToken, Controller: h.store, Grants: credential.New(nil), Log: quiet,
 		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
 		Handlers: []intake.Handler{&factRecorder{}}, Dispatch: h.statuses, Pause: svc,
 	}
-	h.handler = NewServer("127.0.0.1", 8437, options).Handler
 }
 
 // controllerSession registers ses_controller as the project's controller, as `legion controller
@@ -139,14 +144,21 @@ func (h *pauseHarness) pauseOK(target string, body any, header http.Header) *htt
 // pauseRefused sends a request and requires the refusal status and code, answering its body.
 func (h *pauseHarness) pauseRefused(target string, body any, header http.Header, status int, code string) PauseFailure {
 	h.t.Helper()
-	recorder := h.request(http.MethodPost, target, body, header)
+	return refusalServed(h.t, h.request(http.MethodPost, target, body, header), target, status, code)
+}
+
+// refusalServed requires recorder to answer the POST of target with a refusal of status coded
+// code with its sentence, and answers the refusal, decoded out of the recorder. pauseRefused and
+// pauseRefusalServed both check a refusal through it.
+func refusalServed(t *testing.T, recorder *httptest.ResponseRecorder, target string, status int, code string) PauseFailure {
+	t.Helper()
 	if recorder.Code != status {
-		h.t.Fatalf("POST %s = %d, want %d; body %s", target, recorder.Code, status, recorder.Body)
+		t.Fatalf("POST %s = %d, want %d; body %s", target, recorder.Code, status, recorder.Body)
 	}
 	var refused PauseFailure
-	decodeInto(h.t, recorder, &refused)
+	decodeInto(t, recorder, &refused)
 	if refused.Code != code || refused.Error == "" {
-		h.t.Fatalf("POST %s refused %+v, want code %s and a sentence", target, refused, code)
+		t.Fatalf("POST %s refused %+v, want code %s and a sentence", target, refused, code)
 	}
 	return refused
 }

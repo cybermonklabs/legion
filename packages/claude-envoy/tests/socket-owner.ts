@@ -1,7 +1,8 @@
-// The process that owns this machine's end of a TCP connection to a port of 127.0.0.1, read from
-// /proc, so a row that asks (./reopen-server) runs where iproute2 is not installed, as in a worker
-// pod's image.
+// The process that owns this machine's end of a TCP connection to an IPv4 address and port, read
+// from /proc, so a row that asks (./reopen-server) runs where iproute2 is not installed, as in a
+// worker pod's image.
 import { readdir, readFile, readlink } from "node:fs/promises"
+import { endianness } from "node:os"
 import { join } from "node:path"
 
 /** One socket of a /proc/net/tcp or /proc/net/tcp6 table. */
@@ -24,10 +25,27 @@ const LISTED_STATES: Readonly<Record<string, true>> = {
   "0B": true,
 }
 
-/** 127.0.0.1 as /proc/net/tcp writes it, and as /proc/net/tcp6 writes it IPv4-mapped. */
-const LOOPBACK_V4: Readonly<Record<string, true>> = {
-  "0100007F": true,
-  "0000000000000000FFFF00000100007F": true,
+/** The far end of a connection: an IPv4 address, such as a loopback address of 127.0.0.0/8, and
+ *  a port. */
+export interface Endpoint {
+  readonly host: string
+  readonly port: number
+}
+
+/**
+ * `host`, an IPv4 address, as /proc/net/tcp writes it, and as /proc/net/tcp6 writes it
+ * IPv4-mapped: each 32-bit word of the address in this machine's byte order, in hexadecimal, so
+ * 127.0.0.1 is `0100007F` on a little-endian machine. Undefined for any other text.
+ */
+function tableAddresses(host: string): Readonly<Record<string, true>> | undefined {
+  const bytes = host.split(".").map((part) => (/^\d{1,3}$/.test(part) ? Number(part) : Number.NaN))
+  if (bytes.length !== 4 || bytes.some((byte) => !(byte <= 255))) return undefined
+  const word = (four: readonly number[]): string =>
+    (endianness() === "LE" ? [...four].reverse() : four)
+      .map((byte) => byte.toString(16).padStart(2, "0").toUpperCase())
+      .join("")
+  const v4 = word(bytes)
+  return { [v4]: true, [`0000000000000000${word([0, 0, 0xff, 0xff])}${v4}`]: true }
 }
 
 /** The port of a table's `address:port`: hexadecimal, after the last colon, in either table. */
@@ -37,33 +55,42 @@ function portOf(address: string): number {
 
 /**
  * The rows of `table`, a /proc/net/tcp or /proc/net/tcp6 text, that are a connection from local
- * port `localPort` to port `remotePort` of 127.0.0.1, in a state `ss -t` lists. The local port
- * alone does not name one socket: Linux gives one ephemeral port to connects to different
- * destinations, so other live sockets on a busy machine can share it, and a higher pid's socket
- * among them would be named in place of the connection's. `ss -tn '( sport = :<port> )'` had
- * that gap too.
+ * port `localPort` to `remote`, in a state `ss -t` lists. The local port alone does not name one
+ * socket: Linux gives one ephemeral port to connects to different destinations, so other live
+ * sockets on a busy machine can share it, and a higher pid's socket among them would be named in
+ * place of the connection's. `ss -tn '( sport = :<port> )'` had that gap too. The address counts
+ * as well as the port: a listener on another loopback address can have the same port.
  */
-export function connectionRows(table: string, localPort: number, remotePort: number): SocketRow[] {
+export function connectionRows(table: string, localPort: number, remote: Endpoint): SocketRow[] {
+  const addresses = tableAddresses(remote.host)
+  if (addresses === undefined) return []
   const rows: SocketRow[] = []
   // The first line is the column header.
   for (const line of table.split("\n").slice(1)) {
     const fields = line.trim().split(/\s+/)
     const local = fields[1]
-    const remote = fields[2]
+    const remoteField = fields[2]
     const state = fields[3]
     const inode = fields[9]
-    if (local === undefined || remote === undefined || state === undefined || inode === undefined) {
+    if (
+      local === undefined ||
+      remoteField === undefined ||
+      state === undefined ||
+      inode === undefined
+    ) {
       continue
     }
-    if (portOf(local) !== localPort || portOf(remote) !== remotePort) continue
-    if (LOOPBACK_V4[remote.slice(0, remote.lastIndexOf(":")).toUpperCase()] !== true) continue
+    if (portOf(local) !== localPort || portOf(remoteField) !== remote.port) continue
+    if (addresses[remoteField.slice(0, remoteField.lastIndexOf(":")).toUpperCase()] !== true) {
+      continue
+    }
     if (LISTED_STATES[state] !== true) continue
     rows.push({ row: line.trim(), inode })
   }
   return rows
 }
 
-/** What `socketOwner` takes besides the connection's two ports. */
+/** What `socketOwner` takes besides the connection's local port and far end. */
 export interface OwnerOptions {
   /** The procfs root: a stand-in's for a test. */
   readonly proc?: string
@@ -75,20 +102,23 @@ export interface OwnerOptions {
 }
 
 /**
- * The process that owns the connection from local port `localPort` to port `remotePort` of
- * 127.0.0.1, named as `ss -tnp` names a socket's holder (`bun pid=123`), by its `comm`. It is
- * the `expected` process when that held the connection as the lookup began. Else it is, of the
- * processes with an fd linked to the connection's inode, the one `ss` lists first: the one with
- * the highest pid. A process this user cannot read is passed over, as `ss` run by this user
- * passes it over. With no owner found, it is `unknown (...)`, naming the rows it read, or
- * `no connection`, and each table it could not read: it never throws, so a lookup started for a
- * diagnosis cannot fail the row that started it.
+ * The process that owns the connection from local port `localPort` to `remote`, named as
+ * `ss -tnp` names a socket's holder (`bun pid=123`), by its `comm`. It is the `expected` process
+ * when that held the connection as the lookup began. Else it is, of the processes with an fd
+ * linked to the connection's inode, the one `ss` lists first: the one with the highest pid. A
+ * process this user cannot read is passed over, as `ss` run by this user passes it over. With no
+ * owner found, it is `unknown (...)`, naming the rows it read, or `no connection`, and each table
+ * it could not read, or naming a `remote` host that is no IPv4 address: it never throws, so a
+ * lookup started for a diagnosis cannot fail the row that started it.
  */
 export async function socketOwner(
   localPort: number,
-  remotePort: number,
+  remote: Endpoint,
   { proc = "/proc", expected, batchSize = SCAN_BATCH }: OwnerOptions = {},
 ): Promise<string> {
+  if (tableAddresses(remote.host) === undefined) {
+    return `unknown (${remote.host} is not an IPv4 address)`
+  }
   // The expected process's fds are read before the tables. A connection the tables then list
   // with an inode is still held: by that process when its fds named the inode, else by another,
   // which the scan looks for. Once its last holder closes it, a connection keeps no inode in the
@@ -99,7 +129,7 @@ export async function socketOwner(
   for (const table of ["tcp", "tcp6"]) {
     const path = join(proc, "net", table)
     try {
-      rows.push(...connectionRows(await readFile(path, "utf8"), localPort, remotePort))
+      rows.push(...connectionRows(await readFile(path, "utf8"), localPort, remote))
     } catch (error) {
       unread.push(`cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`)
     }

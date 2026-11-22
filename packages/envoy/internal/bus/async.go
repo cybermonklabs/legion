@@ -344,15 +344,24 @@ const ConnLockWait = 100 * time.Millisecond
 // it refuses that write (unsent); only a goroutine kept from running through a whole reconnect
 // attempt lets the write land on the reconnected connection.
 func (w *window) current() bool {
-	w.pinning.Lock()
-	life := w.life
-	w.pinning.Unlock()
 	select {
-	case <-life:
+	case <-w.lifeEnded():
 		return false
 	default:
 		return true
 	}
+}
+
+// lifeEnded is the channel closed when the life the window pinned ends (connLife), the one current
+// reads: a wait that must end at the loss selects on it, rather than on the client's connection
+// event and a read of current after it. The client hears of a loss on nats.go's callback goroutine
+// (onDisconnect) and connLife on its drain goroutine, in either order, so a wait that woke on the
+// client's event could read the life as current, wait for the client's next event, and get none
+// while the connection kept failing to reconnect.
+func (w *window) lifeEnded() <-chan struct{} {
+	w.pinning.Lock()
+	defer w.pinning.Unlock()
+	return w.life
 }
 
 // sendJetStream publishes data, an envelope's encoding, to the stream on subject, under msgID as
@@ -409,7 +418,8 @@ const requestReplies = 4
 //     a flush that could not confirm the publish comes back and once more before the timeout is
 //     answered;
 //   - ErrUnavailable once the window's connection is lost or reconnects before an answer, whether
-//     the loss came before the flush, during it, or after it;
+//     the loss came before the flush, during it, or after it: the moment connLife ends the life
+//     the window pinned, whether or not the client has heard of the loss yet (lifeEnded);
 //   - when the stream did not acknowledge the copy within opts.Timeout on a connection that
 //     stayed current, an error wrapping ErrNotAcknowledged, and ErrPublishUnconfirmed with the
 //     flush's own reason when the flush failed or could not confirm the publish.
@@ -434,13 +444,13 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 	if err != nil {
 		return nil, err
 	}
-	// Taken before the pin reads the connection, so every connection event from here on wakes the
-	// wait for the answer.
-	changed := w.client.ConnectionChanged()
 	if err := w.pinToSend(); err != nil {
 		return nil, err
 	}
-	inbox := nats.NewInbox()
+	// The life the pin holds the window to: it never changes once pinned, so its end, at any moment
+	// from here on, is the loss this request answers.
+	ended := w.lifeEnded()
+	inbox := w.conn.NewInbox()
 	replies := make(chan *nats.Msg, requestReplies)
 	inboxSub, err := w.conn.ChanSubscribe(inbox, replies)
 	if err != nil {
@@ -549,8 +559,16 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		lost := func() error {
 			return fmt.Errorf("bus: %w: the window's connection was lost or reconnected before the request to %q was answered", ErrUnavailable, subject)
 		}
-		timer := time.NewTimer(time.Until(deadline))
-		defer timer.Stop()
+		var expired <-chan time.Time
+		var flushSettled func()
+		if expiry := w.client.requestExpiry; expiry != nil {
+			expired, flushSettled = expiry(deadline)
+		}
+		if expired == nil {
+			timer := time.NewTimer(time.Until(deadline))
+			defer timer.Stop()
+			expired = timer.C
+		}
 		// The record answers the request as soon as the violation is recorded too
 		// (refusalSignal), so a refusal the flush could not name is not left to the timeout. The
 		// signal was taken before the message went out, so a violation recorded since closes it,
@@ -566,19 +584,20 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 				if settled := settleFlush(err); settled != nil {
 					return settled
 				}
+				if flushSettled != nil {
+					flushSettled()
+				}
 			case reply := <-replies:
 				if settled, err := outcome(reply); settled {
 					return err
 				}
-			case <-changed:
+			case <-ended:
+				// The loss is the answer, though a reply that arrived with it still counts.
 				if settled, err := drained(); settled {
 					return err
 				}
-				if !w.current() {
-					return lost()
-				}
-				changed = w.client.ConnectionChanged()
-			case <-timer.C:
+				return lost()
+			case <-expired:
 				// The request is out of time: its answer is the timeout's.
 				if settled, err := drained(); settled {
 					return err
@@ -587,8 +606,10 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 					return lost()
 				}
 				if flushed != nil {
-					// The flush is bounded by this very deadline, so it is returning now, and
-					// what it says belongs in the timeout's answer.
+					// The flush is bounded by this very deadline, so in production, where the
+					// timeout fires at the deadline, it is returning now; under a test's expiry
+					// (requestExpiry) the flush can run on until the deadline. Either way, what it
+					// says belongs in the timeout's answer.
 					if settled := settleFlush(<-flushed); settled != nil {
 						return settled
 					}

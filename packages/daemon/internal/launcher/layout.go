@@ -19,6 +19,19 @@ const (
 	LauncherTokenFile   = "LAUNCHER_TOKEN"
 )
 
+// SessionWriterDirName is the directory under the roles directory that the daemon mounts the
+// session writer token in, and SessionWriterTokenFile is the token's file in it. The writer token
+// is the projected ServiceAccount token whose audience is the session database's writer audience
+// (ompsessions.Database.WriterAudience): the session proxy exchanges it to impersonate the
+// session database's service account. So its path is <roles-dir>/session-writer/token. role-init
+// covers the whole roles directory with an empty filesystem (the covers of prepareRoleNamespace,
+// roleinit_linux.go), so no role reads the token. The launcher gives the path to the proxy alone:
+// it writes the path into no generation's environment and no file.
+const (
+	SessionWriterDirName   = "session-writer"
+	SessionWriterTokenFile = "token"
+)
+
 // The paths a role sees inside its own namespaces. FixedRoot is where `legion launcher role-init`
 // binds the role's own gh, private, state and agent-secrets directories back, at these same
 // names, which are the paths every role is told (internal/runtime/sandbox's GHConfigDir and its

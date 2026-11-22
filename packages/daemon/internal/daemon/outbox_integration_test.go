@@ -280,11 +280,14 @@ func (d *blockingDispatch) Approval(context.Context, string) (dispatch.Approval,
 func (d *blockingDispatch) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
 }
-func (d *blockingDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
-}
 func (d *blockingDispatch) WebhookAppInstalled(context.Context, string) (bool, error) {
 	return true, nil
+}
+func (d *blockingDispatch) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
+	return dispatch.ArtifactChanges{}, nil
+}
+func (d *blockingDispatch) ApprovedVersionBefore(context.Context, string, int) (int, error) {
+	return 0, nil
 }
 func (d *blockingDispatch) PutGatedSteps(context.Context, string, []string) error {
 	return nil
@@ -476,11 +479,14 @@ func (d *refusingDispatch) Approval(context.Context, string) (dispatch.Approval,
 func (d *refusingDispatch) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
 }
-func (d *refusingDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
-}
 func (d *refusingDispatch) WebhookAppInstalled(context.Context, string) (bool, error) {
 	return true, nil
+}
+func (d *refusingDispatch) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
+	return dispatch.ArtifactChanges{}, nil
+}
+func (d *refusingDispatch) ApprovedVersionBefore(context.Context, string, int) (int, error) {
+	return 0, nil
 }
 func (d *refusingDispatch) PutGatedSteps(context.Context, string, []string) error {
 	return nil
@@ -541,11 +547,14 @@ func (d *boardDispatch) Approval(context.Context, string) (dispatch.Approval, er
 func (d *boardDispatch) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
 }
-func (d *boardDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
-}
 func (d *boardDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
-func (d *boardDispatch) PutGatedSteps(context.Context, string, []string) error     { return nil }
+func (d *boardDispatch) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
+	return dispatch.ArtifactChanges{}, nil
+}
+func (d *boardDispatch) ApprovedVersionBefore(context.Context, string, int) (int, error) {
+	return 0, nil
+}
+func (d *boardDispatch) PutGatedSteps(context.Context, string, []string) error { return nil }
 func (d *boardDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
 	return nil
 }
@@ -679,7 +688,7 @@ func TestTheDaemonsReassertIsWrittenAfterDispatchRefusesItsFirstWrite(t *testing
 			client := &refusedOnceDispatch{outboxDispatch: outboxDispatch{issue: shown}, reread: reread}
 			runner := &outbox{pool: pool, records: records, dispatch: client, handlers: []intake.Handler{engine, admission},
 				log: quietLogger()}
-			row := mustOutboxRow(t, tc.key, record.ReassertStatusWrite("in_progress", tc.wrote), time.Now())
+			row := mustOutboxRow(t, tc.key, record.ReassertStatusWrite("in_progress", tc.wrote, shown.LastSeq), time.Now())
 
 			if err := runner.execute(context.Background(), row); err != nil {
 				t.Fatalf("execute the re-assert: %v", err)
@@ -731,14 +740,16 @@ func TestEveryStatusRowKindHasARule(t *testing.T) {
 func TestEveryStatusRowKindHasAStillWantedRule(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
-	runner := &outbox{pool: pool, records: records, log: quietLogger()}
+	// Its Dispatch serves an empty event log: a set-back reads the events after the write it undoes
+	// before it writes again, and no status changed since.
+	runner := &outbox{pool: pool, records: records, dispatch: &outboxDispatch{}, log: quietLogger()}
 	// A row of each kind as its own constructor builds it. A kind this table does not name is
 	// asked all the same, carrying its kind and a status pair: what is under test is whether its
 	// rule answers, and a kind with no rule reaches the default whatever else it carries.
 	payloads := map[record.StatusRowKind]record.StatusWrite{
 		record.OrdinaryStatusRow:       record.OrdinaryStatusWrite("testing", "in_progress", ""),
 		record.PersonHandoverStatusRow: record.PersonHandoverStatusWrite("todo", "triage"),
-		record.ReassertStatusRow:       record.ReassertStatusWrite("in_progress", "done"),
+		record.ReassertStatusRow:       record.ReassertStatusWrite("in_progress", "done", 4),
 		record.HandOverStatusRow:       record.HandOverStatusWrite("todo", "in_progress", "LEGION-207", 1),
 		record.CloseStatusRow:          record.CloseStatusWrite("done", "in_progress", "merged", 0),
 	}

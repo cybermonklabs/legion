@@ -6,7 +6,7 @@
 // compares goes through this one function: the sign-in that writes a login (oidc.WorkspaceLogin,
 // the Cognito username rule), the canonical forms that compare logins (Dispatch's and the broker's
 // CanonicalLogin) and the listener's account lists. So do the airlock's host and header names
-// (internal/broker/airlock and its proxy port), whose Lean model folds exactly this way, so a
+// (internal/cipher/proxyrules and its proxy port), whose Lean model folds exactly this way, so a
 // change here is a change to that model's contract, and Dispatch's document-name match, which
 // envoy-client ranks the same way.
 package fold

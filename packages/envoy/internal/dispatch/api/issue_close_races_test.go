@@ -559,3 +559,69 @@ func awaitRequests(t *testing.T, requests *sync.WaitGroup, start chan struct{}, 
 		t.Fatalf("%s did not both answer within %v", what, raceDeadline)
 	}
 }
+
+// holdLock opens a transaction that runs lock and keeps it until the returned release runs, so a
+// test can stop requests at a known point and let them through together.
+func holdLock(t *testing.T, database *store.Store, lock string, args ...any) (release func()) {
+	t.Helper()
+	tx, err := database.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin the holding transaction: %v", err)
+	}
+	if _, err := tx.Exec(context.Background(), lock, args...); err != nil {
+		_ = tx.Rollback(context.Background())
+		t.Fatalf("take %q: %v", lock, err)
+	}
+	released := false
+	release = func() {
+		if !released {
+			released = true
+			_ = tx.Rollback(context.Background())
+		}
+	}
+	t.Cleanup(release)
+	return release
+}
+
+// lockWaiters counts the backends of this test's own database that wait on a lock. Scoped to
+// current_database() because one Postgres serves every test in the package.
+func lockWaiters(t *testing.T, database *store.Store) int {
+	t.Helper()
+	var waiting int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*) from pg_stat_activity
+		where datname = current_database() and wait_event_type = 'Lock' and pid <> pg_backend_pid()
+	`).Scan(&waiting); err != nil {
+		t.Fatalf("read pg_stat_activity: %v", err)
+	}
+	return waiting
+}
+
+// awaitLockWaiters waits until at least count backends of this test's own database wait on a lock.
+func awaitLockWaiters(t *testing.T, database *store.Store, count int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		waiting := lockWaiters(t, database)
+		if waiting >= count {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d request(s) wait on a lock after 10s, want %d", waiting, count)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// awaitAnswer waits up to 15 seconds for the answer of a request a test sent from a goroutine of
+// its own, and fails the test, naming the request by what, when none arrives.
+func awaitAnswer(t *testing.T, answered <-chan *httptest.ResponseRecorder, what string) *httptest.ResponseRecorder {
+	t.Helper()
+	select {
+	case response := <-answered:
+		return response
+	case <-time.After(15 * time.Second):
+		t.Fatalf("%s never answered", what)
+		return nil
+	}
+}

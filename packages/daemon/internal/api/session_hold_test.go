@@ -21,7 +21,7 @@ const sessionHeldSentence = "is recorded for another claim of this daemon; a cla
 // A Legion session id is held to the first claim that recorded it, whatever that claim's state
 // (plan E's t-e-54). The daemon enrolls the session a claim's agent reports
 // with the secrets broker, and the broker's enrollment takes over the grants and pending requests
-// of every other enrollment of the same principal and session (packages/envoy/internal/broker/
+// of every other enrollment of the same principal and session (packages/envoy/internal/cipher/
 // enroll's adopt), while every pod of a project enrolls as that project's one principal. So a role
 // that registered a sibling's session id, or the id of another claim of its project, live or
 // ended, took that session's secret grants. Through POST /legion/v1/claims/register on the real
