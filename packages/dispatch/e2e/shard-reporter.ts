@@ -1,7 +1,8 @@
-import { readFileSync } from "node:fs";
-import { sep } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join, sep } from "node:path";
 import type { FullConfig, Reporter, Suite, TestRun } from "@playwright/test/reporter";
 
+import { rowId } from "./leg-rows";
 import {
   dependencyProjects,
   placeUnits,
@@ -40,8 +41,21 @@ const weightsFile = new URL("./shard-weights.json", import.meta.url);
  *  how many of its rows were placed by their project's median because the table has no entry for
  *  their file - the share of the placement that is an estimate. Below it, a `::warning::` for a
  *  table older than the step's guard allows for, or one whose estimates are a tenth of the leg
- *  (`tableWarnings`), which the runner shows on the run's summary. */
+ *  (`tableWarnings`), which the runner shows on the run's summary.
+ *
+ *  Where DISPATCH_E2E_LEG_ROWS_DIR names a directory - the shard job's, which the leg uploads
+ *  beside its blob report - it writes two lists there, one row a line (`rowId`, e2e/leg-rows.ts):
+ *  `shard-N.selection.jsonl`, every row of the selection as `preprocess` reads it before any
+ *  exclusion, and `shard-N.ran.jsonl`, the rows `onBegin` is handed, which is what Playwright
+ *  schedules on this leg after every filter. The merge job's reading one holds the four legs'
+ *  lists against each other (e2e/tools/leg-rows.ts): a row of the selection that no leg ran, or
+ *  that two ran, fails it by name. The second list is read from Playwright and not from this
+ *  hook's own choice, so a fault in the choice cannot hide in both. */
 export default class ShardReporter implements Reporter {
+  /** Where this leg writes its lists, and which leg and setup projects they are of; unset where
+   *  the run is not sharded or names no directory. */
+  private lists?: { readonly dir: string; readonly leg: string; readonly setups: Set<string> };
+
   printsToStdio(): boolean {
     return false;
   }
@@ -63,6 +77,11 @@ export default class ShardReporter implements Reporter {
     const setups = dependencyProjects(
       suite.suites.map((projectSuite) => projectSuite.project() ?? {})
     );
+    const dir = process.env.DISPATCH_E2E_LEG_ROWS_DIR;
+    if (dir) {
+      this.lists = { dir, leg: `shard-${shard.current}`, setups };
+      this.writeList("selection", suite);
+    }
     for (const projectSuite of suite.suites) {
       const project = projectSuite.project()?.name ?? projectSuite.title;
       if (setups.has(project)) continue;
@@ -102,5 +121,21 @@ export default class ShardReporter implements Reporter {
     for (const warning of tableWarnings(weights.source.read, new Date(), rows, estimated)) {
       process.stderr.write(`::warning title=shard ${shard.current} row-time table::${warning}\n`);
     }
+  }
+
+  onBegin(_config: FullConfig, suite: Suite): void {
+    if (this.lists) this.writeList("ran", suite);
+  }
+
+  /** Writes `<dir>/shard-N.<kind>.jsonl`: every row of `suite` outside the setup projects,
+   *  sorted, one a line. */
+  private writeList(kind: "selection" | "ran", suite: Suite): void {
+    if (!this.lists) return;
+    const { dir, leg, setups } = this.lists;
+    const rows = suite.suites
+      .filter((projectSuite) => !setups.has(projectSuite.project()?.name ?? projectSuite.title))
+      .flatMap((projectSuite) => projectSuite.allTests().map((test) => rowId(test.titlePath())))
+      .sort();
+    writeFileSync(join(dir, `${leg}.${kind}.jsonl`), rows.length > 0 ? `${rows.join("\n")}\n` : "");
   }
 }

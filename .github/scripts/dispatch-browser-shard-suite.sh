@@ -80,6 +80,13 @@ export DISPATCH_E2E_BROKER_BIN_DIR="$GITHUB_WORKSPACE/packages/envoy/out/dispatc
 # reports keep their own names when the merge job downloads them into one directory.
 export PLAYWRIGHT_BLOB_OUTPUT_DIR="$RUNNER_TEMP/leg-report/blob-report"
 export PLAYWRIGHT_BLOB_OUTPUT_NAME="report-shard-$shard.zip"
+# Where e2e/shard-reporter.ts writes this leg's two row lists, shard-<N>.selection.jsonl and
+# shard-<N>.ran.jsonl: the rows/ directory the upload carries beside the blob report, as it
+# carries the row count written below. The merge job's reading one holds the four legs' lists
+# against each other (packages/dispatch/e2e/tools/leg-rows.ts), which is what sees a row of the
+# selection that no leg ran or that two ran; the row count cannot, since it counts only what the
+# legs ran.
+export DISPATCH_E2E_LEG_ROWS_DIR="$RUNNER_TEMP/leg-report/rows"
 # The lane's projects, named rather than left to the config, and the one place either
 # lane's list is written. An unknown lane ends the step here rather than running the
 # default set under a name nobody meant, and this is the one place that refuses it now

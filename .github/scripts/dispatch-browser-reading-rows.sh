@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Reading one of the merge job: the rows each leg's log printed beside the rows the merged report
-# holds, the legs that owed a blob report and uploaded none, and the two counts held against each
-# other once every owed blob arrived.
+# holds, the legs that owed a blob report and uploaded none, the two counts held against each
+# other once every owed blob arrived, and the shard legs' row lists held against each other, so a
+# row of the selection that no leg ran, or that two ran, fails by name.
 #
 # Who runs it, and what it takes:
 #
@@ -20,8 +21,8 @@
 # out of check-ci-filters.sh's reduction of what a go command compiles. GH_TOKEN is in that set,
 # so that reason does not hold for the token, which is a key of the step's `env:`.
 #
-# It reads $RUNNER_TEMP/selected-blobs, which holds one blob report and one row count per leg,
-# and $RUNNER_TEMP/report.json, the merged report; it writes $RUNNER_TEMP/jobs.json, which
+# It reads $RUNNER_TEMP/selected-blobs, which holds one blob report and one row count per leg and
+# each shard leg's two row lists, and $RUNNER_TEMP/report.json, the merged report; it writes $RUNNER_TEMP/jobs.json, which
 # reading three reads, and the table and the figures it adds to $GITHUB_STEP_SUMMARY. The step
 # keeps its own `timeout-minutes`, which
 # .github/ci-notes/dispatch-browser.md#the-merge-jobs-measured-steps-and-its-budget sizes against
@@ -177,6 +178,17 @@ if [ -n "$missing" ]; then
   fi
   exit 1
 fi
+# The shard legs' row lists, held against each other: every row of the selection the legs read
+# must have run on exactly one of them. The counts below cannot see a row no leg ran - it is
+# missing from the legs' count and from the merged report alike - nor a file two legs ran, which
+# both count twice. packages/dispatch/e2e/tools/leg-rows.ts says why and prints one line per
+# fault, naming the rows and legs; the alone legs are not sharded and write no list. It runs
+# before the counts so both readings print, and the step fails on either.
+mapfile -t shard_legs < <(grep -E '^shard-[0-9]+$' <<< "$legs" || true)
+lists=0
+if [ "${#shard_legs[@]}" -gt 0 ]; then
+  bun packages/dispatch/e2e/tools/leg-rows.ts "$counts" "${shard_legs[@]}" || lists=$?
+fi
 # Every owed blob arrived, so the two counts are of the same rows and must be equal:
 # both count every row the legs ran, skipped rows included. They differ when the merge
 # dropped rows the legs ran, and nothing else here would catch that - reading two and
@@ -189,3 +201,4 @@ if [ "$merged" != unknown ] && [ "$merged" -ne "$printed_total" ]; then
     "the merge dropped rows the legs ran"
   exit 1
 fi
+[ "$lists" -eq 0 ] || exit 1

@@ -6,11 +6,11 @@
  * node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/index.js:2462-2488).
  * Its one knob, `PWTEST_SHARD_WEIGHTS` (lib/cli/testActions.js:193-203), sets each leg's share of
  * that count, not of time. Rows do not cost the same - a stubbed row takes about 2 s and an issue
- * page row 10 - so on main at f02514268a the count split gave the four legs of the full lane
- * 1,756, 2,079, 1,343 and 1,612 s of row time (the per-row medians of 13 of main's runs that the
- * table below was not read from), and the leg holding the slow chromium files was the slowest
- * of its run in 55 of the 85 runs of 2026-11-21/22 whose four legs all ran; the placement below
- * gives the same rows 1,709, 1,697, 1,705 and 1,679 s. What 1.64.1 does offer is the hook this
+ * page row 10 - so on main at f02514268a the count split gave the full lane's heaviest leg 1.115
+ * to 1.225 times the mean row time (the per-row medians of two sets of 13 and 14 of main's runs
+ * that the table below was not read from), and the leg holding the slow chromium files was the
+ * slowest of its run in 55 of the 85 runs of 2026-11-21/22 whose four legs all ran; the placement
+ * below gives the same rows 1.007 and 1.008 times the mean. What 1.64.1 does offer is the hook this
  * module is called from: a reporter's `preprocess` sees the whole un-sharded selection, may call
  * `testRun.skipSharding()` and then `testRun.exclude()` what another leg runs
  * (types/testReporter.d.ts:230-258 and :789-794), which `e2e/shard-reporter.ts` does with the

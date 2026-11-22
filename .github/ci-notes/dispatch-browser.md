@@ -161,19 +161,27 @@ stack starts a server per stack and hands each its own (e2e/harness-postgres.ts)
 
 A leg's quarter is a quarter of the lane's row time, not of its rows. Playwright's own
 `--shard` cuts the rows into four runs of equal count, and rows do not cost the same: at main
-f02514268a it gave the full lane's legs 1,756, 2,079, 1,343 and 1,612 s of row time (the
-per-row medians of 13 of main's runs), and leg 2, all chromium rows, was the slowest leg of its
-run in 55 of the 85 runs of 2026-11-21/22 whose four legs all ran.
-packages/dispatch/e2e/shard-reporter.ts, which the browser step names beside the failure
-reporter, takes the split over: every leg places every file of every project the lane selects
-by the row times main measured (packages/dispatch/e2e/shard-weights.json), heaviest first onto
-the lightest leg, and keeps its own files. The same 13 runs put that placement at 1,709, 1,697,
-1,705 and 1,679 s. packages/dispatch/e2e/shard-split.ts says why
-Playwright 1.64.1 has no split by time of its own, why the file is the unit, how all four legs
-compute one placement, and what a file with no measured time is placed by;
-`bun e2e/tools/shard-weights.ts --main <count>` reads the table again. Each leg prints its own
-line before its first row, `shard N of 4, placed by measured row time: ...`, with the rows of
-it that were placed by an estimate.
+f02514268a it gave the full lane's heaviest leg 1.115 to 1.225 times the mean row time, over
+the per-row medians of two sets of 13 and 14 of main's runs (the pull request's body names them),
+and leg 2, all chromium rows, was the slowest leg of its run in 55 of the 85 runs of
+2026-11-21/22 whose four legs all ran. packages/dispatch/e2e/shard-reporter.ts, which the
+browser step names beside the failure reporter, takes the split over: every leg places every
+file of every project the lane selects by the row times main measured
+(packages/dispatch/e2e/shard-weights.json), heaviest first onto the lightest leg, and keeps its
+own files. The same two sets put that placement at 1.007 and 1.008 times the mean.
+packages/dispatch/e2e/shard-split.ts says why Playwright 1.64.1 has no split by time of its own,
+why the file is the unit, how all four legs compute one placement, and what a file with no
+measured time is placed by; `bun e2e/tools/shard-weights.ts --main <count>` reads the table
+again. Each leg prints its own line before its first row, `shard N of 4, placed by measured row
+time: ...`, with the rows of it that were placed by an estimate.
+
+Each leg also writes two row lists into the rows/ directory its blob upload carries: every row
+of the selection it read, and the rows Playwright gave it to run
+(DISPATCH_E2E_LEG_ROWS_DIR in .github/scripts/dispatch-browser-shard-suite.sh). The merge
+job's reading one holds the four legs' lists against each other and fails by name on a row of
+the selection that no leg ran or that two ran. Its row count cannot see either: a planted
+reporter that put the selection's last file on no leg ran 1,616 of the 1,617 rows, and the legs'
+count and the merged report both read 1,616.
 
 The image this repository builds and publishes for every CI job that can launch WebKit or
 Firefox (.github/docker/browser.Dockerfile, the one `built:` row of .github/ci-images.yaml,
@@ -1238,7 +1246,10 @@ ladder bounds that wait rather than measuring it - three attempts, each bounded 
 `timeout 30`, with waits of 10 s and 20 s between them, which is 120 s at most - and a
 bound takes no 15 per cent. The step's own work has a measured maximum of 4 s, and
 4 x 1.15 = 4.6 s, so 120 + 4.6 = 124.6 s, at the next whole minute above, is the 3 min
-that step carries. The rule's two-minute floor does not bind.
+that step carries. The rule's two-minute floor does not bind. The step now also runs
+packages/dispatch/e2e/tools/leg-rows.ts over the four shard legs' row lists (1.1 MB for the
+full lane's 1,617 rows), measured at 0.02 to 0.08 s on the development box over three runs;
+counted at a whole second, (4 + 1) x 1.15 = 5.75 s and 120 + 5.75 = 125.75 s, still the 3 min.
 
 So by the rule in this file's head the job's budget is the sum of its step budgets, that
 one step's 180 s, plus the measured maximum of every step without one: 40 s less reading
@@ -1345,9 +1356,10 @@ not a run at all. A retried row contributes each attempt it passed, which is one
 ## What the verdict step fails on
 
 The verdict, which the four readings ("Reading one, the rows", "Reading two, the flake rate", "Reading three, the leg exits with no failed row" and "Reading four, the row durations") do not give: they report, and this fails. Two
-of the job's three failures are here - an upstream job that neither succeeded nor was
+of the job's four failures are here - an upstream job that neither succeeded nor was
 skipped, the binaries job among them, and a failed row in the merged report - and the
-third, a missing blob, is in reading one, where it is found.
+other two are in reading one, where they are found: a missing blob, and a row of the
+selection that no shard leg ran or that two ran.
 
 ## When the merge job posts ci-ok
 
