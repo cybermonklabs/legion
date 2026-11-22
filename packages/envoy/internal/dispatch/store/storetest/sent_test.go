@@ -651,7 +651,9 @@ func TestSentStatementsForgetACopyTheServerRefuses(t *testing.T) {
 //     among them, and answers each Sync;
 //   - the bound of what a refusal drops: a refused COPY, simple or one-write extended (refused at
 //     its Execute or its Parse), and after it in the same write a one-write extended COPY the
-//     server runs, whose mark the refusal must leave;
+//     server runs, whose mark the refusal must leave; and the same after a Sync the server
+//     refuses (an insert's deferred unique constraint at its implicit commit) and after a function
+//     call it refuses, neither of which discards what follows;
 //   - and the control that a mark stays where a copy may start: a simple COPY the server runs,
 //     its CopyDone sent before the CopyInResponse.
 //
@@ -698,6 +700,13 @@ func TestSentStatementsLeaveNoCopyEndAfterTheRefusal(t *testing.T) {
 			steps: []step{write(append(oneWrite(copying), oneWrite(running)...)...), read(append([]pgproto3.BackendMessage{syntax, ready, ready}, runs...)...)}, ran: 1},
 		{name: "a simple COPY refused, then in the same write a one-write COPY the server runs",
 			steps: []step{write(append([]pgproto3.FrontendMessage{simple}, oneWrite(running)...)...), read(append([]pgproto3.BackendMessage{missing, ready}, runs...)...)}, ran: 1, refused: 1},
+		{name: "an insert whose Sync the server refuses, then in the same write a one-write COPY the server runs",
+			steps: []step{write(append([]pgproto3.FrontendMessage{&pgproto3.Parse{Query: "insert into deferred_unique values (1), (1)"}, &pgproto3.Bind{}, &pgproto3.Execute{}, &pgproto3.Sync{}}, oneWrite(running)...)...),
+				read(append([]pgproto3.BackendMessage{&pgproto3.ParseComplete{}, &pgproto3.BindComplete{}, &pgproto3.CommandComplete{CommandTag: []byte("INSERT 0 2")},
+					&pgproto3.ErrorResponse{Severity: "ERROR", SeverityUnlocalized: "ERROR", Code: "23505", Message: `duplicate key value violates unique constraint "deferred_unique_n_key"`}, ready}, runs...)...)}, ran: 1},
+		{name: "a function call the server refuses, then in the same write a one-write COPY the server runs",
+			steps: []step{write(append([]pgproto3.FrontendMessage{&pgproto3.FunctionCall{Function: 1, ArgFormatCodes: []uint16{}, Arguments: [][]byte{}}}, oneWrite(running)...)...),
+				read(append([]pgproto3.BackendMessage{&pgproto3.ErrorResponse{Severity: "ERROR", SeverityUnlocalized: "ERROR", Code: "42883", Message: `function with OID 1 does not exist`}, ready}, runs...)...)}, ran: 1, refused: 1},
 		{name: "a simple COPY the server runs, its CopyDone sent before the CopyInResponse",
 			steps: []step{write(simple, data, done), read(&pgproto3.CopyInResponse{ColumnFormatCodes: []uint16{0}}, &pgproto3.CommandComplete{CommandTag: []byte("COPY 1")}, ready)}, ran: 1},
 	} {
