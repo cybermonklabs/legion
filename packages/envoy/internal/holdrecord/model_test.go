@@ -1748,8 +1748,6 @@ var (
 	pinnedCurrentBound3 = map[string]int{"cutover": 78968, "rollback": 9216, "selection-recovery": 12992, "buckets-create": 1270,
 		"buckets-recreate": 3750, "buckets-restore": 5658, "streams-update": 1270, "streams-census": 1799, "hub-restore": 765341,
 		"enroll": 1270, "sentinel-repair": 1270, "consumer-cleanup": 162794}
-	// pinnedCurrentBound3Total was 881,534 before the sentinel-repair workflow's 1,270 states, and
-	// 882,804 before the consumer-cleanup workflow's 162,794.
 	pinnedCurrentBound3Total = 1045598
 )
 

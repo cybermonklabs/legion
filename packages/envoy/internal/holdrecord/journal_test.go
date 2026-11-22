@@ -1235,6 +1235,22 @@ func abortAfterStop(t *testing.T, c *holdrecord.Client, holdID, command, carried
 	}
 }
 
+// doneCompletes writes command's done entry with outputs in hold holdID, and fails t unless that one
+// write completed the record, with hold_gen heldGen, and moved the record's gen by one.
+func doneCompletes(t *testing.T, c *holdrecord.Client, holdID, command string, outputs map[string]string, heldGen uint64) {
+	t.Helper()
+	_, gen := journal(t, c, holdID)
+	if err := c.AppendDone(context.Background(), holdID, command, outputs); err != nil {
+		t.Fatalf("%s's done entry: %v", command, err)
+	}
+	d, after := journal(t, c, holdID)
+	if e := last(t, d); !d.Complete || d.HoldGen == 0 || d.HoldGen != heldGen || after != gen+1 || e.Command != command ||
+		e.State != "done" {
+		t.Fatalf("after %s's done entry: complete %v, hold_gen %d (row gen %d), record gen %d from %d, ending %+v",
+			command, d.Complete, d.HoldGen, heldGen, after, gen, e)
+	}
+}
+
 // enroll on the broker's own routes over Postgres, under the general stop rule. A refused enroll
 // whose stop records that no run of it changed anything (LeftUnchanged) leaves its hold releasable.
 // Control: the same stop recording a change, or recording nothing, leaves hold release refused
@@ -1283,17 +1299,7 @@ func TestAnEnrollStopLeavesTheHoldReleasable(t *testing.T) {
 		if _, err := c.Admit(ctx, "h-enroll-done", cmd(cmdEnroll), map[string]string{"daemon": "P"}); err != nil {
 			t.Fatalf("Admit of %s after its stop: %v", cmdEnroll, err)
 		}
-		held := row(t, c)
-		_, gen := journal(t, c, "h-enroll-done")
-		if err := c.AppendDone(ctx, "h-enroll-done", cmdEnroll, map[string]string{"family": "daemon/P"}); err != nil {
-			t.Fatalf("%s's done entry: %v", cmdEnroll, err)
-		}
-		d, after := journal(t, c, "h-enroll-done")
-		if e := last(t, d); !d.Complete || d.HoldGen == 0 || d.HoldGen != held.Gen || after != gen+1 || e.Command != cmdEnroll ||
-			e.State != "done" {
-			t.Fatalf("after enroll's done entry: complete %v, hold_gen %d (row gen %d), record gen %d from %d, ending %+v",
-				d.Complete, d.HoldGen, held.Gen, after, gen, e)
-		}
+		doneCompletes(t, c, "h-enroll-done", cmdEnroll, map[string]string{"family": "daemon/P"}, row(t, c).Gen)
 		_, err := c.Admit(ctx, "h-enroll-done", cmd(cmdEnroll), nil)
 		refused(t, "enroll after its done entry", err, holdrecord.ErrAlreadyDone, "complete")
 		release(t, c, "h-enroll-done")
@@ -1357,17 +1363,7 @@ func TestASentinelRepairStopLeavesTheHoldReleasable(t *testing.T) {
 		if _, err := c.Admit(ctx, "h-repair-done", cmd(cmdRepairSentinel), inputs); err != nil {
 			t.Fatalf("Admit of %s after its stop: %v", cmdRepairSentinel, err)
 		}
-		held := row(t, c)
-		_, gen := journal(t, c, "h-repair-done")
-		if err := c.AppendDone(ctx, "h-repair-done", cmdRepairSentinel, map[string]string{"sentinel_was": "a malformed value"}); err != nil {
-			t.Fatalf("%s's done entry: %v", cmdRepairSentinel, err)
-		}
-		d, after := journal(t, c, "h-repair-done")
-		if e := last(t, d); !d.Complete || d.HoldGen == 0 || d.HoldGen != held.Gen || after != gen+1 || e.Command != cmdRepairSentinel ||
-			e.State != "done" {
-			t.Fatalf("after repair-sentinel's done entry: complete %v, hold_gen %d (row gen %d), record gen %d from %d, ending %+v",
-				d.Complete, d.HoldGen, held.Gen, after, gen, e)
-		}
+		doneCompletes(t, c, "h-repair-done", cmdRepairSentinel, map[string]string{"sentinel_was": "a malformed value"}, row(t, c).Gen)
 		_, err := c.Admit(ctx, "h-repair-done", cmd(cmdRepairSentinel), nil)
 		refused(t, "repair-sentinel after its done entry", err, holdrecord.ErrAlreadyDone, "complete")
 		release(t, c, "h-repair-done")
@@ -1449,16 +1445,7 @@ func TestAConsumerCleanupCompletesOnARunWithFinal(t *testing.T) {
 			if _, err := c.Admit(ctx, "h-cleanup", cmd(final), inputs[command]); err != nil {
 				t.Fatalf("Admit of %s: %v", final, err)
 			}
-			_, gen := journal(t, c, "h-cleanup")
-			if err := c.AppendDone(ctx, "h-cleanup", final, nil); err != nil {
-				t.Fatalf("%s's done entry: %v", final, err)
-			}
-			d, after := journal(t, c, "h-cleanup")
-			if e := last(t, d); !d.Complete || d.HoldGen == 0 || d.HoldGen != held.Gen || after != gen+1 || e.Command != final ||
-				e.State != "done" {
-				t.Fatalf("after %s's done entry: complete %v, hold_gen %d (row gen %d), record gen %d from %d, ending %+v",
-					final, d.Complete, d.HoldGen, held.Gen, after, gen, e)
-			}
+			doneCompletes(t, c, "h-cleanup", final, nil, held.Gen)
 		}
 		release(t, c, "h-cleanup")
 		released(t, c, "h-cleanup")
