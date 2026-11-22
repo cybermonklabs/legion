@@ -129,7 +129,9 @@ type AppContextOptions struct {
 	// machine's identity token every listener call presents in EnvoyToken's place instead
 	// (cmd/dispatch); empty presents none.
 	EnvoyGoogleAudience string
-	Docs                docs.API
+	// Docs is the document service, which BuildAppContext requires (api.NewDeps refuses none):
+	// its caller builds it and shuts it down once the router is done with it. See api.DepsInput.
+	Docs docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549); nil turns it off.
 	Embedder embed.Embedder
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is configured.

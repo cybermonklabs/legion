@@ -44,7 +44,8 @@ func (m *recordingMux) HandleFunc(pattern string, handler func(http.ResponseWrit
 func mounted(t *testing.T) *recordingMux {
 	t.Helper()
 	mux := &recordingMux{}
-	mount(newKeyedCensusContext(t), mux)
+	_, background := mount(newKeyedCensusContext(t), mux)
+	t.Cleanup(background.Wait)
 	return mux
 }
 
@@ -85,13 +86,13 @@ func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
 func newKeyedCensusContext(t *testing.T) *AppContext {
 	t.Helper()
 	people := newMemoryPeople()
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey:       testSigningKey,
 		People:           people,
 		Identity:         identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
 		Lifetime:         t.Context(),
 		TestHooksEnabled: true,
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}

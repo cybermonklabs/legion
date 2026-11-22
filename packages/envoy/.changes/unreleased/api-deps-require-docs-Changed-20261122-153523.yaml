@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  `api.NewDeps`, and `routes.BuildAppContext` through it, refuse an input with no document service
+  (`DepsInput.Docs`, `AppContextOptions.Docs`) rather than build one of their own. The service
+  they built had no holder to shut it down: its compaction worker, and any settlement it had
+  armed, ran on after the server it served had stopped, against a database pool its caller had
+  closed. `cmd/dispatch` always passes the service it builds and shuts down, so a deployment sees
+  no change; a caller that passed none now builds the service and shuts it down itself.
+time: 2026-11-22T15:35:23Z
+custom:
+    Issue: api-deps-require-docs

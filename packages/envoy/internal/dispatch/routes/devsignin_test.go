@@ -29,7 +29,7 @@ func newDevSignInRouter(t *testing.T, serverURL string, sessions *memorySessionS
 func newDevSignInRouterWithPeople(t *testing.T, serverURL string, sessions *memorySessionStore) (http.Handler, *memoryPeopleStore) {
 	t.Helper()
 	people := newMemoryPeople()
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey:  testSigningKey,
 		People:      people,
 		Sessions:    sessions,
@@ -38,12 +38,13 @@ func newDevSignInRouterWithPeople(t *testing.T, serverURL string, sessions *memo
 		ServerURL:   serverURL,
 		DevSignIn:   true,
 		Lifetime:    t.Context(),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
 	standInEventLog(ctx, 0)
-	handler, _ := New(ctx)
+	handler, background := New(ctx)
+	t.Cleanup(background.Wait)
 	return handler, people
 }
 
@@ -303,18 +304,19 @@ func TestDevSignInRouterRefusesAnotherHost(t *testing.T) {
 
 func TestDevSignInIsNotMountedByDefault(t *testing.T) {
 	sessions := &memorySessionStore{generations: map[string]int64{}}
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey: testSigningKey,
 		People:     newMemoryPeople(),
 		Sessions:   sessions,
 		Identity:   identity.CookieIdentity{SigningKey: testSigningKey, Sessions: sessions},
 		ServerURL:  devSignInOrigin,
 		Lifetime:   t.Context(),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
-	handler, _ := New(ctx)
+	handler, background := New(ctx)
+	t.Cleanup(background.Wait)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, devSignInRequest(t, devSignInOrigin+"/auth/_dev/signin?login=alice"))
 	if response.Code != http.StatusNotFound || errorCodeOf(t, response) != "NOT_FOUND" {
@@ -348,14 +350,14 @@ func TestBuildAppContextDevSignInNeedsSessions(t *testing.T) {
 
 func TestBuildAppContextDevSignInRefusesAPublicOrigin(t *testing.T) {
 	build := func(serverURL string) error {
-		_, err := BuildAppContext(AppContextOptions{
+		_, err := BuildAppContext(withDocuments(t, AppContextOptions{
 			SigningKey: testSigningKey,
 			People:     newMemoryPeople(),
 			Sessions:   &memorySessionStore{generations: map[string]int64{}},
 			Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User"},
 			ServerURL:  serverURL,
 			DevSignIn:  true,
-		})
+		}))
 		return err
 	}
 	for _, serverURL := range []string{
