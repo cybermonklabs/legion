@@ -619,10 +619,13 @@ const (
 // peerPlan is what the stand-ins read: the generation's URL file as the role sees it, and the
 // roles directory as the launcher sees it, under which the agent looks for the writer token. The
 // plan names the directory and not the token's path, so the environment it travels in holds
-// that path only where the launcher puts it.
+// that path only where the launcher puts it. End is when the stand-ins must end (reentryEnd):
+// the shim's argv is the one the shim rule knows (roleShim), which carries no -test.timeout, so
+// the shim hands its agent the deadline the test put here.
 type peerPlan struct {
 	DSNFile  string
 	RolesDir string
+	End      time.Time
 }
 
 // The files the stand-ins write in the role's own /tmp: what the child saw, what the agent saw,
@@ -636,15 +639,20 @@ const (
 
 // sessionPeerShim is the shim stand-in: the test binary run as `<binary> worker-shim`, the
 // argv the shim rule knows a shim by (roleShim), so TestMain runs it before the test framework
-// reads any argument. It starts the agent stand-in as its one direct child, and exits with that
-// child's status, as the shim ends with its agent.
+// reads any argument. It starts the agent stand-in as its one direct child, with the plan's end
+// as its deadline, and exits with that child's status, as the shim ends with its agent.
 func sessionPeerShim() int {
+	var plan peerPlan
+	if err := json.Unmarshal([]byte(os.Getenv(peerPlanEnv)), &plan); err != nil {
+		fmt.Fprintln(os.Stderr, "shim stand-in:", err)
+		return 1
+	}
 	self, err := os.Executable()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "shim stand-in:", err)
 		return 1
 	}
-	agent := exec.Command(self, "-test.run=^TestSessionPeerStandInHelper$")
+	agent := exec.Command(self, reentryUntil(plan.End, "TestSessionPeerStandInHelper")...)
 	agent.Env = append(os.Environ(), peerStandInEnv+"=agent")
 	agent.Stdout, agent.Stderr = os.Stdout, os.Stderr
 	if err := agent.Run(); err != nil {
@@ -677,9 +685,10 @@ func TestSessionPeerStandInHelper(t *testing.T) {
 	if err != nil {
 		fail(err)
 	}
-	// Each wait of a stand-in is under the hang guard of its own test binary, the one the agent's
-	// shim started (testwait.Bounded): how soon the proxy answers is not what the case reads.
-	guard := testwait.Bounded(t, time.Minute, time.Second)
+	// Each wait of a stand-in is under the hang guard of its own test binary (beforeDeadline),
+	// whose deadline its starter set (reentry): how soon the proxy answers is not what the case
+	// reads.
+	guard := beforeDeadline(t)
 	if which == "child" {
 		if err := sayInTmp(peerChildSaw, "connect="+peerConnect(socket, guard)); err != nil {
 			fail(err)
@@ -695,7 +704,7 @@ func TestSessionPeerStandInHelper(t *testing.T) {
 	if err != nil {
 		fail(err)
 	}
-	child := exec.Command(self, "-test.run=^TestSessionPeerStandInHelper$")
+	child := exec.Command(self, reentry(t, "TestSessionPeerStandInHelper")...)
 	child.Env = append(os.Environ(), peerStandInEnv+"=child")
 	child.Stdout, child.Stderr = os.Stdout, os.Stderr
 	if err := child.Start(); err != nil {
@@ -804,6 +813,7 @@ func startPeerGeneration(t *testing.T) *peerGeneration {
 	plan, err := json.Marshal(peerPlan{
 		DSNFile:  filepath.Join(generationDir(filepath.Join(fixed, RolePrivateDir), 1), ompsessions.DSNFileName),
 		RolesDir: g.rolesDir,
+		End:      reentryEnd(t),
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -54,7 +54,7 @@ func TestControllerDrainRunningHeldPIDOneHelper(t *testing.T) {
 			m := &manager{cfg: Config{StopGrace: time.Second}, guard: guard}
 			released := filepath.Join(t.TempDir(), "released")
 			// The context is a hang guard alone.
-			ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, time.Minute, time.Second))
+			ctx, cancel := context.WithTimeout(context.Background(), beforeDeadline(t))
 			defer cancel()
 			held := exec.CommandContext(ctx, "/bin/sh", "-c", tc.script, "sh", released)
 			pid, err := guard.start(held)
@@ -63,7 +63,7 @@ func TestControllerDrainRunningHeldPIDOneHelper(t *testing.T) {
 			}
 			// Wait for the held child's own child before testing the drain; setup is not timed.
 			children := fmt.Sprintf("/proc/%d/task/%d/children", pid, pid)
-			testwait.Eventually(t, "the held child's own child to start", func() bool {
+			testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the held child's own child to start", func() bool {
 				body, err := os.ReadFile(children)
 				return err == nil && strings.TrimSpace(string(body)) != ""
 			})
@@ -91,7 +91,7 @@ func TestControllerDrainRunningHeldPIDOneHelper(t *testing.T) {
 		// Wait for PID 1 to adopt the member so only the group clause can spare it. The member
 		// finishes on release after the drain; the held child exits 5 when it finishes, or 9 if
 		// the drain ends the member. The context bounds a hang, not the drain's behavior.
-		ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, time.Minute, time.Second))
+		ctx, cancel := context.WithTimeout(context.Background(), beforeDeadline(t))
 		defer cancel()
 		held := exec.CommandContext(ctx, "/bin/sh", "-c", `( sh -c 'echo $$ >"$1"; while [ ! -e "$3" ]; do sleep 0.01; done; : >"$2"' sh "$1" "$2" "$3" & )
 until [ -s "$1" ]; do sleep 0.01; done
@@ -103,7 +103,7 @@ exit 5`, "sh", started, finished, released)
 		if err != nil {
 			t.Fatal(err)
 		}
-		testwait.Eventually(t, "PID 1 to adopt the held child's group member", func() bool {
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "PID 1 to adopt the held child's group member", func() bool {
 			body, err := os.ReadFile(started)
 			if err != nil {
 				return false
@@ -176,7 +176,7 @@ exit 5`, "sh", started, finished, released)
 		guard := &pidGuard{}
 		m := &manager{cfg: Config{StopGrace: grace}, guard: guard}
 		released := filepath.Join(t.TempDir(), "released")
-		ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, time.Minute, time.Second))
+		ctx, cancel := context.WithTimeout(context.Background(), beforeDeadline(t))
 		defer cancel()
 		held := exec.CommandContext(ctx, "/bin/sh", "-c", `while [ ! -e "$1" ]; do sleep 0.01; done; exit 5`, "sh", released)
 		pid, err := guard.start(held)
@@ -188,7 +188,7 @@ exit 5`, "sh", started, finished, released)
 		if err := left.Start(); err != nil {
 			t.Fatal(err)
 		}
-		testwait.Eventually(t, "the left process to ignore SIGTERM", func() bool {
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the left process to ignore SIGTERM", func() bool {
 			_, err := os.Stat(ignoring)
 			return err == nil
 		})
@@ -201,7 +201,7 @@ exit 5`, "sh", started, finished, released)
 		var took time.Duration
 		select {
 		case took = <-drained:
-		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+		case <-time.After(beforeDeadline(t)):
 			t.Fatal("the drain had not returned under the test's hang guard: it did not kill the process the generation left, which ignores SIGTERM and outlives the guard")
 		}
 		t.Logf("the drain returned after %s", took.Round(time.Millisecond))
@@ -211,7 +211,7 @@ exit 5`, "sh", started, finished, released)
 		if took >= underTheDefaultGrace {
 			t.Errorf("the drain returned after %s, not before %s: it killed the process it left at the launcher's default grace of 30 s, not at the %s the case configured", took, underTheDefaultGrace, grace)
 		}
-		testwait.Eventually(t, "the process the generation left to be ended and reaped", func() bool {
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the process the generation left to be ended and reaped", func() bool {
 			return errors.Is(syscall.Kill(left.Process.Pid, 0), syscall.ESRCH)
 		})
 		if err := left.Wait(); !reapedByAnother(err) {
@@ -276,7 +276,7 @@ func TestGuardReapsAHeldGroupsOrphanPIDOneHelper(t *testing.T) {
 			}
 			var orphan int
 			// Both exits must be in place before the pass; setup is not timed.
-			testwait.Eventually(t, "the held child to exit and PID 1 to adopt its orphan", func() bool {
+			testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the held child to exit and PID 1 to adopt its orphan", func() bool {
 				body, err := os.ReadFile(orphanFile)
 				if err != nil {
 					return false
@@ -288,7 +288,7 @@ func TestGuardReapsAHeldGroupsOrphanPIDOneHelper(t *testing.T) {
 			if err := os.WriteFile(released, nil, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			testwait.Eventually(t, "the orphan PID 1 adopted to exit", func() bool { return zombie(orphan) })
+			testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the orphan PID 1 adopted to exit", func() bool { return zombie(orphan) })
 			if err := tc.pass(guard); err != nil {
 				t.Fatal(err)
 			}

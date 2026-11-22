@@ -431,7 +431,7 @@ func processRig(t *testing.T) (g *rig, kill func()) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command(self, "-test.run=^TestLauncherProcess$")
+	command := exec.Command(self, reentry(t, "TestLauncherProcess")...)
 	command.Env = append(os.Environ(), launcherProcessEnv+"=1", "LEGION_LAUNCHER_TEST_ADDRESS=tcp://"+listener.Addr().String(),
 		"LEGION_LAUNCHER_TEST_PRIVATE="+private)
 	// The launcher's output goes to a file rather than a pipe: its child inherits it, and a pipe

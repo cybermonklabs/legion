@@ -802,7 +802,7 @@ func TestThePodsProcessesAreVisibleThroughEveryProcEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := &lockedBuffer{}
-	child := exec.Command(self, "-test.run=^TestVolumeGuardNamespaceHelper$")
+	child := exec.Command(self, reentry(t, "TestVolumeGuardNamespaceHelper")...)
 	child.Dir = "/"
 	child.Env = append(os.Environ(), volumeGuardNamespaceEnv+"="+string(plan))
 	child.SysProcAttr = attr
@@ -929,7 +929,7 @@ func TestVolumeGuardNamespaceHelper(t *testing.T) {
 		if process.Kind == "runner" {
 			argv0 = tree.Copy
 		}
-		started := exec.Command(argv0, "-test.run=^TestVolumeGuardProcessHelper$")
+		started := exec.Command(argv0, reentry(t, "TestVolumeGuardProcessHelper")...)
 		started.Dir = "/"
 		started.Env = append(os.Environ(), volumeGuardProcessEnv+"="+string(plan))
 		started.Stdout, started.Stderr = os.Stdout, os.Stderr

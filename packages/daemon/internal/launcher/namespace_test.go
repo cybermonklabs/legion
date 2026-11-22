@@ -83,8 +83,8 @@ func runAsPIDOne(t *testing.T, helper string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := append(append([]string{}, prefix...), "/usr/bin/env", "-i", "PATH="+os.Getenv("PATH"), pidOneHelperEnv+"=1",
-		self, "-test.run=^"+helper+"$", "-test.v", "-test.count=1")
+	args := append(append([]string{}, prefix...), "/usr/bin/env", "-i", "PATH="+os.Getenv("PATH"), pidOneHelperEnv+"=1", self)
+	args = append(append(args, reentry(t, helper)...), "-test.v", "-test.count=1")
 	output, err := exec.Command("sudo", args...).CombinedOutput()
 	if err != nil || !bytes.Contains(output, []byte("--- PASS: "+helper)) {
 		t.Fatalf("%s as PID 1: %v\n%s", helper, err, output)
@@ -110,7 +110,8 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 	}
 	args := append(append([]string{}, prefix...), "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "GOMAXPROCS=1",
 		namespaceHelperEnv+"=1", "LEGION_LAUNCHER_TEST_ADDRESS=tcp://"+listener.Addr().String(),
-		"LEGION_LAUNCHER_TEST_PRIVATE="+g.private, "LEGION_LAUNCHER_TEST_GRACE="+grace.String(), self, "-test.run=^TestLauncherPIDOneHelper$")
+		"LEGION_LAUNCHER_TEST_PRIVATE="+g.private, "LEGION_LAUNCHER_TEST_GRACE="+grace.String(), self)
+	args = append(args, reentry(t, "TestLauncherPIDOneHelper")...)
 	command := exec.Command("sudo", args...)
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output

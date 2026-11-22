@@ -582,7 +582,7 @@ func TestASweepsOwnDeleterIsNoHoldOnTheRootsItDeletesFrom(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), beforeDeadline(t))
 			defer cancel()
-			child := exec.CommandContext(ctx, self, "-test.run=^TestASweepsOwnDeleterIsNoHoldHelper$", "-test.v")
+			child := exec.CommandContext(ctx, self, append(reentry(t, "TestASweepsOwnDeleterIsNoHoldHelper"), "-test.v")...)
 			child.Dir = "/"
 			// The child's temporary directory, under both names a test reads one by (t.TempDir
 			// reads GOTMPDIR first): an empty mount point here, which the child covers with a
@@ -731,7 +731,7 @@ func holdOpen(t *testing.T, dir string) {
 	})
 	// ExtraFiles[0] is the child's descriptor 3.
 	fd := filepath.Join("/proc", strconv.Itoa(holder.Process.Pid), "fd", "3")
-	testwait.Eventually(t, fd+" to name "+dir, func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, fd+" to name "+dir, func() bool {
 		target, err := os.Readlink(fd)
 		return err == nil && target == dir
 	})

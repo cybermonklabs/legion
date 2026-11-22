@@ -2872,7 +2872,7 @@ func startHandleHelper(t *testing.T, path string) int {
 		t.Fatal(err)
 	}
 	marker := filepath.Join(t.TempDir(), "holding")
-	child := exec.Command(self, "-test.run=^TestVolumeTrimHandleHelper$")
+	child := exec.Command(self, reentry(t, "TestVolumeTrimHandleHelper")...)
 	child.Env = append(os.Environ(), volumeTrimHandleEnv+"="+path+"\n"+marker)
 	child.Stdout, child.Stderr = os.Stdout, os.Stderr
 	if err := child.Start(); err != nil {

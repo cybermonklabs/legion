@@ -54,7 +54,7 @@ func requireRoleNamespaces(t *testing.T) {
 	attr, err := roleNamespaceAttr()
 	var output []byte
 	if err == nil {
-		probe := exec.Command(self, "-test.run=^TestRoleNamespaceProbeHelper$")
+		probe := exec.Command(self, reentry(t, "TestRoleNamespaceProbeHelper")...)
 		probe.Env = append(os.Environ(), roleProbeEnv+"="+t.TempDir())
 		probe.SysProcAttr = attr
 		output, err = probe.CombinedOutput()
@@ -125,7 +125,7 @@ func useRoleLayout(t *testing.T, home, homeMounts, fixed string) {
 	}
 	previousHome, previousMounts, previousFixed, previousLaunch := roleHome, roleHomeMounts, roleFixedRoot, roleInitLaunch
 	roleHome, roleHomeMounts, roleFixedRoot = home, homeMounts, fixed
-	roleInitLaunch = roleInitHelperLaunch(self, roleInitOwnTemporariesEnv+"=1")
+	roleInitLaunch = roleInitHelperLaunch(t, self, roleInitOwnTemporariesEnv+"=1")
 	t.Cleanup(func() {
 		roleHome, roleHomeMounts, roleFixedRoot, roleInitLaunch = previousHome, previousMounts, previousFixed, previousLaunch
 	})
@@ -133,13 +133,14 @@ func useRoleLayout(t *testing.T, home, homeMounts, fixed string) {
 
 // roleInitHelperLaunch is roleInitLaunch for a test binary: it re-enters self as role-init, with
 // the flags the launcher would pass on the command line carried in roleInitEnv, and extra in its
-// environment besides.
+// environment besides. Each role-init it starts is a child of t, which ends before t's own
+// deadline (reentry).
 //
 // A binary built with -race sleeps atexit_sleep_ms (1 s by default) before it exits, so a role-init
 // re-entered from a race build would end its namespace a second after its shim, which `legion
 // launcher role-init` never does, and every stop a test times would carry that second. The helper
 // turns the sleep off, keeping whatever else GORACE asks for.
-func roleInitHelperLaunch(self string, extra ...string) func(RoleInitConfig) ([]string, []string, error) {
+func roleInitHelperLaunch(t *testing.T, self string, extra ...string) func(RoleInitConfig) ([]string, []string, error) {
 	return func(cfg RoleInitConfig) ([]string, []string, error) {
 		body, err := json.Marshal(cfg)
 		if err != nil {
@@ -147,7 +148,7 @@ func roleInitHelperLaunch(self string, extra ...string) func(RoleInitConfig) ([]
 		}
 		gorace := strings.TrimSpace(os.Getenv("GORACE") + " atexit_sleep_ms=0")
 		env := append([]string{roleInitEnv + "=" + string(body), "GORACE=" + gorace}, extra...)
-		return []string{self, "-test.run=^TestRoleInitHelper$"}, env, nil
+		return append([]string{self}, reentry(t, "TestRoleInitHelper")...), env, nil
 	}
 }
 

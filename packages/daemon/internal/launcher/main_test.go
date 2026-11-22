@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -66,6 +67,40 @@ func TestMain(m *testing.M) {
 		}
 	}
 	os.Exit(m.Run())
+}
+
+// reentry is the arguments that run this test binary's helper test alone, in a process of its own
+// the test starts: the -test.run of that one test, and a -test.timeout whose deadline is the
+// moment beforeDeadline runs out here. The child is a wait of this process's, so its whole life,
+// its own waits under its own beforeDeadline, its cleanups and its alarm included, ends while
+// this process still has the 30 s beforeDeadline leaves it: a child whose fact never comes fails
+// with its own text, and its parent prints that text before the parent's own timeout. Under
+// -timeout 0 this process has no deadline, and the child is given none either.
+func reentry(t *testing.T, helper string) []string {
+	return reentryUntil(reentryEnd(t), helper)
+}
+
+// reentryEnd is when a child this test starts now must end (reentry): when beforeDeadline runs
+// out, or the zero time under -timeout 0. A child that the launcher starts by an argv the test
+// does not write, and that has no test of its own to read it from, is handed it in its plan
+// (peerPlan.End).
+func reentryEnd(t *testing.T) time.Time {
+	if _, ok := t.Deadline(); !ok {
+		return time.Time{}
+	}
+	return time.Now().Add(beforeDeadline(t))
+}
+
+// reentryUntil is reentry for a child that must end by end, the zero time for no end. The timeout
+// is whole seconds, so no command line of the package's gains digits a test reads /proc for (the
+// role stage's detached sleep), and one second at least, so a child started at or after end ends
+// at once rather than with no deadline, which a -test.timeout of 0 would be.
+func reentryUntil(end time.Time, helper string) []string {
+	args := []string{"-test.run=^" + helper + "$"}
+	if end.IsZero() {
+		return args
+	}
+	return append(args, "-test.timeout="+max(time.Until(end).Truncate(time.Second), time.Second).String())
 }
 
 // No test of this package can reach the workspace of the pod it runs in. The first two cases fail

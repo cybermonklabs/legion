@@ -336,7 +336,7 @@ func (g *rig) childStart(generation uint64, marker string, files map[string]stri
 	dir := g.generationDir(generation)
 	return shimwire.LauncherStart{
 		ID: "start-" + strconv.FormatUint(generation, 10), Generation: generation,
-		Argv: []string{self, "-test.run=^TestLauncherChild$"},
+		Argv: append([]string{self}, reentry(g.t, "TestLauncherChild")...),
 		Env: []string{launcherChildEnv + "=1", "LEGION_LAUNCHER_MARKER=" + marker,
 			"LEGION_WORKSPACE=" + filepath.Join(g.t.TempDir(), "workspace"),
 			"ENVOY_TOKEN_FILE=" + filepath.Join(dir, "ENVOY_TOKEN"),
@@ -1299,13 +1299,11 @@ func TestTheReaperSparesEveryManagersGenerationAndReapsTheRest(t *testing.T) {
 
 // awaitZombie waits for pid, a child of the test that exits at once, to have exited and to wait as
 // a zombie for whoever reaps it. It is the setup of a reap, so it waits for that fact under the
-// test's hang guard and not for a span: how long a loaded machine takes to run a shell that exits
-// is not what any reap case reads. It keeps testwait.Eventually's minute rather than
-// beforeDeadline, because TestControllerDrainPIDOneHelper calls it in a process the test binary
-// re-enters, where there is no deadline to wait before (beforeDeadline).
+// test's hang guard (beforeDeadline) and not for a span: how long a loaded machine takes to run a
+// shell that exits is not what any reap case reads.
 func awaitZombie(t *testing.T, pid int) {
 	t.Helper()
-	testwait.Eventually(t, fmt.Sprintf("process %d to exit", pid), func() bool { return zombie(pid) })
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, fmt.Sprintf("process %d to exit", pid), func() bool { return zombie(pid) })
 }
 
 // reapedByAnother is whether err is a child's own wait answering that another wait of the process

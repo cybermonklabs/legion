@@ -106,7 +106,7 @@ func launchTestDeleter(t *testing.T, follows bool) {
 		// A binary built with -race sleeps atexit_sleep_ms before it exits, which a deleter
 		// reaped inside the sweep's grace would spend on every sweep (roleInitHelperLaunch).
 		gorace := strings.TrimSpace(os.Getenv("GORACE") + " atexit_sleep_ms=0")
-		return []string{self, "-test.run=^TestVolumeTrimDeleteHelper$"},
+		return append([]string{self}, reentry(t, "TestVolumeTrimDeleteHelper")...),
 			[]string{volumeTrimDeleteEnv + "=" + string(body), "GORACE=" + gorace}, nil
 	}
 	t.Cleanup(func() { trimDeleteLaunch = previous })

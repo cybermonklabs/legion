@@ -111,7 +111,7 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stage := exec.Command(self, "-test.run=^TestRoleInitStageHelper$")
+	stage := exec.Command(self, reentry(t, "TestRoleInitStageHelper")...)
 	stage.Env = append(os.Environ(), roleInitStageEnv+"="+string(encoded))
 	// The stage's own IPC namespace, as a container's, so the message queue it makes to stand for
 	// the container's lands in no namespace of the machine's.
@@ -314,16 +314,18 @@ func TestRoleInitStageHelper(t *testing.T) {
 		fmt.Println("stage error:", err)
 		os.Exit(2)
 	}
-	if err := runStage(plan, testwait.Bounded(t, time.Minute, time.Second)); err != nil {
+	if err := runStage(t, plan); err != nil {
 		fmt.Println("stage error:", err)
 		os.Exit(1)
 	}
 	os.Exit(0)
 }
 
-// runStage is the stage's whole run; guard is the hang guard of the stage's own test binary, which
-// each of its waits is under.
-func runStage(plan stagePlan, guard time.Duration) error {
+// runStage is the stage's whole run, in the stage's own test binary t: each of its waits is under
+// that binary's beforeDeadline, whose deadline the case set (reentry), and so is each process of
+// the test binary it starts (role-init, and the agent role-init starts).
+func runStage(t *testing.T, plan stagePlan) error {
+	guard := beforeDeadline(t)
 	if err := privateMounts(); err != nil {
 		return err
 	}
@@ -488,14 +490,14 @@ func runStage(plan stagePlan, guard time.Duration) error {
 		mqueue = "present"
 	}
 	fmt.Printf("stage mqueue=%s\n", mqueue)
-	roleInitLaunch = roleInitHelperLaunch(stageSelf)
+	roleInitLaunch = roleInitHelperLaunch(t, stageSelf)
 	layout := agentPlan{
 		Home: home, HomeMounts: homeMounts, RolesDir: rolesDir, FixedRoot: fixedRoot, Role: plan.Role,
 		Sibling: plan.Sibling, Owner: plan.Owner, OutsidePID: outside.Process.Pid, Detached: plan.Detached,
 		TestPGLog: true,
 	}
 
-	if err := runGeneration(plan, layout, 1, "agent"); err != nil {
+	if err := runGeneration(t, plan, layout, 1, "agent"); err != nil {
 		return err
 	}
 	homes := filepath.Join(rolesDir, RoleHomesDir, plan.Role)
@@ -546,7 +548,7 @@ func runStage(plan stagePlan, guard time.Duration) error {
 	layout.Detached = plan.Detached + "2"
 	// What the links named is reported even when the generation failed, so a role-init that
 	// followed one shows where it wrote.
-	relaunched := runGeneration(plan, layout, 2, "agent2")
+	relaunched := runGeneration(t, plan, layout, 2, "agent2")
 	fmt.Printf("stage2 sibling-config=%s\n", presence(siblingConfig))
 	fmt.Printf("stage2 sibling-state=%s\n", presence(filepath.Join(siblingState, "cache")))
 	if relaunched != nil {
@@ -572,7 +574,7 @@ func runStage(plan stagePlan, guard time.Duration) error {
 	siblingLayout := layout
 	siblingLayout.Role, siblingLayout.Sibling, siblingLayout.Detached = plan.Sibling, plan.Role, plan.Detached+"3"
 	siblingLayout.TestPGLog = false
-	if err := runGeneration(siblingPlan, siblingLayout, 1, "agent-sibling"); err != nil {
+	if err := runGeneration(t, siblingPlan, siblingLayout, 1, "agent-sibling"); err != nil {
 		return err
 	}
 	fmt.Printf("stage-sibling detached=%s\n", detachedProcess(siblingLayout.Detached, guard))
@@ -622,7 +624,7 @@ func standInForHidden(dir string) ([]string, error) {
 
 // runGeneration runs one generation of the role over the stage's layout and reports the wait
 // status role-init gave back for it.
-func runGeneration(plan stagePlan, layout agentPlan, generation uint64, label string) error {
+func runGeneration(t *testing.T, plan stagePlan, layout agentPlan, generation uint64, label string) error {
 	layout.Label = label
 	layout.Generation = generation
 	agent, err := json.Marshal(layout)
@@ -635,7 +637,7 @@ func runGeneration(plan stagePlan, layout agentPlan, generation uint64, label st
 			HomeMounts: layout.HomeMounts, FixedRoot: layout.FixedRoot,
 		},
 		Role: plan.Role, Generation: generation,
-		Argv: []string{stageSelf, "-test.run=^TestRoleInitAgentHelper$"},
+		Argv: append([]string{stageSelf}, reentry(t, "TestRoleInitAgentHelper")...),
 	}, append(os.Environ(), roleInitAgentEnv+"="+string(agent)), os.Stdout, os.Stderr)
 	if err != nil {
 		return err
@@ -828,7 +830,7 @@ func TestRoleInitAgentHelper(t *testing.T) {
 	detached.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := detached.Start(); err != nil {
 		say("detached-start", err.Error())
-	} else if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 10*time.Millisecond, func() bool {
+	} else if !testwait.Holds(beforeDeadline(t), 10*time.Millisecond, func() bool {
 		_, err := os.Stat(trapped)
 		return err == nil
 	}) {
@@ -976,7 +978,7 @@ func TestTheUncoverProbeReportsAnUnlockedCoverRemoved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	control := exec.Command(self, "-test.run=^TestTheUncoverProbeReportsAnUnlockedCoverRemoved$")
+	control := exec.Command(self, reentry(t, "TestTheUncoverProbeReportsAnUnlockedCoverRemoved")...)
 	control.Env = append(os.Environ(), uncoverControlEnv+"="+t.TempDir())
 	control.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags:                 syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
@@ -1110,7 +1112,7 @@ func TestTheRoleNamespaceCheckRunsARoleGeneration(t *testing.T) {
 			fmt.Println("check error:", err)
 			os.Exit(1)
 		}
-		roleInitLaunch = roleInitHelperLaunch(stageSelf)
+		roleInitLaunch = roleInitHelperLaunch(t, stageSelf)
 		answer := func(err error) string {
 			if err == nil {
 				return "passed"
@@ -1126,7 +1128,7 @@ func TestTheRoleNamespaceCheckRunsARoleGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	check := exec.Command(self, "-test.run=^TestTheRoleNamespaceCheckRunsARoleGeneration$")
+	check := exec.Command(self, reentry(t, "TestTheRoleNamespaceCheckRunsARoleGeneration")...)
 	check.Env = append(os.Environ(), roleCheckEnv+"="+stageMountPoint(t))
 	check.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags:                 syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
@@ -1557,7 +1559,7 @@ func TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills(t *testing.T) {
 			fmt.Println("drain error:", err)
 			os.Exit(2)
 		}
-		if err := runRoleDrain(plan); err != nil {
+		if err := runRoleDrain(t, plan); err != nil {
 			fmt.Println("drain error:", err)
 			os.Exit(1)
 		}
@@ -1638,7 +1640,7 @@ func roleDrainReport(t *testing.T, plan roleDrainPlan) (map[string]string, strin
 	guard := beforeDeadline(t)
 	ctx, cancel := context.WithTimeout(context.Background(), guard)
 	defer cancel()
-	stage := exec.CommandContext(ctx, self, "-test.run=^TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills$")
+	stage := exec.CommandContext(ctx, self, reentry(t, "TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills")...)
 	stage.WaitDelay = time.Second
 	stage.Env = append(os.Environ(), roleDrainEnv+"="+string(encoded))
 	stage.SysProcAttr = &syscall.SysProcAttr{
@@ -1673,14 +1675,14 @@ func roleDrainReport(t *testing.T, plan roleDrainPlan) (map[string]string, strin
 // descendant removes on SIGTERM is still in the role's own /tmp once the role's namespace is
 // gone. role-init's own lines, the one that says how its wait ended among them, reach the
 // stage's output through its stderr.
-func runRoleDrain(plan roleDrainPlan) error {
+func runRoleDrain(t *testing.T, plan roleDrainPlan) error {
 	if err := privateMounts(); err != nil {
 		return err
 	}
 	if err := mountTmpfs(plan.Dir, "size=16m"); err != nil {
 		return err
 	}
-	roleInitLaunch = roleInitHelperLaunch(stageSelf)
+	roleInitLaunch = roleInitHelperLaunch(t, stageSelf)
 	const role = "drain"
 	caught := "rm -f /tmp/" + roleDrainFile + "; while :; do /bin/sleep 600 & wait; done"
 	if plan.Leaves {

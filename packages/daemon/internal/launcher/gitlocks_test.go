@@ -258,11 +258,13 @@ func newGatedProc(t *testing.T, pids ...int) *gatedProc {
 // thus costs the rest of the binary's -timeout.
 //
 // Every wait of the package's tests for a fact whose span is not the claim is bounded by it, or by
-// cleanupBeforeDeadline in a cleanup, with one exception: a wait inside a process the test binary
-// re-enters (a *Helper test, the role stage, the session-peer stand-ins, the PID 1 helpers) keeps
-// testwait's minute (testwait.Eventually, testwait.Bounded of a minute). That process is started
-// with no -test.timeout, so it has no deadline, and beforeDeadline there would be 36 years; the
-// minute is what ends its wait for something that never comes.
+// cleanupBeforeDeadline in a cleanup, in the test process and in every process the test binary
+// re-enters alike (a *Helper test, the role stage, role-init, the session-peer stand-ins, the PID 1
+// helpers). A re-entered process is given a -test.timeout whose deadline is the moment its
+// starter's beforeDeadline runs out (reentry), so beforeDeadline there ends 30 s before that, and
+// the child's failure, its cleanups and its alarm all come while its starter still waits. The one
+// re-entry whose argv the test does not write, the session peer's shim (roleShim's `worker-shim`),
+// waits on nothing of its own and hands its agent the deadline its plan carries (peerPlan.End).
 //
 // Not hang guards, so not bounded by it: a span that is part of a case's claim. These are the race
 // cases' two-minute search budget (raceSwaps); the racer's 30 s (raceTheSwap's deadline) and

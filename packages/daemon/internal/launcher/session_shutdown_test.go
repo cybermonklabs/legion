@@ -66,7 +66,7 @@ func TestASessionDatabaseServesItsChildThroughTheChildsShutdownGrace(t *testing.
 			scratch := t.TempDir()
 			ready, result := filepath.Join(scratch, "ready"), filepath.Join(scratch, "result")
 			start := shimwire.LauncherStart{
-				ID: "start-1", Generation: 1, Argv: []string{self, "-test.run=^TestLauncherTermDialer$"},
+				ID: "start-1", Generation: 1, Argv: append([]string{self}, reentry(t, "TestLauncherTermDialer")...),
 				Env: []string{launcherTermDialerEnv + "=1", "LEGION_LAUNCHER_READY=" + ready, "LEGION_LAUNCHER_RESULT=" + result,
 					"LEGION_LAUNCHER_SOCKET=" + filepath.Join(g.generationDir(1), ompsessions.SocketName)},
 			}

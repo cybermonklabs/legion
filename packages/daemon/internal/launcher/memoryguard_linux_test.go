@@ -52,7 +52,7 @@ const memoryGuardHeld = 64 << 20
 func TestMemoryGuardOnRealRoleNamespaces(t *testing.T) {
 	switch os.Getenv(memoryGuardRoleEnv) {
 	case "init":
-		memoryGuardRoleInit()
+		memoryGuardRoleInit(t)
 	case "hold":
 		memoryGuardHold()
 	}
@@ -75,7 +75,7 @@ func TestMemoryGuardOnRealRoleNamespaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	initProcess := exec.Command(self, "-test.run=^TestMemoryGuardOnRealRoleNamespaces$")
+	initProcess := exec.Command(self, reentry(t, "TestMemoryGuardOnRealRoleNamespaces")...)
 	initProcess.Env = append(os.Environ(), memoryGuardRoleEnv+"=init")
 	initProcess.ExtraFiles = []*os.File{readyWrite, statusWrite}
 	initProcess.SysProcAttr = attr
@@ -202,8 +202,9 @@ func TestMemoryGuardOnRealRoleNamespaces(t *testing.T) {
 // /proc of the PID namespace the holder is started in; then it starts the holder in that nested
 // user namespace as the image's unprivileged user, as runRoleShim starts the shim, hands it the
 // test's ready pipe (fd 3), waits on it, and writes the wait status it read on the test's status
-// pipe (fd 4).
-func memoryGuardRoleInit() {
+// pipe (fd 4). The holder is this process's own re-entered child, so its -test.timeout ends
+// before this process's own deadline (reentry).
+func memoryGuardRoleInit(t *testing.T) {
 	ready, status := os.NewFile(3, "ready"), os.NewFile(4, "status")
 	self, err := os.Executable()
 	if err != nil {
@@ -218,7 +219,7 @@ func memoryGuardRoleInit() {
 		fmt.Fprintln(os.Stderr, "role-init: mount the role's own /proc:", err)
 		os.Exit(1)
 	}
-	hold := exec.Command(self, "-test.run=^TestMemoryGuardOnRealRoleNamespaces$")
+	hold := exec.Command(self, reentry(t, "TestMemoryGuardOnRealRoleNamespaces")...)
 	hold.Env = append(os.Environ(), memoryGuardRoleEnv+"=hold")
 	hold.ExtraFiles = []*os.File{ready}
 	hold.Stdout, hold.Stderr = os.Stdout, os.Stderr
