@@ -506,8 +506,8 @@ the architect: only a person can change that setting, to `PR_BODY` or `BLANK`.
 The merger never turns auto-merge on, and the daemon submits no merge and changes no merge setting
 of any pull request. The repository's own required reviews and checks decide when it lands; Legion
 reads none of them at the merge, bypasses none, and waits for a review only a person can give.
-Nothing holds the head that merges to the head the reviewer approved: a repository that wants its
-newest push reviewed says so in its own rulesets.
+Outside a forward merge of the base, nothing holds the head that merges to the head the reviewer
+approved: a repository that wants its newest push reviewed says so in its own rulesets.
 
 When a merge fails, the decision is the merger's, on GitHub's own answer: wait for what GitHub
 waits for, merge again at the head it re-reads, send the issue back with `request_backward_move`

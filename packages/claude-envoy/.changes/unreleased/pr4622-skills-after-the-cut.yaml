@@ -4,8 +4,9 @@ custom:
 body: |-
   The plugin ships the skills and the two review agents of this change. No skill holds the
   follow-the-code sentence, and the thermonuclear review agents carry it once each.
-  `legion-worker` drops `default-branch-check.md` and `foreign-path.md` and the steps that used them,
-  and `legion-oracle` drops its pointer to `default-branch-check.md`. `legion-worker`'s reference
-  list again names the act that sends a merger to `merge-gate.md`, and `envoy`, `agent-secrets`,
-  `legion-worker`, `legion-architect` and `legion-controller` correct the sentences that were false
-  against the code.
+  `legion-worker` drops `default-branch-check.md` and `foreign-path.md` and the steps that used
+  them, and `legion-oracle` drops its pointer to `default-branch-check.md`. `legion-worker`'s
+  reference list again names the act that sends a merger to `merge-gate.md`, and `envoy`,
+  `agent-secrets`, `legion-worker`, `legion-architect` and `legion-controller` correct the
+  sentences that were false against the code. `legion-retro` excepts a forward merge of the base
+  from "No Legion check compares the head that merges with the one the review approved".

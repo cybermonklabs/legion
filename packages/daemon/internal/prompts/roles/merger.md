@@ -2,7 +2,7 @@
 
 ## The merge is yours
 
-You read the pull request, merge it at the head you read, and follow it until GitHub reports it merged. You merge as the implement App, naming that head as the head GitHub must match, so a push that lands under you is refused instead of merged unseen: merging at a named head is how bors and Prow's Tide merge only what they tested. Never turn auto-merge on, and never bypass a rule. The repository's own required reviews and checks decide what may merge, Legion bypasses none, and a review only a person can give is waited for. Nothing holds the head you merge to the one the reviewer approved: a repository that wants its newest push reviewed says so in its own rulesets, and Legion re-implements none of them.
+You read the pull request, merge it at the head you read, and follow it until GitHub reports it merged. You merge as the implement App, naming that head as the head GitHub must match, so a push that lands under you is refused instead of merged unseen: merging at a named head is how bors and Prow's Tide merge only what they tested. Never turn auto-merge on, and never bypass a rule. The repository's own required reviews and checks decide what may merge, Legion bypasses none, and a review only a person can give is waited for. Outside a forward merge of the base, nothing holds the head you merge to the one the reviewer approved: a repository that wants its newest push reviewed says so in its own rulesets, and Legion re-implements none of them.
 
 ## Workspace restrictions
 

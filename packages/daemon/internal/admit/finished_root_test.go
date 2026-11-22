@@ -49,9 +49,9 @@ const (
 // is what a closed tree keeps. The child still at admitted is handed over with the rest — its
 // tree closed and it never started, so nothing would start it where it stands — and this one was
 // the daemon's own to hold besides, since the root stands in merging, a phase the daemon has
-// already accepted (record.AcceptedAncestor), and its architect was told it is held while this
-// root stands in retro or merging. The linger hands it over whether the close followed the merge
-// or a person made it by hand (the workflow's unfinishedHandOvers). The close itself hands nothing over, so
+// already accepted (record.AcceptedAncestor). The linger hands it over whether the close followed
+// the merge or a person made it by hand (the workflow's unfinishedHandOvers). The close itself
+// hands nothing over, so
 // a root that comes back inside its linger resumes its children where they stood and hands none
 // over. The close here is a person's — parked, then closed — where a merged root's close waits
 // for the rest of its tree instead (the workflow's closeMerged) and leaves no child mid-run to
@@ -168,9 +168,8 @@ func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) 
 	expireLinger(t, pool, admission, engine)
 	// The child the exclusion kept out of the close is the child the linger hands over. It is
 	// the other half of the departure above: leaving it where it stands would leave it todo at
-	// admitted in a closed tree for ever, with nobody told, though its architect was told it
-	// was held only while this root stood in retro or merging. Nothing else of this tree is handed over — every member
-	// that ran was parked before the close.
+	// admitted in a closed tree for ever, with nobody told. Nothing else of this tree is handed
+	// over — every member that ran was parked before the close.
 	if got := handOvers(t, pool); len(got) != 1 || got[0] != unstarted {
 		t.Fatalf("hand-overs once the linger ended = %v, want %s alone: the child this root's close left at admitted runs as a root of its own, and every member that ran was parked", got, unstarted)
 	}
