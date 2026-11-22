@@ -880,8 +880,11 @@ func TestARequestNamingADescriptorBelowTheFirstPassedIsRefused(t *testing.T) {
 // remover's close returns: the launcher's Run waits on the trimmer's goroutine at the
 // container's stop, and a close that waited on a child for ever would hold it there, in the
 // process that is PID 1 of the roles container. The child here is a `sleep` that never reads
-// its standard input, started through the guard as the deleter is. The negative control is the
-// close with no grace kill, which waited on the child until the case's own bound.
+// its standard input, started through the guard as the deleter is. The close must return no
+// sooner than volumeRemoverGrace and no later than that grace and 30 s, with the child killed.
+// A close that kills only after some longer budget fails on that bound; one that never kills
+// fails on it and on the signal too, once the sleep's own 300 s are up, or at the hang guard the
+// wait for the close runs under, if that ends sooner.
 func TestADeleterThatIgnoresTheEndOfItsRequestsIsKilledAtTheGrace(t *testing.T) {
 	cmd := exec.Command("sleep", "300")
 	requests, err := cmd.StdinPipe()
@@ -903,8 +906,12 @@ func TestADeleterThatIgnoresTheEndOfItsRequestsIsKilledAtTheGrace(t *testing.T) 
 	case <-time.After(beforeDeadline(t)):
 		t.Fatalf("the remover's close had not returned %v after it began, with a child that ignores the end of its requests", time.Since(began))
 	}
-	if took := time.Since(began); took < volumeRemoverGrace {
+	took := time.Since(began)
+	if took < volumeRemoverGrace {
 		t.Errorf("the close returned after %v, before the %v grace: the child ended some other way", took, volumeRemoverGrace)
+	}
+	if took > volumeRemoverGrace+30*time.Second {
+		t.Errorf("the close returned after %v, past the %v grace and 30 s: it did not kill the child at the grace", took, volumeRemoverGrace)
 	}
 	status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus)
 	if !ok || !status.Signaled() || status.Signal() != syscall.SIGKILL {
