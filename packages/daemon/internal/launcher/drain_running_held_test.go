@@ -228,7 +228,12 @@ func TestGuardReapsAHeldGroupsOrphanPIDOneHelper(t *testing.T) {
 				t.Fatal(err)
 			}
 			var orphan int
-			testwait.WithinPolling(t, 5*time.Second, testwait.Poll, "the held child and its orphan to exit", func() bool {
+			// The pass under test needs both exits in place, and nothing here is timed: the wait
+			// is for the facts, under the test's hang guard (testwait.Eventually). It once allowed
+			// five seconds, which a loaded machine spent on starting the shell and its sleep: the
+			// case failed in this setup, before the pass it is about, on 2026-11-21 in a whole run
+			// of the package at a load average of about 800, and passed five of five alone.
+			testwait.Eventually(t, "the held child and its orphan to exit", func() bool {
 				body, err := os.ReadFile(orphanFile)
 				if err != nil {
 					return false
