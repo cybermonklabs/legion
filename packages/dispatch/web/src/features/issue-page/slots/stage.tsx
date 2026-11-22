@@ -77,15 +77,16 @@ export function StageSlot({
   // box the view is drawn in (`viewBox`), or held by nothing, as where the view's Retry left the
   // page with its line in the render in which the read it asked again answered.
   const told = useRef<string | undefined>(undefined);
-  const [undrawn, setUndrawn] = useState<{ focused: boolean; following: string }>();
+  const [undrawn, setUndrawn] = useState<{ following: string; viewsFocus: boolean }>();
   const viewBox = useRef<HTMLDivElement>(null);
   const onAddressDrawn = useCallback(
     (drawn: boolean) => {
       if (!beside || told.current === following) return;
       told.current = following;
+      if (drawn) return;
       const box = viewBox.current;
-      const focused = focusIsLoose(box) || box?.contains(document.activeElement) === true;
-      if (!drawn) setUndrawn({ focused, following });
+      const viewsFocus = focusIsLoose(box) || box?.contains(document.activeElement) === true;
+      setUndrawn({ following, viewsFocus });
     },
     [beside, following]
   );
@@ -95,7 +96,7 @@ export function StageSlot({
   // (`IssueTree`'s `addressActs`, `BodySlot`'s `takesFocus`): a control pressed outside the stage
   // keeps the focus. Where the focus was the view's, nothing outside the view holds it once the
   // body is drawn: the stage hands that body none, and it watches from its own first draw, so it
-  // lands as it does where the reader made no act.
+  // lands as it does where the reader made no act, a press on blank space included.
   const acts = useRef<AbortController | undefined>(undefined);
   const swapped = undrawn?.following === following;
   const outline = beside && (!filled[preset] || swapped);
@@ -105,7 +106,7 @@ export function StageSlot({
       <ReaderActsWatch into={acts} key={following} />
       {View === undefined ? (
         <StageBox>
-          <BodySlot {...props} acts={swapped && undrawn.focused ? undefined : acts} />
+          <BodySlot {...props} acts={swapped && undrawn.viewsFocus ? undefined : acts} />
         </StageBox>
       ) : (
         <ViewStage key={preset}>

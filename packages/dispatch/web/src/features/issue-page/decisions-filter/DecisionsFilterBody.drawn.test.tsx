@@ -821,9 +821,8 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
         // tree built from that answer draws them.
         answered.again({ children: [openAsk("q-open"), decisionNode("minor")] });
         answer.resolve([]);
-        const settled = Promise.withResolvers<void>();
-        setTimeout(settled.resolve, 0);
-        await settled.promise;
+        // The read's run (`Query.promise`): the query takes its answer as the run ends, first.
+        await answered.client.getQueryCache().find({ queryKey: ["asks", KEY] })?.promise;
       });
     } finally {
       document.removeEventListener("focusin", recordFocus);

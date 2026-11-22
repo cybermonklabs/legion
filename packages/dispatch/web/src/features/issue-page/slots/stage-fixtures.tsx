@@ -1,4 +1,4 @@
-import { expect, spyOn } from "bun:test";
+import { expect, type Mock, spyOn } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { type RenderResult, render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -13,15 +13,13 @@ import {
 } from "react-router-dom";
 
 import { ApiError, api } from "../../../api/client";
-import type { ArtifactBlock, IssueDetails } from "../../../api/types";
+import type { IssueDetails } from "../../../api/types";
 import { MarginProvider } from "../../margin/margin-context";
 import { parseIssuePath } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
-import { artifact, issueDetails, KEY, specRef } from "../decisions-filter/decisions-fixtures";
+import { issueDetails, KEY } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
-import { TWO_THREADS } from "../outline-fixtures";
 import type { Preset } from "../page-words";
-import { check, VERIFICATION_SLUG } from "../verification-filter/verification-fixtures";
 import { FAILED_READ_RETRY } from "./failed-read-line";
 import { ProvidersSlot } from "./providers";
 import { type SlotsFilled, StageSlot, type ViewSlots } from "./stage";
@@ -30,8 +28,10 @@ import { type SlotsFilled, StageSlot, type ViewSlots } from "./stage";
  * What the stage's unit tests share (`stage.test.tsx`, `view-decisions-slot.test.tsx`,
  * `view-address.test.tsx`): the page's stage drawn at an address under the page's own providers,
  * the reads it is drawn from, which slot it drew, and where the focus landed. What the app
- * provides above the page (`AppProviders`) is the Decisions body's drawn test's too
- * (`DecisionsFilterBody.drawn.test.tsx`), so a provider the page comes to need is added once.
+ * provides above the page (`AppProviders`) is what the stage's tests and the Decisions body's
+ * drawn test (`DecisionsFilterBody.drawn.test.tsx`) draw in; the outline's own tests and the
+ * Plan view's (`IssueTree.test.tsx`, `outline-reads.test.tsx`, `PlanFilterBody.test.tsx`) draw
+ * that stack by hand.
  */
 
 /** A navigator that goes nowhere, for a router whose location the case sets itself. */
@@ -167,16 +167,20 @@ export function focusedRow(): string | undefined {
 }
 
 /** Waits for the row `selector` finds in `view` to hold the focus, saying what `what` drew
- *  where it does not. */
+ *  where it does not, and hands the row back. */
 export async function rowTakesFocus(
   view: RenderResult,
   selector: string,
   what: string
-): Promise<void> {
-  await waitFor(() => {
-    const row = view.container.querySelector(selector);
+): Promise<HTMLElement> {
+  return await waitFor(() => {
+    const row = view.container.querySelector<HTMLElement>(selector);
     expect(row, `${what} drew no such row; the stage drew ${drawnSlot(view)}`).not.toBeNull();
-    expect(row, `${what} left the focus on ${focusedRow()}`).toHaveFocus();
+    expect(
+      row,
+      `${what} left the focus on ${focusedRow() ?? document.activeElement?.tagName}`
+    ).toHaveFocus();
+    return row as HTMLElement;
   });
 }
 
@@ -205,8 +209,26 @@ export async function retryTakesFocus(
   });
 }
 
+/** Waits for the outline's line that the issue holds no comment of the address's id, drawn in
+ *  a view's place, to hold the focus, saying what `what` left where it does not. */
+export async function goneLineTakesFocus(view: RenderResult, what: string): Promise<void> {
+  await waitFor(() =>
+    expect(
+      view.queryByRole("heading", { name: "Comment not found" }),
+      `${what} left the focus on ${focusedRow() ?? document.activeElement?.tagName}; the stage drew ${drawnSlot(view)}`
+    ).toHaveFocus()
+  );
+}
+
 /** An id that names no comment of the issue, which the comment's own read answers 404 for. */
 export const GONE_COMMENT = "5f0c2a9e-7d41-4b8a-9c3e-2e6d1b7a4c90";
+
+/** The comment's own read, answering that no comment has the id it is asked for. */
+export function commentGone(): Mock<typeof api.getComment> {
+  return spyOn(api, "getComment").mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: "no such comment" })
+  );
+}
 
 /** Every read the page's tree is built from, answered with nothing, and who is reading. */
 export function stubReads(): { mockRestore(): void }[] {
@@ -236,79 +258,4 @@ export function stubReads(): { mockRestore(): void }[] {
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
     spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
   ];
-}
-
-/** The plan and the Verification document of the issue the Plan and Verification cases draw
- *  (`verifiedIssue`), beside its spec and its decisions document. */
-export const PLAN_DOCUMENT = artifact("artifact-plan", "plan-md");
-export const VERIFICATION_DOCUMENT = artifact("artifact-verification", VERIFICATION_SLUG);
-
-/** The issue with its plan and its Verification document too, each in its role. */
-export function verifiedIssue(): IssueDetails {
-  const issue = issueDetails();
-  return {
-    ...issue,
-    artifacts: [...(issue.artifacts ?? []), PLAN_DOCUMENT, VERIFICATION_DOCUMENT],
-    plan_artifact_id: PLAN_DOCUMENT.id,
-    verification_artifact_id: VERIFICATION_DOCUMENT.id,
-  };
-}
-
-/** The block ids of the spec's one statement, and of the plan task of the plan and the check of
- *  the Verification document that each serve it. */
-export const STATEMENT = "r1";
-export const PLAN_TASK = "t1";
-export const CHECK = "c1";
-
-/** One typed block of a document as the blocks read answers it, with the statement it serves
- *  (`serves`, a `block[]` pointer) where it is given one. */
-export function typedBlock(id: string, type: string, serves?: string): ArtifactBlock {
-  return {
-    attributes: serves === undefined ? [] : [{ kind: "block[]", name: "serves", value: serves }],
-    from: 0,
-    id,
-    references: { asks: 0, comments: 0 },
-    to: 1,
-    token: id,
-    type,
-  };
-}
-
-/** Each document's blocks, by its id: the spec's statement, and the plan's task and the
- *  Verification document's check, whose `serves` places each under that statement
- *  (`tree-drafts.ts`). */
-export const BLOCKS: Readonly<Record<string, readonly ArtifactBlock[]>> = {
-  "artifact-spec": [typedBlock(STATEMENT, "requirement")],
-  [PLAN_DOCUMENT.id]: [typedBlock(PLAN_TASK, "plan_task", specRef(STATEMENT))],
-  [VERIFICATION_DOCUMENT.id]: [typedBlock(CHECK, "check", specRef(STATEMENT))],
-};
-
-/** Answers the reads the tree and the Verification view are drawn from for `verifiedIssue`: the
- *  coverage read with the statement, each document's blocks, the results read with the check,
- *  and the issue's two threads. Each spy is the one `stubReads` set, which `spyOn` hands back,
- *  so the `afterEach` that restores those restores it. */
-export function answerVerificationReads(): void {
-  spyOn(api, "getIssueCoverage").mockResolvedValue({
-    gaps: [],
-    has_plan: true,
-    issue: KEY,
-    requirements: [
-      {
-        block_id: STATEMENT,
-        checks: 1,
-        gaps: [],
-        plan_tasks: 1,
-        ref: specRef(STATEMENT),
-        text: "The page draws the plan.",
-      },
-    ],
-    spec_artifact_id: "artifact-spec",
-  });
-  spyOn(api, "getArtifactBlocks").mockImplementation(async (id: string) => [...(BLOCKS[id] ?? [])]);
-  spyOn(api, "getIssueResults").mockResolvedValue({
-    checks: [check({ block_id: CHECK })],
-    issue: KEY,
-    verification_artifact_id: VERIFICATION_DOCUMENT.id,
-  });
-  spyOn(api, "listComments").mockResolvedValue([...TWO_THREADS]);
 }

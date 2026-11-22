@@ -5,7 +5,7 @@ import { whoAmIQuery } from "../api/queries";
 
 type FocusRule = (query: { readonly state: { readonly status: QueryStatus } }) => "always" | false;
 /** The freshness of a read that events keep fresh: `EVENT_FRESH`'s two options, by shape. */
-export type EventFreshness = Readonly<{ refetchOnWindowFocus?: FocusRule; staleTime?: number }>;
+export type EventFreshness = Readonly<{ refetchOnWindowFocus: FocusRule; staleTime: number }>;
 
 /** Whether the signed-in principal is a person (`/auth/whoami`'s `kind: "user"`), whose sign-in
  *  holds the `person` scope that the routes behind these surfaces require: false while the

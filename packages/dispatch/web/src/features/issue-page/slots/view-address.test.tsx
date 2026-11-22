@@ -2,33 +2,32 @@ import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { act, cleanup, waitFor } from "@testing-library/react";
 import type { NavigateFunction } from "react-router-dom";
 
-import { ApiError, api } from "../../../api/client";
-import type { Comment } from "../../../api/types";
-import { KEY, SPEC_SLUG } from "../decisions-filter/decisions-fixtures";
+import { api } from "../../../api/client";
+import type { ArtifactBlock, Comment, IssueDetails } from "../../../api/types";
+import {
+  artifact,
+  issueDetails,
+  KEY,
+  SPEC_SLUG,
+  specRef,
+} from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
-import { TWO_THREADS, waitInAct } from "../outline-fixtures";
+import { TWO_THREADS } from "../outline-fixtures";
 import { STATE_LINES } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
 import { check, VERIFICATION_SLUG } from "../verification-filter/verification-fixtures";
 import {
-  answerVerificationReads,
-  BLOCKS,
-  CHECK,
+  commentGone,
   drawAtBrowserEntry,
   drawnSlot,
   drawStage,
   focusedRow,
   GONE_COMMENT,
-  PLAN_DOCUMENT,
-  PLAN_TASK,
+  goneLineTakesFocus,
   REFUSED,
   retryTakesFocus,
   rowTakesFocus,
-  STATEMENT,
   stubReads,
-  typedBlock,
-  VERIFICATION_DOCUMENT,
-  verifiedIssue,
 } from "./stage-fixtures";
 
 /**
@@ -46,11 +45,87 @@ afterEach(() => {
   for (const stub of stubs) stub.mockRestore();
 });
 
-/** The task's step in the Plan view's chart, the task's row of the outline, and the statement's
- *  row of the outline. */
+/** The plan and the Verification document of the issue the cases draw (`verifiedIssue`), beside
+ *  its spec and its decisions document. */
+const PLAN_DOCUMENT = artifact("artifact-plan", "plan-md");
+const VERIFICATION_DOCUMENT = artifact("artifact-verification", VERIFICATION_SLUG);
+
+/** The issue with its plan and its Verification document too, each in its role. */
+function verifiedIssue(): IssueDetails {
+  const issue = issueDetails();
+  return {
+    ...issue,
+    artifacts: [...(issue.artifacts ?? []), PLAN_DOCUMENT, VERIFICATION_DOCUMENT],
+    plan_artifact_id: PLAN_DOCUMENT.id,
+    verification_artifact_id: VERIFICATION_DOCUMENT.id,
+  };
+}
+
+/** The block ids of the spec's one statement, and of the plan task of the plan and the check of
+ *  the Verification document that each serve it. */
+const STATEMENT = "r1";
+const PLAN_TASK = "t1";
+const CHECK = "c1";
+
+/** One typed block of a document as the blocks read answers it, with the statement it serves
+ *  (`serves`, a `block[]` pointer) where it is given one. */
+function typedBlock(id: string, type: string, serves?: string): ArtifactBlock {
+  return {
+    attributes: serves === undefined ? [] : [{ kind: "block[]", name: "serves", value: serves }],
+    from: 0,
+    id,
+    references: { asks: 0, comments: 0 },
+    to: 1,
+    token: id,
+    type,
+  };
+}
+
+/** Each document's blocks, by its id: the spec's statement, and the plan's task and the
+ *  Verification document's check, whose `serves` places each under that statement
+ *  (`tree-drafts.ts`). */
+const BLOCKS: Readonly<Record<string, readonly ArtifactBlock[]>> = {
+  "artifact-spec": [typedBlock(STATEMENT, "requirement")],
+  [PLAN_DOCUMENT.id]: [typedBlock(PLAN_TASK, "plan_task", specRef(STATEMENT))],
+  [VERIFICATION_DOCUMENT.id]: [typedBlock(CHECK, "check", specRef(STATEMENT))],
+};
+
+/** Answers the reads the tree and the Verification view are drawn from for `verifiedIssue`: the
+ *  coverage read with the statement, each document's blocks, the results read with the check,
+ *  and the issue's two threads. Each spy is the one `stubReads` set, which `spyOn` hands back,
+ *  so the `afterEach` that restores those restores it. */
+function answerVerificationReads(): void {
+  spyOn(api, "getIssueCoverage").mockResolvedValue({
+    gaps: [],
+    has_plan: true,
+    issue: KEY,
+    requirements: [
+      {
+        block_id: STATEMENT,
+        checks: 1,
+        gaps: [],
+        plan_tasks: 1,
+        ref: specRef(STATEMENT),
+        text: "The page draws the plan.",
+      },
+    ],
+    spec_artifact_id: "artifact-spec",
+  });
+  spyOn(api, "getArtifactBlocks").mockImplementation(async (id: string) => [...(BLOCKS[id] ?? [])]);
+  spyOn(api, "getIssueResults").mockResolvedValue({
+    checks: [check({ block_id: CHECK })],
+    issue: KEY,
+    verification_artifact_id: VERIFICATION_DOCUMENT.id,
+  });
+  spyOn(api, "listComments").mockResolvedValue([...TWO_THREADS]);
+}
+
+/** The task's step in the Plan view's chart, and the outline's rows of the task, the statement
+ *  and the second thread's head. */
 const TASK_STEP = `[data-plan-body] [data-node-row][data-node-id="${blockNodeId(PLAN_DOCUMENT.slug, PLAN_TASK)}"]`;
 const TASK_ROW = `[data-issue-body] [data-node-row][data-node-id="${blockNodeId(PLAN_DOCUMENT.slug, PLAN_TASK)}"]`;
 const STATEMENT_ROW = `[data-issue-body] [data-node-row][data-node-id="${blockNodeId(SPEC_SLUG, STATEMENT)}"]`;
+const COMMENT_ROW = '[data-issue-body] [data-node-row][data-node-id="head-b"]';
 
 // Under a statement the Verification view draws that statement's checks alone
 // (`verificationReading`), so a plan task that serves the statement, which the tree places under
@@ -66,8 +141,8 @@ test("a plan task under a statement, named on the Verification view's address, d
       `the plan task's address left the focus on ${focusedRow() ?? document.activeElement?.tagName}; the stage drew ${drawnSlot(view)}`
     ).toBe(task)
   );
-  // Every read has answered, and the view has said whether it draws the task.
-  await waitInAct(20);
+  // Only the outline draws the task's row, once the view has said it draws none, and the stage
+  // takes nothing more the view says in this following, so nothing is waited for here.
   expect(drawnSlot(view), "the stage drew the view, which has no row for the plan task").toBe(
     "the body"
   );
@@ -87,6 +162,10 @@ test("a comment of the issue or a check, named on the Verification view's addres
     ["?comment=head-b", "head-b"],
     [`#b-${CHECK}`, blockNodeId(VERIFICATION_SLUG, CHECK)],
   ] as const) {
+    // The messages read, which answers last: with it every read is held, and the view has told
+    // the stage whether it draws the node.
+    const messagesOut = Promise.withResolvers<[]>();
+    spyOn(api, "listIssueMessages").mockReturnValue(messagesOut.promise);
     const view = drawStage(after, { issue: verifiedIssue(), preset: "verification" });
     await waitFor(() =>
       expect(
@@ -94,8 +173,7 @@ test("a comment of the issue or a check, named on the Verification view's addres
         `the Verification view drew no row for ${after}; the stage drew ${drawnSlot(view)}`
       ).not.toBeNull()
     );
-    // Every read has answered, and the view has said whether it draws the node.
-    await waitInAct(20);
+    await act(async () => messagesOut.resolve([]));
     expect(drawnSlot(view), `the stage drew the outline in place of the view for ${after}`).toBe(
       "the view"
     );
@@ -109,18 +187,10 @@ test("a comment of the issue or a check, named on the Verification view's addres
 // outline's line says so, with the focus on it, where the view had drawn its step.
 test("a comment the issue holds none of, named on the Plan view's address, draws the outline's line that says so in the view's place, with the focus on it", async () => {
   answerVerificationReads();
-  const read = spyOn(api, "getComment").mockRejectedValue(
-    new ApiError(404, { code: "NOT_FOUND", error: "no such comment" })
-  );
+  const read = commentGone();
   try {
     const view = drawStage(`?comment=${GONE_COMMENT}`, { issue: verifiedIssue(), preset: "plan" });
-    const heading = await waitFor(() => view.getByRole("heading", { name: "Comment not found" }), {
-      onTimeout: () =>
-        new Error(
-          `the address of a comment the issue holds none of drew no line saying so under Plan; the stage drew ${drawnSlot(view)}, with the focus on ${focusedRow() ?? document.activeElement?.tagName}`
-        ),
-    });
-    await waitFor(() => expect(heading).toHaveFocus());
+    await goneLineTakesFocus(view, "the address of a comment the issue holds none of, under Plan");
     expect(
       view.container.querySelector("[data-plan-body]"),
       "the Plan view was drawn beside the line"
@@ -136,11 +206,7 @@ test("a comment the issue holds none of, named on the Plan view's address, draws
 test("a comment of the issue, named on the Plan view's address, draws the outline in the view's place, with the focus on the comment's row", async () => {
   answerVerificationReads();
   const view = drawStage("?comment=head-b", { issue: verifiedIssue(), preset: "plan" });
-  await rowTakesFocus(
-    view,
-    '[data-issue-body] [data-node-row][data-node-id="head-b"]',
-    "the comment's address"
-  );
+  await rowTakesFocus(view, COMMENT_ROW, "the comment's address");
   expect(
     view.container.querySelector("[data-plan-body]"),
     "the Plan view was drawn beside the outline"
@@ -164,11 +230,7 @@ test("`j` on the Plan view's step, before it draws the outline in its place for 
     );
   });
   await act(async () => commentsOut.resolve([...TWO_THREADS]));
-  await rowTakesFocus(
-    view,
-    '[data-issue-body] [data-node-row][data-node-id="head-b"]',
-    "the comments answering after `j`"
-  );
+  await rowTakesFocus(view, COMMENT_ROW, "the comments answering after `j`");
 });
 
 // Every entry the browser makes has the key "default", so each fragment it changes under the Plan

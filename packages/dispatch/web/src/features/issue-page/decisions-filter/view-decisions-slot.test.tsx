@@ -4,7 +4,7 @@ import { act, cleanup, type RenderResult, render, waitFor } from "@testing-libra
 import type { ReactNode } from "react";
 import type { NavigateFunction } from "react-router-dom";
 
-import { ApiError, api } from "../../../api/client";
+import { api } from "../../../api/client";
 import {
   artifactBlocksQuery,
   issueCoverageQuery,
@@ -21,16 +21,18 @@ import { EVENT_FRESH } from "../../refs/reference-target";
 import { buildDispatchReference } from "../../refs/routes";
 import { useMarkThreadRead } from "../../threads/useMarkThreadRead";
 import { presetPath } from "../issue-address";
-import { framesByHand, TWO_THREADS, waitInAct } from "../outline-fixtures";
+import { framesByHand, TWO_THREADS } from "../outline-fixtures";
 import { type ThreadMark, ThreadReadMark } from "../outline-thread-read";
 import { EMPTY_STATE_LINES, STATE_LINES } from "../page-words";
 import { FAILED_READ_RETRY } from "../slots/failed-read-line";
 import {
+  commentGone,
   drawAtBrowserEntry,
   drawnSlot,
   drawStage,
   focusedRow,
   GONE_COMMENT,
+  goneLineTakesFocus,
   REFUSED,
   retryTakesFocus,
   rowTakesFocus,
@@ -82,23 +84,11 @@ test("words of spaces alone draw the empty issue's line, as no words do", async 
 // did before the view was filled: for an id no comment holds, the comment's own read finds none,
 // and the page says so where the outline would be, with the focus on that line.
 test("a comment the issue holds none of, named beside the Decisions view, draws the outline's line that says so, with the focus on it", async () => {
-  const read = spyOn(api, "getComment").mockRejectedValue(
-    new ApiError(404, { code: "NOT_FOUND", error: "no such comment" })
-  );
+  const read = commentGone();
   try {
     const view = drawStage(`?comment=${GONE_COMMENT}`);
-    const heading = await waitFor(() => view.getByRole("heading", { name: "Comment not found" }), {
-      onTimeout: () =>
-        new Error(
-          `the address of a comment the issue holds none of drew no line saying so; the stage drew ${drawnSlot(view)}, with the focus on ${document.activeElement?.tagName}`
-        ),
-    });
+    await goneLineTakesFocus(view, "the address of a comment the issue holds none of");
     expect(read).toHaveBeenCalledWith(GONE_COMMENT);
-    await waitFor(() =>
-      expect(document.activeElement, "the line that names no comment does not hold the focus").toBe(
-        heading
-      )
-    );
     expect(
       view.container.querySelector("[data-decisions-body]"),
       "the view was drawn beside the line"
@@ -140,6 +130,10 @@ test("a block no node carries, named on the Decisions view's address, draws the 
 // read is held.
 test("a comment the tree holds, named beside the Decisions view, keeps the view, with the focus on the comment's row", async () => {
   const comments = spyOn(api, "listComments").mockResolvedValue([...TWO_THREADS]);
+  // The messages read, which answers last: with it every read is held, and the view has told the
+  // stage whether its tree draws the comment.
+  const messagesOut = Promise.withResolvers<[]>();
+  spyOn(api, "listIssueMessages").mockReturnValue(messagesOut.promise);
   try {
     const view = drawStage("?comment=reply-b");
     await waitFor(() =>
@@ -147,8 +141,7 @@ test("a comment the tree holds, named beside the Decisions view, keeps the view,
         "reply-b"
       )
     );
-    // Every read has answered, and the view has said whether its tree draws the comment.
-    await waitInAct(20);
+    await act(async () => messagesOut.resolve([]));
     expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
     expect(focusedRow(), "the focus left the comment's row").toBe("reply-b");
   } finally {
@@ -180,6 +173,10 @@ const WRITE_UP_NODE = decisionNode("writeup").id;
 test("a person's write-up of an answered question, named on the Decisions view's address, keeps the view, with the focus on the question's row", async () => {
   const asks = spyOn(api, "listIssueAsks").mockResolvedValue([...ASKED]);
   const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(WRITE_UP);
+  // The messages read, which answers last: with it every read is held, and the view has told the
+  // stage whether its tree draws the write-up.
+  const messagesOut = Promise.withResolvers<[]>();
+  spyOn(api, "listIssueMessages").mockReturnValue(messagesOut.promise);
   try {
     const view = drawStage("#b-writeup");
     await waitFor(() =>
@@ -188,7 +185,7 @@ test("a person's write-up of an answered question, named on the Decisions view's
         `the write-up's address left the focus elsewhere; the stage drew ${drawnSlot(view)}`
       ).toBe("ask-answered")
     );
-    await waitInAct(20);
+    await act(async () => messagesOut.resolve([]));
     expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
     expect(focusedRow(), "the focus left the question's row").toBe("ask-answered");
     expect(
@@ -244,7 +241,8 @@ test("a write-up's address under words its question does not hold draws the outl
         `the write-up's address left the focus on ${document.activeElement?.tagName}; the stage drew ${drawnSlot(view)}`
       ).toBe(WRITE_UP_NODE)
     );
-    await waitInAct(20);
+    // Only the outline draws the write-up's row, once the view has said it draws none, and the
+    // stage takes nothing more the view says in this following, so nothing is waited for here.
     expect(drawnSlot(view), "the stage drew the view, which has no row for the write-up").toBe(
       "the body"
     );
@@ -321,24 +319,6 @@ function askRow(id: string): string {
   return `[data-decisions-body] [data-node-row][data-node-id="${id}"]`;
 }
 
-/** The comment's own read, answering that no comment has the id it is asked for. */
-function commentGone(): { mockRestore(): void } {
-  return spyOn(api, "getComment").mockRejectedValue(
-    new ApiError(404, { code: "NOT_FOUND", error: "no such comment" })
-  );
-}
-
-/** Waits for the outline's line that the issue holds no comment of the address's id, drawn in
- *  the Decisions view's place, to hold the focus, saying what `what` left where it does not. */
-async function goneLineTakesFocus(view: RenderResult, what: string): Promise<void> {
-  await waitFor(() =>
-    expect(
-      view.queryByRole("heading", { name: "Comment not found" }),
-      `${what} left the focus on ${focusedRow() ?? document.activeElement?.tagName}; the stage drew ${drawnSlot(view)}`
-    ).toHaveFocus()
-  );
-}
-
 // A key pressed on a row of the view is an act of the following too, but the row that holds the
 // focus leaves the page with the view where the view then draws no node the address names. The
 // outline drawn in the view's place lands as it does where the reader pressed nothing: with the
@@ -381,16 +361,11 @@ test("Enter on the Retry of the Decisions view's refused decisions read, before 
   const read = commentGone();
   try {
     const view = drawStage(`?comment=${GONE_COMMENT}`);
-    const retry = await waitFor(() => {
-      const drawn = view.container.querySelector<HTMLElement>(
-        `[data-decisions-body] ${FAILED_READ_RETRY}`
-      );
-      expect(
-        drawn,
-        `the view's Retry does not hold the focus; the stage drew ${drawnSlot(view)}`
-      ).toHaveFocus();
-      return drawn as HTMLElement;
-    });
+    const retry = await rowTakesFocus(
+      view,
+      `[data-decisions-body] ${FAILED_READ_RETRY}`,
+      "the view's refused decisions read"
+    );
     // Enter on a button: its keydown, then the press it makes.
     act(() => {
       retry.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
