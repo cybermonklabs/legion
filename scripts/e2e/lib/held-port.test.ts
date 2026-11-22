@@ -1,8 +1,8 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { type AddressInfo, connect, createServer, type Server, type Socket } from "node:net";
-import { join } from "node:path";
-import { hostGate } from "@legion/test-fixtures/host-tools";
+import { isAbsolute, join } from "node:path";
+import { hostGate, requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // held-port.py's real-process tests: the helper hands its socket to the real envoy-listener of
@@ -16,6 +16,27 @@ const envoy = join(import.meta.dir, "..", "..", "..", "packages", "envoy");
 const work = temporaryDirectory("held-port");
 const listener = join(work, "envoy-listener");
 const O_CLOEXEC = 0o2000000;
+
+// The interpreter python3 reports as sys.executable, resolved once with the caller's environment
+// and run directly, as claude-backend-guards.test.ts's unreadable-environment row runs it: the
+// first python3 on PATH can be a version manager's shim (mise's), which runs the helper with a
+// PATH of its own, so the --pass row read the shim's PATH back from env(1), not the one it gave,
+// and passed or failed by which python3 the machine put first. Without python3 a row fails naming
+// it (requireHostTools).
+let resolvedPython: string | undefined;
+function python(): string {
+  if (resolvedPython !== undefined) return resolvedPython;
+  requireHostTools("python3");
+  const resolved = Bun.spawnSync(["python3", "-I", "-c", "import sys; print(sys.executable)"]);
+  const path = resolved.stdout.toString().trim();
+  if (resolved.exitCode !== 0 || !isAbsolute(path)) {
+    throw new Error(
+      `could not resolve the python3 interpreter (exit ${resolved.exitCode}): ${resolved.stderr.toString() || "no absolute executable path"}`
+    );
+  }
+  resolvedPython = path;
+  return path;
+}
 
 type Running = {
   name: string;
@@ -131,7 +152,7 @@ function start(name: string, argv: string[], stdin: "ignore" | "pipe" = "ignore"
 
 function exec(name: string, portFile: string, command: string[], from?: string): Running {
   return start(name, [
-    "python3",
+    python(),
     helper,
     "exec",
     ...(from ? ["--from", from] : []),
@@ -284,7 +305,7 @@ gated("held-port.py exec", () => {
     const running = start(
       "exec of a shell that waits, then the listener",
       [
-        "python3",
+        python(),
         helper,
         "exec",
         "--port-file",
@@ -346,7 +367,7 @@ gated("held-port.py keep", () => {
     const portFile = join(work, "kept.port");
     const socket = join(work, "keeper.sock");
     const keeper = start("the keeper", [
-      "python3",
+      python(),
       helper,
       "keep",
       "--port-file",
@@ -389,7 +410,7 @@ describe("held-port.py exec --pass", () => {
     const portFile = join(work, `${label}.port`);
     const run = Bun.spawnSync(
       [
-        "python3",
+        python(),
         helper,
         "exec",
         "--port-file",
