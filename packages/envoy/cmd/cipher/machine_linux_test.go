@@ -118,7 +118,7 @@ func TestMachineListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := laptop.EnrollSessionKey(context.Background(), "laptop-box", thumbprint, nil); err == nil || laptop.HasCredential() {
+	if _, _, err := laptop.EnrollSessionKey(context.Background(), "laptop-box", thumbprint, nil, nil); err == nil || laptop.HasCredential() {
 		t.Fatalf("the laptop enrolling after its login was revoked: %v, credential held %v; want the broker's refusal", err, laptop.HasCredential())
 	}
 	if stdout, _, _ := machine("list"); strings.Contains(stdout, laptopID) || !strings.Contains(stdout, own) {

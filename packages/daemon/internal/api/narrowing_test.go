@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"log/slog"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -33,10 +35,19 @@ type narrowingLine struct {
 // refuses, so the record of the narrowing is in the daemon's log and nowhere else.
 func stateNarrowed(t *testing.T, state State, remote string, claims []supervise.Claim) ([]byte, []narrowingLine) {
 	t.Helper()
+	return stateNarrowedStating(t, state, remote, claims, 0)
+}
+
+// stateNarrowedStating is stateNarrowed for a caller stating contract in pluginContractHeader,
+// and stating none where it is zero (stateStating). A plugin from shapedAnswersContract on states
+// its contract, and its pod's claims place it nowhere (podContracts), so a caller at such a
+// contract is asked this way.
+func stateNarrowedStating(t *testing.T, state State, remote string, claims []supervise.Claim, contract int) ([]byte, []narrowingLine) {
+	t.Helper()
 	var logged bytes.Buffer
 	options := stateOptions(state, claims)
 	options.Log = slog.New(slog.NewJSONHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	body := stateAsked(t, NewServer("127.0.0.1", 8437, options).Handler, remote)
+	body := stateStating(t, NewServer("127.0.0.1", 8437, options).Handler, remote, contract)
 
 	var narrowings []narrowingLine
 	for _, written := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
@@ -99,12 +110,13 @@ func narrowingState(t *testing.T) State {
 // Whether a value strip takes something turns on the values state carries as well as on
 // restore, so the strips are read from what the shaping itself reports it took off state
 // (tookOff), the one place their conditions are written, in the order of their table. The
-// fixture carries a retired stranded entry and no wait answered by a value younger than the
-// floor, and narrowingState adds a member of the kind `waiting_on_issue`. So a caller below 56 is
-// expected the stranded entries' line, a caller from whyAndLineFieldsContract up to below
-// waitingOnIssueContract the line of the waiting line's `kind`, and no caller both: below
-// whyAndLineFieldsContract the band of that contract takes `kind` first, and the strip finds
-// nothing left to take.
+// fixture carries a retired stranded entry, no wait answered by a value younger than the floor,
+// and the repository-cache-room row of the source `caches`, and narrowingState adds a member of
+// the kind `waiting_on_issue`. So a caller below 56 is expected the stranded entries' line, a
+// caller from whyAndLineFieldsContract up to below waitingOnIssueContract the line of the waiting
+// line's `kind`, and no caller both: below whyAndLineFieldsContract the band of that contract
+// takes `kind` first, and the strip finds nothing left to take. Every caller a pod places is
+// below cachesSourceContract, so each is expected the caches source's line as well.
 func narrowingsExpected(state State, contract int) []string {
 	restore, strip := restoreContract(contract), stripContract(contract)
 	var dropped []string
@@ -283,6 +295,53 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		}
 	})
 
+	// The newest narrowing is a row of the table like every other, so the caller below it is
+	// told what it lost: a caller one contract below the highest row, 201, which states that
+	// contract in its header as every plugin from shapedAnswersContract on does, is served at the
+	// recorded contract below it, 199, so it stands below that row alone and the log holds that
+	// row's line and nothing else. This subtest does not catch a strip applied beside the loop,
+	// because it reads both its expectation and its answer from stateNarrowings; the subtests
+	// below, which name their lines as literals, are what catch that.
+	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
+		state := populatedState(t)
+		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000",
+			podClaims(repositoriesLiveContract-1), repositoriesLiveContract-1)
+
+		if keys, block := repositoriesServed(t, body); slices.Contains(keys, "live") {
+			t.Errorf("the body served to a caller below %d carries `repositories.live`, the block that contract wrote: %s",
+				repositoriesLiveContract, block)
+		}
+		want := narrowingsExpected(state, repositoriesLiveContract-1)
+		if len(narrowings) != len(want) {
+			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
+				len(narrowings), repositoriesLiveContract-1, len(want), narrowings)
+		}
+		for i, line := range narrowings {
+			if line.Dropped != want[i] {
+				t.Errorf("line %d of a caller at %d says it dropped %q, want %q",
+					i, repositoriesLiveContract-1, line.Dropped, want[i])
+			}
+		}
+	})
+
+	// The repositories line is named as a literal for the reason the assignments line below is:
+	// take the row out of stateNarrowings and write the older block beside the loop as an `if` of
+	// its own, and every subtest that reads the table loses its expectation with its answer, so the
+	// body is still narrowed, no line is written and only this one fails.
+	t.Run("the repositories narrowing names its own keys in the log", func(t *testing.T) {
+		const dropped = "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"
+		_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000",
+			podClaims(repositoriesLiveContract-1), repositoriesLiveContract-1)
+
+		for _, line := range narrowings {
+			if line.Dropped == dropped {
+				return
+			}
+		}
+		t.Fatalf("a caller at %d was served no line saying it dropped %q; the daemon wrote %+v",
+			repositoriesLiveContract-1, dropped, narrowings)
+	})
+
 	// The assignments narrowing is a row of the table like every other, so a caller below it is
 	// told what it lost: a caller one contract below assignmentsContract stands below that row and
 	// every row above it, so the log holds those rows' lines and nothing else. This subtest does
@@ -332,11 +391,12 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	})
 
 	// Every narrowing says what it dropped, not only the mark's own: a caller below every row of
-	// stateNarrowings is served one line per row, each naming its own keys, and one more for the
-	// value strip that took the retired entries out of its body; and a caller at
-	// quietTimeContract is served the line of every row above it and the line of the value strip
-	// that took LEGION-213's `kind`, the `waiting_on_issue` the first caller's body no longer
-	// carries, since a band below it has taken `kind` already. One line for all of them, or a line
+	// stateNarrowings is served one line per row, each naming its own keys, and two more for the
+	// value strips that took the retired entries out of its body and the `caches` source off the
+	// repository-cache-room row; and a caller at quietTimeContract is served the line of every row
+	// above it, the line of the value strip that took LEGION-213's `kind`, the `waiting_on_issue`
+	// the first caller's body no longer carries, since a band below it has taken `kind` already,
+	// and the `caches` source's line again. One line for all of them, or a line
 	// that named the contract and nothing else, would leave a reader of the log to find out
 	// elsewhere what left the body. Three checks share the work. The table check guards the table:
 	// no two rows of stateNarrowings name the same keys, whichever callers would see them, so a
@@ -348,8 +408,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// caller, where a band's line names the highest; the clause under `follows` is what tells an
 	// operator the two numbers of one request apart.
 	t.Run("each narrowing names its own keys", func(t *testing.T) {
-		if want := narrowingsExpected(narrowingState(t), supervise.PodUpdateContract-1); len(want) != len(stateNarrowings)+1 {
-			t.Fatalf("a caller below every row expects %d lines, want the %d rows and the retired entries' own: %v",
+		if want := narrowingsExpected(narrowingState(t), supervise.PodUpdateContract-1); len(want) != len(stateNarrowings)+2 {
+			t.Fatalf("a caller below every row expects %d lines, want the %d rows, the retired entries' own and the caches source's: %v",
 				len(want), len(stateNarrowings), want)
 		}
 		namedBy := map[string]int{}
@@ -399,7 +459,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 				t.Errorf("no caller was told the row of contract %d dropped %q", narrowing.contract, narrowing.dropped)
 			}
 		}
-		for _, value := range []string{droppedStrandedState, droppedLineKind} {
+		for _, value := range []string{droppedStrandedState, droppedLineKind, droppedCapabilitySource} {
 			if !told[value] {
 				t.Errorf("no caller was told the value strip dropped %q", value)
 			}
@@ -419,9 +479,11 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 // applied to the body the bands start from, and the two bodies are marshalled and compared. A
 // band that changes no byte has taken no key, and the log must say nothing of it. Today the
 // bands of the body's own keys do change the bytes, because every state carries
-// `admission.trees`, `wakesWaiting`, `claimsToRefresh`, the mark, `admission.held` and
-// `lowestPluginContract` for these claims, all but withoutRepositoryApps: this state serves no
-// repository, so that band has no `apps` to take and logs nothing.
+// `admission.trees`, `wakesWaiting`, `claimsToRefresh`, the mark, `admission.held`,
+// `lowestPluginContract` for these claims and the repositories block, which the band of
+// repositoriesLiveContract writes in contract 152's shape whatever it names, all but
+// withoutRepositoryApps: this state serves no repository, so that band has no `apps` to take and
+// logs nothing.
 func TestAnEmptyStateLogsNoDropOfAKeyItNeverCarried(t *testing.T) {
 	const below = supervise.PodUpdateContract - 1
 	claims := podClaims(below)
@@ -488,5 +550,121 @@ func TestTheRecordFieldsContractIsNotAboveTheDaemonsOwn(t *testing.T) {
 	if recordFieldsContract > DaemonAPIVersion {
 		t.Fatalf("recordFieldsContract = %d, above DaemonAPIVersion %d: no caller could be served the key",
 			recordFieldsContract, DaemonAPIVersion)
+	}
+}
+
+// capabilityRowServed is the capability row named name of a state body (capabilityRowsServed),
+// and whether the body carries such a row at all.
+func capabilityRowServed(t *testing.T, body []byte, name capabilities.Name) (map[string]any, bool) {
+	t.Helper()
+	for _, row := range capabilityRowsServed(t, body) {
+		if row["name"] == string(name) {
+			return row, true
+		}
+	}
+	return nil, false
+}
+
+// cachesSource is the word capabilities.SourceCaches writes on the wire, the one value of a
+// capability row's `source` that cachesSourceContract added (answers.go's capabilitySources).
+const cachesSource = string(capabilities.SourceCaches)
+
+// A caller whose reader is below cachesSourceContract reads a capability row's `source` with the
+// two words contract 25 gave it and refuses the whole state body for a third, so it is served the
+// repository-cache-room row with every other field of it — its status, its detail naming the
+// full cache, its config line — and without its `source`, and the daemon's log names what it
+// took; every row of another source keeps its own. The word is a value and no key, so the strip
+// follows the contract the caller states, else its pod's lowest (fieldArrivals.heldBack): a
+// plugin of shapedAnswersContract or later states its contract, and an older one is placed by its
+// pod. A caller at the contract is served `source: "caches"`, and so is every caller nothing
+// narrows: a pod whose claims all state their own contract, one the daemon places in no pod, the
+// operator's `legion state`, and every pane of a daemon that places no caller in a pod, which is
+// the tmux runtime. The row is never taken out, and the state the source answered keeps the word
+// for the next caller.
+func TestACallerBelowTheCachesSourceContractGetsNoCachesSource(t *testing.T) {
+	// Named as a literal, as the assignments line is in TestANarrowedBodySaysSo: a strip applied
+	// beside the table's loop would write no line and leave every row read from the table green.
+	const dropped = "the source of every capability row of a source this caller does not admit"
+	state := populatedState(t)
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, _ := capabilityRowServed(t, encoded, capabilities.RepositoryCacheRoom)
+	if full["source"] != cachesSource || full["status"] != capabilities.StatusOpen || full["configLine"] == nil {
+		t.Fatalf("the fixture's %s row is %v, want an open row from the caches; this test proves nothing", capabilities.RepositoryCacheRoom, full)
+	}
+	withoutSource := maps.Clone(full)
+	delete(withoutSource, "source")
+
+	for _, tc := range []struct {
+		name   string
+		remote string
+		claims []supervise.Claim
+		// stated is the contract the caller states, none where it is zero, and restore the
+		// contract the strip follows for it, which its line names.
+		stated, restore int
+	}{
+		{name: "a caller that states the contract below", remote: "192.0.2.1:41000", claims: podClaims(pauseContract),
+			stated: cachesSourceContract - 1, restore: recordedContractAtOrBelow(cachesSourceContract - 1)},
+		{name: "a pod whose claims record a contract below", remote: statePodAddr + ":41000", claims: podClaims(pauseContract),
+			restore: pauseContract},
+	} {
+		t.Run(tc.name+" reads the row without its source", func(t *testing.T) {
+			body, narrowings := stateNarrowedStating(t, state, tc.remote, tc.claims, tc.stated)
+			row, carried := capabilityRowServed(t, body, capabilities.RepositoryCacheRoom)
+			if !carried || !reflect.DeepEqual(row, withoutSource) {
+				t.Errorf("%s is served the %s row %v (carried %v), want every field but source, %v",
+					tc.name, capabilities.RepositoryCacheRoom, row, carried, withoutSource)
+			}
+			for name, source := range map[capabilities.Name]capabilities.Source{
+				capabilities.Secrets:      capabilities.SourceConfiguration,
+				capabilities.PoolCapacity: capabilities.SourceBoot,
+			} {
+				if row, _ := capabilityRowServed(t, body, name); row["source"] != string(source) {
+					t.Errorf("%s is served the %s row %v, want its source %q kept: that word arrived with the field",
+						tc.name, name, row, source)
+				}
+			}
+			var written []narrowingLine
+			for _, line := range narrowings {
+				if line.Dropped == dropped {
+					written = append(written, line)
+				}
+			}
+			if len(written) != 1 {
+				t.Fatalf("%s was served %d lines saying it dropped %q, want one; the daemon wrote %+v",
+					tc.name, len(written), dropped, narrowings)
+			}
+			if written[0].PluginContract != tc.restore || written[0].Follows != followsRestore {
+				t.Errorf("the line names contract %d and follows %q, want %d and %q",
+					written[0].PluginContract, written[0].Follows, tc.restore, followsRestore)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name   string
+		remote string
+		claims []supervise.Claim
+		stated int
+		// tmux is a daemon that places no caller in a pod, as the tmux runtime's is.
+		tmux bool
+	}{
+		{name: "a caller that states the contract", remote: "192.0.2.1:41000", claims: podClaims(pauseContract), stated: cachesSourceContract},
+		{name: "a pod whose claims state their own contract", remote: statePodAddr + ":41000", claims: podClaims(cachesSourceContract)},
+		{name: "the operator's own answer", remote: "192.0.2.1:41000", claims: podClaims(pauseContract)},
+		{name: "a tmux pane", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), tmux: true},
+	} {
+		t.Run(tc.name+" reads source caches", func(t *testing.T) {
+			body := stateStating(t, shapedServer(t, state, tc.claims, &bytes.Buffer{}, !tc.tmux), tc.remote, tc.stated)
+			if row, carried := capabilityRowServed(t, body, capabilities.RepositoryCacheRoom); !carried || !reflect.DeepEqual(row, full) {
+				t.Errorf("%s is served the %s row %v (carried %v), want it whole, %v", tc.name, capabilities.RepositoryCacheRoom, row, carried, full)
+			}
+		})
+	}
+
+	if !slices.ContainsFunc(state.Capabilities, func(row CapabilityState) bool { return row.Source == cachesSource }) {
+		t.Errorf("the strip wrote through to the state the source answered: its capability rows are %+v", state.Capabilities)
 	}
 }

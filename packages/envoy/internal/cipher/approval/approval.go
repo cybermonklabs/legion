@@ -98,7 +98,9 @@ type Config struct {
 	MachineLoginURL string
 	// Store holds the sessions.
 	Store *store.Store
-	// Machine reads the records and decides them (ReadRecord, PendingForApprover, ApplyDecision).
+	// Machine reads the records and decides them (ReadRecord, PendingForApprover, ApplyDecision),
+	// and its group reader (requests.Machine.Groups) says whether the signed-in person is a member
+	// of a group approver and so sees the buttons (record.MayDecide).
 	Machine *requests.Machine
 }
 
@@ -316,6 +318,9 @@ const (
 	codeRecordIDInput = "RECORD_ID_INPUT"
 	// A signed-in person's GET /approve/{record} of a record the broker does not have.
 	codeRecordNotFound = "NOT_FOUND"
+	// A signed-in person's GET /approve/{record} when Dispatch calls them a restricted member, who
+	// decides no secret request, so the page shows them none (Page.mayShowRecords).
+	codeRestrictedViewer = "NOT_APPROVER"
 	// A POST whose form could not be read: a decision's or a sign-out's.
 	codeFormUnreadable = "FORM_UNREADABLE"
 	// A decision that is neither approve nor deny.

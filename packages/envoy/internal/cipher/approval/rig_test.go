@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
@@ -69,18 +70,39 @@ type rig struct {
 	accountToken string
 }
 
+// rigSetup is what a test changes of the broker newRig wires: secrets served beside the four
+// every rig serves, the client of Dispatch's project access the request machine and the
+// enrollment ask (nil for none, as on a broker with no BROKER_PROJECT_ACCESS_URL), and the group
+// reader every decision site asks (nil for none). A rig holding a client serves a secret tagged
+// with a project, as cmd/cipherd's does (Loader.ProjectChecks).
+type rigSetup struct {
+	secrets  []secrets.LocalSecret
+	projects projectaccess.Access
+	groups   record.Directory
+}
+
 // newRig wires the broker as cmd/cipherd does, its approval page signed in at a provider of the
-// test's own.
-func newRig(t *testing.T) *rig {
+// test's own, changed by each of setups.
+func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 	t.Helper()
+	var setup rigSetup
+	for _, change := range setups {
+		change(&setup)
+	}
 	st := storetest.Open(t)
-	local := secrets.NewLocal(
+	local := secrets.NewLocal(append([]secrets.LocalSecret{
 		policytest.Secret("TEST_SECRET", ada, policy.TierHuman, "test-v1"),
 		policytest.Secret("SECOND_SECRET", ada, policy.TierHuman, "second-v1"),
 		policytest.Secret("THIRD_SECRET", ada, policy.TierHuman, "third-v1"),
 		policytest.Secret("SHARED_SECRET", policy.OwnerShared, policy.TierHuman, "shared-v1"),
-	)
-	current := policytest.Current(t, local)
+	}, setup.secrets...)...)
+	loader := policytest.Loader(local)
+	loader.ProjectChecks = setup.projects != nil
+	loader.Groups = setup.groups
+	current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
+	if err != nil {
+		t.Fatalf("policy.NewCurrent: %v", err)
+	}
 
 	mux := http.NewServeMux()
 	// Behind the answer recorder (answer.Middleware), which cmd/cipherd wraps the mux in, inside
@@ -97,13 +119,15 @@ func newRig(t *testing.T) *rig {
 		t.Fatalf("oidc.New: %v", err)
 	}
 
-	enr := &enroll.Service{Store: st, Lease: time.Hour}
+	enr := &enroll.Service{Store: st, Lease: time.Hour, Projects: setup.projects}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 	reqMachine := &requests.Machine{
 		Store: st, Policy: current, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
-		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay,
+		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay, Projects: setup.projects,
+		Groups: setup.groups,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
+	reqMachine.Chain.Groups = setup.groups
 	provider := ciphertest.NewOAuthProvider(t, st, issuer)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: current,

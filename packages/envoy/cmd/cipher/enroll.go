@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/helper"
+	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -36,7 +37,7 @@ import (
 func cmdEnroll(args []string, stdout, stderr io.Writer) int {
 	flagArgs, positional := splitArgs(args, map[string]bool{
 		"runtime-id": true, "thumbprint": true, "session-id": true,
-		"service": true, "out": true, "pod-token-file": true,
+		"service": true, "out": true, "pod-token-file": true, "projects": true,
 	})
 	flags := newFlagSet("enroll", stderr)
 	runtimeID := flags.String("runtime-id", "", "this runtime's stable id")
@@ -51,6 +52,11 @@ func cmdEnroll(args []string, stdout, stderr io.Writer) int {
 	// PrintDefaults, which -h and every usage error print, would print it, and it is the
 	// directory of key.pem, a file that holds a credential.
 	out := flags.String("out", "", "--pod: the directory holding key.pem and enrollment; AGENT_SECRETS_KEY_DIR when not given")
+	// --projects names the Dispatch projects the session works on, defaulting to
+	// AGENT_SECRETS_PROJECTS, as register's does. --helper sends them for the box's session; --pod
+	// sends them for the pod, which the broker takes only from a person's pod, the one pod that
+	// acts for a person, and refuses from a service's pod (PROJECTS_NEED_A_PERSON).
+	projectsFlag := flags.String("projects", "", "the Dispatch projects the session or the person's pod works on, project keys separated by spaces (\"PRIV CORE\"); default "+cipherclient.ProjectsVar)
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
@@ -76,13 +82,23 @@ func cmdEnroll(args []string, stdout, stderr io.Writer) int {
 				return exitUsageError
 			}
 		}
-		return cmdEnrollPod(*service, *podTokenFile, *out, stdout, stderr)
-	}
-	if !*helperFlag {
+	} else if !*helperFlag {
 		fmt.Fprintln(stderr, "agent-secrets enroll: --helper is required (this CLI enrolls a session key only through the local agent-secrets-helper socket; a Kubernetes pod enrolls itself with --pod)")
 		return exitUsageError
 	}
-	return cmdEnrollHelper(*runtimeID, *thumbprint, *sessionID, stdout, stderr)
+	// Read for either mode before it asks anyone, so a list that is no list is refused, naming the
+	// setting and never the value, before the helper or the broker is asked.
+	projects, err := sessionProjectsFlag(*projectsFlag, flags)
+	if err != nil {
+		fmt.Fprintf(stderr, "agent-secrets enroll: %v\n", err)
+		return exitUsageError
+	}
+	if *podFlag {
+		// The list goes with whether --projects named it, so a refusal of the list names the
+		// setting it was read from (podProjects.refusal).
+		return cmdEnrollPod(*service, *podTokenFile, *out, podProjects{keys: projects, flag: flagGiven(flags, "projects")}, stdout, stderr)
+	}
+	return cmdEnrollHelper(*runtimeID, *thumbprint, *sessionID, projects, stdout, stderr)
 }
 
 // cmdEnrollHelper asks the local agent-secrets-helper daemon, over its unix socket, to enroll a
@@ -101,7 +117,7 @@ func cmdEnroll(args []string, stdout, stderr io.Writer) int {
 // because the broker answers the same key under the same launcher credential and runtime id with
 // its live enrollment. And when the helper answers with an enrollment that this command then
 // cannot write, the error names that enrollment's id and the write that failed.
-func cmdEnrollHelper(runtimeID, thumbprint, sessionID string, stdout, stderr io.Writer) int {
+func cmdEnrollHelper(runtimeID, thumbprint, sessionID string, projects []string, stdout, stderr io.Writer) int {
 	if runtimeID == "" || thumbprint == "" {
 		fmt.Fprintln(stderr, "agent-secrets enroll: --helper needs --runtime-id and --thumbprint")
 		return exitUsageError
@@ -123,7 +139,7 @@ func cmdEnrollHelper(runtimeID, thumbprint, sessionID string, stdout, stderr io.
 	if sessionID != "" {
 		sessionIDPtr = &sessionID
 	}
-	resp, err := enrollRetryingDrain(sock, helper.Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: thumbprint, SessionID: sessionIDPtr})
+	resp, err := enrollRetryingDrain(sock, helper.Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: thumbprint, SessionID: sessionIDPtr, Projects: projects})
 	if errors.Is(err, helper.ErrNoReply) {
 		fmt.Fprintf(stderr, "agent-secrets enroll: the helper gave no answer (%v). So it is not known if the broker made the enrollment. Run the same command again: if the broker made the enrollment, the command gets that enrollment.\n", err)
 		return 1

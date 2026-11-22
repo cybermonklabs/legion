@@ -20,7 +20,7 @@ import (
 // every refetch would spend those calls again for every result at a commit heading no pull
 // request Dispatch knows — for ever, since nothing about such a commit is stored. Five minutes
 // is the span every other answer about a commit is believed for (BranchCommitStaleAfter) and
-// the one the reconcile re-reads an open head on (PullRequestHeadStaleAfter), so a pull request
+// the longest the reconcile waits between two passes (ReconcileInterval), so a pull request
 // opened at a recorded commit is read as that result's basis within it.
 const CommitPullReadStaleAfter = 5 * time.Minute
 

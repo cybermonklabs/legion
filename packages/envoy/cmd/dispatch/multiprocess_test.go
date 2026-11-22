@@ -56,6 +56,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/crafted"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
@@ -67,12 +68,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
 	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // start starts both processes on the pair's database and NATS, each on a port held for it from the
@@ -2829,7 +2832,7 @@ func TestAFrozenHolderIsTakenOverAndHandlesNothingOnceResumed(t *testing.T) {
 	pair := newPair(t)
 	seedMergedPullRequestSettings(t, pair.database)
 	fake := newMergedPullRequestFake()
-	// A GitHub of each process's own, and the delivery reconcile on a period the row meets
+	// A GitHub of each process's own, and the delivery reconcile on an interval the row meets
 	// several times over rather than its five minutes, whose jittered first pass would land
 	// inside this row now and then. A pass reads pull requests through the very call that
 	// counts a handling here (delivery.FetchPullRequest), so a pass that re-read one of the
@@ -2965,8 +2968,12 @@ func TestAFrozenHolderIsTakenOverAndHandlesNothingOnceResumed(t *testing.T) {
 	requireOneHoldPerDurable(t, pair)
 	// A delivery reconcile pass ran with the row's own pull requests stored, and re-read none
 	// of them: one that did would have read a pull request through the very call that counts a
-	// handling above (delivery.FetchPullRequest), and the counts would say so. The processes
-	// run it every ten seconds, so this waits out three of its periods at most.
+	// handling above (delivery.FetchPullRequest), and the counts would say so. Each process ticks
+	// at most ten seconds after its last pass ended and more than nine seconds after its last tick,
+	// nine seconds being the lease's period (duty.LeasePeriod of the ten), so its second tick from
+	// here is due in a period that began after this wait did: that tick runs, or another process's
+	// pass has served that period, and either is a pass counted here. Two ticks and their passes
+	// fit in the 30 s.
 	waitUntil(t, 30*time.Second, "a delivery reconcile pass with the row's pull requests stored", func() bool {
 		return countLease(pair.a, leaseRan, "delivery-reconcile")+countLease(pair.b, leaseRan, "delivery-reconcile") > reconciledBefore
 	})
@@ -3284,10 +3291,14 @@ func waitForDurableDrained(t *testing.T, pair *dispatchPair, js natsgo.JetStream
 // message, so the 404 is redelivered to nobody and neither process logs a delivery error for the
 // durable, which this row requires, as the one-binder row does.
 //
-// The delivery reconcile runs its pass as each process starts (DISPATCH_TEST_RECONCILE_AT_START)
-// and takes the lease for that whole ReconcileInterval with it, so the next pass is five minutes
-// away and none lands in the window the fetches are counted in: the pull-request head this row's
-// envelope writes is re-read by that pass, outside the row, rather than by one inside it.
+// The delivery reconcile runs its pass as each process starts (DISPATCH_TEST_RECONCILE_AT_START),
+// long before this row's envelope is published. That pass serves the period its start falls in, an
+// epoch-aligned bucket of duty.LeasePeriod(ReconcileInterval), four and a half minutes, so the
+// next pass needs a tick due past that bucket's end, and each process's first tick comes a uniform
+// draw within ReconcileInterval of its own start. Such a pass reads again the pull request this
+// row's envelope names, and it lands inside the second the fetches are counted in
+// (deliverySecondFetchWindow) by a chance of about that second in minutes: in almost every run it
+// comes outside the row, rather than inside it.
 func TestAProcessBackFromANATSCutKeepsDeliveryEventsAndDeliversThemOnce(t *testing.T) {
 	durable := bus.DispatchDeliveryDurable
 	// The merged pull request the row publishes. Its author has to be one the settings name: a
@@ -3938,9 +3949,10 @@ func requireLeasedOnce(t *testing.T, pair *dispatchPair, lease string) {
 // which both of them passed. That is exactly what the lease guarantees. requireLeasedOnce's
 // "once overall" is a stronger claim than the lease makes, and a row whose run time passes its
 // period breaks it honestly: the block index's period is 30 s (docs.BlockIndexReconcileInterval)
-// and the webhook redelivery's two minutes, so a pass that overruns leaves the next honest pass
-// in the next period and the count becomes two. Waiting out more boundaries cannot mend that,
-// since each boundary it waits for is another period a pass may serve (INFRA-985).
+// and the webhook redelivery's 108 s (duty.LeasePeriod of redeliver.Interval's two minutes), so a
+// pass that overruns leaves the next honest pass in the next period and the count becomes two.
+// Waiting out more boundaries cannot mend that, since each boundary it waits for is another
+// period a pass may serve (INFRA-985).
 func requireLeasedOncePerPeriod(t *testing.T, pair *dispatchPair, lease string) {
 	t.Helper()
 	passes := map[string][]string{}
@@ -4084,9 +4096,11 @@ const (
 // (api.TestTheMaintenanceLoopSweepsOncePerPeriodAcrossTwoRunners holds what its lease is for);
 // architecture-import's and delivery-reconcile's first pass is jittered uniformly over
 // SyncInterval/ReconcileInterval (5 min) and each process draws its own, so whether their passes
-// ever overlap is a coin toss no test should turn into a flake; edit-notices is a woken loop whose
-// passes here, with nothing due, take milliseconds, so whether the two processes' boot passes
-// meet is luck too (docs.TestEditNoticeSweepRetriesAHeldLease holds its retry, and
+// ever overlap is a coin toss no test should turn into a flake, and so is whether the second's
+// tick falls in the epoch-aligned bucket of 4.5 min (duty.LeasePeriod of the 5 min) the first's
+// pass served, where it is refused, or in the next, where it runs; edit-notices is a woken loop
+// whose passes here, with nothing due, take milliseconds, so whether the two processes' boot
+// passes meet is luck too (docs.TestEditNoticeSweepRetriesAHeldLease holds its retry, and
 // docs.TestEditNoticeSweepOfTwoServicesSendsEachNoticeOnce what its lease is for);
 // settlement-resumption's period is SettlementResumeInterval (1 min) and each pass is over in
 // milliseconds, so this window holds several of its periods, each served once; and
@@ -4150,8 +4164,7 @@ func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 	// it at boot, before the sweeper goroutine starts, so it is there before any GitHub call is
 	// made. The other process's skip is no proof either, since a tick that lands in the next
 	// period passes rather than skipping, and waiting for a skip here failed for exactly that
-	// reason - two honest passes, each in its own two-minute period, and no skip at all
-	// (INFRA-985).
+	// reason - two honest passes, each in a period of its own, and no skip at all (INFRA-985).
 	for deadline := time.Now().Add(60 * time.Second); fake.deliveryListings() == 0; time.Sleep(100 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatalf("no webhook delivery listing reached the fake within %v, so no redelivery pass is inside its GitHub call:\nA:\n%s\nB:\n%s",
@@ -4246,10 +4259,14 @@ func TestTheSuggestionOutcomeSweepSerialisesOnTheCursorAcrossBothProcesses(t *te
 // processes are started inside one bucket on purpose: a second process whose first tick lands
 // past a bucket boundary is entitled to sweep, and this row is about the one that lands inside
 // the bucket its peer has already served. waitOutABucketBoundary is what keeps which of the two
-// this run gets from being luck.
+// this run gets from being luck. The sweep's period is 108 s, duty.LeasePeriod(redeliver.Interval),
+// and not the 120 s interval: the boundaries of epoch-aligned buckets of 108 s and of 120 s meet
+// only every 18 minutes, so waiting out a boundary of the interval's would leave one of the
+// period's inside the row in some runs, and the second process would then sweep a period of its
+// own.
 func TestALeasedLoopRunsOnceAcrossAStaggeredStart(t *testing.T) {
 	pair := newPair(t)
-	waitOutABucketBoundary(t, redeliver.Interval)
+	waitOutABucketBoundary(t, duty.LeasePeriod(redeliver.Interval))
 	fake := startGitHubFake(t)
 	// Nothing is held here: this row is about two passes that never meet, so the first one must
 	// finish and give the lease back before the second process exists.
@@ -8570,11 +8587,13 @@ func TestDashboardBuildsAnswersTheBuildsTheLiveProcessesServe(t *testing.T) {
 		t.Fatalf("after B shut down: serving %q, live %q; want %q alone", serving, live, entryA)
 	}
 
-	// A process on B's build that is beating, and then one whose last heartbeat left the window.
+	// A process on B's build that is beating, and then one whose last heartbeat left the window. It
+	// runs this build's binary, so its row names this build's owner lock protocol, as
+	// processes.Register writes it.
 	var instance string
 	if err := pair.database.Pool.QueryRow(ctx, `
-		insert into server_processes (instance, dashboard_build, signing_keys) values (gen_random_uuid(), $1, '{fingerprint}')
-		returning instance::text`, routes.DashboardBuild(buildB.dir)).Scan(&instance); err != nil {
+		insert into server_processes (instance, dashboard_build, signing_keys, owner_lock_protocol) values (gen_random_uuid(), $1, '{fingerprint}', $2)
+		returning instance::text`, routes.DashboardBuild(buildB.dir), store.OwnerLockProtocol).Scan(&instance); err != nil {
 		t.Fatal(err)
 	}
 	if _, live := dashboardBuildsOf(t, a); !slices.Equal(live, []string{entryA, entryB}) {
@@ -8588,4 +8607,377 @@ func TestDashboardBuildsAnswersTheBuildsTheLiveProcessesServe(t *testing.T) {
 	if _, live := dashboardBuildsOf(t, a); !slices.Equal(live, []string{entryA}) {
 		t.Fatalf("after its heartbeat aged past the live window: live %q, want %q alone", live, entryA)
 	}
+}
+
+// ───── the keyword fill ─────────────────────────────────────────────────────
+
+// The keyword fill (textversions.Run) writes search_text_versions under its hold,
+// search-text-versions-fill, one process at a time: the rows below read which process wrote each
+// of its batches from the cursor row's holder, recorded by a trigger of the row's own
+// (recordKeywordFillWrites), against the holder each process's line names when it takes the hold
+// (keywordFillHolder). None of them needs NATS, so every process here runs without it.
+
+// The line a holder logs as it finds its hold lost, which these rows read beside the two lines of
+// main_test.go (keywordFillTookLine, keywordFillStandbyLine).
+const keywordFillLostHoldLine = `msg="dispatch: the keyword fill's hold is lost; it writes nothing more and stands by"`
+
+// keywordFillTakeOverWithin is what a standby gets to take the hold of a holder that renews it no
+// more, killed or frozen: the hold's whole 15 s TTL, since a holder stopped the moment after a
+// renewal leaves the hold its full life to lapse on the database's clock; one 10 s retry of the
+// standby's, which finds it lapsed; and a margin for the take and a first pass.
+const keywordFillTakeOverWithin = 15*time.Second + 10*time.Second + 5*time.Second
+
+// A killed holder does not release its hold, so its hold lapses and the process that stood by takes
+// it and writes the events written since: within keywordFillTakeOverWithin of the kill, well inside
+// the 60 s bound from a holder's death to the rows of the events written after it. Every batch
+// before the kill is the first process's and every batch after is the second's, and every event
+// has exactly its row.
+func TestTheKeywordFillMovesToTheOtherProcessWhenItsHolderIsKilled(t *testing.T) {
+	database := storetest.Open(t)
+	textversionstest.SeedIssue(t, database)
+	writes := recordKeywordFillWrites(t, database)
+	url := databaseURLOf(t, database)
+	first := startDispatchProcessWith(t, url, dispatchOptions{SigningKey: multiprocessSigningKey})
+	first.waitHealthy(t)
+	firstHolder := keywordFillHolder(t, first, 30*time.Second)
+	second := startDispatchProcessWith(t, url, dispatchOptions{SigningKey: multiprocessSigningKey})
+	second.waitHealthy(t)
+	second.waitForLog(t, 30*time.Second, keywordFillStandbyLine)
+
+	before := writeKeywordFillComments(t, database, 50)
+	textversionstest.AwaitRows(t, database, before, time.Minute, nil)
+	first.kill(t)
+	killed := time.Now()
+	after := writeKeywordFillComments(t, database, 50)
+	secondHolder := keywordFillHolder(t, second, keywordFillTakeOverWithin-time.Since(killed))
+	textversionstest.AwaitRows(t, database, after, time.Minute-time.Since(killed), nil)
+	t.Logf("the second process wrote the events written after the kill %v after it", time.Since(killed).Round(time.Millisecond))
+
+	requireKeywordFillWritersInTurn(t, writes(), firstHolder, secondHolder)
+	textversionstest.RequireOnlyRowsOf(t, database, textversionstest.OneEach(slices.Concat(before, after)...))
+}
+
+// A process killed while it catches up a log of 20,000 events leaves its cursor where its last
+// batch committed, and the process that starts after it continues from that cursor: its first batch
+// starts past it, the rows the killed process wrote are left as they are, and at the end every
+// event has exactly its row, none written twice and none missed.
+//
+// The row lets the first process's batches through one at a time on an exclusive lock of the
+// cursor's table (keywordFillStepper) and kills the process, the lock held, once the cursor has
+// reached the 2,000th event: no batch of it can commit after the cursor read under the lock, so
+// that cursor is the one it left, however fast the database writes the backlog and however long
+// the test waits between its reads. Every wait of the row is bounded by the test binary's deadline
+// alone.
+func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
+	database := storetest.Open(t)
+	textversionstest.SeedIssue(t, database)
+	writes := recordKeywordFillWrites(t, database)
+	ids := writeKeywordFillComments(t, database, 20000)
+	last := ids[len(ids)-1]
+	url := databaseURLOf(t, database)
+	// What a wait for a process to take the hold gets, read as it starts: the binary's deadline
+	// less 30 s for the row's cleanups, a day where the binary has none.
+	patience := func() time.Duration { return testwait.Bounded(t, 24*time.Hour, 30*time.Second) }
+
+	step := keywordFillStepper(t, database)
+	first := startDispatchProcessWith(t, url, dispatchOptions{SigningKey: multiprocessSigningKey})
+	firstHolder := keywordFillHolder(t, first, patience())
+	// Four batches of 500 events, out of forty.
+	left := step.through(t, ids[1999])
+	first.kill(t)
+	step.release(t)
+	if left >= last {
+		t.Fatalf("the first process was killed at cursor %d, past the last event %d: it had caught up already", left, last)
+	}
+	kept := keywordRowsThrough(t, database, left)
+
+	second := startDispatchProcessWith(t, url, dispatchOptions{SigningKey: multiprocessSigningKey})
+	secondHolder := keywordFillHolder(t, second, patience())
+	testwait.UntilPolling(t, 200*time.Millisecond, "the new process to write every event's rows", func() (int64, bool) {
+		cursor := textversionstest.Cursor(t, database)
+		return cursor, cursor == last
+	})
+
+	recorded := writes()
+	requireKeywordFillWritersInTurn(t, recorded, firstHolder, secondHolder)
+	for i, write := range recorded {
+		if write.holder != secondHolder {
+			continue
+		}
+		if i == 0 || recorded[i-1].eventID != left || write.eventID <= left {
+			t.Errorf("the new process's first batch moved the cursor to %d after %v; want a batch past the cursor %d the killed process left",
+				write.eventID, recorded[max(i-1, 0)], left)
+		}
+		break
+	}
+	if got := keywordRowsThrough(t, database, left); got != kept {
+		t.Errorf("the rows of the events through the cursor %d were %s when the first process was killed and are %s now: the new process wrote them again",
+			left, kept, got)
+	}
+	textversionstest.RequireOnlyRowsOf(t, database, textversionstest.OneEach(ids...))
+}
+
+// A holder frozen with its connections open - a long garbage collection pause, a host that stops
+// scheduling it - renews nothing, so its hold lapses on the database's clock and the standby takes
+// it within keywordFillTakeOverWithin and writes the events written meanwhile. Once the frozen
+// process resumes it finds its hold lost, says so and stands by, and writes nothing: every batch
+// from the standby's first on is the standby's, across a window of events written after the
+// resume, and every event has exactly its row. A batch the freeze caught in its transaction is
+// ended by the batch's own idle_in_transaction_session_timeout, and any batch the resumed process
+// begins finds in duty_holds that the hold is not its own (filler.batch).
+func TestAFrozenKeywordFillHolderIsTakenOverAndWritesNothingOnceResumed(t *testing.T) {
+	database := storetest.Open(t)
+	textversionstest.SeedIssue(t, database)
+	writes := recordKeywordFillWrites(t, database)
+	url := databaseURLOf(t, database)
+	frozen := startDispatchProcessWith(t, url, dispatchOptions{SigningKey: multiprocessSigningKey, OwnProcessGroup: true})
+	frozen.waitHealthy(t)
+	frozenHolder := keywordFillHolder(t, frozen, 30*time.Second)
+	standby := startDispatchProcessWith(t, url, dispatchOptions{SigningKey: multiprocessSigningKey})
+	standby.waitHealthy(t)
+	standby.waitForLog(t, 30*time.Second, keywordFillStandbyLine)
+
+	before := writeKeywordFillComments(t, database, 20)
+	textversionstest.AwaitRows(t, database, before, time.Minute, nil)
+	frozenAt := frozen.signal(t, syscall.SIGSTOP)
+	resumed := false
+	// So a failure never leaves a stopped process behind: the cleanup cmdtest.Start registered
+	// when the process started kills it, and runs after this one, which is registered later.
+	t.Cleanup(func() {
+		if !resumed {
+			_ = frozen.Cmd.Process.Signal(syscall.SIGCONT)
+		}
+	})
+	waitFrozen(t, frozen, 10*time.Second)
+
+	whileFrozen := writeKeywordFillComments(t, database, 20)
+	standbyHolder := keywordFillHolder(t, standby, keywordFillTakeOverWithin-time.Since(frozenAt))
+	textversionstest.AwaitRows(t, database, whileFrozen, time.Minute, nil)
+	t.Logf("the standby took the hold and wrote the events written meanwhile %v after the holder was frozen",
+		time.Since(frozenAt).Round(time.Millisecond))
+
+	resumedAt := frozen.signal(t, syscall.SIGCONT)
+	resumed = true
+	// Its hold's loss deadline passed while it was stopped, so its timer finds the hold lost as
+	// it resumes, or its batch's next statement fails on a transaction the database ended.
+	frozen.waitForLog(t, 30*time.Second, keywordFillLostHoldLine)
+	frozen.waitForLog(t, 30*time.Second, keywordFillStandbyLine)
+	t.Logf("the resumed process reported its hold lost and stood by %v after it resumed", time.Since(resumedAt).Round(time.Millisecond))
+	// Events across three of the hold's renewal intervals after the resume, in which the resumed
+	// process's timers and wakes have every turn to write them.
+	var afterResume []int64
+	for range 6 {
+		afterResume = append(afterResume, writeKeywordFillComments(t, database, 5)...)
+		time.Sleep(2500 * time.Millisecond)
+	}
+	textversionstest.AwaitRows(t, database, afterResume, time.Minute, nil)
+
+	requireKeywordFillWritersInTurn(t, writes(), frozenHolder, standbyHolder)
+	textversionstest.RequireOnlyRowsOf(t, database, textversionstest.OneEach(slices.Concat(before, whileFrozen, afterResume)...))
+	select {
+	case <-frozen.Exited:
+		t.Fatalf("the resumed process exited; it should stand by for the hold:\n%s", frozen.Output.String())
+	default:
+	}
+}
+
+// keywordFillWrite is one write of the fill's cursor row: the holder that wrote it and the cursor
+// it left.
+type keywordFillWrite struct {
+	holder  string
+	eventID int64
+}
+
+// recordKeywordFillWrites installs a trigger on the fill's cursor row that records each write of it
+// in its own transaction, so a batch that commits is recorded and one that rolls back is not, and
+// answers the reader of what it recorded, in order.
+func recordKeywordFillWrites(t *testing.T, database *store.Store) func() []keywordFillWrite {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := database.Pool.Exec(ctx, `
+		create table keyword_fill_writes (n bigserial primary key, holder text not null, event_id bigint not null);
+		create function keyword_fill_write() returns trigger language plpgsql as $$
+		begin
+			insert into keyword_fill_writes (holder, event_id) values (coalesce(new.holder::text, ''), new.event_id);
+			return new;
+		end $$;
+		create trigger keyword_fill_write after insert or update on search_text_versions_fill
+			for each row execute function keyword_fill_write();
+	`); err != nil {
+		t.Fatalf("record the keyword fill's writes: %v", err)
+	}
+	return func() []keywordFillWrite {
+		t.Helper()
+		rows, err := database.Pool.Query(ctx, `select holder, event_id from keyword_fill_writes order by n`)
+		if err != nil {
+			t.Fatalf("read the keyword fill's writes: %v", err)
+		}
+		recorded, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (keywordFillWrite, error) {
+			var write keywordFillWrite
+			err := row.Scan(&write.holder, &write.eventID)
+			return write, err
+		})
+		if err != nil {
+			t.Fatalf("read the keyword fill's writes: %v", err)
+		}
+		return recorded
+	}
+}
+
+// keywordFillHolderPattern reads the holder of the line a process logs as it takes the fill's hold.
+var keywordFillHolderPattern = regexp.MustCompile(`holder=(\S+)`)
+
+// keywordFillHolder waits for the process to take the fill's hold, and answers the holder it took
+// it as.
+func keywordFillHolder(t *testing.T, p *dispatchProcess, within time.Duration) string {
+	t.Helper()
+	p.waitForLog(t, within, keywordFillTookLine)
+	line := p.logLines(keywordFillTookLine)[0]
+	holder := keywordFillHolderPattern.FindStringSubmatch(line)
+	if holder == nil {
+		t.Fatalf("the line that took the keyword fill's hold names no holder: %s", line)
+	}
+	return holder[1]
+}
+
+// requireKeywordFillWritersInTurn requires that every recorded write of the cursor row is first's
+// until the first of second's, and second's from then on: the holder never goes back.
+func requireKeywordFillWritersInTurn(t *testing.T, recorded []keywordFillWrite, first, second string) {
+	t.Helper()
+	turn := first
+	for i, write := range recorded {
+		if write.holder == second {
+			turn = second
+		}
+		if write.holder != turn {
+			t.Fatalf("write %d of the cursor row is %+v, in %s's turn; want every write %s's until %s's first, and %s's from then on: %+v",
+				i, write, turn, first, second, second, recorded)
+		}
+	}
+	if turn != second {
+		t.Fatalf("the cursor row was never written by %s, which took the hold: %+v", second, recorded)
+	}
+}
+
+// keywordFillSteps lets the keyword fill's batches through one at a time. Each batch locks the
+// cursor row (textversions' lockCursorQuery) before it writes and holds that lock to its end, so
+// an exclusive lock of the cursor's table held here holds every batch back, while reads of the
+// cursor go on. held is the transaction holding it.
+type keywordFillSteps struct {
+	database *store.Store
+	held     pgx.Tx
+}
+
+// keywordFillStepper takes the exclusive lock of the cursor's table before any fill runs.
+func keywordFillStepper(t *testing.T, database *store.Store) *keywordFillSteps {
+	t.Helper()
+	return &keywordFillSteps{database: database, held: keywordFillLockCursorTable(t, database)}
+}
+
+// keywordFillLockCursorTable begins a transaction and asks for the exclusive lock of the cursor's
+// table in it, and answers the transaction once the lock is held. It is ended when the test ends,
+// whatever else ends it before.
+func keywordFillLockCursorTable(t *testing.T, database *store.Store) pgx.Tx {
+	t.Helper()
+	tx, err := database.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin a lock of the keyword fill's cursor: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	if _, err := tx.Exec(context.Background(), `lock table search_text_versions_fill in exclusive mode`); err != nil {
+		t.Fatalf("lock the keyword fill's cursor: %v", err)
+	}
+	return tx
+}
+
+// through lets batches through, one at a time, until the cursor has reached target, and answers
+// the cursor then, the lock held: the fill can write nothing more until release.
+//
+// Each step waits for a batch to wait on the lock, queues a second lock behind that batch
+// (QueuedBehind, through the holder's own connection), and ends the first: the batch runs, and the
+// second lock is granted once it has committed or rolled back, before any batch begun after it.
+// So the cursor read under the second lock is the one that batch left, and no batch runs while
+// this test reads it or waits, however long. A batch that gives its 5 s wait on the lock up before
+// the first lock ends, as when this test stalls that long inside a step, lets that step pass none,
+// and the next step tries again: only a stall at every step keeps the row from going on, and the
+// binary's deadline ends that.
+func (s *keywordFillSteps) through(t *testing.T, target int64) int64 {
+	t.Helper()
+	ctx := context.Background()
+	for {
+		var cursor int64
+		if err := s.held.QueryRow(ctx,
+			`select coalesce((select event_id from search_text_versions_fill where id = 1), 0)`).Scan(&cursor); err != nil {
+			t.Fatalf("read the keyword fill's cursor under its lock: %v", err)
+		}
+		if cursor >= target {
+			return cursor
+		}
+		testwait.Until(t, "a batch of the keyword fill to wait on its cursor", func() (int, bool) {
+			waiting := storetest.WaitForLockWaiters(t, s.held, 1, 0)
+			return waiting, waiting >= 1
+		})
+		next, err := s.database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin the next lock of the keyword fill's cursor: %v", err)
+		}
+		// A failure while the next lock's request waits ends the lock it waits behind first and
+		// then waits for the request, so no two statements ever run on its connection at once.
+		prev, locked, asked := s.held, make(chan error, 1), false
+		t.Cleanup(func() {
+			if asked {
+				_ = prev.Rollback(context.Background())
+				<-locked
+			}
+			_ = next.Rollback(context.Background())
+		})
+		var pid uint32
+		if err := next.QueryRow(ctx, `select pg_backend_pid()`).Scan(&pid); err != nil {
+			t.Fatalf("read the next lock's backend: %v", err)
+		}
+		asked = true
+		go func() {
+			_, err := next.Exec(ctx, `lock table search_text_versions_fill in exclusive mode`)
+			locked <- err
+		}()
+		testwait.Until(t, "the next lock of the keyword fill's cursor to queue behind the batch", func() (bool, bool) {
+			queued, err := storetest.QueuedBehind(ctx, s.held, pid)
+			if err != nil {
+				t.Fatalf("read the lock queue of the keyword fill's cursor: %v", err)
+			}
+			return queued, queued
+		})
+		if err := s.held.Rollback(ctx); err != nil {
+			t.Fatalf("let a batch of the keyword fill through: %v", err)
+		}
+		err = testwait.Receive(t, "the next lock of the keyword fill's cursor once the batch ended", locked)
+		asked = false
+		if err != nil {
+			t.Fatalf("lock the keyword fill's cursor after the batch: %v", err)
+		}
+		s.held = next
+	}
+}
+
+// release ends the lock, letting the fill's batches run again.
+func (s *keywordFillSteps) release(t *testing.T) {
+	t.Helper()
+	if err := s.held.Rollback(context.Background()); err != nil {
+		t.Fatalf("release the keyword fill's cursor: %v", err)
+	}
+}
+
+// keywordRowsThrough is what tells the keyword table's rows of the events through cursor apart
+// from the same rows written again: how many there are and the transactions that wrote them.
+func keywordRowsThrough(t *testing.T, database *store.Store, cursor int64) string {
+	t.Helper()
+	var count int
+	var writers string
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*), coalesce(string_agg(distinct xmin::text, ',' order by xmin::text), '')
+		  from search_text_versions where event_id <= $1
+	`, cursor).Scan(&count, &writers); err != nil {
+		t.Fatalf("read the keyword rows through event %d: %v", cursor, err)
+	}
+	return fmt.Sprintf("%d rows written by transactions [%s]", count, writers)
 }

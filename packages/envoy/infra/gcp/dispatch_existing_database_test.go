@@ -179,6 +179,7 @@ func TestDispatchRefusesAnExistingDatabaseInstanceThatIsNoConnectionName(t *test
 			args.ExistingDatabaseInstance = pulumi.String(row.value)
 			_, err := runDispatch(t, args, true)
 			require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: existingDatabaseInstance")
+			requireInputError(t, err, "existingDatabaseInstance")
 			// Every string holds the empty one, so only a value with something in it can be looked
 			// for in the refusal.
 			if row.value != "" {

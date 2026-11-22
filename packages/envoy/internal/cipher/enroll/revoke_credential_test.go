@@ -71,7 +71,7 @@ func TestRevokeAndDecideAdmitTheSameLogins(t *testing.T) {
 				if service != nil {
 					name = *service
 				}
-				decides := record.MayDecide(record.KindLauncherCredential, approver, name, person)
+				decides := record.MayDecide(record.KindLauncherCredential, approver, name, person, nil)
 				err := svc.RevokeCredential(ctx, cred.ID.String(), person, record.HumanActor(person))
 				if decides && err != nil || !decides && !errors.Is(err, ErrNotApprover) {
 					t.Errorf("approver %q, service %q, login %q: RevokeCredential = %v, but MayDecide = %v", approver, name, person, err, decides)

@@ -3421,15 +3421,15 @@ for key in $stale; do
   note "moved stale todo issue $key to backlog"
 done
 [ -z "$(dispatch_get "issues?project=$project&status=todo" | jq -r '.[].key')" ] || fail "$project still holds todo issues"
-# The project's repository is Dispatch's mapping, not a key of legion.yaml: the daemon boots only
-# on a project with a repository mapped, and records an issue on the repository Dispatch resolves
-# for it, so $repo is mapped to $project as its default before the daemon starts. A mapping already
+# The project's repository is no key of legion.yaml: the daemon records an issue on the repository
+# Dispatch resolves for it, so $repo is set as $project's default repository in Dispatch before the
+# daemon starts (through Dispatch's mapping route, the one way to set it today). A default already
 # so is left as it is; the write names $project alone.
 if ! dispatch_get settings/repo-projects | jq -e --arg repo "$repo" --arg project "$project" \
   'any(.[]; .repo == $repo and .project == $project and .default == true)' >/dev/null; then
   dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$project" '{project:$project,default:true}')" >/dev/null ||
-    fail "map $repo to $project as its default repository in production Dispatch"
-  note "mapped $repo to $project as its default repository"
+    fail "set $repo as the default repository of $project in production Dispatch"
+  note "set $repo as the default repository of $project"
 fi
 # The configured stream carries both halves of the workflow's intake. Each `last` call reads one
 # ordered-consumer message under its 20-second budget instead of draining every matching subject.
@@ -4955,7 +4955,7 @@ refusals_beneath() {
     grep -o 'still in the workflow: [^."]*' | sed 's/^still in the workflow: //'
 }
 refused_naming() { refusals_beneath | grep -qxF -- "$1"; }
-accept_now="read the evidence as your instructions say and accept it with the legion tool's sign_off for $tree1 now. Park, close and change nothing: the proof human takes the children out. Report what the daemon answered."
+accept_now="read the evidence as your instructions say and accept it with the legion tool's sign_off for $tree1 now. Write no status, close nothing and change nothing: the proof human takes the children out. Report what the daemon answered."
 send_agent "$tree1" architect "Stage 4b proof acceptance: the reviewer approved pull request #$pr_number and $tree1 is in accepting, with $child3 and $child4 still in the workflow beneath it; $accept_now"
 on_tree "$tree1" until_true 900 "the daemon to refuse $tree1's sign_off, naming $child3 and $child4 beneath it" \
   refused_naming "$child3, $child4"
@@ -4972,7 +4972,7 @@ child_parked() {
   out=$(op get sandboxes,pods -l "legion.dev/project=$run_label,legion.dev/issue=$1" -o name) && [ -z "$out" ] &&
     out=$(pod_disk "$2") && [ -z "$out" ]
 }
-park_child_issue() {
+backlog_child_issue() {
   local child=$1 pod=$2
   set_status "$child" backlog
   until_true 600 "$child to leave the workflow" issue_phase "$child" "done"
@@ -4980,14 +4980,14 @@ park_child_issue() {
   until_true 600 "$child's Sandbox, pod and disk to be gone after its backlog" child_parked "$child" "$pod"
   note "the proof human parked $child (backlog): it left the workflow, its planner is suspended, and it has no Sandbox, no pod and no disk (its pod $pod took the disk $pod-issue with it)"
 }
-park_child_issue "$child3" "$child3_pod"
+backlog_child_issue "$child3" "$child3_pod"
 send_agent "$tree1" architect "Stage 4b proof acceptance, again: $child3 has left the workflow and $child4 has not; $accept_now"
 on_tree "$tree1" until_true 900 "the daemon to refuse $tree1's sign_off again, naming $child4 alone" \
   refused_naming "$child4"
 issue_phase "$tree1" accepting >/dev/null ||
   fail "$tree1 left accepting while $child4 was still in the workflow: $(daemon_state | jq -c --arg i "$tree1" '.issues[$i].phase')"
 note "with $child3 parked the daemon refused the sign_off again, naming $child4 alone (every refusal of this run so far: $(refusals_beneath | paste -sd '; ' -)): the rule is every issue beneath, not any"
-park_child_issue "$child4" "$child4_pod"
+backlog_child_issue "$child4" "$child4_pod"
 send_agent "$tree1" architect "Stage 4b proof acceptance, last: $child3 and $child4 have both left the workflow; $accept_now"
 on_tree "$tree1" wait_for_phase "$tree1" retro 900
 phase_change_logged "$tree1" accepting retro sign_off ||

@@ -369,7 +369,7 @@ func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 			t.Fatalf("the holder %s received %v within 15s, want each of %v", previous, heardFirst.all(), events)
 		}
 		last := rig.lastSeqOf(t, previous, events...)
-		first.conn.Close()
+		first.close()
 
 		nextStandIn := startSessionStandIn(t, rig.url, next, answerDone)
 		heardNext := hear(t, nextStandIn)
@@ -414,7 +414,7 @@ func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 			t.Fatalf("the holder %s received %v within 15s, want each of %v", holder, heardFirst.all(), events)
 		}
 		last := rig.lastSeqOf(t, holder, events...)
-		first.conn.Close()
+		first.close()
 
 		rig.clock.advance(session.LiveWindow + 30*time.Second)
 		if _, state := rig.harness.sessions.Lookup(holder); state != session.Unresponsive {
@@ -455,7 +455,7 @@ func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 			t.Fatalf("the holder %s received %v within 15s, want each of %v", previous, heardFirst.all(), events)
 		}
 		last := rig.lastSeqOf(t, previous, events...)
-		first.conn.Close()
+		first.close()
 
 		nextStandIn := startSessionStandIn(t, rig.url, next, answerDone)
 		heardNext := hear(t, nextStandIn)

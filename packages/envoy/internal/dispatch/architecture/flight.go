@@ -20,19 +20,19 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// syncCount counts the flights running and waits for none to be left. It has
-// the shape of backgroundWork in api/server.go, and for its reason: a
-// sync.WaitGroup is not it, because a flight may start while a wait is
-// already waiting, and Add after Wait began is what a WaitGroup forbids.
-// begin refuses once Close has begun, so a flight whose goroutine starts
-// after Close took its decision does nothing rather than write into a
-// closing pool.
+// syncCount counts the flights and the push workers (push.go) running and
+// waits for none to be left. It has the shape of backgroundWork in
+// api/server.go, and for its reason: a sync.WaitGroup is not it, because a
+// flight may start while a wait is already waiting, and Add after Wait began
+// is what a WaitGroup forbids. begin refuses once Close has begun, so a flight
+// whose goroutine starts after Close took its decision does nothing rather
+// than write into a closing pool, and a push recorded then starts no worker.
 type syncCount struct {
 	mu      sync.Mutex
 	closing bool
 	running int
 	// idle is closed when running last fell to zero, and replaced when a
-	// flight starts again.
+	// flight or a push worker starts again.
 	idle chan struct{}
 }
 
@@ -58,11 +58,18 @@ func (c *syncCount) done() {
 	}
 }
 
-// stop refuses every later flight and waits for the running ones to end.
+// stop refuses every later flight and push worker and waits for the running
+// ones to end.
 func (c *syncCount) stop() {
 	c.mu.Lock()
 	c.closing = true
 	c.mu.Unlock()
+	c.wait()
+}
+
+// wait returns once no flight and no push worker runs. Until stop has begun,
+// one may start again as soon as it returns.
+func (c *syncCount) wait() {
 	for {
 		c.mu.Lock()
 		running, idle := c.running, c.idle
@@ -121,11 +128,14 @@ func syncKey(project, repo string) string { return project + "\x00" + repo }
 // enter makes it, and the last to leave drops it, with what it recorded. So
 // the record never holds more entries than there are calls running, whatever
 // error a flight ended with and whatever key a caller names, a key that names
-// no source among them. No caller loses by the drop: a flight is fresh only
-// for a call made before its head lookup, and a call holds its key's entry
-// open from before it stamps its call until it returns (Sync). A flight that
-// ends once every call of its key has left is recorded nowhere. Its zero value
-// is ready.
+// no source among them. No call of Sync loses by the drop: a flight is fresh
+// only for a call made before its head lookup, and Sync's call holds its key's
+// entry open from before it stamps its call until it returns (syncAfter). A
+// push worker's moment is its newest push, which came before it entered the
+// key, so a flight that ended in that window may be recorded nowhere: that
+// costs the worker one more set of GitHub calls, and never leaves a push
+// uncovered. A flight that ends once every call of its key has left is
+// recorded nowhere. Its zero value is ready.
 type endedFlights struct {
 	mu    sync.Mutex
 	byKey map[string]*keyFlights
@@ -264,9 +274,10 @@ func (i *Importer) syncOnce(ctx, parent context.Context, project, repo string, f
 		// answers no caller takes as data; a repository the App is not installed on, a missing
 		// Contents permission, a branch GitHub does not have and a 4xx GitHub answers a read with
 		// are answers it leaves to its caller, so the sync notes them here. ctx carries the values
-		// of the caller that started the flight, so a sync a route or a command started notes
-		// nothing. The content of the files (a note over notes.MaxFileSize, notes.Parse, the
-		// projection) is no GitHub read: last_error records it, and the attempt does not.
+		// of the caller that started the flight, so a sync that a route, a command or a push's
+		// import (Importer.Pushed's worker) started notes nothing. The content of the files (a note
+		// over notes.MaxFileSize, notes.Parse, the projection) is no GitHub read: last_error
+		// records it, and the attempt does not.
 		githubreads.NoteFailure(ctx, importErr)
 		return i.failed(ctx, parent, source, importErr)
 	}

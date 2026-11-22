@@ -570,8 +570,9 @@ one. Three things have to be true first; Dispatch checks the first for you.
   database while it lasts.
 
 A second server also costs connections, and Postgres counts them per server. Each server opens up
-to 64 connections for requests, up to 22 for the work it runs once across the servers and the
-delivery intakes' holds, up to 8 for saving what people type in documents, up to 4 for loading
+to 64 connections for requests, up to 24 for the work it runs once across the servers, the
+delivery intakes' holds and the keyword fill's hold,
+up to 8 for saving what people type in documents, up to 4 for loading
 documents, up to 2 for compacting documents, up to 2 for the background fill of documents'
 display trees, one for the health check, two for publishing
 notifications, up to 2 for reading where the event log is safe to stream from (the event horizon),
@@ -583,7 +584,7 @@ background work when the rows that work reads change included. The other servers
 database find each server by the name of that shared connection. The fifth sends the cursors of
 the server's document sessions and its questions and answers to the other servers about a
 document. It opens the first time the server has one to send. A document edit's own notification
-goes out in the transaction that writes the edit, and needs no connection of its own. That is 113
+goes out in the transaction that writes the edit, and needs no connection of its own. That is 115
 connections for one server at its ceiling, and twice that for two, past a default Postgres's
 limit of 100. Check the database's connection limit before you start the second server: a limit
 sized for one server, with whatever else uses that database counted in, is the thing that runs
@@ -721,13 +722,19 @@ server ignores a write's `Idempotency-Key`, so while both run a write whose answ
 run once by each: the page and the `dispatch` command both retry such a write, and its retry can
 reach the other version. At one replica the Deployment's `Recreate` already stops the old pod
 first; above one replica, scale to zero before the new version starts. Releases after it roll
-again. Rolling it back brings the hazard back the other way: a tab still open, and a `dispatch`
-client that saw this version keep keys in the last five minutes, retry a write whose answer was
-lost against the earlier server, which runs it again. So fix it forward, as above; if you must roll
-back, stop this version first, knowing a write in flight at that moment may land twice. Once a
-later release has dropped the broadcast send's old key table (migration `0141`), rolling back past
-this version also stops broadcasts: the earlier version's broadcast send reads and writes that
-table, so every broadcast send fails while the rest of that version keeps working. A tab opened
+again. Rolling it back brings the hazard back the other way: a tab still open, and every
+`dispatch` client, which sends a failed write again under its key and asks nothing first, retry a
+write whose answer was lost against the earlier server, which runs it again. So fix it forward,
+as above; if you must roll back, stop this version first, knowing a write in flight at that
+moment may land twice. Rolling back to a build whose keyed layer passes a caller it cannot
+resolve on to the handler, rather than answering that caller itself, brings the double write back
+too, for as long as that build serves: a `dispatch` command that sends a failed write again
+without reading `/healthz` can have that build run it once with no key and again under its key.
+Once your sessions run such a command, do not roll Dispatch back past `b1c42d1d7d` (the first
+build whose keyed layer answers that caller itself, cybermonklabs/legion#4350); fix forward instead.
+Once a later release has dropped the broadcast send's old key table (migration `0141`),
+rolling back past this version also stops broadcasts: the earlier version's broadcast send reads and
+writes that table, so every broadcast send fails while the rest of that version keeps working. A tab opened
 before the deploy needs a reload: its event route is gone and it shows
 **Live updates unavailable**, and its broadcast body still carries a field the new server refuses.
 

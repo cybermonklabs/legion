@@ -1,5 +1,5 @@
 import { askProject } from "../features/inbox/list-row";
-import { buildDispatchReference } from "../features/refs/routes";
+import { buildDispatchReference, DECISIONS_DOCUMENT_SLUG } from "../features/refs/routes";
 import { issueProject } from "../lib/issue-key";
 import {
   agentMessagesQuery,
@@ -1175,6 +1175,15 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     } else {
       // An uploaded document is an `attached_to` edge into its issue.
       targets.push(referencePanel(issueReference));
+      // An issue's decisions.md sends this event alone on its first upload, no version, and the
+      // outline and the margin beside the spec read the decisions under events alone
+      // (`EVENT_FRESH`), so without this they draw none of them until a reload. The server names
+      // that document by its role, which it writes as it creates the row; a server built before
+      // roles sends none, and names it by its slug alone.
+      const { role, slug } = event.payload.artifact;
+      if (role === "decisions" || (role === undefined && slug === DECISIONS_DOCUMENT_SLUG)) {
+        targets.push({ exact: true, queryKey: ["decisions", key] });
+      }
     }
     return targets;
   }
@@ -1585,7 +1594,7 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * event refreshes: those whose key holds an address it changes the words under, on a comment's
  * edit (its body), an ask's edit (its question) and a document's new version (its blocks' words),
  * and none on any other event. The issue page's names reads are kept fresh by events
- * (`useIssueTree`'s `EVENT_FRESH`), never by their age, and a names read's key is the set of
+ * (`reference-target.ts`'s `EVENT_FRESH`), never by their age, and a names read's key is the set of
  * addresses it names, so a page that comes to hold another set reads again under a key of its
  * own: only a change of words under the same address needs a rule.
  * An issue's write that changes its title (`issue.updated` naming `title` among its changes, or

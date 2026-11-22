@@ -22,10 +22,10 @@ import (
 // only the DialOptions among them.
 type ConnectOption interface{ apply(*connectOpts) }
 
-// DialOption is a ConnectOption Dial honours too: WithConnectInBackground, WithSilentCutDetection
-// and WithReconnectErrClock. Dial's name and environment are its parameters, so WithName and
-// WithEnvironment are not DialOptions, and neither are the options of a client's JetStream
-// (WithReplicas, WithPublishAcknowledgementClock).
+// DialOption is a ConnectOption Dial honours too: WithConnectInBackground, WithSilentCutDetection,
+// WithPromptReconnect, WithInboxPrefix and WithReconnectErrClock. Dial's name and environment
+// are its parameters, so WithName and WithEnvironment are not DialOptions, and neither are the
+// options of a client's JetStream (WithReplicas, WithPublishAcknowledgementClock).
 type DialOption func(*connectOpts)
 
 func (o DialOption) apply(opts *connectOpts) { o(opts) }
@@ -47,22 +47,28 @@ type connectOpts struct {
 	streamSubjectsRefresh       time.Duration
 	reconnectWaitTick           func()
 	beforeRequestFlush          func()
+	requestExpiry               func(deadline time.Time) (expired <-chan time.Time, flushSettled func())
 	background                  bool
 	silentCutDetection          bool
-	immediateReconnect          bool
+	promptReconnect             bool
+	inboxPrefix                 string
+	streamMessageReads          bool
 }
 
 // connectionSettings is what every connection of a client applies after envoy's own options
 // (connectWithContext): the NATS credential names (credential, nil for none), the pings of
-// WithSilentCutDetection and the retry of WithImmediateReconnect, each when the client asked for
-// it.
+// WithSilentCutDetection, the redial waits of WithPromptReconnect and the inbox prefix of
+// WithInboxPrefix, each when the client asked for it.
 func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 	settings := []nats.Option{credential}
 	if o.silentCutDetection {
 		settings = append(settings, detectSilentCuts)
 	}
-	if o.immediateReconnect {
-		settings = append(settings, nats.ReconnectWait(0), nats.ReconnectJitter(reconnectJitterImmediate, reconnectJitterImmediate))
+	if o.promptReconnect {
+		settings = append(settings, promptRedial)
+	}
+	if o.inboxPrefix != "" {
+		settings = append(settings, nats.CustomInboxPrefix(o.inboxPrefix))
 	}
 	if len(settings) == 1 {
 		return credential
@@ -122,9 +128,12 @@ func WithReplicas(n int) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.replicas = n })
 }
 
-// withStreamSubjectsRefresh replaces streamSubjectsRefresh for one client, so a test can see the
-// client read the deployed subjects again without waiting a minute.
-func withStreamSubjectsRefresh(every time.Duration) ConnectOption {
+// WithStreamSubjectsRefresh replaces streamSubjectsRefresh for one client, so a test can see the
+// client read the deployed subjects again without waiting a minute, or hold that read off for the
+// whole of a window in which it counts what the client's connection sends. It is exported for the
+// tests of the programs that connect through this package, as WithKeepInterval is: no deployment
+// sets it, and no caller outside a test may.
+func WithStreamSubjectsRefresh(every time.Duration) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.streamSubjectsRefresh = every })
 }
 
@@ -201,14 +210,44 @@ func WithSilentCutDetection() DialOption {
 	return func(o *connectOpts) { o.silentCutDetection = true }
 }
 
-// WithImmediateReconnect has every connection the client makes retry at once after a cut, with a
-// jitter of reconnectJitterImmediate rather than the second every other client waits. It is for
-// the one client a hub's other clients wait on: the NATS auth service
-// (internal/cipher/natscallout), which is itself a client of the hub it admits connections to, so
-// a restart drops its connection too and every client that comes back before it is refused until
-// it returns. The jitter keeps two replicas from dialling in the same instant.
-func WithImmediateReconnect() DialOption {
-	return func(o *connectOpts) { o.immediateReconnect = true }
+// WithPromptReconnect has every connection the client makes redial at once after a cut, within a
+// jitter of 50 ms where every other client waits a second, and back off while the hub stays away
+// or refuses it: each later wait is drawn anew between half and all of a bound that starts at
+// 250 ms and doubles with each redial up to 2 s, and the next outage starts at once again
+// (promptRedialWait). It is for the one client a hub's other clients wait on: the NATS auth
+// service (internal/cipher/natscallout), which is itself a client of the hub it admits
+// connections to, so a restart drops its connection too and every client that comes back before
+// it is refused until it returns. So the cap is short: it bounds each wait at 2 s, whatever the
+// outage's length, and a dial follows each wait; that dial, like one already in flight when the
+// hub returns, takes its own time, up to its 5 s timeout when it hangs (connectTimeout). The
+// backoff is for a hub that refuses the service's own user, as one whose auth_callout does not
+// list it yet does: redialling within 50 ms each time, a replica connected to it 35 times a second
+// for as long as it refused (1,055 times in 30 s against an in-process nats-server 2.15.1); with
+// the backoff it connects 24 times in its first 30 s and at most once in any second after its
+// first, for one URL (each wait is followed by a dial of every URL of the pool), which for two
+// replicas is nothing to the hub. The jitter keeps two replicas from dialling in the same instant.
+func WithPromptReconnect() DialOption {
+	return func(o *connectOpts) { o.promptReconnect = true }
+}
+
+// WithInboxPrefix has every connection the client makes name its inboxes under prefix in place
+// of nats.go's _INBOX (nats.CustomInboxPrefix): its request replies, and every inbox named by the
+// connection's NewInbox, which is how this module names each one. An edge listener takes it
+// (cmd/listener, natsgrant.EdgeInboxPrefix), so its user may subscribe its own inboxes and no other
+// client's.
+func WithInboxPrefix(prefix string) DialOption {
+	return func(o *connectOpts) { o.inboxPrefix = prefix }
+}
+
+// WithStreamMessageReads has every KV bucket handle opened on the client's connection read a key
+// with a stream message get ($JS.API.STREAM.MSG.GET.KV_<bucket>), which the JetStream API answers,
+// in place of the direct get ($JS.API.DIRECT.GET.KV_<bucket>.>) nats.go sends for every bucket
+// this module creates (streamMessageReads). An edge listener takes it (cmd/listener,
+// natsgrant.Edge), whose grant holds no direct get: the stream itself publishes a direct get's
+// answer, the stored value, on whatever reply subject the request names, and a value aimed at
+// $JS.API. is taken by the JetStream API as a request of the account's.
+func WithStreamMessageReads() ConnectOption {
+	return clientOption(func(o *connectOpts) { o.streamMessageReads = true })
 }
 
 type subscriptionTransport uint8
@@ -293,7 +332,14 @@ type Client struct {
 	// export_test.go) to hold the flush until the connection it would flush is gone, the
 	// interleaving a flush begun after the connection turned reconnecting has.
 	beforeRequestFlush func()
-	mu                 sync.Mutex
+	// requestExpiry, when not nil, gives each Request the channel its timeout fires on, in place of
+	// a timer at the request's deadline, or nil to keep that timer, and a func the request calls
+	// once it has settled a flush that returned before its timeout fired, or nil (window.request).
+	// It is nil outside tests: a test sets it (WithRequestExpiry, export_test.go) to choose which
+	// of the request's timeout and its flush it settles first, so the order of the two is the
+	// test's and not the scheduler's.
+	requestExpiry func(deadline time.Time) (expired <-chan time.Time, flushSettled func())
+	mu            sync.Mutex
 
 	// deniedPublishes holds, under mu, the server's refusals of publishes per subject it refused a
 	// publish to, as the connection reported them (recordPublishDenial), queued in arrival order
@@ -383,6 +429,9 @@ type Client struct {
 	// slowConsumers counts the slow-consumer errors the client's connections reported
 	// (SlowConsumers).
 	slowConsumers atomic.Uint64
+	// streamMessageReads is WithStreamMessageReads: every KV handle opened on the client's
+	// connection reads with a stream message get rather than a direct get (wrapKeyValue).
+	streamMessageReads bool
 
 	// recovery state
 	recovering int32
@@ -393,6 +442,11 @@ type Client struct {
 	// client that runs none, or none yet: one that connects in the background starts it on its first
 	// reconcile (ensureStreamOnce). It is written and read under mu (startKeeper, awaitKeeper).
 	keeperDone chan struct{}
+	// keepPasses counts the keeper's passes that have ended, a pass that failed included (keep,
+	// keepPass), for a test that must know a pass ran after a change it made: a pass that finds
+	// nothing to restore logs nothing and sends no update, so the count is the one sign it ran. It
+	// says nothing of whether the pass did what it set out to; a failed pass logs that.
+	keepPasses atomic.Uint64
 }
 
 // Dial opens a tuned core NATS connection using envoy's standard options (5s connect timeout,
@@ -406,7 +460,7 @@ type Client struct {
 //
 // It takes the DialOptions: WithConnectInBackground, which returns the connection before it has
 // connected (a core subscription made on it before then is sent once it connects),
-// WithSilentCutDetection and WithReconnectErrClock.
+// WithSilentCutDetection, WithPromptReconnect and WithReconnectErrClock.
 //
 // For JetStream-backed publishing or a durable consumer, use Connect; to reconcile the stream
 // this codebase owns, ConnectOwningStream.
@@ -504,6 +558,8 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		reconnectErrClock:           opts.reconnectErrClock,
 		reconnectWaitTick:           opts.reconnectWaitTick,
 		beforeRequestFlush:          opts.beforeRequestFlush,
+		streamMessageReads:          opts.streamMessageReads,
+		requestExpiry:               opts.requestExpiry,
 		stopCh:                      make(chan struct{}),
 	}
 	stream := opts.streamConfig()
@@ -1788,8 +1844,9 @@ func streamFull(err error) error {
 // names the one it will hold (nats-server's JSStreamDuplicateMessageConflict). It is not an
 // ErrRefused: the same publish sent again once the earlier one is stored is answered as a
 // duplicate with that copy's sequence, which is what a caller that reads the acknowledgement
-// retries for (PublishStoredAck; the listener's keep, cmd/listener/role_keep.go). The error still
-// matches nats-server's *nats.APIError.
+// retries for (PublishStoredAck, PublishAckWithin; cmd/listener's publishPastInProcess, which the
+// listener's request publishes, keep and takeover copy take). The error still matches
+// nats-server's *nats.APIError.
 var ErrDuplicateInProcess = errors.New("a publish under the same message id is still in process")
 
 // jsStreamDuplicateMessageConflict is nats-server's code for a publish whose message id is a
@@ -1933,7 +1990,9 @@ func (c *Client) PublishAckWithin(ctx context.Context, item contracts.Envelope) 
 // (sendStored). The first may have reached the stream before the close, so a Duplicate that comes
 // with Resent may name the copy this very call stored: a caller that charges nothing for a repeat
 // of an earlier message (cmd/listener's sender limit, and its keep of a role message) reads such a
-// verdict as the call's own copy rather than as a repeat.
+// verdict as the call's own copy rather than as a repeat. cmd/listener's publishPastInProcess sets
+// it for the same reason on the answer to a publish it made again after the stream refused, as
+// still in process, a send of the same call that nothing had answered (ErrUnacknowledged).
 type StoredAck struct {
 	Sequence  uint64
 	Duplicate bool
@@ -2284,7 +2343,7 @@ func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, m
 	}
 	deadline, _ := ctx.Deadline()
 	conn := c.Conn
-	inbox := nats.NewInbox()
+	inbox := conn.NewInbox()
 	replies, err := conn.SubscribeSync(inbox)
 	if err != nil {
 		return nil, err
@@ -2317,7 +2376,10 @@ type PendingForward struct {
 // ends, and releases its reply subscription. No acknowledgement by the deadline, the stream's
 // error answer, and the server's no-responders answer (nothing captured the subject) are each
 // ErrForwardNotStored, wrapping the reason and, when publishConfirmed could not confirm the
-// publish, the reason for that.
+// publish, the reason for that. A clustered stream's refusal of a forward whose Nats-Msg-Id an
+// earlier forward still has in process wraps ErrDuplicateInProcess too, since the same forward
+// sent again once the earlier one is stored is acknowledged as its duplicate (cmd/listener's
+// publishPastInProcess).
 func (f *PendingForward) Wait() error {
 	defer f.replies.Unsubscribe()
 	for {
@@ -2342,7 +2404,7 @@ func (f *PendingForward) Wait() error {
 		}
 		// The stream's error answer to the forward, which no later reply changes.
 		if ack.Error != nil {
-			return fmt.Errorf("%w: %w", ErrForwardNotStored, ack.Error)
+			return fmt.Errorf("%w: %w", ErrForwardNotStored, duplicateInProcess(ack.Error))
 		}
 		return nil
 	}

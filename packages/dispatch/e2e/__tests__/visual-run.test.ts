@@ -1,14 +1,23 @@
 import { afterAll, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { rowLimit, runBounded } from "./bounded-subprocess";
 
-// What e2e/visual-run.sh tells a reader of a failed run: where the failed rows' shots are, and,
-// for a run in reverse order, that a row failing there alone needs a seed mark and not a new
-// baseline; and that however the run ends, the stack it started is stopped. The script runs
+// What e2e/visual-run.sh tells a reader of a failed run: where a failed row's shots are, if a row
+// ran and failed, and, for a run in reverse order, that a row failing there alone needs a seed
+// mark and not a new baseline; that it never says shots exist, since it cannot tell that a row
+// ran; and that however the run ends, the stack it started is stopped. The script runs
 // whole, as CI runs it, with `bun` and `docker` standing in on PATH: the stand-in `bun` prints
 // the stack's last variable for `e2e/harness-up.ts` and holds the stack up as the real one does,
 // writing its pid to `STUB_STACK_PID` where that is set, and the stand-in `docker` exits with the
@@ -62,7 +71,7 @@ function visualRun(status: number, order: string | undefined, args: readonly str
 /** The line a failed run ends with, naming `directory` as the run prints it: from the repository
  *  root, where a reader of a CI log and the job's upload start. */
 const shotsUnder = (directory: string) =>
-  `the run failed; a failed row's shots (-actual.png, -expected.png, -diff.png) are under ${directory}/.`;
+  `the run failed. If a row ran and failed, its shots (-actual.png, -expected.png, -diff.png) are under ${directory}/.`;
 const seedMark = "write that mark in the seed (markWhatTheShotPagesRead, e2e/review-seed.ts)";
 
 test(
@@ -176,6 +185,32 @@ test(
     }
   },
   rowLimit("short", "short", "short", "short", "short")
+);
+
+// Playwright refuses an argument it cannot read before it runs a row, and exits 1 as a failed row
+// does: `-uG`, whose `G` is no `--update-snapshots` mode, and an option it does not know are two
+// such lists. The script cannot tell that run from one whose rows failed, so no line it prints
+// says that shots exist: the line naming the directory, and the seed hint of a reverse run, each
+// say what holds if a row ran and failed.
+test(
+  "no line of a failed run says shots exist, as when Playwright refuses its arguments and runs no row",
+  async () => {
+    for (const refused of [
+      ["-uG", "--output=e2e/x"],
+      ["--output=e2e/x", "--no-such-option"],
+    ]) {
+      const run = await visualRun(1, "reverse", refused);
+      expect(run.code).toBe(1);
+      const claims = run.stderr
+        .split("\n")
+        .filter((line) => /shots|markWhatTheShotPagesRead/.test(line))
+        .filter((line) => !line.includes("If a row ran and failed"));
+      expect(claims).toEqual([]);
+      expect(run.stderr).toContain(shotsUnder("packages/dispatch/e2e/x"));
+      expect(run.stderr).toContain(seedMark);
+    }
+  },
+  rowLimit("short", "short")
 );
 
 /** The option names of one of visual-run.sh's two lists, sorted. */
@@ -311,29 +346,42 @@ test(
 // SIGINT listener of its own; this row holds the script's trap, not the harness's.) The run goes
 // in a session of its own (`setsid`), so the signal reaches the run's group, read from the
 // container's pid, and not this test's; it waits for the container to start. The group is
-// signalled with `/usr/bin/kill -s INT -- -PGID`.
+// signalled with `/usr/bin/kill -s INT -- -PGID`. The second run names an `--output` that starts
+// with a dash, and that is a directory there, in a copy of the script under a tree of its own: a
+// command of the script that took that name as an option would fail, and under `set -e` end the
+// script with its own status in place of 130.
 test(
-  "a Ctrl-C to a running run stops its stack and exits 130",
+  "a Ctrl-C to a running run stops its stack and exits 130, with an --output that starts with a dash too",
   async () => {
-    const dir = mkdtempSync(join(stubs, "int-"));
-    const run = await runBounded({
-      argv: [
-        "sh",
-        "-c",
-        '(until [ -s "$STUB_DOCKER_STARTED" ]; do sleep 0.05; done; ' +
-          '/usr/bin/kill -s INT -- "-$(ps -o pgid= -p "$(cat "$STUB_DOCKER_STARTED")" | tr -d " ")") & ' +
-          `setsid --wait sh e2e/visual-run.sh "$@"; status=$?; ${stackAfter}; exit "$status"`,
-        "visual-run",
-      ],
-      bound: "short",
-      cwd: dispatchPackage,
-      env: heldRun(dir, 0, "30"),
-      from: import.meta.url,
-    });
-    expect(run.code).toBe(130);
-    expect(read(dir, "stack-after")).toBe("down");
+    const dashed = join(mkdtempSync(join(stubs, "tree-")), "packages/dispatch");
+    mkdirSync(join(dashed, "e2e"), { recursive: true });
+    mkdirSync(join(dashed, "-x"));
+    copyFileSync(join(dispatchPackage, "e2e/visual-run.sh"), join(dashed, "e2e/visual-run.sh"));
+    for (const [cwd, args] of [
+      [dispatchPackage, []],
+      [dashed, ["--output=-x"]],
+    ] as const) {
+      const dir = mkdtempSync(join(stubs, "int-"));
+      const run = await runBounded({
+        argv: [
+          "sh",
+          "-c",
+          '(until [ -s "$STUB_DOCKER_STARTED" ]; do sleep 0.05; done; ' +
+            '/usr/bin/kill -s INT -- "-$(ps -o pgid= -p "$(cat "$STUB_DOCKER_STARTED")" | tr -d " ")") & ' +
+            `setsid --wait sh e2e/visual-run.sh "$@"; status=$?; ${stackAfter}; exit "$status"`,
+          "visual-run",
+          ...args,
+        ],
+        bound: "short",
+        cwd,
+        env: heldRun(dir, 0, "30"),
+        from: import.meta.url,
+      });
+      expect(run.code).toBe(130);
+      expect(read(dir, "stack-after")).toBe("down");
+    }
   },
-  rowLimit("short")
+  rowLimit("short", "short")
 );
 
 // A supervisor's stop sends SIGTERM to the script alone. The script's TERM trap runs once the

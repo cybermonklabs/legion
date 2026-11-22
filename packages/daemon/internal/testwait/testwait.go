@@ -111,14 +111,19 @@ func (realClock) After(d time.Duration) <-chan time.Time { return time.After(d) 
 // Receive waits for one receive from ch (a value, or the close of ch, which gives the zero
 // value) and returns it. Its one bound is the test binary's deadline, the one go test's -timeout
 // sets: it gives up the margin (marginOf the -timeout) before it and at no other moment, and
-// under -timeout 0 it has no end. A wait that gives up writes "testwait: <test>: gave up waiting
-// for <what> at <when>, <margin> before the test binary's deadline <deadline> (-test.timeout
-// <timeout>)" to stderr at once, and then fails the test with the same text: Go's alarm panics
-// without printing a running test's log, so a cleanup that outlasted the margin would otherwise
-// take the failure with it. <when> is the clock's reading as the wait gave up, so a reader can
-// hold that it gave up no earlier than the margin before the deadline.
+// under -timeout 0 it has no end. A row whose verdict is what a call answers waits for that answer
+// here, so a call that waits for ever fails by name and a call that a loaded machine makes slow
+// passes. A wait that gives up writes "testwait: <test>: gave up waiting for <what> after <waited>
+// at <when>, <margin> before the test binary's deadline <deadline> (-test.timeout <timeout>)" to
+// stderr at once, and then fails the test with the same text: Go's alarm panics without printing a
+// running test's log, so a cleanup that outlasted the margin would otherwise take the failure with
+// it. The time waited tells a wait that hung from one that began after an earlier one had spent
+// the deadline. <when> is the clock's reading as the wait gave up, so a reader can hold that it
+// gave up no earlier than the margin before the deadline. The text is one line: a newline in what
+// is written as \n.
 func Receive[T any](t *testing.T, what string, ch <-chan T) T {
 	t.Helper()
+	start := time.Now()
 	deadline, bounded := t.Deadline()
 	timeout := timeoutFlag()
 	value, gaveUp, ok := receive(realClock{}, deadline, bounded, timeout, ch)
@@ -126,8 +131,9 @@ func Receive[T any](t *testing.T, what string, ch <-chan T) T {
 		return value
 	}
 	text := strings.NewReplacer("\n", `\n`, "\r", `\r`).Replace(fmt.Sprintf(
-		"testwait: %s: gave up waiting for %s at %s, %s before the test binary's deadline %s (-test.timeout %s)",
-		t.Name(), what, gaveUp.UTC().Format(time.RFC3339Nano), marginOf(timeout), deadline.UTC().Format(time.RFC3339Nano), timeout))
+		"testwait: %s: gave up waiting for %s after %s at %s, %s before the test binary's deadline %s (-test.timeout %s)",
+		t.Name(), what, gaveUp.Sub(start).Round(time.Millisecond), gaveUp.UTC().Format(time.RFC3339Nano), marginOf(timeout),
+		deadline.UTC().Format(time.RFC3339Nano), timeout))
 	_, _ = os.Stderr.WriteString(text + "\n")
 	t.Fatalf("%s", text)
 	return value
@@ -170,9 +176,9 @@ func timeoutFlag() time.Duration {
 	return span
 }
 
-// giveUpText matches Receive's failure: the test, what it waited for, the give-up moment, the
-// margin, the deadline and the -timeout.
-var giveUpText = regexp.MustCompile(`testwait: (\S+): gave up waiting for (.+?) at (\S+), (\S+) before the test binary's deadline (\S+) \(-test\.timeout (\S+)\)`)
+// giveUpText matches Receive's failure: the test, what it waited for, the time waited (not
+// captured), the give-up moment, the margin, the deadline and the -timeout.
+var giveUpText = regexp.MustCompile(`testwait: (\S+): gave up waiting for (.+?) after \S+ at (\S+), (\S+) before the test binary's deadline (\S+) \(-test\.timeout (\S+)\)`)
 
 // RequireGaveUp fails t unless output, what a child test binary printed, holds Receive's give-up
 // text for what exactly twice (on stderr at once, then as the test's failure). The text must name

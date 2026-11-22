@@ -165,13 +165,14 @@ func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueK
 // getAppInstallation's 502 words it: where GitHub refused the read (githubapp.StatusError) or
 // rate-limited it (githubapp.RateLimitError), the body the error's text ends with is replaced by
 // the `message` GitHub wrote, and left out where it wrote none; and the text is cut to
-// gitHubReasonBytes, saying so, since any other error keeps GitHub's body whole — an
-// installation token mint GitHub refused carries it, up to the megabyte githubapp reads of an
-// answer. Where the read that failed is the installation token mint (delivery.ErrTokenMint), as
-// for a suspended installation's 403, the sentence names the mint, since GitHub was asked nothing
-// about the repository itself. A rate limit names GitHub's wait, in the sentence and in
-// Retry-After, rounded up to whole seconds as every Retry-After Dispatch writes is
-// (ratelimit.RetryAfterSeconds); any other failed read names none, since GitHub gave none.
+// gitHubReasonBytes, saying so, since any other error keeps its text: an installation token mint
+// GitHub refused carries GitHub's body as githubapp.ShownBody shows it, its first 512 characters,
+// which may take 2,048 bytes, and its size. Where the read that failed is the installation token
+// mint (delivery.ErrTokenMint), as for a suspended installation's 403, the sentence names the
+// mint, since GitHub was asked nothing about the repository itself. A rate limit names GitHub's
+// wait, in the sentence and in Retry-After, rounded up to whole seconds as every Retry-After
+// Dispatch writes is (ratelimit.RetryAfterSeconds); any other failed read names none, since
+// GitHub gave none.
 func linkedReadRefusal(repo, sha string, err error) error {
 	reason := gitHubReason(err)
 	limited, rateLimited := githubapp.AsRateLimit(err)

@@ -439,10 +439,16 @@ func TestTheProjectsRecordsWriteNoOutboxRowOfAnotherProjectsIssue(t *testing.T) 
 	t.Run("ExpediteOutbox", func(t *testing.T) {
 		row := seed(t, status(t, "OTHERPROJECT-4", later))
 		before := rowsOf(t, "OTHERPROJECT-4")
-		write(t, func(tx pgx.Tx) error { return records.ExpediteOutbox(ctx, tx, row, now) })
+		write(t, func(tx pgx.Tx) error {
+			_, err := records.ExpediteOutbox(ctx, tx, row, now)
+			return err
+		})
 		refused(t, record.OutboxKindDispatchStatus, "OTHERPROJECT-4", before)
 		own := seed(t, status(t, "LEGION-4", later))
-		write(t, func(tx pgx.Tx) error { return records.ExpediteOutbox(ctx, tx, own, now) })
+		write(t, func(tx pgx.Tx) error {
+			_, err := records.ExpediteOutbox(ctx, tx, own, now)
+			return err
+		})
 		var due time.Time
 		if err := pool.QueryRow(ctx, `select next_at from outbox where id = $1`, own.ID).Scan(&due); err != nil || !due.Equal(now) {
 			t.Errorf("the project's own row %d keyed LEGION-4 is due at %s (%v), want it expedited to %s", own.ID, due, err, now)

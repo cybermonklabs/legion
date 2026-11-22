@@ -40,7 +40,7 @@ func TestARelayHandsOverALapsedSessionsMessagesToTheConsumerThatStands(t *testin
 	// The session registers again, as a laptop that woke registers, and is delivered the message
 	// the hand-over gave back. The first stand-in's connection goes first, so the frame reaches
 	// the one that returned and no other.
-	silent.conn.Close()
+	silent.close()
 	returned := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	// The registration starts a relay, whose restart at the ack floor deletes the consumer holding
 	// the message given back and creates it again.

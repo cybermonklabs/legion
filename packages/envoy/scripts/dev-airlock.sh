@@ -94,6 +94,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# psql is given a database URL without its password, and the password in PGPASSWORD.
+# shellcheck source-path=SCRIPTDIR source=lib/pg-url.sh
+. "$SCRIPT_DIR/lib/pg-url.sh"
 
 usage() {
   cat <<'EOF'
@@ -289,7 +292,7 @@ POSTGRES_CONTAINER="dispatch-pg"
 if [ -n "${DEV_BROKER_POSTGRES_URL:-}" ]; then
   POSTGRES_URL="${POSTGRES_SERVER}/${DB_NAME}${POSTGRES_QUERY}"
   POSTGRES_WHERE="the server DEV_BROKER_POSTGRES_URL names"
-  admin_psql() { psql "$DEV_BROKER_POSTGRES_URL" -v ON_ERROR_STOP=1 -q "$@"; }
+  admin_psql() { pg_url_run "$DEV_BROKER_POSTGRES_URL" psql -v ON_ERROR_STOP=1 -q "$@"; }
 else
   POSTGRES_URL="postgres://postgres:dispatch@127.0.0.1:55432/${DB_NAME}?sslmode=disable"
   POSTGRES_WHERE="the shared $POSTGRES_CONTAINER container dev-broker.sh started"
@@ -429,7 +432,8 @@ POD_UID="$(issuer_field "$POD_TOKEN_FILE" uid)"
 admin_psql -c "create database ${DB_NAME};"
 CREATED_DB=true
 echo "dev-airlock: created isolated database $DB_NAME" >&2
-DISPLAY_URL="$(printf '%s' "$POSTGRES_URL" | sed -E 's#^(postgres(ql)?://[^:/@?]+):[^@/?]*@#\1:***@#')"
+# The banner names the database without any password the URL carries.
+DISPLAY_URL="$(pg_url_without_password "$POSTGRES_URL")"
 
 # --- The stand-ins. Each HTTPS stand's certificate carries the name the rules bind it to, since
 # the proxy verifies the name it dialled against the certificate the stand presents. The

@@ -109,12 +109,18 @@ func newSecretRequest(t *testing.T, m *Machine, box string) Request {
 // is written. It answers the record's id; code is the login's user code.
 func insertMachineLogin(t *testing.T, m *Machine, approver, host, code string, expires time.Time) string {
 	t.Helper()
+	return insertLoginRecord(t, m, approver, approver, record.AuthorizationDetail{Type: record.KindLauncherCredential, Identifier: host}, code, expires)
+}
+
+// insertLoginRecord writes a machine login's record waiting on approver, its request object signed
+// with loginHint for detail, with the deadline expires and the user code code, and answers its id.
+func insertLoginRecord(t *testing.T, m *Machine, approver, loginHint string, detail record.AuthorizationDetail, code string, expires time.Time) string {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("generate the machine's key: %v", err)
 	}
-	compact, err := record.Sign(key, m.Audience, []record.AuthorizationDetail{{Type: record.KindLauncherCredential, Identifier: host}},
-		"", approver, nil, time.Now())
+	compact, err := record.Sign(key, m.Audience, []record.AuthorizationDetail{detail}, "", loginHint, nil, time.Now())
 	if err != nil {
 		t.Fatalf("sign the machine login: %v", err)
 	}
@@ -129,7 +135,7 @@ func insertMachineLogin(t *testing.T, m *Machine, approver, host, code string, e
 	}
 	if _, err := m.Store.Pool.Exec(context.Background(), `insert into credential_requests (id, body, kind, approver, code, expires_at)
 		values ($1,$2,'launcher_credential',$3,$4,$5)`, body.ID(), body.Canonical(), body.Approver, code, body.ExpiresAt); err != nil {
-		t.Fatalf("insert the machine login for %s: %v", host, err)
+		t.Fatalf("insert the machine login for %s: %v", detail.Identifier, err)
 	}
 	return body.ID()
 }

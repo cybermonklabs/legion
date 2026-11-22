@@ -18,12 +18,13 @@ type uploadRefusal struct {
 
 // An upload route has two refusals that one write can meet: a write with no content over a
 // document that exists (400 ARTIFACT_INPUT, blankWriteToADocumentThatExists) and a replacement
-// that names no token (400 PRECONDITION_REQUIRED). A blank write over a held name is refused
-// whatever token it names, so telling its writer to name one would send them into a second
-// refusal. A precondition that is not well formed is answered as malformed first; past that,
-// the blank refusal stands ahead of every check of the token against the document, and each
-// refusal names only a remedy this route then takes. Each case drives its refusal, and then the
-// remedy the refusal names, to its answer.
+// naming a token the document has moved past (409 PRECONDITION_FAILED). A blank write over a held
+// name is refused whatever token it names, so telling its writer to name one would send them into
+// a second refusal. A precondition that is not well formed is answered as malformed first; past
+// that, the blank refusal stands ahead of every check of the token against the document, and each
+// refusal names only a remedy this route then takes. A replacement with content that names no
+// token is taken, as it was before #3000, until every deployed client sends one (INFRA-4980).
+// Each case drives its refusal, and then the remedy the refusal names, to its answer.
 func TestUploadRefusalsNameOnlyARemedyTheRouteTakes(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
@@ -86,23 +87,18 @@ func TestUploadRefusalsNameOnlyARemedyTheRouteTakes(t *testing.T) {
 		blankRefused(c.name, code, refusal, raw)
 	}
 
-	// Content over a held name naming no token: the token refusal, naming the token.
-	code, refusal, raw := post(map[string]any{"name": "notes.md", "content": "# Notes\n\nA second text.\n"})
-	if code != http.StatusBadRequest || refusal.Code != "PRECONDITION_REQUIRED" ||
-		!strings.Contains(refusal.Error, "must name the token of the version it replaces") {
-		t.Fatalf("content over notes.md naming no token: status=%d body=%s, want 400 PRECONDITION_REQUIRED", code, raw)
-	}
-	if read := readDocumentPrecondition(t, handler, notes); read.Token != first.Token {
-		t.Fatalf("a refused write moved notes.md from %s to %s", first.Token, read.Token)
-	}
-	// That refusal's remedy - name the live token - is taken.
-	if code, _, raw := post(token(map[string]any{"name": "notes.md", "content": "# Notes\n\nA second text.\n"}, first.Token)); code != http.StatusCreated {
-		t.Fatalf("content over notes.md naming the live token: status=%d body=%s, want 201", code, raw)
+	// Content over a held name naming no token is taken, as it was before #3000, until every
+	// deployed client sends a token (INFRA-4980).
+	if code, _, raw := post(map[string]any{"name": "notes.md", "content": "# Notes\n\nA second text.\n"}); code != http.StatusCreated {
+		t.Fatalf("content over notes.md naming no token: status=%d body=%s, want 201", code, raw)
 	}
 	second := readDocumentPrecondition(t, handler, notes)
+	if second.Token == first.Token {
+		t.Fatalf("the replacement naming no token left notes.md at %s", first.Token)
+	}
 
 	// A blank write naming a token the document has moved past is still the blank refusal.
-	code, refusal, raw = post(token(map[string]any{"name": "notes.md", "content": ""}, first.Token))
+	code, refusal, raw := post(token(map[string]any{"name": "notes.md", "content": ""}, first.Token))
 	blankRefused("a stale token", code, refusal, raw)
 
 	// Content over a held name naming a stale token: the 409, with the live token beside it.

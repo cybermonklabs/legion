@@ -9,8 +9,10 @@
 // bound to is answered with a certificate this proxy's own authority signs, so each request on
 // it is read: the decision and the swap are internal/cipher/proxyrules's Decide and Rewrite, which
 // a Lean model is proved against and a differential fuzz test ties to, and nothing here decides
-// or swaps anything itself. A CONNECT to any other host is a plain tunnel: the proxy opens no
-// TLS, reads nothing, and copies bytes.
+// or swaps anything itself, with one check beside them that only refuses: a name whose release
+// is Limited to a private project's Slack channels is carried only on a post to one of those
+// channels (slack.go), checked after Rewrite and outside the model. A CONNECT to any other host
+// is a plain tunnel: the proxy opens no TLS, reads nothing, and copies bytes.
 //
 // What this package adds to those two functions is everything around them: who the connection
 // is (the grant), where it may dial (address.go), what the request looks like as a
@@ -42,6 +44,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/sjawhar/envoy/internal/cipher/netaddr"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
@@ -610,6 +613,10 @@ const (
 //     anything of the store the read went to. Which errors those are is the read's own package
 //     to say (requests.IsRefusal), since a sentinel added there would be missed by a list kept
 //     here; the four named here have a code of their own, and any other is GRANT_REFUSED.
+//   - A release the broker refused because it could not learn whether Dispatch calls the
+//     session's person a restricted member (*projectaccess.MemberKindUncheckable) is 503 in its
+//     own fixed words under the code the API port answers it with: nothing is released while
+//     that cannot be told, and the call can be made again.
 //   - Everything left is a read that did not happen - a database that did not answer, most of
 //     them - and is 503 and grantUnreadable, with the error itself in the log, where it is
 //     wanted: a failed read is no proof that a grant ended, and a database failover must not
@@ -617,7 +624,17 @@ const (
 //     the human tier is a person approving each one. Nor may the answer carry the read's own
 //     words, which for a Postgres connect error are the database's user, name and address.
 func (s *Server) grantRefusal(read string, err error) (int, string, string) {
+	var uncheckable *projectaccess.MemberKindUncheckable
 	switch {
+	case errors.As(err, &uncheckable):
+		if uncheckable.CallerEnded() {
+			s.log.Info("airlock proxy: the caller ended before Dispatch said whether the person is a restricted member, so the release is refused",
+				"read", read, "person", uncheckable.Person, "error", uncheckable.Err)
+		} else {
+			s.log.Error("airlock proxy: whether Dispatch calls a person a restricted member cannot be read, so the release is refused",
+				"read", read, "person", uncheckable.Person, "error", uncheckable.Err)
+		}
+		return http.StatusServiceUnavailable, projectaccess.UncheckableCode, uncheckable.Error()
 	case errors.Is(err, requests.ErrGrantNotLive):
 		return http.StatusProxyAuthRequired, codeGrantNotLive, err.Error()
 	case errors.Is(err, requests.ErrAirlockNoNames):
