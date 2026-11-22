@@ -161,11 +161,11 @@ test("membership_held keeps a sign-in broker credential", async () => {
   // call then presents the token it got.
   const state = () =>
     `${broker.trades.length} trades, ${broker.minted.length} minted, ${jest.getTimerCount()} timers`;
-  await turnsUntil(() => jest.getTimerCount() > 0, "the retry loop's wait to be set", { state });
+  await turnsUntil("the retry loop's wait to be set", () => jest.getTimerCount() > 0, { state });
   const waited = Date.now();
   jest.advanceTimersToNextTimer();
   expect(Date.now() - waited).toBeLessThanOrEqual(RETRY_FIRST_WAIT_MS);
-  await turnsUntil(() => broker.minted.length > 0, "the release's token", { state });
+  await turnsUntil("the release's token", () => broker.minted.length > 0, { state });
   expect(broker.minted.length).toBe(1);
   // The broker has answered, and the token client reads its answer over the socket a few turns
   // later: a call before then is still told the hold (it fails fast), so the row calls again at
@@ -173,7 +173,7 @@ test("membership_held keeps a sign-in broker credential", async () => {
   let after: unknown;
   let calling: Promise<void> | undefined;
   let settled = false;
-  await turnsUntil(() => settled, "a call after the release to go through", {
+  await turnsUntil("a call after the release to go through", () => settled, {
     state,
     each: () => {
       if (calling !== undefined) return;

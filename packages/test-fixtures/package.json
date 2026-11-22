@@ -17,6 +17,10 @@
       "types": "./src/fixture-secret.ts",
       "bun": "./src/fixture-secret.ts"
     },
+    "./held-deadlines": {
+      "types": "./src/held-deadlines.ts",
+      "bun": "./src/held-deadlines.ts"
+    },
     "./host-tools": {
       "types": "./src/host-tools.ts",
       "bun": "./src/host-tools.ts"
