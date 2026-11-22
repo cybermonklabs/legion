@@ -74,9 +74,9 @@ func verificationArtifact(t *testing.T, rig *specRig, key string) string {
 	return id
 }
 
-// pinnedDigest is the digest the person's approval answering ask pinned on artifactID, read from
+// approvalDigest is the digest the person's approval answering ask pinned on artifactID, read from
 // that document's reviews.
-func pinnedDigest(t *testing.T, rig *specRig, artifactID, ask string) string {
+func approvalDigest(t *testing.T, rig *specRig, artifactID, ask string) string {
 	t.Helper()
 	response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/reviews", nil, "alice")
 	if response.Code != http.StatusOK {
@@ -172,10 +172,10 @@ func TestTheChangeRequestRestatesEachNodeAndTheDigestTheApprovalPins(t *testing.
 		t.Fatalf("the request reads the digests %q and %q, want two digests of two texts", read.Digest, read.VerificationDigest)
 	}
 	rig.approve(t, ask)
-	if pinned := pinnedDigest(t, rig, issue.PrimaryArtifactID, ask); read.Digest != pinned {
+	if pinned := approvalDigest(t, rig, issue.PrimaryArtifactID, ask); read.Digest != pinned {
 		t.Errorf("the request read the spec's digest %s before the approval, and the approval pinned %s", read.Digest, pinned)
 	}
-	if pinned := pinnedDigest(t, rig, verificationID, ask); read.VerificationDigest != pinned {
+	if pinned := approvalDigest(t, rig, verificationID, ask); read.VerificationDigest != pinned {
 		t.Errorf("the request read the Verification document's digest %s before the approval, and the approval pinned %s", read.VerificationDigest, pinned)
 	}
 
@@ -188,7 +188,7 @@ func TestTheChangeRequestRestatesEachNodeAndTheDigestTheApprovalPins(t *testing.
 				read.SpecSource, read.Proposals, read.VerificationVersion, read.VerificationDigest, read.Digest)
 		}
 		rig.approve(t, ask)
-		if pinned := pinnedDigest(t, rig, elsewhere.PrimaryArtifactID, ask); read.Digest != pinned {
+		if pinned := approvalDigest(t, rig, elsewhere.PrimaryArtifactID, ask); read.Digest != pinned {
 			t.Errorf("the request read the digest %s, and the approval pinned %s", read.Digest, pinned)
 		}
 	})
