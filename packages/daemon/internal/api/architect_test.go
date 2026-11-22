@@ -793,6 +793,7 @@ func TestArchitectureRouteRefusalsExposeTheFactResultAndGrantState(t *testing.T)
 		&intake.Refusal{Status: http.StatusConflict, Code: "PHASE_HELD", Message: "phase is held"})
 	statuses.issues["LEGION-208"] = dispatch.Issue{Key: "LEGION-208", Status: "needs_review", LastSeq: 7}
 	seedTree(t, h, "LEGION-208")
+	recordSaw(t, h, "LEGION-208", "needs_review", "needs_review", 7)
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
 	grant := architect.grant(t)
 	now = now.Add(time.Minute)
@@ -1361,7 +1362,9 @@ func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 	}
 
 	// The bound is on a block, not on the reason: one written as blocks Dispatch takes is applied
-	// whole, however long it is.
+	// whole, however long it is. The record takes the first close's done, as its fact makes the
+	// daemon's take it, so the done Dispatch shows is no move the daemon has not taken.
+	recordSaw(t, h, "LEGION-208", "done", "done", 8)
 	long := strings.TrimSuffix(strings.Repeat(strings.Repeat("y", 6665)+"\n\n", 6), "\n\n")
 	closedLong := h.request(http.MethodPost, "/legion/v1/roots/close", map[string]any{
 		"grantId": architect.grant(t), "issue": "LEGION-208", "reason": long,

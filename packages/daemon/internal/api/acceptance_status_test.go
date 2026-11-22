@@ -51,7 +51,7 @@ func (j *acceptanceJudge) CloseRootRefusal(_ context.Context, tx pgx.Tx, issue s
 
 // newAcceptanceHarness is newArchitectHarness with judge as the workflow's judgement of sign_off
 // and close_root, and written as the sign-off's seam, each nil for none. Dispatch shows the tree
-// root LEGION-208 in needs_review at sequence 7.
+// root LEGION-208 in needs_review at sequence 7, and the record has taken that event.
 func newAcceptanceHarness(t *testing.T, judge AcceptanceJudge, written func(context.Context, string)) (*harness, *factRecorder, *statusRecorder) {
 	t.Helper()
 	return newAcceptanceHarnessOn(t, judge, written, nil)
@@ -70,7 +70,19 @@ func newAcceptanceHarnessOn(t *testing.T, judge AcceptanceJudge, written func(co
 		Acceptance: judge, AfterSignOffStatusWrite: written, IssueLocks: locks,
 	}).Handler
 	seedTree(t, h, "LEGION-208", "LEGION-209")
+	recordSaw(t, h, "LEGION-208", "needs_review", "needs_review", 7)
 	return h, facts, statuses
+}
+
+// recordSaw sets what the daemon's record of key holds of Dispatch: own, the status the daemon
+// holds the issue at (record.Issue.Status), and shown at seq, the status and the sequence of the
+// newest Dispatch event the record has taken (DispatchStatus, LastDispatchSeq).
+func recordSaw(t *testing.T, h *harness, key, own, shown string, seq int64) {
+	t.Helper()
+	if _, err := h.store.Pool().Exec(t.Context(), "update issues set status = $2, dispatch_status = $3, last_dispatch_seq = $4 where key = $1",
+		key, own, shown, seq); err != nil {
+		t.Fatalf("set what the record of %s saw: %v", key, err)
+	}
 }
 
 // sign_off and close_root write their status in Dispatch, asking it to refuse the write over an
@@ -135,6 +147,8 @@ func TestAnAcceptanceIsWrittenInDispatchBeforeItsFact(t *testing.T) {
 	}
 
 	// close_root is judged as its own act and refused by Dispatch the same way, naming its act.
+	// The record takes the sign-off's retro, as the sign-off's own fact makes the daemon's take it.
+	recordSaw(t, h, "LEGION-208", "retro", "retro", 8)
 	statuses.foreignOpen = map[string][]dispatch.ForeignChild{"LEGION-208": {{Key: "OTHR-6", Project: "OTHR", Status: "backlog"}}}
 	answer := h.request(http.MethodPost, "/legion/v1/roots/close", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208", "reason": "moot"}, nil)
 	if message := refused(t, answer, http.StatusConflict, "SIGNOFF_CHILD_OPEN"); !strings.Contains(message, "OTHR-6 (OTHR, backlog)") ||
@@ -176,7 +190,8 @@ func TestAnAcceptanceWhoseFactDoesNotTakeWritesTheStatusBack(t *testing.T) {
 // newWorkflowAcceptanceHarness is newAcceptanceHarness with the workflow itself as the judgement
 // and as the handler of each fact, and LEGION-208 recorded in accepting, so a sign-off is taken or
 // refused as the daemon takes it. written is the sign-off's seam, given the harness and the
-// engine. Dispatch shows LEGION-208 in needs_review at sequence 7.
+// engine. Dispatch shows LEGION-208 in needs_review at sequence 7, and the record has taken that
+// event.
 func newWorkflowAcceptanceHarness(t *testing.T, written func(ctx context.Context, h *harness, engine *workflow.Engine)) (*harness, *statusRecorder) {
 	t.Helper()
 	h := newHarness(t)
@@ -184,7 +199,8 @@ func newWorkflowAcceptanceHarness(t *testing.T, written func(ctx context.Context
 	engine := workflow.New(records, workflow.Config{Project: testDispatchProject}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	statuses := &statusRecorder{issues: map[string]dispatch.Issue{"LEGION-208": {Key: "LEGION-208", Status: "needs_review", LastSeq: 7}}}
 	seedTree(t, h, "LEGION-208")
-	if _, err := h.store.Pool().Exec(t.Context(), "update issues set phase = $1, status = 'needs_review' where key = 'LEGION-208'", string(phase.Accepting)); err != nil {
+	if _, err := h.store.Pool().Exec(t.Context(), "update issues set phase = $1, status = 'needs_review', dispatch_status = 'needs_review', last_dispatch_seq = 7 where key = 'LEGION-208'",
+		string(phase.Accepting)); err != nil {
 		t.Fatalf("put LEGION-208 in accepting: %v", err)
 	}
 	h.handler = NewServer("127.0.0.1", 8437, Options{
@@ -313,23 +329,47 @@ func TestARefusedSignOffWritesBackOverAnEventThatKeptItsStatus(t *testing.T) {
 	}
 }
 
-// A sign-off whose caller goes away after its retro write still writes the status back once its
-// fact does not take: the write back repairs what the daemon itself wrote in Dispatch, and the
-// caller leaving does not make that write any less the daemon's.
-func TestARefusedSignOffWritesBackAfterItsCallerWentAway(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	h, _, statuses := newAcceptanceHarness(t, nil, func(context.Context, string) { cancel() })
-	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
-	body, err := json.Marshal(map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	answer := httptest.NewRecorder()
-	h.handler.ServeHTTP(answer, httptest.NewRequest(http.MethodPost, "/legion/v1/signoff", bytes.NewReader(body)).WithContext(ctx))
-	refused(t, answer, http.StatusInternalServerError, "FACT_APPLY_FAILED")
-	if got := statuses.issues["LEGION-208"].Status; got != "needs_review" {
-		t.Fatalf("Dispatch shows LEGION-208 %s once its caller went away, want needs_review written back", got)
+// A sign-off whose caller goes away after its retro write finishes the act all the same: the write
+// landed in Dispatch, so a caller leaving must not undo it. Its fact is applied, and Dispatch keeps
+// the retro the daemon then records; a fact the workflow refuses still writes the status back,
+// since that write back repairs what the daemon itself wrote in Dispatch.
+func TestASignOffWhoseCallerWentAwayAfterItsWriteFinishesTheAct(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		refusal *intake.Refusal
+		code    int
+		shows   string
+		applied int
+	}{
+		{name: "the fact is taken", code: http.StatusOK, shows: "retro", applied: 1},
+		{name: "the fact is refused", refusal: &intake.Refusal{Status: http.StatusConflict, Code: "SIGNOFF_CHILD_IN_WORKFLOW", Message: "LEGION-209 is still in the workflow"},
+			code: http.StatusConflict, shows: "needs_review", applied: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			h, facts, statuses := newAcceptanceHarness(t, nil, func(context.Context, string) { cancel() })
+			facts.refusal = tc.refusal
+			architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+			body, err := json.Marshal(map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			answer := httptest.NewRecorder()
+			h.handler.ServeHTTP(answer, httptest.NewRequest(http.MethodPost, "/legion/v1/signoff", bytes.NewReader(body)).WithContext(ctx))
+			signOffs := 0
+			for _, fact := range facts.recorded() {
+				if _, ok := fact.(intake.SignOff); ok {
+					signOffs++
+				}
+			}
+			if answer.Code != tc.code || signOffs != tc.applied {
+				t.Fatalf("the sign-off whose caller went away = %d %s with facts %#v, want %d and the sign-off applied", answer.Code, answer.Body, facts.recorded(), tc.code)
+			}
+			if got := statuses.issues["LEGION-208"].Status; got != tc.shows {
+				t.Fatalf("Dispatch shows LEGION-208 %s once its caller went away, want %s", got, tc.shows)
+			}
+		})
 	}
 }
 
@@ -364,6 +404,12 @@ func TestASecondAcceptanceOfAnIssueWaitsForTheFirstToSettle(t *testing.T) {
 		case issue := <-waiting:
 			if issue != "LEGION-208" {
 				t.Errorf("the second sign-off waited on the lock of %s, want LEGION-208", issue)
+			}
+			// The first's fact has the daemon take its retro, which the stand-in handler does not
+			// record: the second then reads a retro the record holds, not a move it has not taken.
+			if _, err := h.store.Pool().Exec(context.Background(),
+				"update issues set status = 'retro', dispatch_status = 'retro', last_dispatch_seq = 8 where key = 'LEGION-208'"); err != nil {
+				t.Errorf("record LEGION-208's retro: %v", err)
 			}
 		case <-time.After(time.Minute):
 			t.Error("the second sign-off neither wrote, ended nor waited on the issue's lock within a minute")
@@ -479,5 +525,91 @@ func TestAnAcceptanceWritesAtANewReadOverAnEventThatKeptTheStatus(t *testing.T) 
 	}
 	if got := statuses.issues["LEGION-208"]; got.Status != "retro" || got.LastSeq != 9 {
 		t.Fatalf("Dispatch shows LEGION-208 %s at sequence %d, want retro written at 9, past the message at 8", got.Status, got.LastSeq)
+	}
+}
+
+// A person moved the issue in Dispatch before the route read it, and the daemon has not taken that
+// move yet: Dispatch shows, past the newest event the record took, a status that is neither the one
+// that event showed nor the one the daemon holds the issue at. The route writes nothing over the
+// move and records nothing, and answers 409 ISSUE_CHANGED naming the status Dispatch shows. Written
+// over, a person's close would be reopened as retro, and its event, once taken, would take the
+// record out of the workflow while Dispatch kept the retro, which no repair puts back. A status the
+// daemon itself holds the issue at, which Dispatch shows before its echo comes back, and an event
+// that kept the status, a message, are no such move: the act is taken over each.
+func TestAnAcceptanceWritesNothingOverAPersonsMoveTheDaemonHasNotTaken(t *testing.T) {
+	closeBody := map[string]any{"reason": "The human decided no change is needed."}
+	for _, tc := range []struct {
+		name, route, writes string
+		body                map[string]any
+		// own, saw and sawSeq are what the record holds (recordSaw); shows and at are what
+		// Dispatch shows when the route reads it.
+		own, saw, shows string
+		sawSeq, at      int64
+		moved           bool
+	}{
+		{name: "sign_off over a person's close", route: "/legion/v1/signoff", writes: "retro",
+			own: "needs_review", saw: "needs_review", sawSeq: 7, shows: "done", at: 8, moved: true},
+		{name: "sign_off over a person's move to backlog", route: "/legion/v1/signoff", writes: "retro",
+			own: "needs_review", saw: "needs_review", sawSeq: 7, shows: "backlog", at: 8, moved: true},
+		{name: "close_root over a person's move to icebox", route: "/legion/v1/roots/close", writes: "done", body: closeBody,
+			own: "todo", saw: "todo", sawSeq: 7, shows: "icebox", at: 8, moved: true},
+		{name: "sign_off over the status the daemon holds, before its echo", route: "/legion/v1/signoff", writes: "retro",
+			own: "needs_review", saw: "testing", sawSeq: 7, shows: "needs_review", at: 8},
+		{name: "close_root after a message the record has not taken", route: "/legion/v1/roots/close", writes: "done", body: closeBody,
+			own: "todo", saw: "todo", sawSeq: 7, shows: "todo", at: 9},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, facts, statuses := newAcceptanceHarness(t, &acceptanceJudge{}, nil)
+			recordSaw(t, h, "LEGION-208", tc.own, tc.saw, tc.sawSeq)
+			statuses.issues["LEGION-208"] = dispatch.Issue{Key: "LEGION-208", Status: tc.shows, LastSeq: tc.at}
+			architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+			body := map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}
+			for key, value := range tc.body {
+				body[key] = value
+			}
+			answer := h.request(http.MethodPost, tc.route, body, nil)
+			if !tc.moved {
+				if answer.Code != http.StatusOK || statuses.issues["LEGION-208"].Status != tc.writes || len(facts.recorded()) != 1 {
+					t.Fatalf("%s = %d %s, Dispatch %s, facts %#v; want 200, %s and the act's fact", tc.route, answer.Code, answer.Body,
+						statuses.issues["LEGION-208"].Status, facts.recorded(), tc.writes)
+				}
+				return
+			}
+			if len(statuses.writes) != 0 || statuses.issues["LEGION-208"].Status != tc.shows {
+				t.Fatalf("%s wrote %+v and Dispatch shows %s, want nothing written over the person's %s",
+					tc.route, statuses.writes, statuses.issues["LEGION-208"].Status, tc.shows)
+			}
+			if message := refused(t, answer, http.StatusConflict, "ISSUE_CHANGED"); !strings.Contains(message, tc.shows) || !strings.Contains(message, tc.saw) {
+				t.Fatalf("the refusal = %q, want it naming the %s Dispatch shows and the %s the daemon last took", message, tc.shows, tc.saw)
+			}
+			if got := facts.recorded(); len(got) != 0 {
+				t.Fatalf("facts = %#v, want none applied", got)
+			}
+		})
+	}
+}
+
+// Dispatch's refusal of the write that lacks Dispatch's own body, a proxy's 5xx in front of it,
+// names no code (dispatch.Error.Code is empty). The route still answers a code a caller can branch
+// on, DISPATCH_FAILED, and records nothing; a refusal Dispatch coded keeps its code.
+func TestAnAcceptanceWriteRefusedWithNoCodeAnswersDispatchFailed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  *dispatch.Error
+		code string
+	}{
+		{name: "a proxy's 5xx with no body", err: &dispatch.Error{Status: http.StatusBadGateway, Message: "502 Bad Gateway"}, code: "DISPATCH_FAILED"},
+		{name: "a coded refusal", err: &dispatch.Error{Status: http.StatusConflict, Code: "ISSUE_CLOSED", Message: "issue is closed"}, code: "ISSUE_CLOSED"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, facts, statuses := newAcceptanceHarness(t, &acceptanceJudge{}, nil)
+			statuses.err = tc.err
+			architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+			refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}, nil),
+				http.StatusBadGateway, tc.code)
+			if got := facts.recorded(); len(got) != 0 {
+				t.Fatalf("facts = %#v, want none applied", got)
+			}
+		})
 	}
 }

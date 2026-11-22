@@ -1491,36 +1491,21 @@ func TestARepairTickDuringASignOffWritesNothingOverItsAcceptance(t *testing.T) {
 	legion.writeDocument(root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(parent.Key, "o1")}}))
 	legion.mustLinkAcross(root.Key, "")
 
+	// The act runs on the sign-off route's goroutine (afterSignOffStatusWrite), where t.Fatalf
+	// would end that goroutine and not the test (the file's linkAcross rule), so it fails nothing
+	// itself: it answers what went wrong, which the test reports on its own goroutine.
 	written.arm(parent.Key, func() seamAnswer {
-		testwait.Eventually(t, "OTHR's record of "+parent.Key+" to hold its sign-off's retro write while it stands in accepting", func() bool {
-			shown := other.record(parent.Key)
-			return shown.Phase == phase.Accepting && shown.DispatchStatus == "retro"
-		})
-		var before int64
-		if err := other.pool.QueryRow(t.Context(), `select coalesce(max(id), 0) from outbox`).Scan(&before); err != nil {
-			t.Errorf("read OTHR's last outbox row before the tick: %v", err)
-			return seamAnswer{}
-		}
-		other.controllerTick(ticks)
-		var over int
-		if err := other.pool.QueryRow(t.Context(), `select count(*) from outbox where id > $1 and issue = $2 and kind = $3 and payload->>'status' <> 'retro'`,
-			before, parent.Key, string(record.OutboxKindDispatchStatus)).Scan(&over); err != nil {
-			t.Errorf("count the status rows of %s the tick queued: %v", parent.Key, err)
-			return seamAnswer{}
-		}
-		if over != 0 {
-			t.Errorf("the controller tick queued %d status writes of %s off its sign-off's retro before the sign-off's fact", over, parent.Key)
-		}
-		if shown := other.issue(parent.Key).Status; shown != "retro" {
-			t.Errorf("Dispatch shows %s %s after the controller tick and before the sign-off's fact, want its sign-off's retro", parent.Key, shown)
-		}
-		return seamAnswer{}
+		return seamAnswer{err: repairTickInsideSignOff(other, ticks, parent.Key)}
 	})
 	if status, refusal := other.architectCall("/legion/v1/signoff", map[string]any{"grantId": parentGrant(), "issue": parent.Key}); status != http.StatusOK {
 		t.Fatalf("the sign-off of %s = %d %+v, want 200", parent.Key, status, refusal)
 	}
-	if ran, _ := written.result(); !ran {
+	ran, inside := written.result()
+	if !ran {
 		t.Fatalf("the seam after %s's retro write never ran", parent.Key)
+	}
+	if inside.err != nil {
+		t.Fatal(inside.err)
 	}
 	testwait.Eventually(t, "OTHR's daemon to record "+parent.Key+" in retro", func() bool {
 		return other.record(parent.Key).Phase == phase.Retro
@@ -1557,6 +1542,81 @@ func TestARepairTickDuringASignOffWritesNothingOverItsAcceptance(t *testing.T) {
 		t.Fatalf("the refused registration left %d gate facts and the gate rows %+v on %s, want none", facts, gates, root.Key)
 	}
 	t.Logf("after a controller tick inside %s's sign-off, %s's registration was refused %s: %s", parent.Key, root.Key, failure.Code, failure.Error)
+}
+
+// repairTickInsideSignOff is TestARepairTickDuringASignOffWritesNothingOverItsAcceptance's act at
+// the seam after key's sign-off wrote retro and before its fact: it waits for r's record of key to
+// hold that write's event while key stands in accepting, runs one controller tick through ticks
+// and waits until the daemon applied it, and answers an error naming what failed where the tick
+// queued a status write of key off retro or Dispatch no longer shows retro. It reads and waits
+// with no testing.T, since it runs on the route's goroutine.
+func repairTickInsideSignOff(r *personHandoverRig, ticks chan<- time.Time, key string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	var readErr error
+	held := testwait.Holds(time.Minute, testwait.Poll, func() bool {
+		var shown *record.Issue
+		readErr = pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+			var err error
+			shown, err = record.NewStore().Issue(ctx, tx, key)
+			return err
+		})
+		return readErr == nil && shown != nil && shown.Phase == phase.Accepting && shown.DispatchStatus == "retro"
+	})
+	if !held {
+		return fmt.Errorf("OTHR's record of %s never held its sign-off's retro write while it stood in accepting (last read error: %v)", key, readErr)
+	}
+	var before int64
+	if err := r.pool.QueryRow(ctx, `select coalesce(max(id), 0) from outbox`).Scan(&before); err != nil {
+		return fmt.Errorf("read OTHR's last outbox row before the tick: %w", err)
+	}
+	ticked := func() (int, error) {
+		var n int
+		err := r.pool.QueryRow(ctx, `select count(*) from processed_events where source = 'controller'`).Scan(&n)
+		return n, err
+	}
+	applied, err := ticked()
+	if err != nil {
+		return fmt.Errorf("count the controller ticks before the tick: %w", err)
+	}
+	select {
+	case ticks <- time.Now():
+	case <-ctx.Done():
+		return fmt.Errorf("hand OTHR's daemon the controller tick: %w", ctx.Err())
+	}
+	if !testwait.Holds(time.Minute, testwait.Poll, func() bool {
+		now, err := ticked()
+		readErr = err
+		return err == nil && now > applied
+	}) {
+		return fmt.Errorf("OTHR's daemon never applied the controller tick (last read error: %v)", readErr)
+	}
+	var over int
+	if err := r.pool.QueryRow(ctx, `select count(*) from outbox where id > $1 and issue = $2 and kind = $3 and payload->>'status' <> 'retro'`,
+		before, key, string(record.OutboxKindDispatchStatus)).Scan(&over); err != nil {
+		return fmt.Errorf("count the status rows of %s the tick queued: %w", key, err)
+	}
+	if over != 0 {
+		return fmt.Errorf("the controller tick queued %d status writes of %s off its sign-off's retro before the sign-off's fact", over, key)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, r.baseURL+"/api/v1/issues/"+key, nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("X-Dispatch-User", "smoke")
+	response, err := scratchDispatchClient.Do(request)
+	if err != nil {
+		return fmt.Errorf("read %s from Dispatch after the tick: %w", key, err)
+	}
+	defer response.Body.Close()
+	var shown scratchIssue
+	if err := json.NewDecoder(response.Body).Decode(&shown); err != nil || response.StatusCode != http.StatusOK {
+		return fmt.Errorf("read %s from Dispatch after the tick = %s: %v", key, response.Status, err)
+	}
+	if shown.Status != "retro" {
+		return fmt.Errorf("Dispatch shows %s %s after the controller tick and before the sign-off's fact, want its sign-off's retro", key, shown.Status)
+	}
+	return nil
 }
 
 // c5's second half (R1 across projects): sign_off and close_root refuse an open child of another
@@ -1628,6 +1688,64 @@ func TestSignOffAndCloseRootRefuseAChildOfAnotherProjectFiledAfterTheTick(t *tes
 	}
 	if shown := r.issue(admitted.Key).Status; shown != "in_progress" {
 		t.Fatalf("Dispatch shows %s %s after its refused close, want in_progress", admitted.Key, shown)
+	}
+	t.Logf("the close of %s was refused: %s", admitted.Key, refusal.Error)
+}
+
+// The real daemon over a real Dispatch: a person closes an issue in accepting, and parks an
+// admitted root in icebox, and the daemon's consumer has not applied either event (it drops each,
+// so the record still holds what it held). The architect's sign_off and close_root then find, in
+// Dispatch, a status past the newest event the record took, which is no status the daemon holds
+// or last saw: each answers 409 ISSUE_CHANGED naming it and writes nothing. Written over, the
+// person's done would be reopened as retro, and the close's event, once applied, would take the
+// record out of the workflow while Dispatch kept the retro.
+func TestAnAcceptanceWritesNothingOverAPersonsMoveTheConsumerHasNotApplied(t *testing.T) {
+	drop := &consumerDrop{}
+	natsURL := testnats.URL(t)
+	r := newProjectRigOn(t, startScratchDispatchOn(t, scratchDispatchOptions{natsURL: natsURL}), natsURL, "LEGION", "acme/widgets", 2)
+	r.tune = func(o *overrides) { o.dropConsumedEvent = drop.drops }
+	r.boot()
+	labelled := map[string]any{"labels": []string{"legion"}}
+	moved := func(key, status string) {
+		t.Helper()
+		before := drop.count()
+		drop.arm(func(fact intake.Fact) bool {
+			issue, ok := fact.(intake.DispatchIssue)
+			return ok && issue.Key == key && issue.Status == status
+		})
+		r.setStatus(key, status)
+		testwait.Eventually(t, "the consumer to drop the person's "+status+" of "+key, func() bool { return drop.count() > before })
+	}
+
+	accepting := r.create(asSession, "Ledger export rewrite", labelled)
+	acceptingGrant := r.admit(accepting.Key)
+	r.setStatus(accepting.Key, "needs_review")
+	r.moveRecord(accepting.Key, phase.Accepting)
+	moved(accepting.Key, "done")
+	status, refusal := r.architectCall("/legion/v1/signoff", map[string]any{"grantId": acceptingGrant(), "issue": accepting.Key})
+	if status != http.StatusConflict || refusal.Code != "ISSUE_CHANGED" || !strings.Contains(refusal.Error, accepting.Key+" done") {
+		t.Fatalf("the sign-off of %s over the person's close = %d %+v, want 409 ISSUE_CHANGED naming the done", accepting.Key, status, refusal)
+	}
+	if shown := r.issue(accepting.Key).Status; shown != "done" {
+		t.Fatalf("Dispatch shows %s %s after the sign-off, want the person's done", accepting.Key, shown)
+	}
+	if standing := r.record(accepting.Key).Phase; standing != phase.Accepting {
+		t.Fatalf("%s stands at %s after its refused sign-off, want accepting", accepting.Key, standing)
+	}
+	t.Logf("the sign-off of %s was refused: %s", accepting.Key, refusal.Error)
+
+	admitted := r.create(asSession, "Harbor crane scheduler", labelled)
+	admittedGrant := r.admit(admitted.Key)
+	r.dispatchRowsDone(admitted.Key)
+	r.quiet(admitted.Key)
+	moved(admitted.Key, "icebox")
+	status, refusal = r.architectCall("/legion/v1/roots/close", map[string]any{"grantId": admittedGrant(), "issue": admitted.Key,
+		"reason": "The human decided no change is needed."})
+	if status != http.StatusConflict || refusal.Code != "ISSUE_CHANGED" || !strings.Contains(refusal.Error, admitted.Key+" icebox") {
+		t.Fatalf("the close of %s over the person's icebox = %d %+v, want 409 ISSUE_CHANGED naming the icebox", admitted.Key, status, refusal)
+	}
+	if shown := r.issue(admitted.Key).Status; shown != "icebox" {
+		t.Fatalf("Dispatch shows %s %s after the close, want the person's icebox", admitted.Key, shown)
 	}
 	t.Logf("the close of %s was refused: %s", admitted.Key, refusal.Error)
 }
