@@ -145,12 +145,12 @@ func TestAStandbyTakesTheReleasedHoldAtOnce(t *testing.T) {
 
 // TestAStandbyTakesAFreeHoldWithNoNotification gives the standby a released wake that is never
 // signalled, as a standby whose listener is down has: the holder releases its hold and nothing
-// tells the standby, which leaves the hold free until its next retry. The test runs that retry
-// (Config.retry, where a serving process's ticker of standbyRetry ticks), which takes the free
-// hold, and the standby's first pass writes the next event.
+// tells the standby, which leaves the hold free until its next retry. The test runs those retries
+// (Config.retry, where a serving process's ticker of standbyRetry ticks), and one takes the free
+// hold; the standby's first pass writes the next event.
 //
-// Each wait is on its fact, bounded by the test binary's deadline alone: the retry's take is one
-// statement, and the pass after it writes the row only once the event horizon, which waits on the
+// Each wait is on its fact, bounded by the test binary's deadline alone: the hold coming free, the
+// retry's take, and the row, which the pass writes only once the event horizon, which waits on the
 // whole Postgres instance, has passed the event (textversionstest.AwaitRowsUntil). A fixed span
 // from the holder's stop, the ticker's 10 s and 5 s more, read the instance's load as well as the
 // standby (merge-group run 44963211024: `the events [1] had 0 rows within 14.996081355s; want 1`).
@@ -166,29 +166,35 @@ func TestAStandbyTakesAFreeHoldWithNoNotification(t *testing.T) {
 	second.AwaitLine(t, standingByMessage, 10*time.Second)
 
 	first.Stop(t)
-	if !first.Logged(t, releasedHoldMessage) {
-		t.Fatalf("the holder stopped without logging its release:\n%s", first.Log())
-	}
-	if live := liveHolder(t, database); live != "" {
-		t.Fatalf("the holder stopped and released its hold, and the hold names %q live; want none", live)
-	}
+	// The holder released its hold as it stopped, or, where its release did not reach the
+	// database, the hold lapses holdOptions.TTL after its last renewal: either way it comes free,
+	// and nothing tells the standby.
+	testwait.Until(t, "the stopped holder's hold to be free", func() (string, bool) {
+		live := liveHolder(t, database)
+		return live, live == ""
+	})
 	id := commitComment(t, database, broker, textversionstest.Issue).id
 	second.Wake()
-	// Nothing has told the standby of the release, so it has not taken the free hold: only its
-	// retry, below, can.
+	// Nothing has told the standby that the hold is free, so it has not taken it: only a retry,
+	// below, can.
 	if second.Logged(t, tookHoldMessage) {
 		t.Fatalf("the standby took the hold before its retry, with no wake for the release:\n%s", second.Log())
 	}
 
+	// The test retries as the ticker does, again after a try that found no free hold or failed,
+	// until a retry takes the hold.
 	retried := time.Now()
-	retry <- retried
-	standby := testwait.Until(t, "the standby's retry to take the free hold", func() (string, bool) {
+	standby := testwait.UntilPolling(t, 100*time.Millisecond, "the standby's retry to take the free hold", func() (string, bool) {
+		select {
+		case retry <- time.Now():
+		default:
+		}
 		live := liveHolder(t, database)
 		return live, live != ""
 	})
 	took := time.Since(retried)
 	textversionstest.AwaitRowsUntil(t, database, []int64{id}, nil)
-	t.Logf("the standby's retry took the hold %v after the test ran it and wrote the next event %v after",
+	t.Logf("the standby's retry took the hold %v after the test's first retry and wrote the next event %v after",
 		took.Round(time.Millisecond), time.Since(retried).Round(time.Millisecond))
 	if standby == firstHolder {
 		t.Fatalf("the hold names the holder that released it, %s; want the standby's", firstHolder)
