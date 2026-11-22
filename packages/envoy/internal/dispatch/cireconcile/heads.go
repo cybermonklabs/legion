@@ -499,8 +499,8 @@ func (r *Reconciler) recordListing(ctx context.Context, writer Writer, head pull
 			// check its record holds is queued or running, and nothing ever takes a check out of
 			// a record, so one run left queued at that commit -- an attempt GitHub abandoned, a
 			// job nobody ran -- would stop ci-ok ever reaching the daemon for that head, which is
-			// the failure this pass exists to mend, and a suite that is not completed holds the
-			// head exactly as a queued run does (cistore's settlementReady). The listener records
+			// the failure this pass exists to mend, and a suite that is not completed can hold
+			// the head as a queued run does (cistore's suiteHolds). The listener records
 			// a running run because the event completing it follows; a pass reading a listing has
 			// no such promise.
 			if observation.Status != "completed" {

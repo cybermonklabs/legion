@@ -22,24 +22,27 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 )
 
-// TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd drives the real broker (its handlers on a
-// real Postgres, through ciphertest's rig), a real helper and this binary, with the broker's own
-// GitHub App minter aimed at a stub GitHub installed on acme and ada, which answers a token
-// request as GitHub does: the permissions and repositories its body names, or all of them. A
-// session key the machine enrolled reads an agent-tier github-app secret: narrowed to ada's proofs
-// repository, read-only, the command gets ada's token alone, minted with that access_tokens body;
-// with no flag, the same grant gives every listed owner's owner-wide token, each minted with no
-// body; narrowed to an account github-owners does not list, nothing runs, the broker answers
-// NARROWING_OWNER_NOT_LISTED and GitHub is asked for no token; narrowed to a repository GitHub
-// refuses with 422, nothing runs and the broker answers NARROWING_REFUSED naming it; and with
-// --github-token beside a narrowing, the child's own NAME holds that installation's token alone,
-// not the JSON object of installations, minted with the access_tokens body of that narrowing.
-func TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd(t *testing.T) {
+// TestTheExecFormReleasesAGitHubAppProfileAndTheBrokerRefusesItsNarrowingFlags drives the real
+// broker (its handlers on a real Postgres, through ciphertest's rig), a real helper and this
+// binary, with the broker's own GitHub App minter aimed at a stub GitHub installed on acme and
+// ada, which answers a token request as GitHub does: the permissions and repositories its body
+// names. Every github-app secret the broker serves is a profile's, so the agent-tier github-app
+// secret APP_KEY is served by the profile of its own name (policytest.AppProfile), and
+// APP_KEY_PROOFS and APP_KEY_MISSING are profiles of APP_KEY on one repository of ada's. A session
+// key the machine enrolled reads them: APP_KEY gives every account of its profile its own token,
+// each minted with the profile's permissions; APP_KEY_PROOFS gives ada's token alone, minted with
+// the access_tokens body of that profile; and APP_KEY_MISSING, on a repository GitHub refuses with
+// 422, runs nothing, the broker answering PROFILE_MINT_REFUSED naming it. The exec form's
+// --github-owner, --github-repo, --github-read-only and --github-token send the github_app field
+// the broker no longer takes, so each run that gives them, an account the profile does not name
+// and --github-token among them, exits 1 on the broker's 400 GITHUB_APP_FIELD_REMOVED, which names
+// what replaces them; nothing runs and GitHub is asked for no token.
+func TestTheExecFormReleasesAGitHubAppProfileAndTheBrokerRefusesItsNarrowingFlags(t *testing.T) {
 	type tokenRequest struct{ installation, body string }
 	var mu sync.Mutex
 	var asked []tokenRequest
 	// held is what each installation's account approved for the App, as GitHub's listing names it:
-	// every permission a read-only token asks for, most of them at write.
+	// every permission the profiles below ask for, most of them at write.
 	held := map[string]string{"actions": "write", "checks": "read", "contents": "write", "metadata": "read", "pull_requests": "write", "statuses": "write"}
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -54,29 +57,23 @@ func TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd(t *testing.T) {
 			mu.Lock()
 			asked = append(asked, tokenRequest{id, string(body)})
 			mu.Unlock()
-			var narrowing struct {
+			var scope struct {
 				Repositories []string          `json:"repositories"`
 				Permissions  map[string]string `json:"permissions"`
 			}
-			_ = json.Unmarshal(body, &narrowing)
-			if slices.Contains(narrowing.Repositories, "missing") {
+			_ = json.Unmarshal(body, &scope)
+			if slices.Contains(scope.Repositories, "missing") {
 				w.WriteHeader(http.StatusUnprocessableEntity)
 				_ = json.NewEncoder(w).Encode(map[string]string{"message": "There is at least one repository that does not exist or is not accessible to the parent installation."})
 				return
 			}
 			answer := map[string]any{
 				"token": "ghs-" + id, "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
-				"permissions": map[string]string{"contents": "write", "metadata": "read"}, "repository_selection": "all",
+				"permissions": scope.Permissions, "repository_selection": "all",
 			}
-			if len(body) > 0 {
-				answer["token"] = "ghs-" + id + "-narrowed"
-			}
-			if narrowing.Permissions != nil {
-				answer["permissions"] = narrowing.Permissions
-			}
-			if len(narrowing.Repositories) > 0 {
+			if len(scope.Repositories) > 0 {
 				var repositories []map[string]string
-				for _, name := range narrowing.Repositories {
+				for _, name := range scope.Repositories {
 					repositories = append(repositories, map[string]string{"name": name})
 				}
 				answer["repository_selection"], answer["repositories"] = "selected", repositories
@@ -96,7 +93,12 @@ func TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd(t *testing.T) {
 		return got
 	}
 
-	rig := ciphertest.NewRig(t, ciphertest.WithMinters(map[string]requests.Minter{
+	profiles := policytest.ProfilesFile(
+		policytest.AppProfile("APP_KEY"),
+		`{"name": "APP_KEY_PROOFS", "source": "APP_KEY", "github": {"accounts": ["ada"], "repositories": ["ada/proofs"], "permissions": {"contents": "read", "metadata": "read"}}}`,
+		`{"name": "APP_KEY_MISSING", "source": "APP_KEY", "github": {"accounts": ["ada"], "repositories": ["ada/missing"], "permissions": {"contents": "read", "metadata": "read"}}}`,
+	)
+	rig := ciphertest.NewRig(t, ciphertest.WithProfiles(profiles), ciphertest.WithMinters(map[string]requests.Minter{
 		policy.TypeGitHubApp: secrets.GitHubApp{Base: github.URL, HTTP: github.Client()}.Mint,
 	}))
 	_, appKey := githubapptest.Key(t)
@@ -127,12 +129,16 @@ func TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd(t *testing.T) {
 		t.Fatalf("enroll-session-key: %+v %v", enrolled, err)
 	}
 	keyDir := writeKeyDir(t, boxKey, enrolled.EnrollmentID)
-	release := func(flags ...string) (map[string]mintedRelease, string, int) {
+	run := func(name string, flags ...string) (stdout, stderr string, exit int) {
 		t.Helper()
-		args := append(append([]string{"APP_KEY", "--reason", "narrowing end to end"}, flags...), "--", "sh", "-c", `printf %s "$APP_KEY"`)
-		stdout, stderr, exit := runAgentSecrets(t, binary, rig.URL, keyDir, nil, args...)
+		args := append(append([]string{name, "--reason", "profile end to end"}, flags...), "--", "sh", "-c", `printf %s "$`+name+`"`)
+		return runAgentSecrets(t, binary, rig.URL, keyDir, nil, args...)
+	}
+	release := func(name string) map[string]mintedRelease {
+		t.Helper()
+		stdout, stderr, exit := run(name)
 		if exit != 0 {
-			return nil, stderr, exit
+			t.Fatalf("release of %s: exit %d, stderr %q; want exit 0", name, exit, stderr)
 		}
 		var got struct {
 			Installations map[string]mintedRelease `json:"installations"`
@@ -140,72 +146,65 @@ func TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd(t *testing.T) {
 		if err := json.Unmarshal([]byte(stdout), &got); err != nil {
 			t.Fatalf("the command printed %q, not the release JSON: %v", stdout, err)
 		}
-		return got.Installations, stderr, exit
+		return got.Installations
+	}
+	body := func(request tokenRequest) map[string]any {
+		t.Helper()
+		var got map[string]any
+		if err := json.Unmarshal([]byte(request.body), &got); err != nil {
+			t.Fatalf("the access_tokens body %q: %v", request.body, err)
+		}
+		return got
 	}
 
-	installations, stderr, exit := release("--github-owner", "Ada", "--github-repo", "proofs", "--github-read-only")
-	if exit != 0 || len(installations) != 1 || installations["ada"].Token != "ghs-8-narrowed" || installations["ada"].InstallationID != 8 {
-		t.Fatalf("narrowed release: exit %d, installations %+v, stderr %q; want ada's narrowed token alone", exit, installations, stderr)
+	// Each narrowing flag: the broker refuses the request that carries it before anything is
+	// granted, and names --target, which replaces it.
+	for _, flags := range [][]string{
+		{"--github-owner", "Ada", "--github-repo", "proofs", "--github-read-only"},
+		{"--github-owner", "outsider", "--github-read-only"},
+		{"--github-owner", "Ada", "--github-repo", "proofs", "--github-token"},
+	} {
+		stdout, stderr, exit := run("APP_KEY", flags...)
+		if exit != 1 || stdout != "" || !strings.Contains(stderr, "GITHUB_APP_FIELD_REMOVED") || !strings.Contains(stderr, "--target") {
+			t.Fatalf("%v: exit %d, stdout %q, stderr %q; want exit 1, nothing run, and GITHUB_APP_FIELD_REMOVED naming --target", flags, exit, stdout, stderr)
+		}
+		if tokens := take(); len(tokens) != 0 {
+			t.Fatalf("%v: GitHub was asked for tokens %+v, want none", flags, tokens)
+		}
+	}
+
+	installations := release("APP_KEY")
+	if len(installations) != 2 || installations["acme"].Token != "ghs-7" || installations["ada"].Token != "ghs-8" {
+		t.Fatalf("APP_KEY's release: installations %+v; want acme's and ada's tokens", installations)
 	}
 	tokens := take()
-	if len(tokens) != 1 || tokens[0].installation != "8" {
-		t.Fatalf("GitHub was asked for tokens %+v, want installation 8's alone", tokens)
+	if len(tokens) != 2 {
+		t.Fatalf("GitHub was asked for tokens %+v, want acme's and ada's", tokens)
 	}
-	var body map[string]any
-	if err := json.Unmarshal([]byte(tokens[0].body), &body); err != nil {
-		t.Fatalf("the access_tokens body %q: %v", tokens[0].body, err)
-	}
-	if want := map[string]any{"repositories": []any{"proofs"}, "permissions": map[string]any{
-		"actions": "read", "checks": "read", "contents": "read", "metadata": "read", "pull_requests": "read", "statuses": "read",
-	}}; !reflect.DeepEqual(body, want) {
-		t.Fatalf("the access_tokens body = %v, want %v", body, want)
+	for _, token := range tokens {
+		if got, want := body(token), map[string]any{"permissions": map[string]any{"metadata": "read"}}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("installation %s's access_tokens body = %v, want the profile's permissions %v", token.installation, got, want)
+		}
 	}
 
-	installations, stderr, exit = release()
-	if exit != 0 || len(installations) != 2 || installations["acme"].Token != "ghs-7" || installations["ada"].Token != "ghs-8" {
-		t.Fatalf("owner-wide release of the same grant: exit %d, installations %+v, stderr %q; want acme's and ada's owner-wide tokens", exit, installations, stderr)
-	}
-	if tokens := take(); len(tokens) != 2 || tokens[0].body != "" || tokens[1].body != "" {
-		t.Fatalf("GitHub was asked for tokens %+v, want two with no body", tokens)
-	}
-
-	_, stderr, exit = release("--github-owner", "outsider", "--github-read-only")
-	if exit != 1 || !strings.Contains(stderr, "NARROWING_OWNER_NOT_LISTED") || !strings.Contains(stderr, "github-owners") {
-		t.Fatalf("release narrowed to an unlisted owner: exit %d, stderr %q; want exit 1 and NARROWING_OWNER_NOT_LISTED naming github-owners", exit, stderr)
-	}
-	if tokens := take(); len(tokens) != 0 {
-		t.Fatalf("GitHub was asked for tokens %+v for an unlisted owner, want none", tokens)
-	}
-
-	_, stderr, exit = release("--github-owner", "ada", "--github-repo", "missing")
-	if exit != 1 || !strings.Contains(stderr, "NARROWING_REFUSED") || !strings.Contains(stderr, "(missing)") || strings.Contains(stderr, "MINT_FAILED") {
-		t.Fatalf("release narrowed to a repository GitHub refuses: exit %d, stderr %q; want exit 1 and NARROWING_REFUSED naming the repository", exit, stderr)
-	}
-	if tokens := take(); len(tokens) != 1 || tokens[0].installation != "8" {
-		t.Fatalf("GitHub was asked for tokens %+v, want installation 8's alone", tokens)
-	}
-
-	// --github-token is no narrowing: the broker releases the same one installation, and the exec
-	// form hands the child ada's token alone, the string a command puts in an Authorization
-	// header, in place of the JSON object of installations. The narrowing still reaches GitHub,
-	// whose access_tokens body names the one repository and no permissions, since this release
-	// is not read-only.
-	stdout, stderr, exit := runAgentSecrets(t, binary, rig.URL, keyDir, nil,
-		"APP_KEY", "--reason", "narrowing end to end", "--github-owner", "Ada", "--github-repo", "proofs", "--github-token",
-		"--", "sh", "-c", `printf %s "$APP_KEY"`)
-	if exit != 0 || stdout != "ghs-8-narrowed" {
-		t.Fatalf("--github-token release: exit %d, stdout %q, stderr %q; want ada's minted token alone, not the JSON object of installations", exit, stdout, stderr)
+	installations = release("APP_KEY_PROOFS")
+	if len(installations) != 1 || installations["ada"].Token != "ghs-8" || installations["ada"].InstallationID != 8 {
+		t.Fatalf("APP_KEY_PROOFS's release: installations %+v; want ada's token alone", installations)
 	}
 	tokens = take()
 	if len(tokens) != 1 || tokens[0].installation != "8" {
 		t.Fatalf("GitHub was asked for tokens %+v, want installation 8's alone", tokens)
 	}
-	var tokenBody map[string]any
-	if err := json.Unmarshal([]byte(tokens[0].body), &tokenBody); err != nil {
-		t.Fatalf("the access_tokens body %q: %v", tokens[0].body, err)
+	if got, want := body(tokens[0]), map[string]any{"repositories": []any{"proofs"}, "permissions": map[string]any{"contents": "read", "metadata": "read"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the access_tokens body = %v, want %v", got, want)
 	}
-	if want := map[string]any{"repositories": []any{"proofs"}}; !reflect.DeepEqual(tokenBody, want) {
-		t.Fatalf("the access_tokens body = %v, want %v", tokenBody, want)
+
+	stdout, stderr, exit := run("APP_KEY_MISSING")
+	if exit != 1 || stdout != "" || !strings.Contains(stderr, "PROFILE_MINT_REFUSED") || !strings.Contains(stderr, "(missing)") || strings.Contains(stderr, "MINT_FAILED") {
+		t.Fatalf("release of a profile on a repository GitHub refuses: exit %d, stdout %q, stderr %q; want exit 1, nothing run, and PROFILE_MINT_REFUSED naming the repository", exit, stdout, stderr)
+	}
+	if tokens := take(); len(tokens) != 1 || tokens[0].installation != "8" {
+		t.Fatalf("GitHub was asked for tokens %+v, want installation 8's alone", tokens)
 	}
 }
 

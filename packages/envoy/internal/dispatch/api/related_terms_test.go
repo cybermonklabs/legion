@@ -460,29 +460,39 @@ func TestRelatedTermsSayATextHoldsNoLexeme(t *testing.T) {
 	}
 }
 
-// The picker tokenizes a text in the order a document version's vector is built: search_text,
-// then the ask blocks stripped. Underscore runs either side of an ask block written inline join
-// once the block is stripped; search_text applied before leaves the joined run whole, a host name
-// the stored vector holds as one lexeme, while applied after it breaks the run into words no
-// stored vector holds.
+// The picker tokenizes a text as a document version's vector is built: the ask blocks removed,
+// then search_text, both through search_document_text. Underscore runs either side of an ask block
+// written inline join once the block is removed, and search_text then breaks the joined run after
+// its sixteenth segment as it breaks any other: the stored vector holds the run's sixteen words and
+// the host name after them, and no host name of the whole run, and the picker reads the same.
+// Applied in the other order, search_text left the joined run whole and handed the parser a run
+// nothing had broken.
 func TestRelatedTermsTokenizeATextAsADocumentVersionsVectorIsBuilt(t *testing.T) {
 	handler, database, srv := relatedTermsServer(t)
 	createSuggestionProject(t, handler, "ORDER")
 	// The block splits a segment, so no underscore meets it, which the stored markdown would
 	// escape: stripped, "al" and "pha_" join into the run's ninth segment.
+	const inline = "al:::ask{#x} Which? :::pha_"
 	document := createProjectDocument(t, handler, "ORDER", "run-notes.md",
-		strings.Repeat("alpha_", 8)+"al:::ask{#x} Which? :::pha_"+strings.Repeat("alpha_", 7)+"beta.example.com\n")
+		strings.Repeat("alpha_", 8)+inline+strings.Repeat("alpha_", 7)+"beta.example.com\n")
 	refreshTermStats(t, database, "ORDER")
 	var markdown string
 	var stored []string
+	var alphas int
 	if err := database.Pool.QueryRow(context.Background(), `
-		select markdown, tsvector_to_array(search) from artifact_versions
-		 where artifact_id = $1 order by number desc limit 1`, document.ID).Scan(&markdown, &stored); err != nil {
+		select markdown, tsvector_to_array(search),
+		       coalesce((select array_length(u.positions, 1) from unnest(search) u where u.lexeme = 'alpha'), 0)
+		  from artifact_versions
+		 where artifact_id = $1 order by number desc limit 1`, document.ID).Scan(&markdown, &stored, &alphas); err != nil {
 		t.Fatalf("read the document's version: %v", err)
 	}
-	host := strings.Repeat("alpha_", 16) + "beta.example.com"
-	if !slices.Contains(stored, host) {
-		t.Fatalf("stored vector %v of %q holds no %q: the version does not keep the inline block inside the run", stored, markdown, host)
+	if !strings.Contains(markdown, inline) {
+		t.Fatalf("stored markdown %q does not keep the inline block inside the run", markdown)
+	}
+	const host = "beta.example.com"
+	if joined := strings.Repeat("alpha_", 16) + host; slices.Contains(stored, joined) || !slices.Contains(stored, host) || alphas != 16 {
+		t.Fatalf("stored vector %v of %q, %d positions of alpha: want 16 of alpha and %q, and not %q, the run broken after its sixteenth segment",
+			stored, markdown, alphas, host, joined)
 	}
 
 	picked := pickTerms(t, srv, "ORDER", markdown, relatedExclusion{})

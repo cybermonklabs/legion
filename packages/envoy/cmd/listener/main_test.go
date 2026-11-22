@@ -1447,7 +1447,7 @@ func TestAdminInterestsHandler_ListAll(t *testing.T) {
 		"ses_list_b": {"notifications.test.>"},
 		"ses_list_a": {"notifications.github.>"},
 	}, nil)
-	handler := adminInterestsHandler(registry, sessions, nil, logging.New("test"))
+	handler := adminInterestsHandler(registry, sessions, nil, nil, logging.New("test"))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/interests/", nil)
 	rec := httptest.NewRecorder()
@@ -1472,7 +1472,7 @@ func TestAdminInterestsHandler_GetBySession(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, map[string][]string{
 		"ses_get_test": {"notifications.test.>"},
 	}, nil)
-	handler := adminInterestsHandler(registry, sessions, nil, logging.New("test"))
+	handler := adminInterestsHandler(registry, sessions, nil, nil, logging.New("test"))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/interests/ses_get_test", nil)
 	rec := httptest.NewRecorder()
@@ -1511,7 +1511,7 @@ func TestAdminInterestsHandler_GetAnswers404OnlyForAnUnknownSession(t *testing.T
 	if err != nil {
 		t.Fatalf("failed to create session registry: %v", err)
 	}
-	handler := adminInterestsHandler(registry, sessions, nil, logging.New("test"))
+	handler := adminInterestsHandler(registry, sessions, nil, nil, logging.New("test"))
 	get := func(sessionID string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/interests/"+sessionID, nil))
@@ -1540,7 +1540,7 @@ func TestAdminInterestsHandler_DeleteBySession(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, map[string][]string{
 		"ses_delete_target": {"notifications.test.>"},
 	}, nil)
-	handler := adminInterestsHandler(registry, sessions, nil, logging.New("test"))
+	handler := adminInterestsHandler(registry, sessions, nil, nil, logging.New("test"))
 
 	req := httptest.NewRequest(http.MethodDelete, "/v1/interests/ses_delete_target", nil)
 	rec := httptest.NewRecorder()
@@ -1559,7 +1559,7 @@ func TestAdminInterestsHandler_DeleteBySession(t *testing.T) {
 
 func TestAdminInterestsHandler_DeleteIdempotent(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	handler := adminInterestsHandler(registry, sessions, nil, logging.New("test"))
+	handler := adminInterestsHandler(registry, sessions, nil, nil, logging.New("test"))
 
 	req := httptest.NewRequest(http.MethodDelete, "/v1/interests/ses_nonexistent", nil)
 	rec := httptest.NewRecorder()
@@ -1572,7 +1572,7 @@ func TestAdminInterestsHandler_DeleteIdempotent(t *testing.T) {
 
 func TestAdminInterestsHandler_MethodNotAllowed(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	handler := adminInterestsHandler(registry, sessions, nil, logging.New("test"))
+	handler := adminInterestsHandler(registry, sessions, nil, nil, logging.New("test"))
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/interests/", nil)
 	rec := httptest.NewRecorder()
@@ -1687,7 +1687,7 @@ func TestAdminInterestsHandler_RowsCarryALiveSessionsHeartbeat(t *testing.T) {
 	registry, sessions := setupInterestLastSeenTest(t, []string{live, unknown})
 	beat := heartbeat(t, sessions, live)
 
-	list, single := listedInterestRows(t, adminInterestsHandler(registry, sessions, nil, logging.New("test")))
+	list, single := listedInterestRows(t, adminInterestsHandler(registry, sessions, nil, nil, logging.New("test")))
 	wantLastSeen(t, "GET /v1/interests/", list[live], beat)
 	wantLastSeen(t, "GET /v1/interests/"+live, single[live], beat)
 	for route, row := range map[string]interestRowLastSeen{"GET /v1/interests/": list[unknown], "GET /v1/interests/" + unknown: single[unknown]} {
@@ -1715,7 +1715,7 @@ func TestAdminInterestsHandler_RowsCarryAnExpiredSessionsLastHeartbeat(t *testin
 	})
 	time.Sleep(sessionTTL + 200*time.Millisecond)
 
-	list, single := listedInterestRows(t, adminInterestsHandler(registry, sessions, nil, logging.New("test")))
+	list, single := listedInterestRows(t, adminInterestsHandler(registry, sessions, nil, nil, logging.New("test")))
 	wantLastSeen(t, "GET /v1/interests/", list[expired], beat)
 	wantLastSeen(t, "GET /v1/interests/"+expired, single[expired], beat)
 }
@@ -1827,7 +1827,7 @@ func TestSessionsHandler_JoinsRegistries(t *testing.T) {
 		},
 		[]string{"ses_a", "ses_b"},
 	)
-	handler := sessionsHandler(registry, sessions)
+	handler := sessionsHandler(registry, sessions, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
 	rec := httptest.NewRecorder()
@@ -1898,7 +1898,7 @@ func TestSessionsHandler_IncludesTitle(t *testing.T) {
 	waitForRegistry(t, registry)
 	waitForSessions(t, sessions)
 
-	handler := sessionsHandler(registry, sessions)
+	handler := sessionsHandler(registry, sessions, nil)
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -1980,10 +1980,10 @@ func TestSessionsHandler_ReportsSelfSubscribedSession(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, map[string][]string{
 		"ses_omp": {"notifications.test.>"},
 	}, nil)
-	if err := sessions.Put("ses_omp", session.SessionEntry{SelfSubscribed: true}); err != nil {
+	if err := sessions.Put("ses_omp", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
 		t.Fatalf("register self-subscribed session: %v", err)
 	}
-	handler := sessionsHandler(registry, sessions)
+	handler := sessionsHandler(registry, sessions, nil)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
 
@@ -2008,7 +2008,7 @@ func TestSessionsHandler_ReportsSelfSubscribedSession(t *testing.T) {
 }
 
 func TestSessionsHandler_MethodNotAllowed(t *testing.T) {
-	handler := sessionsHandler(nil, nil)
+	handler := sessionsHandler(nil, nil, nil)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", nil)
@@ -2021,7 +2021,7 @@ func TestSessionsHandler_MethodNotAllowed(t *testing.T) {
 
 func TestSessionsHandler_EmptyList(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	handler := sessionsHandler(registry, sessions)
+	handler := sessionsHandler(registry, sessions, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
 	rec := httptest.NewRecorder()
@@ -2049,7 +2049,7 @@ func TestSessionsHandler_OnlyLiveSessions(t *testing.T) {
 		// ses_dead intentionally not in the sessions registry — it's dead
 		[]string{"ses_live"},
 	)
-	handler := sessionsHandler(registry, sessions)
+	handler := sessionsHandler(registry, sessions, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
 	rec := httptest.NewRecorder()
@@ -2082,7 +2082,7 @@ func TestSessionsHandler_NoInterestsData(t *testing.T) {
 		nil, // no interests
 		[]string{"ses_orphan"},
 	)
-	handler := sessionsHandler(registry, sessions)
+	handler := sessionsHandler(registry, sessions, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
 	rec := httptest.NewRecorder()
@@ -3608,16 +3608,6 @@ func TestListenerDeliveryHandler_FanoutRefusalOfATeamTopicIsStoredOnItsException
 // a redelivery with the same key cannot emit another refusal.
 func TestListenerDeliveryHandler_FanoutRefusalDedupesAfterExceptionDelivery(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
-	// Both copies refill from their buckets on a goroutine the harness's registries start
-	// (kvwatch.Watcher.Start), and a write that lands while that first read runs carries no mark
-	// of it, so the sweep ending the read takes it back out of the copy
-	// (kvwatch.Copy.CompleteRead) until the watcher delivers the write's own record. The fan-out
-	// reads both copies for the message below, and a session whose record it cannot read is one
-	// it reports dead and sends no exception for ("listener delivery failed ... no session record
-	// for session ses_incapable", merge-queue job 127694167470), so both reads are waited out
-	// here, before registerFanoutTarget's two writes.
-	waitForRegistry(t, harness.registry)
-	waitForSessions(t, harness.sessions)
 	const (
 		topic     = "notifications.github.owner.repo.issue.4"
 		incapable = "ses_incapable"
@@ -3662,13 +3652,6 @@ func TestListenerDeliveryHandler_FanoutAllowsUntaggedPayload(t *testing.T) {
 		firstTarget = "ses_first"
 		nextTarget  = "ses_next"
 	)
-	// Both copies the fan-out reads refill on the goroutine the watcher starts, and a write that
-	// lands while that first read runs is taken back out of the copy until the watcher delivers
-	// its own record, so a target registered before the reads end is one the fan-out cannot see
-	// ("the untagged message was not given to ses_first", envoy-go-race job 128250468046). Both
-	// reads are waited out here, before registerConsumerTarget's writes, as the rows above do.
-	waitForRegistry(t, harness.registry)
-	waitForSessions(t, harness.sessions)
 	harness.registerConsumerTarget(t, firstTarget, topic, nil)
 	harness.registerConsumerTarget(t, nextTarget, topic, nil)
 	// The fan-out reaches only what these two registries answer for, so they are read here: a
@@ -3890,10 +3873,9 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptio
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
-	// Both caches are waited for here, as the listener's own start waits for them: a Put that
-	// lands after a watch fixed its initial snapshot and before the read that turns its marks on
-	// is unmarked, and the sweep that completes the read drops it, so an interest or a session
-	// registered in that window would be missing from what Match and Lookup answer.
+	// Both caches are waited for here, as the listener's own start waits for them: until a cache's
+	// first read completes, the role claim view refuses RolesHeldBy and the session routes answer
+	// their refilling 503 (waitForRegistry, waitForSessions).
 	waitForRegistry(t, registry)
 	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, append([]session.SessionRegistryOption{session.WithSessionReplicas(1)}, sessionOptions...)...)
 	if err != nil {
