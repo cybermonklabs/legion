@@ -334,12 +334,14 @@ func ciUnconcluded(check model.CheckBlock, name, state, ciCase, detail string, w
 	}
 }
 
-// ciRunOfLine is the run a check's ci_check names as a pull-request body line names it, `CI run`
-// and the words words keeps of the name, since the name is text the check's author wrote; where
-// words keeps none of it, the line says `the CI run the check names`.
+// ciRunOfLine is the run a check's ci_check names as a pull-request body line names it: `CI run`
+// and the name, when words keeps every word of it. The name is text the check's author wrote, so
+// where words drops any of its words the line says `the CI run the check names` instead. The words
+// left of a name that lost some are a run nobody can find (`0)` of `unit_tests (test_x.py, 0)`),
+// and two such runs can read the same.
 func ciRunOfLine(name string, words lineWords) string {
 	kept := words.keep(name)
-	if kept == "" {
+	if kept == "" || kept != strings.Join(strings.Fields(name), " ") {
 		return "the CI run the check names"
 	}
 	return "CI run " + kept

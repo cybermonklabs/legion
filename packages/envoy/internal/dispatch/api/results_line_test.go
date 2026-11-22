@@ -375,21 +375,29 @@ func TestTheCIPullRequestLineDropsIssueKeysFromTheChecksWords(t *testing.T) {
 }
 
 // The run a check's ci_check names is text the check's author wrote, and every line Dispatch writes
-// for such a check names it, so the line keeps of the name what it keeps of a reading. A name it
-// keeps nothing of reads as the run the check names. The run `go-test`, which names no project,
-// stays whole: the other CI tests of this package hold its lines.
-func TestTheCIPullRequestLineDropsIssueKeysFromTheRunName(t *testing.T) {
+// for such a check names it. The line names the run only when it keeps every word of the name, and
+// otherwise reads `the CI run the check names`: the words left of a name that lost some are a run
+// nobody can find, as `0)` is of `unit_tests (test_build.py, 0)`, whose `_` words the plain-word
+// rule drops, and the three legs of a matrix job would read alike. A name holding an issue key
+// loses that word too. The runs `go-test` and `e2e build`, which every word of keeps, stay whole.
+func TestTheCIPullRequestLineNamesTheRunOnlyWhenItKeepsEveryWordOfIt(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESCQ", "CI run name", "A spec\n")
 	withControl := `negative_control="` + ciCheckNegativeControl + `" `
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",
 		ciCheckBlock("c1", withControl+`ci_check="e2e `+issue.Key+`"`)+"\n"+
-			ciCheckBlock("c2", withControl+`ci_check="`+issue.Key+`"`))
+			ciCheckBlock("c2", withControl+`ci_check="`+issue.Key+`"`)+"\n"+
+			ciCheckBlock("c3", withControl+`ci_check="unit_tests (test_build.py, 0)"`)+"\n"+
+			ciCheckBlock("c4", withControl+`ci_check="unit_tests (test_build.py, 1)"`)+"\n"+
+			ciCheckBlock("c5", withControl+`ci_check="e2e build"`))
 
 	read := readResults(t, handler, issue.Key)
 	for _, want := range []struct{ check, line string }{
-		{"c1", "- Check c1 (before_merge): CI run e2e has no result (no_head)"},
+		{"c1", "- Check c1 (before_merge): the CI run the check names has no result (no_head)"},
 		{"c2", "- Check c2 (before_merge): the CI run the check names has no result (no_head)"},
+		{"c3", "- Check c3 (before_merge): the CI run the check names has no result (no_head)"},
+		{"c4", "- Check c4 (before_merge): the CI run the check names has no result (no_head)"},
+		{"c5", "- Check c5 (before_merge): CI run e2e build has no result (no_head)"},
 	} {
 		check := checkOf(t, read, want.check)
 		if check.CI == nil {
