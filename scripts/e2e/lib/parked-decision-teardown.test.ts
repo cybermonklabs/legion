@@ -1,5 +1,14 @@
 import { afterAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { hostGate, requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -16,10 +25,11 @@ import { scriptFunctions } from "./script-functions";
 // run's directory, found by that variable, and a helper working inside it. tmux kill-server ends
 // the pane and leaves all three alive, as the brokers outlived cleanup-is-complete in the devbox
 // run at 6512c7fc. The pane the stand-in broker starts is a real tmux pane, and the teardown this
-// test is about is tmux kill-server's, so a host with no tmux skips the row naming tmux, and under
-// GITHUB_ACTIONS fails it by its own name, naming tmux (hostGate). CI's `test` job
-// (.github/workflows/ci-job-test.yaml) installs no tmux of its own: the ubuntu-24.04-arm image it
-// runs on already carries it.
+// test is about is tmux kill-server's; stop_agent_daemons reads each broker.pid with jq. So a host
+// with no tmux or no jq skips the tmux row naming what it lacks, and under GITHUB_ACTIONS fails it
+// by its own name, naming it (hostGate); the newline row, which starts no tmux, is gated on jq
+// alone. CI's `test` job (.github/workflows/ci-job-test.yaml) installs neither: the
+// ubuntu-24.04-arm image it runs on already carries both.
 const e2e = join(import.meta.dir, "..");
 const root = join(e2e, "..", "..");
 const scriptPath = join(e2e, "parked-decision-devbox.sh");
@@ -28,7 +38,8 @@ const set = readFileSync(scriptPath, "utf8").match(/^set -.*$/m)?.[0];
 if (set === undefined) throw new Error(`${scriptPath} has no top-level set line`);
 
 // Read once, at module scope: a call inside the test body would print the warning per row.
-const host = hostGate({ programs: ["tmux"] });
+const host = hostGate({ programs: ["tmux", "jq"] });
+const jq = hostGate({ programs: ["jq"] });
 
 const dir = temporaryDirectory("parked-decision-teardown-test");
 const started: number[] = [];
@@ -143,6 +154,22 @@ function detached(argv: string[], cwd: string, env: Record<string, string>) {
   return pid;
 }
 
+// pathWithout NAME is a PATH of one directory holding a link to the first of each program on this
+// PATH but NAME: the PATH of a host that lacks NAME and has everything else this one has.
+function pathWithout(name: string): string {
+  const bin = mkdtempSync(join(dir, `no-${name}-`));
+  const linked = new Set([name]);
+  for (const entry of (process.env.PATH ?? "").split(":")) {
+    if (entry === "" || !existsSync(entry) || !statSync(entry).isDirectory()) continue;
+    for (const program of readdirSync(entry)) {
+      if (linked.has(program)) continue;
+      linked.add(program);
+      symlinkSync(join(entry, program), join(bin, program));
+    }
+  }
+  return bin;
+}
+
 // harness runs BODY with the script's `set` line, lib/rig.sh sourced as the script sources it (for
 // run_processes) and stop_agent_daemons taken from the script by name, its run marked as the script
 // marks it (LEGION_E2E_RUN). $work comes in through the environment, and the mark is exported only
@@ -151,8 +178,12 @@ function detached(argv: string[], cwd: string, env: Record<string, string>) {
 // DEADLINE, when given (a Date.now() value), bounds the run by the row's remaining time: a run still
 // going then is ended and the row fails naming BODY, inside its own time, since Bun cannot time out
 // a row while a synchronous spawn holds it, and a row it times out after runs on to an unhandled
-// error.
-function harness(work: string, body: string, procRoot?: string, deadline?: number) {
+// error. PATH, when given, is the run's PATH in place of this process's.
+function harness(
+  work: string,
+  body: string,
+  { procRoot, deadline, path }: { procRoot?: string; deadline?: number; path?: string } = {}
+) {
   const remaining = deadline === undefined ? undefined : deadline - Date.now();
   if (remaining !== undefined && remaining <= 0) {
     throw new Error(`the row's time ran out before ${body}`);
@@ -173,7 +204,7 @@ ${body}`,
     ],
     {
       env: {
-        PATH: process.env.PATH ?? "",
+        PATH: path ?? process.env.PATH ?? "",
         WORK: work,
         ...(procRoot === undefined ? {} : { proc_root: procRoot }),
       },
@@ -301,13 +332,13 @@ wait
     // The red half: the broker's whole session outlives the pane, and run_processes, the check's own
     // reading, still names the members, which carry the run's mark.
     expect(members.every(alive)).toBe(true);
-    const before = harness(work, "run_processes || true", undefined, deadline)
+    const before = harness(work, "run_processes || true", { deadline })
       .stdout.split("\n")
       .filter(Boolean)
       .map(Number);
     expect(before).toContain(leader);
 
-    const stopped = harness(work, "stop_agent_daemons", undefined, deadline);
+    const stopped = harness(work, "stop_agent_daemons", { deadline });
     expect({ code: stopped.code, stderr: stopped.stderr }).toEqual({ code: 0, stderr: "" });
     await until(
       "every member of the broker's session to end",
@@ -319,7 +350,7 @@ wait
     // carries the run's mark.
     expect(alive(bystander)).toBe(true);
     expect(alive(stranger)).toBe(true);
-    const after = harness(work, "run_processes || true", undefined, deadline)
+    const after = harness(work, "run_processes || true", { deadline })
       .stdout.split("\n")
       .filter(Boolean)
       .map(Number);
@@ -332,34 +363,73 @@ wait
 // and a name that holds a newline cut a first-line read short of the session field, so a broker so
 // named was tied to no broker.pid and outlived the run. The walk reads a proc root of the broker
 // alone (lib/proc-root.ts), so the row's time is its own and not the host's process count.
-test("stops a broker's session whose leader's name holds a newline and a `) `", async () => {
-  requireHostTools("python3");
-  const work = join(dir, "newline-broker");
+jq.test(
+  "stops a broker's session whose leader's name holds a newline and a `) `",
+  async () => {
+    requireHostTools("python3");
+    const work = join(dir, "newline-broker");
+    const runtime = join(work, "state", "omp-daemon");
+    mkdirSync(runtime, { recursive: true });
+    const pidFile = join(runtime, "broker.pid");
+    // The stand-in leads a session of its own, renames itself to `) S 1` and a newline (prctl
+    // PR_SET_NAME), and only then writes broker.pid, so the walk starts after the rename.
+    const broker = Bun.spawn(
+      [
+        "python3",
+        "-I",
+        "-c",
+        'import ctypes, json, os, sys, time; os.setsid(); ctypes.CDLL(None).prctl(15, b") S 1\\n", 0, 0, 0); open(sys.argv[1] + ".tmp", "w").write(json.dumps({"pid": os.getpid()})); os.rename(sys.argv[1] + ".tmp", sys.argv[1]); time.sleep(60)',
+        pidFile,
+      ],
+      {
+        env: { PATH: process.env.PATH ?? "", OMP_DAEMON_RUNTIME_DIR: runtime },
+        stdout: "ignore",
+        stderr: "ignore",
+      }
+    );
+    teardowns.push(() => {
+      if (alive(broker.pid) && sessionOf(broker.pid) === broker.pid) killSession(broker.pid);
+    });
+    await until("the stand-in broker to write broker.pid", () => existsSync(pidFile));
+    expect(readFileSync(`/proc/${broker.pid}/comm`, "utf8")).toBe(") S 1\n\n");
+    const stopped = harness(work, "stop_agent_daemons", {
+      procRoot: procRootOf(dir, [broker.pid]),
+    });
+    expect({ code: stopped.code, stderr: stopped.stderr }).toEqual({ code: 0, stderr: "" });
+    await until("the broker to end", () => !alive(broker.pid));
+  },
+  30_000
+);
+
+// stop_agent_daemons reads each broker.pid with jq. Without jq it read no file, stopped nothing and
+// exited 0, which its caller takes for a run that left no broker session; it fails with 2 instead,
+// naming jq, and signals nothing. The stand-in broker is a sleep leading a session of its own with
+// the runtime directory in its environment, and the same call with jq on PATH then ends it, so the
+// refusal is the missing jq's and not a broker the walk could not have stopped.
+test("stop_agent_daemons on a PATH without jq fails with 2 naming jq and signals nothing", async () => {
+  const work = join(dir, "no-jq");
   const runtime = join(work, "state", "omp-daemon");
   mkdirSync(runtime, { recursive: true });
-  const pidFile = join(runtime, "broker.pid");
-  // The stand-in leads a session of its own, renames itself to `) S 1` and a newline (prctl
-  // PR_SET_NAME), and only then writes broker.pid, so the walk starts after the rename.
-  const broker = Bun.spawn(
-    [
-      "python3",
-      "-I",
-      "-c",
-      'import ctypes, json, os, sys, time; os.setsid(); ctypes.CDLL(None).prctl(15, b") S 1\\n", 0, 0, 0); open(sys.argv[1] + ".tmp", "w").write(json.dumps({"pid": os.getpid()})); os.rename(sys.argv[1] + ".tmp", sys.argv[1]); time.sleep(60)',
-      pidFile,
-    ],
-    {
-      env: { PATH: process.env.PATH ?? "", OMP_DAEMON_RUNTIME_DIR: runtime },
-      stdout: "ignore",
-      stderr: "ignore",
-    }
-  );
-  teardowns.push(() => {
-    if (alive(broker.pid) && sessionOf(broker.pid) === broker.pid) killSession(broker.pid);
+  const broker = detached(["sleep", "305"], work, {
+    PATH: process.env.PATH ?? "",
+    OMP_DAEMON_RUNTIME_DIR: runtime,
   });
-  await until("the stand-in broker to write broker.pid", () => existsSync(pidFile));
-  expect(readFileSync(`/proc/${broker.pid}/comm`, "utf8")).toBe(") S 1\n\n");
-  const stopped = harness(work, "stop_agent_daemons", procRootOf(dir, [broker.pid]));
+  started.push(broker);
+  await until(
+    "the stand-in broker to lead a session of its own",
+    () => alive(broker) && sessionOf(broker) === broker
+  );
+  writeFileSync(join(runtime, "broker.pid"), JSON.stringify({ pid: broker, domain: "test" }));
+  const procRoot = procRootOf(dir, [broker]);
+  const refused = harness(work, "stop_agent_daemons", { procRoot, path: pathWithout("jq") });
+  expect(refused).toEqual({
+    code: 2,
+    stdout: "",
+    stderr:
+      "stop_agent_daemons: jq is not on PATH, so no broker.pid was read and no broker session was stopped\n",
+  });
+  expect(alive(broker)).toBe(true);
+  const stopped = harness(work, "stop_agent_daemons", { procRoot });
   expect({ code: stopped.code, stderr: stopped.stderr }).toEqual({ code: 0, stderr: "" });
-  await until("the broker to end", () => !alive(broker.pid));
-}, 30_000);
+  await until("the broker to end", () => !alive(broker));
+});

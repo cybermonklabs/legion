@@ -17,8 +17,10 @@ const root = join(e2e, "..", "..");
 const dir = temporaryDirectory("unread-proc-test");
 // perl: three rows start a process in a group of its own through ownGroup (lib/own-group.ts); a
 // host without perl skips them by name outside CI and fails them by name under GITHUB_ACTIONS
-// (hostGate).
+// (hostGate). The first of them also runs stop_agent_daemons over a broker.pid, which it reads with
+// jq, so that row is gated on jq as well.
 const perl = hostGate({ programs: ["perl"] });
+const perlAndJq = hostGate({ programs: ["perl", "jq"] });
 
 const killed: number[] = [];
 afterEach(() => {
@@ -85,7 +87,7 @@ function heldPort(): number {
   return listener.port;
 }
 
-perl.test(
+perlAndJq.test(
   "over a proc root that lists no process, every walk fails with 2 and says it read nothing",
   () => {
     const scratch = mkdtempSync(join(dir, "empty-root-"));
