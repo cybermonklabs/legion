@@ -90,6 +90,9 @@ func keeperPasses(t *testing.T, keepers []*Client, n int) {
 	for i, keeper := range keepers {
 		from[i] = keeper.keepPasses.Load()
 	}
+	if waiting := keeperPassesWaiting.Load(); waiting != nil {
+		(*waiting)()
+	}
 	testwait.Until(t, fmt.Sprintf("each of %d keepers to end %d passes begun after %v had ended", len(keepers), n, from), func() ([]uint64, bool) {
 		ended := make([]uint64, len(keepers))
 		all := true
@@ -99,6 +102,65 @@ func keeperPasses(t *testing.T, keepers []*Client, n int) {
 		}
 		return ended, all
 	})
+}
+
+// keeperPassesWaiting, when set, runs as keeperPasses has read the passes ended so far and is about
+// to wait for more: TestHoldKeeperUpdatesWaitsOutAKeeperPassBegunBeforeItsHold releases a pass it
+// holds there, so that pass ends only while keeperPasses waits for it.
+var keeperPassesWaiting atomic.Pointer[func()]
+
+// heldBucketReads holds every read of stream until resume closes, and closes entered at the first:
+// a keeper pass that reads it waits there, sending its read again each time its read limit passes
+// (readAgain), until the test resumes it.
+type heldBucketReads struct {
+	nats.JetStreamContext
+	stream  string
+	entered chan struct{}
+	first   sync.Once
+	resume  <-chan struct{}
+}
+
+func (js *heldBucketReads) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	if stream == js.stream {
+		js.first.Do(func() { close(js.entered) })
+		<-js.resume
+	}
+	return js.JetStreamContext.StreamInfo(stream, opts...)
+}
+
+// holdKeeperUpdates returns only once every keeper pass begun before its hold has ended: a pass
+// takes its client's JetStream context once, as it starts, so one in flight at the swap still
+// writes through the context with no hold, and it could put back the update the test makes next
+// before the test's read of it came back. The row holds one keeper pass in its read of a bucket
+// across the swap (heldBucketReads) and lets it go only from inside holdKeeperUpdates's wait for
+// passes (keeperPassesWaiting), so a holdKeeperUpdates that returned without that wait returns
+// while the pass is still held, and the row fails by name; no span decides it. (The independent
+// tester's FP7 found the gap with a 5 s read hold and a 40 s freeze of the lowering's replies.)
+func TestHoldKeeperUpdatesWaitsOutAKeeperPassBegunBeforeItsHold(t *testing.T) {
+	const bucket = "envoy_keeper_held_pass"
+	cluster, _ := startClusterJetStream(t)
+	client := startOnCluster(t, cluster, WithReplicas(3), WithKeptBuckets(bucket), WithKeepInterval(testKeepInterval), heldKeeperStepGuard(t))
+	if _, err := EnsureKeyValue(t.Context(), client.Conn, client.JS(), &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3}); err != nil {
+		t.Fatalf("open %s at three copies: %v", bucket, err)
+	}
+	resume := make(chan struct{})
+	release := sync.OnceFunc(func() { close(resume) })
+	t.Cleanup(release)
+	held := &heldBucketReads{stream: "KV_" + bucket, entered: make(chan struct{}), resume: resume}
+	client.mu.Lock()
+	held.JetStreamContext = client.js
+	client.js = held
+	client.mu.Unlock()
+	testwait.Receive(t, "a keeper pass to begin its read of KV_"+bucket, held.entered)
+	endedBefore := client.keepPasses.Load()
+
+	keeperPassesWaiting.Store(&release)
+	t.Cleanup(func() { keeperPassesWaiting.Store(nil) })
+	open := holdKeeperUpdates(t, client)
+	defer open()
+	if ended := client.keepPasses.Load(); ended <= endedBefore {
+		t.Fatalf("holdKeeperUpdates returned while the keeper pass begun before its hold was still running: %d passes ended, as when that pass began", ended)
+	}
 }
 
 // heldFor waits for passes passes of each of keepers, one at a time (keeperPasses), and fails the
