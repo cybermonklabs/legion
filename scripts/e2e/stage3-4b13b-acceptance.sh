@@ -389,6 +389,14 @@ assert_claim_endpoints() {
   omp=$(omp_descendant "$pane_pid") || fail "$role pane on $issue (pid $pane_pid) has no OMP process"
   if mismatch=$(endpoint_mismatch "$omp"); then fail "ABORT: $role pane on $issue (OMP pid $omp) has $mismatch"; fi
 }
+# pane_watcher polls every 0.2 s and checks each pane the daemon launches once its Oh My Pi runs and
+# its environment is laid out, usually before the plugin registers, though no barrier holds the pane
+# back for it. The kernel names the program an exec starts before it lays out that program's
+# environment (environ_laid_out, lib/process-tree.sh), so an Oh My Pi found inside that window is
+# read again at the next poll, never counted: a read there would find no environment. One that never
+# lays its environment out stays out of pane-endpoints-checked.txt, and the every-launched-pane wait
+# fails naming it. A mismatch it reads is recorded, the private tmux server is killed, which ends
+# every agent of the run, and the next bounded wait aborts naming the pane.
 pane_watcher() {
   local claims inc issue role pane omp mismatch
   trap - EXIT ERR
@@ -399,6 +407,7 @@ pane_watcher() {
         grep -qF "$inc " "$evidence/pane-endpoints-checked.txt" 2>/dev/null && continue
         pane=$(incarnation_pid "$inc") || continue
         omp=$(omp_descendant "$pane") || continue
+        environ_laid_out "$omp" || continue
         if mismatch=$(endpoint_mismatch "$omp"); then
           printf '%s pane on %s (incarnation %s, OMP pid %s) has %s\n' "$role" "$issue" "$inc" "$omp" "$mismatch" >"$evidence/pane-endpoint-violation.txt"
           TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
@@ -634,6 +643,10 @@ read_app_logins
 # binaries must both provide.
 declare -F start_held >/dev/null || fail "ACCEPT_ROOT's scripts/e2e/lib/rig.sh ($root) predates start_held: point ACCEPT_ROOT at a checkout that has it"
 require_process_tree
+# The pane watcher reads an Oh My Pi's environment only once it is laid out (environ_laid_out),
+# which ACCEPT_ROOT's lib/process-tree.sh must provide: without it the watcher's call would fail for
+# every pane, and no pane would be checked.
+declare -F environ_laid_out >/dev/null || fail "ACCEPT_ROOT's scripts/e2e/lib/process-tree.sh ($root) predates environ_laid_out: point ACCEPT_ROOT at a checkout that has it"
 real_gh=$(mise which gh) || fail "mise has no gh"
 # The real tmux comes after the real gh on the daemon's PATH: the tmux runtime runs tmux with the
 # pane allow-list alone, where a shimmed tmux, run from a directory under the operator's real
