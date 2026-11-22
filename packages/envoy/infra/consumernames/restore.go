@@ -66,16 +66,17 @@ const (
 // only a test's control sets one, to show the row fails under it; a real run keeps them all
 // unset.
 type restoreRuleSet struct {
-	// lastFloorFirst is round 17's start: the record's last_floor + 1, whatever name and stream
-	// it was read from, before every other start.
+	// lastFloorFirst is an earlier design's start: the record's last_floor + 1, whatever name
+	// and stream it was read from, before every other start.
 	lastFloorFirst bool
-	// keepAnyTarget is round 17's phase kept: a target that exists stays, at restore --prepare
-	// and at restore --finish, with no floor check.
+	// keepAnyTarget is an earlier design's phase kept: a target that exists stays, at
+	// restore --prepare and at restore --finish, with no floor check.
 	keepAnyTarget bool
-	// firstCreateWhenAbsent is round 16's start: a name whose current is absent starts at the
-	// stream's end, its first-create rule.
+	// firstCreateWhenAbsent is an earlier design's start: a name whose current is absent starts
+	// at the stream's end, its first-create rule.
 	firstCreateWhenAbsent bool
-	// createdIsFinal is round 17's finish: a record at phase created is done, its target unread.
+	// createdIsFinal is an earlier design's finish: a record at phase created is done, its
+	// target unread.
 	createdIsFinal bool
 	// noMarkers leaves every family's broker cutover record and store marker as they are.
 	noMarkers bool
@@ -264,6 +265,13 @@ func restoreUnanswered(err error) bool {
 	if errors.As(err, &api) {
 		return api.Code == 503
 	}
+	return noAnswer(err)
+}
+
+// noAnswer reports whether err is a request no server answered: a deadline, a timeout or no
+// responders. restoreUnanswered tests it after the API's 503, and createBucketAwaitGone tests it
+// alone, since a 503 answer ends that wait.
+func noAnswer(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, nats.ErrTimeout) || errors.Is(err, nats.ErrNoResponders)
 }
 
@@ -331,9 +339,8 @@ func (rr *restoreRun) hasCutoverRow(family string) bool {
 
 // restoreEntry is one logical name's record as restore listed it.
 type restoreEntry struct {
-	member   member
-	record   selection.Record
-	revision uint64
+	member member
+	record selection.Record
 	// deleted is a key whose last write is a delete or purge marker: its record is lost.
 	deleted bool
 }
@@ -381,7 +388,7 @@ func (rr *restoreRun) entries(ctx context.Context, family string) ([]restoreEntr
 			if err != nil {
 				return nil, false, unknownf(err, "the key %q of %s", key.Key, selection.SessionBucket)
 			}
-			out = append(out, restoreEntry{member: m, record: record, revision: key.Seq, deleted: key.Deleted})
+			out = append(out, restoreEntry{member: m, record: record, deleted: key.Deleted})
 		}
 		if len(malformed) > 0 {
 			return nil, false, unknownf(nil, "the values of %s in %s are malformed, so restore reads no record there", strings.Join(malformed, ", "), selection.SessionBucket)
@@ -404,11 +411,11 @@ func (rr *restoreRun) entries(ctx context.Context, family string) ([]restoreEntr
 		if err != nil {
 			return nil, false, unknownf(err, "the row %q of %s's %s", logical, family, selection.IntakeConsumersTable)
 		}
-		record, revision, err := pg.Read(ctx, logical)
+		record, _, err := pg.Read(ctx, logical)
 		if err != nil {
 			return nil, false, err
 		}
-		out = append(out, restoreEntry{member: m, record: record, revision: revision})
+		out = append(out, restoreEntry{member: m, record: record})
 	}
 	return out, true, nil
 }
@@ -1197,9 +1204,13 @@ func (rr *restoreRun) create(ctx context.Context, name restoreSetName) error {
 	if err := restoreAt("target", name.Logical); err != nil {
 		return err
 	}
-	next := record
-	next.Current = name.Target
-	next.Restore = &selection.Restore{Target: name.Target, Start: start, Phase: restoreCreated}
+	created := func(record selection.Record) selection.Record {
+		next := record
+		next.Current = name.Target
+		next.Restore = &selection.Restore{Target: name.Target, Start: start, Phase: restoreCreated}
+		return next
+	}
+	next := created(record)
 	for range restoreAttempts {
 		_, err := st.Write(ctx, name.Logical, next, revision)
 		if !errors.Is(err, selection.ErrConflict) {
@@ -1216,9 +1227,7 @@ func (rr *restoreRun) create(ctx context.Context, name restoreSetName) error {
 		if record, revision, err = rr.readRecord(ctx, st, name); err != nil {
 			return err
 		}
-		next = record
-		next.Current = name.Target
-		next.Restore = &selection.Restore{Target: name.Target, Start: start, Phase: restoreCreated}
+		next = created(record)
 	}
 	return fmt.Errorf("%s's record changed under each of %d writes", name.Logical, restoreAttempts)
 }

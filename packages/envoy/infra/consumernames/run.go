@@ -45,7 +45,9 @@ type env struct {
 	// hub opens the operator's reach of the clustered hub for o (writerhold.Operator): its
 	// Kubernetes objects and each declared server's monitoring port, which the held re-read
 	// (heldReread), convert's meta barrier (writerhold.MetaBarrier) and restore --finish's restart
-	// read.
+	// read; and the daemons' Deployments and the retired projects' entries
+	// (writerhold.KubeDaemonDeployments), which enroll's shared-address check, cleanup --gone and
+	// status's gone-store rule read (enrollSharedAddress, daemonStoreByRule).
 	hub func(ctx context.Context, o options) (*writerhold.Operator, error)
 	// reread, when set, replaces the held re-read (heldReread): nil, as realEnv leaves it, is the
 	// re-read. Only the grant rows, whose hubs of static users have no callout stack, set it.
@@ -739,8 +741,10 @@ func openDatabase(ctx context.Context, o options, family string) (*pgxpool.Pool,
 // databaseFile is a family's database file as its flag names it. Its first line is the database's
 // URL with the operator's credential, which every command opens; a daemon's file has a second, the
 // connection name of the Cloud SQL instance the operator's own proxy reaches with that URL, which
-// the census compares with the daemon's Deployment (censusReadDaemonStores). A file of one line
-// serves every command but that comparison.
+// the census compares with the daemon's one address source, its Deployment or its entry of the
+// retired projects' ConfigMap (censusReadDaemonStores). cleanup --gone reads it too, and so does
+// status for a daemon store whose database answers that it does not exist (statusGone,
+// daemonStoreByRule). A file of one line serves every other reading.
 type databaseFile struct {
 	// flag names the flag and value that named the file, as an error names it.
 	flag string

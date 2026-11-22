@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	selection "github.com/sjawhar/envoy/consumernames"
+	"github.com/sjawhar/envoy/internal/bus/kvrecords"
 )
 
 // The selection bucket's values are read as the selection package's store reads them. Any
@@ -13,13 +14,14 @@ import (
 // key of the bucket, by naming the key's subject ($KV.<bucket>.<key>) as the request's reply
 // subject, and a holder of the bucket's direct get can copy one key's record onto another; a
 // lenient decode takes the first as an empty record, which selects nothing, and the second as the
-// other key's, and a reader would then act on either. So every reader of the bucket takes a value
-// only through readSelectionValue, which decodes a record or the sentinel with the package's own
-// decode (selection.DecodeKVValue, which selection.KVStore's Read and State call) and answers a
-// value that is not exactly its key's own as malformed.
+// other key's, and a reader would then act on either. So every reader of the bucket's raw messages
+// takes a value only through readSelectionValue, which decodes a record or the sentinel with the
+// package's own decode (selection.DecodeKVValue, which selection.KVStore's Read and State call) and
+// answers a value that is not exactly its key's own as malformed.
 
-// strictBarrierPrefix begins every key of a hold's bucket barrier (holdrecord.Barrier).
-const strictBarrierPrefix = "hold.barrier."
+// strictBarrierPrefix begins every key of a hold's bucket barrier (holdrecord.Barrier), the system
+// key prefix a restore skips (kvrecords.ForRestore).
+const strictBarrierPrefix = kvrecords.HoldBarrierKeyPrefix
 
 // strictBarrier refuses data under key, a hold's barrier key hold.barrier.<hold id>, unless it is
 // exactly what holdrecord.Barrier puts there: the hold id itself, one subject token.
@@ -49,7 +51,8 @@ type selectionValue struct {
 // kind the bucket holds is refused whatever it holds: nothing writes one but a reply subject. An
 // error is a malformed value, which every caller answers as UNKNOWN or refuses, naming the key, and
 // acts on nothing. It is the one place the census, status, cleanup, restore, create-bucket and
-// repair-sentinel decode a value of the bucket.
+// repair-sentinel decode a raw message of the bucket; their reads through selection.KVStore decode
+// with the same selection.DecodeKVValue.
 func readSelectionValue(key statusKey) (selectionValue, error) {
 	switch {
 	case selection.CheckKey(key.Key) == nil || selection.CheckDurableKey(key.Key) == nil || key.Key == selection.SentinelKey:

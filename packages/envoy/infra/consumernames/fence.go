@@ -47,7 +47,7 @@ func familyMember(family, logical string) (member, error) {
 // operation's candidate a fresh name of logical, and an open operation's old name one of those or
 // logical's fixed name. Its refusal is selection.ErrMalformedRecord naming the field and the name,
 // or the library's refusal of a family or a durable key no store keeps. A nil is no leave to
-// delete: a name t-7 deletes also passes deleteOwned.
+// delete: a name this package deletes also passes deleteOwned.
 func checkRecordFence(family, logical string, record selection.Record) error {
 	return selection.CheckFamily(family, logical, record)
 }

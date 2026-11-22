@@ -134,16 +134,16 @@ func (r *run) replaceListener(ctx context.Context) error {
 			fmt.Sprintf("this run's replace of %s may have reserved, created or published a fresh name in %s's record %s, which its rerun settles (Step 0)", old, durable, m.Logical))
 	}
 	deleted, err := replaceDeleteRetired(ctx, nc, m, replaced.Record)
+	replacedAccount := fmt.Sprintf("this run replaced %s by %s in %s's record %s, and deleted %d of its retired names", old, replaced.Record.Current, durable, m.Logical, deleted)
 	if err != nil {
-		return a.stopped(ctx, fmt.Errorf("%s is %s's current at %d, and %w", replaced.Record.Current, durable, replaced.Record.Start, err), false,
-			fmt.Sprintf("this run replaced %s by %s in %s's record %s, and deleted %d of its retired names", old, replaced.Record.Current, durable, m.Logical, deleted))
+		return a.stopped(ctx, fmt.Errorf("%s is %s's current at %d, and %w", replaced.Record.Current, durable, replaced.Record.Start, err), false, replacedAccount)
 	}
 	fmt.Fprintf(r.stdout, "replace: %s (record %s): %s replaced by %s at stream sequence %s; %s retired; deleted %d retired name(s) the server held\n",
 		durable, m.Logical, old, replaced.Record.Current, formatSeq(replaced.Record.Start), old, deleted)
 	outputs := map[string]string{"durable": durable, "replaced": old, "current": replaced.Record.Current,
 		"start": formatSeq(replaced.Record.Start), "deleted": strconv.Itoa(deleted)}
 	if err := a.done(ctx, outputs); err != nil {
-		return a.stopped(ctx, err, false, fmt.Sprintf("this run replaced %s by %s in %s's record %s, and deleted %d of its retired names", old, replaced.Record.Current, durable, m.Logical, deleted))
+		return a.stopped(ctx, err, false, replacedAccount)
 	}
 	return nil
 }

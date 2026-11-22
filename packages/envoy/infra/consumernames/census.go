@@ -459,12 +459,13 @@ func censusReadDaemonStore(ctx context.Context, o options, project string, deplo
 		s.unreconciled = fmt.Sprintf("%s: its first line is no database URL (the URL is not echoed): %v", file.flag, err)
 		return s
 	}
-	var named, deployed []writerhold.DaemonDeployment
+	var named []writerhold.DaemonDeployment
+	deployed := 0
 	for _, d := range deployments {
 		if d.Annotations[writerhold.DaemonProjectAnnotation] == project {
 			named = append(named, d)
 			if !d.Retired {
-				deployed = append(deployed, d)
+				deployed++
 			}
 		}
 	}
@@ -474,11 +475,11 @@ func censusReadDaemonStore(ctx context.Context, o options, project string, deplo
 			sources[i] = daemonSource(d)
 		}
 		entry := "does not name it"
-		if len(deployed) < len(named) {
+		if deployed < len(named) {
 			entry = "names it"
 		}
 		s.unreconciled = fmt.Sprintf("%d Deployments of namespace %s name project %s (annotation %s), and %s %s (keys %s%s, %s%s): not one source, so no address is the store's: %s",
-			len(deployed), writerhold.DaemonNamespace, project, writerhold.DaemonProjectAnnotation, retiredStoresSource, entry,
+			deployed, writerhold.DaemonNamespace, project, writerhold.DaemonProjectAnnotation, retiredStoresSource, entry,
 			project, writerhold.RetiredStoreDatabaseSuffix, project, writerhold.RetiredStoreInstanceSuffix, cmp.Or(strings.Join(sources, ", "), "none"))
 		return s
 	}
@@ -604,7 +605,7 @@ const censusMaxConflicts = 10
 // already at the stream's identity, which it leaves unchanged, and Unreconciled for each it left
 // as it is, with why.
 //
-// A store whose table holds no sentinel row yet (one enrol has not written) records no identity:
+// A store whose table holds no sentinel row yet (one enroll has not written) records no identity:
 // it is left as it is, reconciled with none. A store the rule finds gone, its database answering
 // that it does not exist, is no daemon's, and does not hold back the others. A store the rule
 // leaves unreconciled is named with why: a declared family no entry names, an address that is not

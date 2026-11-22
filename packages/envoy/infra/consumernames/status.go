@@ -52,13 +52,12 @@ func statusSelectionKeys(ctx context.Context, nc *nats.Conn) ([]statusKey, error
 	if err != nil {
 		return nil, unknownf(err, "the info of %s", stream)
 	}
-	prefix := "$KV." + selection.SessionBucket + "."
 	keys := map[string]statusKey{}
 	next := max(info.State.FirstSeq, 1)
 	// The walk reads each message once, and a key written during it once more: twice the
 	// messages the stream held, and a margin, bound it.
 	for range 2*info.State.Msgs + 10_000 {
-		raw, err := apiRequest(ctx, nc, "$JS.API.STREAM.MSG.GET."+stream, map[string]any{"seq": next, "next_by_subj": prefix + ">"})
+		raw, err := apiRequest(ctx, nc, "$JS.API.STREAM.MSG.GET."+stream, map[string]any{"seq": next, "next_by_subj": selectionKeyPrefix + ">"})
 		if apiErrorIs(err, jetstream.JSErrCodeMessageNotFound) {
 			return slices.SortedFunc(maps.Values(keys), func(a, b statusKey) int { return strings.Compare(a.Key, b.Key) }), nil
 		}
@@ -75,7 +74,7 @@ func statusSelectionKeys(ctx context.Context, nc *nats.Conn) ([]statusKey, error
 		if err != nil {
 			return nil, unknownf(err, "the header of %s's message %d", stream, m.Seq)
 		}
-		key := statusKey{Key: strings.TrimPrefix(m.Subject, prefix), Seq: m.Seq, Value: m.Data}
+		key := statusKey{Key: strings.TrimPrefix(m.Subject, selectionKeyPrefix), Seq: m.Seq, Value: m.Data}
 		if op == "DEL" || op == "PURGE" {
 			key.Deleted, key.Value = true, nil
 		}
@@ -248,11 +247,7 @@ func (r *run) statusPGFamily(ctx context.Context, family string) (statusFamily, 
 	if file, flagName := r.o.storeFile(family); file == "" {
 		return f, fmt.Errorf("%s's store: no %s names it", family, flagName)
 	}
-	db, err := r.database(ctx, family)
-	if err != nil {
-		return f, fmt.Errorf("%s's store: %w", family, err)
-	}
-	store, err := pgStore(family, db)
+	store, err := r.pgStoreOf(ctx, family)
 	if err != nil {
 		return f, err
 	}
