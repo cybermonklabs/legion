@@ -17,6 +17,7 @@ import (
 // Here the catch-up lane holds a transaction while the issue closes. The close must still reach
 // the room, and alice's browser must be closed.
 func TestAnIssueCloseReachesTheRoomsWhileAnotherRoomSyncLaneHoldsAConnection(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	task, server := newTestServiceInstance(t, database)

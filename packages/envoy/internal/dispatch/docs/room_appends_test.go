@@ -203,6 +203,7 @@ func typeInRoom(t *testing.T, service *Service, artifactID string, connection ui
 // transaction in at most three round trips, and on connections of the rooms' own, so the shared
 // pool hands the room none.
 func TestQueuedBrowserUpdatesOfOneRoomCommitInOneTransactionOffTheSharedPool(t *testing.T) {
+	t.Parallel()
 	const queued = 20
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -391,6 +392,7 @@ func creditRowsSince(t *testing.T, database *store.Store, artifactID string, bas
 // leaves it (updateOwedStatement). Each scenario is made twice on two documents, queued and one at
 // a time.
 func TestABatchLeavesThePendingAuthorRowsOneAtATimeAppendsLeave(t *testing.T) {
+	t.Parallel()
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	carol := model.Actor{Kind: "session", ID: "carol"}
@@ -482,6 +484,7 @@ func failDocumentCommits(t *testing.T, database *store.Store, artifactID string)
 // fills the gap (gateAppend). What it refuses is a room whose history was replaced under it, a
 // rebuild on another process here.
 func TestAGateRefusalOrFailedCommitStoresNothingOfTheBatchAndEachUpdateEndsOnce(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		// fail makes the store refuse the room's next append.
@@ -611,6 +614,7 @@ func TestAGateRefusalOrFailedCommitStoresNothingOfTheBatchAndEachUpdateEndsOnce(
 // stored. Every update is stored once and the live write's never a second time, and the stored
 // history decodes with nothing left pending, every time over many rounds (run it with -race).
 func TestABatchStopsAtASuppressedUpdateAndAtAnotherRoomInstance(t *testing.T) {
+	t.Parallel()
 	// Each round's edits grow the document's history, so a round costs more than the one before:
 	// under -race 150 rounds run in about 57 s and 200 in about 110 s.
 	const rounds = 150
@@ -815,6 +819,7 @@ func (s *countingBurstStore) AppendUpdatesWithCredit(ctx context.Context, room s
 // before the update that call has taken, and each append stores one. Each way every update is
 // stored once, in commit order, and the room's record ends every count it held.
 func TestALoneUpdateAndABatchHoldingItStoreItOnce(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		// loneFirst makes the lone update's call before the batch's, which is otherwise first.
@@ -989,6 +994,7 @@ func standingCheckpoints(t *testing.T, database *store.Store, artifactID string)
 // that second read the keystroke is refused as behind the head and the room fails, with nothing
 // wrong with the room or with what the browser typed.
 func TestTheFirstKeystrokeOfARoomLoadedOnAStrandedPruneFinishesIt(t *testing.T) {
+	t.Parallel()
 	const ceiling = 3
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -1042,6 +1048,7 @@ func TestTheFirstKeystrokeOfARoomLoadedOnAStrandedPruneFinishesIt(t *testing.T) 
 // room's batch, whose pipelines carry the recovery (appendRoomTx), and a caller's transaction,
 // which runs it statement by statement (recoverPruneTx, appendUpdatesTx).
 func TestAnAppendFinishesAStrandedPruneAndStoresOnTheHeadItLeaves(t *testing.T) {
+	t.Parallel()
 	const ceiling = 3
 	for _, path := range []string{"batch", "transaction"} {
 		t.Run(path, func(t *testing.T) {
@@ -1115,6 +1122,7 @@ func TestAnAppendFinishesAStrandedPruneAndStoresOnTheHeadItLeaves(t *testing.T) 
 // unknown is the answer the append used to throw away. The append still returns, and its
 // connection must leave the room-appends pool destroyed, its backend ending with it.
 func TestARoomAppendWhoseUnlockDoesNotFreeTheLockClosesItsConnection(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	versioned := NewPgVersioned(database)
@@ -1275,6 +1283,7 @@ func leaseCallBound(t *testing.T) time.Duration {
 // room-appends pool rather than go back into it, and the room's next writer must get past
 // holdRoom - the room's in-process lock, then a connection of that pool - within the same bound.
 func TestARefusedRoomAppendsRollbackIsBoundedOnAHalfOpenLink(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "one")

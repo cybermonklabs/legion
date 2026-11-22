@@ -54,6 +54,7 @@ func xidService(t *testing.T) (*Service, *store.Store, *storetest.XidTracer) {
 // a statement gives it one. A run that judges no gap holds the window's shape here and says so
 // (AssertXidWindows).
 func TestXidWindowRigPassesBackToBackStatementsAfterTheFirstWrite(t *testing.T) {
+	t.Parallel()
 	_, database, tracer := xidService(t)
 	report := tracer.Measure(t, database.Pool, func() {
 		runRigTransaction(t, database, 0)
@@ -131,6 +132,7 @@ func TestXidWindowRigKeepsItsOwnWorkOutOfTheGaps(t *testing.T) {
 // times the bound and is spent in Go, so this test is a reading of the bound alone and skips in
 // a build that judges no window's time.
 func TestXidWindowRigCatchesAGapAfterTheFirstWrite(t *testing.T) {
+	t.Parallel()
 	storetest.RequireXidGapJudgment(t)
 	_, database, tracer := xidService(t)
 	report := tracer.Measure(t, database.Pool, func() {
@@ -155,6 +157,7 @@ func TestXidWindowRigCatchesAGapAfterTheFirstWrite(t *testing.T) {
 // does run a statement inside the window is caught in either build, by the shape each window
 // test asserts.
 func TestXidWindowCatchesADocumentCallInsideTheWindow(t *testing.T) {
+	t.Parallel()
 	storetest.RequireXidGapJudgment(t)
 	_, database, tracer := xidService(t)
 	spec, _ := storetest.XidSpec("DOC", 1)
@@ -180,6 +183,7 @@ func TestXidWindowCatchesADocumentCallInsideTheWindow(t *testing.T) {
 // first one whose result shows it wrote - and never reported as a rig problem; a sleep after that
 // write is caught there as it is under a poller that saw the xid.
 func TestXidWindowRigJudgesAWriteThePollerNeverSaw(t *testing.T) {
+	t.Parallel()
 	for _, probe := range []struct {
 		name string
 		gap  time.Duration
@@ -278,6 +282,7 @@ func rigTransactionDoing(database *store.Store, between func() error) error {
 // anchor against the new tree and writes the version, its anchors and its events in one
 // transaction (settleRoomWithin).
 func TestXidWindowSettlementVersionWrite(t *testing.T) {
+	t.Parallel()
 	service, database, tracer := xidService(t)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
 	artifactID, before, generation := settlementFixture(t, service, database, alice)
@@ -300,6 +305,7 @@ func TestXidWindowSettlementVersionWrite(t *testing.T) {
 // heard of yet: the room stays resident, and the settlement reads the close off the issue row
 // under the owner's lock (lockArtifactOwner).
 func TestXidWindowClosedIssueSettlementVersionWrite(t *testing.T) {
+	t.Parallel()
 	service, database, tracer := xidService(t)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
 	artifactID, before, generation := settlementFixture(t, service, database, alice)
@@ -369,6 +375,7 @@ func settlementFixture(t *testing.T, service *Service, database *store.Store, ed
 // The edit-notice sweep claims a due notice, then reads both versions it names, parses them to
 // tell a server-state-only change from a person's edit and diffs them (sendEditNotice).
 func TestXidWindowEditNoticeSweep(t *testing.T) {
+	t.Parallel()
 	service, database, tracer := xidService(t)
 	spec, quotes := storetest.XidSpec("DOC", 1)
 	document := createIssueDocument(t, database, 2, spec)
@@ -399,6 +406,7 @@ func TestXidWindowEditNoticeSweep(t *testing.T) {
 // with large specs, as a deploy whose overlap wrote versions through code that records no count
 // leaves them.
 func TestXidWindowReconcileTaskProgress(t *testing.T) {
+	t.Parallel()
 	service, database, tracer := xidService(t)
 	spec, _ := storetest.XidSpec("DOC", 1)
 	const issues = 20
@@ -432,6 +440,7 @@ func TestXidWindowReconcileTaskProgress(t *testing.T) {
 // way the whole write is the one statement that writes the windows, so the window is that
 // statement and the commit after it.
 func TestXidWindowBlockIndexWindowArm(t *testing.T) {
+	t.Parallel()
 	service, database, tracer := xidService(t)
 	ctx := context.Background()
 	spec, _ := storetest.XidSpec("DOC", 1)

@@ -33,6 +33,7 @@ import (
 // documents are opened over a day: what fills the cap is how many were touched, not how many are
 // open at once.
 func TestDocumentsOpenAfterMoreThanTheRoomCapWereTouched(t *testing.T) {
+	t.Parallel()
 	service, database := newRoomReleaseService(t)
 	const written, read, opened = 100, 100, maxLiveRooms
 	ids := createDocuments(t, database, written+read+opened+1)
@@ -70,6 +71,7 @@ func TestDocumentsOpenAfterMoreThanTheRoomCapWereTouched(t *testing.T) {
 // are evicted on the idle schedule too, so touching more documents than the cap through the API
 // alone leaves a new document openable and the service's per-document maps empty once they idle.
 func TestRoomsTheAPIOpenedReleaseTheCapOnceIdle(t *testing.T) {
+	t.Parallel()
 	service, database := newRoomReleaseService(t)
 	ids := createDocuments(t, database, maxLiveRooms+51)
 	touched, untouched := ids[:len(ids)-1], ids[len(ids)-1]
@@ -103,6 +105,7 @@ func TestRoomsTheAPIOpenedReleaseTheCapOnceIdle(t *testing.T) {
 // timer, and it goes with its room even while another document's settlement timer sits between its
 // registration and its attachment, which the register holds as a nil entry.
 func TestAStateWithNoTimerIsReleasedWhileAnotherRoomArmsOne(t *testing.T) {
+	t.Parallel()
 	service, _ := newRoomReleaseService(t)
 	const id = "00000000-0000-4000-8000-000000000513"
 	timerID := service.nextSettleTimer.Add(1)
@@ -121,6 +124,7 @@ func TestAStateWithNoTimerIsReleasedWhileAnotherRoomArmsOne(t *testing.T) {
 // the document from it whether or not the issue reopens (resumeOwedSettlements), as does its
 // room's next load.
 func TestClosingAnIssueReleasesItsUnsettledDocuments(t *testing.T) {
+	t.Parallel()
 	service, database := newRoomReleaseService(t)
 	service.settle = time.Hour // the issue closes before any settlement runs
 	ctx := context.Background()
@@ -152,6 +156,7 @@ func TestClosingAnIssueReleasesItsUnsettledDocuments(t *testing.T) {
 // lookup hands out, so the write the lookup was for lands on the document's current state: here a
 // seed's author, which the document's settlement attributes its ask blocks to.
 func TestAStateReleasedAsALookupFindsItTakesNoWrite(t *testing.T) {
+	t.Parallel()
 	service, id := newTestService(t)
 	actor := model.Actor{Kind: "session", ID: "seeding-session"}
 	released := false

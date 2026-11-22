@@ -22,6 +22,7 @@ import (
 // than the tail fold into the fold point and the young row stays as written, byte for byte, and the
 // document reads as it did.
 func TestTheCompactionSweepFoldsADocumentTheRestartedServiceNeverOpened(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
@@ -95,6 +96,7 @@ func TestTheCompactionSweepRunsOnceAnHourAcrossProcesses(t *testing.T) {
 // past the tail, so a compaction would fold them, and fewer than compactMinRows - is left as stored
 // for the queue of whichever process writes or reads it next.
 func TestTheCompactionSweepLeavesADocumentWhoseRowsAreYoungerThanTheAgeRule(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
@@ -115,6 +117,7 @@ func TestTheCompactionSweepLeavesADocumentWhoseRowsAreYoungerThanTheAgeRule(t *t
 // its first, and no other: a document of one row, or of none, has nothing a compaction could fold,
 // and the append of a document's first row names nothing.
 func TestTheCompactionSweepListsADocumentOnceAnAppendGivesItASecondRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	one := storeAgedRows(t, database, 1, time.Hour)
@@ -146,6 +149,7 @@ func TestTheCompactionSweepListsADocumentOnceAnAppendGivesItASecondRow(t *testin
 // point: one that folds every row, all of them old, takes it off, and one that leaves a row younger
 // than the tail above the fold point keeps it there until a later compaction folds that row too.
 func TestACompactionTakesItsDocumentOffTheSweepsListOnceNoRowStaysAboveTheFoldPoint(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	versioned := NewPgVersioned(database)
 	whole := storeAgedRows(t, database, 3, time.Hour)
@@ -173,6 +177,7 @@ func TestACompactionTakesItsDocumentOffTheSweepsListOnceNoRowStaysAboveTheFoldPo
 // A document's deletion and its rebuild, which leaves it one row, each take it off the sweep's
 // list in their own transaction; the rebuilt document's next append names it again.
 func TestDeleteAndRebuildTakeTheDocumentOffTheSweepsList(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	versioned := NewPgVersioned(database)
@@ -217,6 +222,7 @@ func TestDeleteAndRebuildTakeTheDocumentOffTheSweepsList(t *testing.T) {
 // single row, one whose rows went with its artifact - and keeps a document whose rows after its
 // first are too young to be due, which it leaves as stored.
 func TestTheCompactionSweepForgetsADocumentWithNoRowAfterItsFirst(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
@@ -271,6 +277,7 @@ func requireOwed(t *testing.T, database *store.Store, what string, want ...strin
 // lists its candidates by reading every document's rows (a scan of doc_updates, by its heap or its
 // primary key) reads at least one row per document, every hour, on a table of production's size.
 func TestTheCompactionSweepReadsNoRowOfADocumentThatIsNotDue(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
@@ -347,6 +354,7 @@ func docUpdatesTuplesRead(t *testing.T, database *store.Store) int64 {
 // compaction queue, not waited for: the pass goes on and compacts the next document, and the queue
 // compacts the busy one once its lock is free.
 func TestTheCompactionSweepHandsABusyDocumentToTheQueue(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})

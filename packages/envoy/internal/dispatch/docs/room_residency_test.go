@@ -49,6 +49,7 @@ import (
 // replaced. Every load of the room is checked against the writes its earlier instances took
 // (watchRoomLoads), and the document the store holds at the end is the last one written.
 func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	loads := watchRoomLoads(service)
@@ -222,6 +223,7 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 // and the store holds both writes' text. The write here waits inside its Apply while the peer
 // leaves and a read loads the room again (roomIdleTimeout).
 func TestAWriteInsideApplyOutlivesTheRoomsLastPeer(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -317,6 +319,7 @@ func TestAWriteInsideApplyOutlivesTheRoomsLastPeer(t *testing.T) {
 // a room its last browser left (roomIdleTimeout), and the document reads back what the API wrote.
 // An agent's edit of a document no room holds loads none at all (publishLiveWrite).
 func TestARoomOnlyTheAPITouchesLeavesWithinTheIdleTimeout(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	// Production waits roomIdleTimeout; two seconds keeps the test short, and ygo then sweeps
@@ -541,6 +544,7 @@ func TestTheUpdateObserverNeverRendersAWriteHalfWay(t *testing.T) {
 // document, so a listing that held it past the room would keep that copy for a collection more
 // for every room the server evicts, and one that outlived the room would keep it for good.
 func TestAnEvictedRoomsReplicaGoesWithIt(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -609,6 +613,7 @@ func listedReplica(t *testing.T, service *Service, artifactID string) (weak.Poin
 // does not take. A running Dispatch process keeps one service for its whole life, so a record
 // the cleanup fails to take is one more for every room the process ever loads.
 func TestAnEvictedRoomsLoadRecordGoesWithIt(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -646,6 +651,7 @@ func TestAnEvictedRoomsLoadRecordGoesWithIt(t *testing.T) {
 // read: a link reading back with the target the reader wrote, an answered ask with the choice it
 // wrote.
 func TestEditingALiveReadsTreeChangesNoLaterRead(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, `:::ask{#ask-1}
@@ -739,6 +745,7 @@ func newRetiringRoomService(t *testing.T) (*Service, *store.Store) {
 // goroutine. The test pauses the publish's commit in an observer, asks for the close there, and
 // lets the commit go on.
 func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		peer bool
@@ -913,6 +920,7 @@ func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
 // commit returns either way. The longer the document, the longer its room's update observer
 // renders, and the wider that window.
 func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
+	t.Parallel()
 	markdown := func(paragraphs int, tag string) string {
 		var text strings.Builder
 		for index := range paragraphs {
@@ -1138,6 +1146,7 @@ func parkedCommitTrial() (int, bool) {
 // the case in a child process of this test binary with one trial's commit parked for good and
 // requires the child to print the case's own --- FAIL line inside a deadline of its own.
 func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(storetest.DatabaseURLEnv) == "" {
 		t.Skip(storetest.DatabaseURLEnv + " must be set to run Postgres-backed Dispatch tests")
 	}

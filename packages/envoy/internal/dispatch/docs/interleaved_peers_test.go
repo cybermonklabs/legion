@@ -30,6 +30,7 @@ import (
 // held hand-over; and once that hand-over runs it stores nothing and leaves the room counting no
 // update as pending, so nothing holds the room's settlement or its record (unusedLocked).
 func TestARoomWhosePeersUpdatesReachItsPersistenceOutOfOrderSettlesBoth(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	var attempts atomic.Int64
@@ -154,6 +155,7 @@ func TestARoomWhosePeersUpdatesReachItsPersistenceOutOfOrderSettlesBoth(t *testi
 // pending. The replica applies Update then Parked, so a replica rebuilt from the log alone holds
 // everything the live room holds.
 func TestARoomsParkedOnlyCommitIsStoredAndReplaysFromItsLog(t *testing.T) {
+	t.Parallel()
 	t.Run("valid", func(t *testing.T) { parkedOnlyCommitSurvivesReload(t, false) })
 	t.Run("truncated_delete_set", func(t *testing.T) { parkedOnlyCommitSurvivesReload(t, true) })
 }
@@ -293,6 +295,7 @@ func parkedOnlyCommitSurvivesReload(t *testing.T, truncated bool) {
 // bytes too, as it stores a commit that only parked, so a restart before the predecessor arrives
 // keeps both clients' edits.
 func TestAPeerUpdateThatChangesTheRoomAndParksKeepsBothAcrossARestart(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")

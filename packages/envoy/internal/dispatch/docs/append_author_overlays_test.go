@@ -58,6 +58,7 @@ func appendCredit(t *testing.T, service *Service, artifactID string, authors []m
 // author the append queued, which the table holds no row of until the write phase has run, and
 // the commit leaves the row.
 func TestAnAppendsAskBlockAuthorIsReadBackInItsOwnTransaction(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n")
@@ -95,6 +96,7 @@ func TestAnAppendsAskBlockAuthorIsReadBackInItsOwnTransaction(t *testing.T) {
 // has stored the room's updates (transactionPendingAuthors) - finds the author the append queued,
 // which the table holds no row of until the write phase has run, and the commit leaves the row.
 func TestAnAppendsPendingAuthorIsReadBackInItsOwnTransaction(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n")
@@ -141,6 +143,7 @@ func TestAnAppendsPendingAuthorIsReadBackInItsOwnTransaction(t *testing.T) {
 // one author, so an overlay that kept the later row's mark as it stood fails where the table does
 // not.
 func TestAQueuedPendingAuthorIsProvenOnlyWhenEveryRowIs(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	ctx := context.Background()
 	claimed := model.Actor{Kind: "session", ID: "judge-session"}

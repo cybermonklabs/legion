@@ -81,6 +81,7 @@ func fleetProcess(t *testing.T, service *Service, version, creatable, ownerLockP
 // registration takes no gate. The gate is read held first, so a row that took it would wait here
 // for the registration's 5 seconds and fail.
 func TestTheNextBuildsFleetProcessWaitsForNoOwnerLock(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	ctx := context.Background()
 	tx, err := service.store.Pool.Begin(ctx)
@@ -861,6 +862,7 @@ func revokesCloseBeganBeforeTheEnd(writes []socketWrite, revokedAt, closedAt tim
 // writes: only an admission-revoked close frame attempted after the revoke and while the socket
 // was still open explains its end. The times are a trace's own instants, a millisecond apart.
 func TestOnlyARevokedCloseAttemptedBeforeTheEndIsTheRevokesEnd(t *testing.T) {
+	t.Parallel()
 	at := func(ms int) time.Time { return time.Unix(0, 0).Add(time.Duration(ms) * time.Millisecond) }
 	revokedClose := serverFrame(opcodeClose, binary.BigEndian.AppendUint16(nil, uint16(contracts.DocumentAdmissionRevokedCloseCode)))
 	otherClose := serverFrame(opcodeClose, binary.BigEndian.AppendUint16(nil, 1001))
@@ -966,6 +968,7 @@ func admitSchemaSocket(t *testing.T, service *Service, room, token string, prese
 // - whichever of the two asks first. Matching a token to a socket by its key, or by the order the
 // two arrive in, answers one of these orders wrongly, since neither says which socket sent it.
 func TestATokenIsAnsweredFromItsOwnSocketInEitherOrder(t *testing.T) {
+	t.Parallel()
 	for _, order := range []struct {
 		name         string
 		revokedFirst bool
@@ -1028,6 +1031,7 @@ func TestATokenIsAnsweredFromItsOwnSocketInEitherOrder(t *testing.T) {
 // since the fleet no longer admits the page - is admitted and answered read-only, while the
 // revoked socket's late token is answered read-only too.
 func TestARevokedPagesReconnectIsAdmittedBesideItsLateToken(t *testing.T) {
+	t.Parallel()
 	const room, token = "room", "2"
 	service := &Service{}
 	revokedCtx, revoked := admitSchemaSocket(t, service, room, token, schemaPage{version: 2, creatable: 2, valid: true}, true)
@@ -1411,6 +1415,7 @@ func serverFrame(opcode byte, payload []byte) []byte {
 // in each is what that test requires to be past 64 KB, and the frames after it are how it knows
 // the server has finished writing that document.
 func TestTheServerStreamReaderTellsARevokedPagesEndsApart(t *testing.T) {
+	t.Parallel()
 	const head = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n"
 	const documentPayload = 70 * 1024
 	document := serverFrame(opcodeBinary, bytes.Repeat([]byte("d"), documentPayload))

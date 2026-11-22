@@ -21,6 +21,7 @@ import (
 // resolves the quote - runs with no transaction id held, the lock because it is advisory and
 // the reads because a read takes none.
 func TestXidWindowAnchorBlockBackfill(t *testing.T) {
+	t.Parallel()
 	service, database, tracer := xidService(t)
 	spec, quotes := storetest.XidSpec("DOC", 1)
 	artifactID := createIssueDocument(t, database, 1, spec)

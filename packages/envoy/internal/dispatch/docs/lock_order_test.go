@@ -60,6 +60,7 @@ func lockWaits(t *testing.T, ctx context.Context, database *store.Store, like st
 }
 
 func TestConditionalEditDoesNotInvertTheRoomLockOrder(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	database, service, id := lockOrderService(t)
@@ -191,6 +192,7 @@ func awaitUnblocked(t *testing.T, subject string, op func() error) {
 // advisory lock and the append's row lock is `for no key update`: they still serialise the
 // writers that take them, including the event sequence allocation, and do not block a foreign key.
 func TestDurableAppendIsNotBlockedByTheOwnerLock(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	database, service, id := lockOrderDocument(t)
@@ -219,6 +221,7 @@ func TestDurableAppendIsNotBlockedByTheOwnerLock(t *testing.T) {
 }
 
 func TestSnapshotIsNotBlockedByTheOwnerLock(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	database, service, id := lockOrderDocument(t)
@@ -244,6 +247,7 @@ func TestSnapshotIsNotBlockedByTheOwnerLock(t *testing.T) {
 // loser is failRoom - it evicts the room and drops the in-flight update rather than returning
 // an error to anyone.
 func TestLiveUpdateIsNotBlockedByTheOwnerLock(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	database, service, id := lockOrderDocument(t)

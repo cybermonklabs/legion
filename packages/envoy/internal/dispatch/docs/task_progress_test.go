@@ -90,6 +90,7 @@ func runTaskProgress(t *testing.T, service *Service) <-chan struct{} {
 // The reconciliation counts every uncounted issue once at start and then returns: every version
 // write counts its own, so it keeps no timer and makes no statement after the boot pass.
 func TestTaskProgressIsCountedAtStartAndThenNothingRuns(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	keys := []string{
 		seedUncountedIssue(t, database, 1, "- [x] a\n- [ ] b\n"),

@@ -34,6 +34,7 @@ import (
 // alone, so bytes kept on the room's record would be taken back by it - leaving the figure short
 // by the whole of the resident room's history, for as long as that room lives.
 func TestAnEarlierRoomsLateUnloadLeavesTheResidentRoomsBytesResident(t *testing.T) {
+	t.Parallel()
 	r := unloadAcrossAReload(t)
 	r.releaseFirstRoom()
 	// What is left is the second room's load and its write.
@@ -58,6 +59,7 @@ func TestAnEarlierRoomsLateUnloadLeavesTheResidentRoomsBytesResident(t *testing.
 // (takeUpSettlementRoom): when that browser leaves too, its socket's end retires nothing, and the
 // room idles out as any room a browser left.
 func TestARoomALateSettlementLoadedStaysForABrowserThatJoinedIt(t *testing.T) {
+	t.Parallel()
 	r := unloadAcrossAReload(t)
 	settlementRoom, letSettle := r.holdLateSettlementInItsRoom()
 	browser := admitSocket(t, r.url, r.room, "the browser that opens the document while the settlement runs")
@@ -90,6 +92,7 @@ func TestARoomALateSettlementLoadedStaysForABrowserThatJoinedIt(t *testing.T) {
 // does a retirement run after it, as the end of any later holder would run one. The room idles out
 // as any room a write loaded.
 func TestARoomALateSettlementLoadedStaysForAWriterThatTookItUp(t *testing.T) {
+	t.Parallel()
 	r := unloadAcrossAReload(t)
 	settlementRoom, letSettle := r.holdLateSettlementInItsRoom()
 	// The write's own settlement runs once the write has ended, so nothing holds the room's
@@ -145,6 +148,7 @@ func TestARoomALateSettlementLoadedStaysForAWriterThatTookItUp(t *testing.T) {
 // write, its own settlement and the late settlement have all ended, a retirement leaves the room
 // resident, as for a writer that took the room up after it loaded.
 func TestARoomALateSettlementLoadedStaysForAWriterThatTookItUpWhileItLoaded(t *testing.T) {
+	t.Parallel()
 	t.Run("the load ends before the write commits", func(t *testing.T) {
 		writerTakesUpALoadingSettlementRoom(t, false)
 	})
@@ -327,6 +331,7 @@ func writerTakesUpALoadingSettlementRoom(t *testing.T, writeFirst bool) {
 // settlement room's: the room keeps its mark, and the departing browser's socket end retires it as
 // it retires one that finished loading first.
 func TestAnEarlierRoomsUnloadLeavesTheMarkOfASettlementRoomStillLoading(t *testing.T) {
+	t.Parallel()
 	r := unloadAcrossAReload(t)
 	// The second room leaves while the first room's unload is held. The first close holds the
 	// service's close gate for the room (roomServer.CloseRoom) until its unload returns, so the
@@ -355,6 +360,7 @@ func TestAnEarlierRoomsUnloadLeavesTheMarkOfASettlementRoomStillLoading(t *testi
 // still loading as for one that has gone, and the room is the loading settlement's to retire as its
 // departing browser's socket ends.
 func TestARetirementLeavesTheMarkOfASettlementRoomStillLoading(t *testing.T) {
+	t.Parallel()
 	r := unloadAcrossAReload(t)
 	r.releaseFirstRoom()
 	letDeparture := r.closeUnderHeldDeparture()
@@ -377,6 +383,7 @@ func TestARetirementLeavesTheMarkOfASettlementRoomStillLoading(t *testing.T) {
 // record (afterRetireReserved), and meets that reservation still held, since the first, having
 // left the room, ends it only once the second has met it or returned (afterRetireLeft).
 func TestTwoRetirementsInsideASettlementRoomAtOnceRetireIt(t *testing.T) {
+	t.Parallel()
 	r := unloadAcrossAReload(t)
 	r.releaseFirstRoom()
 
@@ -458,6 +465,7 @@ func TestTwoRetirementsInsideASettlementRoomAtOnceRetireIt(t *testing.T) {
 // forked from against the room the name holds at the publish, not that some room is resident: a
 // room another load put back under the name is no room the write forked from.
 func TestAWriterOpeningAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t *testing.T) {
+	t.Parallel()
 	r := unloadAcrossAReload(t)
 	r.releaseFirstRoom()
 
@@ -559,6 +567,7 @@ func TestAWriterOpeningAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t 
 // The settlement is an issue's synchronous one (settleOwedNow), which, as every caller of
 // settleRoomWithin does, holds the room's record while it runs.
 func TestASettlementStartingAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t *testing.T) {
+	t.Parallel()
 	r := unloadAcrossAReload(t)
 	r.releaseFirstRoom()
 
@@ -651,6 +660,7 @@ var errLateSettlementStopsShort = errors.New("the test stops the late departure'
 // until the departing socket has ended, so the retry's end, not the socket's, is what retires the
 // room, and that end comes whatever the order the machine runs the two in.
 func TestARoomALateSettlementLoadedIsRetiredAsTheTimersRetryOfThatSettlementEnds(t *testing.T) {
+	t.Parallel()
 	r := unloadAcrossAReload(t)
 	r.releaseFirstRoom()
 
@@ -698,6 +708,7 @@ func TestARoomALateSettlementLoadedIsRetiredAsTheTimersRetryOfThatSettlementEnds
 // departing browser's socket end retires nothing while the retry's timer is armed, and the
 // fixture's settle delay of an hour keeps it armed until the synchronous settlement takes it.
 func TestARoomALateSettlementLoadedIsRetiredAsTheSynchronousSettlementThatTakesItsRetryOverEnds(t *testing.T) {
+	t.Parallel()
 	r := unloadAcrossAReload(t)
 	r.releaseFirstRoom()
 
@@ -747,6 +758,7 @@ func signal(c chan struct{}) {
 // unloads in full. Whatever the order, each unload ends one of the loads counted under the name,
 // so once both have run no bytes of either are counted and the name counts no load.
 func TestUnloadsOfTwoRoomsInEitherOrderLeaveNoResidentBytes(t *testing.T) {
+	t.Parallel()
 	r := unloadAcrossAReload(t)
 	// The first room's unload goes on past what releaseUnloadedRoom reads, then waits before it
 	// ends a load (beforeUnloadEndsLoad); only that unload waits, and a sync.Once would make the

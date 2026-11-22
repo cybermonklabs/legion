@@ -125,6 +125,7 @@ func (s *failRoomDuringLoadStore) failDuringLoad(room string) {
 // failed, and every later write to the document answers 503 until the server restarts
 // (LEGION-282).
 func TestARoomThatFailsWhileItIsLoadingRecovers(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
 	persist := &failRoomDuringLoadStore{
@@ -308,6 +309,7 @@ func publishWaitsForALoadingRoom() bool {
 // alone, so the ask blocks the dropped settlement would have indexed stayed out of the open
 // asks until someone edited the document. The replacement settles once instead.
 func TestAFailedRoomsReplacementSettlesWithoutAnotherEdit(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID,
@@ -349,6 +351,7 @@ func indexedAsks(t *testing.T, service *Service, artifactID string) int {
 }
 
 func TestATransactionHoldingTheRoomLockFailsFastOnItsFailedRoom(t *testing.T) {
+	t.Parallel()
 	for name, create := range map[string]func(*testing.T, *store.Store, string) string{
 		"issue document":   createDocument,
 		"project document": createProjectDocument,
@@ -396,6 +399,7 @@ func TestATransactionHoldingTheRoomLockFailsFastOnItsFailedRoom(t *testing.T) {
 // document's locks: the transaction holding them may be waiting on a lock this one holds. Once
 // the room has recovered, a write runs as ever.
 func TestAWriteMeetingAFailedRoomFailsFastWhoeverHoldsItsLock(t *testing.T) {
+	t.Parallel()
 	database, service, artifactID := lockOrderService(t)
 	seedFoldableText(t, service, artifactID, "before")
 	ctx := context.Background()
@@ -461,6 +465,7 @@ func TestAWriteMeetingAFailedRoomFailsFastWhoeverHoldsItsLock(t *testing.T) {
 // the mark waits, as every document read outside a transaction does, and answers once the room
 // has recovered.
 func TestABlockPathReadThatCannotWaitFailsFastOnAFailedRoom(t *testing.T) {
+	t.Parallel()
 	database, service, artifactID := lockOrderService(t)
 	seedFoldableText(t, service, artifactID, "before")
 	ctx := context.Background()
@@ -509,6 +514,7 @@ func TestABlockPathReadThatCannotWaitFailsFastOnAFailedRoom(t *testing.T) {
 }
 
 func TestARoomFailingBetweenTwoJoinedOperationsFailsTheSecondFast(t *testing.T) {
+	t.Parallel()
 	database, service, artifactID := lockOrderService(t)
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
@@ -546,6 +552,7 @@ func TestARoomFailingBetweenTwoJoinedOperationsFailsTheSecondFast(t *testing.T) 
 // that holds off every other writer and the settlement is on the failed room. The write fails,
 // and its transaction rolls back.
 func TestARoomFailingDuringAJoinedWriteFailsTheWrite(t *testing.T) {
+	t.Parallel()
 	database, service, artifactID := lockOrderService(t)
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
@@ -586,6 +593,7 @@ func TestARoomFailingDuringAJoinedWriteFailsTheWrite(t *testing.T) {
 // no lock either transaction holds, and the second write then either runs on the reloaded room
 // or, had it reached the failed room first, fails fast. It never waits for good.
 func TestAWriterWaitingForTheSlotFinishesWhenTheRoomFails(t *testing.T) {
+	t.Parallel()
 	database, service, artifactID := lockOrderService(t)
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
@@ -685,6 +693,7 @@ func awaitOwnerLockTaken(t *testing.T, ctx context.Context, database *store.Stor
 // ids into the room, so a room that fails in that window fails the settlement rather than
 // holding it until an eviction that waits for its lock. The reloaded room settles as ever.
 func TestASettlementHoldingTheRoomLockFailsFastOnItsFailedRoom(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
@@ -783,6 +792,7 @@ func (s *failingBrowserAppendStore) AppendUpdateTx(ctx context.Context, tx pgx.T
 // versioning or publishing a document the room never held, and its transaction rolls back to the
 // durable document, which the reloaded room then serves.
 func TestAWriteWhoseRoomFailsBeforeItsFirstAppendFailsFast(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	store := &failingBrowserAppendStore{

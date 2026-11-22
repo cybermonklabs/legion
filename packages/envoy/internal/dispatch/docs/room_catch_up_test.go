@@ -149,6 +149,7 @@ func replaceStoredHistory(t *testing.T, database *store.Store, artifactID, markd
 // trip, and the room is not closed: the browser's socket stays open, the room is the instance it
 // was, its cursor stands at the head, and it writes again.
 func TestAWriteOnTheOtherProcessReachesThisProcessesBrowserWithoutAClose(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	runCatchUps(t, pair.taskA)
 	browser := connectPeer(t, pair.serverA.URL, pair.artifactID, "alice")
@@ -188,6 +189,7 @@ func TestAWriteOnTheOtherProcessReachesThisProcessesBrowserWithoutAClose(t *test
 // holds what it announced. Its bare twin on documentChangedChannel is dropped with it. Another
 // process's announcement for the same room does read, which is the control.
 func TestAHeadAnnouncementFromThisProcessReadsNothing(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	editAsConnectedPeer(t, pair.taskA, pair.artifactID, 1, alice, appendBlocks(t, "Alice types once.\n"))
@@ -215,6 +217,7 @@ func TestAHeadAnnouncementFromThisProcessReadsNothing(t *testing.T) {
 // another process's row was not caught up yet - and folds them into through once the gap fills,
 // as roomHold.since folds into roomHold.loaded.
 func TestOwnAppendsMadeWhileBehindFoldIntoTheCursor(t *testing.T) {
+	t.Parallel()
 	cursor := &roomCursor{through: 4}
 	advanceRoomCursor(cursor, 6)
 	advanceRoomCursor(cursor, 7)
@@ -238,6 +241,7 @@ func TestOwnAppendsMadeWhileBehindFoldIntoTheCursor(t *testing.T) {
 // that row in folds both, so the room then stands at the head and its derived writes pass the gate
 // again.
 func TestABrowserAppendFromARoomBehindTheHeadIsStoredAndTheRoomNeverFails(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	pair.leaveTaskABehind(t, 1, model.Actor{Kind: "user", ID: "bob-on-task-b"}, "Bob's paragraph.\n")
 	room := pair.taskA.srv.GetDoc(pair.artifactID)
@@ -290,6 +294,7 @@ func liveMarkdownOf(t *testing.T, service *Service, artifactID string) string {
 // update is in the room. Here the cursor claims a row whose update the room does not hold, so a
 // catch-up that applied it anyway shows as that row's paragraph in the room.
 func TestACatchUpSkipsTheRowsItsInstanceHolds(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	bob := model.Actor{Kind: "user", ID: "bob-on-task-b"}
 	pair.leaveTaskABehind(t, 1, bob, "Bob's first paragraph.\n")
@@ -325,6 +330,7 @@ func TestACatchUpSkipsTheRowsItsInstanceHolds(t *testing.T) {
 // block (observeAskBlocksForUpdate). Credited, alice - connected to task A, typing nothing - was
 // listed on the version holding bob's words, and named the author of bob's ask.
 func TestARemoteUpdateCreditsNoLocalPeerAndAttributesNoAskBlock(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	alice := model.Actor{Kind: "user", ID: "alice-on-task-a"}
 	bob := model.Actor{Kind: "user", ID: "bob-on-task-b"}
@@ -372,6 +378,7 @@ func TestARemoteUpdateCreditsNoLocalPeerAndAttributesNoAskBlock(t *testing.T) {
 // The rebuild announces itself, task A's catch-up finds the history replaced, and the room is
 // closed - its browser's socket ends - and reloads the rebuilt document.
 func TestARebuildOnTheOtherProcessClosesAResidentRoom(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	runCatchUps(t, pair.taskA)
 	browser := connectPeer(t, pair.serverA.URL, pair.artifactID, "alice")
@@ -399,6 +406,7 @@ func TestARebuildOnTheOtherProcessClosesAResidentRoom(t *testing.T) {
 // a room standing at the head is unaffected, its next catch-up finds a history it holds, and a
 // write on the other process after the compaction is caught up as any other.
 func TestACompactionLeavesACurrentRoomOpen(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	if err := pair.taskA.warmLiveDocument(context.Background(), pair.artifactID); err != nil {
 		t.Fatalf("load task A's room: %v", err)
@@ -437,6 +445,7 @@ func TestACompactionLeavesACurrentRoomOpen(t *testing.T) {
 // before it closes anything (historyReplacedUnderLock), and under it the write has committed, so
 // the room stays open.
 func TestACatchUpInsideThisProcessesOwnCommitWindowClosesNothing(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	service, _ := newTestServiceInstance(t, database)
@@ -492,6 +501,7 @@ func TestACatchUpInsideThisProcessesOwnCommitWindowClosesNothing(t *testing.T) {
 // the settlement, which holds that lock until its commit, and then finds the room at the head;
 // closed instead, the room would lose its readers over this process's own repair.
 func TestACatchUpInsideARepairingSettlementsCommitWindowClosesNothing(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	service, _ := newTestServiceInstance(t, database)
@@ -566,6 +576,7 @@ func waitingAdvisoryLocks(t *testing.T, database *store.Store) int {
 // the way a pool refuses a second connection under a transaction (store.ErrNestedAcquire). Once
 // the reads answer again the wake catches the room up.
 func TestAFailedCatchUpReadIsTriedAgainWithBackoff(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	catchUps := pair.taskA.catchUps
 	now := time.Now()
@@ -605,6 +616,7 @@ func TestAFailedCatchUpReadIsTriedAgainWithBackoff(t *testing.T) {
 
 // A notification for a document this process holds no room for reads nothing and loads nothing.
 func TestACatchUpForADocumentWithNoRoomHereDoesNothing(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	elsewhere := createDocument(t, pair.database, "# Elsewhere")
 	seedServiceText(t, pair.taskB, elsewhere, "Only the other process holds this.\n")
@@ -625,6 +637,7 @@ func TestACatchUpForADocumentWithNoRoomHereDoesNothing(t *testing.T) {
 // each LISTEN stands catches up every room this process has loaded (roomSync.connected,
 // roomCatchUps.sweep), which is why the wait below is on the reconnect and not on a notification.
 func TestARoomLeftBehindWhileTheListenerWasDownIsCaughtUpOnTheReconnect(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	hub := newListenerHub(pair.taskA)
 	up := make(chan struct{})
@@ -685,6 +698,7 @@ func waitForCatchUpsIdle(t *testing.T, service *Service, artifactID string) {
 // catch-up is queued adds nothing. The lane is held while the burst arrives, so every
 // announcement is queued before the first is decided.
 func TestABurstOfBareAnnouncementsCostsOneCatchUp(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	if err := pair.taskA.warmLiveDocument(context.Background(), pair.artifactID); err != nil {
 		t.Fatalf("load task A's room: %v", err)
@@ -817,6 +831,7 @@ func requireNoAnnouncement(t *testing.T, heard <-chan documentHeadNotification, 
 // the stored document as it was, and must wake nobody's catch-up. The announcement carries the
 // head the append left and the process that made it.
 func TestADurableAppendIsAnnouncedOnlyWhenItsTransactionCommits(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	heard := listenForDocumentChanges(t, database)
@@ -852,6 +867,7 @@ func TestADurableAppendIsAnnouncedOnlyWhenItsTransactionCommits(t *testing.T) {
 // text change and its margin projection - and announces it once, at its commit, with the last
 // version it appended (Ledger.announceAppends), not once per append.
 func TestAJoinedTransactionAnnouncesEachDocumentOnceWithItsLastVersion(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -887,6 +903,7 @@ func TestAJoinedTransactionAnnouncesEachDocumentOnceWithItsLastVersion(t *testin
 // announces it there too, with the head it seeded: every room resident elsewhere holds a history
 // that no longer exists.
 func TestARebuildAnnouncesTheDocumentsChange(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
 	// invalid makes the document's first load unreadable, which is what a rebuild needs to see

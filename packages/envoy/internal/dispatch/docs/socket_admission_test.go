@@ -163,6 +163,7 @@ func refuseSpelling(t *testing.T, serverURL, spelling, canonical, what string) {
 // not break is the canonical spelling itself, which is why this drives it first: two browsers
 // on it share one room and what one types reaches the other.
 func TestASocketNamingADocumentByAnotherSpellingOfItsIdIsRefused(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "Shared.")
 	service, server := newTestServiceInstance(t, database)
@@ -200,6 +201,7 @@ func TestASocketNamingADocumentByAnotherSpellingOfItsIdIsRefused(t *testing.T) {
 // verdict is still right: a room an update took outside the schema is refused, and the same room
 // repaired by a replacement from markdown admits sockets again.
 func TestAWarmSocketOpenRendersNothingAndAColdOpenRendersOnce(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	service, server := newTestServiceInstance(t, database)
 	artifactID := createDocuments(t, database, 1)[0]
@@ -248,6 +250,7 @@ func TestAWarmSocketOpenRendersNothingAndAColdOpenRendersOnce(t *testing.T) {
 // liveness ping follows (holdsWhatTheTrackerProtects), waits for the socket to close, which can be
 // hours later. The socket itself is admitted and current all the same.
 func TestAPreloadOvertakenByTheRoomsLoadIsReleasedWhileItsSocketStaysOpen(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	service, server := newTestServiceInstance(t, database)
 	artifactID := createDocuments(t, database, 1)[0]
@@ -306,6 +309,7 @@ func TestAPreloadOvertakenByTheRoomsLoadIsReleasedWhileItsSocketStaysOpen(t *tes
 // closed while that load runs - a person closes the issue as a browser reconnects - still reaches
 // the socket: it is admitted read-only, as a socket opened after the close is.
 func TestAnIssueClosedWhileASocketLoadsAdmitsItReadOnly(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	service, server := newTestServiceInstance(t, database)
 	artifactID := createDocuments(t, database, 1)[0]
@@ -381,6 +385,7 @@ func warmRooms(t *testing.T, service *Service, ids []string) {
 // (addConnection), since a thousand real sockets would test the operating system's limits more
 // than the service's count.
 func TestTheConnectionAndRoomCapsCountWithoutScanning(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	service, server := newTestServiceInstance(t, database)
@@ -447,6 +452,7 @@ func TestTheConnectionAndRoomCapsCountWithoutScanning(t *testing.T) {
 // and 1,000, ten sockets opened at once on ten documents were all admitted and left ten rooms live;
 // with 1,000 and 3, ten sockets on one document left three admitted and seven answered 401.
 func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T) {
+	t.Parallel()
 	const burst = 10
 	open := func(t *testing.T, serverURL string, ids []string) (admitted []*gws.Conn, refusals map[int]int) {
 		t.Helper()
@@ -549,6 +555,7 @@ func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T
 // the room loaded here and keeps nothing of its read, neither the history nor its hold on the
 // document's head-tracker entry, for as long as it stays open.
 func TestAPreloadOfferedAfterAnEarlierRoomsLateUnloadIsNotKeptWhileTheRoomIsLoaded(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	service, server := newTestServiceInstance(t, database)
 	artifactID := createDocuments(t, database, 1)[0]
@@ -629,6 +636,7 @@ func TestAPreloadOfferedAfterAnEarlierRoomsLateUnloadIsNotKeptWhileTheRoomIsLoad
 // head-tracker entry while it stays open. The load is held inside its own read of the store
 // (insideFirstLoadStore), which LoadDoc makes once takePreload has found nothing.
 func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocuments(t, database, 1)[0]
 	reading, release := make(chan struct{}), make(chan struct{})

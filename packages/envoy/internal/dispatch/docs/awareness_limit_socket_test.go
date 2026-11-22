@@ -29,6 +29,7 @@ const socketCloseWait = 5 * time.Second
 // hijacked buffered reader instead, so the reader is reset onto the filter
 // (awarenessLimitWriter.Hijack) - without that the frame reaches ygo and the socket stays open.
 func TestADocumentSocketWhoseFirstMessageNamesNoDocumentIsClosedThroughARealUpgrade(t *testing.T) {
+	t.Parallel()
 	// 600 bytes claiming a document name of 100,000: the message names no document, let alone a
 	// type, within the maxDocumentMessageHeader bytes the filter reads for them.
 	unnameable := encoding.EncodeBytes(func(encoder *encoding.Encoder) {
@@ -104,6 +105,7 @@ func (w *hijackedWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 // read before the connection's own, so the frame is filtered like any other rather than lost
 // when the reader is reset onto the filter (awarenessLimitWriter.Hijack).
 func TestADocumentSocketsFrameSentBeforeTheUpgradesAnswerIsFiltered(t *testing.T) {
+	t.Parallel()
 	const invented = 10
 	writer := &hijackedWriter{
 		conn:     &scriptedSocket{frames: bytes.NewReader(nil)},

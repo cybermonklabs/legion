@@ -32,6 +32,7 @@ import (
 // does not load a room during shutdown, so a room closed first would leave the edit unversioned
 // until someone next opened the document.
 func TestShutdownSettlesARoomWithAnEditorConnectedBeforeClosingIt(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := newShutdownTestService(t, database, nil)
@@ -71,6 +72,7 @@ func TestShutdownSettlesARoomWithAnEditorConnectedBeforeClosingIt(t *testing.T) 
 // inside that delay stops the timer, and Shutdown's own settlement of the document loads the room
 // in its place, so the write is versioned before the process exits rather than left to resume.
 func TestShutdownSettlesTheDocumentAColdWriteLeftOwing(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := newShutdownTestService(t, database, nil)
@@ -106,6 +108,7 @@ func TestShutdownSettlesTheDocumentAColdWriteLeftOwing(t *testing.T) {
 // it reports which documents settled, and stops ygo, only once the settlement has returned, and the
 // process does not close the store under it.
 func TestShutdownJoinsTheSettlementItsLastBrowserLeavingStarted(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := newShutdownTestService(t, database, nil)
@@ -171,6 +174,7 @@ func TestShutdownJoinsTheSettlementItsLastBrowserLeavingStarted(t *testing.T) {
 // what it owes and settles on its own, so the quiet document's edit is versioned while the held
 // room's append is still outstanding, and the held room alone is left to resume.
 func TestShutdownSettlesEveryOtherRoomWhileOneRoomsQueuedAppendIsHeld(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	quiet := createIssueDocument(t, database, 1, "quiet")
 	held := createIssueDocument(t, database, 2, "held")
@@ -235,6 +239,7 @@ func TestShutdownSettlesEveryOtherRoomWhileOneRoomsQueuedAppendIsHeld(t *testing
 // The barrier on service.shuttingDown makes that ordering deterministic rather than a race the
 // goroutine scheduler happens to win (LEGION-501).
 func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	first := &burstGate{entered: make(chan struct{}), release: make(chan struct{})}
@@ -315,6 +320,7 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 // resume (a documented, non-error outcome), but the worker returns in time for Shutdown itself to
 // read that back and finish cleanly rather than time out (LEGION-501).
 func TestShutdownReturnsNilForARenderStillRunningPastItsDrainBudget(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := newShutdownTestService(t, database, nil)

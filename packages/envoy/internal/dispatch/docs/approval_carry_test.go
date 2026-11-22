@@ -59,6 +59,7 @@ func cutDecisionBlocks(t *testing.T, markdown string) string {
 // A re-answered block and a new answered block are the whole difference between the approved
 // fixture and the answered one, so the two cut to the same text; a changed paragraph does not.
 func TestCutDecisionBlocksEqualsAcrossAnswersAndDiffersOnAParagraph(t *testing.T) {
+	t.Parallel()
 	approved := cutDecisionBlocks(t, decisionBlockFixture(t, "approved.md"))
 	answered := cutDecisionBlocks(t, decisionBlockFixture(t, "answered.md"))
 	paragraphChanged := cutDecisionBlocks(t, decisionBlockFixture(t, "paragraph-changed.md"))
@@ -78,6 +79,7 @@ func TestCutDecisionBlocksEqualsAcrossAnswersAndDiffersOnAParagraph(t *testing.T
 // example changes the cut text. The browser's line-based cut (`decision-blocks.test.ts`) reads
 // the same fixture.
 func TestCutDecisionBlocksKeepsADecisionBlockWrittenInsideACodeFence(t *testing.T) {
+	t.Parallel()
 	fenced := decisionBlockFixture(t, "fenced-example.md")
 	cut := cutDecisionBlocks(t, fenced)
 	for _, kept := range []string{"```markdown\n:::ask{urgency=\"high\" multiple=\"false\"}\nWhich region goes first?", "- West: The busy one.\n:::\n```"} {
@@ -99,6 +101,7 @@ func TestCutDecisionBlocksKeepsADecisionBlockWrittenInsideACodeFence(t *testing.
 // The cut leaves out every ask block wherever it stands - at the top level, in a blockquote, in a
 // list item, inside a callout - and keeps the container that held it.
 func TestCutDecisionBlocksLeavesOutEveryAskBlockAndKeepsItsContainer(t *testing.T) {
+	t.Parallel()
 	cut := cutDecisionBlocks(t, decisionBlockFixture(t, "answered.md"))
 	if strings.Contains(cut, ":::ask") || strings.Contains(cut, "ask{") {
 		t.Fatalf("cut holds an ask block:\n%s", cut)
@@ -126,6 +129,7 @@ func TestCutDecisionBlocksLeavesOutEveryAskBlockAndKeepsItsContainer(t *testing.
 // A document with no ask block cuts to its own rendering, and one that is nothing but ask blocks
 // cuts to nothing; a container holding only a block is kept, holding an empty paragraph.
 func TestCutDecisionBlocksOfADocumentWithoutBlocksIsItsRendering(t *testing.T) {
+	t.Parallel()
 	plain := "# Title\n\nA paragraph.\n\n> A quote.\n\n- One.\n- Two.\n"
 	tree, err := pmdoc.Parse(plain)
 	if err != nil {
@@ -151,6 +155,7 @@ func TestCutDecisionBlocksOfADocumentWithoutBlocksIsItsRendering(t *testing.T) {
 // sorted order, from the rows of its blocks: one answerer under two spellings is one, two people
 // are two, and a version whose blocks are all open or resolved names nobody.
 func TestAnswerersNamesEachAnswererOfTheVersionOnce(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 10, 2, 10, 0, 0, 0, time.UTC)
 	answeredBy := func(by string, at time.Time) model.Ask {
 		return model.Ask{State: "answered", Answer: &model.AskAnswer{User: by, At: at}}
@@ -229,6 +234,7 @@ func ownAndOpenRows() map[string]model.Ask {
 // that settlement cannot read. A block holding the row's answer, and one without it, as
 // settlement leaves a withheld answer, are both as the row has it. An open row's body is free.
 func TestRowBackedBlocksReadRowsAndRefuseAForgedACopiedAndAnInvalidNode(t *testing.T) {
+	t.Parallel()
 	rows := ownAndOpenRows()
 	own := askNodeOf(t, ownDecided+ownBody)
 	open := askNodeOf(t, openDirective+openBody)
@@ -314,6 +320,7 @@ func TestRowBackedBlocksReadRowsAndRefuseAForgedACopiedAndAnInvalidNode(t *testi
 // on, or shows open where the row has since been answered is not; nor is a block under an id no
 // row of N backs. A version holding no block holds none.
 func TestAnApprovedVersionsBlocksAreHeldAsTheirRows(t *testing.T) {
+	t.Parallel()
 	rows := ownAndOpenRows()
 	held := heldAsItsRow(map[string]*pmdoc.Node{"own": askNodeOf(t, ownDecided+ownBody), "open": askNodeOf(t, openDirective+openBody)}, rows)
 	if want := map[string]bool{"own": true, "open": true}; !reflect.DeepEqual(held, want) {
@@ -345,6 +352,7 @@ func TestAnApprovedVersionsBlocksAreHeldAsTheirRows(t *testing.T) {
 // and the stored tree of the version he approved are both read through it; a tree that repeats a
 // block id, which settlement reads no block under, is not read at all.
 func TestAskNodesOfTheCarriedVersionReadEveryBlockOnceAndRefuseARepeatedID(t *testing.T) {
+	t.Parallel()
 	tree, err := pmdoc.Parse(decisionBlockFixture(t, "answered.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -385,6 +393,7 @@ func TestAskNodesOfTheCarriedVersionReadEveryBlockOnceAndRefuseARepeatedID(t *te
 // other than its row has it is a change of N's whoever made it: it carries when H answered it
 // again since his approval, and nothing carries otherwise.
 func TestCarryVerdictOverTheBlocksOfTheApprovedAndTheNewVersion(t *testing.T) {
+	t.Parallel()
 	approvedAt := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 	answered := func(by string, at time.Time) model.Ask {
 		return model.Ask{State: "answered", Answer: &model.AskAnswer{User: by, At: at}}
@@ -481,6 +490,7 @@ func approveStoredVersion(t *testing.T, database *store.Store, artifactID string
 // created_at, its transaction's start, says the opposite. A request that carries a sequence is
 // after an approval that carries none, and the time and id decide only when neither does.
 func TestChangesRequestedSinceFollowsTheOrderTheReviewsCommitted(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "Context\n")
 	early := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
@@ -576,6 +586,7 @@ func storedVersionMarkdown(t *testing.T, database *store.Store, artifactID strin
 // approval stays at version 1. A forged block settlement can read is no door: it is indexed as the
 // room's own writer's and its row's `open` is written back over the forgery.
 func TestAForgedAnsweredBlockOnTheSocketCarriesNoApproval(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "Context\n")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: 20 * time.Millisecond})
@@ -690,6 +701,7 @@ func appendSecondRegionAsk(t *testing.T) func(*pmdoc.Node) *pmdoc.Node {
 // nothing: one node per id is the first thing the carry holds a version to, before any node is
 // read. The same version without the repeat carries, so the repeat alone is what refuses.
 func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
+	t.Parallel()
 	run := func(t *testing.T, repeat bool) (reviews, approvals int) {
 		database, service, artifactID := seededRegionDocument(t, 20*time.Millisecond)
 		approveStoredVersion(t, database, artifactID, 1, "alice")
@@ -717,6 +729,7 @@ func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 // restoreReason themselves, so a change to either that the parser no longer reads fails here
 // rather than leaving every carried review to read as a person's own.
 func TestCarriedFromVersionReadsTheVersionEachCarrysReasonNames(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		reason  string
@@ -748,6 +761,7 @@ func TestCarriedFromVersionReadsTheVersionEachCarrysReasonNames(t *testing.T) {
 // the carry for the first version, returning the latest version where the live text has not
 // moved, so the versions are named.
 func TestATransactionCannotCarryOneDocumentsApprovalTwice(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "Context\n")

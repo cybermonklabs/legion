@@ -38,6 +38,7 @@ func rules(count int) string { return strings.Repeat("***\n\n", count) }
 // meets a lock at each text it reads (YXmlText.ToDelta) and none in a run of rules, so the document
 // holds one long enough that a keystroke lands inside the walk.
 func TestReadsOfALiveDocumentRunBesideItsPeers(t *testing.T) {
+	t.Parallel()
 	seeded := "# Heading\n\n" + rules(200) + "before\n\nafter\n"
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	reads := []struct {
@@ -239,6 +240,7 @@ func TestReadsOfALiveDocumentRunBesideItsPeers(t *testing.T) {
 // stored stamp under cached hits and shared folds. The reader service must stay roomless and each
 // read must observe one complete stored state.
 func TestColdReadsRunBesideStoredWrites(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	versioned := NewPgVersioned(database)

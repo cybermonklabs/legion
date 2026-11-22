@@ -44,6 +44,7 @@ func dropBlock(t *testing.T, prefix string) func(*pmdoc.Node) *pmdoc.Node {
 // The settlement that follows the write's publish versions the deletion. A deletion creates no Yjs
 // struct and advances no client's clock, the case a clock-only signal would miss.
 func TestADeletionTheRoomTakesAfterAWritesReadIsVersionedAfterTheWrite(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before\n\ndoomed paragraph")
@@ -88,6 +89,7 @@ func TestADeletionTheRoomTakesAfterAWritesReadIsVersionedAfterTheWrite(t *testin
 // version the settlement then writes holds the deletion, and its refresh, the only one that sees
 // the quote gone, must orphan the ask.
 func TestAnAnchorWhoseQuoteTheRoomDeletedIsOrphanedByTheVersionWrite(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before\n\nthe anchored quote paragraph")
@@ -147,6 +149,7 @@ func TestAnAnchorWhoseQuoteTheRoomDeletedIsOrphanedByTheVersionWrite(t *testing.
 // is a browser and an agent writing together, where every spurious invalidation is a full document
 // render back under the issue row.
 func TestARoomChangeAfterAWritesReadCostsItsVersionNoRender(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -203,6 +206,7 @@ func TestARoomChangeAfterAWritesReadCostsItsVersionNoRender(t *testing.T) {
 // encoding of the room runs, so it is granted the lock in that window: the interleave is driven
 // rather than waited for.
 func TestACaptureNeverReusesARenderingTheForkHasMovedPast(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	body := make([]string, 0, 1200)

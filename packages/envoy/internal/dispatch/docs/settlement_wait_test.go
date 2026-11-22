@@ -25,6 +25,7 @@ import (
 // the settlement's start (beforeSettleStart), in process: a bound on the version's write would
 // also time the settlement's own database work, which says nothing about how it is woken.
 func TestShutdownsDrainWakesOnceWhenARoomsHeldAppendLands(t *testing.T) {
+	t.Parallel()
 	const held = 500 * time.Millisecond
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
@@ -105,6 +106,7 @@ func TestShutdownsDrainWakesOnceWhenARoomsHeldAppendLands(t *testing.T) {
 // gives up after about 100 ms and leaves the document to resume, as it always has. What the wait
 // costs is the question: one lock statement with a bounded wait, not a try-lock every millisecond.
 func TestShutdownsSettlementLockWaitIsOneStatement(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	tracer := &statementTracer{}
 	traced := storetest.TracedStore(t, database, tracer)

@@ -191,6 +191,7 @@ func describeMarkdown(markdown *string) string {
 // point takes its copy from the room itself and starts the replica from it, which the fork read
 // then clones, and after each of its browser edits.
 func TestTheClonedForkMatchesTheReadPointsForkAcrossTheCorpus(t *testing.T) {
+	t.Parallel()
 	writes := 0
 	forks, documents := driveCorpusRooms(t, func(at corpusRoom) {
 		writes += compareForkReads(t, at)
@@ -201,6 +202,7 @@ func TestTheClonedForkMatchesTheReadPointsForkAcrossTheCorpus(t *testing.T) {
 // The clone is a document of its own: the write that runs on it changes nothing the replica
 // holds, and the room's own commits, which the replica consumes, change nothing the fork holds.
 func TestAClonedForkAndItsReplicaAreIndependent(t *testing.T) {
+	t.Parallel()
 	service := &Service{}
 	live := newDocumentCopy()
 	if err := crdt.ApplyUpdateV1(live, newProofHistory(t, 1).write("## Heading\n\nThe paragraph a fork writes into.\n"), nil); err != nil {
@@ -258,6 +260,7 @@ func TestAClonedForkAndItsReplicaAreIndependent(t *testing.T) {
 // transaction (reearth/ygo#340). Both paths leave write.clientID the id its fork holds, so the
 // lost-write check finds the write's own text by it (recordInsertedText).
 func TestEveryForkLeavesTheWriteAuthoringUnderItsForksClientID(t *testing.T) {
+	t.Parallel()
 	server := websocket.NewServer()
 	server.RoomIdleTimeout = time.Hour
 	service := &Service{srv: newRoomServer(server)}

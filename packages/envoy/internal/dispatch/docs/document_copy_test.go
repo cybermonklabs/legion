@@ -23,6 +23,7 @@ import (
 // that document, so every copy the service takes of it - the snapshot a read renders, and the fork
 // a write starts from - holds it too, item for item.
 func TestACopyHoldsEveryItemOneClientWroteAheadOfItsParent(t *testing.T) {
+	t.Parallel()
 	const blocks = 150_000
 	live := crdt.New(crdt.WithClientID(1_000_000))
 	fragment := live.GetXmlFragment(fragmentName)
@@ -72,6 +73,7 @@ const storedHistoryBlocks = 150_000
 // on it, and a rebuild, which would replace its history with its latest saved version, refuses it
 // as a document that loads and leaves its history as it was.
 func TestAStoredHistoryLoadsEveryItemOneClientWroteAheadOfItsParent(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	// Settlement is not under test, and its stamp of every paragraph's block id would race the
 	// subtests' reads of the history.
@@ -168,6 +170,7 @@ const browserUpdateBlocks = 75_000
 // the same update and reads its item count from the update's own header, deciding it without a
 // decode at all where one client wrote it (`refuseUpdateItemCap`, sjawhar/legion#2519).
 func TestTheStoreTakesOneBrowserUpdateItsRoomTook(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	// Settlement is not under test, and its stamp would race the reads below.
 	service.settle = time.Hour
@@ -271,6 +274,7 @@ func TestTheStoreTakesOneBrowserUpdateItsRoomTook(t *testing.T) {
 // (reearth/ygo#268, in the pinned fork); a decode of it at ygo's default queue refuses it, which
 // fails the room on every reload, and the document is never stamped.
 func TestASettlementStampsMoreBlocksThanYgosDefaultQueue(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	// The settlement runs below, once, on the test's own goroutine.
 	service.settle = time.Hour
@@ -332,6 +336,7 @@ func TestASettlementStampsMoreBlocksThanYgosDefaultQueue(t *testing.T) {
 // lost the browser's parked edit: caught up with the edit that fills the gap, as the room is, it
 // shows the room's text without it.
 func TestTheRoomsRenderedReplicaHoldsWhatACommitParked(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	// Settlement is not under test, and its stamp of the browser's blocks would commit into the
 	// room while the edit is parked.
