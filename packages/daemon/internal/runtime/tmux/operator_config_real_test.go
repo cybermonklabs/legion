@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
@@ -15,8 +16,14 @@ import (
 // the first launch's new-session, and its options and commands on the daemon's server.
 func TestRealTmuxThePrivateServerReadsNoTmuxConfigOfTheOperators(t *testing.T) {
 	r := newRig(t)
-	// Each tmux command Spawn runs is bounded by the runtime's own command timeout.
-	ctx := context.Background()
+	// Spawn's one bound is the test binary's deadline less the 30 s that testwait.Receive leaves for
+	// the failure and the cleanups, so a Spawn that never returns ends there and fails the row by name.
+	ctx := t.Context()
+	if deadline, ok := t.Deadline(); ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, deadline.Add(-30*time.Second))
+		defer cancel()
+	}
 	home := filepath.Join(r.dir, "operator")
 	ran := filepath.Join(r.dir, "operator-config-ran")
 	if err := os.MkdirAll(home, 0o700); err != nil {
