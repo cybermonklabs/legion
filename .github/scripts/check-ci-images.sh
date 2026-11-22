@@ -396,6 +396,7 @@ EXCEPTIONS = {
     "scripts/e2e/claude-backend-tmux.sh": NO_CI_JOB,
     "scripts/e2e/controller-start-tmux.sh": NO_CI_JOB,
     "scripts/e2e/controller-sweep-kind.sh": NO_CI_JOB,
+    "scripts/e2e/cutover-proof-kind.sh": NO_CI_JOB,
     "scripts/e2e/dispatch-user-turns.sh": NO_CI_JOB,
     "scripts/e2e/lib/bridge-tunnel.sh": NO_CI_JOB,
     "scripts/e2e/lib/kind-sandbox.sh": NO_CI_JOB,
