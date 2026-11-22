@@ -248,8 +248,16 @@ func TestARowWaitingOnAnotherRowsQuestionHoldsNoSlot(t *testing.T) {
 	clock, cancel := context.WithTimeout(t.Context(), listOwnRowsBound)
 	defer cancel()
 	list := withAccessMemo(clock)
+	// The hook drops a signal it has no room for rather than block: once the clock ends, the rows
+	// that find the question cut short each join again as they ask afresh, more often than any
+	// buffer counts, and a blocked hook would hold its row, and this test, for good.
 	joined := make(chan struct{}, 32)
-	list.Value(accessMemoKey{}).(*accessMemo).joined = func() { joined <- struct{}{} }
+	list.Value(accessMemoKey{}).(*accessMemo).joined = func() {
+		select {
+		case joined <- struct{}{}:
+		default:
+		}
+	}
 	var slow sync.WaitGroup
 	for range 20 {
 		slow.Go(func() { _, _, _ = m.maySee(list, outsider, nil, stalledProject+"-1: rotate the slow key") })
@@ -260,7 +268,11 @@ func TestARowWaitingOnAnotherRowsQuestionHoldsNoSlot(t *testing.T) {
 		t.Fatal("the question about SLOW did not reach Dispatch before the list's clock ended")
 	}
 	for range MaySeeAtOnce - 1 {
-		<-joined
+		select {
+		case <-joined:
+		case <-clock.Done():
+			t.Fatal("15 rows did not wait on SLOW's question before the list's clock ended")
+		}
 	}
 
 	shown, _, err := m.maySee(list, outsider, nil, teamProject+"-1: rotate the deploy key")
