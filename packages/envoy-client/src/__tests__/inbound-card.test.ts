@@ -7,10 +7,10 @@ import { readInboundCard } from "../inbound-card";
 const reader = "01a01111-2222-7333-4444-555555555555";
 const sender = "01a0cccc-dddd-7eee-ffff-0123456789ab";
 
-/** The brief `theorem-session start` has its claimer publish to the new agent's role: the
+/** The brief a session launcher has its claimer publish to the new agent's role: the
  *  listener's publish, which names no session, and asks for no reply. */
 const BRIEF = [
-  "sami started you with theorem-session start; this is their request:",
+  "alice started you with the session launcher; this is their request:",
   "",
   "Work on the Dispatch issue ACME-1: https://dispatch.example/issues/ACME-1.",
 ].join("\n");
@@ -70,7 +70,7 @@ describe("readInboundCard", () => {
     const text = card({
       source: "envoy",
       source_event_id: "envoy.brief",
-      topic: "notifications.role.sami-acme-1",
+      topic: "notifications.role.alice-acme-1",
       payload: BRIEF,
       payload_summary: `${BRIEF.slice(0, 40)}…`,
       expects_reply: false,

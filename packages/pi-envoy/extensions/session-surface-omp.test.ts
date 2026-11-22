@@ -1388,10 +1388,11 @@ test.skipIf(skip)(
 );
 
 // dispatch://INFRA-5271's red check (`accept-5195-liveview-brief-red.sh`) on the real Oh My Pi:
-// an agent that `theorem-session start` made gets its brief as a message its claimer publishes to
-// the agent's role, which the listener stores and the session's consumer relays, and the session
-// shows it as an Envoy card. The check greps the live view's replay for the brief's opening, and
-// before this the stream carried no card, so the brief was on the terminal and not on the page.
+// an agent a session launcher made gets its brief as a message its claimer publishes to the
+// agent's role, which the listener stores and the session's consumer relays, and the session
+// shows it as an Envoy card. The check greps the live view's replay for the brief's opening, up to
+// its `;`, and before this the stream carried no card, so the brief was on the terminal and not on
+// the page.
 // The envelope is the listener's role forward of that publish (card-delivery-omp.test.ts's
 // `forwardedRoleEnvelope`): source `envoy`, no sending session, no reply wanted.
 test.skipIf(skip)(
@@ -1400,7 +1401,7 @@ test.skipIf(skip)(
     const session = await startSession();
     await session.arm();
     const brief = [
-      "sami started you with theorem-session start; this is their request:",
+      "alice started you with the session launcher; this is their request:",
       "",
       "Work on the Dispatch issue ACME-1: https://dispatch.example/issues/ACME-1.",
     ].join("\n");
@@ -1410,7 +1411,7 @@ test.skipIf(skip)(
         event_id: `evt-${label}`,
         source: "envoy",
         source_event_id: `source-${label}`,
-        topic: "notifications.role.sami-acme-1",
+        topic: "notifications.role.alice-acme-1",
         dedupe_key: `envoy.role.forward.publish.${randomUUID().replaceAll("-", "")}`,
         issued_at: Date.now(),
         payload: brief,
@@ -1420,15 +1421,16 @@ test.skipIf(skip)(
       }),
       "the brief"
     );
+    const opening = brief.split(";")[0] ?? brief;
     // The card starts a turn, which the stand-in holds until it is answered.
     const turn = await session.nextTurn("the turn the brief started");
-    expect(conversation(turn.request)).toContain("sami started you with theorem-session start");
+    expect(conversation(turn.request)).toContain(opening);
     turn.reply([text("ready")]);
     await session.settled();
 
     const replayed = await session.replay();
     // What the red check greps the live view's stream for.
-    expect(JSON.stringify(replayed)).toContain("sami started you with theorem-session start");
+    expect(JSON.stringify(replayed)).toContain(opening);
     const messages = replayed.frames
       .filter((frame) => frame.kind === "message")
       .map((frame) => frame.message as Record<string, unknown>);

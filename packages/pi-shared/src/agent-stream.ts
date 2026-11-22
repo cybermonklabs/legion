@@ -41,7 +41,7 @@ import type { ContextUsage } from "@legion/pi-shared/pi-types";
  * so a finished turn can never be left looking like a running one.
  *
  * Beside the session's own turns it carries each Envoy card the session displays (an
- * `envoy-message` custom message: the brief `theorem-session start` sends, another agent's
+ * `envoy-message` custom message: the brief a session launcher sends, another agent's
  * message, a Dispatch notification), as a user message saying who sent it and what they wrote, so
  * the live view shows the conversation the terminal shows (dispatch://INFRA-5271). A card that
  * delivers a Dispatch message to the session is the one left out: Dispatch stores that message

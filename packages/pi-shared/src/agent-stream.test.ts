@@ -1156,9 +1156,10 @@ describe("the model that produced an assistant turn", () => {
   });
 });
 
-/** The brief `theorem-session start` has its claimer publish to the new agent's role. */
+/** The brief a session launcher has its claimer publish to the new agent's role. Its opening,
+ *  up to the `;`, is what the red check greps the live view's stream for. */
 const BRIEF = [
-  "sami started you with theorem-session start; this is their request:",
+  "alice started you with the session launcher; this is their request:",
   "",
   "Work on the Dispatch issue ACME-1: https://dispatch.example/issues/ACME-1.",
 ].join("\n");
@@ -1193,9 +1194,8 @@ function textOf(frame: AgentStreamFrame | undefined): string | undefined {
 }
 
 // pi-envoy shows every Envoy message the session receives as an `envoy-message` card, and the
-// terminal draws it; the live view drew none of them, so a session's first message, the brief
-// `theorem-session start` sends, was in the terminal and not on the page (dispatch://INFRA-5271,
-// R1).
+// terminal draws it; the live view drew none of them, so a session's first message, the brief a
+// session launcher sends, was in the terminal and not on the page (dispatch://INFRA-5271, R1).
 describe("an Envoy card the session displays", () => {
   test("streams in its place as a user message saying who sent it and the whole of what they wrote", () => {
     const { published, publisher } = harness();
@@ -1204,7 +1204,7 @@ describe("an Envoy card the session displays", () => {
       payload: BRIEF,
       payload_summary: `${BRIEF.slice(0, 40)}…`,
       source: "envoy",
-      topic: "notifications.role.sami-acme-1",
+      topic: "notifications.role.alice-acme-1",
     });
     publisher.record(SUBJECT, card(20, brief, { envoyCard: "card-1", event_id: "event-1" }), true);
     publisher.record(SUBJECT, card(20, brief, { envoyCard: "card-1", event_id: "event-1" }), false);
@@ -1224,7 +1224,7 @@ describe("an Envoy card the session displays", () => {
       ["c20:card-1", "a30"]
     );
     // What the red check reads off the live view's stream: the brief's opening.
-    expect(JSON.stringify(replayed)).toContain("sami started you with theorem-session start");
+    expect(JSON.stringify(replayed)).toContain(BRIEF.split(";")[0] ?? BRIEF);
   });
 
   test("names the agent that sent it, and a short message's words from its summary", () => {
