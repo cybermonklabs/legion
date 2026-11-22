@@ -222,13 +222,14 @@ delivers messages again, a higher one skips them. `replay` of a Dispatch or daem
 store's flag. No sentinel that decodes as a store state stops `convert`: it writes each family's
 marker `done` over it, keeping the other fields it reads. A sentinel that does not decode is
 UNKNOWN at its store check; after a cutover, [a sentinel repair](#a-sentinel-repair) writes the
-session one again. `convert` reads records with the selection library's decode, not `status`'s
-strict one: a record that does not decode is UNKNOWN when `convert` reaches it, after it has saved
-its set. `replay --key K` reads with the same decode, and on such a record refuses or stops; on a
-record that decodes it writes K's record anew, which also clears an open operation, retiring its
-names. A record `replay` refuses is one `convert` stops on as UNKNOWN at every run, and no command
-of this package rewrites it, so `hold abort` ends such a hold. The cutover rows do not stop
-`convert`: it writes each of its families' rows `done`.
+session one again. `convert` and `status` read each record with the selection library's decode
+(`selection.DecodeKVValue`): a record that does not decode is UNKNOWN when `convert` reaches it,
+after it has saved its set. `replay --key K` writes K's record anew over any value under K, one
+that does not decode included, retiring none of that value's names and naming it (`replaced a
+value that is no record of it: ...`); over a record that decodes it also clears an open operation,
+retiring its names but K's fixed name. So give each record `status` marks malformed a `replay --key
+K --from SEQ` before `convert`, or after `convert` stops on it, then run `convert` again. The
+cutover rows do not stop `convert`: it writes each of its families' rows `done`.
 
 `status`, the census's reader and `cleanup` check each record as its family's creator does, and
 list or refuse one the creator refuses. A record `restore --finish` left selects the key's fixed
@@ -518,17 +519,21 @@ entry completes the hold's record. A stop names what the run left.
 
 `replay --hold ID --key K --from SEQ [--final] <hold flags> [<store flags>]` writes K's record with
 start SEQ and no current, keeping its retired names and retiring its current and any open
-operation's candidate and old name. In a `cutover` hold it gives a name a start before `convert`,
-or one `convert` found no safe start for; in a `selection-recovery` hold it gives a logical name a
-start other than the recovery's, and `--final` completes the record again. K is a session id, a
-listener durable's key (`durable.listener-<machine id>`, escaped as the bucket keys it), one of
-Dispatch's durables, or a daemon's `legion-go-<project key>-<kind>`; a bare `listener-<machine
-id>` is refused, naming its key. It refuses before its intent a SEQ past the stream's last
-sequence + 1, a session or listener key while the bucket is missing (`create-bucket makes first`),
-a Postgres record it cannot read, and a daemon's key whose store, named by `--daemon-database`,
-the address rule leaves unreconciled or finds gone; it writes a daemon's store through the
-connection the rule opened. It prints `<family>: K's record starts at SEQ with no current;
-retired: ...`. A stop names what the run left.
+operation's candidate and old name, but K's fixed name, which no record retires. A value under K
+that is no record of K (a document a reply subject stored there, garbage, or another key's record
+copied there) it writes over, retiring nothing of it. In a `cutover` hold it gives a name a start
+before `convert`, or one `convert` found no safe start for or stopped on as malformed; in a
+`selection-recovery` hold it gives a logical name a start other than the recovery's, and `--final`
+completes the record again. K is a session id, a listener durable's key (`durable.listener-<machine
+id>`, escaped as the bucket keys it), one of Dispatch's durables, or a daemon's
+`legion-go-<project key>-<kind>`; a bare `listener-<machine id>` is refused, naming its key. It
+refuses before its intent a SEQ past the stream's last sequence + 1, a session or listener key
+while the bucket is missing (`create-bucket makes first`), a Postgres record it cannot read for
+another reason than that it is no record of K, and a daemon's key whose store, named by
+`--daemon-database`, the address rule leaves unreconciled or finds gone; it writes a daemon's store
+through the connection the rule opened. It prints `<family>: K's record starts at SEQ with no
+current; retired: ...`, followed by `; replaced a value that is no record of it: <why>` when it
+wrote over one. A stop names what the run left.
 
 ### `convert`
 

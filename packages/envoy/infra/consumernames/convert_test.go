@@ -1027,3 +1027,36 @@ func TestConvertStopsOnAFailedDeleteOfTheFixedNameAndNeverRetiresIt(t *testing.T
 		})
 	}
 }
+
+// The runbook's procedure for a record status marks malformed, in a cutover hold: convert stops on
+// it as UNKNOWN (exit 2) after it saved its set, naming K's record; replay --key K --from SEQ then
+// writes K's record anew over the value, naming the value it replaced; and convert's rerun converts
+// K's fixed name and is done, so the hold goes on to its census and release, with no hold abort.
+// Control (a red run, by -overlay): a replay that refuses such a value before its intent, as the
+// runbook said replay does, fails the replay step, and convert's rerun stops on the value again.
+func TestAConvertStoppedOnAMalformedRecordIsDoneAfterItsReplay(t *testing.T) {
+	rig := newConvertRig(t, 0)
+	const logical = "ses_mal"
+	subject := "notifications.agent." + logical
+	seqs := rig.publish(subject, 3)
+	rig.fixed(sessionFixedPrefix+logical, subject, 0)
+	id, _ := rig.heldForConvert()
+	nc, _ := rig.operator()
+	malformedReplyStore(t, nc, logical)
+
+	code, _, stderr := rig.run(actionConvert, "--hold", id)
+	require.Equal(t, 2, code, "convert over K's malformed record: %s", stderr)
+	require.Contains(t, stderr, logical+"'s selection record", "convert's UNKNOWN names K's record")
+	require.Equal(t, "stop", rig.lastEntry(id, actionConvert).State, "convert's UNKNOWN ends in its stop")
+
+	code, stdout, stderr := rig.run(actionReplay, "--hold", id, "--key", logical, "--from", formatSeq(seqs[0]))
+	require.Equal(t, 0, code, "replay over K's malformed record in the cutover hold: %s", stderr)
+	require.Contains(t, stdout, "replaced a value that is no record of it", "replay names the value it replaced")
+
+	code, _, stderr = rig.run(actionConvert, "--hold", id)
+	require.Zero(t, code, "convert's rerun after the replay: %s", stderr)
+	require.Equal(t, "done", rig.lastEntry(id, actionConvert).State)
+	record := rig.record(familySession, logical)
+	require.True(t, strings.HasPrefix(record.Current, sessionFreshPrefix+"~"), "convert's rerun selected no fresh name for K: %+v", record)
+	require.Nil(t, rig.consumer(sessionFixedPrefix+logical), "convert's rerun left K's fixed name on the stream")
+}
