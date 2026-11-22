@@ -1,5 +1,7 @@
 package docs
 
+//ci:reads packages/contracts/fixtures/decision-blocks/* decisionBlockFixture
+
 import (
 	"context"
 	"encoding/json"

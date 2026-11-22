@@ -1,5 +1,7 @@
 package store
 
+//ci:reads packages/envoy/**/*.md TestSearchTextKeepsEveryLexeme walks packages/envoy (infra included, node_modules and out passed over) and opens each .md file, and no other
+
 import (
 	"context"
 	"errors"

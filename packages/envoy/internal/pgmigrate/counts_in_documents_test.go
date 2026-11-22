@@ -1,5 +1,7 @@
 package pgmigrate
 
+//ci:reads docs/site/src/content/docs/dispatch/running-dispatch.md internal/pgmigrate/counts_in_documents_test.go reads it: how long a migration waits for its lock, which that page states and pgmigrate.LockTimeout decides
+
 import (
 	"path/filepath"
 	"testing"

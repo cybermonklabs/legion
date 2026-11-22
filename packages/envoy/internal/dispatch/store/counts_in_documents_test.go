@@ -1,5 +1,9 @@
 package store
 
+//ci:reads docs/site/src/content/docs/dispatch/running-dispatch.md internal/dispatch/store/counts_in_documents_test.go reads it: the connection counts it states of this package's pools must equal the constants that decide them: store.LeasePoolSize, store.ConnectionsPerProcess and every pool of the sum (sharedPoolSize, RoomsPoolSize, roomAppendsPoolSize, compactionPoolSize, healthPoolSize, outboxPoolSize, horizonPoolSize, registryPoolSize, listenerConnections)
+//ci:reads .dispatch/architecture/dispatch-store.md internal/dispatch/store/counts_in_documents_test.go reads it, for the lease pool's own count, which that document states in words
+//ci:reads packages/envoy/cmd/dispatch/README.md TestTheDocumentsStateTheCountsThisPackageHolds docnumbers.Check and sumTerms os.ReadFile under ../../../../..: the pool table and connection sum it states must equal the same constants
+
 import (
 	"os"
 	"path/filepath"

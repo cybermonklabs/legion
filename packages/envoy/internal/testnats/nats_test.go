@@ -1,5 +1,8 @@
 package testnats
 
+//ci:builds packages/envoy ./... go list -f ... ./... in packages/envoy
+//ci:reads packages/envoy/**/*.go !packages/envoy/infra/** !packages/envoy/testdata/** containerImporters and dockerDriverFiles walks packages/envoy but infra, node_modules and testdata, and reads every .go file it finds, test files included (dockerDriverFiles, called by TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime)
+
 import (
 	"context"
 	"errors"

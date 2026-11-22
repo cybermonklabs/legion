@@ -16,14 +16,15 @@ module: .github/workflows
 Extends docs/solutions/github/join-a-job-to-the-ci-router.md.
 
 - When tests in two jobs exist to agree with each other through one fixture (a Go port and the
-  code it ports, each reading the same file), put the fixture in the filter of every job whose
-  tests read it, and give each read its `ci_job_reads.py` RULES entry in the same change.
+  code it ports, each reading the same file), declare the read in every test file that reads it,
+  as a `//ci:reads` line at the top of that file, in the same change: the changes job computes
+  each job's filter from those lines, so each filter then selects the fixture.
 - Check the job whose filter lists fixtures file by file: that is the one that misses a new
   fixture. A job whose filter takes the whole package (`packages/contracts/**`) still runs on a
   fixture-only change, so CI stays green while the comparison has only one side and proves
   nothing about drift.
-- A RULES entry alone turns `check-ci-filters.sh` red for the job whose filter misses the file;
-  without the entry the check is silent, since it checks only the reads it is told about.
+- Without the line no check notices: the filters are computed from the reads declared, and a
+  read nobody declares selects nothing.
 
 ## Evidence
 

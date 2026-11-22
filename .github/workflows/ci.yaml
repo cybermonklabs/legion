@@ -98,10 +98,14 @@ jobs:
     if: ${{ !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     # why: .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    # Above the sum of its steps' own timeouts, 28 minutes: the filter generation's 9
+    # (ci-filters-generate.sh stops this tree's run at 300 s and kills it 15 s later, and bounds the
+    # base's fetch at 65 s and its install at 125 s, so it ends within 505 s), 3 each for the
+    # checkout, setup-go, Bun's setup and install, the upload and the paths filter, and 1 for the ref.
+    timeout-minutes: 30
     outputs:
       # Each output but ref_is_main reads the one dorny/paths-filter step below. Rule 19 of
-      # .github/scripts/check-ci-filters.sh refuses an output naming a filter .github/ci-filters.yaml does not hold.
+      # .github/scripts/check-ci-filters.sh refuses an output naming a filter no gate declares.
       typecheck: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.typecheck }}
       test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.test }}
       # why: .github/ci-notes/ci.md#why-the-daemons-go-suite-has-an-output-of-its-own
@@ -220,28 +224,58 @@ jobs:
       # why: .github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own
       ref_is_main: ${{ steps.ref.outputs.is_main }}
     steps:
-      # why: .github/ci-notes/ci.md#on-pull_request-dornypaths-filter-reads-the-file-list-from-the-api-and-reads
-      - if: github.event_name != 'pull_request'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # why: .github/ci-notes/ci.md#the-changes-job-computes-its-filters-when-it-runs
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 3
         with:
           persist-credentials: false
-      # why: .github/ci-notes/ci.md#on-a-pull-request-this-job-reads-the-changed-files-from-the
-      - if: github.event_name == 'pull_request'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Each step before the generation may fail without failing the job: the generation then
+      # fails too, and falls open to selecting every job. No Go cache: its key is exact, so each
+      # pull request's first run and every merge group missed it, and each miss saved 895 MB.
+      - continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          sparse-checkout: .github/ci-filters.yaml
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
+          go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
+          cache: false
+      - name: Setup Bun
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: ./.github/actions/setup-bun
+      - name: Install dependencies
+        continue-on-error: true
+        timeout-minutes: 3
+        run: bun install --frozen-lockfile
+      # The base it is measured against: a change to the computation itself selects every filter
+      # it alters against the base tree's (the script's header says how).
+      - name: Compute every filter from what each job reads
+        timeout-minutes: 9
+        env:
+          CI_FILTERS_BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+        run: .github/scripts/ci-filters-generate.sh "$RUNNER_TEMP/ci-filters.yaml"
+      # The lint job holds the filters this run computed to the tsc programs and the image builds
+      # (check-ts-filters.sh, check-image-trigger-paths.sh), so it reads this file.
+      - name: Keep the filters this run computed
+        timeout-minutes: 3
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-filters
+          path: ${{ runner.temp }}/ci-filters.computed.yaml
+          retention-days: 7
       # why: .github/ci-notes/ci.md#why-the-filter-step-is-skipped-on-a-dispatched-run
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
+        timeout-minutes: 3
         if: github.event_name != 'workflow_dispatch'
         with:
           predicate-quantifier: some-with-excludes
-          filters: .github/ci-filters.yaml
+          filters: ${{ runner.temp }}/ci-filters.yaml
       # why: .github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own
       - name: Read whether this run's ref is exactly refs/heads/main
         id: ref
+        timeout-minutes: 1
         run: if [ "$GITHUB_REF" = refs/heads/main ]; then echo is_main=true; else echo is_main=false; fi >> "$GITHUB_OUTPUT"
 
   # Reads the whole tree, so it runs on every non-draft run, also when `changes` failed.
