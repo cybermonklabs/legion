@@ -101,15 +101,21 @@ jobs:
       # fills no Actions cache entry (INFRA-490's budget).
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         if: matrix.language == 'go'
+        env:
+          NODE_OPTIONS: --require ${{ github.workspace }}/.github/scripts/api-request-ledger.cjs
         with:
           go-version-file: go.work
           cache: false
       - name: Initialize CodeQL
         uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        env:
+          NODE_OPTIONS: --require ${{ github.workspace }}/.github/scripts/api-request-ledger.cjs
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        env:
+          NODE_OPTIONS: --require ${{ github.workspace }}/.github/scripts/api-request-ledger.cjs
         with:
           category: "/language:${{ matrix.language }}"
