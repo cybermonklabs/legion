@@ -250,3 +250,38 @@ func TestAReadCycleThatBeganAfterTheStampLiftsIt(t *testing.T) {
 		t.Fatalf("the head whose own webhook failed settled after the lift: %+v", state)
 	}
 }
+
+// A cycle that could not read a repository the App is installed on does not lift the start stamp:
+// none of that repository's heads was read after the stamp, so one whose webhooks the downtime lost
+// would settle on a record that lacks them. The cycle after it, which reads the repository, frees
+// the head.
+func TestACycleThatMissedARepositoryDoesNotLiftTheStamp(t *testing.T) {
+	h := newHarness(t, reviewerAppID)
+	h.mapRepository(rowRepository)
+	held := fakePull{number: 7, sha: headSHA}
+	h.listHeads(held)
+	run := checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-22T00:05:00Z")
+	h.github.setCheckRuns(gitHubRepository, held.sha, run)
+	h.startWithReconcile(time.Now().Add(-time.Hour), time.Now())
+	// The cycle must begin after the stamp, which is a millisecond.
+	time.Sleep(5 * time.Millisecond)
+	settlements := h.subscribe()
+	h.post("check_run", webhookBody("check_run", run), "d1")
+	h.noSettlement(settlements, "for a head the stamp holds")
+
+	// GitHub names the repository with no owner for one pass, so the pass reads none of its heads:
+	// the early read of the heads a gap holds skips it, and so does the walk.
+	h.github.setRepository(rowRepository, gitHubName, repositoryID)
+	h.pass()
+	line := h.passLine()
+	if line["cycle_complete"] != true || number(t, line, "mappings_skipped") < 1 {
+		t.Fatalf("the pass line is %v, want a completed cycle that skipped the repository", line)
+	}
+	h.noSettlement(settlements, "after a cycle that read none of the repository's heads")
+
+	h.github.setRepository(rowRepository, gitHubRepository, repositoryID)
+	h.pass()
+	if settled := h.settlement(settlements, "after a cycle that read the repository"); settled.Passed.Count != 1 {
+		t.Fatalf("settlement = %+v, want ci-ok passed", settled)
+	}
+}

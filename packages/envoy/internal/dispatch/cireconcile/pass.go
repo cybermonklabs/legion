@@ -287,6 +287,15 @@ func (r *Reconciler) reconcile(ctx context.Context, writer Writer, c *counts) *s
 	return nil
 }
 
+// missedRepository takes from the cycle running its claim to have read every open head: the pass
+// could not read the heads of a repository the App is installed on, whose webhooks the listener
+// gets, so the cycle cannot lift an intake gap stamped before it began (Reconciler.cycleBegan).
+// A repository the App is missing from, or whose installation is suspended, sends no webhook and
+// holds no record, and misses nothing.
+func (r *Reconciler) missedRepository() {
+	r.cycleBegan = time.Time{}
+}
+
 // readGapHeld reads first the heads the listener holds by an intake gap alone (cistore's
 // gap-held list, oldest due first): each over REST, in full (kept answers nothing for a head a gap
 // holds), its runs written with the time the read began, which is what lets the listener settle it.
@@ -541,6 +550,7 @@ func (w *walk) restPage(ctx context.Context) (queryPage, *ending, bool) {
 				return queryPage{}, w.cut(), false
 			}
 			c.mappingsSkipped++
+			r.missedRepository()
 			r.Logger.Warn("ci reconcile read no open pull requests of a repository",
 				"repository", repository.owner+"/"+repository.repo, "error", err)
 			githubreads.NoteFailure(ctx, err)
