@@ -1760,8 +1760,9 @@ func (ConflictConfirm) OutboxKind() OutboxKind { return OutboxKindConflictConfir
 // Head, the head of the issue's pull request (D10): the issue stands in merging, and the spec gate
 // of its tree is open by exemption (GateExempt), so nothing of the tree lands until Dispatch answers
 // `ready` for that head. Cause is what queued it (the SpecEndingCause values): a head move of the
-// issue's pull request, a spec.outcomes_recorded event of an issue of the tree, or a version or an
-// approval of the root's spec document. Its executor reads Dispatch once and applies what it read
+// issue's pull request, a spec.outcomes_recorded event of an issue of the tree, a version or an
+// approval of the root's spec document, or the gate turning open by exemption while the issue
+// merges. Its executor reads Dispatch once and applies what it read
 // (intake.SpecEndingRead), whose transaction records the reading (SpecEnding), tells the running
 // merger the gate closed or opened, and tells the tree root's architect each reason not yet told
 // at that head. It finishes without a read once the issue has left merging at Head, or the gate is
@@ -1773,7 +1774,10 @@ type SpecEndingRead struct {
 
 func (SpecEndingRead) OutboxKind() OutboxKind { return OutboxKindSpecEndingRead }
 
-// SpecEndingCause is what queued a SpecEndingRead, which its executor logs.
+// SpecEndingCause is what queued a SpecEndingRead, which its executor logs. SpecEndingCauseExempted
+// is a registration, a version or a reset that left the root's spec gate open by exemption where it
+// stood otherwise before: a merger that runs then was started without the ending step, so the read
+// tells it how the condition stands whatever reading it follows (workflow's specEndingRead).
 type SpecEndingCause string
 
 const (
@@ -1781,6 +1785,7 @@ const (
 	SpecEndingCauseOutcomes SpecEndingCause = "outcomes"
 	SpecEndingCauseVersion  SpecEndingCause = "version"
 	SpecEndingCauseApproval SpecEndingCause = "approval"
+	SpecEndingCauseExempted SpecEndingCause = "exempted"
 )
 
 // MergeForwardStep is which message of a merge forward a MergeForwardMessage carries
@@ -2490,7 +2495,7 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("a spec ending read names the head it reads the ending condition at; it names none")
 		}
 		switch value.Cause {
-		case SpecEndingCauseHead, SpecEndingCauseOutcomes, SpecEndingCauseVersion, SpecEndingCauseApproval:
+		case SpecEndingCauseHead, SpecEndingCauseOutcomes, SpecEndingCauseVersion, SpecEndingCauseApproval, SpecEndingCauseExempted:
 		default:
 			return fmt.Errorf("a spec ending read names what queued it; it names %q", value.Cause)
 		}

@@ -1190,8 +1190,10 @@ func (f SpecOutcomesRecorded) namedIssue() (string, bool) { return f.Key, true }
 // SpecEndingRead is the outbox's read of the ending condition of Issue's change request at Head
 // (record.SpecEndingRead), never decoded from an event: State is Dispatch's `ready` or `waiting`,
 // Reasons each reason in Dispatch's order, and Version the version of the tree root's spec Dispatch
-// read. The merger's start fence applies it as well, from its own read. Cause is what queued the
-// read, which the workflow logs.
+// read. The merger's start fence applies it as well, from its own read, and marks it Start: the
+// merger is not running yet, and the task its start gives it names the ending step (the outbox's
+// startTask), so the reading tells the merger nothing. Cause is what queued the read, which the
+// workflow logs.
 type SpecEndingRead struct {
 	Issue   string
 	Head    string
@@ -1199,6 +1201,7 @@ type SpecEndingRead struct {
 	Reasons []dispatch.EndingReason
 	Version int
 	Cause   record.SpecEndingCause
+	Start   bool
 }
 
 func (f SpecEndingRead) namedIssue() (string, bool) { return f.Issue, true }

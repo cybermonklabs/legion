@@ -410,37 +410,6 @@ func TestTheEventsThatTurnTheEndingQueueAReadForEveryMergingMember(t *testing.T)
 	})
 }
 
-// The merger's start task of a member of a tree whose spec gate stands open by exemption ends with
-// the paragraph that tells it to read the ending condition before each merge and each enqueue; a
-// tree whose gate a person opened gets the task as it was.
-func TestTheMergerTaskOfAnExemptTreeEndsWithTheEndingStep(t *testing.T) {
-	pool := migratedPool(t)
-	engine := specGateEngine()
-	mergingExemptRoot(t, pool, "1111111111111111111111111111111111111111")
-	issue := recordedRoot(t, pool)
-	var exempt, approved string
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		var err error
-		exempt, err = engine.mergingTask(t.Context(), tx, issue, "Continue the work.")
-		return err
-	})
-	want := "Continue the work. The design gate of " + gatedRoot + " opened with no person's approval: its change request proposes nothing. " +
-		"Before each merge and each enqueue, run `dispatch spec-ending --issue " + gatedRoot + " --head <head>`, and merge or enqueue only when its first line reads `ready`."
-	if exempt != want {
-		t.Fatalf("the merger's task of an exempt tree = %q, want %q", exempt, want)
-	}
-	four := 4
-	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: gateDoc, LatestVersion: 4, ApprovedVersion: &four, EverOpened: true})
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		var err error
-		approved, err = engine.mergingTask(t.Context(), tx, issue, "Continue the work.")
-		return err
-	})
-	if approved != "Continue the work." {
-		t.Fatalf("the merger's task of a tree a person approved = %q, want it as it was", approved)
-	}
-}
-
 // A refused approval of a stale change request (D8) tells the issue's owner, the architect of its
 // tree root, in one notice that names the issue, each stale node with its base and current version
 // and the step to take; the same event delivered twice tells it once. An issue the daemon does not

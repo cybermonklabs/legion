@@ -187,6 +187,15 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	if err := record.PublishChangedGates(ctx, e.store, tx, fact.Issue, gates, e.now()); err != nil {
 		return intake.Result{}, err
 	}
+	// A registration that leaves the root's spec gate open by exemption can turn the ending
+	// condition of its change request, which is judged at the registered version, so every member
+	// in merging is read again (D10), under the cause that tells a merger already running the ending
+	// step where the gate did not stand open by exemption before (endingCauseOfVersion).
+	if !ungated && record.GateExempt(gate) {
+		if err := e.queueEndingReads(ctx, tx, fact.Issue, endingCauseOfVersion(sameDocument && record.GateExempt(*stored))); err != nil {
+			return intake.Result{}, err
+		}
+	}
 	e.logOnCommit(ctx, "workflow: design gate registered", "issue", issue.Key, "artifact", fact.ArtifactID, "step", step,
 		"version", version, "open", classify.DesignGateOpen(gate), "changes_requested", changesRequested, "gated_steps", e.cfg.Steps)
 	if err := e.enqueue(ctx, tx, fact.Issue, record.GateSeed{ArtifactID: fact.ArtifactID, Step: step, Version: version, Generation: issue.Generation}); err != nil {
@@ -571,6 +580,13 @@ func (e *Engine) gateAboveDispatch(ctx context.Context, tx pgx.Tx, fact intake.G
 	if err := record.PublishChangedGates(ctx, e.store, tx, issue.Key, gates, e.now()); err != nil {
 		return intake.Result{}, err
 	}
+	// A reset that leaves the gate open by exemption reads the ending condition again for every
+	// member in merging, as a version does (D10).
+	if !ungated && record.GateExempt(reset) {
+		if err := e.queueEndingReads(ctx, tx, issue.Key, endingCauseOfVersion(record.GateExempt(*gate))); err != nil {
+			return intake.Result{}, err
+		}
+	}
 	if !ungated && fact.Read.Kind != intake.DispatchArtifactVersion {
 		return intake.Result{}, e.applyArtifact(ctx, tx, reset, fact.Read, false)
 	}
@@ -918,11 +934,13 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 	}
 	// A version or an approval of the root's spec document that leaves its gate open by exemption
 	// can turn the ending condition of its change request, which is judged at the latest version,
-	// so every member in merging is read again (D10).
+	// so every member in merging is read again (D10). A version that turned the gate exempt queues
+	// its reads under the cause that tells a merger already running the ending step
+	// (endingCauseOfVersion).
 	if !carried && record.GateExempt(updated) {
 		switch fact.Kind {
 		case intake.DispatchArtifactVersion:
-			err = e.queueEndingReads(ctx, tx, key, record.SpecEndingCauseVersion)
+			err = e.queueEndingReads(ctx, tx, key, endingCauseOfVersion(record.GateExempt(gate)))
 		case intake.DispatchArtifactApproved:
 			err = e.queueEndingReads(ctx, tx, key, record.SpecEndingCauseApproval)
 		}

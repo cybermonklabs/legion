@@ -92,9 +92,10 @@ func (r *outbox) endingSubject(ctx context.Context, key string) (*record.Issue, 
 
 // applyEnding applies what Dispatch answered of the ending condition of issue's change request at
 // head (intake.SpecEndingRead), under eventID, through the workflow, which records it and tells
-// whom it concerns.
-func (r *outbox) applyEnding(ctx context.Context, eventID, issue, head string, ending dispatch.SpecEnding, cause record.SpecEndingCause) error {
-	fact := intake.SpecEndingRead{Issue: issue, Head: head, State: ending.State, Reasons: ending.Reasons, Version: ending.Version, Cause: cause}
+// whom it concerns. start marks the merger's start fence's own reading, which tells the merger
+// nothing: the task its start gives names the ending step (startTask).
+func (r *outbox) applyEnding(ctx context.Context, eventID, issue, head string, ending dispatch.SpecEnding, cause record.SpecEndingCause, start bool) error {
+	fact := intake.SpecEndingRead{Issue: issue, Head: head, State: ending.State, Reasons: ending.Reasons, Version: ending.Version, Cause: cause, Start: start}
 	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", eventID, fact, r.handlers...); err != nil {
 		return fmt.Errorf("apply the ending condition of %s at %s: %w", issue, head, err)
 	}
@@ -143,7 +144,7 @@ func (r *outbox) specEndingRead(ctx context.Context, row record.OutboxRow, paylo
 		return fmt.Errorf("read the ending condition of %s at %s from Dispatch: %w", issue.Tree, payload.Head, err)
 	}
 	r.log.Info("outbox spec ending read", append(attributes, "state", ending.State, "reasons", len(ending.Reasons))...)
-	return r.applyEnding(ctx, fmt.Sprintf("spec-ending-read:%d", row.ID), issue.Key, payload.Head, ending, payload.Cause)
+	return r.applyEnding(ctx, fmt.Sprintf("spec-ending-read:%d", row.ID), issue.Key, payload.Head, ending, payload.Cause, false)
 }
 
 // mergerWaitsForTheEnding is the merger's start fence of a tree whose spec gate stands open by
@@ -153,7 +154,8 @@ func (r *outbox) specEndingRead(ctx context.Context, row record.OutboxRow, paylo
 // role, and a tree whose gate is open some other way, read nothing. A merging issue whose record
 // holds no head waits for one, and so does a Dispatch older than the route: the gate opened by a
 // read of that route's release, and nothing may land unjudged. The fact's event id names the row
-// and its attempt, since each attempt is a new read.
+// and its attempt, since each attempt is a new read. Its reading tells the merger nothing, since
+// the merger is not running yet and the task its start gives names the ending step (startTask).
 func (r *outbox) mergerWaitsForTheEnding(ctx context.Context, row record.OutboxRow, issue record.Issue, role claim.Role) error {
 	if role != claim.RoleMerger {
 		return nil
@@ -175,7 +177,7 @@ func (r *outbox) mergerWaitsForTheEnding(ctx context.Context, row record.OutboxR
 	if err != nil {
 		return fmt.Errorf("read the ending condition of %s at %s from Dispatch: %w", issue.Tree, head, err)
 	}
-	if err := r.applyEnding(ctx, fmt.Sprintf("spec-ending-fence:%d:%d", row.ID, row.Attempts), issue.Key, head, ending, record.SpecEndingCauseHead); err != nil {
+	if err := r.applyEnding(ctx, fmt.Sprintf("spec-ending-fence:%d:%d", row.ID, row.Attempts), issue.Key, head, ending, record.SpecEndingCauseHead, true); err != nil {
 		return err
 	}
 	if ending.Ready() {
@@ -187,6 +189,26 @@ func (r *outbox) mergerWaitsForTheEnding(ctx context.Context, row record.OutboxR
 	}
 	return wait.Errorf("the merger of %s waits for the ending condition of %s's change request to hold at head %s: %s",
 		issue.Key, issue.Tree, head, strings.Join(codes, ", "))
+}
+
+// startTask is the task a start row gives its role: the row's own (record.SuperviseRequest.Task),
+// and for a merger's start of an issue in merging whose tree's spec gate stands open by exemption
+// as the start runs, that task with the paragraph of the ending step at its end
+// (workflow.MergerExemptionParagraph, D10). The paragraph is added here, where the start runs,
+// and not where the task was written, since a task can be written before the gate opened with no
+// person: the resume task a re-admission writes while the re-admitted tree holds no gate (admit's
+// startMidPhaseMembers), or a transition's task while the gate is closed, whose start the gate
+// holds until it opens. So every merger that starts under such a gate is given the step, and the
+// start fence's own reading of the ending condition tells it nothing beside it.
+func (r *outbox) startTask(ctx context.Context, issue record.Issue, payload record.SuperviseRequest) (string, error) {
+	if payload.Role != claim.RoleMerger || payload.Task == "" || issue.Phase != phase.Merging {
+		return payload.Task, nil
+	}
+	_, _, exempt, err := r.endingSubject(ctx, issue.Key)
+	if err != nil || !exempt {
+		return payload.Task, err
+	}
+	return payload.Task + " " + workflow.MergerExemptionParagraph(issue.Tree), nil
 }
 
 // endingHoldsMerger says whether the recorded ending condition holds issue's released merger: its

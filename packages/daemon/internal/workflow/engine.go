@@ -1988,11 +1988,7 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			reason += ": " + r.reason
 		}
 	}
-	text, err := e.mergingTask(ctx, tx, issue, task(issue, record.PhaseRow{}, pr, reason))
-	if err != nil {
-		return "", err
-	}
-	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), text, freshSession)
+	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), task(issue, record.PhaseRow{}, pr, reason), freshSession)
 }
 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that
@@ -2226,11 +2222,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// merge could not say it, since the issue was elsewhere then.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 	if !mergedAlready {
-		text, err := e.mergingTask(ctx, tx, issue, task(issue, handoff, pr, reason))
-		if err != nil {
-			return err
-		}
-		if err := e.start(ctx, tx, issue, starting, text, movedBack); err != nil {
+		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), movedBack); err != nil {
 			return err
 		}
 	}

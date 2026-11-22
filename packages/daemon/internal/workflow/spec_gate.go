@@ -82,10 +82,10 @@ func (e *Engine) exemptSpecGate(ctx context.Context, tx pgx.Tx, tree string) (bo
 
 // queueEndingReads queues the read of the ending condition for every member of tree in merging
 // whose pull request the record holds a head of, when tree's spec gate stands open by exemption
-// (record.SpecEndingRead): a version or an approval of the root's spec document, or a list of
-// outcomes recorded on an issue of the tree, can turn the condition either way for each of them.
-// A tree whose gate is open some other way, or closed, queues nothing: the gate itself holds or
-// releases its merger then.
+// (record.SpecEndingRead): a registration, a version, a reset or an approval of the root's spec
+// document, or a list of outcomes recorded on an issue of the tree, can turn the condition either
+// way for each of them. A tree whose gate is open some other way, or closed, queues nothing: the
+// gate itself holds or releases its merger then.
 func (e *Engine) queueEndingReads(ctx context.Context, tx pgx.Tx, tree string, cause record.SpecEndingCause) error {
 	exempt, err := e.exemptSpecGate(ctx, tx, tree)
 	if err != nil || !exempt {
@@ -113,6 +113,18 @@ func (e *Engine) queueEndingReads(ctx context.Context, tx pgx.Tx, tree string, c
 			"tree", tree, "head", pr.HeadSHA, "cause", cause)
 	}
 	return nil
+}
+
+// endingCauseOfVersion is the cause a registration, a version or a reset that leaves the root's
+// spec gate open by exemption queues its reads under (queueEndingReads): SpecEndingCauseExempted
+// where the gate did not stand open by exemption before it (wasExempt), since a merger that runs
+// then was started without the ending step and is told it by that read, and SpecEndingCauseVersion
+// otherwise.
+func endingCauseOfVersion(wasExempt bool) record.SpecEndingCause {
+	if wasExempt {
+		return record.SpecEndingCauseVersion
+	}
+	return record.SpecEndingCauseExempted
 }
 
 // headMovedInMerging queues the read of the ending condition at issue's new head, for an issue in
@@ -155,12 +167,19 @@ func (e *Engine) specOutcomesRecorded(ctx context.Context, tx pgx.Tx, fact intak
 // gate stands open by exemption no more, takes nothing from it. The head that moved has a read of
 // its own queued (headMovedInMerging), and a gate that closed holds the merger itself.
 //
-// A reading that waits after one that was ready — or after none, since a merger may already run
-// under a gate that opened by exemption since — tells the merger the gate closed for that head,
-// and one that is ready after one that waited tells it the gate opened; a reading the same as the
-// one before tells it nothing. The message goes to the merger's own role topic (record.RoleMessage),
-// which a merger that holds no role is not told: its start is held by the same reading (the
-// outbox's merger fence), and a released merger's woken deliveries wait for it (deliverHeld).
+// The merger is told how the condition stands for that head — the closed-gate message of a
+// reading that waits, the opened-gate message of one that is ready, each ending with the ending
+// step — when the reading turns (it waits after one that was ready, or is ready after one that
+// waited), when it is the first reading the record holds of the issue, and when it was queued
+// because the gate turned open by exemption (record.SpecEndingCauseExempted). The last two reach a
+// merger that may run with no word of the step: one started before the gate stood open by
+// exemption, whose task names no step, whatever reading an earlier time the gate stood exempt
+// left. A reading the same as the one before tells it nothing, and so does the start fence's own
+// reading (intake.SpecEndingRead.Start): that merger is not running yet, and the task its start
+// gives names the step (the outbox's startTask). The message goes to the merger's own role topic
+// (record.RoleMessage), which a merger that holds no role is not told: its start is held by the
+// same reading (the outbox's merger fence), and a released merger's woken deliveries wait for it
+// (deliverHeld).
 //
 // Each reason is told once per head, in a spec-ending-waits notice on the tree's root, so it reaches
 // the root's architect, the owner of the change request; the record keeps the codes told at the
@@ -218,9 +237,11 @@ func (e *Engine) specEndingRead(ctx context.Context, tx pgx.Tx, fact intake.Spec
 		return intake.Result{}, err
 	}
 	wasWaiting := before != nil && before.Waits()
+	tell := !fact.Start && (before == nil || waits != wasWaiting || fact.Cause == record.SpecEndingCauseExempted)
 	e.logOnCommit(ctx, "workflow: the ending condition of a change request was read", "issue", issue.Key, "tree", issue.Tree,
-		"head", fact.Head, "state", reading.State, "was_waiting", wasWaiting, "cause", fact.Cause, "told", told)
-	if waits == wasWaiting {
+		"head", fact.Head, "state", reading.State, "was_waiting", wasWaiting, "cause", fact.Cause, "start", fact.Start, "told", told,
+		"tells_merger", tell)
+	if !tell {
 		return intake.Result{}, nil
 	}
 	return intake.Result{}, e.tellMergerEnding(ctx, tx, *issue, fact, waits)
@@ -267,25 +288,12 @@ func mergerEndingStep(tree string) string {
 		"and merge or enqueue only when its first line reads `ready`.", tree)
 }
 
-// mergerExemptionParagraph is the paragraph the merger's start task ends with when its tree's spec
-// gate stands open by exemption (D10): the gate opened with no person, so the merger reads the
-// ending condition itself before each merge and each enqueue.
-func mergerExemptionParagraph(tree string) string {
+// MergerExemptionParagraph is the paragraph a merger's start task ends with when its tree's spec
+// gate stands open by exemption as the start runs (D10; the outbox's startTask adds it): the gate
+// opened with no person, so the merger reads the ending condition itself before each merge and
+// each enqueue.
+func MergerExemptionParagraph(tree string) string {
 	return fmt.Sprintf("The design gate of %s opened with no person's approval: its change request proposes nothing. %s", tree, mergerEndingStep(tree))
-}
-
-// mergingTask is task with the paragraph of an exempt gate (mergerExemptionParagraph) at its end,
-// for a merger's start of a member whose tree's spec gate stands open by exemption, and task as it
-// is for every other start.
-func (e *Engine) mergingTask(ctx context.Context, tx pgx.Tx, issue record.Issue, text string) (string, error) {
-	if issue.Phase != phase.Merging {
-		return text, nil
-	}
-	exempt, err := e.exemptSpecGate(ctx, tx, issue.Tree)
-	if err != nil || !exempt {
-		return text, err
-	}
-	return text + " " + mergerExemptionParagraph(issue.Tree), nil
 }
 
 // endingWaitsSummary is what a spec-ending-waits notice says: the member whose merge waits, the
