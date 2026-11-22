@@ -15,7 +15,7 @@ import (
 // A child no tree records at all is the opposite case and stays open in backlog or triage: it is
 // work the architect filed and has not released yet, which is exactly what the parent must wait
 // for.
-func TestAChildParkedInAnotherTreeHoldsNothing(t *testing.T) {
+func TestAChildInBacklogInAnotherTreeHoldsNothing(t *testing.T) {
 	const parent, parkedElsewhere, unrecorded, otherTree = "LEGION-500", "LEGION-501", "LEGION-502", "LEGION-600"
 	parentKey := parent
 	issues := []Issue{{Key: parent, Tree: parent, Project: "LEGION", Phase: phase.Admitted, Status: "in_progress"}}

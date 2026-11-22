@@ -14,10 +14,10 @@ import (
 	"sync"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // Every agent of a tree writes the shared clone, so everything below is what a tree agent can plant
@@ -798,7 +798,8 @@ func TestTheRunnerRefusesASymlinkedLayoutDirectory(t *testing.T) {
 
 // A workspace's .jj/repo that is neither a directory nor a regular file is refused, naming what it
 // is, rather than waited on: a FIFO there would otherwise block the runner, which reads .jj/repo
-// before the command's deadline starts (readGitdir).
+// before the command's deadline starts (readGitdir). A runner that waits on it fails the row by
+// name before the test binary's deadline (testwait.Receive).
 func TestTheRunnerRefusesAWorkspaceWhoseRepoIsNotARegularFile(t *testing.T) {
 	run := newLocalRunner(t)
 	ws, err := Provision(context.Background(), run, provisionRequest(t))
@@ -818,24 +819,16 @@ func TestTheRunnerRefusesAWorkspaceWhoseRepoIsNotARegularFile(t *testing.T) {
 		_, err := RunCheckedIn(context.Background(), run, ws, []string{"jj", "log", "-r", "@", "--no-graph", "--ignore-working-copy", "-T", "commit_id"})
 		done <- err
 	}()
-	select {
-	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "is a fifo") {
-			t.Errorf("jj in a workspace whose .jj/repo is a FIFO = %v, want a refusal naming what it is", err)
-		}
-	case <-time.After(20 * time.Second):
-		// Release the blocked reader so the test process can finish, then fail.
-		if writer, err := os.OpenFile(fifo, os.O_WRONLY, 0); err == nil {
-			writer.Close()
-		}
-		t.Fatal("the runner blocked reading a FIFO at .jj/repo for 20 s")
+	if err := testwait.Receive(t, "jj in a workspace whose .jj/repo is a FIFO", done); err == nil || !strings.Contains(err.Error(), "is a fifo") {
+		t.Errorf("jj in a workspace whose .jj/repo is a FIFO = %v, want a refusal naming what it is", err)
 	}
 }
 
 // A workspace's .jj/repo that is a regular file larger than any path jj writes there is refused,
 // naming the bound, rather than read whole: a tree agent can write the file, and the runner reads
 // it before each jj command, under whatever its caller holds (the tmux daemon's store lock among
-// them). The file is gitdirLimit bytes, one more than the bound readGitdir answers.
+// them). The file is gitdirLimit bytes, one more than the bound readGitdir answers, and the read's
+// answer is waited for with no span of its own (testwait.Receive).
 func TestWorkspaceRepositoryRefusesAPointerLargerThanAnyPath(t *testing.T) {
 	jjDir := filepath.Join(t.TempDir(), ".jj")
 	if err := os.Mkdir(jjDir, 0o755); err != nil {
@@ -854,13 +847,9 @@ func TestWorkspaceRepositoryRefusesAPointerLargerThanAnyPath(t *testing.T) {
 		target, err := workspaceRepository(jjDir)
 		done <- answer{target, err}
 	}()
-	select {
-	case got := <-done:
-		want := repo + " is larger than 4096 bytes"
-		if got.err == nil || got.err.Error() != want {
-			t.Fatalf("workspaceRepository of a %d-byte .jj/repo = (%d-byte path, %v), want the refusal %q", gitdirLimit, len(got.target), got.err, want)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatalf("workspaceRepository was still reading %s after 20s", repo)
+	got := testwait.Receive(t, "workspaceRepository of "+repo, done)
+	want := repo + " is larger than 4096 bytes"
+	if got.err == nil || got.err.Error() != want {
+		t.Fatalf("workspaceRepository of a %d-byte .jj/repo = (%d-byte path, %v), want the refusal %q", gitdirLimit, len(got.target), got.err, want)
 	}
 }

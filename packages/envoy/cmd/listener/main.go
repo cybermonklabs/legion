@@ -21,7 +21,6 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/config"
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/envconf"
 	"github.com/sjawhar/envoy/internal/ghrename"
@@ -1009,6 +1008,14 @@ func inactiveThresholdFor(sessions *session.SessionRegistry, reapInterval, sweep
 	return bus.InactiveThresholdFor(max(goneHorizon, sessions.TTL()), reapInterval, sweepInterval)
 }
 
+// processStart is when this process started, as near as the program can read it: Go initialises
+// package variables before main runs. /metrics serves it as envoy_listener_start_time_seconds, and
+// the listener logs it beside its old-form counter (startLegacySubjectsLog), so a reader of two
+// readings of one counter can tell a counter a restart reset from one that did not move
+// (packages/envoy/scripts/legacy-subjects-gate.sh compares envoy_listener_legacy_subjects_total
+// across two readings 72 hours apart, and a listener outside a cluster has no pod to show it).
+var processStart = time.Now()
+
 func main() {
 	// Phase 1: Load config (synchronous, fast). With ENVOY_LISTEN_FD, Load inspects the inherited
 	// socket and takes its address as cfg's, so the API auth fence below judges the address that
@@ -1136,6 +1143,20 @@ func main() {
 
 	// Metrics registry — /metrics available during startup (like /healthz).
 	met := metrics.New()
+	// An edge listener (ENVOY_EDGE_PROJECTS) holds itself to its own NATS grant from its first
+	// connection on (edgeGrant): every connection names its inboxes under its machine's prefix, the
+	// main client reads the stream and owns none, no role lane opens, no wake report is published,
+	// and its delivery handlers keep no role message and publish no exception on a lane the grant
+	// leaves out. Every other listener has none (edge nil).
+	var edge *edgeGrant
+	if len(cfg.EdgeProjects) > 0 {
+		grant, err := newEdgeGrant(cfg.MachineID, cfg.EdgeProjects, met)
+		if err != nil {
+			logger.Error("edge listener grant refused", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		edge = grant
+	}
 	messagesReceived := met.NewCounter("envoy_messages_received_total", "Total messages received by the listener")
 	messagesDelivered := met.NewCounter("envoy_messages_delivered_total", "Total message delivery attempts")
 	messagesNAKed := met.NewCounter("envoy_messages_naked_total", "Total messages NAK'd for retry")
@@ -1147,7 +1168,13 @@ func main() {
 	sessionsReaped := met.NewCounter("envoy_sessions_reaped_total", "Session records deleted at the gone horizon with no clean stop")
 	sessionStoredAfterLastSeen := met.NewCounter("envoy_session_messages_stored_after_last_seen_total", "Messages the stream held for a reaped session, stored after its last registration; not a count of unread messages, since the listener keeps no read receipt")
 	sendsToUnresponsive := met.NewCounter("envoy_sends_unresponsive_total", "Sends accepted and stored for a recipient past the live window")
-	legacySubjects := met.NewCounter("envoy_listener_legacy_subjects_total", "Names a caller gave in their old form, without the project the rename put into them, by kind: an interest a registration named, a role a claim named")
+	legacySubjects := met.NewCounter(legacySubjectsMetric, "Names a caller gave in their old form, without the project the rename put into them, by kind: an interest a registration named, a role a claim named, a role a publish, the role lane or a holder lookup named (role_read)")
+	// The start-time gauge names this listener's machine (ENVOY_MACHINE_ID) in its one label, so a
+	// reader holds the page it read to the machine it meant to read: legacy-subjects-gate.sh takes
+	// an outside listener's machine from the operator's --listener <machine>=<url>, and a URL
+	// serving another listener would otherwise answer for it.
+	startSample := []metrics.GaugeSample{{Labels: [][2]string{{"machine", cfg.MachineID}}, Value: processStart.Unix()}}
+	met.NewGaugeSetFunc(startTimeMetric, "When this listener process started, in Unix seconds, under its machine: every counter on this page counts from that moment", func() []metrics.GaugeSample { return startSample })
 	fanoutUnresponsiveSkips := met.NewCounter("envoy_fanout_unresponsive_skipped_total", "Topic deliveries to a session past the live window that were not made: a push not sent, or an ad-hoc topic send's receipt not waited for; the message is stored for the session either way")
 	// The kept role lanes' outcomes, none labelled by role: a deployment sees unboundedly many
 	// role tokens, and each would be a series of its own for the process's life.
@@ -1218,8 +1245,9 @@ func main() {
 	// Dispatch's server both own ENVOY_NOTIFICATIONS: this client ensures the stream on this
 	// connect and after every reconnect, at the deployment's replica count and byte limit
 	// (listenerStreamOptions), and leaves as it is a stream that a newer build stamped with a
-	// higher generation (bus.ConnectOwningStream).
-	client, err := bus.ConnectOwningStream(cfg.NATSURLs, listenerStreamOptions(cfg)...)
+	// higher generation (bus.ConnectOwningStream). An edge listener owns no stream: it reads it,
+	// and its start ends here when the server has none (connectListenerBus).
+	client, err := connectListenerBus(cfg, edge)
 	if err != nil {
 		// Named, because this step and the two below it are the whole of the start-up between the
 		// listening line and "webhooks open", and each one can end it with a bare error: a reader
@@ -1238,11 +1266,13 @@ func main() {
 	// start is. Making stopping here instead would change that for the whole start, the NATS
 	// connect and the cache warm-ups included, into an ordered shutdown of a start not yet serving.
 	starting := context.Background()
-	// The spent-proof bucket, before anything of /v1 can be served: a listener configured to take
-	// broker access tokens on a bus that cannot open it refuses to start, naming the setting,
-	// rather than recording spent proofs where its own replicas cannot see them.
+	// The spent-proof bucket, before anything of /v1 can be served. Every listener opens it,
+	// whether or not it takes broker tokens, so an edge listener, whose grant creates no bucket,
+	// finds the one a full listener of this build made; a listener configured to take broker
+	// access tokens on a bus that cannot open it refuses to start, naming the setting, rather than
+	// recording spent proofs where its own replicas cannot see them (brokerTokens.open).
 	if err := brokerTokenAuth.open(starting, client.Conn, cfg.NATSReplicas); err != nil {
-		log.Fatalf("open the spent-proof bucket for broker access tokens: %v", err)
+		log.Fatalf("open the spent-proof bucket: %v", err)
 	}
 	consumer := bus.ListenerDurable(cfg.MachineID)
 	// The durable is checked here, before the cache warm-ups below (up to 30 s each), so a refused
@@ -1503,14 +1533,20 @@ func main() {
 	// Wake reports are published off the paths that raise them, under a lifetime of the
 	// listener's own — the shutdown ends every retry still running — and a cap on how many
 	// retry at once (wakeReporter). It is built here because the delivery handlers below copy
-	// this configuration by value, so every seam of it must be set before they are built.
+	// this configuration by value, so every seam of it must be set before they are built. An edge
+	// listener reports none: its grant may not publish the wake topic (natsgrant.Edge), and the
+	// shared listeners report every wake.
 	wakesCtx, stopWakeReports := context.WithCancel(context.Background())
-	wakes := newWakeReporter(wakesCtx, client)
+	var wakes *wakeReporter
+	if edge == nil {
+		wakes = newWakeReporter(wakesCtx, client)
+	}
 
 	// Phase 6: Open the role lane and /v1 onto the stores, then bind the durable consumer.
 	deliveryConfig := listenerDeliveryHandlerConfig{
 		client:            client,
 		wakes:             wakes,
+		edge:              edge,
 		forwardRole:       startRoleForward(client),
 		registry:          registry,
 		sessions:          sessions,
@@ -1559,27 +1595,16 @@ func main() {
 	deliveryConfig = wireRoleForwarder(deliveryConfig)
 	roleForwards := deliveryConfig.roleForwards
 
-	// The role lane is a core-NATS queue subscription on a connection of its own with finite pending
-	// limits (bus.RoleLanePendingMsgs, bus.RoleLanePendingBytes; bus.ConnectRoleLane), in the queue
-	// group every listener shares, or this machine's group on a hub whose grant predates it. During a
-	// rolling deploy the task being replaced is a member too, and NATS hands each role message to one
-	// member of a group, so opening the lane before the durable binds forwards no message twice.
-	roleLaneClient, roleQueue, err := bus.ConnectRoleLane(cfg.NATSURLs, cfg.MachineID, coreNATSDeliveryHandler(deliveryConfig))
+	// The role lane (startRoleLane); an edge listener opens none.
+	lane, err := startRoleLane(cfg, edge, coreNATSDeliveryHandler(deliveryConfig), roleForwards, met, logger)
 	if err != nil {
 		logger.Error("core role subscription failed", slog.String("error", err.Error()))
 		client.Conn.Close()
 		os.Exit(1)
 	}
-	logger.Info("role lane subscribed", slog.String("subject", contracts.RoleTopicPrefix+">"), slog.String("queue", roleQueue))
-	met.NewGaugeFunc("envoy_role_lane_slow_consumers", "Slow-consumer errors the role lane's connection has reported", func() int64 {
-		return int64(roleLaneClient.SlowConsumers())
-	})
 	met.NewGaugeFunc("envoy_role_forwards_outstanding", "Role forwards queued behind their holder or waiting for their outcome", func() int64 {
 		return int64(roleForwards.outstanding())
 	})
-	roleLaneWatchCtx, roleLaneWatchCancel := context.WithCancel(context.Background())
-	go watchRoleLaneSlowConsumers(roleLaneWatchCtx, roleLaneClient, logger, roleLaneSlowConsumerInterval)
-	lane := roleLane{client: roleLaneClient, forwards: roleForwards, stopWatch: roleLaneWatchCancel}
 
 	// Every session takes its messages from a session consumer this listener manages on a
 	// connection of its own (bus.ConnectSessionConsumers), and its relay needs a reply inbox to
@@ -1595,7 +1620,7 @@ func main() {
 	// consumer the listener's own delete had not reached, and with it the only record of where
 	// that session's delivery stopped (inactiveThresholdFor, bus.ConnectSessionConsumers).
 	inactiveThreshold := inactiveThresholdFor(sessions, sessionReapInterval, sessionConsumerSweepInterval)
-	delivery, err := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, client, logger)
+	delivery, err := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, client, logger, edge.connectOptions()...)
 	if err != nil {
 		logger.Error("session consumer connection failed: every session is delivered through a consumer of its own", slog.String("error", err.Error()))
 		client.Conn.Close()
@@ -1636,7 +1661,7 @@ func main() {
 	sessionLive, _ := sessions.Windows()
 	ready := &listenerDeps{
 		client:       client,
-		roleLane:     roleLaneClient,
+		roleLane:     lane.client,
 		consumers:    delivery,
 		registry:     registry,
 		sessions:     sessions,
@@ -1760,7 +1785,8 @@ func main() {
 	// them, on the reapers' cadence and under their context, with a pass as the listener starts.
 	// It costs one stream read a pass while no role has a kept lane (startKeptRoleSweep,
 	// role_keep_sweep.go), and its cadence is the interval the repeated wake report is named by
-	// (roleWakeInterval).
+	// (roleWakeInterval). An edge listener runs none, since its grant writes no kept lane: the
+	// shared listeners' sweeps hand over the lanes of roles held at the edge too.
 	kvLoopsDone = append(kvLoopsDone, startKeptRoleSweep(kvLoopsCtx, deliveryConfig, roleWakeInterval))
 
 	// Phase 6b0a: Free the slot every session consumer whose session ended without deregistering
@@ -1807,8 +1833,17 @@ func main() {
 	// topic the Legion daemons read wakes of released issue pods from. Without it a daemon
 	// cannot tell "the listener sends no reports" from "the listener has nothing to report", so
 	// it releases nothing: this is the positive signal that lets release run at all. It shares
+	// summaryCtx, which the shutdown cancels. An edge listener reports no wake, so it says
+	// nothing here either.
+	if edge == nil {
+		startListenerReadyReports(summaryCtx, client, logger, listenerReadyInterval)
+	}
+
+	// Phase 6b4: Log the old-form counter and the start-time gauge, now and every
+	// legacySubjectsLogInterval, for legacy-subjects-gate.sh's reader of a listener in a cluster,
+	// who may read this pod's log and not its /metrics (startLegacySubjectsLog). It shares
 	// summaryCtx, which the shutdown cancels.
-	startListenerReadyReports(summaryCtx, client, logger, listenerReadyInterval)
+	startLegacySubjectsLog(summaryCtx, logger, met, legacySubjectsLogInterval)
 
 	// Phase 6c: Keep transient JetStream timeouts observable without restarting
 	// the listener. Terminal watcher/consumer failures are rebuilt immediately;

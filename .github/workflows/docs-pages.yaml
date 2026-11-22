@@ -274,6 +274,7 @@ on:
       - 'packages/envoy/internal/weborigin/*'
       - 'packages/dispatch/**'
       - 'scripts/e2e/lib/held-port.py'
+      - 'packages/envoy/scripts/lib/pg-url.sh'
       - 'packages/proof-editor/src/**'
       - 'packages/contracts/src/**'
       - 'packages/envoy-client/src/**'

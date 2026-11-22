@@ -121,9 +121,11 @@ PY
 # entry_state <path>: prints present when something is at <path>, a link whose target is gone
 # included; absent when nothing is and the directory that would hold it was searched; and unknown
 # and why otherwise, as for an ancestor the gate may not search or a link along the way whose target
-# is gone, so a surface the gate cannot see is never read as one that is not there.
+# is gone, so a surface the gate cannot see is never read as one that is not there. A name that is
+# no UTF-8, a link's target among them, is written with its bytes escaped, as Python writes an
+# error, never a write that fails and stops the gate with no verdict.
 entry_state() {
-  python3 - "$1" <<'PY'
+  PYTHONIOENCODING=:backslashreplace python3 - "$1" <<'PY'
 import os
 import stat
 import sys
@@ -151,15 +153,27 @@ while True:
         print(f"unknown {parent}: {error.strerror}")
         sys.exit(0)
     break
+# Its target, read from the link's own directory, is gone, or is there and does not resolve (a link
+# whose target is gone, or a loop).
 if stat.S_ISLNK(mode) and not os.path.exists(parent):
-    print(f"unknown {parent} is a link to {os.readlink(parent)}, which does not exist")
+    target = os.readlink(parent)
+    why = "resolve" if os.path.lexists(os.path.join(os.path.dirname(parent), target)) else "exist"
+    print(f"unknown {parent} is a link to {target}, which does not {why}")
 else:
     print("absent")
 PY
 }
 
+# utf8 <text>: true when <text> is UTF-8. The text goes on stdin, which a launcher that reads its
+# arguments as text does not change.
+utf8() {
+  printf '%s' "$1" | python3 -c 'import sys; sys.stdin.buffer.read().decode("utf-8")' 2>/dev/null
+}
+
 # plugin_trees <out>: the Oh My Pi plugin trees of this box, ~/.omp/plugins and each profile's, one
-# per NUL-terminated entry, into <out>; a profiles directory it cannot list fails, naming why.
+# per NUL-terminated entry, into <out>; a profiles directory it cannot list, a link there whose
+# target is gone among them, fails, naming why, and so does a profile whose name is no UTF-8, which
+# entry_state may not get unchanged (dotfiles_clients says why).
 plugin_trees() {
   python3 - "$HOME" >"$1" <<'PY'
 import os
@@ -171,9 +185,26 @@ print(os.path.join(omp, "plugins"), end="\0")
 try:
     entries = sorted(os.listdir(profiles))
 except FileNotFoundError:
+    # Nothing there is no profile, but a link there whose target is gone hides every profile it
+    # would hold. A link above it whose target is gone is above ~/.omp/plugins too, and entry_state
+    # reports it there; a link that loops fails the listing, as any other error does. The caller
+    # prints the last line of the failure, so a newline in the target is written as printable does.
+    if os.path.islink(profiles):
+        target = os.readlink(profiles)
+        why = "resolve" if os.path.lexists(os.path.join(omp, target)) else "exist"
+        shown = target.replace("\n", "\\x0a")
+        sys.exit(f"{profiles} is a link to {shown}, which does not {why}")
     entries = []
 except OSError as error:
     sys.exit(f"{profiles} cannot be listed: {error.strerror}")
+# The name's own bytes decide, whatever encoding this locale reads names with.
+for entry in entries:
+    path = os.fsencode(os.path.join(profiles, entry))
+    try:
+        os.fsencode(entry).decode("utf-8")
+    except UnicodeDecodeError:
+        shown = path.decode("utf-8", "backslashreplace")
+        sys.exit(shown.replace("\n", "\\x0a") + ": the profile's name is no UTF-8")
 for entry in entries:
     print(os.path.join(profiles, entry, "plugins"), end="\0")
 PY
@@ -188,7 +219,23 @@ dotfiles_clients() {
     unknown=$((unknown + 1))
     return
   fi
-  local root=$dotfiles tree state own home outside="" unread="" pin installed label problem
+  local root=$dotfiles tree state own home outside="" unread="" pin installed label problem name path target why
+  # python3 and jq get each path read here as an argument, and a launcher that reads its arguments
+  # as text (a mise shim) hands on each byte that is no UTF-8 as U+FFFD: the changed path is one
+  # where nothing is, which reads as absent. So a directory these paths start from whose name is no
+  # UTF-8 is UNKNOWN by name, and plugin_trees refuses such a profile.
+  for name in HOME "the dotfiles directory" CLAUDE_CONFIG_DIR; do
+    case "$name" in
+      HOME) path=$HOME ;;
+      CLAUDE_CONFIG_DIR) path=${CLAUDE_CONFIG_DIR:-} ;;
+      *) path=$root ;;
+    esac
+    if [ -n "$path" ] && ! utf8 "$path"; then
+      printf 'UNKNOWN: dotfiles: %s is no UTF-8, so a python3 or jq that reads its arguments as text may read another path: %s\n' "$name" "$(printable "$path")"
+      unknown=$((unknown + 1))
+      return
+    fi
+  done
   local package="$root/omp/plugins/node_modules/@sjawhar/pi-envoy"
   label="dotfiles omp/plugins/package.json"
   # Each copy an Oh My Pi plugin tree holds must be the dotfiles' own, a directory inside the
@@ -198,7 +245,11 @@ dotfiles_clients() {
   own=$(readlink -f "$package" || true)
   state=$(entry_state "$package")
   if [ "$state" = present ] && [ ! -e "$package" ]; then
-    outside="$root/omp/plugins, a link to $(readlink "$package"), which does not exist"
+    # Its target, read from the link's own directory, is gone, or is there and does not resolve.
+    target=$(readlink "$package")
+    case "$target" in /*) path=$target ;; *) path=${package%/*}/$target ;; esac
+    if [ -L "$path" ] || [ -e "$path" ]; then why=resolve; else why=exist; fi
+    outside="$root/omp/plugins, a link to $target, which does not $why"
   elif [ "$state" = present ] && [[ $own != "$home"/* ]]; then
     outside="$root/omp/plugins, a link to ${own:-a path that does not resolve}"
   elif [ "$state" != present ] && [ "$state" != absent ]; then
@@ -268,7 +319,12 @@ dotfiles_claude_envoy() {
       own_record=present
       continue
     fi
-    [ "$(readlink -f "$record")" != "$(readlink -f "$root/.claude/plugins/installed_plugins.json" || true)" ] || continue
+    # A record is the dotfiles' own only when something is there and both paths resolve to it. A
+    # link that loops, or whose target is gone, is read below and fails naming why, even one that
+    # names the dotfiles' own path: two paths that resolve to one name where nothing is are no record.
+    if [ -e "$record" ] && [ "$(readlink -f "$record")" = "$(readlink -f "$root/.claude/plugins/installed_plugins.json" || true)" ]; then
+      continue
+    fi
     if ! installed_claude_envoy "$record" >"$work/claude.outside" 2>"$work/err"; then
       printf 'UNKNOWN: %s: %s\n' "$label" "$(last_line "$work/err")"
       unknown=$((unknown + 1))

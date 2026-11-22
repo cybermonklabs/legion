@@ -94,6 +94,15 @@ func rawFd(f *os.File) (int, error) {
 	return fd, nil
 }
 
+// newPromptShell starts the interactive shell the prompt runs under, in a terminal of its own. It
+// runs under `env --default-signal`, with each of createSignals at its default action, so neither
+// it nor the jobs it starts inherit an ignore of SIGHUP or SIGINT from this test process (a job run
+// in the background of a script ignores SIGINT, nohup SIGHUP), at which the prompt rightly goes on
+// reading: a row's Ctrl-C or hang-up reaches the prompt as a terminal's would. Those two are the
+// ones that can reach it, since Go keeps an inherited ignore only for them and puts its own
+// handler, which a child gets back as the default, on SIGQUIT and SIGTERM; the list names all four
+// of createSignals anyway. A row that needs a signal ignored sets it in the wrapper shell it starts
+// (wrapperIgnores).
 func newPromptShell(t *testing.T) *promptShell {
 	t.Helper()
 	controller, terminal := openPTY(t)
@@ -108,7 +117,7 @@ func newPromptShell(t *testing.T) *promptShell {
 	tty := os.NewFile(uintptr(fd), "terminal")
 	defer tty.Close()
 	home := t.TempDir()
-	cmd := exec.Command("bash", "--norc", "--noprofile", "-i")
+	cmd := exec.Command("env", "--default-signal=HUP,INT,QUIT,TERM", "bash", "--norc", "--noprofile", "-i")
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "HISTFILE=" + filepath.Join(home, "history"), "PS1=PROMPT$ ", "TERM=dumb"}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
