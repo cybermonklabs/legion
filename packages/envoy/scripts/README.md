@@ -1114,6 +1114,27 @@ delete the code that reads both):
   that comes back between the purge and the switch never gets the old-form messages sent to it
   before the producers moved. After the switch its consumer filters the new form alone, so it would
   not get them then either.
+- **A restore of the stream** is no client, and no fact reads one. A restore makes the stream an
+  archive holds, its messages and its consumers as they were when the archive was taken, and
+  nats-server refuses one while a stream of that name exists (v2.15.1's `jsStreamRestoreRequest`
+  and `jsClusteredStreamRestoreRequest`), so it follows a delete of the stream. The clustered hub's
+  move user may make both, as an operator's act: its grant holds the stream's delete, the restore
+  request and the subjects the archive's chunks go to (`$JS.API.STREAM.DELETE.*`,
+  `$JS.API.STREAM.RESTORE.*`, `$JS.SNAPSHOT.RESTORE.>`; `prodRenderMoveDestination` in
+  `infra/gcp/production_render_test.go`, as `infra/gcp/testdata/production-render.golden` renders
+  it), and no other user that render writes may publish the restore request. The same grant's
+  `$JS.API.STREAM.UPDATE.*` can instead name a copy restored under another name among the stream's
+  sources, and the stream stores what it sources under each message's own subject (nats-server
+  refuses an update of a stream's mirror, not of its sources). An archive taken before the purge
+  holds the old-form messages the purge took, and a restore keeps the stream's `envoy_stream_id`,
+  which lives in its configuration (`bus.StreamIDMetadataKey`). So a restore of such an archive
+  after the second reading that read (c) clean puts old-form messages back on
+  `ENVOY_NOTIFICATIONS`, and only a new reading would see them: the operator restores no such
+  archive, under any name, between that reading and the switch. Until the switch every reader
+  takes both forms. After it a consumer the listener sets filters the new form alone and delivers
+  no restored old-form message, which stays stored; a consumer the archive brings back keeps the
+  filters it had then, both forms, until the listener sets them again (`bus.SessionConsumers`'
+  `Ensure` and `UpdateFilter`).
 
 (a3) also reads the users the hub and its auth service are given, not the ones their running
 processes hold. A hub server loads `auth.conf` from the ConfigMap only once the kubelet updates the
