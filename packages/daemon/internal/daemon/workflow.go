@@ -927,7 +927,12 @@ func (w *workflowRuntime) queueBasisSeeds(ctx context.Context, tx pgx.Tx, gates 
 // the person approved the version it waits on or asked for changes on the version it stands open
 // on. It queues one seed for each (queueBasisSeeds), so a pending step opens, and a changes request
 // reaches the root's architect, within one controller wake interval, as a blocker of another
-// project's close does (readObserved). A read that fails is logged, and the next tick reads again.
+// project's close does (readObserved). It queues none for a step a seed of its kind still in the
+// outbox reads (record.Store.QueuedSeedSteps), as one waiting out its backoff while Dispatch is
+// down does, so the rows do not pile up on the roots' lanes, and none for a root out of the
+// workflow or whose tree lingers (record.Stopped), whose tree runs nothing a seed could open or
+// tell: its leave ended its steps' waits, and a re-admission keeps nothing of a basis. A read that
+// fails is logged, and the next tick reads again.
 func (w *workflowRuntime) queueBasisSeedsOfOtherProjects(ctx context.Context) {
 	now := time.Now().UTC()
 	scoped, committed := intake.WithCommitHooks(ctx)
@@ -937,10 +942,32 @@ func (w *workflowRuntime) queueBasisSeedsOfOtherProjects(ctx context.Context) {
 		if err != nil || len(gates) == 0 {
 			return err
 		}
-		generations, err := w.rootGenerations(scoped, tx, gates)
+		keys := make([]string, 0, len(gates))
+		for _, gate := range gates {
+			keys = append(keys, gate.Issue)
+		}
+		roots, err := w.records.IssuesOf(scoped, tx, w.dispatchProject, slices.Compact(keys))
 		if err != nil {
 			return err
 		}
+		generations := make(map[string]uint64, len(roots))
+		for _, root := range roots {
+			if !record.Stopped(root) {
+				generations[root.Key] = root.Generation
+			}
+		}
+		seeding, err := w.records.QueuedSeedSteps(scoped, tx, w.dispatchProject)
+		if err != nil {
+			return err
+		}
+		gates = slices.DeleteFunc(gates, func(gate record.DesignGate) bool {
+			kind := record.OutboxKindGateSeed
+			if gate.PendingOnBasis() {
+				kind = record.OutboxKindPendingBasisSeed
+			}
+			_, seeded := seeding[record.SeedStep{Issue: gate.Issue, Kind: kind, Step: gate.Step.OrSpec()}]
+			return seeded
+		})
 		queued, err = w.queueBasisSeeds(scoped, tx, gates, generations, now)
 		return err
 	}); err != nil {

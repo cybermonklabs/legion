@@ -122,6 +122,35 @@ func TestControllerTickReadsChildrenOfAnotherProject(t *testing.T) {
 		})
 	}
 
+	// A child the copy already holds closed, and that Dispatch still lists closed, holds nothing,
+	// so a later tick reads it no more: its parent stands while the list keeps naming it, and one
+	// read of it every tick would be spent for nothing. Its reopening shows in the list, which is
+	// read again at once.
+	t.Run("a closed child the copy holds closed", func(t *testing.T) {
+		for _, status := range []string{"done", "icebox"} {
+			t.Run(status, func(t *testing.T) {
+				_, client, w := opened(t)
+				client.serveChild(status, acceptingParent, 2)
+				w.applyControllerTick(ctx, time.Now().Add(time.Second))
+				readsOfChild := func() int {
+					return strings.Count(strings.Join(client.asked(), " "), otherProjectChild)
+				}
+				before := readsOfChild()
+
+				w.applyControllerTick(ctx, time.Now().Add(2*time.Second))
+				if after := readsOfChild(); after != before {
+					t.Fatalf("the tick after the copy took %s %s read it %d more times, want none", otherProjectChild, status, after-before)
+				}
+
+				client.serveChild("in_progress", acceptingParent, 3)
+				w.applyControllerTick(ctx, time.Now().Add(3*time.Second))
+				if after := readsOfChild(); after != before+1 {
+					t.Fatalf("the tick after %s reopened read it %d times, want once", otherProjectChild, after-before)
+				}
+			})
+		}
+	})
+
 	t.Run("a failed list of the children", func(t *testing.T) {
 		pool, client, w := opened(t)
 		var logs testlog.Buffer

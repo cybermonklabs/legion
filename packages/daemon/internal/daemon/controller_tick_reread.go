@@ -145,7 +145,10 @@ func (w *workflowRuntime) waitedOn(ctx context.Context) ([]string, []string, err
 // project in that list is left to readWaited, which reads it from the project's listing. A child
 // of another project reaches the daemon so within one wake interval, and so do its close, its move
 // to icebox and its move to another parent, since every such child the mirror holds open under a
-// started parent is also among keys (waitedOn) and read singly there.
+// started parent is also among keys (waitedOn) and read singly there. A child the list shows done
+// or in icebox and the mirror already holds closed (closedInMirror) holds nothing and is not read
+// again: its parent can stand for days while the list keeps naming it. Its reopening shows in the
+// list, and it is read at that tick.
 //
 // A list that fails is logged, one warning for each parent it names, and leaves out what it would
 // have read: the rest of the turn goes on, and the row of a child left out keeps the last thing
@@ -159,6 +162,7 @@ func (w *workflowRuntime) readObserved(ctx context.Context, keys, parents []stri
 	for _, status := range observed {
 		read[status.Key] = struct{}{}
 	}
+	var listed []dispatch.IssueSummary
 	for _, parent := range parents {
 		children, err := w.dispatch.ListChildren(ctx, parent)
 		if err != nil {
@@ -170,12 +174,51 @@ func (w *workflowRuntime) readObserved(ctx context.Context, keys, parents []stri
 				continue
 			}
 			read[child.Key] = struct{}{}
-			if status, ok := w.readBlocker(ctx, child.Key); ok {
-				observed = append(observed, status)
-			}
+			listed = append(listed, child)
+		}
+	}
+	closed := w.closedInMirror(ctx, listed)
+	for _, child := range listed {
+		if _, held := closed[child.Key]; held {
+			continue
+		}
+		if status, ok := w.readBlocker(ctx, child.Key); ok {
+			observed = append(observed, status)
 		}
 	}
 	return observed
+}
+
+// closedInMirror is each of listed that the list shows closed, done or in icebox, and that the
+// mirror already holds closed too (record.ChildOpen of a child no record holds), read in one
+// short read-only transaction. A read that fails is logged and answers none, so every child is
+// read as before.
+func (w *workflowRuntime) closedInMirror(ctx context.Context, listed []dispatch.IssueSummary) map[string]struct{} {
+	var keys []string
+	for _, child := range listed {
+		if !record.ChildOpen(record.DispatchIssueRow{Status: child.Status}, nil) {
+			keys = append(keys, child.Key)
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	var rows []record.DispatchIssueRow
+	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		rows, err = w.records.DispatchIssuesOf(ctx, tx, keys)
+		return err
+	}); err != nil {
+		w.log.Warn("the controller tick could not read the mirror of the closed children of another project it lists; it reads each of them", "error", err)
+		return nil
+	}
+	closed := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		if !record.ChildOpen(row, nil) {
+			closed[row.Key] = struct{}{}
+		}
+	}
+	return closed
 }
 
 // readWaited is Dispatch's answer for keys and for the children of parents of this project.

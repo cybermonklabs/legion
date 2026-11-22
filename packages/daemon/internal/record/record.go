@@ -2331,6 +2331,11 @@ type Store interface {
 	// daemon never hears, since it drops every event of another project's issue, so the controller
 	// tick reads each again. A step whose basis has ended is not among them.
 	GatesOnBasisOfOtherProjects(ctx context.Context, tx pgx.Tx, project string) ([]DesignGate, error)
+	// QueuedSeedSteps is each step of an issue of project that a gate seed or a pending-basis seed
+	// still in the outbox reads, whether it is due, running or waiting out its backoff: a seed
+	// queued for a step is the read another one would make, so the controller tick queues none
+	// beside it. A gate seed written before a deployment named steps reads the spec step.
+	QueuedSeedSteps(ctx context.Context, tx pgx.Tx, project string) (map[SeedStep]struct{}, error)
 	// GatesRestingOn is every gate that rests on one of ancestors in this generation
 	// (DesignGate.RestsOnIssue), in issue and then step order, of every tree: each a basis on
 	// such an ancestor opened at some point, and each whose basis names one now, standing or

@@ -181,6 +181,14 @@ type LaneKey struct {
 	Lane  OutboxLane
 }
 
+// SeedStep names the step of an issue one seed reads, and the seed's kind: OutboxKindGateSeed or
+// OutboxKindPendingBasisSeed (Store.QueuedSeedSteps).
+type SeedStep struct {
+	Issue string
+	Kind  OutboxKind
+	Step  DesignStep
+}
+
 // HeldRow is a due lifecycle row its lane cannot run yet: WaitsOn is the id of the row of its issue
 // under the live lease it waits behind (Store.HeldRows).
 type HeldRow struct {

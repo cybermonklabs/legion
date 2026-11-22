@@ -513,6 +513,59 @@ func TestABasisOnAnotherProjectIsReadAtTheTick(t *testing.T) {
 	}
 }
 
+// A seed the tick queued for a step and that has not run yet, as one waits out its backoff while
+// Dispatch is down, is the read the next tick would queue: that tick queues no second one for the
+// step, so the steps' rows do not pile up on the roots' lanes. A root out of the workflow, here on
+// the backlog, and a root whose tree lingers run nothing a seed could open or tell, and get none.
+func TestTheTickQueuesOneSeedForEachStepOfAnotherProjectsBasis(t *testing.T) {
+	rig := newBasisSeedRig(t)
+	const open, parked, lingering = "LEGION-209", "LEGION-210", "LEGION-211"
+	until := time.Now().Add(time.Hour)
+	for _, issue := range []record.Issue{
+		{Key: open, Tree: open, Project: "LEGION", Title: "open", Phase: phase.Planning, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
+			Rank: "V", HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"},
+		{Key: parked, Tree: parked, Project: "LEGION", Title: "parked", Phase: phase.Done, Generation: 1, Status: "backlog", DispatchStatus: "backlog",
+			Rank: "W", HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"},
+		{Key: lingering, Tree: lingering, Project: "LEGION", Title: "lingering", Phase: phase.Done, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
+			Rank: "X", HandedOver: true, LingerUntil: &until, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"},
+	} {
+		putOutboxIssue(t, rig.pool, rig.records, issue)
+		openTree(t, rig.pool, "LEGION", issue.Key)
+	}
+	for _, key := range []string{open, parked, lingering} {
+		putOutboxGate(t, rig.pool, rig.records, record.OpenOnBasis(record.DesignGate{Issue: key, ArtifactID: "artifact-" + key, LatestVersion: 4},
+			basisOfAnotherProject("OTHR-1563", "artifact-1563", 3)))
+	}
+	engine := workflow.New(rig.records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
+	tick := &workflowRuntime{pool: rig.pool, records: rig.records, dispatch: rig.client, handlers: []intake.Handler{engine},
+		dispatchProject: "LEGION", bootID: "test-boot", log: quietLogger()}
+	seeds := func() map[string]int {
+		t.Helper()
+		rows, err := rig.pool.Query(context.Background(), `select issue, count(*) from outbox where kind = $1 group by issue`, string(record.OutboxKindGateSeed))
+		if err != nil {
+			t.Fatalf("count the gate seeds: %v", err)
+		}
+		defer rows.Close()
+		counted := map[string]int{}
+		for rows.Next() {
+			var issue string
+			var n int
+			if err := rows.Scan(&issue, &n); err != nil {
+				t.Fatalf("scan a count: %v", err)
+			}
+			counted[issue] = n
+		}
+		return counted
+	}
+
+	for turn := range 3 {
+		tick.applyControllerTick(context.Background(), time.Now().Add(time.Duration(turn)*time.Second))
+	}
+	if got, want := seeds(), map[string]int{open: 1}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("gate seeds after three ticks with none run = %v, want %v: one for the running root's step, none for a root out of the workflow or lingering", got, want)
+	}
+}
+
 // A person's changes request on the version of an ancestor of another project that a step stands
 // open on reaches the root's own architect through the gate seed the tick queues, and nothing of
 // it reaches the ancestor's architect from this daemon: that project's daemon runs the ancestor's
