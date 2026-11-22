@@ -831,8 +831,9 @@ type interleavingSessionGetKeyValue struct {
 	value       []byte
 	interleaves int
 
-	mu   sync.Mutex
-	gets int
+	mu       sync.Mutex
+	gets     int
+	firstGot []byte
 }
 
 func (kv *interleavingSessionGetKeyValue) Get(key string) (natsgo.KeyValueEntry, error) {
@@ -843,6 +844,9 @@ func (kv *interleavingSessionGetKeyValue) Get(key string) (natsgo.KeyValueEntry,
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	kv.gets++
+	if kv.firstGot == nil {
+		kv.firstGot = append([]byte(nil), entry.Value()...)
+	}
 	if kv.gets > kv.interleaves {
 		return entry, nil
 	}
@@ -857,6 +861,15 @@ func (kv *interleavingSessionGetKeyValue) reads() int {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	return kv.gets
+}
+
+// firstGetValue is the raw record the first read of key returned to its caller, captured before
+// this seam wrote value over the key. It is what a reader's direct get actually saw, where Refresh
+// re-reads the cache after applying the read and so can answer the newer value this seam wrote.
+func (kv *interleavingSessionGetKeyValue) firstGetValue() []byte {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	return kv.firstGot
 }
 
 type historyFailSessionKeyValue struct {

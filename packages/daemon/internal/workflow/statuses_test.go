@@ -174,7 +174,8 @@ func TestAFailedStatusMovesNoIssue(t *testing.T) {
 		{phase.Testing, "testing", []claim.Role{claim.RoleArchitect, claim.RoleTester, claim.RoleImplementer}},
 		{phase.Reviewing, "needs_review", []claim.Role{claim.RoleArchitect, claim.RoleReviewer, claim.RoleImplementer}},
 		{phase.Accepting, "needs_review", []claim.Role{claim.RoleArchitect, claim.RoleImplementer}},
-		{phase.Merging, "retro", []claim.Role{claim.RoleArchitect, claim.RoleMerger, claim.RoleImplementer}},
+		// In merging the implementer is not told (cybermonklabs/legion#4979).
+		{phase.Merging, "retro", []claim.Role{claim.RoleArchitect, claim.RoleMerger}},
 	} {
 		t.Run(string(tc.from), func(t *testing.T) {
 			pool := migratedPool(t)

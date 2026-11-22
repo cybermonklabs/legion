@@ -333,6 +333,52 @@ func TestTheMergersSquashMessageIsItsOwn(t *testing.T) {
 	}
 }
 
+// Past the review a conflict with the base is the merger's (cybermonklabs/legion#4979): the
+// merger merges the base forward itself, keeps both sides' intent, adapts in that merge what the
+// base's newer code breaks, has the reviewer read the merge's resolution and approve the new head
+// before it merges it, may ask the other workers, and sends the issue back only for a change to the
+// change's own logic. Its part says so, and no longer tells it to hand the conflict to the
+// implementer, to send a failed queue check back as a matter of course, or that it pushes nothing.
+func TestTheMergerResolvesAConflictItself(t *testing.T) {
+	merger := rolePart(t, "merger.md")
+	for _, want := range []string{
+		"## A head that conflicts with its base",
+		"A conflict with the base, and a check the base's newer code breaks, are yours",
+		"Merge; do not rebase.",
+		"git show --remerge-diff <merge>",
+		"so that both sides keep their intent",
+		"adapt the change in the same merge commit",
+		"Merge or enqueue the new head only once the reviewer's approval of it by SHA is on the pull request",
+		"You may ask the implementer, the tester or the reviewer what they know",
+		"Run again what the merge can reach",
+		"ask both, on their role topics, to record their results at the new head",
+		"### A check that failed",
+		"Read its log, and the same check on the base branch, and decide its cause.",
+		"re-run it, or wait for the base's fix",
+		"Send the issue back with `request_backward_move` only when the fix is a change to the change's own logic that no merge of the base resolves",
+	} {
+		if !strings.Contains(merger, want) {
+			t.Errorf("roles/merger.md does not say %q", want)
+		}
+	}
+	for _, gone := range []string{
+		"the daemon asks the implementer to merge the base forward while the issue stays in `merging`",
+		"That is work to fix. Send the issue back with `request_backward_move`",
+		"You push nothing.",
+	} {
+		if strings.Contains(merger, gone) {
+			t.Errorf("roles/merger.md still says %q", gone)
+		}
+	}
+	goMerger, err := goParts.ReadFile("go/merger.md")
+	if err != nil {
+		t.Fatalf("read go/merger.md: %v", err)
+	}
+	if want := "the daemon sends you a merge-forward message on your role topic"; !strings.Contains(string(goMerger), want) {
+		t.Errorf("go/merger.md does not say %q", want)
+	}
+}
+
 // Every update round a part describes is one a daemon of this release can open. The stale-plugin
 // lane replaces a stale process at a paced wake and asks its worker nothing, so nothing builds a
 // plugin round id any more (supervise's PluginRoundPrefix has no constructor beside PodRound's),

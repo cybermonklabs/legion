@@ -1098,11 +1098,20 @@ func (kv stalledReadKV) Get(string) (nats.KeyValueEntry, error) {
 // the swap (review 5911599468 of cybermonklabs/legion#4087 made that interleaving with a delay).
 func swapSessionBucket(t *testing.T, sessions *session.SessionRegistry, wrap func(nats.KeyValue) nats.KeyValue) {
 	t.Helper()
+	swapSessionHandle(t, sessions, func(old bus.KeyValue) bus.KeyValue {
+		return bus.NewKeyValue(wrap(old.Legacy()), old.WatchHandle(), old.Streams())
+	})
+}
+
+// swapSessionHandle is swapSessionBucket for a test that replaces more than the legacy handle: the
+// jetstream context the bucket's stream is read through (bus.KeyValue.Streams), which the stream
+// leader's reads take, among them.
+func swapSessionHandle(t *testing.T, sessions *session.SessionRegistry, swap func(bus.KeyValue) bus.KeyValue) {
+	t.Helper()
 	registry := reflect.ValueOf(sessions).Elem()
 	field := registry.FieldByName("watcher")
 	watcher := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
-	old := watcher.Interface().(*kvwatch.Watcher).KV()
-	swapped := bus.NewKeyValue(wrap(old.Legacy()), old.WatchHandle(), old.Streams())
+	swapped := swap(watcher.Interface().(*kvwatch.Watcher).KV())
 	replacement := reflect.ValueOf(kvwatch.New("session registry", swapped, discardingCache{}))
 	// The cast below trusts the field's type, so the type is checked first: a sync.Mutex there
 	// would compile, and RWMutex.Lock would write past it into the next field.
