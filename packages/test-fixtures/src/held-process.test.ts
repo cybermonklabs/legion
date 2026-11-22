@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { ignoresSignal, skipWithoutIgnoreMasks } from "./held-process";
 
 const withoutMasks = skipWithoutIgnoreMasks("packages/test-fixtures/src/held-process.test.ts");
@@ -38,4 +39,19 @@ describe("ignoresSignal", () => {
 test("a pid /proc does not name reads as ignoring nothing", () => {
   expect(ignoresSignal(0, "SIGHUP")).toBe(false);
   expect(ignoresSignal(-1, "SIGHUP")).toBe(false);
+});
+
+// The skip is the machine's answer and nothing else. Where this process's own /proc/self/status,
+// read here, holds a SigIgn line, no row skips; where it holds none, the rows skip, but on GitHub
+// Actions on Linux, where they run and fail. A skip that came where the mask can be read would
+// pass every mask row in silence.
+test("the mask rows skip exactly where /proc/self/status holds no SigIgn line, and never on GitHub Actions on Linux", () => {
+  let readable = false;
+  try {
+    readable = /^SigIgn:/m.test(readFileSync("/proc/self/status", "utf8"));
+  } catch {
+    readable = false;
+  }
+  const onActions = process.env.GITHUB_ACTIONS === "true" && process.platform === "linux";
+  expect(withoutMasks).toBe(!readable && !onActions);
 });
