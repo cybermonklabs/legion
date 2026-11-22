@@ -70,7 +70,7 @@ const (
 	// webhook's failed deliveries (internal/dispatch/redeliver).
 	WebhookRedeliveryBucket = "envoy_webhook_redelivery"
 	// PrivateProjectsBucket holds one key per private project, its value the repositories
-	// Dispatch maps to it, and a key exists exactly while its project is private: Dispatch writes
+	// Dispatch names for it, and a key exists exactly while its project is private: Dispatch writes
 	// it and the listeners read it to hold each session to its token's projects
 	// (dispatch://INFRA-3862). It is deliberately in no list of the buckets a static grant
 	// reaches (ListenerBuckets): only the auth service grants its calls, so a hub that runs none
@@ -82,10 +82,11 @@ const (
 // them: the interest and role-claim buckets (internal/store), the session registry and the
 // known-session store (internal/session), the Legion agent registry (internal/legionagents), the
 // CI state bucket, which only a listener with the GitHub webhook route opens (internal/cistore),
-// and the spent-proof bucket, which only a listener that takes broker access tokens opens
-// (cmd/listener/brokerauth.go). The listener's keeper raises each of them (WithKeptBuckets), and
-// envoy-infra grants the listener and the host each one's calls
-// (packages/envoy/infra/core/permissions.go), so a bucket named here is both kept and granted.
+// and the spent-proof bucket, which every listener opens at its start so an edge listener, whose
+// grant creates no bucket, finds it (cmd/listener/brokerauth.go). The listener's keeper raises
+// each of them (WithKeptBuckets), and envoy-infra grants the listener and the host each one's
+// calls (packages/envoy/infra/core/permissions.go), so a bucket named here is both kept and
+// granted.
 // A bucket named here is granted to the host and Dispatch users too; the note on that file's
 // ListenerBuckets loop (listenerGrant) says where what that widens is written down.
 // Each call returns a fresh slice, so no caller changes another's list.
@@ -150,6 +151,18 @@ const DeliverSubjectPrefix = NotificationTopicPrefix + "envoy.deliver."
 func DeliverSubject(sessionID string) string {
 	return DeliverSubjectPrefix + sessionID
 }
+
+// RelayReplyPrefix begins the receipt family of the edge listeners: an edge machine's relay frame
+// receipts are this prefix and its machine id, then a nuid, the session id and a token
+// (relayreply.<machine>.<nuid>.<session id>.<token>; natsgrant.EdgeRelayReplyPrefix).
+// Its grant subscribes only its own machine's and publishes every machine's, since the listener
+// serving a session's relay socket answers on the family of the machine holding the session's
+// consumer (natsgrant.Edge). The edge's session relay names its frames' receipts here, and the
+// relay socket publishes each receipt its client sends on the subject the frame named
+// (cmd/listener's startSessionRelays and relay_socket.go). No stream subject captures it
+// (StreamCaptures), so a receipt travels over core NATS, as the frame does, and the stream stores
+// none.
+const RelayReplyPrefix = NotificationTopicPrefix + "envoy.relayreply."
 
 // SessionReplySubject is the reply subject of one request made of session sessionID,
 // <inbox>.<session id>.<token>: inbox a reply inbox of the requester's own (nats.NewInbox), then

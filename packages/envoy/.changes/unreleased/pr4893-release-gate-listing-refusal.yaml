@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  `scripts/daemon-release-gate.sh` reads a refused listing of the deployment's `legion/projects/`
+  as a missing directory only when gh's own last line is its line for a 404,
+  `gh: <message> (HTTP 404)`. Before this change any refusal whose words held `HTTP 404` read so,
+  a 5xx that quoted an upstream's 404 among them, and the gate went on from the old project list
+  in `legion/Pulumi.prod.yaml`. Such a refusal is now `UNKNOWN`, naming the listing and GitHub's
+  answer.

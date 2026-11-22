@@ -35,7 +35,7 @@ const (
 
 // Row is one project as Dispatch holds it: whether it is public or private, its owner, the
 // people its access list names, and two lists of repositories Dispatch keeps apart: the ones its
-// membership answer maps to the project, and the ones its repository answer says the project's
+// membership answer names for the project, and the ones its repository answer says the project's
 // issues resolve to.
 type Row struct {
 	// Visibility is "public" or "private".
@@ -44,8 +44,8 @@ type Row struct {
 	Owner string
 	// Listed are the lowercase logins the project's access list names.
 	Listed []string
-	// Repositories are the "owner/name" repositories Dispatch maps to the project, which the
-	// membership answer carries.
+	// Repositories are the "owner/name" repositories Dispatch's membership answer names for the
+	// project.
 	Repositories []string
 	// Resolved are the "owner/name" repositories the project's issues resolve to, which the
 	// repository answer carries, sorted.
@@ -136,7 +136,7 @@ func (s *Server) ProjectCalls() int {
 }
 
 // SetDown makes every later request fail 503 (true) or be answered again (false), which is what a
-// Dispatch the broker cannot reach looks like to it.
+// Dispatch the broker cannot reach looks like to it: a gateway's 503, whose body names no code.
 func (s *Server) SetDown(down bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -162,8 +162,8 @@ func (s *Server) SetMemberKind(person, kind string) {
 }
 
 // SetRepositories makes the list project's issues resolve to, which the repository route answers,
-// a copy of list from now on; an empty list is answered as []. The project's mapped list, which
-// the membership answer carries, does not change.
+// a copy of list from now on; an empty list is answered as []. The membership answer's own list
+// of the project does not change.
 func (s *Server) SetRepositories(project string, list []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -208,7 +208,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	down, canned, stall := s.down || projectRoute && s.projectsDown, s.answer, s.stall
 	s.mu.Unlock()
 	if down {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "UNAVAILABLE", "error": "the stand-in is down"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "the stand-in is down"})
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -250,7 +250,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		if repositories {
 			// Dispatch's repository answer: the project and the list its issues resolve to,
-			// sorted byte-wise, [] for none. The mapped list is the membership answer's alone.
+			// sorted byte-wise, [] for none. The membership answer's own list is not part of it.
 			resolved := append([]string{}, row.Resolved...)
 			slices.Sort(resolved)
 			writeJSON(w, http.StatusOK, map[string]any{"project": key, "repositories": resolved})

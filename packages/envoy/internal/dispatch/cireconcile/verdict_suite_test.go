@@ -20,7 +20,7 @@ func TestAPassOverTheVerdictAppsCompletedSuitePublishesTheHeadOnce(t *testing.T)
 	h.verdict = strconv.Itoa(verdictApp)
 	h.reconciler.VerdictAppID = h.verdict
 	h.startListener()
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	run := checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z")
 	suite := checkSuite(900, "completed", "success", otherApp, "2026-11-05T03:01:05Z")

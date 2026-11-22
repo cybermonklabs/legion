@@ -38,6 +38,7 @@ const (
 type verdictListener struct {
 	t       *testing.T
 	handler func(event, body string)
+	store   *cistore.Store
 	sub     *nats.Subscription
 	logged  *bytes.Buffer
 }
@@ -90,7 +91,7 @@ func verdictListenerOn(t *testing.T, client *bus.Client, verdictAppID string) *v
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 	handler := webhook.GitHubHandler(verdictSecret, "@legion", "", verdictAppID, client, store)
 	deliveries := 0
-	return &verdictListener{t: t, sub: sub, logged: &logged, handler: func(event, body string) {
+	return &verdictListener{t: t, store: store, sub: sub, logged: &logged, handler: func(event, body string) {
 		t.Helper()
 		deliveries++
 		req := httptest.NewRequest("POST", "/webhook/github", strings.NewReader(body))
@@ -139,13 +140,29 @@ func (l *verdictListener) suiteWithoutApp(id int, action, status, conclusion str
 	}`, action, id, status, conclusion, verdictHead))
 }
 
+// recorded writes a check suite of the head in status, created by app ("" for none), to the CI
+// store, as a listener before the webhook route stopped taking a requested check_suite delivery
+// (contracts.GithubCIObservations) recorded one. No delivery records a suite before it completes
+// now, so a queued suite is in a record only that way.
+func (l *verdictListener) recorded(id int, status, app string) {
+	l.t.Helper()
+	if err := l.store.RecordSuite(l.t.Context(), contracts.CIObservation{
+		Owner: "acme", Repo: "widgets", Number: "42", SHA: verdictHead,
+		AppID: app, SuiteID: fmt.Sprint(id), Status: status, ObservedAt: "2026-11-20T02:00:00Z",
+	}); err != nil {
+		l.t.Fatalf("record suite %d: %v", id, err)
+	}
+}
+
 // A queued suite whose record names no App is no suite of the verdict App's: with
-// ENVOY_VERDICT_APP_ID set it still holds the head, as any App's queued suite does, and the head
-// settles once it completes. The test reads the settlement it then requires, which shows the
+// ENVOY_VERDICT_APP_ID set it still holds the head, as cistore's suiteHolds holds any queued suite
+// of no App, and the head settles once the suite's completed delivery, which the listener does
+// not leave out, arrives. Such a suite is in a record a listener wrote before the record carried
+// a suite's App (recorded). The test reads the settlement it then requires, which shows the
 // subscription would have seen one.
 func TestASuiteWithNoAppIDStillHoldsTheHead(t *testing.T) {
 	l := newVerdictListener(t)
-	l.suiteWithoutApp(820, "requested", "queued", "")
+	l.recorded(820, "queued", "")
 	l.suite(900, "completed", "completed", "success", actionsApp)
 	l.run(1, "build", "success", actionsApp)
 	if settled, ok := l.settlement(2 * time.Second); ok {
@@ -202,34 +219,38 @@ func TestVerdictAppSuiteLeavesTheHeadToSettle(t *testing.T) {
 	}
 }
 
-// Another App's queued suite is a CI result still to come, so it holds the head from settling, as
-// it did before the verdict App's suites were left out. The test then completes that suite and
-// requires the settlement, which shows the subscription would have seen one.
+// GitHub Actions' queued suite is a CI result still to come, so it holds the head from settling
+// with ENVOY_VERDICT_APP_ID set, as it did before the verdict App's suites were left out: the
+// listener and the store leave out that App's suites alone. Another App's requested suite is no CI
+// result and holds nothing (cistore's suiteHolds), and the listener does not take it for the
+// verdict App's. The test then completes Actions' suite and requires the settlement, which shows
+// the subscription would have seen one.
 func TestAnotherAppsIncompleteSuiteHoldsSettlement(t *testing.T) {
 	l := newVerdictListener(t)
-	l.suite(810, "requested", "queued", "", otherApp)
+	l.recorded(810, "queued", fmt.Sprint(actionsApp))
+	l.suite(811, "requested", "queued", "", otherApp)
 	l.suite(900, "completed", "completed", "success", actionsApp)
 	l.run(1, "build", "success", actionsApp)
 	if settled, ok := l.settlement(2 * time.Second); ok {
-		t.Fatalf("the head settled as %+v while App %d's suite was queued, want it held", settled, otherApp)
+		t.Fatalf("the head settled as %+v while GitHub Actions' suite was queued, want it held", settled)
 	}
 	if strings.Contains(l.logged.String(), "ci: left out the verdict App's own check suite") {
 		t.Fatalf("the listener left another App's suite out:\n%s", l.logged.String())
 	}
-	l.suite(810, "completed", "completed", "success", otherApp)
+	l.suite(810, "completed", "completed", "success", actionsApp)
 	if _, ok := l.settlement(3 * time.Second); !ok {
-		t.Fatal("no settlement was published once App 5341243's suite completed")
+		t.Fatal("no settlement was published once GitHub Actions' suite completed")
 	}
 }
 
-// A listener without ENVOY_VERDICT_APP_ID records the verdict App's queued suite like any other.
-// Once the setting names that App, the suite's later deliveries are left out, so the record keeps
-// it queued for good: the CI store disregards the verdict App's stored suites when it decides
-// whether a head settles, and the head settles on its CI.
+// A listener without ENVOY_VERDICT_APP_ID recorded the verdict App's queued suite like any other
+// (recorded). Once the setting names that App, the suite's later deliveries are left out, so the
+// record keeps it queued for good: the CI store disregards the verdict App's stored suites when it
+// decides whether a head settles, and the head settles on its CI.
 func TestAVerdictAppSuiteRecordedBeforeTheSettingDoesNotHoldTheHead(t *testing.T) {
 	client := verdictBus(t)
 	before := verdictListenerOn(t, client, "")
-	before.suite(800, "requested", "queued", "", verdictApp)
+	before.recorded(800, "queued", fmt.Sprint(verdictApp))
 
 	after := verdictListenerOn(t, client, fmt.Sprint(verdictApp))
 	after.suite(800, "completed", "completed", "success", verdictApp)
@@ -247,21 +268,21 @@ func TestAVerdictAppSuiteRecordedBeforeTheSettingDoesNotHoldTheHead(t *testing.T
 	}
 }
 
-// Another App's queued suite recorded before the setting still holds the head once the setting
+// GitHub Actions' queued suite recorded before the setting still holds the head once the setting
 // names the verdict App, and the head settles once that suite completes.
 func TestAnotherAppsSuiteRecordedBeforeTheSettingStillHoldsTheHead(t *testing.T) {
 	client := verdictBus(t)
 	before := verdictListenerOn(t, client, "")
-	before.suite(810, "requested", "queued", "", otherApp)
+	before.recorded(810, "queued", fmt.Sprint(actionsApp))
 
 	after := verdictListenerOn(t, client, fmt.Sprint(verdictApp))
 	after.suite(900, "completed", "completed", "success", actionsApp)
 	after.run(1, "build", "success", actionsApp)
 	if settled, ok := after.settlement(2 * time.Second); ok {
-		t.Fatalf("the head settled as %+v while App %d's suite recorded before the setting was queued, want it held", settled, otherApp)
+		t.Fatalf("the head settled as %+v while GitHub Actions' suite recorded before the setting was queued, want it held", settled)
 	}
-	after.suite(810, "completed", "completed", "success", otherApp)
+	after.suite(810, "completed", "completed", "success", actionsApp)
 	if _, ok := after.settlement(3 * time.Second); !ok {
-		t.Fatal("no settlement was published once App 5341243's suite completed")
+		t.Fatal("no settlement was published once GitHub Actions' suite completed")
 	}
 }

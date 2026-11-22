@@ -85,12 +85,14 @@ type Deps struct {
 	// which is a single-pod broker and every test that wires none. POST
 	// /v1/secrets/{name}/reread is its one route (notifyPeers, from rereadSecret and from the
 	// reread it runs after answering, rereadAfterAnswer), which explains both when it is called
-	// and why it is called from the route rather than from RefreshOne.
+	// and why it is called from the route rather than from RefreshOne. moved is the names whose
+	// value this pod's own reread of name may have moved (policy.Lookup.Moved, RefreshOne's), whose
+	// held values cmd/cipherd drops from its airlock proxy.
 	//
 	// It reports nothing, because the handler has nothing to do with a failure: the local reread
 	// has already succeeded and its answer stands, so whether a failed fan-out is logged, and at
 	// what level, belongs to the function cmd/cipherd supplies.
-	NotifyReread func(ctx context.Context, name string)
+	NotifyReread func(ctx context.Context, name string, moved []string)
 	// Detached counts the work a route starts that outlives its answer, the reread run after a
 	// 202, for the stop sequence to wait on (Detached.Wait); nil counts nothing, for a mux nothing
 	// stops.
@@ -232,6 +234,9 @@ type server struct {
 	// repositoryCalls counts each edge listener's calls of GET /v1/project-repositories still
 	// waiting on Dispatch, at most maxRepositoryCallsInFlight each.
 	repositoryCalls *callsInFlight
+	// ownOnlyLogged lets MachineLoginsOwnOnlyMessage be written once per person per
+	// ownOnlyLogEvery (machineLoginsOwnOnly).
+	ownOnlyLogged *ratelimit.Keyed
 }
 
 func Register(mux *http.ServeMux, deps Deps) {
@@ -282,6 +287,7 @@ func Register(mux *http.ServeMux, deps Deps) {
 		accountLimiter:  ratelimit.NewKeyed(account),
 		address:         address,
 		repositoryCalls: newCallsInFlight(maxRepositoryCallsInFlight),
+		ownOnlyLogged:   ratelimit.NewKeyed(ratelimit.Limit{Every: ownOnlyLogEvery, Burst: 1}),
 	}
 	if deps.OAuth != nil {
 		s.verificationURI = deps.OAuth.VerificationURL()

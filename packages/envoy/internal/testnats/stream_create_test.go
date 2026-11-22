@@ -34,10 +34,7 @@ func cutStream(name string) natsgo.StreamConfig {
 // a route.
 func dropAtCreate(t *testing.T, cluster *Cluster, member *Server, stream string) func() int {
 	t.Helper()
-	var thaws []func()
-	for _, route := range cluster.routes {
-		thaws = append(thaws, route.freeze())
-	}
+	thawRoutes := cluster.FreezeRoutes(t)
 	var mu sync.Mutex
 	creates := 0
 	watch := func(*natsgo.Msg) {
@@ -61,9 +58,7 @@ func dropAtCreate(t *testing.T, cluster *Cluster, member *Server, stream string)
 				_ = srv.DisconnectClientByID(conn.Cid)
 			}
 		}
-		for _, thaw := range thaws {
-			thaw()
-		}
+		thawRoutes()
 		if !testwait.Holds(connectTimeout, testwait.Poll, func() bool { return streamAnswered(cluster, stream) }) {
 			t.Errorf("no member led stream %s with every member current within %s of the drop", stream, connectTimeout)
 		}
@@ -79,11 +74,7 @@ func dropAtCreate(t *testing.T, cluster *Cluster, member *Server, stream string)
 	if err := watcher.Flush(); err != nil {
 		t.Fatalf("watch member %s's creates: %v", member.Name(), err)
 	}
-	t.Cleanup(func() {
-		for _, thaw := range thaws {
-			thaw()
-		}
-	})
+	t.Cleanup(thawRoutes)
 	return func() int {
 		mu.Lock()
 		defer mu.Unlock()

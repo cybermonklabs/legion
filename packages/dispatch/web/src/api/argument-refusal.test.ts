@@ -76,16 +76,6 @@ const refusals: readonly Refusal[] = [
     method: "putAgentState",
   },
   {
-    call: (api) => api.putRepoProject("", { project: "ACME" }, bounds),
-    message: notOwnerRepo,
-    method: "putRepoProject",
-  },
-  {
-    call: (api) => api.deleteRepoProject("", bounds),
-    message: notOwnerRepo,
-    method: "deleteRepoProject",
-  },
-  {
     call: (api) => api.putArchitectureSource("ACME", "", { branch: "main" }, bounds),
     message: notOwnerRepo,
     method: "putArchitectureSource",

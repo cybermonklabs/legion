@@ -2,10 +2,10 @@ kind: Added
 body: |-
   `ENVOY_VERDICT_APP_ID` names the App that writes `legion-verdict`. The listener leaves that App's
   own check suites out of the CI record in every action, and logs
-  `ci: left out the verdict App's own check suite` for each, so a head settles beside the queued
-  suite GitHub makes the App on each push; another App's queued suite is recorded and holds the
-  head until it completes, as before. The CI store also disregards the App's suites it recorded
-  while the setting was unset, so setting it never leaves a head held. A value that is not a GitHub
+  `ci: left out the verdict App's own check suite` for each, a requested suite's too, so a head
+  settles beside the queued suite GitHub makes the App on each push; another App's suites are not
+  left out. The CI store also disregards the App's suites it recorded while the setting was unset,
+  so setting it never leaves a head held. A value that is not a GitHub
   App id (a whole number above 0, with no leading zero) refuses the start, naming the variable;
   unset or blank, nothing changes. `aws:WebhookListener` takes it as the optional input
   `verdictAppId`, and `envoy-infra render webhook-listener-env` as `--verdict-app-id`, each refusing
