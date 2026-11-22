@@ -32,7 +32,9 @@ import (
 // private specs: the test logs only their size, sha256 and anchor count, and a difference on one
 // names only lengths and sha256s.
 func TestAMarginWriteMatchesTheWholeDocumentWrite(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it already runs its flows at once (inParallel) on two 390 and 600 KiB specs, and
+	// beside the package's other tests it took the race binary to 9.0 GB, past the step's 8 GB
+	// RACE_MEM_LIMIT_KB (envoy-go-race-docs job 137379090967).
 	sources := []equivalenceSource{
 		{name: "generated-390KiB", markdown: generatedSpec(390 << 10)},
 		{name: "generated-600KiB", markdown: generatedSpec(600 << 10)},

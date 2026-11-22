@@ -1089,7 +1089,8 @@ func TestNamedVersionIndexesServerURLDocumentReferences(t *testing.T) {
 // nodes its new markdown cites, so a reader holding those nodes' batched backlink counts — an
 // Inbox row's ask — refreshes without reading the graph.
 func TestSettledVersionNamesChangedReferenceTargets(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it holds a timer or a sweep to a wall-clock window, and among the package's parallel
+	// tests it missed it (envoy-go-docs-finalizers job 137379091221).
 	service, artifactID := newTestService(t)
 	askID := uuid.NewString()
 	if _, err := service.store.Pool.Exec(context.Background(), `

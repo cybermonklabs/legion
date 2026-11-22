@@ -136,7 +136,8 @@ func TestAwarenessSetOnOneProcessReachesAReaderOnTheOther(t *testing.T) {
 // cursors it superseded until each client's next heartbeat - 15 s in a browser, and never for
 // the readers here, which send none.
 func TestEveryReaderMovingAtOnceOnOneProcessReachesAReaderOnTheOther(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it holds a timer or a sweep to a wall-clock window, and among the package's parallel
+	// tests it missed it (envoy-go-docs-finalizers job 137379091221).
 	pair := newProcessPair(t)
 	runAwareness(t, pair.taskA)
 	runAwareness(t, pair.taskB)
