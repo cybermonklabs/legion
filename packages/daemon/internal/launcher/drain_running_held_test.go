@@ -56,9 +56,11 @@ func TestControllerDrainRunningHeldPIDOneHelper(t *testing.T) {
 				t.Fatal(err)
 			}
 			// The drain begins once the held child is under way, with a child of its own (its sleep),
-			// as the install's --help run is: bash, and the python it runs.
+			// as the install's --help run is: bash, and the python it runs. The wait is for that
+			// fact, under the test's hang guard: how long a loaded machine takes to start it is not
+			// what the case reads.
 			children := fmt.Sprintf("/proc/%d/task/%d/children", pid, pid)
-			testwait.WithinPolling(t, 5*time.Second, testwait.Poll, "the held child's sleep to start", func() bool {
+			testwait.Eventually(t, "the held child's sleep to start", func() bool {
 				body, err := os.ReadFile(children)
 				return err == nil && strings.TrimSpace(string(body)) != ""
 			})
@@ -79,17 +81,27 @@ func TestControllerDrainRunningHeldPIDOneHelper(t *testing.T) {
 		guard := &pidGuard{}
 		m := &manager{cfg: Config{StopGrace: time.Second}, guard: guard}
 		marks := t.TempDir()
-		started, finished := filepath.Join(marks, "started"), filepath.Join(marks, "finished")
+		started, released, finished := filepath.Join(marks, "started"), filepath.Join(marks, "released"), filepath.Join(marks, "finished")
 		// The member writes its own pid, and the drain begins only once PID 1 has adopted it, so
-		// it is no descendant of the held child and only the group clause can spare it.
-		held := exec.CommandContext(context.Background(), "/bin/sh", "-c",
-			`( sh -c 'echo $$ >"$1"; sleep 1; : >"$2"' sh "$1" "$2" & ); sleep 2 && [ -e "$2" ] && exit 5; exit 9`, "sh", started, finished)
+		// it is no descendant of the held child and only the group clause can spare it. Nothing
+		// here is timed: the member finishes once the case releases it, after the drain, and the
+		// held child exits 5 once the member has finished, or 9 once the member is gone without
+		// finishing, as it is when the drain ended it. The member once finished a second after it
+		// started and the held child read it two seconds after, so a machine slower than that to
+		// show the adoption failed the case before the drain. The context is a hang guard alone.
+		ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, time.Minute, time.Second))
+		defer cancel()
+		held := exec.CommandContext(ctx, "/bin/sh", "-c", `( sh -c 'echo $$ >"$1"; while [ ! -e "$3" ]; do sleep 0.01; done; : >"$2"' sh "$1" "$2" "$3" & )
+until [ -s "$1" ]; do sleep 0.01; done
+member=$(cat "$1")
+while [ ! -e "$2" ]; do kill -0 "$member" 2>/dev/null || exit 9; sleep 0.01; done
+exit 5`, "sh", started, finished, released)
 		procgroup.Configure(held)
 		pid, err := guard.start(held)
 		if err != nil {
 			t.Fatal(err)
 		}
-		testwait.WithinPolling(t, 5*time.Second, testwait.Poll, "PID 1 to adopt the held child's group member", func() bool {
+		testwait.Eventually(t, "PID 1 to adopt the held child's group member", func() bool {
 			body, err := os.ReadFile(started)
 			if err != nil {
 				return false
@@ -102,6 +114,9 @@ func TestControllerDrainRunningHeldPIDOneHelper(t *testing.T) {
 			t.Fatal("the group member finished before the drain began, so the drain had nothing of the group to spare")
 		}
 		m.cleanExitedGeneration()
+		if err := os.WriteFile(released, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
 		err = held.Wait()
 		guard.done(pid)
 		if held.ProcessState == nil || held.ProcessState.ExitCode() != 5 {
@@ -163,7 +178,7 @@ func TestControllerDrainRunningHeldPIDOneHelper(t *testing.T) {
 		if err := left.Start(); err != nil {
 			t.Fatal(err)
 		}
-		testwait.WithinPolling(t, 5*time.Second, testwait.Poll, "the left process to ignore SIGTERM", func() bool {
+		testwait.Eventually(t, "the left process to ignore SIGTERM", func() bool {
 			_, err := os.Stat(ignoring)
 			return err == nil
 		})

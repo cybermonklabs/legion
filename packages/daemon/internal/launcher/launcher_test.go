@@ -1301,10 +1301,12 @@ func TestTheReaperSparesEveryManagersGenerationAndReapsTheRest(t *testing.T) {
 }
 
 // awaitZombie waits for pid, a child of the test that exits at once, to have exited and to wait as
-// a zombie for whoever reaps it.
+// a zombie for whoever reaps it. It is the setup of a reap, so it waits for that fact under the
+// test's hang guard and not for a span: how long a loaded machine takes to run a shell that exits
+// is not what any reap case reads.
 func awaitZombie(t *testing.T, pid int) {
 	t.Helper()
-	testwait.WithinPolling(t, 5*time.Second, testwait.Poll, fmt.Sprintf("process %d to exit", pid), func() bool { return zombie(pid) })
+	testwait.Eventually(t, fmt.Sprintf("process %d to exit", pid), func() bool { return zombie(pid) })
 }
 
 // reapedByAnother is whether err is a child's own wait answering that another wait of the process
