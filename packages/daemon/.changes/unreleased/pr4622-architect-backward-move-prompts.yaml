@@ -14,6 +14,6 @@ body: |-
   place of "before that issue closes", and the refusal says to call again once the ancestor has
   closed, where it is not the tree's root. The reviewer's and the merger's prompts no longer say
   that nothing holds the head that merges to the head the reviewer approved: a forward merge past
-  the review is the exception, and the reviewer's prompt also excepts a backward move from its "no
-  implementation or further review change" after approval and from "your approved head is the head
-  the merger merges".
+  the review is the exception, and the reviewer's prompt excepts a forward merge of the base and a
+  backward move from its "no implementation or further review change" after approval and from
+  "nothing of this tree pushes above" the approved head.
