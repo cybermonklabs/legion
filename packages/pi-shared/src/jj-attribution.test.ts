@@ -444,6 +444,15 @@ describe("exportJjSessionAttribution", () => {
     expect(await readdir(dir)).toEqual([]);
   });
 
+  /** The jj commands the templates row below runs, counted: the row's bound is that count times
+   *  each command's own hang guard, so a loaded machine running jj slowly fails nothing, and the
+   *  row holds the count to the commands it ran. A fixed 60 s for the whole row once decided it at
+   *  a load of about 1,400, where its jj work took 46 s and more. */
+  const TEMPLATE_ROW_JJ_COMMANDS = 34;
+  /** Each jj command's hang guard in that row: far above one command on a loaded machine, so a
+   *  jj that never ends fails naming its command. */
+  const JJ_COMMAND_MS = 60_000;
+
   // The one case here that runs the real jj, which is not on every host: it skips where PATH has
   // none, except on GitHub Actions, where the pi-shared job installs one and a skip would hide
   // the only run of the check (as `ompNatsGuard` does for Oh My Pi, `test/omp-harness.ts`).
@@ -472,19 +481,31 @@ describe("exportJjSessionAttribution", () => {
       expect(chain).toBe(`${base}:${path.join(state, `omp-attribution-${ROOT_ID}.toml`)}`);
       const repo = path.join(root, "repo");
       await mkdir(repo);
+      let ran = 0;
       const jj = async (...args: string[]): Promise<string> => {
+        ran += 1;
+        if (ran > TEMPLATE_ROW_JJ_COMMANDS) {
+          throw new Error(
+            `jj ${args.join(" ")} is past the ${TEMPLATE_ROW_JJ_COMMANDS} commands this row counts`
+          );
+        }
         const child = Bun.spawn([JJ, ...args], {
           cwd: repo,
           env,
           stdin: "ignore",
           stdout: "pipe",
           stderr: "pipe",
+          timeout: JJ_COMMAND_MS,
+          killSignal: "SIGKILL",
         });
         const [code, stdout, stderr] = await Promise.all([
           child.exited,
           new Response(child.stdout).text(),
           new Response(child.stderr).text(),
         ]);
+        if (child.signalCode === "SIGKILL") {
+          throw new Error(`jj ${args.join(" ")} ran past its ${JJ_COMMAND_MS} ms guard`);
+        }
         if (code !== 0) throw new Error(`jj ${args.join(" ")} exited ${code}: ${stderr}`);
         return stdout;
       };
@@ -534,8 +555,11 @@ describe("exportJjSessionAttribution", () => {
         `the running pair\n\n${pair}`
       );
       expect(await duplicateOf(undefined)).toBe("");
+      // The count the row's bound is made of is the commands it ran.
+      expect(ran).toBe(TEMPLATE_ROW_JJ_COMMANDS);
     },
-    60_000
+    // Each counted command's guard, and room for the row's own file work around them.
+    TEMPLATE_ROW_JJ_COMMANDS * JJ_COMMAND_MS + 30_000
   );
 });
 
