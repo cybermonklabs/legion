@@ -148,7 +148,15 @@ function detached(argv: string[], cwd: string, env: Record<string, string>) {
 // marks it (LEGION_E2E_RUN). $work comes in through the environment, and the mark is exported only
 // once the shell runs, so the harness's own process carries no mark and run_processes does not name
 // it. PROCROOT, when given, is the proc root the walks read (`proc_root`, lib/proc-root.ts).
-function harness(work: string, body: string, procRoot?: string) {
+// DEADLINE, when given (a Date.now() value), bounds the run by the row's remaining time: a run still
+// going then is ended and the row fails naming BODY, inside its own time, since Bun cannot time out
+// a row while a synchronous spawn holds it, and a row it times out after runs on to an unhandled
+// error.
+function harness(work: string, body: string, procRoot?: string, deadline?: number) {
+  const remaining = deadline === undefined ? undefined : deadline - Date.now();
+  if (remaining !== undefined && remaining <= 0) {
+    throw new Error(`the row's time ran out before ${body}`);
+  }
   const ran = Bun.spawnSync(
     [
       "bash",
@@ -171,8 +179,12 @@ ${body}`,
       },
       stdout: "pipe",
       stderr: "pipe",
+      ...(remaining === undefined ? {} : { timeout: remaining }),
     }
   );
+  if (ran.exitedDueToTimeout) {
+    throw new Error(`the row's time ran out during ${body}`);
+  }
   return { code: ran.exitCode, stdout: ran.stdout.toString(), stderr: ran.stderr.toString() };
 }
 
@@ -181,10 +193,10 @@ host.test(
   async () => {
     // The row decides on the broker session's stop, bounded only by the hang guard: the stop walks
     // every process of the host and how long it takes is the machine's (a run at load ~1,000 passed
-    // main's 30 s). Its waits end 15 s before the guard, and each step checks the time first, so a
-    // row out of time fails by the name of what it waited for, inside its own time, and Bun's own
-    // timeout, which would end the row's children and leave the body running on to an unhandled
-    // expect, does not come first.
+    // main's 30 s). Its waits end 15 s before the guard, each harness run is ended at that deadline
+    // (harness's DEADLINE), and the tmux step checks the time first, so a row out of time fails by
+    // the name of what it was doing, inside its own time, and Bun's own timeout, which would end the
+    // row's children and leave the body running on to an unhandled expect, does not come first.
     const deadline = Date.now() + HANG_GUARD_MS - 15_000;
     const inTime = (step: string) => {
       if (Date.now() >= deadline) throw new Error(`the row's time ran out before ${step}`);
@@ -289,15 +301,13 @@ wait
     // The red half: the broker's whole session outlives the pane, and run_processes, the check's own
     // reading, still names the members, which carry the run's mark.
     expect(members.every(alive)).toBe(true);
-    inTime("run_processes before the stop");
-    const before = harness(work, "run_processes || true")
+    const before = harness(work, "run_processes || true", undefined, deadline)
       .stdout.split("\n")
       .filter(Boolean)
       .map(Number);
     expect(before).toContain(leader);
 
-    inTime("stop_agent_daemons");
-    const stopped = harness(work, "stop_agent_daemons");
+    const stopped = harness(work, "stop_agent_daemons", undefined, deadline);
     expect({ code: stopped.code, stderr: stopped.stderr }).toEqual({ code: 0, stderr: "" });
     await until(
       "every member of the broker's session to end",
@@ -309,8 +319,7 @@ wait
     // carries the run's mark.
     expect(alive(bystander)).toBe(true);
     expect(alive(stranger)).toBe(true);
-    inTime("run_processes after the stop");
-    const after = harness(work, "run_processes || true")
+    const after = harness(work, "run_processes || true", undefined, deadline)
       .stdout.split("\n")
       .filter(Boolean)
       .map(Number);
