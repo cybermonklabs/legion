@@ -2749,16 +2749,21 @@ func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 	ghRecord, running := filepath.Join(records, "gh"), filepath.Join(records, "running")
 	ghProbe, release := filepath.Join(records, "probe"), filepath.Join(records, "release")
 	ghPid := filepath.Join(records, "pid")
+	// The probe reads by behaviour, so the row first reads that it can fail: run with SIGHUP at
+	// its default (env --default-signal sets that whatever this test binary inherited), it must
+	// die of the hangup it sends itself.
+	t.Run("the probe dies of a hangup at its default", func(t *testing.T) {
+		requireProbeDiesAtDefault(t)
+	})
 	// The stand-in writes its pid, whole, and the status of its probe of its own disposition of
-	// SIGHUP: a child shell, which inherits that disposition, sends itself the hangup and exits 0
-	// if it survived it, and its status is 129 if it died of it. Then the stand-in traps the
-	// hangup, says it is running, and waits for the test's release, or for this test binary to be
-	// gone, in ticks short enough that a trap runs within one of them: a shell runs no trap while
-	// a foreground command of its own is still going.
+	// SIGHUP (ghHangupProbe, run in a child shell, which inherits that disposition). Then the
+	// stand-in traps the hangup, says it is running, and waits for the test's release, or for this
+	// test binary to be gone, in ticks short enough that a trap runs within one of them: a shell
+	// runs no trap while a foreground command of its own is still going.
 	stub := filepath.Join(t.TempDir(), "gh")
 	script := ghStandInPrefix(help) +
 		"echo $$ >\"$GH_STANDIN_PID.new\" && mv \"$GH_STANDIN_PID.new\" \"$GH_STANDIN_PID\"\n" +
-		"sh -c 'kill -HUP $$; exit 0'; echo $? >\"$GH_STANDIN_PROBE\"\n" +
+		"sh -c '" + ghHangupProbe + "'; echo $? >\"$GH_STANDIN_PROBE\"\n" +
 		"trap 'printf \"gh caught the hangup\\n\" >>\"$GH_STANDIN_RECORD\"; exit 44' HUP\n" +
 		": >\"$GH_STANDIN_RUNNING\"\n" +
 		"while [ ! -f \"$GH_STANDIN_RELEASE\" ] && kill -0 \"$GH_STANDIN_TEST_PID\" 2>/dev/null; do sleep 0.05; done\n" +
@@ -2858,11 +2863,38 @@ func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 	}
 }
 
-// requireGhStartedIgnoringHangup fails the row unless the stand-in gh's probe, whose status it
-// wrote at path, survived the hangup it sent itself: the probe is a child of gh, so it inherits
-// gh's disposition of SIGHUP, which every kernel acts on, and it survives the signal only if gh
-// was started ignoring it. A probe that wrote no status fails the row too: the row then has no
-// answer, not a clean one.
+// ghHangupProbe is the shell text that reads, by behaviour, a shell's disposition of SIGHUP as its
+// parent left it: run as `sh -c`, it sends itself the hangup, and exits 0 if it survived it, which
+// it does only if the hangup is ignored, or 3 if the kill could not send it, so a kill that fails
+// never reads as ignored. A shell that dies of the hangup ends with status 129 as its parent shell
+// reads it.
+const ghHangupProbe = `kill -HUP $$ || exit 3; exit 0`
+
+// requireProbeDiesAtDefault fails the row unless ghHangupProbe dies of the hangup it sends itself
+// when its SIGHUP is at the default: env --default-signal sets that before it runs the probe,
+// whatever this test binary inherited, so a probe that survives there could not tell an ignored
+// hangup from one that kills.
+func requireProbeDiesAtDefault(t *testing.T) {
+	t.Helper()
+	err := exec.Command("env", "--default-signal=HUP", "sh", "-c", ghHangupProbe).Run()
+	var exited *exec.ExitError
+	if !errors.As(err, &exited) {
+		t.Fatalf("the probe with SIGHUP at its default answered %v, want a death by the hangup it sent itself: the probe cannot tell an ignored hangup from one that kills", err)
+	}
+	switch status := exited.Sys().(syscall.WaitStatus); {
+	case status.Signaled() && status.Signal() == syscall.SIGHUP:
+	case status.Exited() && status.ExitStatus() == 3:
+		t.Fatal("the probe with SIGHUP at its default could not send itself the hangup, so it read nothing")
+	default:
+		t.Fatalf("the probe with SIGHUP at its default ended with %v, want a death by the hangup it sent itself", err)
+	}
+}
+
+// requireGhStartedIgnoringHangup fails the row unless the stand-in gh's probe (ghHangupProbe),
+// whose status it wrote at path, survived the hangup it sent itself: the probe is a child of gh,
+// so it inherits gh's disposition of SIGHUP, which every kernel acts on, and it survives the
+// signal only if gh was started ignoring it. A probe that wrote no status, or could not send the
+// hangup, fails the row too: the row then has no answer, not a clean one.
 func requireGhStartedIgnoringHangup(t *testing.T, path string) {
 	t.Helper()
 	written, err := os.ReadFile(path)
@@ -2873,6 +2905,8 @@ func requireGhStartedIgnoringHangup(t *testing.T, path string) {
 	case "0":
 	case "":
 		t.Fatal("the stand-in gh's probe wrote no status")
+	case "3":
+		t.Fatal("the stand-in gh's probe could not send itself the hangup, so it read nothing of gh's disposition")
 	default:
 		t.Fatalf("gh was started with SIGHUP not ignored: a child of gh, which inherits its disposition, ended with status %s when it sent itself the hangup (129 is a death by it): `legion gh` handed a nohuped gh a hangup that ends it", status)
 	}
