@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  `dispatch doc-edit` refuses a `replace` that names no `with`, or carries a field `replace` does
+  not take (`markdown`, `after`, `before`, `block`, `index`, `type`, `attributes`), and exits 2
+  before it sends anything, naming `ops[<index>]` and the field. Such a replace was sent, read as
+  an empty `with`, and deleted the text its `find` matched, as one that sent its new text as
+  `markdown` did. `with: ""` still deletes the match on purpose.
+time: 2026-11-20T09:21:35.000000000Z
+custom:
+  Issue: doc-edit-replace-fields
