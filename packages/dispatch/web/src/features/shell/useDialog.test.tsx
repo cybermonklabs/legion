@@ -134,6 +134,40 @@ test("a key typed in a dialog's first frame presses nothing behind the dialog", 
   }
 });
 
+// In its first frame the dialog itself holds the focus, and it is the first element of the dialog
+// in the Tab order, so a Shift+Tab from it would leave the dialog for the control behind it. The
+// hook sends that Shift+Tab to the dialog's last control instead, and the key typed after it
+// lands there, not on the control that opened the dialog.
+test("a Shift+Tab and a key in a dialog's first frame stay inside the dialog", async () => {
+  const user = userEvent.setup();
+  let pressed = 0;
+  const view = render(
+    <KeymapProvider>
+      <ControlUnderADialog onPress={() => (pressed += 1)} />
+    </KeymapProvider>
+  );
+  const frames = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+  try {
+    act(() => view.getByRole("button", { name: "Approve" }).focus());
+    await user.keyboard("R");
+    const dialog = view.getByRole("dialog", { name: "Request changes" });
+    expect(document.activeElement, "the dialog left the focus behind it as it opened").toBe(dialog);
+    await user.tab({ shift: true });
+    await user.keyboard(" ");
+    expect(
+      pressed,
+      "a Shift+Tab and a Space in the dialog's first frame pressed the control under it"
+    ).toBe(0);
+    expect(
+      document.activeElement,
+      "a Shift+Tab in the dialog's first frame went to no last control of it"
+    ).toBe(view.getByRole("textbox", { name: "Reason" }));
+  } finally {
+    frames.mockRestore();
+    view.unmount();
+  }
+});
+
 /** Holds every animation frame the hook asks for until `run`, as a loaded machine draws its next
  *  frame late. A cancelled frame does not run. */
 function holdFrames(): { restore: () => void; run: () => void } {
