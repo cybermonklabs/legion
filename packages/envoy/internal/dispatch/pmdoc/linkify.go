@@ -199,7 +199,10 @@ func readLiteralAddress(parent ast.Node, block text.Reader, pc parser.Context, s
 	} else {
 		previous = previousCharacter(parent, block, segment.Start)
 	}
-	for at := segment.Start; at < stop; {
+	at := segment.Start
+	// Each character the guard reads is a step of the parse (ParseWork).
+	defer func() { parseWork.Add(uint64(at - segment.Start)) }()
+	for at < stop {
 		c := source[at]
 		if at != asked && (util.IsPunct(c) || util.IsSpace(c)) {
 			return nil
@@ -295,6 +298,8 @@ func previousEmail(previous rune) bool {
 // digits, `-` and `_` with a dot inside it before a letter or digit, ending in a letter.
 func literalEmail(text []byte) int {
 	at := 0
+	// Each character read is a step of the parse (ParseWork).
+	defer func() { parseWork.Add(uint64(at)) }()
 	for at < len(text) && gfmAtext(text[at]) {
 		at++
 	}
@@ -377,7 +382,10 @@ func literalURL(text []byte, domains *literalDomains) (length int, www bool) {
 	if !ok {
 		return 0, false
 	}
-	return literalPath(text, end, &trail), www
+	length = literalPath(text, end, &trail)
+	// Each character of the path read is a step of the parse (ParseWork).
+	parseWork.Add(uint64(length - end))
+	return length, www
 }
 
 // literalDomains is the record of the last domain read on a line (tokenizeDomain), for every later
@@ -439,6 +447,9 @@ func (d *literalDomains) read(text []byte, at int, trail *literalTrail) (int, bo
 			d.plain = d.base + i
 			i += width
 		}
+		// Each character of the domain read is a step of the parse (ParseWork); a read starting
+		// inside the recorded domain reads none.
+		parseWork.Add(uint64(i - at))
 		d.end = d.base + i
 	}
 	underscoreLast := d.underscore[0] >= max(from, d.lastDot+1)

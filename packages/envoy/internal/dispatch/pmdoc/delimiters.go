@@ -218,10 +218,12 @@ func (l *delimiterList) pair(bottom int, groups ...runGroup) {
 	}
 }
 
-// firstAfter is the first run of group pushed after bottom, or nil.
+// firstAfter is the first run of group pushed after bottom, or nil. Each run it walks back over is
+// a step of the parse (ParseWork).
 func (l *delimiterList) firstAfter(group runGroup, bottom int) *listedRun {
 	var first *listedRun
 	for run := l.lastInGroup[group]; run != nil && run.seq > bottom; run = run.prevInGroup {
+		parseWork.Add(1)
 		first = run
 	}
 	return first
@@ -237,6 +239,9 @@ func (l *delimiterList) firstAfter(group runGroup, bottom int) *listedRun {
 // pair makes before this one goes on.
 func (l *delimiterList) advance(pass *pairingPass) (pairingPass, bool) {
 	for pass.closer != nil && pass.closer.seq < pass.top {
+		// Each closer the pass visits is a step of the parse (ParseWork), as is each run the
+		// loops below and clear take off the list.
+		parseWork.Add(1)
 		closer := pass.closer
 		end := closer.delimiter
 		if !end.CanClose {
@@ -274,6 +279,7 @@ func (l *delimiterList) advance(pass *pairingPass) (pairingPass, bool) {
 		}
 		parent.InsertAfter(parent, start, mark)
 		for run := opener.nextInGroup; run != closer; {
+			parseWork.Add(1)
 			next := run.nextInGroup
 			l.remove(run)
 			run = next
@@ -307,6 +313,7 @@ func (l *delimiterList) clear(pass pairingPass) {
 		run = pass.closer.prevInGroup
 	}
 	for run != nil && run.seq > pass.bottom {
+		parseWork.Add(1)
 		prev := run.prevInGroup
 		l.remove(run)
 		run = prev

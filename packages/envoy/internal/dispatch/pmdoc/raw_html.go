@@ -101,11 +101,12 @@ func (p inlineRawHTMLParser) Parse(parent ast.Node, block text.Reader, pc parser
 	if record.holdsNoCloser(kind, segment.Start) {
 		return nil
 	}
+	walked := walkedLines{block}
 	var html ast.Node
 	if kind == htmlDeclaration {
-		html = parseDeclaration(block)
+		html = parseDeclaration(walked)
 	} else {
-		html = p.InlineParser.Parse(parent, block, pc)
+		html = p.InlineParser.Parse(parent, walked, pc)
 	}
 	if html == nil {
 		// Both walks, this parser's over a declaration and the wrapped parser's over the three
@@ -116,6 +117,16 @@ func (p inlineRawHTMLParser) Parse(parent ast.Node, block text.Reader, pc parser
 		record.noCloserFrom(kind, segment.Start)
 	}
 	return html
+}
+
+// walkedLines is the block reader an inline raw HTML walk reads its block's lines through,
+// counting each line the walk advances past as a step of the parse (ParseWork): the record of
+// where a block holds no closer keeps that count linear in the block.
+type walkedLines struct{ text.Reader }
+
+func (r walkedLines) AdvanceLine() {
+	parseWork.Add(1)
+	r.Reader.AdvanceLine()
 }
 
 // parseDeclaration reads the declaration the block reader is at, which goldmark's parser reads

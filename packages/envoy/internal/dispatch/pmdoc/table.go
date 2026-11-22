@@ -35,14 +35,19 @@ var tableTransformer = extension.NewTableParagraphTransformer()
 // inside a code span's text are exactly the `\|` that text holds. Each text is split around the
 // backslash of each one, which it drops, as goldmark splits it; in a cell split off a goldmark cell,
 // which goldmark's transformer never walks, too, as the browser editor's parser drops it. Run once
-// the bounds hold, it walks the blocks and each cell once.
+// the bounds hold, it walks the blocks and each cell once, each node it enters a step of the parse
+// (ParseWork).
 func unescapeTablePipes(root ast.Node, source []byte) {
+	walked := 0
 	_ = ast.Walk(root, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
 		switch {
 		case !entering:
 			return ast.WalkContinue, nil
 		case node.Kind() == extensionast.KindTableCell:
 			_ = ast.Walk(node, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+				if entering {
+					walked++
+				}
 				if entering && node.Kind() == ast.KindCodeSpan {
 					unescapeCodeSpanPipes(node, source)
 					return ast.WalkSkipChildren, nil
@@ -50,11 +55,14 @@ func unescapeTablePipes(root ast.Node, source []byte) {
 				return ast.WalkContinue, nil
 			})
 			return ast.WalkSkipChildren, nil
-		case node.Type() == ast.TypeInline:
+		}
+		walked++
+		if node.Type() == ast.TypeInline {
 			return ast.WalkSkipChildren, nil
 		}
 		return ast.WalkContinue, nil
 	})
+	parseWork.Add(uint64(walked))
 }
 
 // unescapeCodeSpanPipes splits each text of span around the backslash of every `\|` it holds,

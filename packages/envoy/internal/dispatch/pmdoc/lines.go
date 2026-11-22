@@ -717,12 +717,21 @@ func (r *lastLineColumns) PeekLine() ([]byte, gmtext.Segment) {
 }
 
 // AdvanceLine drops the columns left at the source's end, which goldmark's reader keeps there, so
-// the last line is read once.
+// the last line is read once. Each line it advances past is a step of the parse (ParseWork).
 func (r *lastLineColumns) AdvanceLine() {
+	parseWork.Add(1)
 	r.Reader.AdvanceLine()
 	if _, segment := r.Reader.Position(); segment.Start >= len(r.Source()) {
 		r.Reader.SetPadding(0)
 	}
+}
+
+// SkipBlankLines is goldmark's reader's own, which advances its own reader past the blank lines
+// rather than through AdvanceLine above, so the lines it skips are counted here (ParseWork).
+func (r *lastLineColumns) SkipBlankLines() (gmtext.Segment, int, bool) {
+	segment, lines, ok := r.Reader.SkipBlankLines()
+	parseWork.Add(uint64(lines))
+	return segment, lines, ok
 }
 
 // AdvanceToEOL takes every column left at the source's end, as it takes the rest of any line, so
