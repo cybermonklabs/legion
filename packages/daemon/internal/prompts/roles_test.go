@@ -889,10 +889,13 @@ func TestTheMergerReadsTheEndingConditionBeforeEachMergeAndEnqueue(t *testing.T)
 // approval request; a `spec-ending-waits` notice names one reason the ending condition does not
 // hold, and each of its five codes asks one thing, so the paragraph names every code; and a
 // `design-approved` notice of an opening with no person carries no actor and a reason that starts
-// `no proposal:`, which follows a registration that requested no approval. The needles are matched
-// over the part with its whitespace collapsed, and the codes within the one paragraph that names
-// the notice, since a code named elsewhere answers nothing about that notice. This shows the text
-// is loaded, never that an architect follows it.
+// `no proposal:`, which follows a registration that requested no approval. A `check` block is a
+// node of The Spec only when its `statement` names a statement the spec proposes or the approved
+// spec holds; any other is the root's own acceptance check, which proposes nothing, so a root that
+// proposes nothing keeps its acceptance checks. The needles are matched over the part with its
+// whitespace collapsed, and the codes within the one paragraph that names the notice, since a code
+// named elsewhere answers nothing about that notice. This shows the text is loaded, never that an
+// architect follows it.
 func TestTheRootArchitectKnowsWhatEachChangeRequestNoticeAsks(t *testing.T) {
 	part := rolePart(t, "architect-root.md")
 	text := foldWhitespace(part)
@@ -906,9 +909,20 @@ func TestTheRootArchitectKnowsWhatEachChangeRequestNoticeAsks(t *testing.T) {
 		"A `spec-request-stale` notice",
 		"set the block's `base` to the node's current approved version",
 		"open a new approval request with `dispatch request-approval`",
+		"each `check` block of the Verification document whose `statement` names a statement that the spec proposes or that the approved spec holds",
+		"is the root's own acceptance check",
+		"It keeps its own acceptance checks",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("roles/architect-root.md does not say %q", want)
+		}
+	}
+	for _, wrong := range []string{
+		"each `check` block of the Verification document is a node of The Spec",
+		"writes no such block except context",
+	} {
+		if strings.Contains(text, wrong) {
+			t.Errorf("roles/architect-root.md still says %q: a check that names no statement is the root's own acceptance check", wrong)
 		}
 	}
 	waits := ruleParagraphs(part, "A `spec-ending-waits` notice")
