@@ -57,16 +57,7 @@ func TestAPassWhoseWriteOfOneFinishedRunFailedSettlesNothing(t *testing.T) {
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-22T00:04:00Z"),
 		checkRun(2, "lint", "completed", "failure", otherApp, "2026-11-22T00:04:10Z"),
 	)
-	unanswering := &unansweringWriter{check: "lint", failures: 1}
-	bind := h.reconciler.Open
-	h.reconciler.Open = func() (Writer, error) {
-		bound, err := bind()
-		if err != nil {
-			return nil, err
-		}
-		unanswering.Writer = bound
-		return unanswering, nil
-	}
+	h.answerNoRunWriteCarrying("lint", 1)
 	settlements := h.subscribe()
 
 	h.pass()
@@ -81,6 +72,73 @@ func TestAPassWhoseWriteOfOneFinishedRunFailedSettlesNothing(t *testing.T) {
 	settled := h.settlement(settlements, "after the pass whose write landed")
 	if settled.Passed.Count != 1 || settled.Failed.Count != 1 {
 		t.Fatalf("settlement = %+v, want ci-ok passed and lint failed", settled)
+	}
+}
+
+// answerNoRunWriteCarrying makes the pass bind a writer whose first failures writes of runs that
+// carry check fail (unansweringWriter). Every pass binds its writer through Open, so the wrapping
+// goes around Open.
+func (h *harness) answerNoRunWriteCarrying(check string, failures int) {
+	h.t.Helper()
+	unanswering := &unansweringWriter{check: check, failures: failures}
+	bind := h.reconciler.Open
+	h.reconciler.Open = func() (Writer, error) {
+		bound, err := bind()
+		if err != nil {
+			return nil, err
+		}
+		unanswering.Writer = bound
+		return unanswering, nil
+	}
+}
+
+// A pass whose write of a head's runs failed writes nothing more of that head. The head settled
+// on its first run; GitHub then holds a queued run no webhook carried, and a suite of another App
+// that has completed. The bus does not answer the write of the runs. Had the pass gone on to write
+// the completed suite, that write would re-arm the settled record, which holds the first run
+// alone, and the listener would settle the head again while GitHub runs the queued one. The next
+// pass, with the bus answering, writes the queued run, and the head waits for it.
+func TestAPassWhoseRunWriteFailedWritesNothingMoreOfTheHead(t *testing.T) {
+	h := newHarness(t, reviewerAppID)
+	h.mapRepository(rowRepository)
+	h.listHead()
+	settlements := h.subscribe()
+	changes := checkRun(1, "changes", "completed", "success", otherApp, "2026-11-22T00:02:05Z")
+	h.post("check_run", webhookBody("check_run", changes), "d1")
+	if settled := h.settlement(settlements, "on the webhook"); settled.Passed.Count != 1 {
+		t.Fatalf("settlement = %+v, want the head settled on changes", settled)
+	}
+	h.settledRecord()
+
+	h.github.setCheckRuns(gitHubRepository, headSHA,
+		changes,
+		unfinished(checkRun(2, "test", "queued", "", otherApp, "2026-11-22T00:02:06Z")),
+	)
+	h.github.setCheckSuites(gitHubRepository, headSHA,
+		checkSuite(901, "completed", "success", 4321, "2026-11-22T00:02:07Z"),
+	)
+	h.answerNoRunWriteCarrying("test", 1)
+
+	h.pass()
+
+	h.noSettlement(settlements, "after a pass whose write of the runs failed")
+	state, _, ok := h.record()
+	if !ok {
+		t.Fatal("the head's record is gone after the pass")
+	}
+	if _, held := state.Suites["901"]; held {
+		t.Fatalf("the record holds the suite %+v; the pass wrote more of a head whose runs it could not write", state.Suites)
+	}
+
+	h.pass()
+
+	h.noSettlement(settlements, "while GitHub runs test")
+	state, _, ok = h.record()
+	if !ok {
+		t.Fatal("the head's record is gone after the second pass")
+	}
+	if got := state.Checks["test"]; got.CheckRunID != 2 || got.Status != "queued" {
+		t.Fatalf("the record holds test as %+v, want run 2 queued", got)
 	}
 }
 

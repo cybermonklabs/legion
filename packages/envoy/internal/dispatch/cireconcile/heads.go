@@ -393,11 +393,18 @@ func (r *Reconciler) recordHead(ctx context.Context, writer Writer, head pullHea
 // listener already holds changes none. ok is false when a write failed and a later pass might
 // make it land, which is every failure but a refusal (refused); it is what makes the pass drop
 // this head's ETags.
+//
+// A head whose runs did not land is written nothing more in the pass: a completed suite or a
+// status written after it would re-arm a record that lacks the runs GitHub holds, and the listener
+// would settle the head on what the record held before.
 func (r *Reconciler) record(ctx context.Context, writer Writer, head pullHead, runs, suites, statuses []pageOf[object]) (wanted int, changedRecord, ok bool) {
 	wantedRuns, changedRuns, runsOK := r.recordRuns(ctx, writer, head, runs)
+	if !runsOK {
+		return wantedRuns, changedRuns, false
+	}
 	wantedSuites, changedSuites, suitesOK := r.recordSuites(ctx, writer, head, suites)
 	wantedStatuses, changedStatuses, statusesOK := r.recordStatuses(ctx, writer, head, statuses)
-	return wantedRuns + wantedSuites + wantedStatuses, changedRuns || changedSuites || changedStatuses, runsOK && suitesOK && statusesOK
+	return wantedRuns + wantedSuites + wantedStatuses, changedRuns || changedSuites || changedStatuses, suitesOK && statusesOK
 }
 
 // recordStatuses writes each commit status of the pages GitHub answered 200 with whose state the
