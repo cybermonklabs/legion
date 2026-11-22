@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -208,12 +209,7 @@ func (h *t7Stack) nameDeps(dialer nats.CustomDialer) consumernames.Deps {
 	return consumernames.Deps{
 		Records: func(context.Context, bool) (*holdrecord.Client, error) { return h.s.Broker.Client(h.t), nil },
 		Connect: func(context.Context) (*nats.Conn, error) {
-			opts := append(h.s.OperatorCredential(), nats.Name("envoy-infra consumer-names"),
-				nats.MaxReconnects(-1), nats.ReconnectWait(100*time.Millisecond), nats.Timeout(10*time.Second))
-			if dialer != nil {
-				opts = append(opts, nats.SetCustomDialer(dialer))
-			}
-			return nats.Connect(h.s.Cluster.URL(), opts...)
+			return h.connectOperator("envoy-infra consumer-names", dialer)
 		},
 		Database: func(_ context.Context, family string) (consumernames.Database, error) {
 			h.mu.Lock()
@@ -292,11 +288,19 @@ func (h *t7Stack) streamsThrough(ctx context.Context, op *writerhold.Operator, r
 // operatorThrough is a copy of the stack's Operator whose operator connections go through dialer.
 func (h *t7Stack) operatorThrough(dialer nats.CustomDialer) *writerhold.Operator {
 	op := *h.op
-	op.Connect = func(context.Context) (*nats.Conn, error) {
-		return nats.Connect(h.s.Cluster.URL(), append(h.s.OperatorCredential(), nats.Name("envoy-infra hold"), nats.SetCustomDialer(dialer),
-			nats.MaxReconnects(-1), nats.ReconnectWait(100*time.Millisecond), nats.Timeout(10*time.Second))...)
-	}
+	op.Connect = func(context.Context) (*nats.Conn, error) { return h.connectOperator("envoy-infra hold", dialer) }
 	return &op
+}
+
+// connectOperator connects to the hub as the operator under name, reconnecting as the commands'
+// own connections do, through dialer when it is set.
+func (h *t7Stack) connectOperator(name string, dialer nats.CustomDialer) (*nats.Conn, error) {
+	opts := append(h.s.OperatorCredential(), nats.Name(name), nats.MaxReconnects(-1),
+		nats.ReconnectWait(100*time.Millisecond), nats.Timeout(10*time.Second))
+	if dialer != nil {
+		opts = append(opts, nats.SetCustomDialer(dialer))
+	}
+	return nats.Connect(h.s.Cluster.URL(), opts...)
 }
 
 // streamsWith is streamsOn on a context that never ends.
@@ -624,7 +628,7 @@ func (h *t7Stack) awaitLeaders() {
 	h.s.AwaitStreamLeaders(h.t, h.present())
 }
 
-// session is one session of the cutover's scene, by its id: its fixed consumer s-<id>.
+// t7Fixed is session's fixed consumer name, s-<id>, as today's build names it.
 func t7Fixed(session string) string { return "s-" + session }
 
 // sessionConsumerConfig is a session consumer's configuration as today's listener makes it
@@ -860,11 +864,9 @@ func TestHoldPreflightTheFirstDeployment(t *testing.T) {
 // TestHoldPreflightALostSelectionBucket: a lost selection bucket (red team G5). After a cutover the
 // selection bucket is lost; `selection-recovery`, whose preflight records the bucket's expected
 // absence, runs every step from its preflight: hold prepare, hold set, create-bucket --after-loss,
-// and hold release. Control: the same lost bucket in a cutover hold's census, which the cutover does
-// not declare absent once create-bucket has run, is not where the recovery starts: a buckets-create
-// hold's preflight, which declares only its own targets absent, stops on the absent bucket, naming
-// it. It fails when the recovery cannot set its hold over the lost bucket, or completes without the
-// bucket and its sentinel.
+// and hold release. Control: a buckets-create hold, whose preflight declares only its own targets
+// absent, stops at hold set on the absent selection bucket, naming it. It fails when the recovery
+// cannot set its hold over the lost bucket, or completes without the bucket and its sentinel.
 func TestHoldPreflightALostSelectionBucket(t *testing.T) {
 	h := newT7Stack(t)
 	h.seed()
@@ -876,9 +878,7 @@ func TestHoldPreflightALostSelectionBucket(t *testing.T) {
 	fresh := h.sessionRecord("ses_lost1").Current
 
 	// The bucket is lost.
-	h.noStepsHold(holdrecord.WorkflowStreamsUpdate, writerhold.CommandStreamsUpdate, func(_ *nats.Conn, js jetstream.JetStream) {
-		require.NoError(t, js.DeleteStream(context.Background(), "KV_"+selection.SessionBucket))
-	})
+	h.loseSelectionBucket()
 
 	// Control: a hold whose workflow does not declare the selection bucket absent stops at its
 	// preflight, naming it.
@@ -1137,35 +1137,6 @@ func (c *t7KillConn) Write(p []byte) (int, error) {
 	return 0, errors.New("the process was killed before this write")
 }
 
-// t7RewriteDialer dials the operator's connection of one consumer-names run and rewrites, in every
-// write to the hub, from into to, which is as long: a request it rewrites to a subject the grant
-// does not hold is refused, and its answer never comes.
-type t7RewriteDialer struct{ from, to []byte }
-
-func (d t7RewriteDialer) Dial(network, address string) (net.Conn, error) {
-	if len(d.from) != len(d.to) {
-		return nil, errors.New("a rewrite changes no length")
-	}
-	conn, err := net.DialTimeout(network, address, 10*time.Second)
-	if err != nil {
-		return nil, err
-	}
-	return &t7RewriteConn{Conn: conn, d: d}, nil
-}
-
-// t7RewriteConn is a pointer, as nats.go compares the connections it holds.
-type t7RewriteConn struct {
-	net.Conn
-	d t7RewriteDialer
-}
-
-func (c *t7RewriteConn) Write(p []byte) (int, error) {
-	if _, err := c.Conn.Write(bytes.ReplaceAll(p, c.d.from, c.d.to)); err != nil {
-		return 0, err
-	}
-	return len(p), nil
-}
-
 // cutovers are the broker's cutover rows, by family, their state.
 func (h *t7Stack) cutovers() map[string]string {
 	h.t.Helper()
@@ -1240,6 +1211,15 @@ func (h *t7Stack) deleteBucket() {
 	_, js := h.operator()
 	require.NoError(h.t, js.DeleteStream(context.Background(), "KV_"+selection.SessionBucket))
 	h.closeConns()
+}
+
+// loseSelectionBucket deletes the selection bucket under a streams-update hold of its own, as a lost
+// bucket leaves the hub.
+func (h *t7Stack) loseSelectionBucket() {
+	h.t.Helper()
+	h.noStepsHold(holdrecord.WorkflowStreamsUpdate, writerhold.CommandStreamsUpdate, func(_ *nats.Conn, js jetstream.JetStream) {
+		require.NoError(h.t, js.DeleteStream(context.Background(), "KV_"+selection.SessionBucket))
+	})
 }
 
 // heldCutover runs a cutover hold to where convert runs, with hold set's journal written without
@@ -1321,8 +1301,8 @@ func TestHoldACrashThenARerun(t *testing.T) {
 		require.Contains(t, stderr, holdrecord.ErrBusy.Error())
 		require.NotContains(t, h.entries(id), "streams census intent")
 
-		// convert's rerun skips the family whose cutover row reads done: it converts no name again
-		// and leaves the session family's marker unwritten, and marks Dispatch.
+		// convert's rerun converts no name again: it writes each family's cutover row again, leaves
+		// the session family's marker, which reads done, unwritten, and marks Dispatch.
 		code, stdout, stderr := h.names("convert", "--hold", id, "--dispatch-database-file", dispatch)
 		require.Zero(t, code, "convert's rerun: %s", stderr)
 		require.Contains(t, stdout, "converted 0 of", "convert's rerun converted a name again")
@@ -1421,7 +1401,9 @@ func TestHoldACrashThenARerun(t *testing.T) {
 		require.NoError(t, err)
 		h.closeConns()
 		info := "STREAM.INFO.KV_" + selection.SessionBucket
-		failing := t7RewriteDialer{from: []byte(info), to: []byte("STREAM.INFX.KV_" + selection.SessionBucket)}
+		failing := t7TapDialer{tap: func(p []byte) []byte {
+			return bytes.ReplaceAll(p, []byte(info), []byte("STREAM.INFX.KV_"+selection.SessionBucket))
+		}}
 		bounded, cancel := context.WithTimeout(ctx, 3*time.Minute)
 		code, _, stderr = h.namesThrough(bounded, failing, "create-bucket", "--hold", id, "--replicas", "3")
 		cancel()
@@ -1506,9 +1488,7 @@ func TestHoldACrashThenARerun(t *testing.T) {
 		h.census(cutover, "session")
 		code, _, _ = h.hold("release", "--hold", cutover)
 		require.Zero(t, code)
-		h.noStepsHold(holdrecord.WorkflowStreamsUpdate, writerhold.CommandStreamsUpdate, func(_ *nats.Conn, js jetstream.JetStream) {
-			require.NoError(t, js.DeleteStream(context.Background(), "KV_"+selection.SessionBucket))
-		})
+		h.loseSelectionBucket()
 		id := h.prepared(holdrecord.WorkflowSelectionRecovery)
 		h.heldNoSteps(id)
 		code, _, stderr = h.names("create-bucket", "--hold", id, "--after-loss", "--replicas", "3")
@@ -1660,9 +1640,6 @@ func (c *t7TapConn) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// index is the first position of subject among subjects, or -1.
-func index(subjects []string, subject string) int { return slices.Index(subjects, subject) }
-
 // t7Exchange is one request to the broker's routes and its answer.
 type t7Exchange struct {
 	Body   []byte
@@ -1746,9 +1723,10 @@ func (h *t7Stack) listenerRefused(what string) {
 // every client but the operator is refused hold_unknown. `hold restore --hold <id>` brings the row
 // back held, signed at the restore_gen that /restore's 409 gen_mismatch names, above every logged
 // one; a PUT at a gen read before the delete answers 409; convert and the census run, and release
-// succeeds. After completion the admin deletes the row again: a --bootstrap restore is refused,
-// because its gen 1 is not the log's next; `hold restore` brings the row back held at a higher gen;
-// a second `hold restore` answers 409 row_exists; and release succeeds, printing both gens.
+// succeeds. After completion the admin deletes the row again: `hold restore` brings the row back
+// held at a higher gen; a second `hold restore` answers 409 row_exists; and release succeeds,
+// printing both gens. Last, a hold lost mid-way: a --bootstrap restore is refused, because its gen
+// 1 is not the log's next.
 // Controls: a restore that reads the field gen in place of restore_gen sends gen 1 again and is
 // refused; the release a comparison of hold_gen with the row's gen (v59's) would refuse for good;
 // and a row put back at the gen it had, as a restore that does not move above the log would leave
@@ -2259,7 +2237,8 @@ func (r *t7Requests) with(prefix string) []t7Request {
 // a STREAM.SNAPSHOT of a copied bucket, a create of it, and each read only prepare lists (the
 // STREAM.INFO of KV_legion_agents, KV_envoy_dpop_proofs and KV_envoy_webhook_redelivery) are refused.
 // Control: without $JS.API.STREAM.MSG.GET.KV_envoy_session_consumers the walk is refused by name. A
-// second hold is set after a release: hold prepare reads the row and moves it to prepare at its gen.
+// second hold is prepared after a release: hold prepare reads the row and moves it to prepare at its
+// gen.
 // With the hold rule running and Postgres stopped, the operator is admitted with the released grant
 // and a user that expires within 10 minutes, while every other client is refused hold_unknown.
 func TestHoldGrantReleased(t *testing.T) {
@@ -2472,14 +2451,14 @@ func TestHoldGrantHeld(t *testing.T) {
 	for _, request := range converted.with("$JS.API.") {
 		subjects = append(subjects, request.Subject)
 	}
-	deleted := index(subjects, "$JS.API.CONSUMER.DELETE."+bus.Stream+"."+t7Fixed("ses_h1"))
+	deleted := slices.Index(subjects, "$JS.API.CONSUMER.DELETE."+bus.Stream+"."+t7Fixed("ses_h1"))
 	require.GreaterOrEqual(t, deleted, 0, "convert sent no delete of F: %v", subjects)
 	fresh := slices.IndexFunc(subjects, func(s string) bool {
 		return strings.HasPrefix(s, "$JS.API.CONSUMER.CREATE."+bus.Stream+".session~")
 	})
 	require.Greater(t, fresh, deleted, "convert created no N after F's delete: %v", subjects)
-	made := index(subjects, "$JS.API.STREAM.CREATE."+natsgrant.HoldBarrierStream)
-	removed := index(subjects, "$JS.API.STREAM.DELETE."+natsgrant.HoldBarrierStream)
+	made := slices.Index(subjects, "$JS.API.STREAM.CREATE."+natsgrant.HoldBarrierStream)
+	removed := slices.Index(subjects, "$JS.API.STREAM.DELETE."+natsgrant.HoldBarrierStream)
 	require.GreaterOrEqual(t, made, 0, "convert's barrier was not created: %v", subjects)
 	require.Greater(t, removed, made, "convert's barrier was not deleted after its create: %v", subjects)
 	t.Logf("convert's meta barrier, as its connection sent it: %v", subjects[made:removed+1])
@@ -2795,9 +2774,7 @@ func TestHoldCompletionPerWorkflow(t *testing.T) {
 		h.census(cutover, "session")
 		code, _, _ = h.hold("release", "--hold", cutover)
 		require.Zero(t, code)
-		h.noStepsHold(holdrecord.WorkflowStreamsUpdate, writerhold.CommandStreamsUpdate, func(_ *nats.Conn, js jetstream.JetStream) {
-			require.NoError(t, js.DeleteStream(context.Background(), "KV_"+selection.SessionBucket))
-		})
+		h.loseSelectionBucket()
 
 		id := h.prepared(holdrecord.WorkflowSelectionRecovery)
 		h.heldNoSteps(id)
@@ -2895,8 +2872,9 @@ func TestHoldCompletionPerWorkflow(t *testing.T) {
 		require.True(t, h.journal(id).Complete, "restore --finish did not complete the record")
 		code, _, _ = h.hold("release", "--hold", id)
 		require.Zero(t, code)
+		left := h.consumers()
 		for _, session := range []string{"ses_rb1", "ses_rb2"} {
-			require.Contains(t, h.consumers(), t7Fixed(session), "the rollback did not make %s again", t7Fixed(session))
+			require.Contains(t, left, t7Fixed(session), "the rollback did not make %s again", t7Fixed(session))
 		}
 	})
 
@@ -3021,12 +2999,12 @@ func TestHoldCompletionPerWorkflow(t *testing.T) {
 // envoy-operator/envoy-operator-retired-stores, keys RETIRED.database and RETIRED.instance, its
 // database dropped), reconciles the daemon stores of every cutover row through the one reader of
 // their addresses, writerhold.KubeDaemonDeployments of the hold's own client, with consumernames'
-// writer (ReconcileDaemonStreamIDs): the call hub-restore's abort makes over the cutover rows'
-// daemon families before it releases. Here the census inside the hold makes it, and reads the
-// retired store gone: it prints `GONE daemon/RETIRED: ...`, names gone.daemon/RETIRED in its done
-// entry, which completes the record, and the hold is released. Control: 2b1d598844's reader, which
-// never reads the ConfigMap, leaves daemon/RETIRED unreconciled ("0 Deployments of namespace legion
-// name project RETIRED"), and the census is UNKNOWN.
+// writer (ReconcileDaemonStreamIDs), as the census inside the hold calls it: it reads the retired
+// store gone, prints `GONE daemon/RETIRED: ...`, names gone.daemon/RETIRED in its done entry, which
+// completes the record, and the hold is released. It fails for a reader that never reads the
+// ConfigMap, as the reader before KubeDaemonDeployments read it did: daemon/RETIRED is then
+// unreconciled ("0 Deployments of namespace legion name project RETIRED"), and the census is
+// UNKNOWN.
 func TestHoldAHubRestoreReadsARetiredProjectsStoreGone(t *testing.T) {
 	h := newT7Stack(t)
 	h.seed()
@@ -3058,11 +3036,7 @@ func TestHoldAHubRestoreReadsARetiredProjectsStoreGone(t *testing.T) {
 		Data:       map[string]string{"RETIRED.database": dropped, "RETIRED.instance": t7Instance},
 	}, metav1.CreateOptions{})
 	require.NoError(t, err)
-	var families []string
-	for family := range h.cutovers() {
-		families = append(families, family)
-	}
-	slices.Sort(families)
+	families := slices.Sorted(maps.Keys(h.cutovers()))
 	require.Contains(t, families, "daemon/RETIRED")
 
 	code, stdout, stderr := h.streams(append(h.censusArgs(hub, families...), "--daemon-database", "RETIRED="+file)...)
@@ -3070,11 +3044,12 @@ func TestHoldAHubRestoreReadsARetiredProjectsStoreGone(t *testing.T) {
 	gone := "database " + dropped + " on instance " + t7Instance + " (the operator's file states " + t7Instance + "): "
 	require.Contains(t, stdout, "GONE daemon/RETIRED: "+gone)
 	require.True(t, slices.Contains(strings.Split(strings.TrimSpace(stdout), "\n"), "CLEAN"), stdout)
-	done := h.journal(hub).Ops[len(h.journal(hub).Ops)-1]
+	d := h.journal(hub)
+	done := d.Ops[len(d.Ops)-1]
 	require.Equal(t, writerhold.CommandStreamsCensus+" done", done.Command+" "+done.State)
 	require.True(t, strings.HasPrefix(done.Outputs["gone.daemon/RETIRED"], gone), "%q", done.Outputs["gone.daemon/RETIRED"])
 	require.Contains(t, done.Outputs["gone.daemon/RETIRED"], "SQLSTATE 3D000")
-	require.True(t, h.journal(hub).Complete)
+	require.True(t, d.Complete)
 	code, _, _ = h.hold("release", "--hold", hub)
 	require.Zero(t, code)
 	require.Equal(t, natsgrant.OperatorPhaseReleased, h.row().Phase)
