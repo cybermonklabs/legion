@@ -2,7 +2,13 @@ import { readFileSync } from "node:fs";
 import { sep } from "node:path";
 import type { FullConfig, Reporter, Suite, TestRun } from "@playwright/test/reporter";
 
-import { placeUnits, type ShardWeights, type Unit } from "./shard-split";
+import {
+  dependencyProjects,
+  placeUnits,
+  type ShardWeights,
+  tableWarnings,
+  type Unit,
+} from "./shard-split";
 
 /** The file of measured row times the placement reads, beside this module. */
 const weightsFile = new URL("./shard-weights.json", import.meta.url);
@@ -25,10 +31,16 @@ const weightsFile = new URL("./shard-weights.json", import.meta.url);
  *  because a `--reporter` there replaces the config's list. A run that loads it twice would call
  *  `skipSharding` twice, which Playwright refuses by name.
  *
+ *  A project another project names in `dependencies` or `teardown` is left out of the placement:
+ *  Playwright runs it in full on every leg and refuses `exclude` on it (`dependencyProjects`, in
+ *  e2e/shard-split.ts). No project of this config has either today.
+ *
  *  It prints one line, on stderr so a `--list --reporter=json` run's stdout stays the JSON it is:
  *  this leg's rows, the seconds of row time the placement expects of it and of the whole run, and
  *  how many of its rows were placed by their project's median because the table has no entry for
- *  their file - the share of the placement that is an estimate. */
+ *  their file - the share of the placement that is an estimate. Below it, a `::warning::` for a
+ *  table older than the step's guard allows for, or one whose estimates are a tenth of the leg
+ *  (`tableWarnings`), which the runner shows on the run's summary. */
 export default class ShardReporter implements Reporter {
   printsToStdio(): boolean {
     return false;
@@ -48,8 +60,12 @@ export default class ShardReporter implements Reporter {
     testRun.skipSharding();
     const weights = JSON.parse(readFileSync(weightsFile, "utf8")) as ShardWeights;
     const files: { unit: Unit; suite: Suite; rows: number }[] = [];
+    const setups = dependencyProjects(
+      suite.suites.map((projectSuite) => projectSuite.project() ?? {})
+    );
     for (const projectSuite of suite.suites) {
       const project = projectSuite.project()?.name ?? projectSuite.title;
+      if (setups.has(project)) continue;
       for (const fileSuite of projectSuite.suites) {
         const tests = fileSuite.allTests();
         const runs = tests.filter((test) => test.expectedStatus !== "skipped").length;
@@ -83,5 +99,8 @@ export default class ShardReporter implements Reporter {
         `${Math.round(total)} s; ${estimated} of these rows are in files e2e/shard-weights.json ` +
         "has no entry for, placed by their project's median row\n"
     );
+    for (const warning of tableWarnings(weights.source.read, new Date(), rows, estimated)) {
+      process.stderr.write(`::warning title=shard ${shard.current} row-time table::${warning}\n`);
+    }
   }
 }

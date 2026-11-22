@@ -29,8 +29,9 @@
  * the median row of its project, and a project the table has none for takes the median of every
  * project's: an estimate from the same measurements, never nothing, so a new file is placed on
  * the day it lands and the split never refuses a run. How far those estimates are from the truth
- * is what makes the table worth reading again, and each leg prints how many of its rows were
- * placed by one (`e2e/shard-reporter.ts`).
+ * is what makes the table worth reading again: each leg prints how many of its rows were placed
+ * by one (`e2e/shard-reporter.ts`), and `tableWarnings` below says when the table is old enough,
+ * or the estimates many enough, that the browser step's hang guard no longer covers the drift.
  *
  * The placement is the longest-first greedy: the heaviest unit first, each onto the leg with the
  * least time so far. It is a function of the selection and the table alone - the units are sorted
@@ -126,4 +127,55 @@ export function placeUnits(
     return { ...unit, shard: lightest + 1 };
   });
   return { loads, placed };
+}
+
+/** How old the table may be before a leg warns: the browser step's 18-minute guard is
+ *  534 s x 1.75 x 1.11, and 1.11 is the worst share of the mean the heaviest leg took under a
+ *  table up to 7 days old, of the two read (.github/ci-notes/dispatch-browser.md, the browser
+ *  step's budget). Past that no table was measured, and one that drifted to the count split's 1.21
+ *  would leave a healthy p90 leg on the slowest runner seen near 1,131 s, past the guard. */
+export const tableDaysAtMost = 7;
+
+/** The share of a leg's rows that may be placed by an estimate before the leg warns: the reading
+ *  the table's tool names as the time to read it again. */
+export const estimatedShareAtMost = 0.1;
+
+/** The warnings a leg prints about the table it was placed by, each a sentence that names what
+ *  to run: one when the table was read more than `tableDaysAtMost` days before `now`, one when
+ *  `estimated` of the leg's `rows` reach `estimatedShareAtMost`. None for a fresh table whose
+ *  files are measured. */
+export function tableWarnings(read: string, now: Date, rows: number, estimated: number): string[] {
+  const warnings: string[] = [];
+  const days = (now.getTime() - Date.parse(read)) / 86_400_000;
+  if (!(days <= tableDaysAtMost)) {
+    warnings.push(
+      `e2e/shard-weights.json was read ${Number.isNaN(days) ? "at no date it names" : `${days.toFixed(1)} days ago`} ` +
+        `(${read}), past the ${tableDaysAtMost} days the browser step's 18-minute guard allows for its drift; ` +
+        "read it again from packages/dispatch: bun e2e/tools/shard-weights.ts --main 17"
+    );
+  }
+  if (rows > 0 && estimated / rows >= estimatedShareAtMost) {
+    warnings.push(
+      `${estimated} of this leg's ${rows} rows are in files e2e/shard-weights.json has no entry for, ` +
+        `at least ${estimatedShareAtMost * 100}% of them; read it again from packages/dispatch: ` +
+        "bun e2e/tools/shard-weights.ts --main 17"
+    );
+  }
+  return warnings;
+}
+
+/** The projects a run holds as setup or teardown of another: each name in any project's
+ *  `dependencies` or `teardown`. Playwright 1.64.1 runs such a project in full on every leg - it
+ *  marks every project its closure reaches below the top as a dependency
+ *  (`buildProjectsClosure`, lib/runner/index.js:2183-2203) and refuses `testRun.exclude` on its
+ *  suite (:2363-2374) - so the placement leaves it out rather than excluding from it. */
+export function dependencyProjects(
+  projects: readonly { readonly dependencies?: readonly string[]; readonly teardown?: string }[]
+): Set<string> {
+  const names = new Set<string>();
+  for (const project of projects) {
+    for (const name of project.dependencies ?? []) names.add(name);
+    if (project.teardown !== undefined) names.add(project.teardown);
+  }
+  return names;
 }

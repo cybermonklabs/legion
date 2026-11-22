@@ -153,9 +153,9 @@ jobs:
         # of 347 legs of 2026-11-21/22 each rescaled to the balanced leg the time split gives
         # (1,698 s of row time; step = 24.0 s + 0.2549 x row time over 68 legs of main); 1.75 is
         # the slowest runner seen (run 44985914477 ran its rows 1.75 times slower, per-row median,
-        # than a runner of the same minute); 1.11 is the heaviest leg's share of the mean under a
-        # row-time table 7 days old. A p90 leg on that runner with that table ends under it, so no
-        # row's verdict rests on it; what it cuts is a leg whose log has stopped gaining rows.
+        # than a runner of the same minute); 1.11 is the worst share of the mean the heaviest leg
+        # took under a row-time table up to 7 days old. A p90 leg on that runner under such a table
+        # ends under it, so no row's verdict rests on it; it cuts a leg that has stopped running rows.
         timeout-minutes: 18
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-shard-suite.sh" "${{ matrix.shard }}" "${{ inputs.lane }}" \
