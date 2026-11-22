@@ -496,7 +496,9 @@ func TestAnApprovedVersionThatDispatchCannotReadStopsNoOtherJudgment(t *testing.
 // route says that the approval is refused, the person's approval is refused, and the carry's gate
 // answers a break, so the carry writes no approval.
 func TestAVersionThatTheJudgmentNamesAndDispatchCannotReadIsRefused(t *testing.T) {
-	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	// No settlement timer fires during the test: the version is made unreadable in place, and a
+	// settlement of the issue room after the create would version the room's text over it.
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1", settle: time.Hour})
 	issue := createFormIssue(t, tree.handler, tree.root, "An unreadable spec", "# Spec\n\n"+formRequirement("clean", "Dispatch shows each record."))
 	storeUnreadableVersion(t, tree.database, issue.PrimaryArtifactID, 1)
 	const finding = "- document spec.md in spec.md version 1: Dispatch cannot read this version ("
