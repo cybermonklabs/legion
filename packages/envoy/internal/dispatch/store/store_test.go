@@ -1115,6 +1115,9 @@ func migratedTemplate(t *testing.T, admin url.URL, version int) string {
 	if err != nil {
 		t.Fatalf("open template database %s: %v", name, err)
 	}
+	// A migration that fails ends the test here; the deferred close still lets the pool go, so a
+	// failed build leaves no connections behind for the tests after it. Close is idempotent.
+	defer database.Pool.Close()
 	migrateAbove(t, database, baseVersion, version)
 	// Postgres refuses to copy a database a session is connected to, so the template is left
 	// with none, and refuses connections from here on so a stray one cannot make a copy fail.
