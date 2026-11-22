@@ -2,10 +2,12 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import { type ReactNode, useId } from "react";
 import { Link } from "react-router-dom";
 
+import { isNoRoute } from "../../api/client";
 import { changeRequestQuery, specNodeQuery } from "../../api/queries";
 import type { Artifact, SpecNodeRead, SpecProvenance } from "../../api/types";
 import {
   card,
+  dangerText,
   linkHoverText,
   linkText,
   textMutedOnSurface,
@@ -170,6 +172,15 @@ export function ApprovedChangeRequest({
     queries: named.map((node) => specNodeQuery(spec.project, read?.repo ?? "", node.id)),
   });
   if (approval === undefined) return null;
+  // A failed read says so rather than showing part of the request or nothing; a Dispatch older
+  // than the change request (its read has no route) holds no approved spec to show.
+  if ((request.isError && !isNoRoute(request.error)) || nodes.some((node) => node.isError)) {
+    return (
+      <p className={`text-sm ${dangerText}`} role="alert">
+        Could not read the approved change request.
+      </p>
+    );
+  }
   const shown = nodes.flatMap((node) => {
     const written = node.data === undefined ? undefined : approvedNode(node.data, approval);
     return written === undefined ? [] : [written];

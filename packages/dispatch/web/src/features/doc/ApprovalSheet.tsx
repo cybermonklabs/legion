@@ -117,39 +117,63 @@ function SheetNode({ node, page }: { node: ChangeRequestNode; page: boolean }): 
 
 export interface ApprovalSheetProps {
   readonly issueKey: string;
-  /** The version of the issue's spec the approval approves. */
-  readonly version: number;
+  /** The version of the issue's spec the approval request names, or null while the sheet cannot
+   *  tell which document of the request is the spec (the issue's read failed): the sheet then
+   *  says so and offers `onRetry`. */
+  readonly version: number | null;
   /** Whether the approval names the issue's Verification document beside its spec, so the sheet
    *  shows the digest it pins on that document too. */
   readonly coversVerification: boolean;
+  /** The version of the Verification document the approval request names. The sheet restates the
+   *  checks and the digest of that version only: a Verification document that moved past it is
+   *  said so, and Approve sends nothing, since Dispatch refuses such an approval. */
+  readonly verificationVersion?: number;
   readonly onApprove: () => void;
   readonly onClose: () => void;
+  /** Called by Retry while `version` is null. */
+  readonly onRetry?: () => void;
 }
 
 /**
  * The sheet a phone shows before a person approves a change request (R22: "Before the person
  * approves on a phone, Dispatch shows a sheet that restates what the approval covers"). It reads
- * the change request at the version the approval names, and lists each node it adds, changes and
- * removes, and each check it changes, with its text, then the digest the approval pins on the spec
- * and, when the approval names it, on the Verification document. Approve sends the approval; it is
- * refused until the read is in. Cancel, Escape and the backdrop close the sheet and send nothing.
+ * the change request at the spec version the approval request names, never at another version,
+ * since an approval counts only for the texts its request names. It lists each node the request
+ * adds, changes and removes, and each check it changes, with its text, then the digest the
+ * approval pins on the spec and, when the request names it, on the Verification document at the
+ * version the request names. Approve sends the approval; it is refused until the read is in, and
+ * while the Verification document stands at another version than the one the request names.
+ * Cancel, Escape and the backdrop close the sheet and send nothing.
  */
 export function ApprovalSheet({
   coversVerification,
   issueKey,
   onApprove,
   onClose,
+  onRetry,
+  verificationVersion,
   version,
 }: ApprovalSheetProps): ReactNode {
   const dialog = useDialog<HTMLDivElement>({ onClose, open: true });
   const page = usePageWords() !== null;
-  const read = useQuery(changeRequestQuery(issueKey, version));
+  const read = useQuery({
+    ...changeRequestQuery(issueKey, version ?? 0),
+    enabled: version !== null,
+  });
   const request = read.data;
   const nodes =
     request === undefined ? [] : [...(request.proposals ?? []), ...(request.changed_checks ?? [])];
+  // The Verification document moved past the version the request names: the checks and the digest
+  // the read restates are another version's.
+  const verificationMoved =
+    request !== undefined &&
+    coversVerification &&
+    verificationVersion !== undefined &&
+    request.verification_version !== verificationVersion;
+  const failed = version === null || read.isError;
   const label = page ? ON_PAGE.label : textMutedOnSurface;
   const digest = `font-mono text-xs break-all ${page ? ON_PAGE.text : textPrimaryOnSurface}`;
-
+  const failure = page ? ON_PAGE.failure : dangerText;
   return (
     <>
       <div
@@ -172,16 +196,16 @@ export function ApprovalSheet({
           </h2>
           <div className="min-h-0 space-y-3 overflow-y-auto">
             {request === undefined ? (
-              read.isError ? (
+              failed ? (
                 <div
-                  className={`flex flex-wrap items-center gap-3 text-sm ${page ? ON_PAGE.failure : dangerText}`}
+                  className={`flex flex-wrap items-center gap-3 text-sm ${failure}`}
                   role="alert"
                 >
                   <p>Could not read what this approval covers.</p>
                   <button
                     className="font-medium underline disabled:cursor-not-allowed disabled:opacity-50"
                     disabled={read.isFetching}
-                    onClick={() => void read.refetch()}
+                    onClick={() => (version === null ? onRetry?.() : void read.refetch())}
                     type="button"
                   >
                     Retry
@@ -213,7 +237,13 @@ export function ApprovalSheet({
                   <p className={digest} data-testid="approval-sheet-digest">
                     {request.digest}
                   </p>
-                  {coversVerification && request.verification_version > 0 ? (
+                  {verificationMoved ? (
+                    <p className={`text-sm ${failure}`} role="alert">
+                      This approval request names version {verificationVersion} of the Verification
+                      document, and the document is now at version {request.verification_version}.
+                      Dispatch refuses this approval. Ask for a new approval request.
+                    </p>
+                  ) : coversVerification && request.verification_version > 0 ? (
                     <>
                       <p className={`text-xs ${label}`}>
                         And this digest of version {request.verification_version} of the
@@ -238,7 +268,7 @@ export function ApprovalSheet({
             </button>
             <button
               className={`min-h-11 rounded-lg px-3 py-1.5 text-sm font-medium ${page ? ON_PAGE.filled : `${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}`}
-              disabled={request === undefined}
+              disabled={request === undefined || verificationMoved}
               onClick={onApprove}
               type="button"
             >
@@ -251,24 +281,29 @@ export function ApprovalSheet({
   );
 }
 
-/** An approval the sheet holds until the person approves or cancels it. */
+/** An approval the sheet holds until the person approves or cancels it: the spec version and the
+ *  Verification version its request names, or no version while the issue's read failed. */
 interface HeldApproval {
+  readonly covered: ApprovalCovered;
   readonly issueKey: string;
-  readonly version: number;
-  readonly coversVerification: boolean;
+  readonly version: number | null;
+  readonly verificationVersion?: number;
   readonly approve: () => void;
 }
 
 /**
  * The sheet before an approval on a phone (R22), for a surface that sends an approval: the Inbox
  * card's Answer with Approve picked, and the document header's Approve. `confirm(covered, approve)`
- * stands in for the send. On a wider screen, for a document of no issue, and for an approval that
- * does not name the issue's spec, it sends at once, as every approval was sent before. Otherwise it
- * reads the issue and the change request at the spec's version the approval names: an issue whose
- * repository is no spec source sends at once, and so does a Dispatch older than the change request
- * (its read has no route); every other issue opens the sheet, which sends only from its Approve.
- * A read that failed opens the sheet too, which says so with its Retry: the person approves only
- * what the sheet restated. `sheet` is the element the surface draws.
+ * stands in for the send. On a wider screen, and for a document of no issue, it sends at once, as
+ * every approval was sent before. Otherwise it reads the issue, to tell which document of the
+ * request is the spec: an approval that names no spec sends at once. It then reads the change
+ * request at the spec version the request names: an issue whose repository is no spec source
+ * sends at once, and so does a Dispatch older than the change request (its read has no route).
+ * Every other issue opens the sheet, which sends only from its Approve, with the Verification
+ * version the request names when it names one. A read that failed opens the sheet too, which
+ * says so with its Retry and sends nothing: the person approves only what the sheet restated, and
+ * the sheet never reads a version the request does not name. `sheet` is the element the surface
+ * draws.
  */
 export function useApprovalSheet(): {
   readonly confirm: (covered: ApprovalCovered, approve: () => void) => void;
@@ -279,31 +314,33 @@ export function useApprovalSheet(): {
   const confirm = useCallback(
     (covered: ApprovalCovered, approve: () => void) => {
       const { documents, issueKey } = covered;
-      const [first] = documents;
       if (
         !window.matchMedia(PHONE_VIEWPORT_QUERY).matches ||
         issueKey === null ||
-        first === undefined
+        documents.length === 0
       ) {
         approve();
         return;
       }
-      const coversVerification = documents.length > 1;
       void (async () => {
-        // The version the sheet reads when the issue cannot be read: the document the request was
-        // asked on, which is the spec of every request that names the Verification document.
-        let version = first.version;
+        let primary: string;
         try {
-          const issue = await queryClient.ensureQueryData(issueQuery(issueKey));
-          const spec = documents.find(
-            (document) => document.artifact_id === issue.primary_artifact_id
+          primary = (await queryClient.ensureQueryData(issueQuery(issueKey))).primary_artifact_id;
+        } catch {
+          setHeld({ approve, covered, issueKey, version: null });
+          return;
+        }
+        const spec = documents.find((document) => document.artifact_id === primary);
+        if (spec === undefined) {
+          approve();
+          return;
+        }
+        // A request that names the Verification document names it beside the spec.
+        const verification = documents.find((document) => document.artifact_id !== primary);
+        try {
+          const request = await queryClient.ensureQueryData(
+            changeRequestQuery(issueKey, spec.version)
           );
-          if (spec === undefined) {
-            approve();
-            return;
-          }
-          version = spec.version;
-          const request = await queryClient.ensureQueryData(changeRequestQuery(issueKey, version));
           if (!request.spec_source) {
             approve();
             return;
@@ -314,7 +351,13 @@ export function useApprovalSheet(): {
             return;
           }
         }
-        setHeld({ approve, coversVerification, issueKey, version });
+        setHeld({
+          approve,
+          covered,
+          issueKey,
+          verificationVersion: verification?.version,
+          version: spec.version,
+        });
       })();
     },
     [queryClient]
@@ -322,13 +365,18 @@ export function useApprovalSheet(): {
   const sheet =
     held === null ? null : (
       <ApprovalSheet
-        coversVerification={held.coversVerification}
+        coversVerification={held.verificationVersion !== undefined}
         issueKey={held.issueKey}
         onApprove={() => {
           setHeld(null);
           held.approve();
         }}
         onClose={() => setHeld(null)}
+        onRetry={() => {
+          setHeld(null);
+          confirm(held.covered, held.approve);
+        }}
+        verificationVersion={held.verificationVersion}
         version={held.version}
       />
     );
