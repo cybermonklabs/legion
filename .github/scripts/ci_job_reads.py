@@ -485,7 +485,7 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
                                                                  "check of the packed tarball passes a listing longer than a pipe holds\" "
                                                                  "copies it into a root of its own and runs it over a long listing"),
         (".github/scripts/release-codex-envoy-check-packed.sh", "packages/claude-envoy/tests/codex-packed.test.ts's tests \"the release's "
-                                                                "check passes the tarball the build packed\" and the three that refuse a "
+                                                                "check passes the tarball the build packed\" and the five that refuse a "
                                                                 "copy of it copy it into a root of their own and run it"),
         (".github/scripts/release-claude-envoy-manifest-repository.sh", "packages/claude-envoy/tests/release-manifest-repository.test.ts's "
                                                                         "tests \"the publishing repository's url is written into both "

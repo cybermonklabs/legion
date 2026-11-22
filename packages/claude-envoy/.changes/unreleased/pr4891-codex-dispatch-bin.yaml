@@ -7,6 +7,4 @@ body: |-
   after 120 s, and a command that waits for a person, such as the device login
   `dispatch login --device --person <address>`, runs there. Run the installed plugin's
   `${CODEX_HOME:-~/.codex}/plugins/cache/legion-plugins/codex-envoy/<version>/bin/dispatch`, or
-  `npx --package @sjawhar/codex-envoy dispatch …`. The Claude Code plugin's `bin/dispatch` now
-  runs when it is started by a relative path in a shell that exports `CDPATH`; it exited 2 there,
-  saying `dist/dispatch.js` was missing.
+  `npx --package @sjawhar/codex-envoy dispatch …`.
