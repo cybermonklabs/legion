@@ -10,4 +10,4 @@ body: |-
   as a key of `events_pkey`, so each reads one row.
 time: 2026-11-21T19:12:01Z
 custom:
-    Issue: INFRA-5126
+    Issue: pr4883
