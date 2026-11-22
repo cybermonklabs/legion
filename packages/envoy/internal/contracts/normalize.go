@@ -93,6 +93,16 @@ func GithubEnvelopes(input GithubEnvelopeInput, trigger string) []Envelope {
 	return append(mentions, item)
 }
 
+// CIHead names one pull request head of the CI state aggregator: the identity a record's key is
+// built from (cistore.Key). It is here rather than in cistore so that a writer of the CI store
+// (Dispatch's CI reconcile) can speak to it through an interface without importing the store.
+type CIHead struct {
+	Owner  string `json:"owner"`
+	Repo   string `json:"repo"`
+	Number string `json:"number"`
+	SHA    string `json:"sha"`
+}
+
 // CIObservation is a per-PR check_run or check_suite fact for the CI state
 // aggregator.
 type CIObservation struct {

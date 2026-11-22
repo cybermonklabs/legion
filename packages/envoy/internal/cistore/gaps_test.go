@@ -69,7 +69,7 @@ func TestAFailedWebhookWriteHoldsItsHeadUntilAReadAfterIt(t *testing.T) {
 	defer cleanup()
 	s := openStore(t, conn)
 	servedByReconcile(t, s, time.UnixMilli(1))
-	key := recordRunsHead.key()
+	key := headKey(recordRunsHead)
 	readBefore := time.Now()
 	time.Sleep(2 * time.Millisecond)
 
@@ -124,7 +124,7 @@ func TestTheStartStampIsWrittenAndHeldByEveryReader(t *testing.T) {
 	s.MarkIntakeGap(time.Now())
 	testSummarizer(s, 0).pass(&recPub{}, logging.New("test"), time.Now().UnixMilli())
 	st, _ := recordRunsStored(t, s)
-	if !s.gapHoldsFor(recordRunsHead.key(), st) {
+	if !s.gapHoldsFor(headKey(recordRunsHead), st) {
 		t.Fatal("the stamp does not hold a head with no read after it")
 	}
 	stamped, err := s.readStamp(intakeGapKey)

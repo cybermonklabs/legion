@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
@@ -31,11 +30,11 @@ const maxPages = 100
 // the heads the listener holds by a gap alone, which a pass reads first (readGapHeld), and
 // MarkReadCycle says a cycle that began at a time has read every open head (Reconciler.reconcile).
 type Writer interface {
-	RecordRuns(context.Context, cistore.Head, time.Time, []contracts.CIObservation) (bool, error)
+	RecordRuns(context.Context, contracts.CIHead, time.Time, []contracts.CIObservation) (bool, error)
 	RecordSuite(context.Context, contracts.CIObservation) (bool, error)
 	RecordStatus(context.Context, contracts.StatusObservation) (bool, error)
 	NeedsRead(owner, repo, number, sha string) (bool, error)
-	GapHeldHeads() ([]cistore.Head, error)
+	GapHeldHeads() ([]contracts.CIHead, error)
 	MarkReadCycle(context.Context, time.Time) error
 }
 
@@ -505,7 +504,7 @@ func (r *Reconciler) recordRuns(ctx context.Context, writer Writer, head pullHea
 	if len(runs) == 0 {
 		return 0, false, true
 	}
-	changed, err := writer.RecordRuns(ctx, cistore.Head{Owner: head.owner, Repo: head.repo, Number: head.number, SHA: head.sha}, readAt, runs)
+	changed, err := writer.RecordRuns(ctx, contracts.CIHead{Owner: head.owner, Repo: head.repo, Number: head.number, SHA: head.sha}, readAt, runs)
 	if err != nil {
 		r.Logger.Warn("ci reconcile did not record the check runs of a head",
 			"runs", len(runs), "repository", head.repository(),

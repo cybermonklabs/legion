@@ -53,16 +53,14 @@ const (
 	maxGapHeld = 200
 )
 
-// Head names one head's record: the identity Key builds its key from.
-type Head struct {
-	Owner  string `json:"owner"`
-	Repo   string `json:"repo"`
-	Number string `json:"number"`
-	SHA    string `json:"sha"`
-}
+// Head names one head's record: the identity Key builds its key from. It is contracts.CIHead, so
+// a writer that speaks to the store through an interface (Dispatch's CI reconcile) names a head
+// without importing this package.
+type Head = contracts.CIHead
 
-func (h Head) key() string {
-	return Key(h.Owner, h.Repo, h.Number, h.SHA)
+// headKey is the key of head's record.
+func headKey(head Head) string {
+	return Key(head.Owner, head.Repo, head.Number, head.SHA)
 }
 
 func headOf(st State) Head {
@@ -155,7 +153,7 @@ func (s *Store) noteGap(observation contracts.CIObservation, err error) {
 	if s.pendingGaps == nil {
 		s.pendingGaps = map[string]pendingGap{}
 	}
-	key := head.key()
+	key := headKey(head)
 	held := s.pendingGaps[key]
 	s.pendingGaps[key] = pendingGap{head: head, at: max(held.at, at)}
 	s.gapMu.Unlock()
@@ -243,8 +241,8 @@ func (s *Store) persistGaps(ctx context.Context) bool {
 			return false
 		}
 		s.gapMu.Lock()
-		if held, ok := s.pendingGaps[gap.head.key()]; ok && held.at == at {
-			delete(s.pendingGaps, gap.head.key())
+		if held, ok := s.pendingGaps[headKey(gap.head)]; ok && held.at == at {
+			delete(s.pendingGaps, headKey(gap.head))
 		}
 		s.gapMu.Unlock()
 	}
@@ -349,7 +347,7 @@ func (s *Store) saveGapHeld(ctx context.Context, held map[string]gapHeldHead) er
 		if a.since != b.since {
 			return cmp.Compare(a.since, b.since)
 		}
-		return strings.Compare(a.head.key(), b.head.key())
+		return strings.Compare(headKey(a.head), headKey(b.head))
 	})
 	list := gapHeldList{Kind: gapHeldKey, Heads: make([]Head, 0, min(len(heads), maxGapHeld))}
 	for _, head := range heads[:min(len(heads), maxGapHeld)] {
