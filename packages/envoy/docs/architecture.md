@@ -552,14 +552,19 @@ moves costs four writes an hour however many listeners sweep it, and never ages 
 needs it. A role message is one whose topic is the role's, or whose `role` field names it. A pass,
 the relay and the kept lane's walk tell it by one read (`readRoleFrame`): past a leading UTF-8 byte
 order mark, the message's top-level fields are split by their brackets and strings, at any depth,
-and only its `topic` and `role` fields are read, each by its exact key, the last of a repeated key
-winning, as the plugins' `JSON.parse` reads them. So a later `"TOPIC"` key, an event id written as
-a number, or a value nested deeper than the 10,000 levels `encoding/json` reads does not change
-what it is. The envelope is then read field by field, a field whose value its type does not take
-left unset, so the message is still copied whatever the listener's wire rules or the envelope's
-own say of it. An `urgency` or `source` word a newer build adds is kept in the copy, for the
-holder's reader to judge, and an `issued_at` written as `1795191371979.0` is read as that integer,
-while one written as a JSON string is left out, as `encoding/json` leaves it.
+as the plugins' `JSON.parse` splits them, and only its `topic` and `role` fields are read, each by
+its exact key, the last of a repeated key winning. The plugins read `topic` the same way; they
+never read `role` from an inbound frame, so the rule for it is the listener's own. So a later
+`"TOPIC"` key, an event id written as a number, or a value nested deeper than the 10,000 levels
+`encoding/json` reads does not change what it is. That read keeps the event id beside the two and
+no other field, so the relay's read of a frame makes no allocation for each key the frame holds,
+and its error names a field and its JSON type, or a key cut to 32 bytes, never a whole value: the
+walk logs it. Only for a role message to copy is the envelope then read, field by field from every
+field, a field whose value its type does not take left unset, so the message is still copied
+whatever the listener's wire rules or the envelope's own say of it. An `urgency` or `source` word
+a newer build adds is kept in the copy, for the holder's reader to judge, and an `issued_at`
+written as `1795191371979.0` is read as that integer, while one written as a JSON string is left
+out, as `encoding/json` leaves it.
 An `expects_reply` word the envelope does not know is a value that field cannot hold, so the copy
 leaves it out, and the holder reads the message with no `expects_reply`. A message
 that is not a JSON object, or whose topic or `role` is not a string and names no role, is not

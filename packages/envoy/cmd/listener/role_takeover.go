@@ -602,18 +602,20 @@ func keepTakenRoleFrame(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 
 // takeOverFrame judges a frame of session sessionID's consumer before the relay sends it, and
 // reports whether it took the frame, which the relay then does not send. It reads the frame's role
-// first (readRoleFrame), from its topic and its role mark alone, each by its exact key: a frame
-// that is no role message is not taken, at the cost of that read, and nor is a frame whose role
-// that read cannot tell - one that is not a JSON object, or whose topic or role mark is not a string
-// and names no role - which the relay sends to the session as it sends every frame that is no role
-// message, as it did before it told role messages apart. For a role message the relay reads the
-// role's claim from the role bucket (readRoleClaimHolder, within the role routes' bound on a claim
-// read): a claim naming sessionID leaves the frame to the relay, which sends it as it sends every
-// frame, so a holder that continues while it still holds its role receives its role messages, and
-// nothing more of it is read here. A claim naming another session, or none, has the envelope read
-// field by field (roleFrame.envelope, as a takeover pass and the kept lane's walk read it) and the
-// frame copied to the role's kept lane (keepTakenRoleFrame) and only then acknowledged, with one
-// line naming the session, the role, the holder and the event, and a handover of the lane started
+// first (readRoleFrame), from its topic and its role mark alone, each by its exact key, keeping its
+// event id beside them and no other field, so that read makes no allocation for each key a frame
+// holds: a frame that is no role message is not taken, at the cost of that read, and nor is a
+// frame whose role that read cannot tell - one that is not a JSON object, or whose topic or role
+// mark is not a string and names no role - which the relay sends to the session as it sends every
+// frame that is no role message, as it did before it told role messages apart. For a role message
+// the relay reads the role's claim from the role bucket (readRoleClaimHolder, within the role
+// routes' bound on a claim read): a claim naming sessionID leaves the frame to the relay, which
+// sends it as it sends every frame, so a holder that continues while it still holds its role
+// receives its role messages, and nothing more of it is read here. A claim naming another session,
+// or none, has every field of the frame read, the envelope field by field (roleFrame.envelope, as a
+// takeover pass and the kept lane's walk read it), and the frame copied to the role's kept lane
+// (keepTakenRoleFrame) and only then acknowledged, with one line naming the session, the role, the
+// holder and the event, and a handover of the lane started
 // (runKeptRoleDrain), so the role's holder receives it and not this session. That holds for an
 // envelope the listener's wire rules or the envelope's own refuse: the walk forwards its copy, with
 // each value the envelope can hold (roleFrame.envelope says which it leaves out), and the holder's
@@ -635,7 +637,7 @@ func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg
 	}
 	role := frame.role
 	// The id the relay's lines name; one that is not a string reads as none.
-	eventID, _ := frame.text("event_id")
+	eventID, _ := fieldText("event_id", frame.eventID)
 	giveBack := func(why string, err error) bool {
 		nakErr := msg.NakWithDelay(relayNakDelayFor(msg.Delivered))
 		m.logger.Warn("listener session relay gave a role message back to the server: "+why,

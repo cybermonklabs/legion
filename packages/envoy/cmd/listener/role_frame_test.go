@@ -1,17 +1,23 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/store"
 )
 
 // readRoleFrame refuses a document that is not a JSON object, and each object the plugins'
-// JSON.parse refuses at the object's own level, as its doc comment says (topLevelFields), and tells
+// JSON.parse refuses at the object's own level, as its doc comment says (eachTopLevelField), and tells
 // the role of each object JSON.parse reads, however its top level is written. A refused document is
 // no role message, so the relay sends it to the session whose subject holds it, as it sends every
 // frame that is no role message.
@@ -135,6 +141,190 @@ func TestARoleMarkIsReadAsTheClaimKeyOfTheRoleItNames(t *testing.T) {
 			}
 			if item, ok := takenRoleMessage(data, c.key); !ok || item.EventID != "evt-mark" {
 				t.Errorf("a takeover pass of role %s takes the message marked %q: %t (event %q); want it taken", c.key, c.mark, ok, item.EventID)
+			}
+		})
+	}
+}
+
+// roleFrameErrorBound is the most an error of readRoleFrame may hold: a few dozen bytes of a key
+// beside the words. The kept lane's walk logs the error whole (judgeKeptRoleCopy), and a key or a
+// value can be as long as the message.
+const roleFrameErrorBound = 256
+
+// readRoleFrame's error names the field and the JSON type it holds, and at most a few dozen bytes
+// of a key, however long the value or the key: an 8 MiB topic nested 4 Mi deep, and a key of
+// 1 MiB with no colon, a bad escape or no value after it, each give an error of at most
+// roleFrameErrorBound bytes.
+func TestAnUnreadableRoleFrameIsNamedInAFewDozenBytes(t *testing.T) {
+	nested := strings.Repeat("[", 4<<20) + strings.Repeat("]", 4<<20)
+	key := strings.Repeat("k", 1<<20)
+	for _, c := range []struct{ name, data, names string }{
+		{"an 8 MiB nested topic", `{"topic":` + nested + `}`, "its topic is a JSON array, not a string"},
+		{"an 8 MiB nested role mark under a topic that names no role", `{"topic":"notifications.agent.ses_x","role":` + nested + `}`, "its role is a JSON array, not a string"},
+		{"a topic that is a 1 MiB number", `{"topic":` + strings.Repeat("7", 1<<20) + `}`, "its topic is a JSON number, not a string"},
+		{"a topic that is a 1 MiB string with a bad escape", `{"topic":"` + key + `\q"}`, "its topic is a JSON string that does not decode"},
+		{"a 1 MiB key with no colon", `{"` + key + `" 1}`, "has no colon after it"},
+		{"a 1 MiB key with a bad escape", `{"` + key + `\q":1}`, "holds a bad escape"},
+		{"a 1 MiB key with no value", `{"` + key + `":}`, "it is missing"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := readRoleFrame([]byte(c.data))
+			if !errors.Is(err, errRoleFrameUnreadable) {
+				t.Fatalf("readRoleFrame answers %.200v; want errRoleFrameUnreadable", err)
+			}
+			if text := err.Error(); len(text) > roleFrameErrorBound || !strings.Contains(text, c.names) {
+				t.Errorf("readRoleFrame's error is %d bytes, starting %.200q; want at most %d bytes, naming %q", len(text), text, roleFrameErrorBound, c.names)
+			}
+		})
+	}
+}
+
+// manyKeysFrame is a message on topic whose top level holds an event id, the topic and keys
+// more distinct short keys, every other one written with an escape that the read decodes to tell
+// it from the topic.
+func manyKeysFrame(topic string, keys int) []byte {
+	var data bytes.Buffer
+	data.WriteString(`{"event_id":"evt-many-keys","topic":"` + topic + `"`)
+	for i := range keys {
+		if i%2 == 0 {
+			fmt.Fprintf(&data, `,"k%d":0`, i)
+		} else {
+			fmt.Fprintf(&data, `,"k\u0030%d":0`, i)
+		}
+	}
+	data.WriteString("}")
+	return data.Bytes()
+}
+
+// The session relay reads every frame it judges before it reads a claim (takeOverFrame), and that
+// read keeps the frame's topic, role mark and event id alone, so it makes as many allocations for
+// a frame of 100,000 keys (1.2 MiB) as for one of 8: for a frame that is no role message, judged
+// whole, and for the first read of a role message, after which the relay reads the role's claim.
+// A read that kept every key in a map made more than 100,000 for such a frame.
+func TestTheRelaysFirstReadOfAFrameMakesNoAllocationForEachKey(t *testing.T) {
+	relays := &sessionRelays{}
+	ctx := context.Background()
+	for _, c := range []struct {
+		name  string
+		topic string
+		judge func(t *testing.T, data []byte)
+	}{
+		{"a frame that is no role message, which the relay sends", contracts.AgentTopicPrefix + "ses_many_keys", func(t *testing.T, data []byte) {
+			if relays.takeOverFrame(ctx, "ses_many_keys", bus.SessionMessage{Data: data}) {
+				t.Fatal("the relay took a frame that is no role message")
+			}
+		}},
+		{"a role message, whose claim the relay reads next", contracts.RoleTopicPrefix + "reader", func(t *testing.T, data []byte) {
+			if frame, err := readRoleFrame(data); err != nil || frame.role != "reader" {
+				t.Fatalf("readRoleFrame answers role %q and %v; want role reader", frame.role, err)
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			few, many := manyKeysFrame(c.topic, 8), manyKeysFrame(c.topic, 100_000)
+			fewAllocs := testing.AllocsPerRun(5, func() { c.judge(t, few) })
+			manyAllocs := testing.AllocsPerRun(5, func() { c.judge(t, many) })
+			t.Logf("%v allocations for 8 keys (%d bytes), %v for 100,000 keys (%d bytes)", fewAllocs, len(few), manyAllocs, len(many))
+			if manyAllocs > fewAllocs {
+				t.Errorf("the read makes %v allocations for a frame of 100,000 keys and %v for one of 8; want no more for more keys", manyAllocs, fewAllocs)
+			}
+		})
+	}
+}
+
+// A role message the relay, a takeover pass or the kept lane's walk copies has its every key read
+// (roleFrame.envelope), however many other keys come before and after them: the copy holds each
+// field of the envelope its sender wrote. Every field of the envelope is set, so a field a later
+// version adds is held to this too.
+func TestACopiedRoleMessageCarriesEveryFieldAmongManyKeys(t *testing.T) {
+	expires, kept := int64(1795191372979), int64(1795191371999)
+	want := contracts.Envelope{
+		EventID:           "evt-every-field",
+		Source:            "agent",
+		SourceEventID:     "src-every-field",
+		SourceSession:     "ses_every_field_sender",
+		Topic:             contracts.RoleTopicPrefix + "reader",
+		DedupeKey:         "dedupe-every-field",
+		IssuedAt:          1795191371979,
+		ExpiresAt:         &expires,
+		KeptAt:            &kept,
+		MentionDedupeKeys: map[string]string{"ses_mentioned": "mention-key"},
+		Role:              "reader",
+		PayloadSummary:    "every field",
+		PayloadRef:        "ref-every-field",
+		Payload:           "the payload",
+		TraceID:           "trace-every-field",
+		Sender:            &contracts.EnvelopeSender{SessionID: "ses_every_field_sender", Machine: "machine", Cwd: "/cwd", Title: "title", Roles: []string{"writer"}},
+		InReplyTo:         "evt-asked",
+		Supersedes:        "evt-superseded",
+		Urgency:           "high",
+		ExpectsReply:      contracts.ExpectsReplyRequired,
+	}
+	fields := reflect.ValueOf(want)
+	for i := range fields.NumField() {
+		if fields.Field(i).IsZero() {
+			t.Fatalf("the envelope's field %s is not set; set it, so the copy is held to carry it", fields.Type().Field(i).Name)
+		}
+	}
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := bytes.TrimSuffix(manyKeysFrame(contracts.AgentTopicPrefix+"ses_before", 5_000), []byte("}"))
+	after := bytes.TrimPrefix(manyKeysFrame(contracts.AgentTopicPrefix+"ses_after", 5_000), []byte("{"))
+	// The envelope's own topic and event id come after the ones the keys before it carry, and
+	// before the ones after it, so the frame's are the last: the keys after it are renamed.
+	after = bytes.Replace(after, []byte(`"event_id"`), []byte(`"after_event_id"`), 1)
+	after = bytes.Replace(after, []byte(`"topic"`), []byte(`"after_topic"`), 1)
+	inner := bytes.TrimSuffix(bytes.TrimPrefix(encoded, []byte("{")), []byte("}"))
+	data := bytes.Join([][]byte{before, inner, after}, []byte(","))
+
+	frame, err := readRoleFrame(data)
+	if err != nil || frame.role != "reader" {
+		t.Fatalf("readRoleFrame answers role %q and %v; want role reader", frame.role, err)
+	}
+	if got := frame.envelope(); !reflect.DeepEqual(got, want) {
+		t.Errorf("the relay's copy reads\n%+v\nwant every field its sender wrote\n%+v", got, want)
+	}
+	if got, ok := takenRoleMessage(data, "reader"); !ok || !reflect.DeepEqual(got, want) {
+		t.Errorf("a takeover pass takes %t and copies\n%+v\nwant every field its sender wrote\n%+v", ok, got, want)
+	}
+}
+
+// keyNames reads a key with its escapes as encoding/json reads it, with no allocation, for each
+// of the keys the relay's first read keeps.
+func TestAKeyWithEscapesNamesAFieldAsEncodingJSONReadsIt(t *testing.T) {
+	tokens := []string{
+		`"topic"`, `"top\u0069c"`, `"\u0074\u006f\u0070\u0069\u0063"`, `"\u0074OPIC"`, `"top\u0049c"`, `"topi\u0063 "`,
+		`"topic\u0000"`, `"top\u0130c"`, `"\ud835\udcc9opic"`, `"t\/opic"`, `"ro\u006ce"`, `"r\u006Fle"`, `"role\n"`,
+		`"event\u005fid"`, `"event_\u0069d"`, `"event\\_id"`, `"\"role\""`, `"top\u0069c\u0069"`, `""`,
+	}
+	for _, token := range tokens {
+		var decoded string
+		if err := json.Unmarshal([]byte(token), &decoded); err != nil {
+			t.Fatalf("encoding/json refuses the key %s: %v", token, err)
+		}
+		for _, name := range []string{"topic", "role", "event_id"} {
+			if got := keyNames([]byte(token), name); got != (decoded == name) {
+				t.Errorf("keyNames(%s, %q) = %t; encoding/json reads the key as %q", token, name, got, decoded)
+			}
+		}
+	}
+}
+
+// BenchmarkTheRelaysFirstReadOfAFrame times readRoleFrame, the read the session relay makes of
+// every frame before it reads a claim (takeOverFrame), of a frame that is no role message with 8,
+// 1,000 and 100,000 distinct short keys (manyKeysFrame).
+func BenchmarkTheRelaysFirstReadOfAFrame(b *testing.B) {
+	for _, keys := range []int{8, 1_000, 100_000} {
+		data := manyKeysFrame(contracts.AgentTopicPrefix+"ses_bench", keys)
+		b.Run(fmt.Sprintf("%d keys, %d bytes", keys, len(data)), func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(data)))
+			for b.Loop() {
+				if _, err := readRoleFrame(data); err != nil {
+					b.Fatal(err)
+				}
 			}
 		})
 	}
