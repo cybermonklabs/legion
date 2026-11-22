@@ -1362,10 +1362,7 @@ func main() {
 	var renames ghrename.Renames
 	if webhookCfg.GitHub != nil {
 		renames = webhookCfg.GitHub.RepositoryRenames
-		// The store takes the verdict App's id too, so a suite of that App it recorded while the
-		// setting was unset holds no head (cistore.WithVerdictApp).
-		ciStore, err = cistore.Open(starting, client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(7*24*time.Hour),
-			cistore.WithVerdictApp(webhookCfg.GitHub.VerdictAppID))
+		ciStore, err = cistore.Open(starting, client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(7*24*time.Hour))
 		if err != nil {
 			log.Fatalf("open the CI store: %v", err)
 		}

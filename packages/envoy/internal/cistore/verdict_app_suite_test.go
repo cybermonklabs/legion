@@ -62,8 +62,8 @@ func verdictBus(t *testing.T) *bus.Client {
 }
 
 // verdictListenerOn is a listener on client whose ENVOY_VERDICT_APP_ID is verdictAppID, "" for
-// unset, as cmd/listener builds one: the setting goes to the webhook handler and to the CI store.
-// Two of them on one client are one deployment before and after the setting changed.
+// unset, as cmd/listener builds one: the setting goes to the webhook handler. Two of them on one
+// client are one deployment before and after the setting changed.
 func verdictListenerOn(t *testing.T, client *bus.Client, verdictAppID string) *verdictListener {
 	t.Helper()
 	var logged bytes.Buffer
@@ -72,7 +72,7 @@ func verdictListenerOn(t *testing.T, client *bus.Client, verdictAppID string) *v
 	log.SetFlags(0)
 	t.Cleanup(func() { log.SetOutput(previous); log.SetFlags(flags) })
 	store, err := cistore.Open(t.Context(), client.Conn, logging.New("test"),
-		cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithVerdictApp(verdictAppID))
+		cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
 	if err != nil {
 		t.Fatalf("open cistore: %v", err)
 	}
@@ -221,10 +221,10 @@ func TestVerdictAppSuiteLeavesTheHeadToSettle(t *testing.T) {
 
 // GitHub Actions' queued suite is a CI result still to come, so it holds the head from settling
 // with ENVOY_VERDICT_APP_ID set, as it did before the verdict App's suites were left out: the
-// listener and the store leave out that App's suites alone. Another App's requested suite is no CI
-// result and holds nothing (cistore's suiteHolds), and the listener does not take it for the
-// verdict App's. The test then completes Actions' suite and requires the settlement, which shows
-// the subscription would have seen one.
+// listener leaves out that App's suites alone. Another App's requested suite is no CI result and
+// holds nothing (cistore's suiteHolds), and the listener does not take it for the verdict App's.
+// The test then completes Actions' suite and requires the settlement, which shows the
+// subscription would have seen one.
 func TestAnotherAppsIncompleteSuiteHoldsSettlement(t *testing.T) {
 	l := newVerdictListener(t)
 	l.recorded(810, "queued", fmt.Sprint(actionsApp))
@@ -245,8 +245,9 @@ func TestAnotherAppsIncompleteSuiteHoldsSettlement(t *testing.T) {
 
 // A listener without ENVOY_VERDICT_APP_ID recorded the verdict App's queued suite like any other
 // (recorded). Once the setting names that App, the suite's later deliveries are left out, so the
-// record keeps it queued for good: the CI store disregards the verdict App's stored suites when it
-// decides whether a head settles, and the head settles on its CI.
+// record keeps it queued for good; it holds no head, since the CI store holds a head only on a
+// queued suite of GitHub Actions or of no App (cistore's suiteHolds), and the head settles on its
+// CI.
 func TestAVerdictAppSuiteRecordedBeforeTheSettingDoesNotHoldTheHead(t *testing.T) {
 	client := verdictBus(t)
 	before := verdictListenerOn(t, client, "")

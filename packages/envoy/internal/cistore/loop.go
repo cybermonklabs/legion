@@ -349,23 +349,19 @@ func (z *summarizer) fileLocked(logger *logging.Logger, key string, now int64) (
 		delete(z.heldLogged, key)
 		return State{}, false
 	}
-	// The verdict and the held line read the record without the verdict App's suites
-	// (Store.settling); an attempt takes the record as the cache holds it, whose Hash the claim
-	// compares with the durable one.
-	judged := z.store.settling(st)
-	switch v, at := schedule(judged, now, z.debounce); v {
+	switch v, at := schedule(st, now, z.debounce); v {
 	case verdictIdle:
 		delete(z.heldLogged, key)
 	case verdictWait:
 		z.queue.set(key, at)
 	case verdictStuck:
-		z.logHeldLocked(logger, key, judged)
+		z.logHeldLocked(logger, key, st)
 	case verdictHeld:
 		z.held[key] = struct{}{}
 		if at := heldLineAt(st); now < at {
 			z.queue.set(key, at)
 		} else {
-			z.logHeldLocked(logger, key, judged)
+			z.logHeldLocked(logger, key, st)
 		}
 	case verdictAttempt:
 		return st, true

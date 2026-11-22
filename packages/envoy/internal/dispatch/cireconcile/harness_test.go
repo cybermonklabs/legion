@@ -84,8 +84,7 @@ type harness struct {
 	// startListener needs for the webhook handler it mounts.
 	reviewer string
 	// verdict is the verdict App's id this test's listener was built with, "" for none:
-	// startListener gives it to the webhook handler and to the listener's CI store, as
-	// cmd/listener does.
+	// startListener gives it to the webhook handler, as cmd/listener does.
 	verdict string
 	// issues counts the issues issueInRepository has recorded, so each one it records has a key
 	// and a number of its own without its caller passing them.
@@ -197,8 +196,7 @@ func (w *holdingWriter) Record(ctx context.Context, observation contracts.CIObse
 // to make this listener settle, and a record alone does not prove that.
 func (h *harness) startListener() {
 	h.t.Helper()
-	listener, err := cistore.Open(h.ctx, h.bus.Conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour),
-		cistore.WithVerdictApp(h.verdict))
+	listener, err := cistore.Open(h.ctx, h.bus.Conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
 	if err != nil {
 		h.t.Fatalf("open the listener's CI store: %v", err)
 	}
