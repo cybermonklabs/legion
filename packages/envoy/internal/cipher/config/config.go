@@ -91,6 +91,40 @@ type Config struct {
 	// — is served either way. Unset is the deployment where machines hold a cloud identity and
 	// no person ever types a code.
 	MachineLoginURL string
+	// BROKER_EDGE_LISTEN_ADDR: the host:port the broker's edge binds, a fourth port of the same
+	// process, bound and drained with the API's. Its port is a decimal number, and it is refused
+	// when that number is the port of BROKER_LISTEN_ADDR, BROKER_METRICS_LISTEN_ADDR or
+	// BROKER_AIRLOCK_LISTEN_ADDR, each read as the bind reads it, so 013382 is 13382. The edge is
+	// what a caller outside the deployment's private network reaches through a public load
+	// balancer, and it serves three routes and no other: POST /v1/oauth/device_authorization,
+	// POST /v1/oauth/token and GET /healthz; any other method on the two login paths is 405. On
+	// the two login routes a caller's address is the second-to-last X-Forwarded-For entry, the
+	// one the load balancer appends for the client it accepted (a login request with fewer than
+	// two is 400 REQUEST_INVALID); the edge's buckets are its own, so a flood there spends
+	// nothing a caller of BROKER_LISTEN_ADDR is held to; a machine login naming an address on
+	// BROKER_SIGNIN_DOMAIN or a BROKER_SIGNIN_WORKSPACE_DOMAINS domain is 400
+	// EDGE_WORKSPACE_LOGIN before any of them is spent; and the token route takes the device
+	// code, the refresh token and the trade of the broker's own access token, and answers every
+	// other grant 400 unsupported_grant_type. Set together with BROKER_EDGE_URL and
+	// BROKER_EDGE_MACHINE_LOGIN_URL, or none of the three: unset, the broker has no edge and binds
+	// nothing for one. Needs BROKER_MACHINE_LOGIN_URL, since the device grant is what the edge
+	// serves, and BROKER_SIGNIN_DOMAIN, the Workspace it refuses.
+	EdgeListenAddr string
+	// BROKER_EDGE_URL: the broker's own address as a caller of its edge reaches it, an absolute
+	// http or https URL with no path, whose origin is not BROKER_PUBLIC_URL's: the two are
+	// compared as a DPoP proof's htu is, the scheme and the host without regard to case and the
+	// scheme's default port the same as none, so https://secrets.example:443 is refused beside
+	// https://secrets.example. A machine login's request object made at the edge names it as its
+	// audience and every DPoP proof sent there names it and the route's path, as one made on
+	// BROKER_PUBLIC_URL names that, so neither is spendable at the other. Set with
+	// BROKER_EDGE_LISTEN_ADDR. cmd/cipherd refuses an http one unless BROKER_FAKE_SECRETS_FILE is
+	// set.
+	EdgeURL string
+	// BROKER_EDGE_MACHINE_LOGIN_URL: the absolute http(s) URL of the page a person decides a
+	// machine login made at the edge on, which that login's verification_uri names in place of
+	// BROKER_MACHINE_LOGIN_URL. Set with BROKER_EDGE_LISTEN_ADDR. cmd/cipherd refuses an http one
+	// unless BROKER_FAKE_SECRETS_FILE is set, as it does BROKER_EDGE_URL.
+	EdgeMachineLoginURL string
 	// BROKER_API_ACCOUNTS: the accounts that call the broker's named-caller routes — the
 	// approval routes Dispatch's server calls on a person's behalf, the introspection route
 	// a resource server reads one of the broker's access tokens back through, and the grant-log
@@ -164,6 +198,17 @@ type Config struct {
 	// BROKER_SIGNIN_* setting, naming the ones set, and beside the model judge, which decides
 	// only a request that waits for a person; any other value refuses naming it.
 	SignInOff bool
+	// BROKER_SIGNIN_WORKSPACE_DOMAINS: the other domains the Google Workspace owns beside
+	// BROKER_SIGNIN_DOMAIN, separated by commas, each a lowercase domain name; an
+	// internationalized one is written in Unicode or as its A-labels, and is held as its A-labels.
+	// The broker's edge (BROKER_EDGE_LISTEN_ADDR) refuses a machine login naming an address on any
+	// of them or on a subdomain of one, as it refuses one on BROKER_SIGNIN_DOMAIN, and serves no
+	// token of a machine login whose person is on one, so nobody on the internet can name or use a
+	// person of the Workspace there; nothing else reads it. Unset, the Workspace is
+	// BROKER_SIGNIN_DOMAIN alone. An empty entry, or one that is no lowercase domain name, refuses
+	// the start naming its position, and BROKER_SIGNIN=off refuses it, since that broker names no
+	// Workspace.
+	SignInWorkspaceDomains []string
 	// BROKER_SIGNIN_DEVICE_AUDIENCE: the audience a person's own Google identity token must
 	// carry to be traded at the RFC 8693 token exchange, where such a token is a subject token
 	// (urn:envoy:params:oauth:token-type:person-google-identity) and the machine the person
@@ -386,14 +431,22 @@ type Config struct {
 	// credential's person; a project-channels secret asked for by a credential naming a private
 	// project, about that project's channels; the approval page, the pending lists and each
 	// decision, about the projects a request touches; the model judge, about whether a request is
-	// a private project's; and an edge listener, about its project's repositories. Set with
+	// a private project's; and an edge listener, about its project's repositories. Set, it also
+	// holds a restricted member's agents to no secret: an enrollment under a machine login or a
+	// pod login whose person Dispatch calls a restricted member is refused
+	// (enroll.Service.Projects), a session such a person already had is denied every secret
+	// (requests.Machine.Projects), and while Dispatch cannot say what kind of member a person is,
+	// every enrollment under that person's login and every secret request and release of their
+	// sessions is refused 503 MEMBER_KIND_UNCHECKABLE, and an approval of one decides nothing
+	// (the approval page says it could not decide the request). Set with
 	// BROKER_PROJECT_ACCESS_TOKEN_FILE or not at all: with neither, the broker asks Dispatch
 	// nothing. It then refuses every secret carrying a dispatch-project tag (project-unchecked)
 	// and serves every other secret as before; a token that names no project, and an operator
 	// entry's token, whose project that operator's own setting chose, are minted as before; a
 	// person's trade that names a project, and a session enrollment that names projects, are
-	// refused, since nothing could say that person may see them; and every edge listener's read
-	// of a project's repositories is 503 REPOSITORIES_UNKNOWN.
+	// refused, since nothing could say that person may see them; every edge listener's read of a
+	// project's repositories is 503 REPOSITORIES_UNKNOWN; and every other enrollment and secret
+	// request is decided as before.
 	ProjectAccessURL string
 	// BROKER_PROJECT_ACCESS_TOKEN_FILE: the file holding the broker's own projected
 	// ServiceAccount token for that Dispatch, minted for Dispatch's audience, which both of the
@@ -783,28 +836,26 @@ type Config struct {
 	// a seed of its kind (a user, an account, a curve key), naming the variable and never the
 	// value. BROKER_NATS_SERVICES lists the services admitted by platform identity, as
 	// whitespace-separated <kind>/<machine id or ->/<* or ->=<account> entries (dispatch,
-	// listener, daemon or measure; * for the kind's whole grant, - for the projects the account's
-	// exchange entry lists), each account written as BROKER_API_ACCOUNTS writes one, every entry
-	// read once at load (ParseNATSServices). An edge listener's entry,
+	// listener, edge-listener, daemon or measure; * for the kind's whole grant, - for the projects
+	// the account's exchange entry lists), each account written as BROKER_API_ACCOUNTS writes one,
+	// every entry read once at load (ParseNATSServices). An edge listener's entry,
 	// edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>, lists in place of * or - the projects
-	// GET /v1/project-repositories answers that account about, whether or not the broker runs the
-	// auth service: BROKER_NATS_SERVICES set alone, every entry an edge listener's, starts no auth
-	// service and needs no NATS audience, and any other kind of entry needs the URLs and seeds. An
-	// edge listener's account needs the issuer its identity token comes from, as a
-	// BROKER_API_ACCOUNTS entry of its kind does: BROKER_K8S_OIDC_ISSUER for a Kubernetes account,
-	// BROKER_GOOGLE_OIDC_AUDIENCE for a google: one, which counts as that audience's Google
-	// caller; an entry without its issuer refuses the start, naming the entry. The auth service
-	// refuses an edge listener's connection, since this build holds no edge listener's grant.
-	// BROKER_NATS_K8S_AUDIENCE is the audience a service's projected Kubernetes token must
-	// carry, verified against BROKER_K8S_OIDC_ISSUER, which it needs; BROKER_NATS_GOOGLE_AUDIENCE
-	// the audience a service's Google identity token must carry, verified against
-	// BROKER_GOOGLE_OIDC_ISSUER; while the auth service runs, a service entry whose kind of token
-	// has no audience is refused at start naming it. An edge listener's entry needs neither: no
-	// edge listener's connection is admitted whatever its token, so an audience would admit
-	// nothing, and without one its connection is refused at the token check. A session presents
-	// its broker access token and needs neither. All unset, or BROKER_NATS_SERVICES alone holding
-	// only edge listeners' entries, the broker runs no auth service; any other set needs the URLs
-	// and the three seed files.
+	// its grant is built for and GET /v1/project-repositories answers that account about, whether
+	// or not the broker runs the auth service: BROKER_NATS_SERVICES set alone, every entry an edge
+	// listener's, starts no auth service and needs no NATS audience, and any other kind of entry
+	// needs the URLs and seeds. An edge listener's account needs the issuer its identity token
+	// comes from, as a BROKER_API_ACCOUNTS entry of its kind does: BROKER_K8S_OIDC_ISSUER for a
+	// Kubernetes account, BROKER_GOOGLE_OIDC_AUDIENCE for a google: one, which counts as that
+	// audience's Google caller; an entry without its issuer refuses the start, naming the entry.
+	// The auth service answers an edge listener's connection with natsgrant.Edge for the projects
+	// its entry lists. BROKER_NATS_K8S_AUDIENCE is the audience a service's projected Kubernetes
+	// token must carry, verified against BROKER_K8S_OIDC_ISSUER, which it needs;
+	// BROKER_NATS_GOOGLE_AUDIENCE the audience a service's Google identity token must carry,
+	// verified against BROKER_GOOGLE_OIDC_ISSUER; while the auth service runs, a service entry,
+	// an edge listener's included, whose kind of token has no audience is refused at start naming
+	// it. A session presents its broker access token and needs neither. All unset, or
+	// BROKER_NATS_SERVICES alone holding only edge listeners' entries, the broker runs no auth
+	// service; any other set needs the URLs and the three seed files.
 	NATS NATSCallout
 	// BROKER_LEASE_SECONDS: an enrollment's lease. A session renews it while it runs; one whose
 	// lease runs out is no longer enrolled and its calls are refused. Time while no broker was
@@ -865,11 +916,19 @@ type Config struct {
 	// Dispatch deployment sizes its preStop wait at, for the same reason. 0 is for a local run or
 	// a dev stack, where nothing propagates and the wait is pure delay.
 	DrainSeconds int
-	// BROKER_TRUSTED_PROXY_HEADER: the request header (e.g. X-Forwarded-For) whose last entry the
-	// machine-login and secret-reread rate limiters take as the caller's address. Unset, they use
-	// the connection's own address, which is right only when nothing proxies the broker. Set it
-	// only when every request passes through your own reverse proxy, which appends that entry;
-	// otherwise a caller can forge the header and pick its own rate-limit bucket.
+	// BROKER_TRUSTED_PROXY_HEADER: the request header (e.g. X-Forwarded-For) whose last entry, on
+	// its last line, the machine-login and secret-reread rate limiters take as the caller's
+	// address. Unset, they use the connection's own address, which is right only when nothing
+	// proxies the broker. Set it only when every request passes through your own reverse proxy,
+	// which appends that entry; otherwise a caller can forge the header and pick its own rate-limit
+	// bucket. The last line is read because a proxy that folds the lines into one, appends to the
+	// last line, or adds a line of its own leaves its entry at the end of the last line, after any
+	// line the client sent. A proxy that appends to the first line and passes a later line the
+	// client sent would leave the client's text last, so the setting assumes the proxy is not of
+	// that kind; one that sends a single line never is. The broker's edge (BROKER_EDGE_LISTEN_ADDR)
+	// does not read it: its
+	// buckets key on the second-to-last entry of its one X-Forwarded-For line, the one its load
+	// balancer appends for the client.
 	TrustedProxyHeader string
 }
 
@@ -894,10 +953,10 @@ const (
 )
 
 // signInOffRefuses are the settings BROKER_SIGNIN=off refuses beside it, in the order every
-// message naming them uses: the four of the sign-in client, how long a sign-in lasts, and the
+// message naming them uses: the four of the sign-in client, how long a sign-in lasts, the
 // audience a person's own device sign-in is traded at, which holds the person to the sign-in's
-// domain.
-var signInOffRefuses = append(slices.Clone(SignInSettings), "BROKER_SIGNIN_SESSION_SECONDS", "BROKER_SIGNIN_DEVICE_AUDIENCE")
+// domain, and the Workspace's other domains, which are listed beside that domain.
+var signInOffRefuses = append(slices.Clone(SignInSettings), "BROKER_SIGNIN_SESSION_SECONDS", "BROKER_SIGNIN_DEVICE_AUDIENCE", workspaceDomainsSetting)
 
 // airlockProxySettings are the settings the airlock's proxy port cannot run without, every one of
 // them required with BROKER_AIRLOCK_RULES_FILE. Every message that names them names them in this
@@ -1537,7 +1596,7 @@ func parsePodOperators(setting, value string) (map[string]string, error) {
 // deciding person's name from the caller, so the person's pod could decide any request in any
 // person's name. It refuses a mapped account that a BROKER_NATS_SERVICES entry names, because the
 // person's pod would then be answered as that entry's service: by the NATS auth service
-// (internal/cipher/natscallout) with that entry's service grant or, for an edge-listener entry, by
+// (internal/cipher/natscallout) with that entry's service grant and, for an edge-listener entry, also by
 // GET /v1/project-repositories with the repositories of the projects the entry lists. It reads
 // each entry's account from cfg.NATS.Services, the one parse of that setting (ParseNATSServices),
 // which holds the account to ParseAccount's form. It refuses a mapped account that either side of
@@ -1615,7 +1674,7 @@ func mappedAccountRefusal(cfg *Config) error {
 			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_API_ACCOUNTS names it as the caller %q; that caller's routes act on the caller's word, and the approval relays take the deciding person's name from it, so take the account out of BROKER_API_ACCOUNTS or out of %s", setting, account, person, caller.Name, setting)
 		}
 		if entry, names := natsEntries[account]; names {
-			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_NATS_SERVICES entry %q names it; the person's pod would be answered as that service, by the NATS auth service with its NATS grant or, for an edge-listener entry, by GET /v1/project-repositories, so take the account out of BROKER_NATS_SERVICES or out of %s", setting, account, person, entry, setting)
+			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_NATS_SERVICES entry %q names it; the person's pod would be answered as that service, by the NATS auth service with its NATS grant and, for an edge-listener entry, also by GET /v1/project-repositories, so take the account out of BROKER_NATS_SERVICES or out of %s", setting, account, person, entry, setting)
 		}
 		if pair, paired := pairs[account]; paired {
 			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_SESSION_ACCOUNT_PAIRS pair %q names it; a pair lets either account take the session names the other holds, so the session names the token exchange binds for the person's account and for the other account would cross, and a person's account shares no session name with another account, so take the account out of the pair or out of %s", setting, account, person, pair, setting)
@@ -2024,6 +2083,9 @@ func Load(getenv func(string) string) (Config, error) {
 		DatabaseURL:               getenv("BROKER_DATABASE_URL"),
 		PublicURL:                 getenv("BROKER_PUBLIC_URL"),
 		MachineLoginURL:           strings.TrimSpace(getenv("BROKER_MACHINE_LOGIN_URL")),
+		EdgeListenAddr:            strings.TrimSpace(getenv("BROKER_EDGE_LISTEN_ADDR")),
+		EdgeURL:                   strings.TrimSpace(getenv("BROKER_EDGE_URL")),
+		EdgeMachineLoginURL:       strings.TrimSpace(getenv("BROKER_EDGE_MACHINE_LOGIN_URL")),
 		SecretsStore:              orDefault(getenv("BROKER_SECRETS_STORE"), secrets.StoreAWS),
 		SecretsPrefix:             getenv("BROKER_SECRETS_PREFIX"),
 		AirlockRulesFile:          getenv("BROKER_AIRLOCK_RULES_FILE"),
@@ -2118,6 +2180,14 @@ func Load(getenv func(string) string) (Config, error) {
 		if err := httpURLSetting("BROKER_MACHINE_LOGIN_URL", cfg.MachineLoginURL); err != nil {
 			return Config{}, err
 		}
+	}
+	// The edge's settings, held here beside BROKER_MACHINE_LOGIN_URL, whose device grant the edge
+	// serves (loadEdge), and the Workspace's other domains, which only the edge reads.
+	if err := loadEdge(&cfg); err != nil {
+		return Config{}, err
+	}
+	if cfg.SignInWorkspaceDomains, err = parseWorkspaceDomains(getenv(workspaceDomainsSetting)); err != nil {
+		return Config{}, err
 	}
 	// The broker cluster's own ranges, read whatever the rules file says: a list the broker could
 	// not act on is a mistake in the deployment whether or not its airlock is on today.

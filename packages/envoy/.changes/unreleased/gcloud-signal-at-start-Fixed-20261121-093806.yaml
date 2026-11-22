@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  `agent-secrets`: a hang-up, Ctrl-C, Ctrl-\ or termination that comes just as a gcloud call
+  starts, or just as it ends, no longer ends the command with gcloud's processes still running,
+  and one that comes as the call ends now ends the command by that signal, not with the call's
+  own failure and status. The command began to watch for these signals only once gcloud had
+  started, stopped before it killed what an exited gcloud left behind, and could go on from a
+  signal its watch had already taken. A signal in those gaps ended the command without the kill
+  of gcloud's process group, which gets no signal sent to the command's group. The command now
+  watches from before gcloud starts until what gcloud left is killed, and a signal the watch
+  takes always ends it.
+time: 2026-11-21T09:38:06Z
+custom:
+    Issue: gcloud-signal-at-start

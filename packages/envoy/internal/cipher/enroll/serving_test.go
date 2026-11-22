@@ -532,22 +532,16 @@ func TestAHeldServingLockFailsTheBeatAndAnotherBrokerKeepsTheGuardOff(t *testing
 }
 
 // beatsPastCap and beatsPastMargin bound the wait below: the clock under test needs more than its
-// threshold of real time to get past want, and a run whose binary deadline leaves less than the
-// margin fails by name rather than letting go test's own timeout fire with no test named.
+// threshold of real time to get past want, and the wait leaves beatsPastMargin of the binary's
+// deadline (testwait.Remaining), so a run whose deadline leaves less fails by name rather than
+// letting go test's own timeout fire with no test named.
 const beatsPastCap = 30 * time.Second
 const beatsPastMargin = 10 * time.Second
 
 // beatsPast waits for clock's broker_serving row to pass want.
 func (r servingRig) beatsPast(t *testing.T, clock *ServingClock, want time.Time) {
 	t.Helper()
-	wait := beatsPastCap
-	if deadline, bounded := t.Deadline(); bounded {
-		left := time.Until(deadline)
-		if left <= beatsPastMargin {
-			t.Fatalf("the test binary's deadline leaves %s, not more than %s: this looks like a misconfigured run; raise -timeout", left.Round(time.Millisecond), beatsPastMargin)
-		}
-		wait = min(wait, left-beatsPastMargin)
-	}
+	wait := min(beatsPastCap, testwait.Remaining(t, beatsPastMargin))
 	if !testwait.Holds(wait, 10*time.Millisecond, func() bool {
 		last, _ := r.servingOf(t, clock)
 		return last.After(want)

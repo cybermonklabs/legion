@@ -44,6 +44,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/sjawhar/envoy/internal/cipher/netaddr"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
@@ -612,6 +613,10 @@ const (
 //     anything of the store the read went to. Which errors those are is the read's own package
 //     to say (requests.IsRefusal), since a sentinel added there would be missed by a list kept
 //     here; the four named here have a code of their own, and any other is GRANT_REFUSED.
+//   - A release the broker refused because it could not learn whether Dispatch calls the
+//     session's person a restricted member (*projectaccess.MemberKindUncheckable) is 503 in its
+//     own fixed words under the code the API port answers it with: nothing is released while
+//     that cannot be told, and the call can be made again.
 //   - Everything left is a read that did not happen - a database that did not answer, most of
 //     them - and is 503 and grantUnreadable, with the error itself in the log, where it is
 //     wanted: a failed read is no proof that a grant ended, and a database failover must not
@@ -619,7 +624,17 @@ const (
 //     the human tier is a person approving each one. Nor may the answer carry the read's own
 //     words, which for a Postgres connect error are the database's user, name and address.
 func (s *Server) grantRefusal(read string, err error) (int, string, string) {
+	var uncheckable *projectaccess.MemberKindUncheckable
 	switch {
+	case errors.As(err, &uncheckable):
+		if uncheckable.CallerEnded() {
+			s.log.Info("airlock proxy: the caller ended before Dispatch said whether the person is a restricted member, so the release is refused",
+				"read", read, "person", uncheckable.Person, "error", uncheckable.Err)
+		} else {
+			s.log.Error("airlock proxy: whether Dispatch calls a person a restricted member cannot be read, so the release is refused",
+				"read", read, "person", uncheckable.Person, "error", uncheckable.Err)
+		}
+		return http.StatusServiceUnavailable, projectaccess.UncheckableCode, uncheckable.Error()
 	case errors.Is(err, requests.ErrGrantNotLive):
 		return http.StatusProxyAuthRequired, codeGrantNotLive, err.Error()
 	case errors.Is(err, requests.ErrAirlockNoNames):

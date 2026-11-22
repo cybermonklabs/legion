@@ -262,8 +262,6 @@ jobs:
             LEGION_REVISION=${{ steps.meta.outputs.built_sha }}
             PI_LEGION_VERSION=${{ inputs.pi_legion_version }}
             PI_ENVOY_VERSION=${{ inputs.pi_envoy_version }}
-          secrets: |
-            github_token=${{ secrets.GITHUB_TOKEN }}
 
       - name: Record digest
         id: record

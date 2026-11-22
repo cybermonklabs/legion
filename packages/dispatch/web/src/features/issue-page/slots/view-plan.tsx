@@ -4,6 +4,7 @@ import { useLocation } from "react-router-dom";
 
 import { primarySpec, roleDocument } from "../../../api/issue-cache";
 import { artifactBlocksQuery } from "../../../api/queries";
+import { standsFailed } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
 import { useOutlineEditing } from "../IssuePresetPanels";
 import { issueAddress } from "../issue-address";
@@ -14,7 +15,7 @@ import { EMPTY_STATE_LINES } from "../page-words";
 import { type PlanFailedRead, PlanFilterBody, type PlanReads } from "../plan-filter/PlanFilterBody";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
-import { standsFailed, useIssueTree } from "../useIssueTree";
+import { useIssueTree } from "../useIssueTree";
 
 /**
  * The Plan view: the plan's tasks as a chart of time, with one control in the view's first line
@@ -45,7 +46,7 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
   // document the issue does not name needs no read.
   //
   // A read has answered where it holds data, whatever its status, and has failed where it stands
-  // failed (`useIssueTree.ts`'s `standsFailed`, the outline's own rule, which says why neither
+  // failed (`refs/reference-target.ts`'s `standsFailed`, the one rule, which says why neither
   // is read from the status). Each failed read draws one line, which stays while the read runs
   // again or waits for the network, its Retry busy while it runs (`retrying`), and says each
   // failure again (`failure`). The view draws its tasks, its switch and its empty line once both
