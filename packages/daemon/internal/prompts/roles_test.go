@@ -789,3 +789,137 @@ func TestThePodMemoryRuleAndTheToolsSkillSendTheSameRunsToCI(t *testing.T) {
 		}
 	}
 }
+
+// The three outcome lists of a pull request of a spec-source repository (R27) are written by the
+// two roles that judge the change, each list by one of them: the author's by the implementer, the
+// reviewer's own and its final list by the reviewer. Dispatch refuses a reviewer's or a final list
+// from the session that wrote the author's, and an author's list from the session that wrote the
+// reviewer's, so each part names only its own lists. The reviewer's own list comes before its read
+// of the author's, since an own list written after that read is no longer its own, and its final
+// list at the head it reviewed comes last: the conclusion is judged against that list before the
+// change lands (R23, R26). The needles are the commands as each part writes them, matched over
+// the part with its whitespace collapsed, since a part hard-wraps, and the order is the order of
+// their first appearance. This shows the text is loaded, never that a role follows it.
+func TestTheOutcomeListsAreWrittenByTheirOwnRoleInTheirOrder(t *testing.T) {
+	const list = "dispatch outcomes --issue <issue> --pull-request <o>/<r>#<n> --head <head> --list "
+	const specSource = "`dispatch spec-source --action list --project <project>`"
+	lineForms := []string{"`(requires <statement-id>) <text>`", "`(restored) <text>`", "keep it as a plain line",
+		"never write `(restored)` to make it covered", "An empty body records an empty list"}
+	reviewer := foldWhitespace(rolePart(t, "reviewer.md"))
+	last := -1
+	for _, step := range []struct{ name, command string }{
+		{"its own list", list + "reviewer --body-file -"},
+		{"its read of the author's list", list + "author`"},
+		{"its final list", list + "final --body-file -"},
+	} {
+		at := strings.Index(reviewer, step.command)
+		if at < 0 {
+			t.Errorf("roles/reviewer.md does not name %s: %q", step.name, step.command)
+			continue
+		}
+		if at < last {
+			t.Errorf("roles/reviewer.md names %s before the step it follows: %q", step.name, step.command)
+		}
+		last = at
+	}
+	for _, want := range append([]string{specSource, "`OUTCOME_AUTHOR_LIST_FIRST`",
+		"Record the final list before you submit the review of the head."}, lineForms...) {
+		if !strings.Contains(reviewer, want) {
+			t.Errorf("roles/reviewer.md does not say %q", want)
+		}
+	}
+	if strings.Contains(reviewer, list+"author --body-file") {
+		t.Errorf("roles/reviewer.md has the reviewer write the author's list, which Dispatch refuses from it (OUTCOME_LIST_BY_REVIEWER)")
+	}
+	implementer := foldWhitespace(rolePart(t, "implementer.md"))
+	for _, want := range append([]string{specSource, list + "author --body-file -",
+		"at each head you hand to review", "`OUTCOME_AUTHOR_LIST_FIRST`"}, lineForms...) {
+		if !strings.Contains(implementer, want) {
+			t.Errorf("roles/implementer.md does not say %q", want)
+		}
+	}
+	for _, other := range []string{"--list reviewer", "--list final"} {
+		if strings.Contains(implementer, other) {
+			t.Errorf("roles/implementer.md names %q, a list Dispatch refuses from the author (OUTCOME_LIST_BY_AUTHOR)", other)
+		}
+	}
+}
+
+// A tree whose design gate opened with no person, because its change request proposes nothing,
+// lands only once the ending condition holds for the head that would merge: the reviewer's final
+// list at that head and a complete conclusion (R23, R26). The daemon holds the merger's start on
+// it and tells a running merger when it stops holding, but only the merger knows the head it is
+// about to merge or enqueue, so its part reads the condition before each merge and each enqueue,
+// the head it reads again after a refused merge included, and merges only on `ready`. The part
+// also names the task's sentence that tells it so and the two messages the daemon sends when the
+// condition moves, by the words each opens with, since the merger takes each message by those
+// words. This shows the text is loaded, never that a merger follows it.
+func TestTheMergerReadsTheEndingConditionBeforeEachMergeAndEnqueue(t *testing.T) {
+	merger := foldWhitespace(rolePart(t, "merger.md"))
+	for _, want := range []string{
+		"`dispatch spec-ending --issue <tree> --head <head>`",
+		"The design gate of <tree> opened with no person's approval",
+		"immediately before each merge and each enqueue",
+		"each head you read again after a refused merge (step 6)",
+		"Merge or enqueue only when its first line reads `ready`.",
+		"When the first line reads `waiting`, merge nothing and enqueue nothing, and do not complete.",
+		"The design gate of <tree> closed: the ending condition of its change request does not hold for head <sha>",
+		"The design gate of <tree> opened: the ending condition of its change request holds for head <sha>",
+	} {
+		if !strings.Contains(merger, want) {
+			t.Errorf("roles/merger.md does not say %q", want)
+		}
+	}
+	// The gate that closes for a new version of a document is still told and still releases
+	// the merge as before: the ending's messages are added beside it, never in its place.
+	for _, kept := range []string{
+		"The design gate of <tree> closed: version <n> of its <step> document (<id>)",
+		"The design gate of <tree> opened: a person approved version <n> of its <step> document (<id>)",
+	} {
+		if !strings.Contains(merger, kept) {
+			t.Errorf("roles/merger.md no longer says %q", kept)
+		}
+	}
+}
+
+// The root architect owns the change request of its root, so it is told what each notice of
+// that request asks of it: a `spec-request-stale` notice is a person's approval Dispatch refused
+// because the approved spec moved under the request, which the architect answers by writing the
+// request again with each node's `base` at its current approved version and opening a new
+// approval request; a `spec-ending-waits` notice names one reason the ending condition does not
+// hold, and each of its five codes asks one thing, so the paragraph names every code; and a
+// `design-approved` notice of an opening with no person carries no actor and a reason that starts
+// `no proposal:`, which follows a registration that requested no approval. The needles are matched
+// over the part with its whitespace collapsed, and the codes within the one paragraph that names
+// the notice, since a code named elsewhere answers nothing about that notice. This shows the text
+// is loaded, never that an architect follows it.
+func TestTheRootArchitectKnowsWhatEachChangeRequestNoticeAsks(t *testing.T) {
+	part := rolePart(t, "architect-root.md")
+	text := foldWhitespace(part)
+	for _, want := range []string{
+		"`dispatch spec-source --action list --project <project>`",
+		"\"$DISPATCH_URL/api/v1/issues/<root>/change-request?version=<n>\"",
+		"register the step at that version and request no approval",
+		"a reason that starts `no proposal:`",
+		":::conclusion{#<id> statement=\"<approved id>\" difference=\"code_breaks\"}",
+		"`no_statement=true`",
+		"A `spec-request-stale` notice",
+		"set the block's `base` to the node's current approved version",
+		"open a new approval request with `dispatch request-approval`",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("roles/architect-root.md does not say %q", want)
+		}
+	}
+	waits := ruleParagraphs(part, "A `spec-ending-waits` notice")
+	if len(waits) != 1 {
+		t.Fatalf("roles/architect-root.md holds %d paragraphs on the spec-ending-waits notice, want one", len(waits))
+	}
+	for _, want := range []string{"`no_conclusion`", "`incomplete`", "`no_final_list_for_head`",
+		"`final_list_of_another_head`", "`uncovered_without_approval`",
+		"write the `conclusion` block", "record its final list at that head", "`dispatch request-approval`"} {
+		if !strings.Contains(waits[0], want) {
+			t.Errorf("the spec-ending-waits paragraph of roles/architect-root.md does not say %q: %s", want, waits[0])
+		}
+	}
+}
