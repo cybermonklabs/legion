@@ -21,13 +21,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
-// Grace is how long Claude Code has to exit after the bridge's SIGTERM before it is killed, and how
-// long it has to exit on its own once its input ended before that SIGTERM. It is a variable so that
-// a test whose row reads Claude Code's own exit can give a stand-in a loaded machine makes slow the
-// time it takes.
-var Grace = 3 * time.Second
+// grace is Grace as end reads it: a variable so that a test whose row reads Claude Code's own exit
+// can give a stand-in a loaded machine makes slow the time it takes.
+var grace = Grace
 
 const (
+	// Grace is how long Claude Code has to exit after the bridge's SIGTERM before it is killed.
+	Grace = 3 * time.Second
 	// drainTimeout bounds reading Claude Code's stdout once it has exited. What Claude Code wrote
 	// is in the pipe by then, and once it has exited the loop takes its lines without waiting on the
 	// shim, so a pipe's worth is read in well under a millisecond: only a process it started and
@@ -338,7 +338,7 @@ func (b *bridge) end(ctx context.Context, claude *os.Process, inputEnded, exited
 		}
 		b.log.Printf("%s: sending SIGTERM to Claude Code", why)
 		_ = claude.Signal(syscall.SIGTERM)
-		killAt = time.After(Grace)
+		killAt = time.After(grace)
 	}
 	done := ctx.Done()
 	for {
@@ -353,12 +353,12 @@ func (b *bridge) end(ctx context.Context, claude *os.Process, inputEnded, exited
 			terminate("Claude Code stopped reading its input")
 		case <-inputEnded:
 			inputEnded = nil
-			inputBound = time.After(Grace)
+			inputBound = time.After(grace)
 		case <-inputBound:
 			inputBound = nil
-			terminate(fmt.Sprintf("Claude Code is still running %v after its input ended", Grace))
+			terminate(fmt.Sprintf("Claude Code is still running %v after its input ended", grace))
 		case <-killAt:
-			b.log.Printf("Claude Code is still running %v after SIGTERM; killing it", Grace)
+			b.log.Printf("Claude Code is still running %v after SIGTERM; killing it", grace)
 			_ = claude.Kill()
 			return
 		}

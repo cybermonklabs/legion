@@ -1395,13 +1395,12 @@ func TestUnknownRequestsAreRefusedByName(t *testing.T) {
 // The bridge's exit status is Claude Code's, and the shim closing the bridge's input ends it. The
 // bridge gives Claude Code Grace to exit on its own once its input ended, and SIGTERMs it after; a
 // stand-in a loaded machine makes slower than that would read as killed (143). So the row gives
-// Grace what is left of the test binary's deadline, less deadlineMargin: the status the bridge
-// reports is then the stand-in's own exit, however late it comes, and a bridge that never passes
-// on the input's end still fails the row by name.
+// the bridge's grace what is left of the test binary's deadline, less deadlineMargin: the status
+// the bridge reports is then the stand-in's own exit, however late it comes, and a bridge that
+// never passes on the input's end still fails the row by name.
 func TestTheShimClosingInputEndsClaudeCode(t *testing.T) {
-	grace := Grace
-	Grace = deadlineWait(t)
-	t.Cleanup(func() { Grace = grace })
+	grace = deadlineWait(t)
+	t.Cleanup(func() { grace = Grace })
 	r := newRig(t, "-p", "--resume", sessionID)
 	r.prompt("p1", "say WAITING")
 	r.expect("agent_start", nil)
