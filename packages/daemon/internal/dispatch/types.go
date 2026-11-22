@@ -32,9 +32,12 @@ type Client interface {
 	// ArtifactSlugs is the slug of every document and file the issue holds.
 	ArtifactSlugs(ctx context.Context, key string) ([]string, error)
 	// UploadArtifact writes a markdown document on the issue under name, and answers the slug
-	// Dispatch filed it under. It names no token, so it is a first upload: Dispatch refuses a name
-	// the issue already holds 400 PRECONDITION_REQUIRED, and the outbox uploads only a name the
-	// issue lists no document under (messageArtifact).
+	// Dispatch filed it under. It names no token, so it is meant as a first upload, and the outbox
+	// uploads only a name the issue lists no document under (messageArtifact). Since
+	// legion-envoy-v32.36.1 Dispatch stores an upload naming no token over a name the issue already
+	// holds, as it did before it began to ask for one, and counts it
+	// (envoy_dispatch_document_replacements_unguarded_total); a token behind the live document is
+	// still refused 409 PRECONDITION_FAILED.
 	UploadArtifact(ctx context.Context, key, name, content string) (slug string, err error)
 	// EventsAfter is the issue's event log after a sequence, oldest first, each event as Dispatch
 	// serves it: the boot catch-up's read of what a root's durable stream may not have delivered.

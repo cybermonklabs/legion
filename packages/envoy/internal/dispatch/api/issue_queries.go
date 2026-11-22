@@ -1118,8 +1118,8 @@ func (s *server) loadIssueWithProgress(ctx context.Context, q queryer, key strin
 
 // issueChildrenStatement reads the issue's direct children, $1 its key, each with a rollup over
 // its whole subtree (the child itself included, every status): done/total counts and the newest
-// updated_at. The recursive walk uses `union` with parentDepthCap like refs.Closure, so it
-// terminates even if a raced reparent ever commits a cycle. scanIssueChildren decodes its rows.
+// updated_at. The recursive walk uses `union` with parentDepthCap, so it terminates even if a
+// raced reparent ever commits a cycle. scanIssueChildren decodes its rows.
 //
 // The walk reads each subtree issue's row already, so it carries that row's status and
 // updated_at and the rollup counts them where it stands. Joining the walk's keys back to issues

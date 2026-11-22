@@ -3,6 +3,15 @@ package gcp
 // CloudConfig is the hub VM's cloud-config document, for the tests outside the package.
 type CloudConfig = cloudConfig
 
+// ShellCommand starts a shell under its test's deadline, and ScriptContext and UntilTheTestDeadline
+// are the deadlines a test gives any other command it starts (shell_test.go), for the tests outside
+// the package.
+var (
+	ShellCommand         = shellCommand
+	ScriptContext        = scriptContext
+	UntilTheTestDeadline = untilTheTestDeadline
+)
+
 // ResolveNatsHub is newSettings' refusal, for gcp_test's refusal table, which needs no engine.
 func ResolveNatsHub(args *NatsHubArgs) error {
 	_, err := newSettings(args)
@@ -45,6 +54,9 @@ type ClusteredNatsHubSettings struct {
 	PodSelector                              map[string]string
 	Tailnet                                  *ClusteredHubTailnetSettings
 	Listener                                 *ClusteredHubListenerSettings
+	// RouteSecretName, RouteSecretKey and RouteStage are routeAuthorization's, all empty without
+	// it.
+	RouteSecretName, RouteSecretKey, RouteStage string
 }
 
 // ClusteredHubTailnetSettings is the resolved tailnet entry.
@@ -96,8 +108,14 @@ func ResolveClusteredNatsHub(args *ClusteredNatsHubArgs) (ClusteredNatsHubSettin
 			ClientNamespaces: l.clientNamespaces, CPU: l.cpu, Memory: l.memory, Env: l.env,
 		}
 	}
+	if r := s.route; r != nil {
+		settings.RouteSecretName, settings.RouteSecretKey, settings.RouteStage = r.secretName, r.secretKey, r.stage.String()
+	}
 	return settings, nil
 }
+
+// ClusteredHubRouteStages are routeAuthorization.stage's names, in their order.
+var ClusteredHubRouteStages = clusteredHubRouteStageNames[:]
 
 // ClusteredHubListenerNamed is the session listener args resolve, with its refusals naming path in
 // place of the input the listener is declared at, for the test that holds the listener's token

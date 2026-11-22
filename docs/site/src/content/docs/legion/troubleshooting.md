@@ -1775,9 +1775,10 @@ notice comes once per handoff commit, from whichever read finds it first.
   dropped settlements since: each remembers in memory what it logged.
   - The listener writes `checks held a head` for a head's record that it has
     not settled after 10 minutes with no event. The line names what holds the record: `running`
-    names each check run that has not finished, `suites` names each check suite that is not
-    completed with its App and run count, and `overflowed`, `no_run_id`, `legacy` and `claimed`
-    name the other holds. It is a warning when every recorded check run has finished.
+    names each check run that has not finished, `suites` names each check suite that holds it,
+    with its App: a suite not completed that is GitHub Actions' or whose App the record does not
+    know. `overflowed`, `no_run_id`, `legacy` and `claimed` name the other holds. It is a warning
+    when every recorded check run has finished.
   - The listener writes `checks settlement published` for each settlement it publishes.
   - The daemon writes one line for each checks settlement it drops before it applies it:
     `intake: a checks settlement was dropped: the decoder refused it` (a warning that names the

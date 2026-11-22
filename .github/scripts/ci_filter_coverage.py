@@ -15,10 +15,10 @@ that differs (pin_difference, name_list_difference) or by both directories, or s
 it (an env name outside ENV_ALLOWED, a shell, a container, an environment write that reaches it)
 can change what it compiles or which tests it runs. The pin is also the table's word for which
 tests the step runs, and reading everything says nothing where a filter selects every Go file
-already. What surrounds a go command is read over the steps whose writes reach it: a pinned step
-the steps before it, a claimed simple command the steps up to and including its own (job_up_to),
-and a script's go command each job's steps up to the last one whose run: starts the script
-(names_script, SCRIPT_START), or every step of a job that names it nowhere (around_job).
+already. What surrounds a go command is read over the steps whose writes may reach it: a pinned
+step the steps before it, a claimed simple command the steps up to and including its own
+(job_up_to), and a script's go command every step of each job that may run the script
+(around_job), since which step starts a script is nothing this check can prove.
 check-ci-filters.sh's header says why, gives the remedies - the step's own script line, or
 ENV_ALLOWED for a name with which go compiles the same files and runs the same tests - and gives
 the recipe that runs it as CI does, GOROOT unset.
@@ -882,12 +882,15 @@ def check_output_steps(document: dict, filters: dict, problems: list[Annotation]
     the file holds it. A reference to a paths-filter step that reads no such file is passed over
     here, since rule 21 refuses that step and no filter of it was read to hold the name to; so is
     every name while no filter was read at all, since each way that happens is refused on its own
-    (changes_filters, rule 21) and holding the names to nothing would refuse every output again."""
+    (changes_filters, rule 21) and holding the names to nothing would refuse every output again.
+    REF_OUTPUT is no filter's verdict: check_ci_ok holds it and the one step that writes it."""
     job = (document.get("jobs") or {}).get("changes") or {}
     steps = job.get("steps") or []
     ids = [str(s.get("id", "")) for s in steps if s.get("id")]
     filter_steps = {str(s.get("id", "")): s for s in filter_input_steps(job)}
     for output, expression in (job.get("outputs") or {}).items():
+        if output == REF_OUTPUT:
+            continue
         for step_id, name in STEP_OUTPUT_REF.findall(str(expression)):
             if step_id not in ids:
                 problems.append(error(WORKFLOW, f"the changes job's output {output} reads "
@@ -1236,10 +1239,9 @@ ENV_ALLOWED = frozenset({
     "DISPATCH_PREVIOUS_BUILD", "DISPATCH_TEST_DATABASE_URL", "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE",
     "ENVOY_SMOKE_IMAGE", "FIRST_ROLLOUT_COMMIT",
     # The token gh reads. A step of the lint job sets it for the daemon API contract check, and
-    # around_job reads the env of every step up to the one that runs go-release-notices.sh, that
-    # step among them, so without this name here every go command of that script would count as
-    # unreduced and go_notices would have to match every Go file of the repository again. go reads
-    # it nowhere.
+    # around_job reads the env of every step of the job that runs go-release-notices.sh, so
+    # without this name here every go command of that script would count as unreduced and
+    # go_notices would have to match every Go file of the repository again. go reads it nowhere.
     "GH_TOKEN",
     "GOPROXY",
     "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
@@ -1322,29 +1324,6 @@ def job_up_to(job: dict, step: dict, including: bool = True) -> dict:
     return job if at is None else {**job, "steps": steps[:at + 1] if including else steps[:at]}
 
 
-# What may come before a script's path where a step starts it: the start of a line, a space, a
-# quote, an `=`, a `(` or a backtick; `./` after one of those; or a `/` after a variable
-# (`$NAME`), a `}` or a `)`, which end `${NAME}`, `${{ ... }}` and `$(...)`. A `/` after anything
-# else ends a directory of another path, so `tools/scripts/e2e-local.sh` is not
-# `packages/envoy/scripts/e2e-local.sh` run from `packages/envoy`.
-SCRIPT_START = r"(?:^|[\s'\"=(`]|(?:^|[\s'\"=(`])\./|(?:\$[A-Za-z_][A-Za-z0-9_]*|[})])/)"
-
-
-def names_script(holder: dict, job: dict, step: dict, source: str) -> bool:
-    """Whether a run: step names the repository script `source`: by its path from the repository
-    root, or from the directory the step runs in, as a whole word of its run: text after one of
-    SCRIPT_START's starts - `"$GITHUB_WORKSPACE/<script>"`, `${{ github.workspace }}/<script>`,
-    `$(<script> ...)`, a backticked call, `$(git rev-parse --show-toplevel)/<script>` and
-    `./<script>` among them. The script's own parent directories before its path from the step's
-    directory make its path from the root, which is read as that; any other directory before it
-    names another script. Nothing that goes on the path after it (`.bak`, `-old`, a longer name)
-    counts."""
-    run = str(step.get("run", ""))
-    workdir = step_workdir(holder, job, step)
-    paths = {source, os.path.relpath(source, workdir)} if workdir != "." else {source}
-    return any(re.search(rf"{SCRIPT_START}{re.escape(p)}(?![\w.-])", run) for p in paths)
-
-
 def around_reason(document: dict, job: dict, steps: list) -> str:
     """The first thing outside a go command's line that can change what it compiles: an env:,
     a step writing the job's environment, a shell or a container; or ''. `steps` are the steps
@@ -1401,21 +1380,16 @@ def owner_steps(units: list, owner: str) -> list:
     return [s for own, _, _, _, job in units if own == owner for s in job.get("steps") or []]
 
 
-def around_job(units: list, owner: str, source: str) -> str:
-    """The first thing around a ci.yaml job that can change what a go command its script `source`
-    holds compiles, over its own steps and those of a workflow it calls, each read under the env:,
-    defaults and container of the file that holds it; or ''. A job some step of which names the
-    script (names_script) is read up to and including the last such step, since a step after it
-    runs after the script. A job that names it nowhere is read whole, since it may start the
-    script some way this check does not see - in a form names_script does not read, by another
-    script, or by a test it compiles."""
+def around_job(units: list, owner: str) -> str:
+    """The first thing around a ci.yaml job that can change what a go command of a script it runs
+    compiles, over every step of the job and of each job of a workflow it calls, each read under
+    the env:, defaults and container of the file that holds it; or ''. Every step, since which one
+    starts the script is nothing this check can prove: a step can start it through another
+    script, from another directory or by a test it compiles, and a step that names its path may
+    only chmod or lint it. So a write after the last step that shows a start still counts: the
+    check errs wide, never narrow."""
     for own, _, _, holder, job in units:
-        if own != owner:
-            continue
-        steps = job.get("steps") or []
-        naming = [i for i, s in enumerate(steps) if "run" in s and names_script(holder, job, s, source)]
-        read = {**job, "steps": steps[:naming[-1] + 1]} if naming else job
-        reason = around_reason(holder, read, read.get("steps") or [])
+        reason = around_reason(holder, job, job.get("steps") or []) if own == owner else ""
         if reason:
             return reason
     return ""
@@ -1491,12 +1465,14 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
     inputs_of = input_expressions(documents, problems)
     # Rule 3 over every document of the set: a called file's job or step is gated through an
     # input of its own, resolved to the caller's expression here, and the refusal names the file
-    # the condition is in.
+    # the condition is in. REF_OUTPUT is no filter: the condition reading it is check_ci_ok's.
     gated = defaultdict(set)  # (workflow, job) -> filters its job-level if: names
     for path, document in documents.items():
         for job_id, job in (document.get("jobs") or {}).items():
             for step, condition in conditions(job or {}):
                 for name in GATE_REF.findall(resolve_condition(condition, inputs_of.get(path, {}))):
+                    if name == REF_OUTPUT:
+                        continue
                     if step is None:
                         gated[(path, job_id)].add(name)
                     if name not in gates and name not in excluded:
@@ -1640,11 +1616,10 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
                                                                           f"runs `{r.text}`; update or remove the Run"))
     # A script's go command is held exact rather than reduced: the line holding the pinned text is
     # that text alone, uncontinued, and no env:, shell: or defaults.run.shell of the workflow, the
-    # job or its steps, no container: and no environment write of the job can move it - each job's
-    # steps up to the last one naming the script, or all of them where it names the script nowhere
-    # (around_job), since the check does not otherwise know which step starts it. A job that calls
-    # a workflow runs the script from that workflow's jobs, so each of them is read the same way.
-    # Its variables are the Run author's.
+    # job or its steps, no container: and no environment write of the job can move it - over every
+    # step of the job (around_job), since the check cannot prove which step starts the script. A
+    # job that calls a workflow runs the script from that workflow's jobs, so each of them is read
+    # the same way. Its variables are the Run author's.
     for g in data.GATES:
         for r in g.runs:
             if not r.source:
@@ -1660,7 +1635,7 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
                 continue
             lines = source_text.split("\n")
             held = [i for i, line in enumerate(lines) if r.text in line]
-            reason = around_job(units, g.job, r.source) or ("" if held else "its text spans lines")
+            reason = around_job(units, g.job) or ("" if held else "its text spans lines")
             for i in held:
                 line = lines[i].strip(" \t")
                 if not reason and line != r.text:
@@ -1714,10 +1689,67 @@ REPORT_STATUS = "${{ job.status }}"
 # check run is in its run's own check suite, where one POSTed with POST /repos/.../check-runs
 # joins the Actions App's first suite at that commit. ci-ok is the verdict over every other job,
 # pr-title runs check-pr-text.sh on a pull request and a merge group. No other job of ci.yaml may
-# carry one of these names, and neither of the two may be renamed by a `name:`, since a job posts
-# the check its display name gives and a skipped job posts a passing one.
+# carry one of these names, since a job posts the check its display name gives and a skipped job
+# posts a passing one.
+#
+# Each of the two carries the one `name:` DISPATCH_NAMES gives it, and no other. GitHub evaluates
+# a job's name only when the job runs. ci-ok runs on every event: it is `ci-ok` on a pull
+# request, a merge group and a dispatch of exactly refs/heads/main, and `ci-ok (dispatch)` on a
+# dispatch of any other ref. pr-title runs only on a pull request that is not a draft and on a
+# merge group, and is named pr-title there; every run that skips it, a dispatch of any ref and a
+# draft's run among them, leaves the name unevaluated, and the check run carries the
+# expression's text, which is no pr-title either. A dispatch of a branch tests the branch's own
+# tree, not its merge with the base, and its check runs land on the branch's head, which is a
+# pull request's head: under the plain name that commit carried a second ci-ok with another
+# tree's verdict, and a skipped pr-title. Pull request #3513 at a368687e carried both on
+# 2026-11-21 from workflow_dispatch run 44860519340, a ci-ok success beside its pull_request
+# run's failure. GitHub's rollup of the pull request read no check run of the dispatched run,
+# but a reader by name (the commit's check-runs list, or a record keeping the higher check run
+# id per name) takes the dispatched run's.
+#
+# Whether a dispatch is of main is read by a shell test in the changes job (REF_STEP), not by an
+# expression: GitHub's `==` and `!=` ignore case, so `github.ref != 'refs/heads/main'` is false
+# for the branches refs/heads/Main and refs/heads/MAIN, which git accepts. The step writes
+# is_main=true only for exactly refs/heads/main, and the changes job hands it on as
+# REF_OUTPUT; a dispatch whose changes job wrote nothing (it failed) is no dispatch of main
+# either. pr-title needs no job, so it cannot read that output, and its name carries the event
+# alone: it runs on no dispatch, so its dispatch arm is never evaluated, and what keeps a
+# skipped pr-title from posting a pass named pr-title is that its name is an expression at all.
 REQUIRED_CHECKS = ("ci-ok", "pr-title")
 VERDICT_JOB = "ci-ok"
+REF_OUTPUT = "ref_is_main"
+REF_OUTPUT_VALUE = "${{ steps.ref.outputs.is_main }}"
+REF_STEP_ID = "ref"
+REF_STEP_NAME = "Read whether this run's ref is exactly refs/heads/main"
+REF_STEP_RUN = ('if [ "$GITHUB_REF" = refs/heads/main ]; then echo is_main=true; else echo is_main=false; fi '
+                '>> "$GITHUB_OUTPUT"')
+DISPATCH_OFF_MAIN = f"github.event_name == 'workflow_dispatch' && needs.changes.outputs.{REF_OUTPUT} != 'true'"
+DISPATCH_NAMES = {
+    "ci-ok": f"${{{{ {DISPATCH_OFF_MAIN} && 'ci-ok (dispatch)' || 'ci-ok' }}}}",
+    "pr-title": "${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' || 'pr-title' }}",
+}
+# The verdict job's step that sets every other ci-ok on the head to its conclusion, and the one
+# `if:` it carries: it runs after a failed verdict (always()) and on no dispatch but one of
+# exactly refs/heads/main, since every other ci-ok on such a head is a pull request's or the
+# queue's.
+RECONCILE_STEP = "Set every other ci-ok on this head to this job's conclusion"
+RECONCILE_IF = (f"${{{{ always() && (github.event_name != 'workflow_dispatch' || "
+                f"needs.changes.outputs.{REF_OUTPUT} == 'true') }}}}")
+
+
+def dispatch_name(job_id: str) -> str:
+    """The one `name:` a REQUIRED_CHECKS job carries: `<job id> (dispatch)` on a dispatch of any
+    ref but exactly refs/heads/main, and the job id on every other run that evaluates it. A run
+    that skips the job evaluates no name, and its check run carries this expression's text."""
+    return DISPATCH_NAMES[job_id]
+
+
+def quoted_names(named: str) -> set:
+    """The single-quoted strings of a `name:` that is an expression, which are the names it can
+    evaluate to, and nothing for a plain name."""
+    return set(re.findall(r"'([^']*)'", named)) if "${{" in named else set()
+
+
 # ci.yaml's env entry naming the jobs outside ci-ok's accounting: the job that exists to stop a
 # doomed merge-group run, which runs only on merge_group, holds `actions: write`, runs no
 # dependency code, reports no result to ci-ok and is no job a verdict waits for, VERDICT_JOB,
@@ -1737,8 +1769,10 @@ def check_ci_ok(documents: dict, problems: list[Annotation]) -> None:
     with the report step, or a merge-group run that job's failure decides posts no ci-ok until
     the verdict job has waited for every other job, and a job that calls
     a workflow must hand that workflow `ci-ok-changes` for its job's report step. Each
-    REQUIRED_CHECKS name is a job of this file and no other job carries it, and VERDICT_JOB must
-    need every job of the file but itself and
+    REQUIRED_CHECKS name is a job of this file that carries the name dispatch_name gives it, no
+    other job carries it or a name expression that can evaluate to it, VERDICT_JOB's reconcile
+    step (RECONCILE_STEP) carries RECONCILE_IF, and VERDICT_JOB must need every job of the file
+    but itself and
     the exempt ones: a job outside its needs: ends after the verdict that says nothing about it.
     A job EXEMPT_LIST names is outside all of that: it is no job of
     CI_OK_SELECTED_BY, it needs no report step, and it must carry none, since ci-ok.sh fails a
@@ -1812,15 +1846,53 @@ def check_ci_ok(documents: dict, problems: list[Annotation]) -> None:
     for job_id, job in jobs.items():
         named = str((job or {}).get("name", job_id))
         if job_id in REQUIRED_CHECKS:
-            if named != job_id:
-                problems.append(error(WORKFLOW, f"job {job_id} carries `name: {named}`, so its check run "
-                                                f"is called {named} and {job_id}, a check main's ruleset requires, is reported by "
-                                                f"nothing; drop the name:"))
+            want_name = dispatch_name(job_id)
+            if named != want_name:
+                carried = "carries no `name:`" if named == job_id else f"carries `name: {named}`"
+                problems.append(error(WORKFLOW, f"job {job_id} {carried}, and {job_id} is a check main's "
+                                                f"ruleset requires: give it `name: {want_name}`, so that a "
+                                                f"workflow_dispatch run of any ref but exactly refs/heads/main, which "
+                                                f"tests that ref's tree rather than a merge with the base, reports "
+                                                f"under a name of its own and never sits beside the pull request's "
+                                                f"{job_id} on the branch's head, while every other run that runs the job "
+                                                f"reports {job_id}"))
             continue
         if named in REQUIRED_CHECKS:
             problems.append(error(WORKFLOW, f"job {job_id} is named {named}, a check main's ruleset "
                                             f"requires, and is not the {named} job: a job posts its own check, and a skipped one "
                                             f"posts a pass, so the job of that name is the only one that may carry it"))
+            continue
+        for check in sorted(quoted_names(named) & set(REQUIRED_CHECKS)):
+            problems.append(error(WORKFLOW, f"job {job_id} carries `name: {named}`, which evaluates to {check} on "
+                                            f"some run, a check main's ruleset requires, and is not the {check} job: a "
+                                            f"job posts its own check, and a skipped one posts a pass, so the job of "
+                                            f"that name is the only one that may carry it"))
+    verdict_steps = (jobs.get(VERDICT_JOB) or {}).get("steps") or []
+    for step in verdict_steps:
+        if isinstance(step, dict) and step.get("name") == RECONCILE_STEP and str(step.get("if", "")) != RECONCILE_IF:
+            problems.append(error(WORKFLOW, f"job {VERDICT_JOB}'s step \"{RECONCILE_STEP}\" carries `if: "
+                                            f"{squash(str(step.get('if', '')))}`: give it `if: {RECONCILE_IF}`, so that "
+                                            f"it runs after a failed verdict and on no workflow_dispatch run but one of "
+                                            f"exactly refs/heads/main, since any other dispatch's verdict is no pull "
+                                            f"request's and must set none of a pull request's ci-ok check runs"))
+    # The output the name and the reconcile step read, and the one step that writes it.
+    changes = jobs.get("changes") or {}
+    have_output = (changes.get("outputs") or {}).get(REF_OUTPUT)
+    why_shell = ("the shell's `=` is case-sensitive, where an expression's `==` and `!=` ignore case and read "
+                 "refs/heads/Main as main")
+    if str(have_output) != REF_OUTPUT_VALUE:
+        carried = f"has no output {REF_OUTPUT}" if have_output is None else \
+            f"carries `{REF_OUTPUT}: {squash(str(have_output))}`"
+        problems.append(error(WORKFLOW, f"the changes job {carried}: give it `{REF_OUTPUT}: {REF_OUTPUT_VALUE}`, the "
+                                        f"output job {VERDICT_JOB}'s name and its step \"{RECONCILE_STEP}\" read to tell "
+                                        f"a dispatch of exactly refs/heads/main from one of any other ref"))
+    ref_steps = [s for s in changes.get("steps") or [] if isinstance(s, dict) and s.get("id") == REF_STEP_ID]
+    exact = (len(ref_steps) == 1 and ref_steps[0].get("name") == REF_STEP_NAME and "if" not in ref_steps[0]
+             and str(ref_steps[0].get("run", "")).strip() == REF_STEP_RUN)
+    if not exact:
+        problems.append(error(WORKFLOW, f"the changes job holds {len(ref_steps)} step(s) with id {REF_STEP_ID}, and "
+                                        f"must hold exactly one, named \"{REF_STEP_NAME}\", with no `if:` and `run: "
+                                        f"{REF_STEP_RUN}`: it is what writes {REF_OUTPUT}, and {why_shell}"))
     for check in REQUIRED_CHECKS:
         if check != VERDICT_JOB and check not in jobs:
             problems.append(error(WORKFLOW, f"this file has no {check} job, a check main's ruleset "

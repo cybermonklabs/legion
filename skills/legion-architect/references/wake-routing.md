@@ -18,9 +18,9 @@ sends the question to the architect above it.
 | `checks-red` | The daemon asked the implementer to merge the base forward; the issue stays in the phase the notice names. Start nothing; in `accepting`, wait for the reviewer's approval of the new head ("A conflicting head" in `skill://legion-architect/references/acceptance.md`). |
 | `review-stuck` | No review decides the round, or the approval is of other code: tell the reviewer on the notice's `topic` to approve the head or request changes; ask a person when it answers again with no review. GitHub will not merge the head: no `topic`, and its `reason` names the merge state, each check run with its conclusion and each commit status with its state; sort it as your role prompt says. |
 | `pr-merged` | Merged, not closed: it waits to reach `merging`, or for the issues beneath it. Start nothing. |
-| `pr-closed-unmerged` | Decide whether the work reopens, restarts (`park_child` then `rerun_child`) or ends, and give the reason. A phase worker makes the repository change. |
+| `pr-closed-unmerged` | Decide whether the work reopens, restarts or ends, and give the reason. A phase worker makes the repository change. |
 | `pull-request-missing` | Tell the implementer to open the pull request from the branch the reason names. |
-| `child-status` | A child left, re-entered, joined the tree or started. The daemon starts what runs. When a park leaves an issue in `accepting` waiting on no child, run its last round. |
+| `child-status` | A child left, re-entered, joined the tree or started. The daemon starts what runs. |
 | `child-closed` | Section 2. File any new child it calls for after the red-team check, and release it at once. When it was the last child an issue in `accepting` waits on, run that issue's last round. |
 | `children-first` | Release every child that should run. Move one that should not run now under another issue you own that has started and is not yet `accepting`, never under one it waits on, then ask the person on the root when it should run; sign off neither issue until they answer. A `blocked_by` link up the parent chain: ask a person to remove it. |
 | `child-release-stalled` | Read the parent's record (`read_record`), release the parent first when the reason says so, then release the child again. Tell the controller if the parent never records. |

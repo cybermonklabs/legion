@@ -3,6 +3,7 @@ package gcp
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	kubernetes "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes"
 	apiextensions "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/apiextensions"
@@ -175,7 +176,8 @@ func newClusteredHubKubernetes(ctx *pulumi.Context, comp *ClusteredNatsHub, name
 // a pod of neither kind: it carried the tailnet hosts' labels while it was a container of their
 // pods, and without a rule of its own it would reach NATS only while clientNamespaces happened to
 // name the hub's namespace; the route port from the hub pods alone, which is
-// all that keeps anything else from joining the cluster, since routes carry no credential; the
+// all that keeps anything else from joining the cluster, since routes carry no credential unless
+// routeAuthorization has reached authorization; the
 // monitoring port from each monitor namespace, and from none without one, as an empty from would
 // admit every pod; and the exporter's port from each metrics namespace.
 func clusteredHubIngress(s clusteredHubSettings) networkingv1.NetworkPolicyIngressRuleArray {
@@ -210,7 +212,9 @@ func protectClusteredHubStatefulSet(_ context.Context, args *pulumi.ResourceTran
 // templates). The reloader and the exporter take no resources value in this chart version, so
 // their fixed sizes are merged into their containers (reloader.merge, promExporter.merge).
 // nats-server's GOMEMLIMIT is a container.env entry, which the chart renders as a plain env var
-// of the nats container (files/stateful-set/nats-container.yaml, templates/_helpers.tpl nats.env).
+// of the nats container (files/stateful-set/nats-container.yaml, templates/_helpers.tpl nats.env);
+// with routeAuthorization, so are the route password, from its Secret, and the route URLs
+// (clusteredHubRoute.env), which roll the pods when they first appear.
 func clusteredHubChartValues(s clusteredHubSettings) pulumi.Map {
 	jetstreamPVC := pulumi.Map{"size": gibibytes(s.size.diskSizeGb)}
 	if s.storageClassName != "" {
@@ -241,6 +245,10 @@ func clusteredHubChartValues(s clusteredHubSettings) pulumi.Map {
 	for _, port := range []string{"nats", "leafnodes", "websocket", "mqtt", "cluster", "gateway", "monitor", "profiling"} {
 		servicePorts[port] = pulumi.Map{"enabled": pulumi.Bool(port == "nats")}
 	}
+	env := pulumi.Map{"GOMEMLIMIT": pulumi.String(s.size.goMemLimit)}
+	if s.route != nil {
+		maps.Copy(env, s.route.env(s.name, s.namespace))
+	}
 	return pulumi.Map{
 		"fullnameOverride": pulumi.String(s.name),
 		"natsBox":          pulumi.Map{"enabled": pulumi.Bool(false)},
@@ -258,7 +266,7 @@ func clusteredHubChartValues(s clusteredHubSettings) pulumi.Map {
 		"container": pulumi.Map{
 			"image":     pulumi.Map{"fullImageName": pulumi.String(s.images.nats)},
 			"resources": chartResources(s.size.natsCPU, s.size.natsMemory),
-			"env":       pulumi.Map{"GOMEMLIMIT": pulumi.String(s.size.goMemLimit)},
+			"env":       env,
 		},
 		"reloader": pulumi.Map{
 			"image": pulumi.Map{"fullImageName": pulumi.String(s.images.reloader)},
@@ -291,7 +299,8 @@ func clusteredHubChartValues(s clusteredHubSettings) pulumi.Map {
 }
 
 // clusteredHubCluster is the chart's cluster values: three servers that advertise no pod address
-// and, beside a callout, whose routes keep their own ping. The settings carry a callout exactly
+// and, beside a callout, whose routes keep their own ping, and with routeAuthorization, the route
+// credential its stage has reached (clusteredHubRoute.merge). The settings carry a callout exactly
 // when calloutDigest is set.
 //
 // The merge pins the routes' own ping_interval and ping_max at what routes used before the
@@ -302,12 +311,19 @@ func clusteredHubChartValues(s clusteredHubSettings) pulumi.Map {
 // drain is closed as stale and loses what was in transit. Without a callout, the 2-minute default
 // (server/const.go:120) is capped for routes at routeMaxPingInterval, 30 s (server/route.go:144,
 // :152; client.go:6005-6010), and a route takes the top-level ping_max, 2 (const.go:123;
-// client.go:5983-5986). Pinned, only client connections get the 20 s ping. Without a callout the
-// cluster block is as it was (R9).
+// client.go:5983-5986). Pinned, only client connections get the 20 s ping. Without a callout or a
+// routeAuthorization past env, the cluster block is as it was (R9).
 func clusteredHubCluster(s clusteredHubSettings) pulumi.Map {
 	cluster := pulumi.Map{"enabled": pulumi.Bool(true), "replicas": pulumi.Int(clusteredHubServers), "noAdvertise": pulumi.Bool(true)}
+	merge := pulumi.Map{}
 	if s.calloutDigest != "" {
-		cluster["merge"] = pulumi.Map{"ping_interval": pulumi.String("30s"), "ping_max": pulumi.Int(2)}
+		merge["ping_interval"], merge["ping_max"] = pulumi.String("30s"), pulumi.Int(2)
+	}
+	if s.route != nil {
+		s.route.merge(merge)
+	}
+	if len(merge) > 0 {
+		cluster["merge"] = merge
 	}
 	return cluster
 }
