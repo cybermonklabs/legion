@@ -10,11 +10,11 @@
 # the driver says of it.
 #
 # The cases: the driver purges every old-form subject and leaves every new-form message; it
-# refuses, calling nothing, a reading whose (a1), (a2) or (b) did not read true, a first reading,
-# and another cluster's; it purges nothing when an old-form message was published after the
-# reading, or when the stream is not the reading's; it keeps an old-form message published after
-# the Job's check and before its purge; and it prints UNKNOWN when its read-back still finds an
-# old-form message.
+# refuses, calling nothing, a reading whose (a1), (a2), (a3) or (b) did not read true, one that
+# holds no (a3), a first reading, and another cluster's; it purges nothing when an old-form message
+# was published after the reading, or when the stream is not the reading's; it keeps an old-form
+# message published after the Job's check and before its purge; and it prints UNKNOWN when its
+# read-back still finds an old-form message.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -120,11 +120,11 @@ printf '%s\n' "$old_issue 790" "$old_agent 800" "$old_issue 805" "$new_issue 810
 echo stream-id-1 >"$base/stream_id"
 jq -n '{spec: {template: {spec: {containers: [{name: "envoy-listener",
   env: [{name: "NATS_URLS", value: "nats://envoy-hub.envoy.svc.cluster.local:4222"}]}]}}}}' >"$base/deployment.json"
-# The second reading the purge exists for: (a1), (a2) and (b) true, (c) false, the newest old-form
-# message at stream sequence 805.
+# The second reading the purge exists for: (a1), (a2), (a3) and (b) true, (c) false, the newest
+# old-form message at stream sequence 805.
 jq -n '{gate: "legacy-subjects-gate", version: 3, context: "example-cluster", verdict: "shut",
   compared_with: "2026-11-21T00:00:00Z", stream: {id: "stream-id-1", last_seq: 811},
-  facts: {a1: "true", a2: "true", b: "true", c: "false", last_old_seq: 805}}' >"$base/reading.json"
+  facts: {a1: "true", a2: "true", a3: "true", b: "true", c: "false", last_old_seq: 805}}' >"$base/reading.json"
 
 # --- running a case -------------------------------------------------------------------------------
 new_case() {
@@ -201,7 +201,7 @@ grep -qF -- "-n envoy get pods -l job-name=$name -o name" "$FAKE/calls" || fail 
 ! grep -q 'eyJtZXNzYWdl' <<<"$output" || fail "the driver printed a message's content"
 done_case
 
-for fact in a1 a2 b; do
+for fact in a1 a2 a3 b; do
   for verdict in false unknown; do
     new_case "the driver refuses, calling nothing, a reading whose ($fact) read $verdict"
     jq --arg f "$fact" --arg v "$verdict" '.facts[$f] = $v' "$base/reading.json" >"$FAKE/reading.json"
@@ -215,6 +215,16 @@ for fact in a1 a2 b; do
     done_case
   done
 done
+
+# A reading recorded before the gate read (a3), or one that lost it, reads no publisher: refused.
+new_case "the driver refuses, calling nothing, a reading that holds no (a3)"
+jq 'del(.facts.a3)' "$base/reading.json" >"$FAKE/reading.json"
+purge
+expect_status 1
+expect_line "REFUSED: the reading $FAKE/reading.json read (a3) the publishers unread, not true"
+expect_last "REFUSED"
+[ ! -s "$FAKE/calls" ] || fail "the refused driver called $(head -n 1 "$FAKE/calls")"
+done_case
 
 new_case "the driver refuses a first reading, which reads no fact, and another cluster's reading"
 jq '.compared_with = null | .facts = null' "$base/reading.json" >"$FAKE/reading.json"

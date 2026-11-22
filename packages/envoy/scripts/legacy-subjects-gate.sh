@@ -3,7 +3,8 @@
 #   [--since <earlier record>] [--listener <machine>=<url>]... [--insecure]
 #   [--bus-alias <nats-urls>]... [--token-file <path>] [--inbox-prefix <prefix>]
 #   [--deployment <owner/repo> --new-form-commit <commit> [--dotfiles <dir>]]
-#   [--hub-statefulset <name>] [--hub-server <name>]...
+#   [--hub-statefulset <name>] [--hub-server <name>]... [--publisher <identity>=<pin key>]...
+#   [--broker <namespace>/<deployment>]
 #
 # Says whether any reader or writer of the bus still uses the old form of a name the rename moved
 # (an issue event named by its key alone, an agent's or a role's name with no project, a kept lane
@@ -14,9 +15,9 @@
 # old (180 s, the judge's log_line_bound), so each listener's line at the second reading comes after
 # the one the first read. It prints GATE OPEN only at a second reading, when both readings read
 # every surface, no listener counted an old-form name in between, nothing still holds an old form,
-# and the four facts below read true.
+# and the five facts below read true.
 #
-# The four facts, read at a second reading alone, each printed on lines that name it first and kept
+# The five facts, read at a second reading alone, each printed on lines that name it first and kept
 # in the record's facts (true, false or unknown), which legacy-subjects-purge.sh reads:
 #
 #   (a1) The pins, for the clients that start later: daemon-release-gate.sh --deployment
@@ -38,14 +39,34 @@
 #        a pin. A build behind or beside the commit makes it false; a connection that names no
 #        build, a server that does not answer, a census that moved between its pages and one that
 #        enumerates no connection make it unknown.
+#   (a3) The publishers: every user of the hub that may publish a notification subject runs a
+#        listener pin at or after --new-form-commit. The users are read from the hub's auth.conf,
+#        the key of a ConfigMap the --hub-statefulset's pods mount, in the shape infra/core's
+#        Authorization.Render writes it (lib/legacy-subjects-gate-publishers.jq, auth_conf): each
+#        user, by the name its `# <name>` line gives it, whose publish allow list can match a
+#        notification subject (notifications.>, notifications.<x>.>, *.>, >) or that has none,
+#        which allows every subject, unless one deny entry matches every notification subject.
+#        Behind an auth callout, each entry of the auth service's BROKER_NATS_SERVICES, read from
+#        the Deployment --broker names, whose kind lib/legacy-subjects-gate-callout-publishers.json
+#        lists is one too, by the name the service's answer gives its user (<kind>/<machine id>);
+#        the natscallout test TestTheGateCountsEveryCalloutKindWhoseGrantPublishesANotificationSubject
+#        holds that list to the grants the service answers. Nothing the gate reads links a user to
+#        the stack that runs it, so the operator maps each with --publisher <identity>=<pin key>,
+#        repeated for a user more than one process runs, to a pin key of daemon-release-gate.sh
+#        --listeners, run beside this script: envoy, envoy-cluster, dispatch or dispatch-server.
+#        It is true when every such user is mapped and every key it maps to passed; a key that
+#        census shut makes it false; a user no --publisher maps, a key it printed no PASS for, a
+#        server --hub-server names (whose users cannot be read), an auth.conf of another shape, a
+#        callout whose auth service is not named or cannot be read, and no such user at all make
+#        it unknown. The record keeps each --publisher as given, with its key's verdict.
 #   (b)  The consumers: each consumer of the stream has acknowledged (its ack floor's stream
 #        sequence) the newest message of the old-form subjects its filters match: a floor equal to
 #        that message's sequence holds, since the floor's own message is acknowledged, and a floor
 #        below it shuts. A stream that holds no old-form message hands none. A consumer list that
 #        lists none is unknown.
-#   (c)  The stream: it holds no old-form message. Once (a1), (a2) and (b) read true, the committed
-#        driver legacy-subjects-purge.sh, given that reading, purges each old-form subject and reads
-#        back that none is left, in place of waiting out the stream's retention.
+#   (c)  The stream: it holds no old-form message. Once (a1), (a2), (a3) and (b) read true, the
+#        committed driver legacy-subjects-purge.sh, given that reading, purges each old-form subject
+#        and reads back that none is left, in place of waiting out the stream's retention.
 #
 # The legacy-cutover user: the one NATS user that reads the census and purges, a temporary static
 # user of the account the hub's clients connect in, the global account $G on a hub that renders no
@@ -120,8 +141,8 @@
 #     which the listener writes into every record itself until the old form is refused;
 #   - a reading named with --since that shut the gate, less than 180 s between the two readings,
 #     or a listener whose counter line is no later than the one the first reading read;
-#   - a fact read false: a pin or a running client behind the commit, a consumer that has not
-#     acknowledged an old-form message it takes.
+#   - a fact read false: a pin, a running client or a publisher's listener pin behind the commit, a
+#     consumer that has not acknowledged an old-form message it takes.
 #
 # The old form is the gate's own rule (lib/legacy-subjects-gate-forms.jq, old_form), so the gate
 # stays right once the code that reads the old form is deleted.
@@ -190,13 +211,14 @@
 # the logs of and delete Jobs and pods in envoy: a developer box's account holds list through its
 # container.viewer role, and the rest through its edit role in envoy and its pods/log read in
 # dispatch), jq, curl, base64 and date; at a second reading, gh too (signed in with read access to
-# cybermonklabs/legion, for each build a connection names), read of the hub StatefulSet in envoy,
-# and what daemon-release-gate.sh needs.
+# cybermonklabs/legion, for each build a connection names), read of the hub StatefulSet and of the
+# ConfigMaps its pods mount in envoy, with --broker read of that Deployment in its namespace, and
+# what daemon-release-gate.sh needs.
 set -euo pipefail
 
 usage() {
   [ -z "${1:-}" ] || echo "legacy-subjects-gate.sh: $1" >&2
-  echo "usage: legacy-subjects-gate.sh --context <kube-context> --record <file> [--since <earlier record>] [--listener <machine>=<url>]... [--insecure] [--bus-alias <nats-urls>]... [--token-file <path>] [--inbox-prefix <prefix>] [--deployment <owner/repo> --new-form-commit <commit> [--dotfiles <dir>]] [--hub-statefulset <name>] [--hub-server <name>]..." >&2
+  echo "usage: legacy-subjects-gate.sh --context <kube-context> --record <file> [--since <earlier record>] [--listener <machine>=<url>]... [--insecure] [--bus-alias <nats-urls>]... [--token-file <path>] [--inbox-prefix <prefix>] [--deployment <owner/repo> --new-form-commit <commit> [--dotfiles <dir>]] [--hub-statefulset <name>] [--hub-server <name>]... [--publisher <identity>=<pin key>]... [--broker <namespace>/<deployment>]" >&2
   echo "  <kube-context> is the kubectl context of the cluster that runs the listeners and the hub bridge" >&2
   echo "  <file> is where this reading is written; it must not exist" >&2
   echo "  <earlier record> is the first reading's --record, taken at least 180 s before" >&2
@@ -205,10 +227,12 @@ usage() {
   echo "  <nats-urls> is a NATS_URLS that reaches the NATS servers the listener Deployment's NATS_URLS reaches, by another name: a listener container that dials it is read as one of the bus's" >&2
   echo "  <path> is where the listener Deployment mounts its projected NATS token, for a hub that is not static" >&2
   echo "  <prefix> is the inbox prefix the listener identity's grant subscribes, for a hub that is not static" >&2
-  echo "  at a second reading, for the four facts:" >&2
-  echo "  <owner/repo> is the deployment repository daemon-release-gate.sh --clients reads the pins of (a1)" >&2
-  echo "  <commit> is the full commit from which every client writes only new-form names (a1, a2)" >&2
-  echo "  --hub-statefulset names the hub's StatefulSet in envoy, and --hub-server a hub server outside it, each of which must answer the census (a2)" >&2
+  echo "  at a second reading, for the five facts:" >&2
+  echo "  <owner/repo> is the deployment repository daemon-release-gate.sh reads the pins of: --clients for (a1), --listeners for (a3)" >&2
+  echo "  <commit> is the full commit from which every client writes only new-form names (a1, a2, a3)" >&2
+  echo "  --hub-statefulset names the hub's StatefulSet in envoy, and --hub-server a hub server outside it, each of which must answer the census (a2); the StatefulSet's auth.conf names the hub's users (a3)" >&2
+  echo "  <identity>=<pin key> maps a hub user that may publish a notification subject, by its auth.conf name or, behind an auth callout, <kind>/<machine id>, to the daemon-release-gate.sh --listeners pin it runs: envoy, envoy-cluster, dispatch or dispatch-server (a3)" >&2
+  echo "  <namespace>/<deployment> is the auth service's Deployment, whose BROKER_NATS_SERVICES names the services a hub behind an auth callout admits (a3)" >&2
   exit 2
 }
 
@@ -222,9 +246,11 @@ deployment=""
 new_form_commit=""
 dotfiles=""
 hub_statefulset=""
+broker=""
 outside=()
 aliases=()
 hub_servers=()
+publishers=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --context) [ "$#" -ge 2 ] || usage "--context takes a value"; context=$2; shift 2 ;;
@@ -240,6 +266,8 @@ while [ "$#" -gt 0 ]; do
     --dotfiles) [ "$#" -ge 2 ] || usage "--dotfiles takes a value"; dotfiles=$2; shift 2 ;;
     --hub-statefulset) [ "$#" -ge 2 ] || usage "--hub-statefulset takes a value"; hub_statefulset=$2; shift 2 ;;
     --hub-server) [ "$#" -ge 2 ] || usage "--hub-server takes a value"; hub_servers+=("$2"); shift 2 ;;
+    --publisher) [ "$#" -ge 2 ] || usage "--publisher takes a value"; publishers+=("$2"); shift 2 ;;
+    --broker) [ "$#" -ge 2 ] || usage "--broker takes a value"; broker=$2; shift 2 ;;
     *) usage "unknown argument $1" ;;
   esac
 done
@@ -268,13 +296,19 @@ esac
 for server in ${hub_servers[@]+"${hub_servers[@]}"}; do
   [[ $server =~ ^[A-Za-z0-9._-]+$ ]] || usage "--hub-server $server is not a NATS server name"
 done
+for entry in ${publishers[@]+"${publishers[@]}"}; do
+  [[ $entry =~ ^[^=[:space:][:cntrl:]]+=[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] ||
+    usage "--publisher $entry is not <identity>=<pin key>: a hub user's name or <kind>/<machine id>, then a daemon-release-gate.sh --listeners pin key"
+done
+[ -z "$broker" ] || [[ $broker =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?/[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]] ||
+  usage "--broker $broker is not <namespace>/<deployment>"
 for tool in kubectl jq curl base64 date; do
   command -v "$tool" >/dev/null 2>&1 || usage "$tool is required and is not on PATH"
 done
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 readonly here context record since insecure token_file inbox_prefix deployment new_form_commit dotfiles
-readonly hub_statefulset
+readonly hub_statefulset broker
 readonly judge="$here/lib/legacy-subjects-gate-judge.jq"
 readonly job_script="$here/lib/legacy-subjects-gate-nats.sh"
 readonly census_script="$here/lib/legacy-subjects-gate-census.sh"
@@ -285,8 +319,13 @@ readonly cutover_account=legacy-cutover
 readonly cutover_seed_class=legacy-cutover-nats-seed
 readonly cutover_seed_file=nats-seed
 readonly cutover_inbox=_INBOX_legacy_cutover
-# (a1)'s census of pinned builds: the release gate beside this script, in its --clients mode.
+# (a1)'s census of pinned builds, and (a3)'s of listener pins: the release gate beside this script,
+# in its --clients and its --listeners mode.
 readonly release_gate="$here/daemon-release-gate.sh"
+# (a3)'s kinds of auth-service entry whose grant may publish a notification subject, which the
+# natscallout test TestTheGateCountsEveryCalloutKindWhoseGrantPublishesANotificationSubject holds
+# to the grants the auth service answers.
+readonly callout_publishers="$here/lib/legacy-subjects-gate-callout-publishers.json"
 # The nats-box image the deployment pins for its own NATS Jobs (envoy-cluster/Pulumi.prod.yaml
 # moveImage), by digest, so the Job runs the nats CLI the reads were measured with.
 readonly nats_box="mirror.gcr.io/natsio/nats-box:0.19.0@sha256:00f10dd4156f28ece84bb3a52cf356ef220ebaa0494310caa90dec184d9e2b89"
@@ -513,10 +552,12 @@ for entry in ${outside[@]+"${outside[@]}"}; do
   jq -cn --arg name "$name" --arg url "$url" --argjson read "$read_json" '{name: $name, url: $url, read: $read}' >>"$work/outside-reads.jsonl"
 done
 
-# --- the four facts' reads, at a second reading -------------------------------------------------
+# --- the five facts' reads, at a second reading -------------------------------------------------
 # (a1): the release gate's census of pinned builds, as it prints it. (a2): the hub servers that must
 # each answer the census, and the census connection's own name, drawn here so no client can name
-# itself to be left out. A flag a fact needs and was not given is named, and the fact is unknown.
+# itself to be left out. (a3): the release gate's census of listener pins, the hub's auth.conf and,
+# with --broker, the auth service's BROKER_NATS_SERVICES. A flag a fact needs and was not given is
+# named, and the fact is unknown.
 echo '{}' >"$work/facts.json"
 census_name=""
 if [ -n "$since" ]; then
@@ -558,19 +599,94 @@ if [ -n "$since" ]; then
   for server in ${hub_servers[@]+"${hub_servers[@]}"}; do
     echo "$server" >>"$work/hub-servers"
   done
+  a3_missing=()
+  [ -n "$deployment" ] || a3_missing+=("--deployment <owner/repo>")
+  [ -n "$new_form_commit" ] || a3_missing+=("--new-form-commit <commit>")
+  [ -n "$hub_statefulset" ] || a3_missing+=("--hub-statefulset <name>")
+  a3_error=""
+  a3_rc=null
+  : >"$work/a3.out"
+  if [ -n "$deployment" ] && [ -n "$new_form_commit" ]; then
+    set +e
+    "$release_gate" --deployment "$deployment" --listeners "$new_form_commit" >"$work/a3.out" 2>"$work/a3.err"
+    a3_rc=$?
+    set -e
+    if [ "$a3_rc" = 2 ]; then
+      a3_error="it refused its arguments (exit 2): $(first_line "$work/a3.err")"
+    fi
+  fi
+  # The hub's users: the auth.conf key of the one ConfigMap the StatefulSet's pods mount that holds
+  # one, read only from a StatefulSet that read settled.
+  auth_error=""
+  auth_configmap=""
+  : >"$work/auth.conf"
+  if [ -n "$hub_statefulset" ]; then
+    if [ -n "$hub_error" ]; then
+      auth_error=$hub_error
+    else
+      : >"$work/auth-holders"
+      while IFS= read -r configmap; do
+        if kc -n "$job_namespace" get configmap "$configmap" -o json >"$work/configmap.json" 2>"$work/configmap.err"; then
+          if jq -e '.data | type == "object" and has("auth.conf")' "$work/configmap.json" >/dev/null 2>&1; then
+            echo "$configmap" >>"$work/auth-holders"
+            jq -j '.data["auth.conf"]' "$work/configmap.json" >"$work/auth.conf"
+          fi
+        else
+          auth_error="the ConfigMap $job_namespace/$configmap the StatefulSet mounts could not be read: $(first_line "$work/configmap.err")"
+          break
+        fi
+      done < <(jq -r '[.spec.template.spec.volumes[]? | (.configMap.name // empty), (.projected.sources[]? | .configMap.name // empty)] | unique[]' "$work/hub.json" 2>/dev/null)
+      if [ -z "$auth_error" ]; then
+        case "$(wc -l <"$work/auth-holders")" in
+          1) auth_configmap=$(cat "$work/auth-holders") ;;
+          0) auth_error="no ConfigMap the StatefulSet $job_namespace/$hub_statefulset mounts holds auth.conf" ;;
+          *) auth_error="$(wc -l <"$work/auth-holders") ConfigMaps the StatefulSet $job_namespace/$hub_statefulset mounts hold auth.conf: $(paste -sd' ' "$work/auth-holders")" ;;
+        esac
+      fi
+    fi
+  fi
+  # The auth service's services, which a hub behind an auth callout admits: the one literal
+  # BROKER_NATS_SERVICES of the Deployment --broker names. The judge reads it only for a hub whose
+  # auth.conf holds the callout.
+  broker_read='{"given": false}'
+  if [ -n "$broker" ]; then
+    if kc -n "${broker%%/*}" get deployment "${broker#*/}" -o json >"$work/broker.json" 2>"$work/broker.err"; then
+      broker_read=$(jq -c '[.spec.template.spec.containers[]? | .env[]? | select(.name == "BROKER_NATS_SERVICES")] as $e
+        | {given: true}
+        + if ($e | length) == 0 then {error: "its containers set no BROKER_NATS_SERVICES in their env (one set through envFrom cannot be read)"}
+          elif ($e | length) > 1 then {error: "its containers set BROKER_NATS_SERVICES \($e | length) times"}
+          elif ($e[0].value | type) != "string" or $e[0].valueFrom != null then {error: "its BROKER_NATS_SERVICES is no literal value (set through valueFrom)"}
+          else {value: $e[0].value} end' "$work/broker.json" 2>/dev/null) ||
+        broker_read='{"given": true, "error": "its Deployment is no JSON object"}'
+      broker_read=$(jq -c --arg broker "$broker" 'if .error then .error = "the Deployment \($broker): \(.error)" else . end' <<<"$broker_read")
+    else
+      broker_read=$(jq -cn --arg error "the Deployment $broker could not be read: $(first_line "$work/broker.err")" '{given: true, error: $error}')
+    fi
+  fi
   jq -n --arg commit "$new_form_commit" --argjson a1_rc "$a1_rc" --arg a1_error "$a1_error" \
     --rawfile a1_out "$work/a1.out" --arg census_name "$census_name" --arg hub_error "$hub_error" \
     --rawfile hub "$work/hub-servers" \
     --arg a1_missing "$(printf '%s\n' ${a1_missing[@]+"${a1_missing[@]}"})" \
-    --arg census_missing "$(printf '%s\n' ${census_missing[@]+"${census_missing[@]}"})" '
+    --arg census_missing "$(printf '%s\n' ${census_missing[@]+"${census_missing[@]}"})" \
+    --arg a3_missing "$(printf '%s\n' ${a3_missing[@]+"${a3_missing[@]}"})" \
+    --argjson a3_rc "$a3_rc" --arg a3_error "$a3_error" --rawfile a3_out "$work/a3.out" \
+    --arg auth_error "$auth_error" --arg auth_configmap "$auth_configmap" --rawfile auth "$work/auth.conf" \
+    --argjson broker "$broker_read" --slurpfile kinds "$callout_publishers" \
+    --arg outside "$(printf '%s\n' ${hub_servers[@]+"${hub_servers[@]}"})" \
+    --arg map "$(printf '%s\n' ${publishers[@]+"${publishers[@]}"})" '
     def lines: split("\n") | map(select(length > 0));
-    {new_form_commit: (if $commit == "" then null else $commit end),
-     a1: {missing: ($a1_missing | lines), rc: $a1_rc, error: (if $a1_error == "" then null else $a1_error end),
+    def nullable: if . == "" then null else . end;
+    {new_form_commit: ($commit | nullable),
+     a1: {missing: ($a1_missing | lines), rc: $a1_rc, error: ($a1_error | nullable),
        lines: ($a1_out | lines)},
-     census: {missing: ($census_missing | lines), name: (if $census_name == "" then null else $census_name end)},
-     hub: {error: (if $hub_error == "" then null else $hub_error end),
+     census: {missing: ($census_missing | lines), name: ($census_name | nullable)},
+     hub: {error: ($hub_error | nullable),
        servers: ($hub | split("\n") | map(select(length > 0)) | unique)},
-     builds: {}}' >"$work/facts.json"
+     builds: {},
+     a3: {missing: ($a3_missing | lines), rc: $a3_rc, error: ($a3_error | nullable), lines: ($a3_out | lines),
+       auth: {error: ($auth_error | nullable), configmap: ($auth_configmap | nullable), text: $auth},
+       broker: $broker, callout_kinds: ($kinds[0].kinds // []), outside: ($outside | lines),
+       map: [$map | lines | .[] | capture("^(?<identity>.+)=(?<key>[^=]+)$")]}}' >"$work/facts.json"
 fi
 
 # --- the NATS reads, from a Job that connects as the in-cluster listener --------------------------
@@ -768,7 +884,7 @@ case "$verdict" in
     again=$(jq -r '.again | todate' "$work/judgement.json")
     found=$(jq -r .found "$work/judgement.json")
     last_seq=$(jq -r .last_seq "$work/judgement.json")
-    echo "FIRST READING: $record holds a first reading of every surface, with $found FOUND line(s) naming old-form names still in use; read again at or after $again with --since $record and the four facts' flags: that reading opens only if the stream then holds no old-form message (none after stream sequence $last_seq), no listener's count moved, no interest record or consumer filter holds an old form, and the pins, the running clients and the consumers are all past the old form"
+    echo "FIRST READING: $record holds a first reading of every surface, with $found FOUND line(s) naming old-form names still in use; read again at or after $again with --since $record and the five facts' flags: that reading opens only if the stream then holds no old-form message (none after stream sequence $last_seq), no listener's count moved, no interest record or consumer filter holds an old form, and the pins, the running clients, the publishers and the consumers are all past the old form"
     exit 4
     ;;
 esac

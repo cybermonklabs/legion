@@ -2,16 +2,17 @@
 # packages/envoy/scripts/legacy-subjects-purge.sh --context <kube-context> --reading <record>
 #
 # Purges the old-form messages ENVOY_NOTIFICATIONS still holds, once legacy-subjects-gate.sh's
-# second reading has read three of its four facts true: (a1) every pinned build, and (a2) every
-# client connected to the hub, writes only new-form names, and (b) every consumer of the stream has
-# acknowledged the last old-form message it takes. Then no client writes an old form and no
-# consumer still needs one, and the old-form messages are only what keeps fact (c) false, which
-# this driver makes true in place of waiting out the stream's retention. The gate's next second
-# reading reads (c) again, with the other three.
+# second reading has read four of its five facts true: (a1) every pinned build, (a2) every client
+# connected to the hub, and (a3) every user of the hub that may publish a notification subject
+# writes only new-form names, and (b) every consumer of the stream has acknowledged the last
+# old-form message it takes. Then no client writes an old form and no consumer still needs one,
+# and the old-form messages are only what keeps fact (c) false, which this driver makes true in
+# place of waiting out the stream's retention. The gate's next second reading reads (c) again,
+# with the other four.
 #
 # It refuses to purge anything (REFUSED, exit 1) unless --reading is a second reading of the gate,
-# of the cluster --context names, whose record holds (a1), (a2) and (b) true; it reads that record
-# before it calls anything. It then runs one Job in namespace envoy (lib/legacy-subjects-purge-nats.sh)
+# of the cluster --context names, whose record holds (a1), (a2), (a3) and (b) true; it reads that
+# record before it calls anything. It then runs one Job in namespace envoy (lib/legacy-subjects-purge-nats.sh)
 # that connects as the legacy-cutover user, at the NATS URL of the listener Deployment
 # envoy/envoy-listener: the Job runs as the ServiceAccount legacy-cutover and mounts that user's
 # nkey seed through the SecretProviderClass legacy-cutover-nats-seed, as the file nats-seed, and
@@ -42,7 +43,7 @@ set -euo pipefail
 usage() {
   [ -z "${1:-}" ] || echo "legacy-subjects-purge.sh: $1" >&2
   echo "usage: legacy-subjects-purge.sh --context <kube-context> --reading <record>" >&2
-  echo "  <record> is a second reading's --record of legacy-subjects-gate.sh, which read (a1), (a2) and (b) true" >&2
+  echo "  <record> is a second reading's --record of legacy-subjects-gate.sh, which read (a1), (a2), (a3) and (b) true" >&2
   exit 2
 }
 
@@ -56,7 +57,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 [ -n "$context" ] || usage "--context <kube-context> is required"
-[ -n "$reading" ] || usage "--reading <record> is required: the driver purges only on a reading that read (a1), (a2) and (b) true"
+[ -n "$reading" ] || usage "--reading <record> is required: the driver purges only on a reading that read (a1), (a2), (a3) and (b) true"
 for tool in kubectl jq base64 od; do
   command -v "$tool" >/dev/null 2>&1 || usage "$tool is required and is not on PATH"
 done
@@ -79,9 +80,9 @@ readonly nats_box="mirror.gcr.io/natsio/nats-box:0.19.0@sha256:00f10dd4156f28ece
 readonly job_namespace=envoy
 readonly job_deadline=300
 
-# --- the reading: a second reading of this cluster whose (a1), (a2) and (b) read true -----------
+# --- the reading: a second reading of this cluster whose (a1), (a2), (a3) and (b) read true -----
 refusals=$(jq -r --arg context "$context" --arg path "$reading" '
-  {a1: "(a1) the pins", a2: "(a2) the running clients", b: "(b) the consumers"} as $names
+  {a1: "(a1) the pins", a2: "(a2) the running clients", a3: "(a3) the publishers", b: "(b) the consumers"} as $names
   | if .gate != "legacy-subjects-gate" or .version != 3 then "the reading \($path) is no legacy-subjects-gate reading of version 3"
     elif .context != $context then "the reading \($path) read the cluster \(.context), not \($context)"
     elif .compared_with == null or (.facts | type) != "object" then "the reading \($path) is a first reading, which reads no fact"

@@ -4,13 +4,16 @@
 # what it read: the listener pods it found and what each one's log last said of its counter, each
 # listener named outside the cluster and its /metrics, the lines the NATS Job printed
 # (lib/legacy-subjects-gate-nats.sh), the times the reading began and ended, the earlier reading it
-# is compared with, or null, and, at a second reading, what it read for the four facts (facts: the
+# is compared with, or null, and, at a second reading, what it read for the five facts (facts: the
 # release gate's census of pinned builds, the hub servers that must answer the census of
-# connections, the census connection's own name, and the verdict on each build a connection
-# names). It reads nothing itself and answers {verdict, lines, record}: `shut`, `unknown`, `clean`
-# or `open`, the lines the gate prints, and the record it writes.
+# connections, the census connection's own name, the verdict on each build a connection names, and
+# for the publishers the release gate's census of listener pins, the hub's auth.conf, the auth
+# service's BROKER_NATS_SERVICES and the operator's map). It reads nothing itself and answers
+# {verdict, lines, record}: `shut`, `unknown`, `clean` or `open`, the lines the gate prints, and the
+# record it writes.
 
 include "legacy-subjects-gate-forms";
+include "legacy-subjects-gate-publishers";
 
 # The longest a listener's newest log line of its counter may come before the reading began: the
 # listener logs one every minute (cmd/listener startLegacySubjectsLog), so an older one is a
@@ -23,9 +26,12 @@ def log_line_bound: 180;
 #        shows every pin at or after the commit from which every client writes only new-form names;
 #   (a2) the running clients: every connection the census of every hub server lists names its
 #        build in its connection name (forms' build_token), at or after that commit;
+#   (a3) the publishers: every user of the hub that may publish a notification subject (publishers'
+#        can_publish_notifications) runs a listener pin of the release gate's census
+#        (daemon-release-gate.sh --listeners) at or after that commit, by the operator's map;
 #   (b)  every consumer of the stream has acknowledged the last old-form message it takes;
 #   (c)  the stream holds no old-form message.
-def fact_names: {a1: "(a1) the pins", a2: "(a2) the running clients", b: "(b) the consumers", c: "(c) the stream"};
+def fact_names: {a1: "(a1) the pins", a2: "(a2) the running clients", a3: "(a3) the publishers", b: "(b) the consumers", c: "(c) the stream"};
 
 # subject_matches($filter) says whether a subject is one a NATS filter matches: `*` matches one
 # token, a last `>` one token or more, any other token itself.
@@ -479,10 +485,10 @@ def old_filters:
        ]
    end) as $compared
 
-# --- the four facts, at a second reading ------------------------------------------------------
+# --- the five facts, at a second reading ------------------------------------------------------
 # Each entry names its fact (fact); a fact is false where any of its entries shuts, unknown where
 # none shuts and any cannot be read, and true otherwise. A census that enumerates nothing (no pin,
-# no connection, no consumer) is unknown, never true.
+# no connection, no publisher, no consumer) is unknown, never true.
 | ($in.facts // {}) as $fi
 | ($fi.new_form_commit // null) as $commit
 # What the stream holds now, family by family: each family whole (every page read, joined, and as
@@ -500,6 +506,55 @@ def old_filters:
        empty: ($read and ($subjects | length) == 0 and ($family == "notifications.dispatch.issue.>" or $family == "notifications.agent.>"))}]) as $families
 | ([$families[] | select(.whole and .empty) | .family]) as $emptyfamilies
 | ([$families[] | .subjects[] | select(old_form)] | unique) as $oldnow
+# (a3) the publishers: every user of the hub that may publish a notification subject, each static
+# user of its auth.conf and, behind its auth callout, each entry of the auth service whose kind's
+# grant publishes one, runs a listener pin the release gate's census passed, by the operator's map
+# (--publisher <identity>=<pin key>). It is read beside the facts so the record keeps the map it
+# judged: each entry as the operator gave it, with its key's verdict.
+| (if $in.earlier == null then null else
+    ($fi.a3 // {}) as $p
+    | ([$p.lines // [] | .[] | strings]) as $ll
+    | (if $p.error then "daemon-release-gate.sh --listeners \($commit // "?") could not be run: \($p.error | printable)"
+       elif (["GATE OPEN", "GATE SHUT", "UNKNOWN"] | index($ll | last // "")) == null then "daemon-release-gate.sh --listeners \($commit // "?") ended before its verdict (exit \($p.rc // "?"))"
+       else null end) as $censusbad
+    | ([$p.map // [] | .[] | {identity, key} + (if $censusbad then {verdict: "unknown", line: $censusbad} else listener_verdict($ll; .key) end)]) as $judged
+    | def unknown($why): {entries: [{fact: "a3", unknown: "\(fact_names.a3): \($why)"}], map: $judged, users: null};
+      if ($p.missing // []) | length > 0 then unknown("the hub's publishers were not read: name \($p.missing | join(" and "))")
+      elif ($p.outside // []) | length > 0 then unknown("the hub server(s) \($p.outside | map(printable) | join(", ")) that --hub-server names run outside the StatefulSet, whose users this gate cannot read")
+      elif $p.auth.error then unknown("the hub's users could not be read: \($p.auth.error | printable)")
+      else
+        ($p.auth.text // "" | auth_conf) as $ac
+        | if $ac.error then unknown("the ConfigMap \($p.auth.configmap // "?" | printable)'s auth.conf is not the rendering this gate reads, so a user it holds could be passed over: \($ac.error | if .line then "line \(.line), \(.text | .[:120] | printable), \(.why)" elif .names then "\(.why) \(.names | map(printable) | join(", "))" else .why end)")
+          else
+            ([$ac.users[] | select(.permissions | can_publish_notifications) | .name]) as $static
+            | ($p.callout_kinds // []) as $kinds
+            | (if ($ac.callout | not) then {ids: []}
+               elif ($p.broker.given // false | not) then {unknown: "the hub runs an auth callout, whose services this gate reads from the auth service's Deployment: name it with --broker <namespace>/<deployment>"}
+               elif $p.broker.error then {unknown: "the hub runs an auth callout, and the services its auth service admits could not be read: \($p.broker.error | printable)"}
+               else ($p.broker.value | nats_services) as $s
+                 | if $s.error then {unknown: "the hub runs an auth callout, and its auth service's BROKER_NATS_SERVICES cannot be read: an entry is no <kind>/<machine id or ->/<scope>=<account>: \($s.error.entry | .[:120] | printable)"}
+                   else {ids: ([$s.entries[] | select(.kind as $k | $kinds | index($k) != null) | .identity]
+                     + (if ($kinds | index("session")) != null then ["session/*"] else [] end))} end
+               end) as $callout
+            | if $callout.unknown then unknown($callout.unknown)
+              else (($static + $callout.ids) | unique) as $ids
+                | if ($ids | length) == 0 then unknown("no user of the hub may publish a notification subject, by its auth.conf\(if $ac.callout then " and its auth service's entries" else "" end), and a census that read nothing passes nothing")
+                  else
+                    ([$ids[] | . as $id | ([$judged[] | select(.identity == $id)] | unique_by(.key)) as $keys
+                      | if ($keys | length) == 0 then {fact: "a3", unknown: "\(fact_names.a3): \($id | printable) may publish a notification subject, and no --publisher maps it to a listener pin"}
+                        else $keys[]
+                          | if .verdict == "pass" then empty
+                            elif .verdict == "shut" then {fact: "a3", shut: "\(fact_names.a3): \($id | printable) runs \(.key | printable), which the census of listener pins shut: \(.line | printable)"}
+                            else {fact: "a3", unknown: "\(fact_names.a3): \($id | printable) runs \(.key | printable), which the census of listener pins did not pass: \(.line | printable)"} end
+                        end]) as $entries
+                    | {entries: (if ($entries | length) > 0 then $entries
+                        else [{fact: "a3", pass: "\(fact_names.a3): each of the \($ids | length) user(s) of the hub that may publish a notification subject runs a listener pin the census passed at or after \($commit): \([$ids[] | . as $id | "\($id | printable) (\([$judged[] | select(.identity == $id) | .key] | unique | map(printable) | join(", ")))"] | join("; "))"}] end),
+                       map: $judged, users: $ids}
+                  end
+              end
+          end
+      end
+  end) as $a3
 | (if $in.earlier == null then [] else [
     # (a1) the pins: the release gate's census, as daemon-release-gate.sh --clients printed it.
     ($fi.a1 // {}) as $a
@@ -584,6 +639,9 @@ def old_filters:
            end
        end)[],
 
+    # (a3) the publishers, judged above.
+    $a3.entries[],
+
     # (b) the consumers: each consumer of the stream has acknowledged the last old-form message it
     # takes, the newest message of the old-form subjects its filters match (its ack floor's stream
     # sequence at or after it): one that has not would still be handed an old-form message once
@@ -623,11 +681,11 @@ def old_filters:
     (if ($whole | not) then {fact: "c", unknown: "\(fact_names.c): the NATS reads' log ends before its last read, so what they read is not whole"}
      elif ($families | all(.whole) | not) then {fact: "c", unknown: "\(fact_names.c): the stream's subjects were not read whole"}
      elif ($emptyfamilies | length) > 0 then {fact: "c", unknown: "\(fact_names.c): the stream's subjects under \($emptyfamilies | join(", ")) read none, so the read saw nothing"}
-     elif ($oldnow | length) > 0 then {fact: "c", shut: "\(fact_names.c): the stream holds \($oldnow | length) old-form subject(s); once (a1), (a2) and (b) read true, legacy-subjects-purge.sh purges them"}
+     elif ($oldnow | length) > 0 then {fact: "c", shut: "\(fact_names.c): the stream holds \($oldnow | length) old-form subject(s); once (a1), (a2), (a3) and (b) read true, legacy-subjects-purge.sh purges them"}
      else {fact: "c", pass: "\(fact_names.c): the stream holds no old-form message under \($families | map(.family) | join(", "))"}
      end)
   ] end) as $facts
-| ({a1: null, a2: null, b: null, c: null} | with_entries(.key as $k
+| ({a1: null, a2: null, a3: null, b: null, c: null} | with_entries(.key as $k
     | .value = ([$facts[] | select(.fact == $k)] | if length == 0 then null elif any(.[]; .shut) then "false" elif any(.[]; .unknown) then "unknown" else "true" end))) as $factverdicts
 | ([$oldnow[] | $oldlast[.].seq | numbers] | max) as $lastoldseq
 
@@ -681,8 +739,11 @@ def old_filters:
       shut: [$shut[] | .shut],
       unknown: [$unknown[] | .unknown],
       # What each fact read at a second reading, which legacy-subjects-purge.sh reads before it
-      # purges anything; null at a first reading.
+      # purges anything, and the operator's map of publishers as given, each entry with the verdict
+      # its pin key read (a3), with the hub's users that may publish a notification subject; null at
+      # a first reading.
       facts: (if $in.earlier == null then null
-        else $factverdicts + {new_form_commit: $commit, last_old_seq: $lastoldseq, census_name: ($fi.census.name // null)} end)
+        else $factverdicts + {new_form_commit: $commit, last_old_seq: $lastoldseq, census_name: ($fi.census.name // null),
+          publishers: {map: [$a3.map[] | {identity, key, verdict}], users: $a3.users}} end)
     }
   }

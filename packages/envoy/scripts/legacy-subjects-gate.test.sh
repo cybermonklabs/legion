@@ -26,17 +26,21 @@
 # when it serves as the machine of a listener read (its machine read trimmed, as the listener reads
 # it), or sets its machine as no literal value (a $(VAR) reference among them), and a container that
 # lists ENVOY_MACHINE_ID or NATS_URLS twice makes it UNKNOWN too. At a second reading it reads the
-# four facts, each with a case that shuts the gate or makes it UNKNOWN for that fact alone: a pin
+# five facts, each with a case that shuts the gate or makes it UNKNOWN for that fact alone: a pin
 # behind the new-form commit (a1), a census of pins that read none, a connected client at an older
 # build (a2), a connection that names no build, a hub server that does not answer the census, a
-# census with no connection, a census whose list moved under it at an unchanged count, a consumer
-# that has not acknowledged the last old-form message it takes (b), a session's as well as a
-# daemon's, an empty consumer list, a consumer the server could not read, a list shorter than the
-# server's count and one with no daemon's consumer, a read of a family that saw nothing (b and c),
-# and an old-form message still on the stream (c); new pins with one older client still connected
-# keep the gate shut, and the purge driver refuses that reading and each reading whose (b) is
-# unknown; and a required-mode listener's connection, its build before its trailing privacy
-# suffix, is judged by that build. Every case runs from the same clean
+# census with no connection, a census whose list moved under it at an unchanged count, a user of
+# the hub that may publish a notification subject mapped to no pin or to one the census of
+# listener pins shut (a3), a hub with no such user, each shape of publish permission that reaches
+# a notification subject and two that reach none, the auth service's entries behind an auth
+# callout, and a ConfigMap, an auth.conf, an auth service or a hub server it cannot read, a
+# consumer that has not acknowledged the last old-form message it takes (b), a session's as well
+# as a daemon's, an empty consumer list, a consumer the server could not read, a list shorter than
+# the server's count and one with no daemon's consumer, a read of a family that saw nothing (b and
+# c), and an old-form message still on the stream (c); new pins with one older client still
+# connected keep the gate shut, and the purge driver refuses that reading and each reading whose
+# (a3) or (b) is unknown; and a required-mode listener's connection, its build before its trailing
+# privacy suffix, is judged by that build. Every case runs from the same clean
 # fixture with one thing changed, so each fails for its own reason. The old-form rule itself is
 # held row by row. The summary counts cases.
 set -euo pipefail
@@ -45,14 +49,21 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
 # The gate runs from a copy of this directory's gate and lib/, beside a fake daemon-release-gate.sh
-# (the census of pinned builds (a1) reads), which records its arguments in $FAKE/release-gate.args,
-# prints $FAKE/release-gate.out and exits $FAKE/release-gate.rc (0 when absent).
+# (the census of pinned builds (a1) and of listener pins (a3) read), which adds its arguments as a
+# line to $FAKE/release-gate.args and, with --listeners, prints $FAKE/release-gate-listeners.out
+# and exits $FAKE/release-gate-listeners.rc, else prints $FAKE/release-gate.out and exits
+# $FAKE/release-gate.rc (0 when absent).
 mkdir -p "$root/gate/lib"
 cp "$here/legacy-subjects-gate.sh" "$root/gate/"
 cp "$here"/lib/legacy-subjects-gate-*.* "$root/gate/lib/"
 cat >"$root/gate/daemon-release-gate.sh" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >"$FAKE/release-gate.args"
+printf '%s\n' "$*" >>"$FAKE/release-gate.args"
+case " $* " in
+  *" --listeners "*)
+    cat "$FAKE/release-gate-listeners.out"
+    exit "$(cat "$FAKE/release-gate-listeners.rc" 2>/dev/null || echo 0)" ;;
+esac
 cat "$FAKE/release-gate.out"
 exit "$(cat "$FAKE/release-gate.rc" 2>/dev/null || echo 0)"
 EOF
@@ -108,6 +119,17 @@ case "$*" in
   "-n envoy get statefulset envoy-nats -o json")
     [ ! -e "$FAKE/statefulset.fail" ] || { echo 'Error from server (NotFound): statefulsets.apps "envoy-nats" not found' >&2; exit 1; }
     cat "$FAKE/statefulset.json" ;;
+  "-n envoy get configmap "*" -o json")
+    # A ConfigMap the hub's pods mount: $FAKE/configmaps/<name>.json, refused as the operator's
+    # account may not read it when configmap.fail exists.
+    [ ! -e "$FAKE/configmap.fail" ] || { echo "Error from server (Forbidden): configmaps \"$5\" is forbidden: User cannot get resource \"configmaps\" in API group \"\" in the namespace \"envoy\"" >&2; exit 1; }
+    if [ -f "$FAKE/configmaps/$5.json" ]; then cat "$FAKE/configmaps/$5.json"
+    else echo "Error from server (NotFound): configmaps \"$5\" not found" >&2; exit 1
+    fi ;;
+  "-n dispatch get deployment envoy-broker -o json")
+    # The auth service's Deployment, refused when broker.fail exists.
+    [ ! -e "$FAKE/broker.fail" ] || { echo 'Error from server (Forbidden): deployments.apps "envoy-broker" is forbidden: User cannot get resource "deployments" in API group "apps" in the namespace "dispatch"' >&2; exit 1; }
+    cat "$FAKE/broker.json" ;;
   "-n "*" logs "*" -c "*" --since=5m")
     ns=$2
     pod=$4
@@ -294,7 +316,7 @@ clean_consumers() {
   consumer listener-envoy-hub '["notifications.agent.>","notifications.dispatch.>"]' true "$durable_lapse_ns"
 }
 
-# The four facts' fixture. new_form is the commit from which every client writes only new-form
+# The five facts' fixture. new_form is the commit from which every client writes only new-form
 # names; newer is a later one. Each build a connection names has its compare with new_form in
 # $FAKE/compare/<head>.
 readonly new_form=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -372,7 +394,64 @@ jq -n '{spec: {template: {spec: {
     volumeAttributes: {secretProviderClass: "envoy-listener-nats-seed"}}}]}}}}' >"$base/deployment.json"
 echo '{"status":{"succeeded":1}}' >"$base/job-status.json"
 job_log "$(consumers_page "$(clean_consumers)")" "$(clean_issue_subjects)" >"$base/job.log"
-jq -n '{metadata: {name: "envoy-nats"}, spec: {replicas: 3}, status: {replicas: 3, currentRevision: "envoy-nats-7d9", updateRevision: "envoy-nats-7d9"}}' >"$base/statefulset.json"
+jq -n '{metadata: {name: "envoy-nats"},
+  spec: {replicas: 3, template: {spec: {volumes: [{name: "config", configMap: {name: "envoy-nats-config"}}, {name: "pid", emptyDir: {}}]}}},
+  status: {replicas: 3, currentRevision: "envoy-nats-7d9", updateRevision: "envoy-nats-7d9"}}' >"$base/statefulset.json"
+
+# auth_conf [--callout] NAME=PERMISSIONS...: the hub's auth.conf as infra/core's Authorization.Render
+# writes it, a user per NAME with the permissions object PERMISSIONS, the fifth its no_auth_user;
+# --callout adds the auth callout's block and the ping lines it ends the text with.
+auth_conf() {
+  local callout=0 n=0 user
+  if [ "${1:-}" = --callout ]; then
+    callout=1
+    shift
+  fi
+  printf '# Rendered by envoy-infra. Public keys only.\nauthorization {\n  users: [\n'
+  for user in "$@"; do
+    n=$((n + 1))
+    printf '    # %s\n    %s\n' "${user%%=*}" "$(jq -cn --arg key "$(printf 'U%055d' "$n")" --argjson p "${user#*=}" '{nkey: $key, permissions: $p}')"
+  done
+  printf '  ]\n'
+  if [ "$callout" = 1 ]; then
+    printf '  auth_callout {\n    issuer: "AB2TCXFBYSIN24KFPVJARBN5CHCL4ZCV5SBWSONTZ2WYXS3XTAEK6S3G"\n    auth_users: ["%s"]\n    xkey: "XBVCTZK3PV5Y7TBIVYTDZBP3O2YGHUUL7MMENN4DTZIREJCPGLTAF6EL"\n  }\n' "$(printf 'U%055d' 1)"
+  fi
+  printf '}\n# members: a client presenting no credential becomes this user\nno_auth_user: "%s"\n' "$(printf 'U%055d' 5)"
+  if [ "$callout" = 1 ]; then
+    printf '%s\n' "# a replica of the auth service that answers nothing is dropped from the callout's queue group within 80 s" 'ping_interval: "20s"' 'ping_max: 2'
+  fi
+}
+
+# hub_configmap DIR [auth_conf ARG...]: DIR's ConfigMap envoy-nats-config, which the hub's
+# StatefulSet mounts: its nats.conf and the auth.conf auth_conf writes.
+hub_configmap() {
+  local dir=$1
+  shift
+  mkdir -p "$dir/configmaps"
+  jq -n --arg auth "$(auth_conf "$@")" '{metadata: {name: "envoy-nats-config"}, data: {"nats.conf": "include auth.conf\n", "auth.conf": ($auth + "\n")}}' \
+    >"$dir/configmaps/envoy-nats-config.json"
+}
+
+# The hub's users: Dispatch and the listener publish every notification subject, and the daemon,
+# the legacy-cutover user and the sessions' fallback user none.
+# shellcheck disable=SC2016 # $JS and $SYS begin NATS subjects, not the shell's expansions
+readonly clean_users=(
+  'dispatch={"publish": {"allow": ["notifications.>", "$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS"]}, "subscribe": {"allow": ["_INBOX.>"]}}'
+  'daemon={"publish": {"allow": ["$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS", "$JS.ACK.ENVOY_NOTIFICATIONS.>"]}, "subscribe": {"allow": ["notifications.envoy.exceptions.notifications.role.>", "_INBOX.>"]}}'
+  'listener={"publish": {"allow": ["notifications.>", "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.listener-gke"]}, "subscribe": {"allow": ["notifications.>", "_INBOX.>"]}}'
+  'legacy-cutover={"publish": {"allow": ["$SYS.REQ.SERVER.PING.CONNZ", "$JS.API.STREAM.PURGE.ENVOY_NOTIFICATIONS"]}, "subscribe": {"allow": ["_INBOX_legacy_cutover.>"]}}'
+  'members={"publish": {"allow": ["_INBOX.>", "agentstream.*.frames"]}, "subscribe": {"allow": ["notifications.envoy.deliver.*", "agentstream.*.control"]}}'
+)
+hub_configmap "$base" "${clean_users[@]}"
+# The auth service's Deployment: its services, a listener's, Dispatch's, a daemon's, the
+# measurement job's and an edge listener's, which a hub behind its callout admits.
+jq -n --arg services "listener/host-a/*=system:serviceaccount:envoy:host-a dispatch/example-dispatch/*=system:serviceaccount:dispatch:dispatch daemon/-/-=system:serviceaccount:legion:daemon measure/-/*=google:measure@example-project.iam.gserviceaccount.com edge-listener/edge-a/PRIV=system:serviceaccount:edge:edge-a" \
+  '{metadata: {name: "envoy-broker"}, spec: {template: {spec: {containers: [{name: "envoy-broker",
+    env: [{name: "BROKER_NATS_URLS", value: "nats://envoy-nats.envoy.svc.cluster.local:4222"}, {name: "BROKER_NATS_SERVICES", value: $services}]}]}}}}' >"$base/broker.json"
+# The census of listener pins: no VM hub, and each pin at or after the commit.
+printf '%s\n' "NO VM HUB: envoy/ at eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee declares no gcp:NatsHub" \
+  "PASS: envoy-cluster runs $new_form (identical to $new_form)" "PASS: dispatch runs $newer (ahead of $new_form)" \
+  "PASS: dispatch-server runs $newer (ahead of $new_form)" "GATE OPEN" >"$base/release-gate-listeners.out"
 printf '%s\n' "PASS: ACME's image ghcr.io/example/worker@sha256:1111 runs pi-envoy and claude-envoy at $new_form" \
   "PASS: the sessions image ghcr.io/example/sessions@sha256:2222 runs pi-envoy and claude-envoy at $newer" "GATE OPEN" >"$base/release-gate.out"
 mkdir -p "$base/compare"
@@ -382,8 +461,12 @@ for head in "$newer" pi-envoy-v21.0.0 claude-envoy-v6.0.0; do
 done
 echo '{"status":"behind","behind_by":12}' >"$base/compare/pi-envoy-v19.0.0"
 
-# facts are the four facts' flags a second reading takes.
-readonly facts=(--deployment example/deploy --new-form-commit "$new_form" --hub-statefulset envoy-nats)
+# facts_default are the five facts' flags a second reading takes, the operator's map of the hub's
+# publishers among them, and facts the ones a case's second readings take: new_case sets it to
+# facts_default, and a case may change it before it reads.
+readonly facts_default=(--deployment example/deploy --new-form-commit "$new_form" --hub-statefulset envoy-nats
+  --broker dispatch/envoy-broker --publisher dispatch=dispatch --publisher dispatch=dispatch-server --publisher listener=envoy-cluster)
+facts=("${facts_default[@]}")
 
 # --- running a case -------------------------------------------------------------------------------
 # new_case NAME copies the clean fixture into a fresh case directory, sets FAKE to it and names the
@@ -394,6 +477,7 @@ new_case() {
   FAKE="$root/case-$((passed + failed))-$RANDOM"
   cp -r "$base" "$FAKE"
   : >"$FAKE/calls"
+  facts=("${facts_default[@]}")
   export FAKE
 }
 
@@ -407,7 +491,7 @@ run_gate() {
 }
 
 # reading [ARG...] runs the gate as a reading of the case, with the hub's listener named, writing
-# $FAKE/record.json; a second reading (--since) takes the four facts' flags too.
+# $FAKE/record.json; a second reading (--since) takes the five facts' flags (facts) too.
 reading() {
   local extra=()
   case " $* " in *" --since "*) extra=("${facts[@]}") ;; esac
@@ -670,7 +754,7 @@ done_case
 new_case "a clean fleet's first reading is a first reading, never GATE OPEN"
 reading
 expect_status 4
-expect_last "FIRST READING: $FAKE/record.json holds a first reading of every surface, with 0 FOUND line(s) naming old-form names still in use; read again at or after $(jq -r '(.finished_at + 180) | todate' "$FAKE/record.json") with --since $FAKE/record.json and the four facts' flags: that reading opens only if the stream then holds no old-form message (none after stream sequence 900), no listener's count moved, no interest record or consumer filter holds an old form, and the pins, the running clients and the consumers are all past the old form"
+expect_last "FIRST READING: $FAKE/record.json holds a first reading of every surface, with 0 FOUND line(s) naming old-form names still in use; read again at or after $(jq -r '(.finished_at + 180) | todate' "$FAKE/record.json") with --since $FAKE/record.json and the five facts' flags: that reading opens only if the stream then holds no old-form message (none after stream sequence 900), no listener's count moved, no interest record or consumer filter holds an old form, and the pins, the running clients, the publishers and the consumers are all past the old form"
 [ "$(jq -c .facts "$FAKE/record.json")" = null ] || fail "a first reading recorded facts: $(jq -c .facts "$FAKE/record.json")"
 [ ! -e "$FAKE/release-gate.args" ] || fail "a first reading ran the release gate: $(cat "$FAKE/release-gate.args")"
 [ ! -e "$FAKE/created-census-job.json" ] || fail "a first reading created a census Job: $(jq -c .metadata "$FAKE/created-census-job.json")"
@@ -749,9 +833,9 @@ expect_status 4
 expect_line "IDENTITY: the server answers that the NATS reads ran as user $listener_nkey, account \$G"
 done_case
 
-# No wait for the stream's retention: a second reading 200 s after the first, with the four facts
+# No wait for the stream's retention: a second reading 200 s after the first, with the five facts
 # true, opens.
-new_case "a clean fleet read twice, 200 s apart, with the four facts true, opens"
+new_case "a clean fleet read twice, 200 s apart, with the five facts true, opens"
 first_reading_secs 200 reading
 reading --since "$FAKE/earlier.json"
 expect_status 0
@@ -762,11 +846,17 @@ expect_line "PASS: (a1) the pins: daemon-release-gate.sh --clients $new_form rea
 expect_line "PASS: (a2) the running clients: every one of the 5 connection(s) on the 3 hub server(s) (envoy-nats-0, envoy-nats-1, envoy-nats-2) names a build at or after $new_form, 4 build(s): @sjawhar/claude-envoy@6.0.0, @sjawhar/pi-envoy@21.0.0, legion@$new_form, legion@$newer"
 expect_line "PASS: (b) the consumers: each of the stream's 7 consumer(s) has acknowledged every old-form message it takes (0 old-form subject(s) on the stream)"
 expect_line "PASS: (c) the stream: the stream holds no old-form message under"
+expect_line "PASS: (a3) the publishers: each of the 2 user(s) of the hub that may publish a notification subject runs a listener pin the census passed at or after $new_form: dispatch (dispatch, dispatch-server); listener (envoy-cluster)"
 [ "$(jq -r .verdict "$FAKE/record.json")" = complete ] || fail "an open reading's record is $(jq -r .verdict "$FAKE/record.json"), want complete, a first reading for the next"
-[ "$(jq -c '.facts | {a1, a2, b, c, new_form_commit}' "$FAKE/record.json")" = "{\"a1\":\"true\",\"a2\":\"true\",\"b\":\"true\",\"c\":\"true\",\"new_form_commit\":\"$new_form\"}" ] ||
+[ "$(jq -c '.facts | {a1, a2, a3, b, c, new_form_commit}' "$FAKE/record.json")" = "{\"a1\":\"true\",\"a2\":\"true\",\"a3\":\"true\",\"b\":\"true\",\"c\":\"true\",\"new_form_commit\":\"$new_form\"}" ] ||
   fail "the record's facts are $(jq -c .facts "$FAKE/record.json")"
-[ "$(cat "$FAKE/release-gate.args" 2>/dev/null)" = "--deployment example/deploy --clients $new_form" ] ||
+# The record keeps the operator's map as given, each entry with its key's verdict.
+[ "$(jq -c .facts.publishers "$FAKE/record.json")" = '{"map":[{"identity":"dispatch","key":"dispatch","verdict":"pass"},{"identity":"dispatch","key":"dispatch-server","verdict":"pass"},{"identity":"listener","key":"envoy-cluster","verdict":"pass"}],"users":["dispatch","listener"]}' ] ||
+  fail "the record's publishers are $(jq -c .facts.publishers "$FAKE/record.json")"
+[ "$(cat "$FAKE/release-gate.args" 2>/dev/null)" = "--deployment example/deploy --clients $new_form"$'\n'"--deployment example/deploy --listeners $new_form" ] ||
   fail "the release gate was run as $(cat "$FAKE/release-gate.args" 2>/dev/null)"
+grep -qxF -- "--context example-cluster --request-timeout=60s -n envoy get configmap envoy-nats-config -o json" "$FAKE/calls" ||
+  fail "the hub's auth.conf was not read from the ConfigMap its StatefulSet mounts"
 # The census runs in a Job of its own, as the legacy-cutover user's ServiceAccount with that user's
 # seed alone mounted; the listener-identity Job takes nothing of the census.
 jq -e '.spec.template.spec as $s
@@ -1301,15 +1391,17 @@ expect_status 0
 expect_last "GATE OPEN"
 done_case
 
-# --- the four facts -------------------------------------------------------------------------------
-new_case "a second reading given none of the four facts' flags is UNKNOWN, naming each"
+# --- the five facts -------------------------------------------------------------------------------
+new_case "a second reading given none of the five facts' flags is UNKNOWN, naming each"
 first_reading_secs 200 reading
 run_gate --context example-cluster --record "$FAKE/record.json" --listener envoy-hub=https://envoy-hub.example-tailnet.ts.net:9020 --since "$FAKE/earlier.json"
 expect_status 3
 expect_line "UNKNOWN: (a1) the pins: the census of pinned builds was not read: name --deployment <owner/repo> and --new-form-commit <commit>"
 expect_line "UNKNOWN: (a2) the running clients: no census of the hub's connections was read: name --new-form-commit <commit>"
+expect_line "UNKNOWN: (a3) the publishers: the hub's publishers were not read: name --deployment <owner/repo> and --new-form-commit <commit> and --hub-statefulset <name>"
 [ ! -e "$FAKE/created-census-job.json" ] || fail "a reading with no --new-form-commit created a census Job"
-[ "$(jq -c '.facts | {a1, a2, b, c}' "$FAKE/record.json")" = '{"a1":"unknown","a2":"unknown","b":"true","c":"true"}' ] ||
+[ ! -e "$FAKE/release-gate.args" ] || fail "a reading with no --deployment ran the release gate: $(cat "$FAKE/release-gate.args")"
+[ "$(jq -c '.facts | {a1, a2, a3, b, c}' "$FAKE/record.json")" = '{"a1":"unknown","a2":"unknown","a3":"unknown","b":"true","c":"true"}' ] ||
   fail "the record's facts are $(jq -c .facts "$FAKE/record.json")"
 done_case
 
@@ -1451,10 +1543,10 @@ first_reading_secs 200 reading
 old_stream_rows
 reading --since "$FAKE/earlier.json"
 expect_status 1
-expect_line "GATE SHUT: (c) the stream: the stream holds 1 old-form subject(s); once (a1), (a2) and (b) read true, legacy-subjects-purge.sh purges them"
+expect_line "GATE SHUT: (c) the stream: the stream holds 1 old-form subject(s); once (a1), (a2), (a3) and (b) read true, legacy-subjects-purge.sh purges them"
 expect_line "PASS: (b) the consumers: each of the stream's 7 consumer(s) has acknowledged every old-form message it takes (1 old-form subject(s) on the stream, the last at stream sequence 812)"
 expect_line "PASS: (a2) the running clients:"
-[ "$(jq -c '.facts | {a1, a2, b, c, last_old_seq}' "$FAKE/record.json")" = '{"a1":"true","a2":"true","b":"true","c":"false","last_old_seq":812}' ] ||
+[ "$(jq -c '.facts | {a1, a2, a3, b, c, last_old_seq}' "$FAKE/record.json")" = '{"a1":"true","a2":"true","a3":"true","b":"true","c":"false","last_old_seq":812}' ] ||
   fail "the record's facts are $(jq -c .facts "$FAKE/record.json")"
 done_case
 
@@ -1565,6 +1657,169 @@ reading --since "$FAKE/earlier.json"
 expect_status 3
 expect_line "UNKNOWN: (a2) the running clients: hub server envoy-nats-0's census page at offset 2 begins with connection 15, not 13, the last of the page before, so the list moved between the two reads and a connection may have been passed over; read again"
 [ "$(jq -r .facts.a2 "$FAKE/record.json")" = unknown ] || fail "the record's (a2) is $(jq -r .facts.a2 "$FAKE/record.json"), want unknown"
+done_case
+
+# --- (a3) the publishers --------------------------------------------------------------------------
+# The reading the purge exists for, with the listener's user mapped to no pin: (a3) is unknown, and
+# the purge driver refuses it. The record keeps the map as the operator gave it.
+new_case "(a3) a hub user no --publisher maps is UNKNOWN, and the purge driver refuses that reading"
+facts=(--deployment example/deploy --new-form-commit "$new_form" --hub-statefulset envoy-nats --broker dispatch/envoy-broker
+  --publisher dispatch=dispatch --publisher dispatch=dispatch-server)
+first_reading_secs 200 reading
+old_stream_rows
+reading --since "$FAKE/earlier.json"
+expect_line "UNKNOWN: (a3) the publishers: listener may publish a notification subject, and no --publisher maps it to a listener pin"
+[ "$(jq -c '.facts | {a1, a2, a3, b}' "$FAKE/record.json")" = '{"a1":"true","a2":"true","a3":"unknown","b":"true"}' ] ||
+  fail "the record's facts are $(jq -c .facts "$FAKE/record.json")"
+[ "$(jq -c '.facts.publishers.map' "$FAKE/record.json")" = '[{"identity":"dispatch","key":"dispatch","verdict":"pass"},{"identity":"dispatch","key":"dispatch-server","verdict":"pass"}]' ] ||
+  fail "the record's map is $(jq -c .facts.publishers.map "$FAKE/record.json")"
+purge_refuses "(a3) the publishers" unknown
+done_case
+
+new_case "(a3) a user mapped to a listener pin the census of listener pins shut is false"
+printf '%s\n' "NO VM HUB: envoy/ at eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee declares no gcp:NatsHub" \
+  "GATE SHUT: envoy-cluster runs cccccccccccccccccccccccccccccccccccccccc (behind $new_form by 4)" "PASS: dispatch runs $newer (ahead of $new_form)" \
+  "PASS: dispatch-server runs $newer (ahead of $new_form)" "GATE SHUT" >"$FAKE/release-gate-listeners.out"
+echo 1 >"$FAKE/release-gate-listeners.rc"
+first_reading_secs 200 reading
+reading --since "$FAKE/earlier.json"
+expect_status 1
+expect_line "GATE SHUT: (a3) the publishers: listener runs envoy-cluster, which the census of listener pins shut: GATE SHUT: envoy-cluster runs cccccccccccccccccccccccccccccccccccccccc (behind $new_form by 4)"
+expect_last "GATE SHUT"
+[ "$(jq -r .facts.a3 "$FAKE/record.json")" = false ] || fail "the record's (a3) is $(jq -r .facts.a3 "$FAKE/record.json"), want false"
+[ "$(jq -c '[.facts.publishers.map[] | select(.identity == "listener")]' "$FAKE/record.json")" = '[{"identity":"listener","key":"envoy-cluster","verdict":"shut"}]' ] ||
+  fail "the record's map is $(jq -c .facts.publishers.map "$FAKE/record.json")"
+done_case
+
+new_case "(a3) a hub none of whose users may publish a notification subject is UNKNOWN"
+hub_configmap "$FAKE" "${clean_users[1]}" "${clean_users[3]}" "${clean_users[4]}"
+first_reading_secs 200 reading
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: (a3) the publishers: no user of the hub may publish a notification subject, by its auth.conf, and a census that read nothing passes nothing"
+[ "$(jq -r .facts.a3 "$FAKE/record.json")" = unknown ] || fail "the record's (a3) is $(jq -r .facts.a3 "$FAKE/record.json"), want unknown"
+done_case
+
+# Each shape of publish permission that can reach a notification subject makes its user one of the
+# hub's publishers, which the map must name: a user named extra, mapped by none, is UNKNOWN. The
+# clean fixture's own users hold the first shape, notifications.>.
+publisher_shapes=(
+  'notifications.<x>.>|{"publish": {"allow": ["notifications.agent.>"]}, "subscribe": {"allow": ["_INBOX.>"]}}'
+  '*.>|{"publish": {"allow": ["*.>"]}, "subscribe": {"allow": ["_INBOX.>"]}}'
+  '>|{"publish": {"allow": [">"]}, "subscribe": {"allow": ["_INBOX.>"]}}'
+  'missing, which allows every subject|{"subscribe": {"allow": ["_INBOX.>"]}}'
+  '> with a deny of one family alone|{"publish": {"allow": [">"], "deny": ["notifications.agent.>"]}, "subscribe": {"allow": ["_INBOX.>"]}}'
+)
+for shape in "${publisher_shapes[@]}"; do
+  new_case "(a3) a user whose publish allow list is ${shape%%|*} may publish a notification subject, and one no --publisher maps is UNKNOWN"
+  hub_configmap "$FAKE" "${clean_users[@]}" "extra=${shape#*|}"
+  first_reading_secs 200 reading
+  reading --since "$FAKE/earlier.json"
+  expect_status 3
+  expect_line "UNKNOWN: (a3) the publishers: extra may publish a notification subject, and no --publisher maps it to a listener pin"
+  done_case
+done
+
+# And the shapes that reach none: a deny of every notification subject beside an allow of every
+# subject, and a one-token subject, which no notification subject is. The gate opens.
+# shellcheck disable=SC2016 # $JS begins a NATS subject, not a shell expansion
+silent_shapes=(
+  '> with a deny of notifications.>|{"publish": {"allow": [">"], "deny": ["notifications.>"]}, "subscribe": {"allow": ["_INBOX.>"]}}'
+  'the one token notifications|{"publish": {"allow": ["notifications", "$JS.API.>"]}, "subscribe": {"allow": ["_INBOX.>"]}}'
+)
+for shape in "${silent_shapes[@]}"; do
+  new_case "(a3) a user whose publish allow list is ${shape%%|*} publishes no notification subject, and the gate opens"
+  hub_configmap "$FAKE" "${clean_users[@]}" "extra=${shape#*|}"
+  first_reading_secs 200 reading
+  reading --since "$FAKE/earlier.json"
+  expect_status 0
+  expect_line "PASS: (a3) the publishers: each of the 2 user(s) of the hub that may publish a notification subject"
+  expect_no_line "extra"
+  done_case
+done
+
+# Behind an auth callout, each entry of the auth service whose kind's grant publishes a notification
+# subject (lib/legacy-subjects-gate-callout-publishers.json) is a publisher too, by the name the
+# service gives its user.
+new_case "(a3) behind an auth callout, the auth service's dispatch and listener entries are publishers, and its daemon's, measurement job's and edge listener's are not"
+hub_configmap "$FAKE" --callout "${clean_users[@]}"
+facts+=(--publisher listener/host-a=envoy-cluster --publisher dispatch/example-dispatch=dispatch-server)
+first_reading_secs 200 reading
+reading --since "$FAKE/earlier.json"
+expect_status 0
+expect_last "GATE OPEN"
+expect_line "PASS: (a3) the publishers: each of the 4 user(s) of the hub that may publish a notification subject runs a listener pin the census passed at or after $new_form: dispatch (dispatch, dispatch-server); dispatch/example-dispatch (dispatch-server); listener (envoy-cluster); listener/host-a (envoy-cluster)"
+grep -qxF -- "--context example-cluster --request-timeout=60s -n dispatch get deployment envoy-broker -o json" "$FAKE/calls" ||
+  fail "the auth service's Deployment was not read"
+done_case
+
+new_case "(a3) behind an auth callout, an entry of the auth service no --publisher maps is UNKNOWN"
+hub_configmap "$FAKE" --callout "${clean_users[@]}"
+facts+=(--publisher dispatch/example-dispatch=dispatch-server)
+first_reading_secs 200 reading
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: (a3) the publishers: listener/host-a may publish a notification subject, and no --publisher maps it to a listener pin"
+expect_no_line "daemon/system:serviceaccount:legion:daemon may publish"
+expect_no_line "edge-listener/edge-a may publish"
+done_case
+
+new_case "(a3) behind an auth callout with no --broker named is UNKNOWN"
+hub_configmap "$FAKE" --callout "${clean_users[@]}"
+facts=(--deployment example/deploy --new-form-commit "$new_form" --hub-statefulset envoy-nats
+  --publisher dispatch=dispatch --publisher dispatch=dispatch-server --publisher listener=envoy-cluster)
+first_reading_secs 200 reading
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: (a3) the publishers: the hub runs an auth callout, whose services this gate reads from the auth service's Deployment: name it with --broker <namespace>/<deployment>"
+done_case
+
+# An auth service the operator's account cannot read is UNKNOWN, never a callout with no service.
+new_case "(a3) an auth service's Deployment the operator cannot read is UNKNOWN, never passed over"
+hub_configmap "$FAKE" --callout "${clean_users[@]}"
+touch "$FAKE/broker.fail"
+facts+=(--publisher listener/host-a=envoy-cluster --publisher dispatch/example-dispatch=dispatch-server)
+first_reading_secs 200 reading
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: (a3) the publishers: the hub runs an auth callout, and the services its auth service admits could not be read: the Deployment dispatch/envoy-broker could not be read: Error from server (Forbidden): deployments.apps \"envoy-broker\" is forbidden"
+done_case
+
+new_case "(a3) an auth service whose BROKER_NATS_SERVICES is set through valueFrom is UNKNOWN"
+hub_configmap "$FAKE" --callout "${clean_users[@]}"
+jq '.spec.template.spec.containers[0].env[1] = {name: "BROKER_NATS_SERVICES", valueFrom: {configMapKeyRef: {name: "envoy-broker", key: "services"}}}' \
+  "$FAKE/broker.json" >"$FAKE/broker.tmp" && mv "$FAKE/broker.tmp" "$FAKE/broker.json"
+first_reading_secs 200 reading
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: (a3) the publishers: the hub runs an auth callout, and the services its auth service admits could not be read: the Deployment dispatch/envoy-broker: its BROKER_NATS_SERVICES is no literal value (set through valueFrom)"
+done_case
+
+new_case "(a3) a ConfigMap of the hub the operator cannot read is UNKNOWN"
+touch "$FAKE/configmap.fail"
+first_reading_secs 200 reading
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: (a3) the publishers: the hub's users could not be read: the ConfigMap envoy/envoy-nats-config the StatefulSet mounts could not be read: Error from server (Forbidden)"
+done_case
+
+# An auth.conf of another shape than the rendering this gate reads, here one with an accounts
+# block, is UNKNOWN: a user the reader passed over could be a publisher.
+new_case "(a3) an auth.conf of another shape, with an accounts block, is UNKNOWN"
+jq '.data["auth.conf"] |= sub("\nauthorization \\{"; "\naccounts {\n  CLIENTS: {}\n}\nauthorization {")' \
+  "$FAKE/configmaps/envoy-nats-config.json" >"$FAKE/configmap.tmp" && mv "$FAKE/configmap.tmp" "$FAKE/configmaps/envoy-nats-config.json"
+first_reading_secs 200 reading
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: (a3) the publishers: the ConfigMap envoy-nats-config's auth.conf is not the rendering this gate reads, so a user it holds could be passed over: line 2, accounts {, comes before its authorization block"
+done_case
+
+new_case "(a3) a hub server outside the StatefulSet, whose users cannot be read, is UNKNOWN"
+facts+=(--hub-server envoy-vm)
+first_reading_secs 200 reading
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: (a3) the publishers: the hub server(s) envoy-vm that --hub-server names run outside the StatefulSet, whose users this gate cannot read"
 done_case
 
 new_case "a stream whose configuration carries no identity is UNKNOWN at a first reading"

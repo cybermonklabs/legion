@@ -14,8 +14,8 @@
 #      lib/legacy-subjects-gate-forms.jq, old_form);
 #   3. reads each old-form subject's last message (its subject, stream sequence and time alone),
 #      and purges nothing if any is after LAST_OLD_SEQ, the newest old-form message the reading
-#      found: one published since was published after (a1), (a2) and (b) were read, by a client
-#      the reading did not see, and a consumer may not have it yet;
+#      found: one published since was published after (a1), (a2), (a3) and (b) were read, by a
+#      client the reading did not see, and a consumer may not have it yet;
 #   4. purges each old-form subject by itself, $JS.API.STREAM.PURGE.ENVOY_NOTIFICATIONS with the
 #      subject as the filter, a literal subject and never a wildcard, so no new-form message goes,
 #      and LAST_OLD_SEQ + 1 as its sequence, so it takes the messages up to LAST_OLD_SEQ alone: one
