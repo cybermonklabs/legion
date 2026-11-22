@@ -281,12 +281,20 @@ func TestAVersionCommittedWhileTheFillRunsIsNotReplacedByTheOlderOneItRead(t *te
 		written int64
 		err     error
 	}
+	// The fill runs on a connection of its own, and the wait watches its backend
+	// (storetest.WaitForQueuedBehind): its batch statement queued behind the open version write
+	// has read artifact_versions and reached its own insert, and no other session queued behind
+	// that write is taken for it.
+	fillPool, fillPID := storetest.OneConnection(t, database.Pool)
+	fillStore := &store.Store{Pool: fillPool}
 	done := make(chan filled, 1)
 	go func() {
-		written, err := database.FillDocumentSearch(context.Background())
+		written, err := fillStore.FillDocumentSearch(context.Background())
 		done <- filled{written: written, err: err}
 	}()
-	awaitFillQueued(t, database)
+	if answer, early := storetest.WaitForQueuedBehind(t, writing, fillPID, done); early {
+		t.Fatalf("the fill answered (%d rows, error %v) before its batch queued behind the open version write", answer.written, answer.err)
+	}
 	if err := writing.Commit(ctx); err != nil {
 		t.Fatalf("commit the version write: %v", err)
 	}
@@ -300,22 +308,6 @@ func TestAVersionCommittedWhileTheFillRunsIsNotReplacedByTheOlderOneItRead(t *te
 			answer.written, documents)
 	}
 	requireDocumentSearchRow(t, database, notes.ID, 2, "zebra", "quagga")
-}
-
-// awaitFillQueued waits for the fill's batch statement to queue behind a lock, which is what
-// says the batch has read artifact_versions and reached its own insert. The statement's text
-// names it, so no other session queued on the same lock is taken for it. Its one bound is the
-// test binary's deadline (testwait.UntilPolling): a batch a loaded machine starts late still ends
-// the wait.
-func awaitFillQueued(t *testing.T, database *store.Store) {
-	t.Helper()
-	testwait.UntilPolling(t, 10*time.Millisecond, "the fill's batch to queue behind the open version write (the sessions its statement has waiting on a lock)", func() (int, bool) {
-		waiting, err := storetest.CountLockWaits(context.Background(), database, "%document_search_backfill for update%")
-		if err != nil {
-			t.Fatalf("read the sessions waiting on a lock: %v", err)
-		}
-		return waiting, waiting > 0
-	})
 }
 
 // The cheap boot: once the pass is finished, a run reads the progress row and nothing else. The

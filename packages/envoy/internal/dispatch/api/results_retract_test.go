@@ -280,8 +280,8 @@ func TestResultRetractionIsTakenOnAClosedIssueAndForAnAfterMergeCheck(t *testing
 // three statements either way. Holding the lock until both retractions wait on it does.
 func TestTwoRetractionsOfOneResultSentAtOnceAnswerOneRetractionAndOneConflict(t *testing.T) {
 	// An hour's settle keeps the upload's settlement, which takes the same owner lock, out of the
-	// queue this test counts.
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	// queue this test makes.
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "RETR", "Raced", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
 	result := recordResultAsSession(t, handler, issue.Key, "ses-recorder", resultBody("k1", "pass", headCommit, nil))
@@ -296,10 +296,17 @@ func TestTwoRetractionsOfOneResultSentAtOnceAnswerOneRetractionAndOneConflict(t 
 		t.Fatalf("hold the check issue's owner lock: %v", err)
 	}
 
+	// Each retraction runs on a connection of its own, and the wait below watches those two
+	// backends (storetest.WaitForEachQueuedBehind), so the lock is released only once both have
+	// queued behind it, and no other session queued on the owner lock is taken for one of them.
+	sessionHandler, sessionPID := oneConnectionHandler(t, deps)
+	personHandler, personPID := oneConnectionHandler(t, deps)
 	answers := make(chan *httptest.ResponseRecorder, 2)
-	go func() { answers <- retractAsSession(t, handler, result.ID, "ses-recorder", "The suite was stale.") }()
-	go func() { answers <- retractAsPerson(t, handler, result.ID, "The commit was wrong.") }()
-	storetest.WaitForLockWaiters(t, holder, 2)
+	go func() {
+		answers <- retractAsSession(t, sessionHandler, result.ID, "ses-recorder", "The suite was stale.")
+	}()
+	go func() { answers <- retractAsPerson(t, personHandler, result.ID, "The commit was wrong.") }()
+	storetest.WaitForEachQueuedBehind(t, holder, sessionPID, personPID)
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("release the check issue's owner lock: %v", err)
 	}

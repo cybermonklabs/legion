@@ -53,7 +53,7 @@ func (g *gatedProjectMark) ProjectMark(ctx context.Context, artifactID, markID s
 // whether the close was seen.
 func TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused(t *testing.T) {
 	// The seeded spec's settlement takes the owner lock this test holds; keep it out of the queue.
-	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "Closed while waiting", "A spec")
 	// Creating the issue starts the project's term-statistics refresh, which commits its rows
 	// whenever it finishes: waited out here, it cannot read as a write of the refused ask.
@@ -74,12 +74,18 @@ func TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused(t *testing.T) {
 	`, issue.Key); err != nil {
 		t.Fatalf("close the issue: %v", err)
 	}
+	// The ask runs on a connection of its own, and the wait watches its backend
+	// (storetest.WaitForQueuedBehind), so the close commits only once the ask has queued behind
+	// the issue's owner lock, and no other session queued there is taken for it.
+	askHandler, askPID := oneConnectionHandler(t, deps)
 	responses := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		responses <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks",
+		responses <- dispatchRequest(t, askHandler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks",
 			map[string]any{"question": "Opened while the issue closed?"}, "alice")
 	}()
-	waitForDatabaseLocks(t, closer, 1)
+	if response, early := storetest.WaitForQueuedBehind(t, closer, askPID, responses); early {
+		t.Fatalf("the ask answered %d %s before it queued behind the issue's owner lock", response.Code, response.Body.String())
+	}
 	if err := closer.Commit(context.Background()); err != nil {
 		t.Fatalf("commit the close: %v", err)
 	}

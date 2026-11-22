@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -442,9 +443,16 @@ func TestAnInFlightRepeatIsJudgedWithoutSpoolingItsBody(t *testing.T) {
 // for a lease. Here the claim waits behind another transaction's hold on the key, the client gives
 // up meanwhile, and once the hold goes the request is claimed, run once and answered under its key.
 func TestAKeyedClaimFinishesWhenItsClientGivesUpDuringIt(t *testing.T) {
-	rig := newKeyedRig(t, answerRun)
+	_, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
+	// The keyed layer runs on a connection of its own, so the wait below watches the claim's
+	// backend alone (storetest.WaitForQueuedBehind): the client gives up only once that claim has
+	// queued behind the hold, and no other session waiting on the database is taken for it.
+	claimStore, claimPID := oneConnectionStore(t, deps)
+	claimDeps := deps
+	claimDeps.Store = claimStore
+	rig := newKeyedRigOn(t, claimDeps, keyedRigPattern, answerRun)
 	ctx := context.Background()
-	hold, err := rig.database.Pool.Begin(ctx)
+	hold, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -467,7 +475,9 @@ func TestAKeyedClaimFinishesWhenItsClientGivesUpDuringIt(t *testing.T) {
 		defer close(served)
 		rig.handler.ServeHTTP(response, request)
 	}()
-	waitForDatabaseLocks(t, hold, 1)
+	if _, early := storetest.WaitForQueuedBehind(t, hold, claimPID, served); early {
+		t.Fatalf("the request finished (status=%d body=%s) before its claim queued behind the hold on its key", response.Code, response.Body.String())
+	}
 	giveUp()
 	// Long enough for a claim bound to the client's context to be cancelled in the database.
 	time.Sleep(300 * time.Millisecond)
@@ -480,7 +490,7 @@ func TestAKeyedClaimFinishesWhenItsClientGivesUpDuringIt(t *testing.T) {
 			response.Code, response.Body.String(), rig.runs.Load())
 	}
 	var status *int
-	if err := rig.database.Pool.QueryRow(ctx,
+	if err := database.Pool.QueryRow(ctx,
 		`select status from request_keys where login = 'alice' and idempotency_key = 'cut-claim'`).Scan(&status); err != nil {
 		t.Fatalf("read the key: %v", err)
 	}
