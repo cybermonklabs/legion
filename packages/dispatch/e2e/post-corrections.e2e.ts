@@ -37,10 +37,12 @@ import { asUser } from "./users";
  * seeds through the API and then reads the page, because the mark is the server's record drawn
  * by the component rather than anything the browser can make on its own, and each pays a Go
  * server, a Postgres, a sign-in and a database reset for that, which is why the two pages that
- * read one comment are read by one row. Two more hold a page open while the post's author
- * edits it and then deletes it through the API - the Inbox's thread rows and the answers page -
- * and read the marks without a reload: the event each correction appends makes the page read its
- * list again (`web/src/api/event-refresh.ts`). The last holds the search palette open over a
+ * read one comment are read by one row. That row also reads the two posts' rows on the
+ * References list of a second issue's Artifacts tab, from a message of that issue that links to
+ * both. Two more hold a page open while the post's author edits it and then deletes it through
+ * the API - the Inbox's thread rows and the answers page - and read the marks without a reload:
+ * the event each correction appends makes the page read its list again
+ * (`web/src/api/event-refresh.ts`). The last holds the search palette open over a
  * comment's hit while its author deletes it. Every other surface that prints a body is covered
  * by a test of its component in `web/src`, which CI runs.
  *
@@ -159,6 +161,30 @@ test("the issue page and the document margin mark an edited message and a delete
     await expect(deletedLine(card)).toHaveText(/^Deleted by alice · /);
     await expect(page.getByText("The ledger replays twice at 02:00.")).toHaveCount(0);
     await expect(card.getByText(/^1 reply · last reply/)).toBeVisible();
+
+    // The Artifacts tab's References rows name each node an issue's own content links to by the
+    // head of its words. An issue's own posts are no rows of its own references read
+    // (`refs/closure.go`), so a message of a second issue links to both: the deleted comment's
+    // row is the deleted line, with none of its words, and the edited message's carries
+    // ` · edited` after its words. Each stays a link to its post.
+    const linking = await createIssue({ project: "CORE", title: "The replay audit" });
+    await createMessage(
+      linking.key,
+      {
+        body: `The audit reads dispatch://${issue.key}/comment/${comment.id} and dispatch://${issue.key}/message/${message.id} again.`,
+      },
+      asPlanner
+    );
+    await page.goto(`/issues/${linking.key}/artifacts`);
+    await page.getByText("References (2)", { exact: true }).click();
+    const references = page.getByRole("region", { exact: true, name: "References" });
+    await expect(references.getByRole("listitem")).toHaveCount(2);
+    const deletedRow = references.locator(`a[href="/issues/${issue.key}/comments/${comment.id}"]`);
+    await expect(deletedLine(deletedRow)).toHaveText(/^Deleted by alice · /);
+    await expect(page.getByText("The ledger replays twice at 02:00.")).toHaveCount(0);
+    await expect(
+      references.locator(`a[href="/issues/${issue.key}/messages/${message.id}"]`)
+    ).toHaveText("Corrected: the export runs at 02:00 UTC. · edited");
   } finally {
     await alice.close();
   }
