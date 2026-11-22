@@ -30,9 +30,12 @@
 #     proof job (select-e2e-proofs.sh emits them, each row's `apt` list joined by spaces), the
 #     rows narrowed by a step `if:` of the form matrix.<key> == '<value>' or matrix.<key> != '',
 #     and the smallest timeout of the rows left taken; anything else is refused, not guessed;
-#   * a `run:` that calls apt or apt-get itself (update, install, upgrade): no budget bounds it.
-#     The command may be named by a path (`/usr/bin/apt-get`) and take options before its verb,
-#     with or without a value (`-y`, `-o Acquire::Retries=3`, `--option=...`, `-c <file>`);
+#   * a `run:` that calls apt or apt-get itself for a verb that fetches from a mirror (update,
+#     install, upgrade, dist-upgrade, full-upgrade, build-dep, source, download): no budget bounds
+#     it. The command may be named by a path (`/usr/bin/apt-get`) and take options before its
+#     verb, with or without a value (`-y`, `-o Acquire::Retries=3`, `--option=...`, `-c <file>`),
+#     and may be split over lines a backslash continues, which the shell runs as one command: each
+#     `run:` is read with its continued lines joined, for the script calls too;
 #   * a composite action under .github/actions that runs either script or apt: an action's step
 #     has no job timeout of its own to hold a budget to;
 #   * no call of either script found at all, which would make every rule above pass over nothing.
@@ -60,8 +63,17 @@ BUDGET = re.compile(r"^\s+--budget\s+(\d+)(?:\s|$)")
 APT = re.compile(
     r"(?:^|[\s;&|(`/])apt(?:-get)?\s+"
     r"(?:(?:-[oct]|--option|--config-file|--target-release)\s+\S+\s+|-\S+\s+)*"
-    r"(?:update|install|upgrade|dist-upgrade|full-upgrade)\b"
+    r"(?:update|install|upgrade|dist-upgrade|full-upgrade|build-dep|source|download)\b"
 )
+# A backslash at the end of a line, which the shell reads as no break at all.
+CONTINUED = re.compile(r"\\\r?\n")
+
+
+def command_text(run):
+    """A `run:` as the shell reads its commands: each line a backslash continues joined to the next."""
+    return CONTINUED.sub(" ", run)
+
+
 MATRIX = re.compile(r"^\$\{\{\s*matrix\.([A-Za-z0-9_-]+)\s*\}\}$")
 IF_EQUALS = re.compile(r"^(?:\$\{\{\s*)?matrix\.([A-Za-z0-9_-]+)\s*==\s*'([^']*)'(?:\s*\}\})?$")
 IF_NOT_EMPTY = re.compile(r"^(?:\$\{\{\s*)?matrix\.([A-Za-z0-9_-]+)\s*!=\s*''(?:\s*\}\})?$")
@@ -134,6 +146,8 @@ def check_step(path, job_id, job, rows, step, index):
     job with no matrix) for each call that fits, for the job's total."""
     fitted = []
     run = step.get("run")
+    if isinstance(run, str):
+        run = command_text(run)
     if not isinstance(run, str):
         return fitted
     where = f"job {job_id}, step {step.get('name') or step.get('id') or index + 1}"
@@ -216,6 +230,7 @@ for path in sorted(Path(".github/actions").glob("*/action.y*ml")):
     document = yaml.safe_load(path.read_text()) or {}
     for index, step in enumerate((document.get("runs") or {}).get("steps") or []):
         run = step.get("run") if isinstance(step, dict) else None
+        run = command_text(run) if isinstance(run, str) else None
         if isinstance(run, str) and (APT.search(run) or CALL.search(run)):
             problem(path, f"step {step.get('name') or index + 1}", "a composite action runs apt or a budgeted script, and an action's step has no job timeout to hold a budget to; run it from the workflow's own step")
 

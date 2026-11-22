@@ -196,12 +196,14 @@ check "naming the apt-get step" "$(contains "$out" '^::error file=.github/workfl
 check "naming the apt step" "$(contains "$out" "^::error file=.github/workflows/ci.yaml::job changes, step List the change's files: runs apt itself")"
 check "counting two problems" "$(contains "$out" '^2 problem(s) with the budgets of bounded retries$')"
 
-# Each form apt takes in a step: options with a value before the verb, a long option, and the
-# command by its absolute path. Each is a fixture of its own, so each must be found by itself.
+# Each form apt takes in a step: options with a value before the verb, a long option, the command
+# by its absolute path, and a verb besides install and update that fetches from a mirror. Each is a
+# fixture of its own, so each must be found by itself.
 for form in 'sudo apt-get -o Acquire::Retries=3 install -y zsh' \
   'sudo apt-get --option Acquire::Retries=3 update' \
   'sudo /usr/bin/apt-get install -y zsh' \
-  'sudo apt-get -y -o Dpkg::Options::=--force-confold -c /etc/apt/apt.conf install zsh'; do
+  'sudo apt-get -y -o Dpkg::Options::=--force-confold -c /etc/apt/apt.conf install zsh' \
+  'sudo apt-get build-dep -y zsh'; do
   echo "case: a step that runs: $form"
   root=$(fixture "raw-apt-$(printf '%s' "$form" | tr -c '[:alnum:]' -)")
   replace "$root/.github/workflows/ci-job-pi-envoy.yaml" 'run: bun run test' "run: $form"
@@ -210,9 +212,33 @@ for form in 'sudo apt-get -o Acquire::Retries=3 install -y zsh' \
   check "naming the step" "$(contains "$out" '^::error file=.github/workflows/ci-job-pi-envoy.yaml::job pi-envoy, step Test: runs apt itself, which no budget bounds')"
 done
 
-echo "control: words that name apt but run no apt verb pass"
+echo "case: a step that runs apt-get split over a line a backslash continues"
+# The shell runs `sudo apt-get \` and `  update` as one command: the hang this check exists for.
+root=$(fixture raw-apt-continued)
+replace "$root/.github/workflows/ci-job-pi-envoy.yaml" 'run: bun run test' "run: |
+          sudo apt-get \\
+            update
+          bun run test"
+run_check "$root"
+check "it fails" "$(is "$status" 1)"
+check "naming the step" "$(contains "$out" '^::error file=.github/workflows/ci-job-pi-envoy.yaml::job pi-envoy, step Test: runs apt itself, which no budget bounds')"
+
+echo "control: a budgeted call split over a line a backslash continues is read whole"
+# Read line by line, the call would name no --budget right after the script and be refused.
+root=$(fixture call-continued)
+replace "$root/.github/workflows/ci-job-pi-envoy.yaml" 'run: .github/scripts/apt-install.sh --budget 300 tmux' "run: |
+          .github/scripts/apt-install.sh \\
+            --budget 300 tmux"
+run_check "$root"
+check "it passes" "$(is "$status" 0)"
+check "reading its 300 s budget" \
+  "$(contains "$out" 'ci-job-pi-envoy.yaml job pi-envoy, step Install tmux: apt-install.sh --budget 300, at most half')"
+
+echo "control: words that name apt but run no apt verb pass, joined or not"
 root=$(fixture apt-words)
-replace "$root/.github/workflows/ci-job-pi-envoy.yaml" 'run: bun run test' 'run: echo apt-install.sh /usr/share/apt-get.d && bun run test'
+replace "$root/.github/workflows/ci-job-pi-envoy.yaml" 'run: bun run test' "run: |
+          echo apt-install.sh /usr/share/apt-get.d \\
+            apt-get-docs && bun run test"
 run_check "$root"
 check "it passes" "$(is "$status" 0)"
 

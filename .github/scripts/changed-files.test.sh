@@ -648,6 +648,17 @@ check "  and not the newer base's own file" "$(is "$(diff_status "$work/pr-merge
 check "it says where it read them" \
   "$(is "$out" "9 path(s) changed: pull request #7, 3500 files past the 3000 the API lists, read with git diff of its merge commit $merge_sha against its first parent $newer_base")"
 
+echo "case: the checkout of a merge commit that is not the one GITHUB_SHA names"
+# Its HEAD has two parents and diffs cleanly, so only the HEAD = GITHUB_SHA guard tells it from
+# the event's merge commit: here the event names the pull request's head.
+cd "$work/merge-checkout"
+list_files pull_request "$work/pr-merge-other" GITHUB_SHA="$head_sha"
+check "it fails" "$(is "$status" 1)"
+check "naming the checkout's HEAD and the commit the event names" \
+  "$(contains "$err" "^::error::pull request #7 changes 3500 files, more than the 3000 GET repos/o/r/pulls/7/files lists, and the checkout's HEAD ($merge_sha) is not its merge commit GITHUB_SHA ($head_sha) with two parents, ")"
+check "having read nothing" "$(is "$gh_calls" "")"
+check "it writes no repository" "$(is "$(test -e "$work/pr-merge-other" && echo yes || echo no)" no)"
+
 echo "control: the same pull request in a checkout of its head, a commit with one parent"
 cd "$work/sparse-2"
 list_files pull_request "$work/pr-merge-head" GITHUB_SHA="$head_sha"
