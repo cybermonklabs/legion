@@ -589,6 +589,7 @@ const (
 	codeMintFailed         = "MINT_FAILED"
 	codeProfileMintRefused = "PROFILE_MINT_REFUSED"
 	codeTargetRefused      = "TARGET_REFUSED"
+	codeTargetRepositories = "TARGET_REPOSITORIES_REFUSED"
 	codeValueShape         = "AIRLOCK_VALUE_SHAPE"
 	codeGrantRefused       = "GRANT_REFUSED"
 	codeGrantUnreadable    = "GRANT_UNREADABLE"
@@ -615,7 +616,7 @@ const (
 //     apart - is 403 in those words. No retry clears one of them, so telling a command to make
 //     the call again would be untrue, and none of them carries anything of the store the read
 //     went to. Which errors those are is the read's own package to say (requests.IsRefusal),
-//     since a sentinel added there would be missed by a list kept here; the six named here have
+//     since a sentinel added there would be missed by a list kept here; the seven named here have
 //     a code of their own, and any other is GRANT_REFUSED.
 //   - A release the broker refused because it could not learn whether Dispatch calls the
 //     session's person a restricted member (*projectaccess.MemberKindUncheckable) is 503 in its
@@ -654,6 +655,8 @@ func (s *Server) grantRefusal(read string, err error) (int, string, string) {
 		return http.StatusForbidden, codeMintFailed, err.Error()
 	case errors.Is(err, secrets.ErrMintNarrowingRefused):
 		return http.StatusForbidden, codeProfileMintRefused, err.Error()
+	case errors.Is(err, requests.ErrTargetRepositoriesRefused):
+		return http.StatusForbidden, codeTargetRepositories, err.Error()
 	case errors.Is(err, requests.ErrTargetRefused):
 		return http.StatusForbidden, codeTargetRefused, err.Error()
 	case errors.Is(err, requests.ErrAirlockValueShape):

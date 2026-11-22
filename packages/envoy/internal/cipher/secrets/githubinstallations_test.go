@@ -1,0 +1,380 @@
+package secrets_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"maps"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
+	"github.com/sjawhar/envoy/internal/cipher/secrets"
+)
+
+// storedNow is the clock the github-installations minter reads in these tests.
+var storedNow = time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+
+// storedEntry is one installation as a minter outside the broker writes it into a
+// github-installations secret. Repositories is set beside repository_selection "selected" alone,
+// where the minter narrowed the token to those repositories.
+type storedEntry struct {
+	InstallationID      int64             `json:"installation_id"`
+	Token               string            `json:"token"`
+	ExpiresAt           string            `json:"expires_at"`
+	Permissions         map[string]string `json:"permissions"`
+	RepositorySelection string            `json:"repository_selection"`
+	Repositories        []string          `json:"repositories,omitempty"`
+}
+
+// stored is the entry of installation id whose token is token, which lapses life after storedNow
+// and holds permissions, for every repository of its installation.
+func stored(id int64, token string, life time.Duration, permissions map[string]string) storedEntry {
+	return storedEntry{InstallationID: id, Token: token, ExpiresAt: storedNow.Add(life).Format(time.RFC3339), Permissions: permissions, RepositorySelection: "all"}
+}
+
+// storedValue is the secret's value holding entries, by the account login as GitHub writes it.
+func storedValue(t *testing.T, entries map[string]storedEntry) string {
+	t.Helper()
+	value, err := json.Marshal(map[string]any{"installations": entries})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(value)
+}
+
+// scopeOf is a profile's scope as requests' gitHubScope builds it: accounts (lowercase logins),
+// permissions, the value form, and no repositories.
+func scopeOf(value string, permissions map[string]string, accounts ...string) *secrets.GitHubScope {
+	return &secrets.GitHubScope{Accounts: accounts, Permissions: permissions, Value: value}
+}
+
+// mintStored is the release of value under scope, at storedNow.
+func mintStored(value string, scope *secrets.GitHubScope) (secrets.Minted, error) {
+	return secrets.GitHubInstallations{Now: func() time.Time { return storedNow }}.Mint(context.Background(),
+		secrets.MintRequest{Name: "GITHUB_READ", Source: "APP_TOKENS", Type: "github-installations", Value: value, GitHub: scope})
+}
+
+// fresh is a stored token's life well past the margin: what a minter that runs every ten minutes
+// leaves, at the least, on a token GitHub gives an hour.
+const fresh = 50 * time.Minute
+
+// TestAStoredTokenWiderThanItsProfileIsRefusedACutOneIsServedNamingTheCutAndAMetadataOnlyOneIsRefused:
+// the stored entry's permissions are held to the profile's. An entry that holds one permission
+// the profile does not name, or one at a level past the profile's, is refused (the security rule:
+// no token wider than its profile leaves the broker). An entry that holds less than the profile,
+// as a minter's own cut to what the installation holds leaves it, is served, and the release
+// names each permission the entry lacks exactly as the github-app mint's cut names it
+// (Minted.LeftOut). An entry that holds none of the profile's permissions but metadata is refused,
+// as the github-app mint's empty cut is. An entry equal to the profile is served whole.
+//
+// The named reverts: drop the wider check, and the two wider rows are served; drop LeftOut, and
+// the two cut rows name nothing; drop the empty-cut check, and the metadata row is served.
+func TestAStoredTokenWiderThanItsProfileIsRefusedACutOneIsServedNamingTheCutAndAMetadataOnlyOneIsRefused(t *testing.T) {
+	profile := map[string]string{"contents": "write", "issues": "read", "metadata": "read"}
+	const token = "ghs_stored_ada"
+	for _, row := range []struct {
+		name    string
+		holds   map[string]string
+		refused error    // nil: served
+		names   []string // what the refusal names, or, served, what the release names as cut
+	}{
+		{"one permission more than the profile", map[string]string{"contents": "write", "issues": "read", "metadata": "read", "administration": "read"}, secrets.ErrMintStoredWider, []string{"administration:read"}},
+		{"one permission at a level past the profile's", map[string]string{"contents": "write", "issues": "write", "metadata": "read"}, secrets.ErrMintStoredWider, []string{"issues:write"}},
+		{"one permission less than the profile", map[string]string{"contents": "write", "metadata": "read"}, nil, []string{"issues"}},
+		{"one permission at a level below the profile's", map[string]string{"contents": "read", "issues": "read", "metadata": "read"}, nil, []string{"contents:write"}},
+		{"metadata alone", map[string]string{"metadata": "read"}, secrets.ErrMintEmptyCut, []string{"contents: write", "issues: read"}},
+		{"the profile's own permissions", maps.Clone(profile), nil, nil},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			value := storedValue(t, map[string]storedEntry{"ada": stored(42, token, fresh, row.holds)})
+			minted, err := mintStored(value, scopeOf(githubname.ValueToken, profile, "ada"))
+			if row.refused != nil {
+				if !errors.Is(err, row.refused) || !errors.Is(err, secrets.ErrMintNarrowingRefused) || minted.Value != "" {
+					t.Fatalf("Mint = %+v, %v; want nothing and a refusal wrapping %v and ErrMintNarrowingRefused", minted, err, row.refused)
+				}
+				for _, word := range row.names {
+					if !strings.Contains(err.Error(), word) {
+						t.Errorf("the refusal %q does not name %q", err, word)
+					}
+				}
+				if strings.Contains(err.Error(), token) {
+					t.Errorf("the refusal %q holds the stored token", err)
+				}
+				return
+			}
+			if err != nil || minted.Value != token {
+				t.Fatalf("Mint = %+v, %v; want the stored token of ada", minted, err)
+			}
+			var want map[string][]string
+			if row.names != nil {
+				want = map[string][]string{"ada": row.names}
+			}
+			if !reflect.DeepEqual(minted.LeftOut, want) {
+				t.Errorf("Minted.LeftOut = %v; want %v, each profile permission the entry lacks", minted.LeftOut, want)
+			}
+		})
+	}
+}
+
+// TestAStoredTokenIsServedOnlyWhileItOutlivesTheGrantsEndByTheMargin pins the margin at 20
+// minutes. The release of a stored token hands a grant on it that ends at the token's expires_at
+// less the margin (Minted.Expires, which the airlock proxy reads the grant again five minutes
+// before), so every token the broker hands over outlives the grant it hands on it by the margin. A
+// release whose grant would end at or before now is refused: a token whose remaining life is just
+// below 20 minutes, and one of exactly 20, are refused as a stored token its minter has not
+// replaced (ErrMintTokenStale, an ErrMintUpstream), and a token of just above 20 is served, its
+// grant ending one second from now. A release of two accounts is held to the earlier of the two.
+//
+// The named revert: drop the expiry check, and the two short rows are served; set the margin to
+// another number, and either the 19m59s row is served or the 20m01s row is refused.
+func TestAStoredTokenIsServedOnlyWhileItOutlivesTheGrantsEndByTheMargin(t *testing.T) {
+	profile := map[string]string{"contents": "read", "metadata": "read"}
+	for _, row := range []struct {
+		name   string
+		life   time.Duration
+		served bool
+	}{
+		{"a token of 19m59s left", 19*time.Minute + 59*time.Second, false},
+		{"a token of 20m left", 20 * time.Minute, false},
+		{"a token of 20m01s left", 20*time.Minute + time.Second, true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			value := storedValue(t, map[string]storedEntry{"ada": stored(42, "ghs_stored_ada", row.life, profile)})
+			minted, err := mintStored(value, scopeOf(githubname.ValueToken, profile, "ada"))
+			if !row.served {
+				if !errors.Is(err, secrets.ErrMintTokenStale) || !errors.Is(err, secrets.ErrMintUpstream) || minted.Value != "" {
+					t.Fatalf("Mint = %+v, %v; want nothing and ErrMintTokenStale, an ErrMintUpstream", minted, err)
+				}
+				if !strings.Contains(err.Error(), storedNow.Add(row.life).Format(time.RFC3339)) || strings.Contains(err.Error(), "ghs_stored_ada") {
+					t.Errorf("the refusal %q does not name the token's expiry, or holds the token", err)
+				}
+				return
+			}
+			if err != nil || minted.Value != "ghs_stored_ada" {
+				t.Fatalf("Mint = %+v, %v; want ada's stored token", minted, err)
+			}
+			if want := storedNow.Add(time.Second); !minted.Expires.Equal(want) {
+				t.Errorf("Minted.Expires = %s; want %s, the token's expiry less the 20-minute margin", minted.Expires, want)
+			}
+		})
+	}
+	t.Run("two accounts, one of them short", func(t *testing.T) {
+		value := storedValue(t, map[string]storedEntry{
+			"acme": stored(41, "ghs_stored_acme", fresh, profile),
+			"ada":  stored(42, "ghs_stored_ada", 19*time.Minute, profile),
+		})
+		if minted, err := mintStored(value, scopeOf(githubname.ValueInstallations, profile, "acme", "ada")); !errors.Is(err, secrets.ErrMintTokenStale) || minted.Value != "" {
+			t.Fatalf("Mint = %+v, %v; want nothing and ErrMintTokenStale for ada's token", minted, err)
+		}
+	})
+	t.Run("two accounts, the grant ends at the earlier", func(t *testing.T) {
+		value := storedValue(t, map[string]storedEntry{
+			"acme": stored(41, "ghs_stored_acme", fresh, profile),
+			"ada":  stored(42, "ghs_stored_ada", 30*time.Minute, profile),
+		})
+		minted, err := mintStored(value, scopeOf(githubname.ValueInstallations, profile, "acme", "ada"))
+		if want := storedNow.Add(10 * time.Minute); err != nil || !minted.Expires.Equal(want) {
+			t.Fatalf("Mint = %+v, %v; want Expires %s, ada's expiry less the margin", minted, err, want)
+		}
+	})
+}
+
+// TestAnInstallationsProfileIsServedItsAccountsStoredTokensInTheGitHubAppReleaseForm: a profile of
+// value installations is released the JSON object the github-app mint releases, one entry for each
+// account in effect, keyed by the login as the minter wrote it, holding that installation's id,
+// stored token and expiry and nothing else: no permissions and no repository selection, which
+// clients of today's release do not read. An account the profile does not name is left out of the
+// release, whatever the stored value holds for it.
+func TestAnInstallationsProfileIsServedItsAccountsStoredTokensInTheGitHubAppReleaseForm(t *testing.T) {
+	profile := map[string]string{"contents": "read", "metadata": "read"}
+	value := storedValue(t, map[string]storedEntry{
+		"Acme-Org": stored(41, "ghs_stored_acme", fresh, profile),
+		"ada":      stored(42, "ghs_stored_ada", fresh+time.Minute, profile),
+		"outsider": stored(43, "ghs_stored_outsider", fresh, profile),
+	})
+	minted, err := mintStored(value, scopeOf(githubname.ValueInstallations, profile, "acme-org", "ada"))
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	var release map[string]map[string]map[string]any
+	if err := json.Unmarshal([]byte(minted.Value), &release); err != nil {
+		t.Fatalf("the release is no JSON object of installations: %v", err)
+	}
+	want := map[string]map[string]map[string]any{"installations": {
+		"Acme-Org": {"installation_id": float64(41), "token": "ghs_stored_acme", "expires_at": storedNow.Add(fresh).Format(time.RFC3339)},
+		"ada":      {"installation_id": float64(42), "token": "ghs_stored_ada", "expires_at": storedNow.Add(fresh + time.Minute).Format(time.RFC3339)},
+	}}
+	if !reflect.DeepEqual(release, want) {
+		t.Errorf("the release = %v; want %v", release, want)
+	}
+	if want := storedNow.Add(fresh - secrets.MintedTokenMargin); !minted.Expires.Equal(want) || minted.LeftOut != nil {
+		t.Errorf("Minted = Expires %s, LeftOut %v; want Expires %s and nothing left out", minted.Expires, minted.LeftOut, want)
+	}
+}
+
+// TestAValueTokenProfileOfOneAccountIsServedThatAccountsStoredToken: a profile of value token
+// releases its one account's stored token, bare, as the github-app mint releases its one
+// installation's.
+func TestAValueTokenProfileOfOneAccountIsServedThatAccountsStoredToken(t *testing.T) {
+	profile := map[string]string{"contents": "read", "metadata": "read"}
+	value := storedValue(t, map[string]storedEntry{
+		"acme": stored(41, "ghs_stored_acme", fresh, profile),
+		"Ada":  stored(42, "ghs_stored_ada", fresh, profile),
+	})
+	minted, err := mintStored(value, scopeOf(githubname.ValueToken, profile, "ada"))
+	if err != nil || minted.Value != "ghs_stored_ada" {
+		t.Fatalf("Mint = %+v, %v; want ada's stored token alone", minted, err)
+	}
+}
+
+// TestAnAccountTheStoredValueHoldsNoTokenForIsLeftOutAndNoneIsRefused: an account in effect that
+// the stored value holds no entry for is left out of the release, as the github-app mint leaves
+// out an account the App is not installed on, and a release that leaves every account out is
+// refused ErrMintNoInstallation in the words a released client matches ("has no installation on").
+func TestAnAccountTheStoredValueHoldsNoTokenForIsLeftOutAndNoneIsRefused(t *testing.T) {
+	profile := map[string]string{"contents": "read", "metadata": "read"}
+	value := storedValue(t, map[string]storedEntry{"ada": stored(42, "ghs_stored_ada", fresh, profile)})
+	minted, err := mintStored(value, scopeOf(githubname.ValueInstallations, profile, "ada", "example-org"))
+	if err != nil || !strings.Contains(minted.Value, "ghs_stored_ada") || strings.Contains(minted.Value, "example-org") {
+		t.Fatalf("Mint = %+v, %v; want ada's token alone", minted, err)
+	}
+	minted, err = mintStored(value, scopeOf(githubname.ValueToken, profile, "example-org"))
+	if !errors.Is(err, secrets.ErrMintNoInstallation) || !strings.Contains(err.Error(), "has no installation on example-org") || minted.Value != "" {
+		t.Fatalf("Mint = %+v, %v; want ErrMintNoInstallation naming example-org", minted, err)
+	}
+}
+
+// narrowed is stored's entry narrowed to repositories, full names, as GitHub answers a token
+// request that names them: repository_selection "selected" and the list.
+func narrowed(entry storedEntry, repositories ...string) storedEntry {
+	entry.RepositorySelection, entry.Repositories = "selected", repositories
+	return entry
+}
+
+// TestAProfilesRepositoriesMustEqualThoseItsStoredTokenReaches: a minter may narrow a token to
+// repositories, and then stores repository_selection "selected" and their full names. A token
+// cannot be cut further once it is minted, so a profile of such a token names exactly those
+// repositories, compared as GitHub compares names, without regard to case: the same list is
+// served; a list that differs by one repository more or one less is refused naming both lists;
+// a profile that names none is refused, since it would claim every repository of the
+// installation; and a profile that names repositories of a token of every repository is refused,
+// since the token reaches more than the profile says.
+//
+// The named reverts: drop the comparison, and the profile of one repository is served the token of
+// two; read a profile with no repositories as matching any token, and the selected token is served
+// as the whole installation's.
+func TestAProfilesRepositoriesMustEqualThoseItsStoredTokenReaches(t *testing.T) {
+	profile := map[string]string{"contents": "read", "metadata": "read"}
+	selected := narrowed(stored(42, "ghs_stored_ada", fresh, profile), "ada/lean", "Ada/Proofs")
+	for _, row := range []struct {
+		name         string
+		entry        storedEntry
+		repositories []string // the profile's, as gitHubScope builds them; nil for none
+		served       bool
+		names        []string
+	}{
+		{"the stored token's repositories", selected, []string{"ada/lean", "ada/proofs"}, true, nil},
+		{"one repository fewer", selected, []string{"ada/proofs"}, false, []string{"ada/lean, ada/proofs", "ada/proofs"}},
+		{"one repository more", selected, []string{"ada/lean", "ada/proofs", "ada/site"}, false, []string{"ada/lean, ada/proofs", "ada/lean, ada/proofs, ada/site"}},
+		{"one repository other", selected, []string{"ada/lean", "ada/site"}, false, []string{"ada/lean, ada/proofs", "ada/lean, ada/site"}},
+		{"no repositories, of a narrowed token", selected, nil, false, []string{"ada/lean, ada/proofs", "every repository"}},
+		{"repositories, of a token of every repository", stored(42, "ghs_stored_ada", fresh, profile), []string{"ada/proofs"}, false, []string{"every repository", "ada/proofs"}},
+		{"no repositories, of a token of every repository", stored(42, "ghs_stored_ada", fresh, profile), nil, true, nil},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			scope := scopeOf(githubname.ValueToken, profile, "ada")
+			scope.Repositories = row.repositories
+			minted, err := mintStored(storedValue(t, map[string]storedEntry{"ada": row.entry}), scope)
+			if row.served {
+				if err != nil || minted.Value != "ghs_stored_ada" {
+					t.Fatalf("Mint = %+v, %v; want ada's stored token", minted, err)
+				}
+				return
+			}
+			if !errors.Is(err, secrets.ErrMintStoredRepositories) || !errors.Is(err, secrets.ErrMintNarrowingRefused) || minted.Value != "" {
+				t.Fatalf("Mint = %+v, %v; want nothing and ErrMintStoredRepositories, an ErrMintNarrowingRefused", minted, err)
+			}
+			for _, word := range row.names {
+				if !strings.Contains(err.Error(), word) {
+					t.Errorf("the refusal %q does not name %q", err, word)
+				}
+			}
+		})
+	}
+}
+
+// TestAMalformedStoredValueIsRefusedNamingNoPartOfIt: the stored value is read strictly, by the
+// one decoder the policy's load and the minter share (ParseValue): a JSON object of installations
+// and nothing else, each a GitHub login of an entry of exactly installation_id, token, expires_at,
+// permissions, repository_selection and, beside "selected" alone, repositories, the account's own
+// full names, each once. Each malformed value is refused ErrMintStoredValue, by ParseValue and by
+// the minter alike, and no refusal holds the token it carries.
+func TestAMalformedStoredValueIsRefusedNamingNoPartOfIt(t *testing.T) {
+	const canary = "ghs_canary_never_quoted"
+	// entries is the value holding one well-formed entry under each of keys, each as edit leaves
+	// it.
+	entries := func(edit func(map[string]any), keys ...string) string {
+		installations := map[string]any{}
+		for _, key := range keys {
+			one := map[string]any{"installation_id": 42, "token": canary, "expires_at": storedNow.Add(fresh).Format(time.RFC3339),
+				"permissions": map[string]string{"contents": "read", "metadata": "read"}, "repository_selection": "all"}
+			edit(one)
+			installations[key] = one
+		}
+		value, err := json.Marshal(map[string]any{"installations": installations})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(value)
+	}
+	entry := func(edit func(map[string]any)) string { return entries(edit, "ada") }
+	unedited := func(map[string]any) {}
+	good := entry(unedited)
+	for _, row := range []struct{ name, value string }{
+		{"not JSON", "ghs_canary_never_quoted"},
+		{"a JSON string", `"` + canary + `"`},
+		{"null", "null"},
+		{"no installations", `{}`},
+		{"no installation", `{"installations": {}}`},
+		{"a field beside installations", strings.Replace(good, `{"installations"`, `{"app_id":"1","installations"`, 1)},
+		{"a second object after it", good + ` {"token": "` + canary + `"}`},
+		{"a key that is no GitHub login", entries(unedited, "ada smith")},
+		{"one account twice, in two cases", entries(unedited, "Ada", "ada")},
+		{"an entry of a field it does not hold", entry(func(e map[string]any) { e["account"] = "ada" })},
+		{"no installation id", entry(func(e map[string]any) { delete(e, "installation_id") })},
+		{"no token", entry(func(e map[string]any) { delete(e, "token") })},
+		{"a token holding a space", entry(func(e map[string]any) { e["token"] = canary + " x" })},
+		{"no expiry", entry(func(e map[string]any) { delete(e, "expires_at") })},
+		{"an expiry that is no RFC 3339 time", entry(func(e map[string]any) { e["expires_at"] = "tomorrow" })},
+		{"no permissions", entry(func(e map[string]any) { delete(e, "permissions") })},
+		{"a permission that is no permission's name", entry(func(e map[string]any) { e["permissions"] = map[string]string{"Contents": "read"} })},
+		{"a level GitHub does not give", entry(func(e map[string]any) { e["permissions"] = map[string]string{"contents": "own"} })},
+		{"no repository selection", entry(func(e map[string]any) { delete(e, "repository_selection") })},
+		{"a repository selection that is neither all nor selected", entry(func(e map[string]any) { e["repository_selection"] = "some" })},
+		{"repositories of a token of every repository", entry(func(e map[string]any) { e["repositories"] = []string{"ada/proofs"} })},
+		{"an empty repositories list", entry(func(e map[string]any) { e["repository_selection"], e["repositories"] = "selected", []string{} })},
+		{"a repository of another account", entry(func(e map[string]any) {
+			e["repository_selection"], e["repositories"] = "selected", []string{"acme/site"}
+		})},
+		{"a repository that is no owner/name", entry(func(e map[string]any) { e["repository_selection"], e["repositories"] = "selected", []string{"proofs"} })},
+		{"one repository twice, in two cases", entry(func(e map[string]any) {
+			e["repository_selection"], e["repositories"] = "selected", []string{"ada/proofs", "Ada/Proofs"}
+		})},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			if _, err := secrets.ParseValue("github-installations", row.value); !errors.Is(err, secrets.ErrMintStoredValue) || strings.Contains(err.Error(), canary) {
+				t.Errorf("ParseValue = %v; want ErrMintStoredValue holding no part of the value", err)
+			}
+			profile := map[string]string{"contents": "read", "metadata": "read"}
+			if minted, err := mintStored(row.value, scopeOf(githubname.ValueToken, profile, "ada")); !errors.Is(err, secrets.ErrMintStoredValue) || minted.Value != "" || strings.Contains(err.Error(), canary) {
+				t.Errorf("Mint = %+v, %v; want nothing and ErrMintStoredValue holding no part of the value", minted, err)
+			}
+		})
+	}
+	if _, err := secrets.ParseValue("github-installations", good); err != nil {
+		t.Fatalf("ParseValue of the well-formed value the rows edit = %v; want it read", err)
+	}
+}

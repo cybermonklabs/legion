@@ -606,7 +606,7 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 	// the profile's own. Create refused a target the profile cannot serve (checkTarget), and an
 	// edit of the profile since ends the grant (checkRelease), so a refusal here is one no release
 	// reaches; it is answered rather than minted, since a scope it cannot build is never widened.
-	scope, err := gitHubScope(g.name, served.Profile, g.target)
+	scope, err := gitHubScope(g.name, served, g.target)
 	if err != nil {
 		return secrets.Minted{}, err
 	}

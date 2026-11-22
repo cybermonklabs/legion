@@ -378,6 +378,8 @@ marked with tags or annotations:
   (`BROKER_SERVICES` or `BROKER_VM_SERVICES`).
 - **`tier`** is `agent` or `human`.
 - **`type`** is absent for a stored secret. It is `github-app` for a GitHub App key,
+  `github-installations` for GitHub installation tokens a minter outside the broker stores
+  ([Requests and grants](#requests-and-grants)),
   `google-login` for a Google authorized-user login, `azure-login` for the Entra tenant and client
   ids of the one secret the deployment names in `BROKER_AZURE_LOGIN_SECRET`, released with the
   broker's own projected Azure token at human tier alone, `google-service-account` for one Google
@@ -393,15 +395,16 @@ marked with tags or annotations:
   stored ([Rolling back](/legion/broker/operate/#what-it-depends-on)). `agent-secrets` writes a
   type only through a broker whose settings answer `secret_type_tag: true`.
   `secret retag NAME --type none` removes both classifier names and the rollback guard.
-- **`github-owners`** is required on a `github-app` secret, and read on no other type. It lists
-  the GitHub accounts the broker mints installation tokens for, separated by spaces
+- **`github-owners`** is required on a `github-app` or `github-installations` secret, and read on
+  no other type. It lists the GitHub accounts the broker hands installation tokens over for,
+  separated by spaces
   (`acme-org ada`) and compared without regard to case, a form both stores hold.
   A comma, or an entry no GitHub login can be (one that does not start with an ASCII letter or digit, holds anything but ASCII letters, digits, hyphens and underscores, is over 39 characters, or is the word `none`), is refused `github-owners-malformed`.
   An entry may hold an underscore, which GitHub's sign-up form refuses, because a managed user's login ends in `_<shortcode>` (`mona-cat_octo`).
   A public App can be installed by any account, so an
   installation on an account the list does not
-  name gets no token. A `github-app` secret without the tag, or with one that names no account, is
-  refused `github-owners-missing`.
+  name gets no token. A `github-app` or `github-installations` secret without the tag, or with one
+  that names no account, is refused `github-owners-missing`.
 - **`requesters`** is optional. It names the only people, groups and services that may ask for the
   secret at all: people by the lowercase email they sign in with, Google groups as `group:` and the
   group's lowercase email, whose members' sessions it admits, and services by the name the
@@ -661,9 +664,9 @@ does not fit the source's type, `github-owners` or `scopes`), `profile-looser` (
 source in tier, `requesters` or `maxGrant`), `profile-needs-proxy` (no `proxy` block on a stored
 value, `google-login` or `azure-login` source), or a tag rule its own tags over its source's break,
 such as `admin-tier` for an agent-tier profile of an `admin` source. A source a profile of another
-name uses is served only through its profiles, and a `github-app` secret no profile names is
-refused by its own name (`github-app-no-profile`), so every GitHub App token the broker mints is a
-profile's.
+name uses is served only through its profiles, and a `github-app` or `github-installations` secret
+no profile names is refused by its own name (`github-app-no-profile`), so every GitHub token the
+broker hands over is a profile's.
 A profile's `requesters` may name a Google group as a `requesters` tag does, and a full load reads
 every group a profile names as it reads the stored secrets' groups. Against a source's list, a
 group entry is matched by that same group alone: a profile that names a person in the source's
@@ -928,9 +931,9 @@ The broker evaluates every name
   once is granted there as everywhere.
 - Names that need approval must all need the same approver, else the request is refused
   `MIXED_APPROVERS`; request them separately.
-- A **type secret** has `type=github-app`, `type=google-login`, `type=azure-login`,
-  `type=google-service-account` or `type=anthropic-federation`, and a current stored value. A
-  GitHub App value holds an App identifier and private key.
+- A **type secret** has `type=github-app`, `type=github-installations`, `type=google-login`,
+  `type=azure-login`, `type=google-service-account` or `type=anthropic-federation`, and a current
+  stored value. A GitHub App value holds an App identifier and private key.
   Every GitHub App token the broker releases is a profile's (the profiles file, above), and a
   `github-app` secret no profile names is refused by its name (`403 PROFILE_REFUSED`,
   `github-app-no-profile`). A release holds one installation token for each account in effect,
@@ -984,11 +987,43 @@ The broker evaluates every name
   verdict when it cannot read the stored value or mint from it, when the check passes its own
   bounds (ten seconds for the whole check, five for one mint) or its caller goes away, when the
   enrollment has used its checks (five at once, one more every twelve seconds), and when it
-  cannot read the requester or has no GitHub App minter.
+  cannot read the requester or has no minter for the profile's type.
   A profile with a `proxy` block is behind the airlock ([The airlock](#the-airlock)): its release
   hands the command a placeholder, and the proxy mints the profile's token itself, for the grant's
   target and with the same cut, keeps it until five minutes before it expires, and puts it in
   place of the placeholder only in the requests the block allows.
+  A `github-installations` value holds installation tokens that a minter outside the broker
+  minted before any request and stores again every few minutes, so the broker holds no App key
+  for them: `{"installations": {"<account login>": {"installation_id": 42, "token": "…",
+  "expires_at": "<RFC 3339 time>", "permissions": {"contents": "read", "metadata": "read"},
+  "repository_selection": "all"}}}`, and, for a token the minter narrowed to repositories,
+  `"repository_selection": "selected"` with `"repositories": ["<account>/<name>", …]`. The broker
+  reads it strictly: a field it does not know, a key that is no GitHub login, one account twice,
+  or a token, expiry, permission, level or repository list it cannot read refuses the whole value
+  (`value-malformed`). It is served as a `github-app` secret is, only through profiles on the
+  accounts its `github-owners` tag lists, and its release has the same form: the installations
+  object, or the one account's bare token for `value: token`. The broker mints nothing for it, and
+  a token cannot be cut once it is minted, so the broker holds each stored token to the profile
+  before it hands it over. A token that holds a permission the profile does not name, or a level
+  above the profile's, is refused `422 PROFILE_MINT_REFUSED`. A token that holds less than the
+  profile is served, and the values answer names each permission it lacks (`github_left_out`), as
+  the cut of a `github-app` profile does; a token that holds none of the profile's permissions but
+  `metadata` is refused. A token narrowed to repositories serves only a profile whose
+  `github.repositories` of that account are the same list, compared without regard to case; a
+  profile that names none is refused, since it would claim every repository of the installation,
+  and so is a profile that names repositories of a token of every repository. A target of such a
+  profile names its account alone: a target that names a repository is refused
+  `400 TARGET_REPOSITORIES_REFUSED` before anybody is asked. The grant a release hands on stored
+  tokens ends 20 minutes before the earliest token's `expires_at`, so each token is handed over
+  with more than 20 minutes left: the Legion daemon serves a cached installation token until 20
+  minutes before its expiry, and a minter that stores new tokens every ten minutes, of the hour
+  GitHub gives a token, leaves each at least 50, so three of its runs in a row may fail before a
+  release is refused. A stored token with 20 minutes or less left is refused `502 MINT_FAILED`
+  (`class=upstream`), and the airlock's proxy, which reads the grant again five minutes before
+  its end, answers a call it cannot carry `503` until the minter stores a newer token. The broker
+  gives no such token back to GitHub: it is the stored one, which every other release of the
+  secret hands over too. Where a person must approve a request for such a profile, the broker
+  makes the same checks on the stored token before it asks anybody.
   The exec form's `--github-token` narrows nothing: the release holds the
   same JSON object of installations, and the flag decides what the exec form puts in the
   command's environment. With it the name holds that one installation's token alone, which is
@@ -1828,7 +1863,9 @@ Three things the log does not say, which a reviewer has to be told:
   `request.granted` row and that row's `lifetime_seconds`.
 - A minted token — `github-app`, `google-login` and `google-service-account` alike — lives its own
   hour from the moment it was minted, an `azure-login` token until the broker's projected token it
-  carries ends, and an `anthropic-federation` token as long as Anthropic's answer gave it.
+  carries ends, an `anthropic-federation` token as long as Anthropic's answer gave it, and a
+  `github-installations` token until the `expires_at` its minter stored, the broker handing it over
+  only while more than 20 minutes of that are left.
   Revoking the grant stops the next release; it does not revoke a token the broker
   has already released.
 

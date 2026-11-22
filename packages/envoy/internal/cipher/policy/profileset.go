@@ -29,8 +29,9 @@ func profileKey(name string) string { return profileKeyPrefix + name }
 //     (ReasonProfileNameTaken), by its own id;
 //   - a source profiles of other names use (Set.ProfilesOf) is served by its own name only where
 //     a profile holds that name, and otherwise only through them;
-//   - a github-app secret no profile names is refused by its own id (ReasonGitHubAppNoProfile),
-//     so every GitHub App token the broker mints is a profile's.
+//   - a secret released as GitHub installation tokens (ServesGitHubTokens: github-app or
+//     github-installations) that no profile names is refused by its own id
+//     (ReasonGitHubAppNoProfile), so every GitHub token the broker hands over is a profile's.
 //
 // Each profile is checked against set's stored secrets alone, never against another profile, so
 // a profile is never the source of another. prefix is the namespace, from which a stored secret's
@@ -70,7 +71,7 @@ func (p Profiles) apply(set *Set, prefix string) *Set {
 		}
 	}
 	for name, secret := range set.Secrets {
-		if p.Lookup(name) != nil || p.Of(name) != nil || secret.Type() != TypeGitHubApp {
+		if p.Lookup(name) != nil || p.Of(name) != nil || !ServesGitHubTokens(secret.Type()) {
 			continue
 		}
 		delete(served, name)
@@ -84,11 +85,11 @@ func (p Profiles) apply(set *Set, prefix string) *Set {
 	return next
 }
 
-// servesAnApp reports whether set serves a github-app secret, which apply refuses unless a
-// profile names it.
+// servesAnApp reports whether set serves a secret released as GitHub installation tokens
+// (ServesGitHubTokens), which apply refuses unless a profile names it.
 func servesAnApp(set *Set) bool {
 	for _, secret := range set.Secrets {
-		if secret.Type() == TypeGitHubApp {
+		if ServesGitHubTokens(secret.Type()) {
 			return true
 		}
 	}
@@ -208,13 +209,14 @@ func storeHolds(set *Set, name, prefix string) bool {
 }
 
 // blockMismatch says how profile's github or google block does not fit source, and is "" when
-// it fits: a github block is a github-app source's, which must have one, on accounts the source's
-// github-owners names; a google block is a google-service-account source's, on scopes the
-// source's scopes tag names, so a profile narrows the account's scopes and never widens them.
+// it fits: a github block is the block of a source released as GitHub installation tokens
+// (ServesGitHubTokens), which must have one, on accounts the source's github-owners names; a
+// google block is a google-service-account source's, on scopes the source's scopes tag names, so
+// a profile narrows the account's scopes and never widens them.
 func blockMismatch(profile *Profile, source Secret) string {
 	sourceType := source.Type()
 	switch {
-	case profile.GitHub != nil && sourceType != TypeGitHubApp:
+	case profile.GitHub != nil && !ServesGitHubTokens(sourceType):
 		return "a github block on a " + kindOf(sourceType) + " source"
 	case profile.GitHub != nil:
 		owners := source.GitHubOwnerLogins()
@@ -223,8 +225,8 @@ func blockMismatch(profile *Profile, source Secret) string {
 				return fmt.Sprintf("github.accounts names %s, which the source's github-owners (%s) does not", account, source.GitHubOwners)
 			}
 		}
-	case sourceType == TypeGitHubApp:
-		return "no github block on a " + TypeGitHubApp + " source"
+	case ServesGitHubTokens(sourceType):
+		return "no github block on a " + sourceType + " source"
 	}
 	if profile.Google == nil {
 		return ""

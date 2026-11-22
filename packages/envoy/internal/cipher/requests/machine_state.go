@@ -103,6 +103,15 @@ var (
 	// release mints nothing for it (gitHubScope). Its returned error names the profile's accounts
 	// and repositories.
 	ErrTargetRefused = errors.New("the request's target is refused")
+	// ErrTargetRepositoriesRefused is the refusal of a target that names repositories of a profile
+	// served from a github-installations secret (policy.TypeGitHubInstallations): that profile's
+	// tokens were minted for each installation whole, ahead of any request, and a token cannot be
+	// cut to repositories once it is minted, so a target of such a profile names its account
+	// alone (gitHubScope). It is an ErrTargetRefused, so every reader of that refusal (the approval
+	// page, the judge, the proxy, IsRefusal) reads it as one, and the API answers it a code of its
+	// own, TARGET_REPOSITORIES_REFUSED. Its returned error names the profile and the account to
+	// name instead.
+	ErrTargetRepositoriesRefused = fmt.Errorf("%w: a token minted ahead of the request cannot be cut to repositories", ErrTargetRefused)
 	// ErrSessionIDInvalid: the request's own session_id override (requests.session_id — an
 	// unsigned claim any enrolled process may send, never verified against a signature) is too
 	// long or carries a whitespace or control character, refused before it is ever stored or
@@ -123,7 +132,7 @@ func (notOwnerError) Is(target error) bool { return target == ErrNotYours }
 var refusals = []error{
 	ErrNotYours, ErrNotOwner, ErrNotApprover, ErrTerminal, ErrExpired, ErrNotExpired, ErrGrantNotLive, ErrGrantChainInvalid,
 	ErrSecretNotInStore, ErrMixedApprovers, ErrGrantRequiresLifetime, ErrMintFailed,
-	ErrRequestPending, ErrTargetRefused, ErrSessionIDInvalid, ErrAirlockNoNames, ErrAirlockValueShape,
+	ErrRequestPending, ErrTargetRefused, ErrTargetRepositoriesRefused, ErrSessionIDInvalid, ErrAirlockNoNames, ErrAirlockValueShape,
 }
 
 // IsRefusal reports whether err is one of this package's own refusals, as against a read that

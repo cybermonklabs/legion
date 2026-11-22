@@ -131,12 +131,13 @@ const (
 	// ReasonMaxGrantMalformed: max-grant is not a Go duration of at least one second
 	// (ParseMaxGrant).
 	ReasonMaxGrantMalformed = "max-grant-malformed"
-	// ReasonGitHubOwnersMissing: a github-app secret has no github-owners tag, or one that names no
-	// account (ParseGitHubOwners). A public App can be installed on any account, so the broker mints
-	// only for the accounts the deployment lists.
+	// ReasonGitHubOwnersMissing: a github-app or github-installations secret has no github-owners
+	// tag, or one that names no account (ParseGitHubOwners). A public App can be installed on any
+	// account, so the broker hands over tokens only for the accounts the deployment lists.
 	ReasonGitHubOwnersMissing = "github-owners-missing"
-	// ReasonGitHubOwnersMalformed: a github-app secret's github-owners tag holds a comma, its logins
-	// being separated by spaces, or an entry that is not a GitHub login (ParseGitHubOwners).
+	// ReasonGitHubOwnersMalformed: a github-app or github-installations secret's github-owners
+	// tag holds a comma, its logins being separated by spaces, or an entry that is not a GitHub
+	// login (ParseGitHubOwners).
 	ReasonGitHubOwnersMalformed = "github-owners-malformed"
 	// ReasonDefaultGrantMalformed: default-grant is set to anything but "session".
 	ReasonDefaultGrantMalformed = "default-grant-malformed"
@@ -215,10 +216,11 @@ const (
 	// a name a profile holds is never released as a stored value.
 	ReasonProfileNameTaken = "profile-name-taken"
 	// ReasonProfileBlockMismatch: a profile's github or google block does not fit its source's
-	// type and tags: a github block on a source that is no github-app secret, or naming an account
-	// the source's github-owners does not; a github-app source's profile with no github block; or
-	// a google block on a source that is no google-service-account secret, or naming a scope the
-	// source's scopes tag does not. Its detail says which.
+	// type and tags: a github block on a source that is no github-app or github-installations
+	// secret (ServesGitHubTokens), or naming an account the source's github-owners does not; such a
+	// source's profile with no github block; or a google block on a source that is no
+	// google-service-account secret, or naming a scope the source's scopes tag does not. Its detail
+	// says which.
 	ReasonProfileBlockMismatch = "profile-block-mismatch"
 	// ReasonProfileLooser: a profile is looser than its source: agent tier on a human-tier source,
 	// a requester the source's requesters tag does not name (a source with no such tag serves
@@ -229,11 +231,11 @@ const (
 	// an azure-login source, whose credential a profile cannot narrow at a mint, so only the
 	// proxy's hosts, methods and paths scope it.
 	ReasonProfileNeedsProxy = "profile-needs-proxy"
-	// ReasonGitHubAppNoProfile: a github-app secret no profile names, as its own name or as its
-	// source. Every GitHub App token the broker mints is a profile's, cut to that profile's
-	// accounts and permissions, so such a secret is refused by its name rather than released with
-	// every permission its installations hold. A github-app secret profiles of other names use is
-	// no refusal: it is served through them (ErrServedOnlyAsProfiles).
+	// ReasonGitHubAppNoProfile: a github-app or github-installations secret no profile names, as
+	// its own name or as its source. Every GitHub token the broker hands over is a profile's, held
+	// to that profile's accounts and permissions, so such a secret is refused by its name rather
+	// than released with every permission its installations hold. Such a secret profiles of other
+	// names use is no refusal: it is served through them (ErrServedOnlyAsProfiles).
 	ReasonGitHubAppNoProfile = "github-app-no-profile"
 )
 

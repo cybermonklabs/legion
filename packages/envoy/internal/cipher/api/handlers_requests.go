@@ -49,7 +49,10 @@ func refuseGitHubApp(w http.ResponseWriter, field json.RawMessage) bool {
 // 400 TARGET_REFUSED is a target the profile cannot serve (requests.ErrTargetRefused): outside
 // the profile, on a name with no github block, or missing on a value-token profile of several
 // accounts. Its message names the profile's accounts and repositories, so the caller names a
-// target inside them.
+// target inside them. 400 TARGET_REPOSITORIES_REFUSED is the one such target that has a code of
+// its own (requests.ErrTargetRepositoriesRefused): a target naming repositories of a profile
+// served from a github-installations secret, whose tokens were minted ahead of the request and
+// cannot be cut to repositories; its message names the account to name instead.
 //
 // 422 PROFILE_MINT_REFUSED is a scope the minter refused (secrets.ErrMintNarrowingRefused): its
 // permissions cut to what an installation holds leave none but metadata, a bare token of more
@@ -62,6 +65,8 @@ func refuseGitHubApp(w http.ResponseWriter, field json.RawMessage) bool {
 // Either way Create wrote nothing and asked nobody, and a release released nothing.
 func writeProfileRefusal(w http.ResponseWriter, err error) bool {
 	switch {
+	case errors.Is(err, requests.ErrTargetRepositoriesRefused):
+		writeError(w, http.StatusBadRequest, "TARGET_REPOSITORIES_REFUSED", err.Error())
 	case errors.Is(err, requests.ErrTargetRefused):
 		writeError(w, http.StatusBadRequest, "TARGET_REFUSED", err.Error())
 	case errors.Is(err, secrets.ErrMintNarrowingRefused),

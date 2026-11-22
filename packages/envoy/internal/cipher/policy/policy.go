@@ -51,6 +51,17 @@ const (
 	// TypeGitHubApp mints one installation token for every installation of the stored GitHub App
 	// on an account its TagGitHubOwners lists.
 	TypeGitHubApp = "github-app"
+	// TypeGitHubInstallations hands over installation tokens a minter outside the broker minted
+	// ahead of any request, from an App key the broker never holds, and stores as one value:
+	// {"installations": {"<account login>": {"installation_id", "token", "expires_at",
+	// "permissions", "repository_selection" and, for a token narrowed to repositories,
+	// "repositories"}}} (secrets.ParseValue). It is served as a github-app secret is, only through
+	// profiles on the accounts its TagGitHubOwners lists, and released in the github-app release's
+	// form; the broker mints nothing for it, and a token cannot be cut once it is minted, so a
+	// release serves a profile only the token whose permissions are within the profile's and whose
+	// repositories are the profile's exactly, and a target of it names no repository
+	// (secrets.GitHubInstallations).
+	TypeGitHubInstallations = "github-installations"
 	// TypeGoogleLogin exchanges the stored authorized-user refresh token for an access token.
 	TypeGoogleLogin = "google-login"
 	// TypeAzureLogin releases the broker's projected token with the stored Entra identity ids.
@@ -81,9 +92,10 @@ const (
 	TagDefaultGrant = "default-grant"
 	// DefaultGrantSession is the one value TagDefaultGrant takes.
 	DefaultGrantSession = "session"
-	// TagGitHubOwners lists the GitHub accounts a github-app secret mints installation tokens for
-	// (ParseGitHubOwners). A github-app secret without it is refused, since a public App can be
-	// installed by any account, and an installation on an account it does not list gets no token.
+	// TagGitHubOwners lists the GitHub accounts a github-app secret mints installation tokens for,
+	// or a github-installations secret hands stored ones over for (ParseGitHubOwners). Such a
+	// secret without it is refused, since a public App can be installed by any account, and an
+	// installation on an account it does not list gets no token.
 	TagGitHubOwners = "github-owners"
 	// TagRequesters lists who may ask for the secret at all: people by lowercase email, Google
 	// groups as group:<lowercase email>, whose members' sessions it admits, and registered
@@ -183,7 +195,7 @@ const (
 )
 
 // Types is every value a secret's type tag may name. The broker holds a minter for each.
-var Types = []string{TypeGitHubApp, TypeGoogleLogin, TypeAzureLogin, TypeGoogleServiceAccount, TypeAnthropicFederation}
+var Types = []string{TypeGitHubApp, TypeGitHubInstallations, TypeGoogleLogin, TypeAzureLogin, TypeGoogleServiceAccount, TypeAnthropicFederation}
 
 // ValidType reports whether type is one of Types.
 func ValidType(secretType string) bool {
@@ -464,10 +476,20 @@ func TagRules(t TagSet) string {
 	return ""
 }
 
+// ServesGitHubTokens reports whether a secret of type is released as GitHub installation tokens:
+// a github-app secret, whose tokens the broker mints from the App's key, and a
+// github-installations one, whose tokens a minter outside the broker stored. Both are served only
+// through profiles with a github block on the accounts their github-owners tag lists, in the one
+// release form, and both are taken apart alike behind the airlock.
+func ServesGitHubTokens(secretType string) bool {
+	return secretType == TypeGitHubApp || secretType == TypeGitHubInstallations
+}
+
 // TypeNeedsGitHubOwners reports whether a secret of type must carry a github-owners tag naming at
-// least one account. Only a github-app secret reads the tag.
+// least one account: a secret released as GitHub installation tokens (ServesGitHubTokens), whose
+// tokens are handed over for the accounts the tag lists and no other.
 func TypeNeedsGitHubOwners(secretType string) bool {
-	return secretType == TypeGitHubApp
+	return ServesGitHubTokens(secretType)
 }
 
 // GitHubOwnersFor is the github-owners rule every reader and writer of a secret's tags applies:
@@ -562,8 +584,9 @@ type Secret struct {
 	// none (ParseMaxGrant refuses anything under a second). A value, never a pointer, so a Secret
 	// compares equal to an unchanged reread of itself (Current.RefreshOne).
 	MaxGrant time.Duration
-	// GitHubOwners is a github-app secret's github-owners tag as ParseGitHubOwners answers it, and
-	// "" for every other secret. A string, not a slice, for the same reason as MaxGrant.
+	// GitHubOwners is the github-owners tag of a secret released as GitHub installation tokens
+	// (ServesGitHubTokens) as ParseGitHubOwners answers it, and "" for every other secret. A
+	// string, not a slice, for the same reason as MaxGrant.
 	GitHubOwners string
 	// Requesters is the secret's requesters tag as ParseRequesters answers it, and "" for a secret
 	// that carries none, which every session and pod may ask for. A string, not a slice, for the

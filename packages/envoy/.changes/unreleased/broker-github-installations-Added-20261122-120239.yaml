@@ -1,0 +1,23 @@
+kind: Added
+body: |-
+  The new secret type `github-installations` serves GitHub installation tokens that a minter
+  outside the broker minted and stores, so the broker holds no App key for them. Its value is
+  `{"installations": {"<account login>": {"installation_id", "token", "expires_at",
+  "permissions", "repository_selection"}}}`, with `"repositories": ["<account>/<name>", …]` beside
+  `"repository_selection": "selected"` for a token the minter narrowed; the broker reads it
+  strictly and refuses any other shape `value-malformed`. It needs a `github-owners` tag, is
+  served only through profiles with a `github` block on those accounts (one no profile names is
+  refused `github-app-no-profile`), and is released in the github-app release's form. The broker
+  mints nothing for it and holds each stored token to the profile: a token holding a permission
+  past the profile's, none but `metadata`, or other repositories than the profile names (none
+  where the token was narrowed, some where it reaches every repository) is refused
+  `422 PROFILE_MINT_REFUSED`; a token holding less than the profile is served and the cut is
+  named in `github_left_out`. A target of such a profile names its account alone: one naming a
+  repository is refused with the new code `400 TARGET_REPOSITORIES_REFUSED` (`403` at the proxy).
+  A release hands a grant on the stored tokens that ends 20 minutes before the earliest token's
+  `expires_at`; a token with 20 minutes or less left is refused `502 MINT_FAILED`
+  (`class=upstream`). The check before an approval reads the stored tokens as a release does. Such
+  a token is never given back to GitHub.
+time: 2026-11-22T12:02:39Z
+custom:
+    Issue: broker-github-installations
