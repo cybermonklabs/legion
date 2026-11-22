@@ -121,14 +121,15 @@ test("summarises the session's open asks into context and records the session id
 })
 
 // The hook ends its process once its output is out (`endOnceWritten`, session-hook.ts): a summary
-// larger than a pipe holds (64 KiB on Linux) must still arrive whole, its last ask included, so the
-// exit waits until stdout has taken every byte.
+// far larger than a pipe holds (64 KiB on Linux), read slowly, must still arrive whole, its last ask
+// included, so the exit waits until stdout has taken every byte. Read this way, a 2 MB write to a
+// pipe lost its tail on 10 of 10 exits that did not end the stream first, and on none that did.
 test("a summary larger than a pipe holds arrives whole before the hook ends its process", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-large-"))
-  const asks = Array.from({ length: 1_500 }, (_, index) => ({
+  const asks = Array.from({ length: 2_000 }, (_, index) => ({
     id: `ask-${index}`,
     ref: `/issues/LEGION-9#ask-${index}`,
-    question: `Ship part ${index} of the large summary, ${"long ".repeat(10)}?`,
+    question: `Ship part ${index} of the large summary, ${"long ".repeat(200)}?`,
     kind: "decision",
     urgency: "med",
     created_at: "2026-09-14T00:00:00Z",
@@ -153,17 +154,37 @@ test("a summary larger than a pipe holds arrives whole before the hook ends its 
       }),
   })
   try {
-    const result = await runHook(hookInput, {
-      HOME: scratch,
-      CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
-      DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-      DISPATCH_TOKEN,
+    const run = Bun.spawn(["bun", hookEntry, "open-asks"], {
+      env: {
+        PATH: process.env["PATH"] ?? "",
+        ...NO_TRANSPILER_CACHE,
+        HOME: scratch,
+        CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
+        DISPATCH_URL: `http://127.0.0.1:${server.port}`,
+        DISPATCH_TOKEN,
+      },
+      stdin: new TextEncoder().encode(JSON.stringify({ cwd: scratch, ...hookInput })),
+      stdout: "pipe",
+      stderr: "pipe",
     })
+    const stderr = collected(run.stderr)
+    // Read slowly, a pause after each chunk, so the hook's writes outrun the pipe.
+    const read = (async () => {
+      let text = ""
+      const decoder = new TextDecoder()
+      for await (const chunk of run.stdout) {
+        text += decoder.decode(chunk, { stream: true })
+        await Bun.sleep(5)
+      }
+      return text + decoder.decode()
+    })()
+    const exitCode = await exitBeforeTheGuard(run, "the open-asks hook", () => stderr.text())
+    const stdout = await read
 
-    expect(result.exitCode).toBe(0)
-    expect(Buffer.byteLength(result.stdout)).toBeGreaterThan(64 * 1024)
-    expect(result.stdout.match(/Ship part \d+ of the large summary/g)?.length).toBe(asks.length)
-    expect(result.stdout).toContain("Ship part 1499 of the large summary")
+    expect(exitCode).toBe(0)
+    expect(Buffer.byteLength(stdout)).toBeGreaterThan(2_000_000)
+    expect(stdout.match(/Ship part \d+ of the large summary/g)?.length).toBe(asks.length)
+    expect(stdout).toContain("Ship part 1999 of the large summary")
   } finally {
     server.stop(true)
     await rm(scratch, { recursive: true, force: true })
