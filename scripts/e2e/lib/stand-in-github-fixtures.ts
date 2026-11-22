@@ -7,7 +7,7 @@
 // included. The implement App holds checks: read alone, as the real one does.
 import { afterAll, expect } from "bun:test";
 import { createVerify, generateKeyPairSync } from "node:crypto";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 interface StandInApp {
   id: number;
@@ -213,7 +213,7 @@ export interface StandInGitHub {
  * file calls this once and no file's teardown reaches what another file owns. A run that selects
  * no row of the file makes no directory at all, since Bun then runs neither hook. */
 export function standInGitHub(prefix: string): StandInGitHub {
-  const dir = temporaryDirectory(prefix);
+  const dir = temporaryDirectory(prefix, { root: memoryRoot() });
   const seen: string[] = [];
   const verified: Record<string, unknown>[] = [];
   const github = Bun.serve({

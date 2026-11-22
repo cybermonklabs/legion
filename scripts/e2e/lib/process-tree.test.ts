@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { copyFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup } from "./own-group";
 import { scriptFunctions } from "./script-functions";
 
@@ -15,7 +15,7 @@ import { scriptFunctions } from "./script-functions";
 // every sleep the machine runs.
 const rig = join(import.meta.dir, "rig.sh");
 const root = join(import.meta.dir, "..", "..", "..");
-const dir = temporaryDirectory("process-tree-test");
+const dir = temporaryDirectory("process-tree-test", { root: memoryRoot() });
 // perl: run starts every harness through ownGroup (lib/own-group.ts).
 const skip = skipWithout("bash", "sleep", "sh", "perl");
 const program = join(dir, "program");

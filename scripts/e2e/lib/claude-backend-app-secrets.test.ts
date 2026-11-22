@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // claude-backend-tmux.sh's prerequisites on a box whose own `secrets` store holds no App credential
 // (the devbox once its local copies of another deployment's keys were removed): the run must reach
@@ -21,7 +21,7 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 // credentials came from. It stops soon after: `mise` resolves no real binary for the run's own
 // PATH, and then the stand-in `gh` acts as no account for the proof human, which ends the run.
 const script = join(import.meta.dir, "..", "claude-backend-tmux.sh");
-const dir = temporaryDirectory("claude-backend-key-runner-test");
+const dir = temporaryDirectory("claude-backend-key-runner-test", { root: memoryRoot() });
 
 const bin = join(dir, "bin");
 const scratch = join(dir, "tmp");

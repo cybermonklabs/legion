@@ -1,12 +1,12 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // The key-file route's own installer: unlike the Hawk gateway route, its key command has no mint
 // and no cache, so there is nothing to fake — every call is a plain read of a caller-supplied file.
 const lib = import.meta.dir;
-const dir = temporaryDirectory("install-key-file-test");
+const dir = temporaryDirectory("install-key-file-test", { root: memoryRoot() });
 const operatorHome = join(dir, "operator-home");
 beforeAll(() => {
   mkdirSync(operatorHome);

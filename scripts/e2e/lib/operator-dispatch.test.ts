@@ -8,10 +8,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { operatorDispatch } from "./operator-dispatch";
 
-const dir = temporaryDirectory("operator-dispatch-test");
+const dir = temporaryDirectory("operator-dispatch-test", { root: memoryRoot() });
 
 const home = join(dir, "home");
 const profile = join(dir, "profile");

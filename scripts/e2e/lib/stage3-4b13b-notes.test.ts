@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { expectNoMissingHelpers, nameMissingHelpers, scriptFunctions } from "./script-functions";
 
 // The 4b.13b acceptance's own soft and cleanup, taken from the script by name and run after the
@@ -10,7 +10,7 @@ import { expectNoMissingHelpers, nameMissingHelpers, scriptFunctions } from "./s
 const script = join(import.meta.dir, "..", "stage3-4b13b-acceptance.sh");
 const fn = scriptFunctions(script);
 const helperGuard = nameMissingHelpers(script);
-const dir = temporaryDirectory("stage3-4b13b-notes-test");
+const dir = temporaryDirectory("stage3-4b13b-notes-test", { root: memoryRoot() });
 const bin = join(dir, "bin");
 beforeAll(() => {
   mkdirSync(bin);

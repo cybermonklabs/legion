@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
 
 // wait_for_run_processes, the cleanup-is-complete checkpoint's wait for every process of the run to
@@ -14,7 +14,7 @@ const fn = scriptFunctions(scriptPath);
 const tree = scriptFunctions(join(import.meta.dir, "process-tree.sh"));
 const set = readFileSync(scriptPath, "utf8").match(/^set -.*$/m)?.[0];
 if (set === undefined) throw new Error(`${scriptPath} has no top-level set line`);
-const dir = temporaryDirectory("parked-decision-cleanup-test");
+const dir = temporaryDirectory("parked-decision-cleanup-test", { root: memoryRoot() });
 
 let runs = 0;
 // wait runs `wait_for_run_processes ARGS` with RUN_PROCESSES as run_processes's body; the body sees

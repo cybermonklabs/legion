@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import type { FinishedIssue, PlanRecord, ProjectPlans } from "@legion/contracts";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { bearerCredential } from "../../../packages/envoy-client/src/bearer";
 import { executeDispatchTool } from "../../../packages/envoy-client/src/dispatch-execute";
 import { fakeDispatchFetch } from "../../../packages/envoy-client/test/fake-dispatch";
@@ -15,7 +15,7 @@ import { changed, fakeDispatchRead } from "./fake-dispatch-command";
 // drops the answer's types when it runs this file, so the typecheck of scripts/e2e/lib, whose
 // tsconfig.json includes it, holds the answer to the contract's types.
 const script = join(import.meta.dir, "..", "plan-ratings-read.sh");
-const dir = temporaryDirectory("plan-ratings-read-test");
+const dir = temporaryDirectory("plan-ratings-read-test", { root: memoryRoot() });
 
 const project = "INFRA";
 const key = "INFRA-42";

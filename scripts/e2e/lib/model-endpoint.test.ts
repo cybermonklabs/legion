@@ -1,7 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // model_key_preflight against an endpoint shaped like the LiteLLM proxy the proofs' gateway is:
 // /v1/models refuses a call with no key and answers one with the key, and the key's metadata is
@@ -9,7 +9,7 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 // /v1/key/info is not found). The preflight must name the key's alias there, which is the run's
 // only record of which key the endpoint saw.
 const lib = import.meta.dir;
-const dir = temporaryDirectory("model-endpoint-test");
+const dir = temporaryDirectory("model-endpoint-test", { root: memoryRoot() });
 const key = "sk-gateway-test";
 const server = Bun.serve({
   port: 0,

@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
 
 // review_threads and reviewer_thread, taken from lib/workflow.sh by name and run against a
@@ -14,7 +14,7 @@ import { scriptFunctions } from "./script-functions";
 const fn = scriptFunctions(join(import.meta.dir, "workflow.sh"));
 const reviewApp = "example-review";
 
-const dir = temporaryDirectory("reviewer-thread-test");
+const dir = temporaryDirectory("reviewer-thread-test", { root: memoryRoot() });
 const bin = join(dir, "bin");
 beforeAll(() => {
   mkdirSync(bin);

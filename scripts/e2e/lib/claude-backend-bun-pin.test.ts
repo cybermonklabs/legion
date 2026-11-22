@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // claude-backend-tmux.sh builds claude-envoy with packages/claude-envoy/scripts/build.ts, which
 // refuses any Bun but the one the repository's .bun-version pins. A devbox whose `bun` is another
@@ -18,7 +18,7 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 const root = join(import.meta.dir, "..", "..", "..");
 const script = join(root, "scripts", "e2e", "claude-backend-tmux.sh");
 const pinned = readFileSync(join(root, ".bun-version"), "utf8").trim();
-const dir = temporaryDirectory("claude-backend-bun-pin-test");
+const dir = temporaryDirectory("claude-backend-bun-pin-test", { root: memoryRoot() });
 
 const bin = join(dir, "bin");
 const scratch = join(dir, "tmp");

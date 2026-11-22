@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // merge_when_clean and await_merger_merge (lib/workflow.sh) against a fake gh first on PATH.
 // merge_when_clean is the proof human's merge of a pull request the merger does not merge: it
@@ -20,7 +20,7 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 // delete is refused 422 when FAKE_GH_BRANCH_GONE is set, as GitHub refuses a branch its own
 // auto-delete already removed.
 const lib = join(import.meta.dir, "workflow.sh");
-const dir = temporaryDirectory("merge-when-clean-test");
+const dir = temporaryDirectory("merge-when-clean-test", { root: memoryRoot() });
 const bin = join(dir, "bin");
 beforeAll(() => {
   mkdirSync(bin);

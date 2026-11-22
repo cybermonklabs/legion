@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { expectNoMissingHelpers, nameMissingHelpers, scriptFunctions } from "./script-functions";
 
 // Stage 4b's own blocked, fail, pass, until_reached, cleanup, audit_verdict and audit_failure,
@@ -19,7 +19,7 @@ const rigFn = scriptFunctions(join(import.meta.dir, "rig.sh"));
 // itself: that library's own function, by name, as the functions above are the script's own.
 const appsFn = scriptFunctions(join(import.meta.dir, "github-apps.sh"));
 const helperGuard = nameMissingHelpers(script, join(import.meta.dir, "rig.sh"));
-const dir = temporaryDirectory("stage4b-verdict-test");
+const dir = temporaryDirectory("stage4b-verdict-test", { root: memoryRoot() });
 const bin = join(dir, "bin");
 beforeAll(() => {
   mkdirSync(bin);

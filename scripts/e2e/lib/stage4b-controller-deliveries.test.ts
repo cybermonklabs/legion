@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
 
 // Stage 4b's controller checkpoints read the controller's Oh My Pi sessions for the Envoy deliveries
@@ -14,7 +14,7 @@ import { scriptFunctions } from "./script-functions";
 // text a delivery's line holds.
 const scriptPath = join(import.meta.dir, "..", "stage4b-sandbox-tree.sh");
 const fn = scriptFunctions(scriptPath);
-const dir = temporaryDirectory("stage4b-controller-deliveries-test");
+const dir = temporaryDirectory("stage4b-controller-deliveries-test", { root: memoryRoot() });
 
 /** A delivery's session line: pi-envoy's custom message, its TOON card as the content. */
 const delivery = (id: string, summary: string, kind: string) =>

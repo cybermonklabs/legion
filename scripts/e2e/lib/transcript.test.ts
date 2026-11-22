@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // lib/transcript.sh's transcript_to, as an entry script runs it: sourced under `set -euo
 // pipefail`, called before the run's first output, and followed by the run, here one line on
@@ -9,7 +9,7 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 // its diagnostics. A transcript the helper cannot open must end the run there, naming the file, and
 // never let the run go on to its PASS with no transcript of it.
 const helper = join(import.meta.dir, "transcript.sh");
-const dir = temporaryDirectory("transcript-test");
+const dir = temporaryDirectory("transcript-test", { root: memoryRoot() });
 const pass = "stand-in e2e: PASS";
 const diagnostic = "stand-in e2e: a diagnostic on standard error";
 

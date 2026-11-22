@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { changed, fakeDispatchRead } from "./fake-dispatch-command";
 
 // step-records-read.sh (the read of a deployed issue's step records after the merge) against the
@@ -9,7 +9,7 @@ import { changed, fakeDispatchRead } from "./fake-dispatch-command";
 // answer. The answers below are the lines `dispatch steps` prints
 // (packages/envoy-client/src/dispatch-commands/steps.ts): a header, then one run per line.
 const script = join(import.meta.dir, "..", "step-records-read.sh");
-const dir = temporaryDirectory("step-records-read-test");
+const dir = temporaryDirectory("step-records-read-test", { root: memoryRoot() });
 
 const key = "INFRA-42";
 const run = (step: string) =>

@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
 
 // request_changes_as_reviewer and reviewer_requested_changes_from, taken from lib/workflow.sh by
@@ -13,7 +13,7 @@ const fn = scriptFunctions(join(import.meta.dir, "workflow.sh"));
 const reviewApp = "example-review[bot]";
 const session = "01a151b4-1122-7147-a350-9e54db101525";
 
-const dir = temporaryDirectory("reviewer-footer-test");
+const dir = temporaryDirectory("reviewer-footer-test", { root: memoryRoot() });
 const bin = join(dir, "bin");
 beforeAll(() => {
   mkdirSync(bin);

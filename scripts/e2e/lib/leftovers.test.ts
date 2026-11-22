@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup, untilRunning } from "./own-group";
 import { procRootOf } from "./proc-root";
 
@@ -12,7 +12,7 @@ import { procRootOf } from "./proc-root";
 // `${proc_root:-/proc}`; each row points proc_root at a proc root of its own processes
 // (lib/proc-root.ts), so its time is its own and not the host's process count.
 const leftovers = join(import.meta.dir, "leftovers.sh");
-const dir = temporaryDirectory("leftovers-test");
+const dir = temporaryDirectory("leftovers-test", { root: memoryRoot() });
 const skip = skipWithout("perl", "sleep", "find");
 const prefix = "legion-e2e-leftovers-test";
 

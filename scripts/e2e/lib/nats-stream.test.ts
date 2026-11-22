@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { connect, type NatsConnection } from "nats";
 import { readLast } from "./nats-stream";
 
@@ -13,7 +13,7 @@ const skip = skipWithout("docker");
 const root = join(import.meta.dir, "..", "..", "..");
 const container = `legion-nats-stream-${randomUUID()}`;
 const stream = `NATS_STREAM_${randomUUID().replaceAll("-", "_")}`;
-const configDirectory = temporaryDirectory("nats-stream-test");
+const configDirectory = temporaryDirectory("nats-stream-test", { root: memoryRoot() });
 const config = join(configDirectory, "envoy.json");
 const subjectCount = 10_000;
 const publishBatchSize = 25;

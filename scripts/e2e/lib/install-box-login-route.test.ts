@@ -11,13 +11,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // The box-login route's own installer, against a fake operator home in a temp directory: never the
 // real ~/.omp. Its one outside call is `mise ls --global --json`, faked here by a `mise` first on
 // PATH that prints the listing the test names and records the HOME and directory it ran under.
 const lib = import.meta.dir;
-const dir = temporaryDirectory("install-box-login-test");
+const dir = temporaryDirectory("install-box-login-test", { root: memoryRoot() });
 // The caller's HOME, which the installer refuses as --home; distinct from the fake operator home.
 const callerHome = join(dir, "caller-home");
 beforeAll(() => {

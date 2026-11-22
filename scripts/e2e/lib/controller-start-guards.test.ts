@@ -2,8 +2,9 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { copyFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup } from "./own-group";
+import { scratchNeed } from "./scratch-need";
 import { scriptFunctions } from "./script-functions";
 
 // The controller start proof's lookup of the controller's Oh My Pi (controller-start-tmux.sh's
@@ -17,7 +18,9 @@ const controllerOmp = scriptFunctions(join(import.meta.dir, "..", "controller-st
 );
 const rig = join(import.meta.dir, "rig.sh");
 const root = join(import.meta.dir, "..", "..", "..");
-const dir = temporaryDirectory("controller-start-guards-test");
+const dir = temporaryDirectory("controller-start-guards-test", {
+  root: memoryRoot({ need: scratchNeed.controllerStartGuards }),
+});
 // perl: run starts every harness in a group of its own (ownGroup, lib/own-group.ts).
 const skip = skipWithout("bash", "sleep", "sh", "env", "perl");
 const work = join(dir, "work");

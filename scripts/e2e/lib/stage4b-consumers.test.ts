@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
 
 // Stage 4b's delete_consumers against the durable consumers the daemon opens on production NATS
@@ -14,7 +14,7 @@ import { scriptFunctions } from "./script-functions";
 // lists the daemon's consumers under the prefix and records each name it is asked to delete.
 const root = join(import.meta.dir, "..", "..", "..");
 const fn = scriptFunctions(join(import.meta.dir, "..", "stage4b-sandbox-tree.sh"));
-const dir = temporaryDirectory("stage4b-consumers-test");
+const dir = temporaryDirectory("stage4b-consumers-test", { root: memoryRoot() });
 
 describe("delete_consumers", () => {
   test("deletes every durable consumer the daemon opens for the project", () => {

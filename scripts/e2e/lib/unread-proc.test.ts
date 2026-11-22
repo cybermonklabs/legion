@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { release } from "node:os";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup, untilRunning } from "./own-group";
 import { scriptFunctions } from "./script-functions";
 
@@ -14,7 +14,7 @@ import { scriptFunctions } from "./script-functions";
 // the process recorded: stop_pid and signal_group (lib/process-tree.sh) hold it to its start time.
 const e2e = join(import.meta.dir, "..");
 const root = join(e2e, "..", "..");
-const dir = temporaryDirectory("unread-proc-test");
+const dir = temporaryDirectory("unread-proc-test", { root: memoryRoot() });
 // perl: three rows start a process in a group of its own through ownGroup (lib/own-group.ts), and
 // a host without perl skips them by name.
 const withoutPerl = skipWithout("perl");

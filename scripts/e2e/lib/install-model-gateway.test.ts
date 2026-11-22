@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // The key command install-model-gateway.sh writes, against a fake hawk-token first on PATH. The
 // fake appends its pid to FAKE_MINT_LOG (one line per mint), sleeps FAKE_MINT_SLEEP seconds, then
@@ -9,7 +9,7 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 // does when its 9000 ms budget runs out (budget), fails at once on the login (refused), or is
 // killed by a signal (killed).
 const lib = import.meta.dir;
-const dir = temporaryDirectory("install-model-gateway-test");
+const dir = temporaryDirectory("install-model-gateway-test", { root: memoryRoot() });
 const bin = join(dir, "bin");
 const operatorHome = join(dir, "operator-home");
 beforeAll(() => {

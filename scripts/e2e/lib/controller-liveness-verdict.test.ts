@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { runJq } from "./run-jq.ts";
 import { scriptFunctions } from "./script-functions";
 
@@ -14,7 +14,7 @@ import { scriptFunctions } from "./script-functions";
 const library = fileURLToPath(new URL(".", import.meta.url));
 const program = fileURLToPath(new URL("./controller-liveness-verdict.jq", import.meta.url));
 const root = join(import.meta.dir, "..", "..", "..");
-const dir = temporaryDirectory("controller-liveness-verdict-test");
+const dir = temporaryDirectory("controller-liveness-verdict-test", { root: memoryRoot() });
 
 interface Verdict {
   notRegistered: { time: string; msg: string; claimState?: string; registered?: boolean }[];

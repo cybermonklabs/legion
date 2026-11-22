@@ -1,10 +1,10 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { expectNoMissingHelpers, nameMissingHelpers, scriptFunctions } from "./script-functions";
 
-const dir = temporaryDirectory("script-functions-test");
+const dir = temporaryDirectory("script-functions-test", { root: memoryRoot() });
 const path = join(dir, "fixture.sh");
 /** The fixture's functions, read once the hook below has written it. */
 let fn: (name: string) => string;

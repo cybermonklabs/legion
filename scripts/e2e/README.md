@@ -6457,6 +6457,13 @@ A walk of the host's whole `/proc` held a row to the host's process count; on th
 Each row of `lib/run-processes.test.ts` walks a root of the processes it started and the test process, and its first row starts a marked process outside that root, which a walk that went back to the host's `/proc` would name.
 A harness shell makes the same root for itself with one `ln -s` an entry, as `lib/unread-proc.test.ts`'s row for an agent's member that outlives its TERM does
 
+## lib/scratch-need.ts
+
+The suites of `lib/` make their file's scratch directory on the memory root (`memoryRoot`, `docs/testing.md`), so the one `afterAll` that removes it does not wait on a busy shared disk: on the dev box a removal of 1,716 entries there outlasted Bun's 5 s hook timeout.
+The five suites that hold the most there pass `memoryRoot` a `need`, the bytes `scratchNeed` names for each: twice what its tree held at its `afterAll`, measured on `/dev/shm`, rounded up to a whole MiB.
+A tmpfs with less free than that gives `tmpdir()`, the scratch disk, where a nearly full one, as a pod's 64 MiB `/dev/shm` can be, would fail the suite's writes with ENOSPC.
+`lib/scratch-need.test.ts` mounts two tmpfs of its own for each need, a page short of it and exactly it, in a mount namespace of its own, and `memoryRoot` gives `tmpdir()` for the first and the mount for the second.
+
 ## lib/process-tree.sh
 
 How a live proof knows a process it started: by the pid it had when it started, read from what started it, and by the program the kernel records it runs (`/proc/<pid>/exe`), never by a walk of the machine's `/proc` for its name, its command line or its working directory.

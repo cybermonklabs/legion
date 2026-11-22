@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
 
 // Stage 4b names its two throwaway Postgres containers for the driver's pid (legion-e2e4b-pg-$$,
@@ -12,7 +12,7 @@ import { scriptFunctions } from "./script-functions";
 // does for a name no container has when LABEL is unset.
 const script = join(import.meta.dir, "..", "stage4b-sandbox-tree.sh");
 const fn = scriptFunctions(script);
-const dir = temporaryDirectory("stage4b-run-containers-test");
+const dir = temporaryDirectory("stage4b-run-containers-test", { root: memoryRoot() });
 const id = "4242-1759240000000000000";
 const container = "legion-e2e4b-db-4242";
 // The container id docker answers with, which the removal uses in place of the name.

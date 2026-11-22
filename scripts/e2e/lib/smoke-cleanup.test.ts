@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { expectNoMissingHelpers, nameMissingHelpers, scriptFunctions } from "./script-functions";
 
 // clean_smoke_main's pull request and branch (lib/workflow.sh) through each stage's own teardown:
@@ -13,7 +13,7 @@ import { expectNoMissingHelpers, nameMissingHelpers, scriptFunctions } from "./s
 // case seeds and reads back.
 const e2e = join(import.meta.dir, "..");
 const root = join(e2e, "..", "..");
-const dir = temporaryDirectory("smoke-cleanup-test");
+const dir = temporaryDirectory("smoke-cleanup-test", { root: memoryRoot() });
 const bin = join(dir, "bin");
 beforeAll(() => {
   mkdirSync(bin);

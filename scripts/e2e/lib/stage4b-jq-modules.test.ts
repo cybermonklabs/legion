@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { runJq } from "./run-jq";
 import { scriptFunctions } from "./script-functions";
 
@@ -13,7 +13,7 @@ import { scriptFunctions } from "./script-functions";
 // turn (`PATH=/tmp/jqs/<v>:$PATH bun test …`), since jq's error wording moves between versions.
 const scriptPath = join(import.meta.dir, "..", "stage4b-sandbox-tree.sh");
 const fn = scriptFunctions(scriptPath);
-const dir = temporaryDirectory("stage4b-jq-modules-test");
+const dir = temporaryDirectory("stage4b-jq-modules-test", { root: memoryRoot() });
 
 beforeAll(() => {
   writeFileSync(join(dir, "good.jq"), "def ok: true;\n");

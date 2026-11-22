@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
 
 // omp_setup_wizard_off, and the controller proof's profile writer that calls it, read back as Oh My
@@ -9,7 +9,7 @@ import { scriptFunctions } from "./script-functions";
 // rig, as a pane that sits on "Setup step 1 of 5". The three model-route libraries' own tests read
 // the config.yml each one writes.
 const lib = import.meta.dir;
-const dir = temporaryDirectory("omp-home-test");
+const dir = temporaryDirectory("omp-home-test", { root: memoryRoot() });
 const writeControllerProfile = scriptFunctions(join(lib, "..", "controller-start-tmux.sh"))(
   "write_controller_profile"
 );

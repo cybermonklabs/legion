@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
 
 // ensure_project, write_dispatch_header and dispatch_agent (lib/workflow.sh) against a fake curl on
@@ -11,7 +11,7 @@ import { scriptFunctions } from "./script-functions";
 // nothing, as real curl does when the connection fails (no response, so -w writes the status as
 // 000).
 const lib = join(import.meta.dir, "workflow.sh");
-const dir = temporaryDirectory("ensure-project-test");
+const dir = temporaryDirectory("ensure-project-test", { root: memoryRoot() });
 beforeAll(() => {
   writeFileSync(
     join(dir, "curl"),

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { runJq } from "./run-jq";
 import { scriptFunctions } from "./script-functions";
 import { defaults, type Reservation } from "./stage4b-reservations";
@@ -17,7 +17,7 @@ const root = join(import.meta.dir, "..", "..", "..");
 const lib = join(root, "scripts", "e2e", "lib");
 const fn = scriptFunctions(join(root, "scripts", "e2e", "stage4b-sandbox-tree.sh"));
 const shapeProblems = fn("shape_problems");
-const dir = temporaryDirectory("stage4b-pods-test");
+const dir = temporaryDirectory("stage4b-pods-test", { root: memoryRoot() });
 let runs = 0;
 const golden = JSON.parse(
   readFileSync(

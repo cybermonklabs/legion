@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
 
 // Stage 4b's hold loops end a worker's launch while its task is outstanding and count on the daemon
@@ -12,7 +12,7 @@ import { scriptFunctions } from "./script-functions";
 const scriptPath = join(import.meta.dir, "..", "stage4b-sandbox-tree.sh");
 const script = readFileSync(scriptPath, "utf8");
 const fn = scriptFunctions(scriptPath);
-const dir = temporaryDirectory("stage4b-hold-test");
+const dir = temporaryDirectory("stage4b-hold-test", { root: memoryRoot() });
 
 /** The value the script assigns NAME at the start of a line. */
 function scriptNumber(name: string): number {

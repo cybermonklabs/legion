@@ -1,10 +1,10 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { operatorNatsSeed } from "./operator-nats-seed";
 
-const dir = temporaryDirectory("operator-nats-seed-test");
+const dir = temporaryDirectory("operator-nats-seed-test", { root: memoryRoot() });
 
 const production = "nats://envoy-nats.internal.example:4222";
 const file = join(dir, "envoy.json");

@@ -2,8 +2,9 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup } from "./own-group";
+import { scratchNeed } from "./scratch-need";
 import { scriptFunctions } from "./script-functions";
 
 // The Claude Code backend proof's process guards (claude-backend-tmux.sh), taken from the script by
@@ -26,7 +27,9 @@ const guards = [
   .map(fn)
   .join("\n");
 
-const dir = temporaryDirectory("claude-backend-guards-test");
+const dir = temporaryDirectory("claude-backend-guards-test", {
+  root: memoryRoot({ need: scratchNeed.claudeBackendGuards }),
+});
 // The stand-in processes are copies of two real programs, and sh runs one wrapper, so a host
 // without any of the three has nothing to start and every row here is skipped, as on a host without
 // perl, which starts every harness in a group of its own (ownGroup, lib/own-group.ts).

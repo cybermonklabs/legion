@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import {
   assistant,
   bashDevice,
@@ -27,7 +27,7 @@ import { scriptFunctions } from "./script-functions";
 // a write to xd://bash, eval code calling tool.bash(...), and eval code calling the generic
 // tool.write(...) naming xd://bash.
 const fn = scriptFunctions(join(import.meta.dir, "..", "stage4b-sandbox-tree.sh"));
-const dir = temporaryDirectory("report-after-tick-test");
+const dir = temporaryDirectory("report-after-tick-test", { root: memoryRoot() });
 
 const report = "LEGSMOKE-472";
 const body = "Legion daily report for 2026-10-06 (UTC). Running: LEGSMOKE-469. Slots: 0 free.";

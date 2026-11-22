@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { runJq } from "./run-jq";
 import { scriptFunctions } from "./script-functions";
 
@@ -20,7 +20,7 @@ const fn = scriptFunctions(join(root, "scripts", "e2e", "stage4b-sandbox-tree.sh
 const fixture = join(lib, "testdata", "stage4b-tools-session.jsonl");
 const session = readFileSync(fixture, "utf8");
 // The home every bash this file starts runs under, so none of them reads the caller's.
-const home = temporaryDirectory("stage4b-tools-home");
+const home = temporaryDirectory("stage4b-tools-home", { root: memoryRoot() });
 
 interface Block {
   type: string;

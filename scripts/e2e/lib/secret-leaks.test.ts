@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // lib/secret-leaks.ts, Stage 4b's leak check (pod-shape): it watches the run's Secrets and, on
 // SIGTERM, flags every ready Sandbox pod one of whose containers' command, args or env values
@@ -16,7 +16,7 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 // The script is driven as the stage drives it: a stub kubectl answers the Secret list from a
 // fixture and holds the watch open, the pod watch is a fixture file, SIGTERM makes it judge.
 const script = join(import.meta.dir, "secret-leaks.ts");
-const dir = temporaryDirectory("secret-leaks-test");
+const dir = temporaryDirectory("secret-leaks-test", { root: memoryRoot() });
 const bin = join(dir, "bin");
 beforeAll(() => {
   mkdirSync(bin);

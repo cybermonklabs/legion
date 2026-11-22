@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
 
 // node-release (stage4b-sandbox-tree.sh) waits for every node a pod of tree 1 ran on to be
@@ -110,7 +110,7 @@ describe("node_pods_judged", () => {
 describe("node_released, over a stub kubectl", () => {
   // The stub answers `get node` with what NODE_EXISTS says and `get pods` with LISTING; `timeout`
   // runs it from PATH, so it is a script, not a function.
-  const bin = temporaryDirectory("node-released");
+  const bin = temporaryDirectory("node-released", { root: memoryRoot() });
   beforeAll(() => {
     writeFileSync(
       join(bin, "kubectl"),
