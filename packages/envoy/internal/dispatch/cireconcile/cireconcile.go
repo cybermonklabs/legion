@@ -2,10 +2,12 @@
 //
 // The listener records a check run or a check suite from the webhook GitHub sends it, and the
 // Legion daemon reads the settlement those records produce (`ci-ok`, `pr-title`). A webhook that
-// reaches no record leaves that head short of a check, and a head short of a check never settles:
-// the daemon waits for an answer that never comes. GitHub holds the same objects the webhook
-// carries, so every Interval a pass reads each open pull request's head and records every
-// completed check run and completed check suite the listener's record of that head lacks.
+// reaches no record leaves that head's record behind GitHub: a run whose end it missed holds the
+// head for ever, and the daemon waits for an answer that never comes, and a run it missed whole
+// is absent, so the head settles while GitHub still runs it and the daemon reads the head as done.
+// GitHub holds the same objects the webhook carries, so every Interval a pass reads each open
+// pull request's head and records every check run, finished or not, in one write of the head's
+// record, and every completed check suite the listener's record of that head lacks (recordRuns).
 //
 // A pass reads GitHub in batches, over GraphQL: one query answers twenty open pull requests of
 // one repository with every check suite and every check run of each one's head commit

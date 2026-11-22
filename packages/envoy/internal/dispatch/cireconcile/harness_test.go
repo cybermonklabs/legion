@@ -147,11 +147,11 @@ func openWriter(client *bus.Client) func() (Writer, error) {
 	}
 }
 
-// holdWriteUntilTheBoundFalls makes the nth check-run write of this harness's passes wait until
-// the pass making it has run out of its own bound. It is a CI bucket slower to answer than the
-// pass has left, which is the one thing that can take a pass past its bound in the middle of a
-// page its query answered whole: those heads cost no request of their own, so nothing else
-// about them can be slow.
+// holdWriteUntilTheBoundFalls makes the nth check-run write of this harness's passes, each the
+// runs of one head, wait until the pass making it has run out of its own bound. It is a CI bucket
+// slower to answer than the pass has left, which is the one thing that can take a pass past its
+// bound in the middle of a page its query answered whole: those heads cost no request of their
+// own, so nothing else about them can be slow.
 //
 // The count is the harness's rather than one pass's, so the pass after the one that was held
 // writes every head of its own without waiting.
@@ -171,16 +171,16 @@ func (h *harness) holdWriteUntilTheBoundFalls(nth int) {
 	}
 }
 
-// holdingWriter is the CI record writer with hold run before each check run it is given
+// holdingWriter is the CI record writer with hold run before each write of a head's check runs
 // (holdWriteUntilTheBoundFalls).
 type holdingWriter struct {
 	Writer
 	hold func(ctx context.Context)
 }
 
-func (w *holdingWriter) Record(ctx context.Context, observation contracts.CIObservation) (bool, error) {
+func (w *holdingWriter) RecordRuns(ctx context.Context, observations []contracts.CIObservation) (bool, error) {
 	w.hold(ctx)
-	return w.Writer.Record(ctx, observation)
+	return w.Writer.RecordRuns(ctx, observations)
 }
 
 // startListener opens the listener's own store, which makes the bucket and watches it, and its

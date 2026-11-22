@@ -445,7 +445,7 @@ func Open(ctx context.Context, nc *nats.Conn, logger *logging.Logger, opts ...Op
 	return s, nil
 }
 
-// Writer is the CI record bucket as a process that only writes it holds it: exactly Record,
+// Writer is the CI record bucket as a process that only writes it holds it: exactly RecordRuns,
 // RecordSuite, RecordStatus and HasRecord, and no way to reach the store behind it. Everything
 // else on Store belongs to the listener's store and would panic here: the cache, the summary loop,
 // Ping, Rewatch, StopWatch, EndWatch, WaitForCacheReady and the settlement transitions all go
@@ -491,21 +491,23 @@ func OpenWriter(conn *nats.Conn, js nats.JetStreamContext, logger *logging.Logge
 	return &Writer{store: s}, nil
 }
 
-// Record folds one check observation into the head's record and reports whether that changed it:
-// an observation the record already holds, or one its own rules refuse as older, changes nothing
-// and is no news for a caller counting what a pass did.
-func (w *Writer) Record(ctx context.Context, observation contracts.CIObservation) (bool, error) {
-	return w.store.record(ctx, observation)
+// RecordRuns folds every check run of one head into the head's record in one compare-and-swap
+// (recordRuns), and reports whether that changed it: runs the record already holds, or ones its own
+// rules refuse as older, change nothing and are no news for a caller counting what a pass did.
+// The runs land together or none of them does, so a write that fails never leaves the record
+// holding some of a head's finished runs without the rest.
+func (w *Writer) RecordRuns(ctx context.Context, observations []contracts.CIObservation) (bool, error) {
+	return w.store.recordRuns(ctx, observations)
 }
 
 // RecordSuite folds one check_suite observation into the head's record and reports whether that
-// changed it, as Record does.
+// changed it, as RecordRuns does.
 func (w *Writer) RecordSuite(ctx context.Context, observation contracts.CIObservation) (bool, error) {
 	return w.store.recordSuite(ctx, observation)
 }
 
 // RecordStatus folds one commit status into the head's record and reports whether that changed
-// it, as Record does (recordStatus). A status the record already holds, an older one than the
+// it, as RecordRuns does (recordStatus). A status the record already holds, an older one than the
 // record keeps for its context, and one the record's bounds refuse (write) change nothing. It
 // refuses, with an error, a status with no context or in a state other than success, failure and
 // error (contracts.TerminalStatusState): contracts.GithubStatusObservation maps no other, so a
@@ -770,43 +772,73 @@ func (s *Store) WaitForCacheReady(ctx context.Context) error {
 
 // Record folds one check observation into the per-commit state via CAS, waiting for it no longer
 // than ctx allows (update). It answers the error alone, which is the shape webhook.CIRecorder
-// takes and all the webhook handler has a use for; a writer's Record also answers whether the
-// observation changed the record.
+// takes and all the webhook handler has a use for.
 func (s *Store) Record(ctx context.Context, observation contracts.CIObservation) error {
-	_, err := s.record(ctx, observation)
+	_, err := s.update(ctx, observation.Owner, observation.Repo, observation.Number, observation.SHA, "", func(st *State) bool {
+		return applyCheckRun(st, observation)
+	})
 	return err
 }
 
-// record is the one body both forms of Record share, and reports whether the observation changed
-// the head's record.
-func (s *Store) record(ctx context.Context, observation contracts.CIObservation) (bool, error) {
-	return s.update(ctx, observation.Owner, observation.Repo, observation.Number, observation.SHA, "", func(st *State) bool {
-		if st.Checks == nil {
-			st.Checks = map[string]Check{}
+// recordRuns folds every check run of observations, all of one head, into that head's record as
+// one mutation, so one compare-and-swap writes them all or none (update, write), and reports
+// whether any of them changed the record. Each run goes through the record's own rules
+// (applyCheckRun), in the order given, exactly as it would written alone. A write past the
+// record's bounds is refused whole, as one webhook's observation past them is: the record is
+// written as it was, marked Overflowed, so it never settles on part of the head (write, atBounds).
+// Runs of more than one head are refused before anything is read, and no run is no write.
+func (s *Store) recordRuns(ctx context.Context, observations []contracts.CIObservation) (bool, error) {
+	if len(observations) == 0 {
+		return false, nil
+	}
+	head := observations[0]
+	for _, observation := range observations[1:] {
+		if observation.Owner != head.Owner || observation.Repo != head.Repo || observation.Number != head.Number || observation.SHA != head.SHA {
+			return false, fmt.Errorf("cistore: check runs of %s/%s#%s@%s and %s/%s#%s@%s in one write; a write carries the runs of one head",
+				head.Owner, head.Repo, head.Number, head.SHA, observation.Owner, observation.Repo, observation.Number, observation.SHA)
 		}
-		key := observation.CheckName
-		if current, ok := st.Checks[key]; ok {
-			if checkRunIDIsOlder(observation.CheckRunID, uint64(current.CheckRunID)) ||
-				(observation.CheckRunID == uint64(current.CheckRunID) && !observationMayReplace(observation.ObservedAt, current.ObservedAt, observation.Status, current.Status)) {
-				return false
+	}
+	return s.update(ctx, head.Owner, head.Repo, head.Number, head.SHA, "", func(st *State) bool {
+		changed := false
+		for _, observation := range observations {
+			if applyCheckRun(st, observation) {
+				changed = true
 			}
 		}
-		next := Check{
-			Name:       observation.CheckName,
-			CheckRunID: checkRunID(observation.CheckRunID),
-			URL:        observation.URL,
-			Status:     observation.Status,
-			Conclusion: observation.Conclusion,
-			ObservedAt: observation.ObservedAt,
-		}
-		if current, ok := st.Checks[key]; ok && current == next {
+		return changed
+	})
+}
+
+// applyCheckRun folds one check run into st and reports whether that changed it. A run older than
+// the one st holds of its name (checkRunIDIsOlder), and an observation of the same run that may
+// not replace the held one (observationMayReplace, which ranks a finished run over a running or
+// queued one), change nothing, and neither does one st already holds.
+func applyCheckRun(st *State, observation contracts.CIObservation) bool {
+	if st.Checks == nil {
+		st.Checks = map[string]Check{}
+	}
+	key := observation.CheckName
+	if current, ok := st.Checks[key]; ok {
+		if checkRunIDIsOlder(observation.CheckRunID, uint64(current.CheckRunID)) ||
+			(observation.CheckRunID == uint64(current.CheckRunID) && !observationMayReplace(observation.ObservedAt, current.ObservedAt, observation.Status, current.Status)) {
 			return false
 		}
-		st.Checks[key] = next
-		rearm(st)
-		st.LastEventAt = time.Now().UnixMilli()
-		return true
-	})
+	}
+	next := Check{
+		Name:       observation.CheckName,
+		CheckRunID: checkRunID(observation.CheckRunID),
+		URL:        observation.URL,
+		Status:     observation.Status,
+		Conclusion: observation.Conclusion,
+		ObservedAt: observation.ObservedAt,
+	}
+	if current, ok := st.Checks[key]; ok && current == next {
+		return false
+	}
+	st.Checks[key] = next
+	rearm(st)
+	st.LastEventAt = time.Now().UnixMilli()
+	return true
 }
 
 // RecordSuite folds a check_suite observation into the per-commit state, waiting for it no longer

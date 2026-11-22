@@ -215,34 +215,35 @@ func TestAQueuedSuiteIsNotRecordedAndTheHeadStillSettles(t *testing.T) {
 	}
 }
 
-// A run that is queued or in progress is not recorded either: nothing takes a check out of a
-// record, so one recorded while it is running would hold the head for ever if it never finished.
-func TestARunningRunIsNotRecordedAndTheHeadStillSettles(t *testing.T) {
+// A run that is queued or in progress is recorded, as its webhook would have recorded it, and
+// holds the head: GitHub has not finished the head's CI, so a settlement on its one completed
+// check would claim the head done while two of its checks still run.
+func TestARunningRunIsRecordedAndHoldsTheHead(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.mapRepository(rowRepository)
 	h.listHead()
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
-		checkRun(2, "flaky", "queued", "", otherApp, ""),
-		checkRun(3, "slow", "in_progress", "", otherApp, "2026-11-05T03:01:02Z"),
+		unfinished(checkRun(2, "flaky", "queued", "", otherApp, "")),
+		unfinished(checkRun(3, "slow", "in_progress", "", otherApp, "2026-11-05T03:01:02Z")),
 	)
 	settlements := h.subscribe()
 
 	h.pass()
 
-	settled := h.settlement(settlements, "with a queued and a running run at the head")
-	if settled.SHA != headSHA || settled.Passed.Count != 1 || settled.Failed.Count != 0 {
-		t.Fatalf("settlement = %+v, want the head settled on its one completed check", settled)
-	}
+	h.noSettlement(settlements, "with a queued and a running run at the head")
 	state, _, ok := h.record()
 	if !ok {
 		t.Fatal("the head has no record")
 	}
-	if len(state.Checks) != 1 {
-		t.Fatalf("the record holds %+v, want the completed check alone", state.Checks)
+	if len(state.Checks) != 3 {
+		t.Fatalf("the record holds %+v, want all three runs", state.Checks)
 	}
-	if _, held := state.Checks["ci-ok"]; !held {
-		t.Fatalf("the record holds %+v, want ci-ok", state.Checks)
+	if got := state.Checks["flaky"]; got.Status != "queued" {
+		t.Fatalf("the record holds flaky as %+v, want it queued", got)
+	}
+	if got := state.Checks["slow"]; got.Status != "in_progress" {
+		t.Fatalf("the record holds slow as %+v, want it in_progress", got)
 	}
 }
 
