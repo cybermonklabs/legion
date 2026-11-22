@@ -1,0 +1,5 @@
+kind: Fixed
+body: '`Version` carries `token`, a file''s or an image''s version token, in `schemas/dispatch-openapi.json`, `src/dispatch-api.generated.ts` and `versionFields`. The `dispatch_doc_read` and `dispatch_artifact` descriptions, and the upload precondition''s, say that a read of a file prints its version''s token and that an upload replacing a file names it, as one replacing a document does.'
+time: 2026-11-22T15:07:19.17031954Z
+custom:
+    Issue: pr5013
