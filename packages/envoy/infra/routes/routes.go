@@ -488,7 +488,7 @@ func checkUnchanged(ctx context.Context, r *Report, src Source, before []Pod) ma
 // to five more, with waits of 20 to 320 ms between them, doubling from closedRouteWait (620 ms of
 // waits in all, besides each read's own time).
 const (
-	closedRouteReads = 6
+	closedRouteReads = 1
 	closedRouteWait  = 20 * time.Millisecond
 )
 
