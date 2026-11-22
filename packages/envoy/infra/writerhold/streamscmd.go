@@ -91,16 +91,17 @@ type streamsOptions struct {
 // store it cannot match, reach or read is unreconciled; while any store is unreconciled, it writes
 // nothing. What it did is its StreamIDResult, which places each of its stores, and so each daemon
 // family of families, in exactly one list (StreamIDResult.Covers). A malformed daemonDatabases
-// entry, a listing of the Deployments it cannot read, and a stream with no identity are its error,
-// and it then writes nothing; a result answered with an error carries no promise, and no caller
-// reads it. It is consumernames.ReconcileDaemonStreamIDs, whose package imports this one, so
-// cmd/envoy-infra passes it in.
+// entry, a listing of the daemon stores' address sources it cannot read (the Deployments, or the
+// retired projects' ConfigMap), and a stream with no identity are its error, and it then writes
+// nothing; a result answered with an error carries no promise, and no caller reads it. It is
+// consumernames.ReconcileDaemonStreamIDs, whose package imports this one, so cmd/envoy-infra passes
+// it in.
 type StreamIDWriter func(ctx context.Context, conn *nats.Conn, deployments DaemonDeployments, families, daemonDatabases []string) (StreamIDResult, error)
 
 // StreamIDResult is what a StreamIDWriter did to the daemon stores, each list in the order of the
 // stores' project keys. A result its writer answered with no error places each store in exactly
-// one list (Covers): the decision a hold that acts on the stores reads, as a hub-restore's abort
-// needs Unreconciled empty and every daemon/<P> family it gave in one of the others.
+// one list (Covers), which the census's reconcile (reconcileStreamIDs) checks before it prints or
+// records any store.
 type StreamIDResult struct {
 	Changed      []StreamIDChange    // stores whose recorded identity it rewrote, by project key
 	Gone         []GoneStore         // stores confirmed gone, which no daemon can use
@@ -607,10 +608,10 @@ func leftBy(r streams.Report, barriers map[string]uint64, err error) error {
 // recorded, unchanged` for one that records none yet, named in no output, since the census wrote
 // nothing there. The stores are the daemons' own databases, no stream of the hub, so the
 // postcheck counts none of these writes. With no stores, an error of theirs (a malformed
-// --daemon-database, a listing of the Deployments it cannot read, a stream with no identity), or
-// any store left unreconciled, which it names with why, it is UNKNOWN and the census writes no
-// done entry; a store changed before that is then named as what the run left (a *Left), so the
-// stop does not record the run as unchanged.
+// --daemon-database, a listing of the daemon stores' address sources it cannot read, a stream with
+// no identity), or any store left unreconciled, which it names with why, it is UNKNOWN and the
+// census writes no done entry; a store changed before that is then named as what the run left (a
+// *Left), so the stop does not record the run as unchanged.
 func reconcileStreamIDs(ctx context.Context, nc *nats.Conn, stores StreamIDWriter, deployments DaemonDeployments, families, daemonDatabases []string, stdout io.Writer) (map[string]string, error) {
 	if stores == nil {
 		return nil, unknownf(StepPostcheck, ErrNoStoreWriter, "reconcile the daemon stores' stream ids")
