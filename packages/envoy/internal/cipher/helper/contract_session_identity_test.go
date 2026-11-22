@@ -278,7 +278,7 @@ func TestContractASessionThatDoesNotComeBackLosesItsGrant(t *testing.T) {
 	// goRevoke), so the broker has answered the revoke before the grant is read, however long a
 	// loaded machine takes; a poll of five seconds failed here under load on main, 1 run of 12
 	// (the pull request records the runs).
-	next.waitRevokes()
+	next.waitRevokes(t)
 	status, body = cr.sessionReq(t, sess, http.MethodPost, "/v1/grants/"+*created.GrantID+"/values", nil)
 	if status == http.StatusOK {
 		t.Fatalf("a session that never came back still released its grant: %d %s", status, body)
