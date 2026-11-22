@@ -1615,11 +1615,21 @@ func (s *server) acceptStatus(w http.ResponseWriter, r *http.Request, a acceptAc
 		return
 	}
 	if recorded != nil && moveNotTaken(*recorded, shown) {
-		s.writeFailure(w, r, http.StatusConflict, "ISSUE_CHANGED", fmt.Sprintf("Dispatch shows %s %s at sequence %d, a move the daemon has not taken yet: its record last took sequence %d, "+
-			"which showed %s, and holds the issue at %s. So the %s write was not made over that move and nothing was recorded; once read_record shows the move, "+
-			"make the %s again only where it still stands for it",
-			a.issue, shown.Status, shown.LastSeq, recorded.LastDispatchSeq, recorded.DispatchStatus, recorded.Status, a.status, a.act))
-		return
+		mover, err := s.statusMoverSince(r.Context(), a.issue, recorded.LastDispatchSeq)
+		if err != nil {
+			s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED",
+				fmt.Sprintf("Dispatch shows %s %s, past what the daemon's record took, and its events after sequence %d could not be read to tell whose move that is, so nothing was written or recorded: %v; retry %s",
+					a.issue, shown.Status, recorded.LastDispatchSeq, err, a.act))
+			return
+		}
+		if mover != nil {
+			s.writeFailure(w, r, http.StatusConflict, "ISSUE_CHANGED", fmt.Sprintf("Dispatch shows %s %s at sequence %d, a move %s made at sequence %d that the daemon has not taken yet: its record last took sequence %d, "+
+				"which showed %s, and holds the issue at %s. So the %s write was not made over that move and nothing was recorded; once read_record shows the move, "+
+				"make the %s again only where it still stands for it",
+				a.issue, shown.Status, shown.LastSeq, cmp.Or(mover.Actor.Name(), "someone Dispatch does not name"), mover.Seq, recorded.LastDispatchSeq,
+				recorded.DispatchStatus, recorded.Status, a.status, a.act))
+			return
+		}
 	}
 	// The write may land in Dispatch however the call to it ends, so from here the act is finished
 	// whether or not its caller is still there: a caller that went away does not leave Dispatch
@@ -1694,11 +1704,34 @@ func (s *server) readAndJudge(ctx context.Context, issue string, judge func(cont
 // moveNotTaken says whether Dispatch shows the issue (shown) at a status its record has not
 // taken: one past the newest event the record applied (LastDispatchSeq) that is neither the status
 // that event showed (DispatchStatus) nor the one the daemon holds the issue at (Status), which it
-// has queued and Dispatch can show before the write's echo comes back. Such a status is someone's
-// move the consumer has not applied, as the outbox's status row reads one (daemon's statusMoved);
-// an event that kept the status, a message, is none.
+// has queued and Dispatch can show before the write's echo comes back. Such a status is a move the
+// consumer has not applied, as the outbox's status row reads one (daemon's statusMoved); an event
+// that kept the status, a message, is none. Whose move it is the event log says
+// (statusMoverSince): the daemon's own earlier write, a status row whose event is still on its way,
+// is no move to refuse over.
 func moveNotTaken(recorded record.Issue, shown dispatch.Issue) bool {
 	return shown.LastSeq > recorded.LastDispatchSeq && shown.Status != recorded.DispatchStatus && shown.Status != recorded.Status
+}
+
+// statusMoverSince is the first event of issue's Dispatch log after seq that changed its status
+// and that the daemon did not make (intake.StatusChangeOf), nil for none: a person's or a
+// session's move, as the outbox's set-back reads one (daemon's setBackOwed). Only the log names who
+// made a change, because the act runs before the consumer can apply the change's event.
+func (s *server) statusMoverSince(ctx context.Context, issue string, seq int64) (*intake.StatusChange, error) {
+	events, err := s.dispatch.EventsAfter(ctx, issue, seq)
+	if err != nil {
+		return nil, err
+	}
+	for _, raw := range events {
+		change, err := intake.StatusChangeOf(raw)
+		if err != nil {
+			return nil, err
+		}
+		if change.Changed && !change.DaemonActor {
+			return &change, nil
+		}
+	}
+	return nil, nil
 }
 
 // statusWriteAttempts bounds how often one write of an acceptance's status, or of its write back,

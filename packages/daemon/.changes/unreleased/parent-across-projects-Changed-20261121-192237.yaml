@@ -13,10 +13,13 @@ body: |-
   reads that refusal's `relation: child` entries as the children that hold the write, and the route
   answers it the same way, `409 SIGNOFF_CHILD_OPEN` naming them, recording nothing and writing
   nothing back. Before it writes, the route compares the status
-  Dispatch shows with what its record has taken: a status past the newest event the record
-  applied that is neither the status that event showed nor the one the daemon holds the issue at
-  is a person's move the consumer has not applied yet, such as a close or a park, and the route
-  answers `409 ISSUE_CHANGED` naming it and writes nothing over it. The write is made at the
+  Dispatch shows with what its record has taken: where Dispatch shows a status past the newest
+  event the record applied that is neither the status that event showed nor the one the daemon
+  holds the issue at, and the issue's event log after that event holds a status change someone
+  other than the daemon made (a person's close or park, or a session's write, that the consumer has
+  not applied yet), the route answers `409 ISSUE_CHANGED` naming it and who made it, and writes
+  nothing over it. The daemon's own earlier write, whose event is still on its way, is no such
+  move. The write is made at the
   sequence of the route's own read of the issue (`expected_sequence`): where a person moved the
   issue since, nothing is written over the move, nothing is recorded, and the route answers
   `409 ISSUE_CHANGED` naming the status Dispatch shows; an event that kept the status, a message,

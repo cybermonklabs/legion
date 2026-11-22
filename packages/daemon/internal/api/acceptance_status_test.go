@@ -530,31 +530,38 @@ func TestAnAcceptanceWritesAtANewReadOverAnEventThatKeptTheStatus(t *testing.T) 
 
 // A person moved the issue in Dispatch before the route read it, and the daemon has not taken that
 // move yet: Dispatch shows, past the newest event the record took, a status that is neither the one
-// that event showed nor the one the daemon holds the issue at. The route writes nothing over the
-// move and records nothing, and answers 409 ISSUE_CHANGED naming the status Dispatch shows. Written
-// over, a person's close would be reopened as retro, and its event, once taken, would take the
-// record out of the workflow while Dispatch kept the retro, which no repair puts back. A status the
-// daemon itself holds the issue at, which Dispatch shows before its echo comes back, and an event
-// that kept the status, a message, are no such move: the act is taken over each.
+// that event showed nor the one the daemon holds the issue at, and its log names someone other than
+// the daemon as the one who changed it. The route writes nothing over the move and records nothing,
+// and answers 409 ISSUE_CHANGED naming the status Dispatch shows and who moved it. Written over, a
+// person's close would be reopened as retro, and its event, once taken, would take the record out
+// of the workflow while Dispatch kept the retro, which no repair puts back. A status the daemon
+// itself holds the issue at, which Dispatch shows before its echo comes back, the daemon's own
+// earlier write whose event is still on its way, and an event that kept the status, a message, are
+// no such move: the act is taken over each.
 func TestAnAcceptanceWritesNothingOverAPersonsMoveTheDaemonHasNotTaken(t *testing.T) {
 	closeBody := map[string]any{"reason": "The human decided no change is needed."}
+	person := statusEvent{seq: 8, kind: "user", id: "alice"}
+	daemon := statusEvent{seq: 8, kind: "session", id: dispatch.DaemonSession("LEGION-208")}
 	for _, tc := range []struct {
 		name, route, writes string
 		body                map[string]any
 		// own, saw and sawSeq are what the record holds (recordSaw); shows and at are what
-		// Dispatch shows when the route reads it.
+		// Dispatch shows when the route reads it, and log is its status changes after sawSeq.
 		own, saw, shows string
 		sawSeq, at      int64
+		log             []statusEvent
 		moved           bool
 	}{
 		{name: "sign_off over a person's close", route: "/legion/v1/signoff", writes: "retro",
-			own: "needs_review", saw: "needs_review", sawSeq: 7, shows: "done", at: 8, moved: true},
+			own: "needs_review", saw: "needs_review", sawSeq: 7, shows: "done", at: 8, log: []statusEvent{person}, moved: true},
 		{name: "sign_off over a person's move to backlog", route: "/legion/v1/signoff", writes: "retro",
-			own: "needs_review", saw: "needs_review", sawSeq: 7, shows: "backlog", at: 8, moved: true},
+			own: "needs_review", saw: "needs_review", sawSeq: 7, shows: "backlog", at: 8, log: []statusEvent{person}, moved: true},
 		{name: "close_root over a person's move to icebox", route: "/legion/v1/roots/close", writes: "done", body: closeBody,
-			own: "todo", saw: "todo", sawSeq: 7, shows: "icebox", at: 8, moved: true},
+			own: "todo", saw: "todo", sawSeq: 7, shows: "icebox", at: 8, log: []statusEvent{person}, moved: true},
 		{name: "sign_off over the status the daemon holds, before its echo", route: "/legion/v1/signoff", writes: "retro",
 			own: "needs_review", saw: "testing", sawSeq: 7, shows: "needs_review", at: 8},
+		{name: "sign_off over the daemon's own earlier write, its event still on its way", route: "/legion/v1/signoff", writes: "retro",
+			own: "needs_review", saw: "needs_review", sawSeq: 7, shows: "in_progress", at: 8, log: []statusEvent{daemon}},
 		{name: "close_root after a message the record has not taken", route: "/legion/v1/roots/close", writes: "done", body: closeBody,
 			own: "todo", saw: "todo", sawSeq: 7, shows: "todo", at: 9},
 	} {
@@ -562,6 +569,7 @@ func TestAnAcceptanceWritesNothingOverAPersonsMoveTheDaemonHasNotTaken(t *testin
 			h, facts, statuses := newAcceptanceHarness(t, &acceptanceJudge{}, nil)
 			recordSaw(t, h, "LEGION-208", tc.own, tc.saw, tc.sawSeq)
 			statuses.issues["LEGION-208"] = dispatch.Issue{Key: "LEGION-208", Status: tc.shows, LastSeq: tc.at}
+			statuses.events = map[string][]statusEvent{"LEGION-208": tc.log}
 			architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
 			body := map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}
 			for key, value := range tc.body {

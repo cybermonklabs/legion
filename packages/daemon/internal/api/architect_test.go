@@ -115,6 +115,9 @@ type statusRecorder struct {
 	listFails error
 	// reads is every issue and document read, in order: `issue:<key>` and `approval:<id>`.
 	reads []string
+	// events is each issue's Dispatch event log, by key, as EventsAfter serves it: each event's
+	// seq, type, actor and payload. An issue it leaves out has none.
+	events map[string][]statusEvent
 }
 
 // ListIssues answers Dispatch's project listing: every issue the fake knows, in key order, as the
@@ -249,8 +252,28 @@ func (r *statusRecorder) PostMessage(_ context.Context, key, _ string) error {
 func (r *statusRecorder) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }
-func (r *statusRecorder) EventsAfter(context.Context, string, int64) ([]json.RawMessage, error) {
-	return nil, nil
+
+// EventsAfter answers each event of key's log after seq, in order, as Dispatch encodes one.
+func (r *statusRecorder) EventsAfter(_ context.Context, key string, after int64) ([]json.RawMessage, error) {
+	var events []json.RawMessage
+	for _, event := range r.events[key] {
+		if event.seq <= after {
+			continue
+		}
+		encoded, err := json.Marshal(map[string]any{"issue_key": key, "seq": event.seq, "type": "issue.updated",
+			"actor": map[string]string{"kind": event.kind, "id": event.id}, "payload": map[string]any{"changed": []string{"status"}}})
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, encoded)
+	}
+	return events, nil
+}
+
+// statusEvent is one status change of an issue's Dispatch log: its sequence and its actor.
+type statusEvent struct {
+	seq      int64
+	kind, id string
 }
 
 // Approval answers Dispatch's document read. A document this fake knows that the case under test
