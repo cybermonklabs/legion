@@ -118,8 +118,8 @@ func (check *Check) UnmarshalJSON(data []byte) error {
 
 // Suite is the last-known state of one GitHub check suite for a commit. A record written before
 // the listener stopped taking a suite before it completes (contracts.GithubCIObservations) may
-// hold a run_count field of its suites, which no release reads any more and the next write of the
-// record drops.
+// hold a run_count field of its suites, which this release no longer reads and the next write of
+// the record drops.
 type Suite struct {
 	ID         string `json:"id"`
 	AppID      string `json:"app_id"`
@@ -1101,11 +1101,12 @@ func (s *Store) markOverflowed(key string) error {
 }
 
 // githubActionsAppID is the id of the GitHub App GitHub Actions runs as (15368), the same on every
-// repository. Actions creates a workflow's check suite before any of its runs, and a workflow that
-// waits on a concurrency group, or a job that waits on another, holds its suite open with no run,
-// or with some runs finished and the next not yet made, for minutes. So an Actions suite that is
-// not completed holds the head, run or none (suiteHolds): settling beside an empty one would
-// announce the head before its workflow ran.
+// repository. An Actions suite that is not completed holds the head, run or none (suiteHolds). No
+// path records such a suite, before or after this change: a repository or organization webhook
+// receives only completed check suites, a check_run delivery records its run and not its suite,
+// and Dispatch's CI reconcile skips every suite that is not completed. So the rule guards only a
+// record written before this change, should one hold such a suite. Keeping a head from settling
+// before its workflow's first run is a separate change.
 const githubActionsAppID = "15368"
 
 // settlementReady reports whether st can settle: every check it holds is terminal, one check has
