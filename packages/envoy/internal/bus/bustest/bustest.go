@@ -1,14 +1,17 @@
 // Package bustest holds the deployed stream the start tests of envoy-listener and envoy-dispatch
 // both begin from, the check each makes of what a start left of it, the drift table each start
-// corrects and the fill loop the full-stream tests begin from. The bus's own tests cannot import
-// it (it imports the bus) and keep their own copies: the fixture deployedClusterStream, the drift
-// table in internal/bus/stream_replicas_test.go and the fill loops in that file and in
-// internal/bus/publish_not_stored_test.go. Every test outside package bus takes them from here.
+// corrects, the fill loop the full-stream tests begin from and the change a test makes to the
+// stream that no owner of it undoes, a narrowing that takes a subject out among them. The bus's
+// own tests cannot import it (it imports the bus) and keep their own copies: the fixture
+// deployedClusterStream, the drift table in internal/bus/stream_replicas_test.go and the fill
+// loops in that file and in internal/bus/publish_not_stored_test.go. Every test outside package
+// bus takes them from here.
 package bustest
 
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -177,5 +180,95 @@ func FillStream(t testing.TB, client *bus.Client, most int) {
 			t.Fatalf("fill publish %d = %v, want nil or bus.ErrStreamFull", filled, err)
 		}
 		return
+	}
+}
+
+// streamGenerationKey is the stream metadata key that holds the generation of the stream's
+// settings, spelled out as every build reads it: bus keeps its own unexported.
+// stampedGeneration is the generation ChangeStream stamps there: one no build reaches.
+const (
+	streamGenerationKey = "dispatch.stream-generation"
+	stampedGeneration   = "1000000"
+)
+
+// ChangeStream makes change to a copy of config, stamps it with a generation no build reaches
+// (stampedGeneration) and writes it to the stream js reaches. It then reads the stream back, fails
+// the test unless the stamp holds, and returns the configuration it read, for the caller to check
+// its own change in. A test puts the stream back by writing config.
+//
+// The stamp is what keeps the change while the test runs. Every client that owns the stream
+// (bus.ConnectOwningStream) ensures it at its start and after every reconnect, which reconciles it
+// with its binary's settings, and keeps it every 30 s, which puts back each subject of its
+// binary's that no subject of the stream overlaps and the byte limit, the age, the duplicate window
+// and discard. Both leave a stream a newer build stamped exactly as it is, and to them a changed
+// stream is one. Without the stamp a change held only until the next reconnect or keeper pass of
+// any owner of the stream: TestABackedOffEventHoldsBackOnlyItsDestination failed on a dev box when
+// the keeper put the agent subjects back a second before the outbox published the event the test
+// had refused, and a hub that stops answering for 2 to 3 s makes the listener and Dispatch's
+// server reconnect, since they ping it every second.
+func ChangeStream(t testing.TB, js natsgo.JetStreamContext, config natsgo.StreamConfig, change func(*natsgo.StreamConfig)) natsgo.StreamConfig {
+	t.Helper()
+	changed := config
+	changed.Subjects = slices.Clone(config.Subjects)
+	changed.Metadata = maps.Clone(config.Metadata)
+	if changed.Metadata == nil {
+		changed.Metadata = map[string]string{}
+	}
+	change(&changed)
+	changed.Metadata[streamGenerationKey] = stampedGeneration
+	if _, err := js.UpdateStream(&changed); err != nil {
+		t.Fatalf("change the stream: %v", err)
+	}
+	info, err := js.StreamInfo(config.Name)
+	if err != nil {
+		t.Fatalf("read the stream back after the change: %v", err)
+	}
+	if got := info.Config.Metadata[streamGenerationKey]; got != stampedGeneration {
+		t.Fatalf("the changed stream carries generation %q, want %s, which every owner of the stream leaves as it is", got, stampedGeneration)
+	}
+	return info.Config
+}
+
+// NarrowStream takes each subject of config that drop matches out of the stream js reaches and
+// puts each of add in, stamped so that no owner of the stream undoes it (ChangeStream). It fails
+// the test when drop matches no subject, and unless the stream reads back with every dropped
+// subject gone and every added one there, so a test never runs on a narrowing that did not take.
+// A test lets the stream capture again by writing config back.
+//
+// The stamp keeps the stream's subjects, not every client's view of them. A client decides each
+// topic's transport by the deployed stream's subjects as it last read them
+// (bus.Client.UsesCoreTransport): an owner of the stream reads them again at each reconnect, and
+// every client every 60 s. From then on it sends a dropped topic over core NATS, where nothing
+// refuses it. So NarrowStream refuses a store only to a publisher that judges the subjects its
+// binary compiles, as the outbox's sends (bus.Client.Window) and a role forward
+// (bus.Client.StartRequestStoredTo) do. A test whose publisher follows the deployed subjects - the
+// listener's webhook and publish routes - refuses the store another way that keeps the topic
+// captured: a full stream, or one that acknowledges nothing (ChangeStream).
+func NarrowStream(t testing.TB, js natsgo.JetStreamContext, config natsgo.StreamConfig, drop func(subject string) bool, add ...string) {
+	t.Helper()
+	var dropped []string
+	narrowed := ChangeStream(t, js, config, func(narrowed *natsgo.StreamConfig) {
+		narrowed.Subjects = nil
+		for _, subject := range config.Subjects {
+			if drop(subject) {
+				dropped = append(dropped, subject)
+				continue
+			}
+			narrowed.Subjects = append(narrowed.Subjects, subject)
+		}
+		if len(dropped) == 0 {
+			t.Fatalf("take a subject out of the stream's %v: none is one to take out", config.Subjects)
+		}
+		narrowed.Subjects = append(narrowed.Subjects, add...)
+	})
+	for _, subject := range dropped {
+		if slices.Contains(narrowed.Subjects, subject) {
+			t.Fatalf("the stream still captures %s after the narrowing: %v", subject, narrowed.Subjects)
+		}
+	}
+	for _, subject := range add {
+		if !slices.Contains(narrowed.Subjects, subject) {
+			t.Fatalf("the stream does not capture %s after the narrowing: %v", subject, narrowed.Subjects)
+		}
 	}
 }

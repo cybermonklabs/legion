@@ -65,23 +65,29 @@ func TestAForwardTheStreamDoesNotAcknowledgeDoesNotDelayAnotherIssuesEvents(t *t
 	// committed in it.
 	time.Sleep(200 * time.Millisecond)
 	committed := time.Now()
-	rig.routedEvent(t, "T-2", liveRole, model.Actor{Kind: "user", ID: "alice"})
+	other := rig.routedEvent(t, "T-2", liveRole, model.Actor{Kind: "user", ID: "alice"})
 	select {
 	case <-live.arrived:
-		// T-2's forward counts only while the stalled forward is still outstanding: one that
-		// arrived after that send had settled would prove nothing about what its wait holds back.
-		if settled, state := settledState(t, rig.database, held.ID); settled {
-			t.Fatalf("the stalled holder's event %d had been settled when T-2's forward arrived (%s), so "+
-				"T-2 followed that send rather than going out beside it: the %s acknowledgement wait "+
-				"should still have been running", held.ID, state, stalledForwardWait)
-		}
-		// Logged, not asserted: how long T-2's forward took is as much a measure of the machine
-		// as of the outbox.
-		t.Logf("the live holder received T-2's forward %s after its commit",
-			time.Since(committed).Round(time.Millisecond))
 	case <-time.After(hangGuard):
 		t.Fatalf("the live holder never received T-2's forward within %s, while the stalled "+
 			"forward's %s acknowledgement wait was still running: that wait held back another "+
 			"issue's send", hangGuard, stalledForwardWait)
 	}
+	// T-2's forward reaches its holder on the stream's acknowledgement of the copy it stored,
+	// which publishes the event: a forward the stream did not store would wait out the same
+	// stalledForwardWait as the stalled one.
+	waitFor(t, hangGuard, "T-2's event published on the stream's acknowledgement of its forward", func() bool {
+		return publishedAt(t, rig.database, other.ID) != nil
+	})
+	// It counts only while the stalled forward is still outstanding: one that arrived after that
+	// send had settled would prove nothing about what its wait holds back.
+	if settled, state := settledState(t, rig.database, held.ID); settled {
+		t.Fatalf("the stalled holder's event %d had been settled when T-2's forward was stored (%s), so "+
+			"T-2 followed that send rather than going out beside it: the %s acknowledgement wait "+
+			"should still have been running", held.ID, state, stalledForwardWait)
+	}
+	// Logged, not asserted: how long T-2's forward took is as much a measure of the machine as of
+	// the outbox.
+	t.Logf("T-2's event was published on its forward's acknowledgement %s after its commit",
+		time.Since(committed).Round(time.Millisecond))
 }

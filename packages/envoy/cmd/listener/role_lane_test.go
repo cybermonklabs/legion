@@ -17,6 +17,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
@@ -467,13 +468,11 @@ func TestRoleLaneForwardTheStreamDoesNotStoreIsDeliveryFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the stream: %v", err)
 	}
-	config := info.Config
-	config.Subjects = slices.DeleteFunc(slices.Clone(config.Subjects), func(subject string) bool {
+	// Taken out in a narrowing that fails the test unless it took and that no owner of the stream
+	// undoes (bustest.NarrowStream).
+	bustest.NarrowStream(t, client.JS(), info.Config, func(subject string) bool {
 		return strings.HasPrefix(subject, contracts.AgentTopicPrefix)
 	})
-	if _, err := client.JS().UpdateStream(&config); err != nil {
-		t.Fatalf("take the agent subjects out of the stream: %v", err)
-	}
 	exceptions, err := client.Conn.SubscribeSync(bus.ExceptionTopicPrefix + contracts.RoleTopicPrefix + role)
 	if err != nil {
 		t.Fatalf("subscribe to the role's exceptions: %v", err)
