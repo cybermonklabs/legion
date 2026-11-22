@@ -239,30 +239,182 @@ for shape in outside no-path no-manifest; do
     "$(grep -qF "UNKNOWN: dotfiles .claude/settings.json: ${want}" "$out" && echo true || echo false)"
 done
 
-# A link whose target is gone is something there that cannot be read, never nothing there.
-for shape in package outside-record dotfiles-record; do
+# A link whose target is gone, or that never resolves, is something there that cannot be read, never
+# nothing there: not a record that is the dotfiles' own, and not a profiles directory with no
+# profile in it. ~/.omp, the profiles directory's parent, is read through ~/.omp/plugins. A link to
+# a link whose target is gone is named as one that does not resolve: its own target is there.
+for shape in package package-chain outside-record outside-record-loop outside-record-to-dotfiles dotfiles-record profiles profiles-chain profiles-newline omp omp-chain omp-not-utf8; do
   echo "case: --clients, a link that does not resolve (${shape})"
   box_case "box-dangling-${shape}"
+  assign=()
   case "$shape" in
     package)
       at="${case_root}/home/.dotfiles/omp/plugins/node_modules/@sjawhar/pi-envoy"
       rm -r "$at" && ln -s ../gone "$at"
       want="UNKNOWN: dotfiles omp/plugins/package.json: @sjawhar/pi-envoy is installed outside ${case_root}/home/.dotfiles, in ${case_root}/home/.dotfiles/omp/plugins, a link to ../gone, which does not exist"
       ;;
+    package-chain)
+      at="${case_root}/home/.dotfiles/omp/plugins/node_modules/@sjawhar/pi-envoy"
+      rm -r "$at" && ln -s ../gone-link "$at" && ln -s gone "$(dirname "$at")/../gone-link"
+      want="UNKNOWN: dotfiles omp/plugins/package.json: @sjawhar/pi-envoy is installed outside ${case_root}/home/.dotfiles, in ${case_root}/home/.dotfiles/omp/plugins, a link to ../gone-link, which does not resolve"
+      ;;
     outside-record)
       mkdir -p "${case_root}/home/.claude/plugins" && ln -s gone.json "${case_root}/home/.claude/plugins/installed_plugins.json"
+      want="UNKNOWN: dotfiles .claude/settings.json: ${case_root}/home/.claude/plugins/installed_plugins.json cannot be read as JSON: "
+      ;;
+    outside-record-loop)
+      mkdir -p "${case_root}/home/.claude/plugins" && ln -s installed_plugins.json "${case_root}/home/.claude/plugins/installed_plugins.json"
+      check "the dotfiles hold no .claude/plugins, so the path of their record does not resolve either" \
+        "$(readlink -f "${case_root}/home/.dotfiles/.claude/plugins/installed_plugins.json" >/dev/null && echo false || echo true)"
+      want="UNKNOWN: dotfiles .claude/settings.json: ${case_root}/home/.claude/plugins/installed_plugins.json cannot be read as JSON: "
+      ;;
+    outside-record-to-dotfiles)
+      # A link to the path of the dotfiles' own record, where no record is: both paths resolve to
+      # one name, and no file is there.
+      mkdir -p "${case_root}/home/.claude/plugins" "${case_root}/home/.dotfiles/.claude/plugins" &&
+        ln -s ../../.dotfiles/.claude/plugins/installed_plugins.json "${case_root}/home/.claude/plugins/installed_plugins.json"
       want="UNKNOWN: dotfiles .claude/settings.json: ${case_root}/home/.claude/plugins/installed_plugins.json cannot be read as JSON: "
       ;;
     dotfiles-record)
       mkdir -p "${case_root}/home/.dotfiles/.claude/plugins" && ln -s gone.json "${case_root}/home/.dotfiles/.claude/plugins/installed_plugins.json"
       want="UNKNOWN: dotfiles .claude/settings.json: ${case_root}/home/.dotfiles/.claude/plugins/installed_plugins.json cannot be read as JSON: "
       ;;
+    profiles)
+      ln -s missing-profile-volume "${case_root}/home/.omp/profiles"
+      want="UNKNOWN: dotfiles omp/plugins/package.json: cannot tell whether @sjawhar/pi-envoy is installed: ${case_root}/home/.omp/profiles is a link to missing-profile-volume, which does not exist"
+      ;;
+    profiles-chain)
+      ln -s profiles-volume "${case_root}/home/.omp/profiles" && ln -s gone "${case_root}/home/.omp/profiles-volume"
+      want="UNKNOWN: dotfiles omp/plugins/package.json: cannot tell whether @sjawhar/pi-envoy is installed: ${case_root}/home/.omp/profiles is a link to profiles-volume, which does not resolve"
+      ;;
+    profiles-newline)
+      # The gate prints the last line of what it could not read, so the target is one line.
+      ln -s "$(printf 'missing\nvolume')" "${case_root}/home/.omp/profiles"
+      want="UNKNOWN: dotfiles omp/plugins/package.json: cannot tell whether @sjawhar/pi-envoy is installed: ${case_root}/home/.omp/profiles is a link to missing\\x0avolume, which does not exist"
+      ;;
+    omp)
+      rm "${case_root}/home/.omp/plugins" && rmdir "${case_root}/home/.omp" && ln -s gone "${case_root}/home/.omp"
+      want="UNKNOWN: dotfiles omp/plugins/package.json: cannot tell whether @sjawhar/pi-envoy is installed: ${case_root}/home/.omp is a link to gone, which does not exist"
+      ;;
+    omp-chain)
+      rm "${case_root}/home/.omp/plugins" && rmdir "${case_root}/home/.omp" &&
+        ln -s omp-volume "${case_root}/home/.omp" && ln -s gone "${case_root}/home/omp-volume"
+      want="UNKNOWN: dotfiles omp/plugins/package.json: cannot tell whether @sjawhar/pi-envoy is installed: ${case_root}/home/.omp is a link to omp-volume, which does not resolve"
+      ;;
+    omp-not-utf8)
+      # A target name that is no UTF-8, read where Python writes UTF-8 strictly, as it does in a
+      # locale such as en_US.UTF-8.
+      rm "${case_root}/home/.omp/plugins" && rmdir "${case_root}/home/.omp" && ln -s "$(printf 'gone\377')" "${case_root}/home/.omp"
+      assign=(PYTHONIOENCODING=utf-8:strict)
+      want="UNKNOWN: dotfiles omp/plugins/package.json: cannot tell whether @sjawhar/pi-envoy is installed: ${case_root}/home/.omp is a link to gone\\udcff, which does not exist"
+      ;;
   esac
-  run_gate -- --clients "$commit"
+  run_gate "${assign[@]}" -- --clients "$commit"
   check "exits 3" "$(is "$status" 3)"
   check "refuses UNKNOWN naming the link" "$(grep -qF "$want" "$out" && echo true || echo false)"
   check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 done
+
+# A record outside the dotfiles that is theirs, through a link to their Claude Code configuration or
+# to the record itself, is the dotfiles' own: a link that resolves to a record hides nothing.
+for shape in configuration record; do
+  echo "case: --clients, a Claude Code record outside the dotfiles, a link to theirs (${shape})"
+  box_case "box-claude-alias-${shape}"
+  claude_install 4.0.0 4.0.0
+  if [ "$shape" = configuration ]; then
+    link="${case_root}/home/.claude" target=.dotfiles/.claude
+  else
+    link="${case_root}/home/.claude/plugins/installed_plugins.json" target=../../.dotfiles/.claude/plugins/installed_plugins.json
+  fi
+  mkdir -p "$(dirname "$link")" && ln -s "$target" "$link"
+  check "the link is the one the case needs" "$([ "$(readlink "$link")" = "$target" ] && echo true || echo false)"
+  run_gate -- --clients "$commit"
+  check "exits 0, the record being the dotfiles' own" "$(is "$status" 0)"
+  check "judges the copy the dotfiles' record names" \
+    "$(has_line "PASS: dotfiles .claude/plugins installed claude-envoy runs claude-envoy 4.0.0 from claude-envoy-v4.0.0 at ${identical_rev} (identical to ${commit})")"
+  check "the verdict is GATE OPEN" "$(last_line_is "GATE OPEN")"
+done
+
+# A path the gate hands python3 as an argument reaches it changed when its name is no UTF-8 and a
+# launcher that reads its arguments as text runs python3: mise's shims hand on each such byte as
+# U+FFFD, and the changed path, which is not there, reads as absent. The gate refuses such a name,
+# a profile's or a directory it reads under, by its bytes, whatever python3 and locale run it: here a
+# python3 that changes its arguments as the shim does, under C.UTF-8, and for a profile also
+# Python's strict writing of en_US.UTF-8. Each fixture holds an install that shuts or refuses the
+# gate when read. A profile whose name is UTF-8 is read as any other, though a Python whose locale
+# is ASCII reads its name as one that is no UTF-8.
+mangling_bin="${temporary_dir}/mangling-python"
+mkdir -p "$mangling_bin"
+quoted_python=$(printf %q "$(python3 -c 'import sys; print(sys.executable)')")
+cat >"$mangling_bin/python3" <<EOF
+#!/usr/bin/env bash
+exec ${quoted_python} -c 'import os, sys; os.execv(sys.argv[1], sys.argv[1:2] + [os.fsencode(a).decode("utf-8", "replace") for a in sys.argv[2:]])' ${quoted_python} "\$@"
+EOF
+chmod +x "$mangling_bin/python3"
+echo "case: --clients, a python3 that changes an argument that is no UTF-8"
+check "hands a byte that is no UTF-8 on as U+FFFD, as mise's shim does" \
+  "$(is "$(PATH="${mangling_bin}:${PATH}" python3 -c 'import sys; print(ascii(sys.argv[1]))' "$(printf 'x\377')")" "'x\\ufffd'")"
+for row in profile:mangling profile:strict home:mangling dotfiles:mangling claude-config:mangling; do
+  shape=${row%%:*} python=${row#*:}
+  echo "case: --clients, a name that is no UTF-8 (${shape}, ${python} python3)"
+  box_case "box-not-utf8-${shape}-${python}"
+  home="${case_root}/home"
+  args=(--clients "$commit")
+  if [ "$python" = mangling ]; then
+    assign=(--unset PYTHONIOENCODING LC_ALL=C.UTF-8 "PATH=${mangling_bin}:${temporary_dir}/bin:${PATH}")
+  else
+    assign=(PYTHONIOENCODING=utf-8:strict)
+  fi
+  case "$shape" in
+    profile)
+      at="$home/.omp/profiles/$(printf 'work\377')/plugins/node_modules/@sjawhar/pi-envoy"
+      mkdir -p "$at" && printf '{"name": "@sjawhar/pi-envoy", "version": "17.39.0"}\n' >"$at/package.json"
+      want="UNKNOWN: dotfiles omp/plugins/package.json: cannot tell whether @sjawhar/pi-envoy is installed: $home/.omp/profiles/work\\xff: the profile's name is no UTF-8"
+      ;;
+    home)
+      # The dotfiles are elsewhere, so only the paths under HOME change: ~/.claude records claude-envoy.
+      mv "$home/.dotfiles" "${case_root}/box-dotfiles"
+      ln -sfn "${case_root}/box-dotfiles/omp/plugins" "$home/.omp/plugins"
+      mkdir -p "$home/.claude/plugins"
+      printf '{"version": 2, "plugins": {"claude-envoy@legion-plugins": [{"version": "1.0.0"}]}}\n' >"$home/.claude/plugins/installed_plugins.json"
+      mv "$home" "${case_root}/$(printf 'home\377')"
+      assign+=("HOME=${case_root}/$(printf 'home\377')")
+      args=(--clients --dotfiles "${case_root}/box-dotfiles" "$commit")
+      want="UNKNOWN: dotfiles: HOME is no UTF-8, so "
+      ;;
+    dotfiles)
+      # The dotfiles' Claude Code configuration holds a copy behind the commit.
+      claude_install 3.3.0 3.3.0
+      mv "$home/.dotfiles" "${case_root}/$(printf 'dot\377files')"
+      sed -i "s|$home/.dotfiles|${case_root}/$(printf 'dot\377files')|" "${case_root}/$(printf 'dot\377files')/.claude/plugins/installed_plugins.json"
+      ln -sfn "${case_root}/$(printf 'dot\377files')/omp/plugins" "$home/.omp/plugins"
+      args=(--clients --dotfiles "${case_root}/$(printf 'dot\377files')" "$commit")
+      want="UNKNOWN: dotfiles: the dotfiles directory is no UTF-8, so "
+      ;;
+    claude-config)
+      mkdir -p "${case_root}/$(printf 'claude\377')/plugins"
+      printf '{"version": 2, "plugins": {"claude-envoy@legion-plugins": [{"version": "4.0.0"}]}}\n' \
+        >"${case_root}/$(printf 'claude\377')/plugins/installed_plugins.json"
+      assign+=("CLAUDE_CONFIG_DIR=${case_root}/$(printf 'claude\377')")
+      want="UNKNOWN: dotfiles: CLAUDE_CONFIG_DIR is no UTF-8, so "
+      ;;
+  esac
+  run_gate "${assign[@]}" -- "${args[@]}"
+  check "exits 3" "$(is "$status" 3)"
+  check "refuses UNKNOWN naming the name that is no UTF-8" "$(grep -qF "$want" "$out" && echo true || echo false)"
+  check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
+done
+
+echo "case: --clients, a profile whose name is UTF-8, read by a Python whose locale is ASCII"
+box_case box-utf8-profile-ascii-python
+mkdir -p "${case_root}/home/.omp/profiles/$(printf 'caf\303\251')/plugins/node_modules/@sjawhar"
+ln -s "${case_root}/home/.dotfiles/omp/plugins/node_modules/@sjawhar/pi-envoy" \
+  "${case_root}/home/.omp/profiles/$(printf 'caf\303\251')/plugins/node_modules/@sjawhar/pi-envoy"
+check "this Python reads names as ASCII, as the case needs" \
+  "$(is "$(LC_ALL=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0 python3 -c 'import sys; print(sys.getfilesystemencoding())')" ascii)"
+run_gate LC_ALL=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0 -- --clients "$commit"
+check "exits 0, the copy being the dotfiles' own" "$(is "$status" 0)"
+check "the verdict is GATE OPEN" "$(last_line_is "GATE OPEN")"
 
 # Something the gate cannot tell is there or not is never read as not there: a directory it may
 # not search or list, and a link along the way whose target is gone, each hide an install that would

@@ -909,9 +909,11 @@ in silence:
   `claude-envoy@legion-plugins` prints `SKIPPED`. A pi-envoy in `~/.omp/plugins` or a profile's
   plugin tree that is not the dotfiles' copy, a claude-envoy recorded in `~/.claude` or another
   `CLAUDE_CONFIG_DIR`, a link that does not resolve, a directory the gate may not search, a
-  marketplace entry it cannot read, and a marketplace that names claude-envoy twice print
-  `UNKNOWN`. A session started before a pin moved still runs the plugin it loaded: the gate reads
-  pins and installs, not processes.
+  marketplace entry it cannot read, a marketplace that names claude-envoy twice, and a profile,
+  `HOME`, dotfiles directory or `CLAUDE_CONFIG_DIR` whose name is not UTF-8 print `UNKNOWN`. The
+  gate hands each path to `python3` and `jq` as an argument, and a launcher that reads its
+  arguments as text (a mise shim) changes a name that is not UTF-8. A session started before a pin
+  moved still runs the plugin it loaded: the gate reads pins and installs, not processes.
 
 It prints a line per pin or surface (`PASS`, `GATE SHUT`, `UNKNOWN`, `SKIPPED`, `VM HUB` or
 `NO VM HUB`) and the verdict on the last: `GATE OPEN` (exit 0) only when every pin it read passed

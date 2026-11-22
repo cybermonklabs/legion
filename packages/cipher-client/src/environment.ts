@@ -6,6 +6,8 @@
 
 import { PROJECT_KEY_PATTERN, PROJECT_KEY_RULE } from "@legion/contracts/dispatch-tools";
 import { isHttpUrl } from "@legion/contracts/log-text";
+import { DeviceLoginIdentity, deviceLoginSessionName } from "./device-login";
+import { DEVICE_LOGIN_FILE_VAR, deviceLoginFile } from "./device-login-file";
 import { importDpopKey, newDpopKey } from "./dpop";
 import { metadataIdentity } from "./metadata-identity";
 import { personIdentity } from "./person-identity";
@@ -15,6 +17,7 @@ import {
   chooseSignIn,
   PERSON_TRADE_VAR,
   PERSON_VAR,
+  personTradeOff,
   SIGNIN_CLIENT_ID_VAR,
   SIGNIN_CLIENT_SECRET_FILE_VAR,
   SIGNIN_DIR_VAR,
@@ -60,10 +63,16 @@ export const IDENTITY_METADATA = "metadata";
  *  {@link MACHINE_TOKEN_FILE_VAR} names (`pool-identity.ts`): a machine with no Google service
  *  account of its own. */
 export const IDENTITY_POOL = "pool";
+/** A machine's device login at the broker's device grant, kept in the file
+ *  `AGENT_SECRETS_DEVICE_LOGIN_FILE` names (`device-login.ts`), which `dispatch login --device`
+ *  makes: a machine with no platform identity of its own, such as a person's laptop. Only this
+ *  client trades one; the Go client's `MachineIdentity` knows no such kind. */
+export const IDENTITY_DEVICE_LOGIN = "device-login";
 
 /**
- * The variables this package reads, by name: this module's, and those `signins.ts` reads to find
- * a person's sign-in on this machine and the client that renews it, whose names that module
+ * The variables this package reads, by name: this module's, `device-login.ts`'s
+ * `AGENT_SECRETS_DEVICE_LOGIN_FILE`, and those `signins.ts` reads to find a person's sign-in on
+ * this machine and the client that renews it, whose names that module
  * holds (`SIGNIN_DIR_VAR`, `PERSON_VAR`, `SIGNIN_ISSUER_VAR`, `SIGNIN_CLIENT_ID_VAR` and
  * `SIGNIN_CLIENT_SECRET_FILE_VAR`), `PERSON_TRADE_VAR`, which turns a person's trade off for a
  * process whose own credentials are a service's, and `XDG_STATE_HOME` and `HOME`, which its
@@ -80,6 +89,7 @@ export const BROKER_VARIABLES = [
   PROJECTS_VAR,
   POOL_AUDIENCE_VAR,
   POOL_ACCOUNT_VAR,
+  DEVICE_LOGIN_FILE_VAR,
   SIGNIN_DIR_VAR,
   "XDG_STATE_HOME",
   "HOME",
@@ -116,7 +126,8 @@ function required(env: BrokerEnvironment, name: keyof BrokerVariables, kind: str
  * that trades nothing and is no error. A named identity whose own variables are missing throws
  * naming them, since a deployment that asked for one and gave it nothing has a mistake in it.
  * Each kind reads the variables Go's `MachineIdentity` reads for it
- * (`packages/envoy/internal/cipherclient/environment.go`), in the same order.
+ * (`packages/envoy/internal/cipherclient/environment.go`), in the same order; a device login,
+ * which Go has no kind for, reads the broker it was made at and the file that keeps it.
  */
 export function machineIdentity(env: BrokerEnvironment): TokenSource | undefined {
   const kind = value(env, IDENTITY_VAR);
@@ -139,10 +150,14 @@ export function machineIdentity(env: BrokerEnvironment): TokenSource | undefined
         tokenAudience,
       });
     }
+    case IDENTITY_DEVICE_LOGIN: {
+      const brokerUrl = required(env, BROKER_URL_VAR, kind);
+      return new DeviceLoginIdentity({ path: deviceLoginFile(env), brokerUrl });
+    }
     default:
       // Its value is not quoted: a secret pasted into the wrong variable would be printed.
       throw new Error(
-        `${IDENTITY_VAR} names no identity this machine can prove; it takes ${IDENTITY_KUBERNETES}, ${IDENTITY_METADATA} or ${IDENTITY_POOL}`
+        `${IDENTITY_VAR} names no identity this machine can prove; it takes ${IDENTITY_KUBERNETES}, ${IDENTITY_METADATA}, ${IDENTITY_POOL} or ${IDENTITY_DEVICE_LOGIN}`
       );
   }
 }
@@ -256,6 +271,19 @@ export interface MadeBrokerClient {
  * Claude Code process, each of them on the operator's machine-logins list for its hour and
  * removed by nothing. The machine's own launcher credential is `agent-secrets`' and the
  * helper's, which ask for it.
+ *
+ * A device login ({@link IDENTITY_DEVICE_LOGIN}) is none of those: it is a person's own
+ * credential on their own machine, approved by them in Dispatch, so no sign-in is chosen beside
+ * it and there is no actor. The login's access token is the subject (`device-login.ts`), the key
+ * is the login's own, which the broker binds a trade of that token to, and the session is
+ * {@link tradeSession}'s, else {@link deviceLoginSessionName}'s. It names the projects
+ * {@link PROJECTS_VAR} lists, which the broker names only when Dispatch says the login's person
+ * may see each one, and sends no launcher credential parameter: a trade of a machine login's
+ * token mints no launcher credential. A machine with no login yet, or whose login file cannot be
+ * read, is an error naming `dispatch login --device`. A process that turns the person trade off
+ * ({@link PERSON_TRADE_VAR} set to `off`) is refused one: the broker mints its trade as the
+ * login's person, so a controller would act on Dispatch and Envoy in its operator's name, and
+ * there is no machine identity to trade in its place.
  */
 export async function brokerTokenClient(
   env: BrokerEnvironment,
@@ -267,6 +295,21 @@ export async function brokerTokenClient(
   // Not quoted: every trade's text names this URL, and a value that is none may be a token pasted
   // into the variable.
   if (!isHttpUrl(brokerUrl)) throw new Error(`${BROKER_URL_VAR} is not an http or https URL`);
+  if (machine instanceof DeviceLoginIdentity) {
+    if (personTradeOff(env)) {
+      throw new Error(
+        `${PERSON_TRADE_VAR}=off turns off every trade made as a person, and ${IDENTITY_VAR}=${IDENTITY_DEVICE_LOGIN} trades this machine's device login as the person who approved it; unset one of them`
+      );
+    }
+    const client = new BrokerTokenClient({
+      brokerUrl,
+      key: await machine.key(),
+      subject: machine,
+      session: tradeSession(env, own) || deviceLoginSessionName(await machine.thumbprint()),
+      projects: tradeProjects(env),
+    });
+    return { client, signIn: undefined };
+  }
   const record = await chooseSignIn(env);
   if (record === undefined) {
     const client = new BrokerTokenClient({

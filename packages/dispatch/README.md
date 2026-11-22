@@ -847,6 +847,18 @@ OUTSIDE_EDGE_ADDRESS=192.0.2.10 OUTSIDE_EDGE_ROUTED=routed.txt \
 inputs are, how it reads an answer, when a signal ends it, and what its three test files hold;
 `cd packages/dispatch && bun test e2e/__tests__/outside-edge-refusals` runs them.
 
+`e2e/acceptance/outside-agent-tailnet.sh` and `e2e/acceptance/outside-agent-public.sh` are the two
+legs of the outside agent's acceptance: what a person from outside the sign-in domain gets when
+their agents, on their own machine and on the public internet, work with ours through the edge
+origins, and the gate both legs make before a real person from outside is named on an access
+list. The tailnet leg is the one command and runs on a developer box; it starts the public leg
+on a runner on the public internet. `e2e/acceptance/outside-agent-acceptance.md` says how to run
+them, what each row reads, and the controls. `cd packages/dispatch && bun test
+e2e/__tests__/outside-agent-acceptance.test.ts e2e/__tests__/outside-agent-public.test.ts` checks
+that each leg prints `UNKNOWN`, never `PASS`, for a row whose target is absent, and that each leg
+holds its rows to their controls (the public leg's P6, P7, P10 and T5 part; the tailnet leg's T2,
+T3, T5, P7, the sweep, the workflow's inputs and the pins) against stand-ins of what it drives.
+
 ## Acceptance run against the deployed image
 
 The `dispatch.acceptance.compose.yml` Compose file builds a Dispatch image from this tree and runs
