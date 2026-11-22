@@ -63,6 +63,7 @@ func ownerFamilies() []ownerFamily {
 		{name: "idle release", match: "insert into issue_releases", retried: true, open: idleReleaseOwner},
 		{name: "unowned release", match: "insert into issue_releases", retried: true, open: unownedReleaseOwner, unknown: unownedReleaseUnknown},
 		{name: "release cancel", match: "delete from issue_releases", open: releaseCancelOwner, unknown: releaseCancelUnknown},
+		{name: "news settle", match: newsSettleMatch, retried: true, open: newsSettleOwner, unknown: newsSettleUnknown},
 	}
 }
 

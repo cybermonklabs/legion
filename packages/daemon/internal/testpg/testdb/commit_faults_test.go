@@ -23,7 +23,8 @@ import (
 
 // faultRig is one proxy test's database: proxied reaches it through CommitFaults' proxy, and
 // observer reaches it directly, so the observer counts what committed whatever the proxy did to
-// proxied.
+// proxied. Both are single connections, so the database is PlainDatabase's, whose URL holds no
+// pool key for pgx.Connect to send to the server.
 type faultRig struct {
 	through  string
 	fault    *CommitFault
@@ -33,7 +34,7 @@ type faultRig struct {
 
 func newFaultRig(t *testing.T) faultRig {
 	t.Helper()
-	dsn := Database(t, "legion_testdb_faults")
+	dsn := PlainDatabase(t, "legion_testdb_faults")
 	through, fault := CommitFaults(t, dsn)
 	rig := faultRig{through: through, fault: fault, proxied: connect(t, through), observer: connect(t, dsn)}
 	if _, err := rig.observer.Exec(context.Background(), "create table fault_probe (id int primary key)"); err != nil {
@@ -342,7 +343,7 @@ func TestTheProxyPassesAStartupMessageAfterARefusedSSLRequest(t *testing.T) {
 // reading a message shorter than the bytes it then slices, which would panic the test binary; and
 // the next client gets through.
 func TestTheProxyEndsAConnectionWhoseMessageIsShorterThanItsHeader(t *testing.T) {
-	through, _ := CommitFaults(t, Database(t, "legion_testdb_faults"))
+	through, _ := CommitFaults(t, PlainDatabase(t, "legion_testdb_faults"))
 	for _, tc := range []struct {
 		name    string
 		typed   bool // the client sends its startup message first, so the proxy reads a type byte
@@ -380,7 +381,7 @@ func TestTheProxyEndsAConnectionWhoseMessageIsShorterThanItsHeader(t *testing.T)
 // The proxy cannot read TLS, so it ends that connection at once, as a server without TLS does,
 // rather than wait for the length that header names.
 func TestTheProxyEndsADirectTLSConnectionAtOnce(t *testing.T) {
-	through, _ := CommitFaults(t, Database(t, "legion_testdb_faults"))
+	through, _ := CommitFaults(t, PlainDatabase(t, "legion_testdb_faults"))
 	direct, err := url.Parse(through)
 	if err != nil {
 		t.Fatal("net/url refuses the proxy's URL")

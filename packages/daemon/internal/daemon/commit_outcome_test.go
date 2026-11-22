@@ -106,9 +106,9 @@ func cancelWhileCommitting(t *testing.T, done <-chan error, cancel context.Cance
 	}
 }
 
-// reconcileRoot is the root the reconcile tests list: recorded at admitted with no slot, and
+// listedRoot is the root the reconcile tests list: recorded at admitted with no slot, and
 // listed level with its record, so the reconcile's admission pass gives it the one free slot.
-const reconcileRoot = "CAPTURE-1"
+const listedRoot = "CAPTURE-1"
 
 // reconcileRig is the workflow runtime of the reconcile tests on the faulted pool, the listing it
 // reconciles, and where its log lines go.
@@ -124,12 +124,12 @@ func newReconcileRig(t *testing.T) *reconcileRig {
 	t.Helper()
 	direct, faulted, fault := faultedPools(t)
 	logged, log := watchedLog()
-	listing := []dispatch.IssueSummary{{Key: reconcileRoot, ResolvedRepo: "acme/widgets", Title: reconcileRoot, Status: "todo", Rank: "A", HandedOver: true, LastSeq: 1}}
+	listing := []dispatch.IssueSummary{{Key: listedRoot, ResolvedRepo: "acme/widgets", Title: listedRoot, Status: "todo", Rank: "A", HandedOver: true, LastSeq: 1}}
 	client := &bootClaimDispatch{outboxDispatch: &outboxDispatch{}, shown: map[string]dispatch.Issue{}, listing: listing}
 	w := catchUpRigOn(t, faulted, client, 1, log)
 	w.consumers = bootClaimConsumers(t, direct)
 	w.repositories = newRepositories("CAPTURE", ghrepo.Renames{})
-	putOutboxIssue(t, direct, record.NewStore(), record.Issue{Key: reconcileRoot, Tree: reconcileRoot, Project: "CAPTURE", Title: reconcileRoot,
+	putOutboxIssue(t, direct, record.NewStore(), record.Issue{Key: listedRoot, Tree: listedRoot, Project: "CAPTURE", Title: listedRoot,
 		Phase: phase.Admitted, Generation: 1, Status: "todo", Rank: "A", HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main",
 		GitHubRepo: "acme/widgets", LastDispatchSeq: 1})
 	return &reconcileRig{direct: direct, fault: fault, logged: logged, w: w, listing: listing}
@@ -153,13 +153,13 @@ func TestAReconcileWhoseCommitReplyComesAfterTheCancelLogsTheSlotItTook(t *testi
 	go func() { done <- rig.reconcile(ctx) }()
 	testdb.Met(t, fired)
 	testwait.Eventually(t, "the reconcile's slot to be visible while its commit's reply is held", func() bool {
-		return slices.Contains(tickSlotted(t, rig.direct), reconcileRoot)
+		return slices.Contains(tickSlotted(t, rig.direct), listedRoot)
 	})
 	if err := cancelWhileCommitting(t, done, cancel); err != nil {
 		t.Errorf("the reconcile whose commit landed = %v, want nil", err)
 	}
-	if lines := releaseLogLines(rig.logged, slotTakenMessage); len(lines) != 1 || !strings.Contains(lines[0], "issue="+reconcileRoot) {
-		t.Errorf("slot taken lines after the reconcile = %q, want one naming %s: its commit landed", lines, reconcileRoot)
+	if lines := releaseLogLines(rig.logged, slotTakenMessage); len(lines) != 1 || !strings.Contains(lines[0], "issue="+listedRoot) {
+		t.Errorf("slot taken lines after the reconcile = %q, want one naming %s: its commit landed", lines, listedRoot)
 	}
 	slotted := tickSlotted(t, rig.direct)
 
@@ -194,11 +194,11 @@ func TestAReconcileCutBeforeItsCommitTakesNoSlotUntilItsRetry(t *testing.T) {
 	if err := rig.reconcile(context.Background()); err != nil {
 		t.Fatalf("the retried reconcile = %v, want nil", err)
 	}
-	if slotted := tickSlotted(t, rig.direct); !slices.Equal(slotted, []string{reconcileRoot}) {
-		t.Errorf("slots after the retry = %v, want [%s]", slotted, reconcileRoot)
+	if slotted := tickSlotted(t, rig.direct); !slices.Equal(slotted, []string{listedRoot}) {
+		t.Errorf("slots after the retry = %v, want [%s]", slotted, listedRoot)
 	}
-	if lines := releaseLogLines(rig.logged, slotTakenMessage); len(lines) != 1 || !strings.Contains(lines[0], "issue="+reconcileRoot) {
-		t.Errorf("slot taken lines after the retry = %q, want one naming %s", lines, reconcileRoot)
+	if lines := releaseLogLines(rig.logged, slotTakenMessage); len(lines) != 1 || !strings.Contains(lines[0], "issue="+listedRoot) {
+		t.Errorf("slot taken lines after the retry = %q, want one naming %s", lines, listedRoot)
 	}
 }
 

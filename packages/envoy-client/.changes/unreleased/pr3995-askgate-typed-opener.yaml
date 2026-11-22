@@ -1,0 +1,13 @@
+kind: Fixed
+custom:
+  Issue: pr3995
+body: |-
+  The ask gate reads a typed block's opening line as Dispatch's server reads it. A quoted value
+  ends at the next quote, and a backslash in it escapes nothing, so a line with `\"` in a value
+  opens no ask block, as on the server. A `#id` runs to the first space, tab, line end or other
+  character the shortcut cannot hold, so `#q:1` is the id `q:1`. The gate reads the id of
+  `id="…"` with its character references decoded (`id="R&amp;D"` is `R&D`), and it refuses an
+  opening line that writes `blockId`. Before, the gate read `blockId="…"` as the id and did not
+  read `id="…"`. Of the named references, the gate decodes `&amp;`, `&lt;`, `&gt;`, `&quot;`,
+  `&apos;` and `&nbsp;` only: an ask whose `id="…"` holds another named reference is still
+  reported, without its id.

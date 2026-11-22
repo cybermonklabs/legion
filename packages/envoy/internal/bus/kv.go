@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -225,21 +226,62 @@ func (kv KeyValue) keySubjects(key string) func() []string {
 	return func() []string { return []string{"$KV." + kv.Bucket() + "." + key} }
 }
 
-// getSubjects are the requests a read of key's last value can send: a direct get of the key's last
-// message, on a bucket that allows direct gets, and a get from the stream's leader on one that
-// does not (nats.go@v1.55.0 kv.go:642-686, js.go:216-217).
+// getSubjects is the one request a read of key's last value sends: a direct get of the key's last
+// message through a handle that reads directly, and a get from the stream's leader through one
+// that does not (readsDirect; nats.go@v1.55.0 kv.go:642-686, js.go:210-217, jsm.go:1304-1332).
+// The other is not listed: a read takes the refusal of any subject it lists, and a refusal of a
+// request it never sends is another read's to answer.
 func (kv KeyValue) getSubjects(key string) func() []string {
 	return func() []string {
 		stream := "KV_" + kv.Bucket()
-		return []string{jsAPI("DIRECT.GET", stream, "$KV."+kv.Bucket()+"."+key), jsAPI("STREAM.MSG.GET", stream)}
+		if readsDirect(kv.legacy) {
+			return []string{jsAPI("DIRECT.GET", stream, "$KV."+kv.Bucket()+"."+key)}
+		}
+		return []string{jsAPI("STREAM.MSG.GET", stream)}
 	}
 }
 
-// revisionSubjects are the requests a read of one revision can send: a direct get by sequence and
-// a get from the stream's leader (nats.go@v1.55.0 kv.go:642-686, js.go:214).
+// revisionSubjects is the one request a read of one revision sends: a direct get by sequence
+// through a handle that reads directly, and a get from the stream's leader through one that does
+// not (readsDirect; nats.go@v1.55.0 kv.go:642-668, js.go:210-214, jsm.go:1304-1332).
 func (kv KeyValue) revisionSubjects() []string {
 	stream := "KV_" + kv.Bucket()
-	return []string{jsAPI("DIRECT.GET", stream), jsAPI("STREAM.MSG.GET", stream)}
+	if readsDirect(kv.legacy) {
+		return []string{jsAPI("DIRECT.GET", stream)}
+	}
+	return []string{jsAPI("STREAM.MSG.GET", stream)}
+}
+
+// natsPackage is the import path of nats.go, whose legacy KV handle readsDirect reads.
+var natsPackage = reflect.TypeFor[nats.Conn]().PkgPath()
+
+// readsDirect reports whether legacy, a legacy KV handle, sends its reads of a key and of a
+// revision as direct gets, which any copy of the bucket answers, rather than as gets from the
+// stream's leader. nats.go decides that once, as it builds the handle, from its stream's
+// AllowDirect, keeps it in the handle's unexported useDirect, and reports it through no method
+// (nats.go@v1.55.0 kv.go:562-574, 642-668, 1353-1364), so it is read off the handle: a read of the
+// stream now would cost a request, and could answer otherwise than the read the handle was built
+// from. Only an unanswered read asks this (refusedAfter), so a read the server answers pays
+// nothing for it.
+//
+// A handle nats.go did not build, a test's double (NewKeyValue), is taken to read directly, as
+// every handle on a bucket this build creates does (Get). So is a nats.go handle that holds no
+// such field: TestAReadTakesOnlyTheRefusalOfTheRequestItsHandleSends fails on it, since its handle
+// on a stream without AllowDirect would then be read as a direct one.
+func readsDirect(legacy nats.KeyValue) bool {
+	handle := reflect.ValueOf(legacy)
+	if handle.Kind() != reflect.Pointer || handle.IsNil() {
+		return true
+	}
+	kvs := handle.Elem()
+	if kvs.Kind() != reflect.Struct || kvs.Type().PkgPath() != natsPackage {
+		return true
+	}
+	useDirect := kvs.FieldByName("useDirect")
+	if useDirect.Kind() != reflect.Bool {
+		return true
+	}
+	return useDirect.Bool()
 }
 
 // watchCreate is the shape of the request a watch sends to create its consumer, as nats.go builds
@@ -398,10 +440,11 @@ func invalidKey(key any, err error) error {
 //
 // The read is a direct get, as every read of this build's buckets is: nats.go sends a KV get
 // to the stream's $JS.API.DIRECT.GET subject whenever that stream carries AllowDirect, and every
-// bucket here carries it. CreateKeyValue sets AllowDirect on the stream it creates and
-// nats.KeyValueConfig holds no field that unsets it; mapStreamToKVS, which both CreateKeyValue
-// and KeyValue return a handle through, reads that stream's AllowDirect back as the handle's
-// useDirect; and kvs.get passes nats.DirectGet to the GetLastMsg behind every read that flag is
+// bucket here carries it. A start creates its buckets with AllowDirect set, as nats.go's
+// CreateKeyValue does (bucketStreamConfig), and nats.KeyValueConfig holds no field that unsets it;
+// mapStreamToKVS, which both CreateKeyValue and KeyValue return a handle through, reads that
+// stream's AllowDirect back as the handle's useDirect (readsDirect); and kvs.get passes
+// nats.DirectGet to the GetLastMsg behind every read that flag is
 // set on. Neither KV surface takes a per-read option for it: the legacy nats.KeyValue.Get takes a
 // key alone and jetstream.KeyValue.Get a context and a key, and the jetstream side builds the
 // same read (prepareKeyValueConfig sets AllowDirect, its own mapStreamToKVS sets useDirect, and
@@ -552,8 +595,30 @@ func (kv KeyValue) Delete(key string, opts ...nats.DeleteOpt) error {
 	return invalidKey(key, err)
 }
 
-// DeleteAtRead deletes key at the revision it reads, so a write that lands in between is kept, and
-// returns that revision, 0 when there was none to read.
+// ReadStored is key's newest record, read by a direct get and read again from the stream's leader
+// (GetFromLeader) when readable refuses its value. A value that is no record of key can be a copy
+// the server stored from another key's record, which carries its source's Nats-Sequence header
+// ahead of its own, so the revision a direct get reports for it is the source's, and a write or a
+// delete fenced on that revision is refused at every attempt; the leader's read reports the
+// sequence the value is really stored at. A nil readable takes every value, and so never reads
+// the leader. Its errors are Get's, and GetFromLeader's for the second read, whose answer is
+// returned whether readable takes it or not.
+func (kv KeyValue) ReadStored(ctx context.Context, key string, readable func(value []byte) bool) (nats.KeyValueEntry, error) {
+	entry, err := kv.Get(key)
+	if err != nil || readable == nil || readable(entry.Value()) {
+		return entry, err
+	}
+	return kv.GetFromLeader(ctx, key)
+}
+
+// DeleteAtRead deletes key at the revision it reads (ReadStored, with readable), so a write that
+// lands in between is kept, and returns that revision, 0 when there was none to read. A value
+// readable refuses is deleted at the revision the stream's leader reports for it, the one it is
+// stored at. A delete the bucket refuses at the revision a direct get reported is followed by one
+// read of the key from the stream's leader: a record the server wrote (ReadFromLeader, LeaderServerWritten), which a
+// direct get can report at another stream's sequence however its value reads, is deleted at the
+// sequence it is stored at, and any other answer leaves the refusal standing, a write that
+// landed in between being kept.
 //
 // A key the read finds missing is deleted at no revision at all, which fences nothing: nats.go
 // sends no expected-last-subject-sequence header for revision 0, so that delete would take
@@ -565,12 +630,11 @@ func (kv KeyValue) Delete(key string, opts ...nats.DeleteOpt) error {
 // bound and nats.go refuses a key outside its alphabet everywhere, so nothing can land in between:
 // that key is deleted at no revision, which removes a key an earlier build stored past the write
 // bound, and a key outside the alphabet is refused by the delete too.
-func (kv KeyValue) DeleteAtRead(key string) (uint64, error) {
-	entry, err := kv.Get(key)
+func (kv KeyValue) DeleteAtRead(ctx context.Context, key string, readable func(value []byte) bool) (uint64, error) {
+	entry, err := kv.ReadStored(ctx, key, readable)
 	switch {
 	case err == nil:
-		revision := entry.Revision()
-		return revision, kv.Delete(key, nats.LastRevision(revision))
+		return kv.DeleteAt(ctx, key, entry.Revision())
 	case errors.Is(err, nats.ErrKeyNotFound):
 		return 0, nil
 	case errors.Is(err, ErrRefused):
@@ -578,6 +642,30 @@ func (kv KeyValue) DeleteAtRead(key string) (uint64, error) {
 	default:
 		return 0, err
 	}
+}
+
+// DeleteAt deletes key fenced on revision, the revision a read of the key reported, and returns the
+// revision the delete landed at. A delete the bucket refuses as a compare-and-swap conflict
+// (IsCASConflict - a wrong last sequence, reported as ErrKeyExists for a key holding a value and as
+// a wrong-last-sequence error otherwise) is followed by one read of the key from the stream's
+// leader: a record the server wrote (ReadFromLeader, LeaderServerWritten), which a direct get reports at another
+// stream's sequence however its value reads, is deleted at the sequence it is stored at and that
+// sequence returned; any other compare-and-swap refusal is returned as its error with revision, a
+// write that landed between the read and the delete being kept. A delete refused for any other
+// reason is that error.
+func (kv KeyValue) DeleteAt(ctx context.Context, key string, revision uint64) (uint64, error) {
+	err := kv.Delete(key, nats.LastRevision(revision))
+	if err == nil || !IsCASConflict(err) {
+		return revision, err
+	}
+	// A record the server wrote, which a direct get reports at another stream's sequence however
+	// its value reads (ReadFromLeader, LeaderServerWritten), is deleted at the sequence the leader
+	// reports it stored at, fenced there. Any other newest message - a writer's record, a marker,
+	// none - and a leader read that failed, leave the refusal standing for the caller to answer.
+	if leader, readErr := kv.ReadFromLeader(ctx, key); readErr == nil && leader.WrittenByServer() {
+		return leader.Revision, kv.Delete(key, nats.LastRevision(leader.Revision))
+	}
+	return revision, err
 }
 
 func (kv KeyValue) Purge(key string, opts ...nats.DeleteOpt) error {

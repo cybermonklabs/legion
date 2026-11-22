@@ -58,6 +58,13 @@ func TestMain(m *testing.M) {
 		if curl := os.Getenv(testCurlEnv); curl != "" {
 			leakguardCurl = curl
 		}
+		// The bounds legion sets on a program it starts, at what is left of the deadline of the
+		// test binary that started this run (boundByTheDeadline). Only this test binary reads the
+		// variable; the legion binary has none.
+		if err := boundByTheEnvironment(); err != nil {
+			fmt.Fprintln(os.Stderr, "TestMain:", err)
+			os.Exit(2)
+		}
 		// The environment these tests hand gh beside ghChildEnviron's allowlist
 		// (testGhChildEnviron); the legion binary has no such hook.
 		ghChildTestEnviron = testGhChildEnviron(os.Environ())
@@ -70,6 +77,15 @@ func TestMain(m *testing.M) {
 	// The tests run real git and jj, in-process and as children (fixtureenv.MustGuard).
 	// LEGION_GH_PATH is kept: it names the real gh a capture test runs, a binary and no credential.
 	fixtureenv.MustGuard("LEGION_GH_PATH")
+	// The bounds legion sets on a program it starts, at what is left of this binary's deadline,
+	// here and in every run of it as `legion` (boundByTheDeadline). After MustGuard, which takes
+	// LEGION_* variables out of the environment.
+	if deadline, ok := testBinaryDeadline(); ok {
+		if err := boundByTheDeadline(deadline); err != nil {
+			fmt.Fprintln(os.Stderr, "TestMain:", err)
+			os.Exit(1)
+		}
+	}
 	// testpg.Main lets TestPauseCommands clone a migrated database of its own, and drops what it
 	// cloned once the run ends; a run that clones nothing, as every other test here, costs nothing,
 	// and with no LEGION_TEST_PG_DSN the cloning test is skipped (testpg.Clone).
@@ -134,7 +150,9 @@ func legionConfig(t *testing.T, project string, port int) string {
 
 // runningLegion is a live process named `legion`, which is what the registry's pids point at and
 // what registry.Alive answers true for. A copy of sleep: Alive reads argv[0], and a shell
-// script's argv[0] is the shell.
+// script's argv[0] is the shell. It sleeps without end, and the test's cleanup kills it: a probe
+// that ended on its own, once a loaded machine made the test outlast its sleep, would read as a
+// legion that had stopped.
 func runningLegion(t *testing.T) int {
 	t.Helper()
 	sleep, err := exec.LookPath("sleep")
@@ -150,7 +168,7 @@ func runningLegion(t *testing.T) int {
 		t.Fatalf("write the probe: %v", err)
 	}
 
-	probe := exec.Command(path, "300")
+	probe := exec.Command(path, "infinity")
 	if err := probe.Start(); err != nil {
 		t.Fatalf("start the probe: %v", err)
 	}
@@ -158,7 +176,9 @@ func runningLegion(t *testing.T) int {
 		_ = probe.Process.Kill()
 		_, _ = probe.Process.Wait()
 	})
-	if !testwait.Holds(5*time.Second, testwait.Poll, func() bool { return registry.Alive(probe.Process.Pid) }) {
+	// The exec is waited for with no span of its own, only what is left of the test binary's
+	// deadline less 30 s (testwait.Bounded): a loaded machine's slow exec passes.
+	if !testwait.Holds(testwait.Bounded(t, 1<<60, 30*time.Second), testwait.Poll, func() bool { return registry.Alive(probe.Process.Pid) }) {
 		t.Fatalf("the probe at %s never exec'd", path)
 	}
 	return probe.Process.Pid
@@ -186,7 +206,9 @@ func reapedPID(t *testing.T) int {
 }
 
 // healthzOn serves /healthz on one address and returns the port, so a status can be told to dial
-// somewhere other than 127.0.0.1 and be wrong about it.
+// somewhere other than 127.0.0.1 and be wrong about it. A client's headers have what is left of
+// the test binary's deadline less 30 s to arrive: a status a loaded machine makes slow to write
+// them is still answered.
 func healthzOn(t *testing.T, host string) int {
 	t.Helper()
 	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
@@ -197,7 +219,7 @@ func healthzOn(t *testing.T, host string) int {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
-	server := &http.Server{Handler: mux, ReadHeaderTimeout: time.Second}
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: testwait.Bounded(t, 1<<60, 30*time.Second)}
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(func() { _ = server.Close() })
 	return listener.Addr().(*net.TCPAddr).Port
@@ -367,12 +389,15 @@ func startOnDescriptor(t *testing.T, config string, descriptor *os.File) (int, s
 		_ = command.Wait()
 		close(exited)
 	}()
+	// The exit is waited for with no span of its own, only what is left of the test binary's
+	// deadline less 30 s (testwait.Bounded): a loaded machine's slow start passes, and one that
+	// never exits is killed and fails by name.
 	select {
 	case <-exited:
-	case <-time.After(30 * time.Second):
+	case <-time.After(testwait.Bounded(t, 1<<60, 30*time.Second)):
 		_ = command.Process.Kill()
 		<-exited
-		t.Fatalf("legion start did not exit within 30s; stderr = %q", stderr.String())
+		t.Fatalf("legion start did not exit 30s before the test binary's deadline; stderr = %q", stderr.String())
 	}
 	return command.ProcessState.ExitCode(), stderr.String()
 }
@@ -1513,7 +1538,7 @@ func TestConfigCheckNamesTheRepositoryCache(t *testing.T) {
 func TestConfigCheckRefusesAnUnknownCapabilityDecision(t *testing.T) {
 	legionState(t)
 	for _, tc := range []struct{ name, extra, want string }{
-		{"a name that is no deployment capability", "capabilities: {decided: {nonsense: \"because\"}}\n", "legion config check: unknown key capabilities.decided.nonsense: a decision may name secrets, model-fallback, resource-limits or pool-capacity\n"},
+		{"a name that is no deployment capability", "capabilities: {decided: {nonsense: \"because\"}}\n", "legion config check: unknown key capabilities.decided.nonsense: a decision may name secrets, model-fallback, resource-limits, pool-capacity or repository-cache-room\n"},
 		{"a blank reason", "capabilities: {decided: {secrets: \"\"}}\n", "legion config check: capabilities.decided.secrets must not be empty\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

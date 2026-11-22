@@ -280,13 +280,14 @@ func (g *gatedProc) through(t *testing.T, which string) {
 			}
 			opened <- err
 		}()
+		bound := beforeDeadline(t)
 		select {
 		case err := <-opened:
 			if err != nil {
 				t.Fatal(err)
 			}
-		case <-time.After(testwait.Bounded(t, 30*time.Second, time.Second)):
-			t.Fatalf("the sweep's %s holder read never reached %s", which, gate)
+		case <-time.After(bound):
+			t.Fatalf("the sweep's %s holder read never reached %s in %s, to 30 s before the test binary's deadline", which, gate, bound.Round(time.Second))
 		}
 	}
 }
@@ -342,14 +343,15 @@ func requireRemoved(t *testing.T, log *lockedBuffer, path string) {
 	}
 }
 
-// awaitPass fails the row unless the pass running in a goroutine of its own has returned within
-// d, with the sweep's own log for what it was doing.
-func awaitPass(t *testing.T, done <-chan struct{}, d time.Duration, log *lockedBuffer) {
+// awaitPass fails the row unless the pass running in a goroutine of its own has returned before
+// beforeDeadline runs out, with the sweep's own log for what it was doing.
+func awaitPass(t *testing.T, done <-chan struct{}, log *lockedBuffer) {
 	t.Helper()
+	bound := beforeDeadline(t)
 	select {
 	case <-done:
-	case <-time.After(testwait.Bounded(t, d, time.Second)):
-		t.Fatalf("the pass did not return within %s; its log:\n%s", d, log.String())
+	case <-time.After(bound):
+		t.Fatalf("the pass did not return in %s, to 30 s before the test binary's deadline; its log:\n%s", bound.Round(time.Second), log.String())
 	}
 }
 
@@ -714,8 +716,8 @@ func TestTheFirstPassRunsBeforeTheBundleRestore(t *testing.T) {
 			if path != lock {
 				t.Fatalf("the pass held at the removal of %s, not of %s; the launcher's log:\n%s", path, lock, f.stderr.String())
 			}
-		case <-time.After(testwait.Bounded(t, 30*time.Second, time.Second)):
-			t.Fatalf("the launcher's pass never reached the removal of %s; its log:\n%s", lock, f.stderr.String())
+		case <-time.After(beforeDeadline(t)):
+			t.Fatalf("the launcher's pass never reached the removal of %s before 30 s ahead of the test binary's deadline; its log:\n%s", lock, f.stderr.String())
 		}
 		answersNothingFor(t, conn, 300*time.Millisecond)
 		if swept(lock) {
@@ -869,8 +871,8 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 		cancel()
 		select {
 		case <-done:
-		case <-time.After(testwait.Bounded(t, 10*time.Second, time.Second)):
-			t.Fatalf("the sweep's ticker outlived the container's context; its log:\n%s", log.String())
+		case <-time.After(beforeDeadline(t)):
+			t.Fatalf("the sweep's ticker outlived the container's context to 30 s before the test binary's deadline; its log:\n%s", log.String())
 		}
 	})
 
@@ -888,8 +890,8 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 		case err := <-f.result:
 			// Put it back: newFleet's own cleanup waits for this same send.
 			f.result <- err
-		case <-time.After(testwait.Bounded(t, 30*time.Second, time.Second)):
-			t.Fatalf("Run did not return after its context ended; the launcher's log:\n%s", f.stderr.String())
+		case <-time.After(beforeDeadline(t)):
+			t.Fatalf("Run did not return after its context ended, to 30 s before the test binary's deadline; the launcher's log:\n%s", f.stderr.String())
 		}
 		after := c.lock("refs/heads/after.lock", "stale", time.Hour)
 		if testwait.Holds(500*time.Millisecond, testwait.Poll, func() bool { return swept(after) }) {
@@ -1071,7 +1073,7 @@ func TestAClockPassKeepsALockAProcessHoldsOpen(t *testing.T) {
 		s.recheck = time.Hour
 		done := make(chan struct{})
 		go func() { defer close(done); s.pass(context.Background(), false) }()
-		awaitPass(t, done, 10*time.Second, log)
+		awaitPass(t, done, log)
 		requireKept(t, log, held, "a process of the container holds it open")
 	})
 
@@ -1092,7 +1094,7 @@ func TestAClockPassKeepsALockAProcessHoldsOpen(t *testing.T) {
 		}
 		defer file.Close()
 		proc.through(t, "second")
-		awaitPass(t, done, 30*time.Second, log)
+		awaitPass(t, done, log)
 		requireKept(t, log, taken, "a process of the container holds it open")
 	})
 }
@@ -1211,7 +1213,7 @@ func TestAClockPassKeepsALockThatChangedBetweenTheTwoReads(t *testing.T) {
 			t.Fatal(err)
 		}
 		proc.through(t, "second")
-		awaitPass(t, done, 30*time.Second, log)
+		awaitPass(t, done, log)
 		requireKept(t, log, path, "it changed between the two reads")
 	})
 
@@ -1231,7 +1233,7 @@ func TestAClockPassKeepsALockThatChangedBetweenTheTwoReads(t *testing.T) {
 		}
 		c.plant(path, "a second writer's", time.Hour)
 		proc.through(t, "second")
-		awaitPass(t, done, 30*time.Second, log)
+		awaitPass(t, done, log)
 		requireKept(t, log, path, "it changed between the two reads")
 	})
 }

@@ -14,12 +14,19 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 const workerShimUsage = "legion worker-shim --connect <unix:///path|tcp://host:port> --boot-token-file <path> [--provider-env-dir <dir>] [--pod-safety] [--stop-grace <duration>] [--warm-codegraph] [--agent-secrets-key-dir <dir> --pod-token-file <path> --agent-secrets-bin <path>] -- <omp argv…>"
+
+// workerShimGrace is how long the shim gives a SIGTERMed agent before it kills it:
+// shim.DefaultGrace, half the daemon's default worker_stop_timeout_seconds. It is a variable so
+// that this package's tests can give it their own deadline (programbound): a stand-in agent a
+// loaded machine makes slow to act on its SIGTERM is not killed at 5 s.
+var workerShimGrace = shim.DefaultGrace
 
 // newWorkerShimCommand is `legion worker-shim`, the command a runtime puts in front of every phase
 // worker's OMP: it dials the daemon's worker stream, and bridges OMP to it once acked. Its lines
@@ -203,7 +210,7 @@ func workerShimConfig(set map[string]bool, given workerShimFlags, argv []string)
 		Env:          os.Environ(),
 		ProviderEnv:  providerEnv,
 		AgentSecrets: agentSecrets,
-		Grace:        shim.DefaultGrace,
+		Grace:        programbound.Of(&workerShimGrace),
 		StopGrace:    given.stopGrace,
 	}
 	if given.warmCodegraph {

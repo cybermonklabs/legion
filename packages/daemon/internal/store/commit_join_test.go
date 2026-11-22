@@ -609,7 +609,7 @@ func TestAReadOnlyTransactionRefusesEveryWrite(t *testing.T) {
 }
 
 func TestARollbackAfterTheCallersCancelKeepsItsConnection(t *testing.T) {
-	dsn := testdb.Database(t, "legion_store_commit_test")
+	dsn := testdb.PlainDatabase(t, "legion_store_commit_test")
 	config, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		t.Fatalf("parse the dsn: %v", err)

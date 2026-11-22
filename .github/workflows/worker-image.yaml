@@ -135,6 +135,7 @@ jobs:
       group: worker-image-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.sha }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     env:
+      JOB_TIMEOUT_MINUTES: 30 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # The commit that is built and that the sha- tag names: the PR head on a pull request (ci.yaml's
       # call; github.sha would be the ephemeral merge commit there); the triggering commit for
       # release.yaml's call and workflow_dispatch.
