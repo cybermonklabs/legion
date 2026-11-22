@@ -230,7 +230,7 @@ test("a plan task is not open, and the check beside it is what opens their branc
 // A component states nothing of its own to answer, and a conclusion needs no person's approval
 // (R23): the person may answer it, and nothing waits on that answer. Neither opens a path.
 test("a component and a conclusion are not open", () => {
-  const root = node("CORE-1", "issue", [
+  const root = node("the-issue", "issue", [
     node("spec", "document", [
       node("spec#b-billing", "component"),
       node("spec#b-c1", "conclusion"),
