@@ -128,20 +128,27 @@ while (count := field()) is not None:
             answer = questions[question](*args)
         except BaseException:
             traceback.print_exc()
-            answer = ""
+            os._exit(1)
         sys.stdout.write(f"{answer}\0")
         sys.stdout.flush()
         os._exit(0)
-    os.waitpid(child, 0)
+    # A question that raised, or a child that died before it answered, ends this python3 too: its
+    # stdout closes, and ask fails rather than read an empty answer.
+    if os.waitpid(child, 0)[1] != 0:
+        sys.exit(1)
 '
 }
 
 # ask <question> <arg>...: the answer of that python3 to one question, as a fresh python3 would
-# print it. A question it cannot answer prints the traceback on stderr and answers nothing.
+# print it. A question that raises ends that python3, its traceback on stderr, and ask then fails
+# with no answer, as a fresh python3 that raised failed.
 ask() {
-  local answer=''
+  local answer
   printf '%s\0' "$#" "$@" >&"${READS[1]}"
-  IFS= read -r -d '' answer <&"${READS[0]}" || true
+  if ! IFS= read -r -d '' answer <&"${READS[0]}"; then
+    echo "the python3 that answers for ci_job_reads.py ended without answering '$1'" >&2
+    return 1
+  fi
   printf '%s\n' "$answer"
 }
 
