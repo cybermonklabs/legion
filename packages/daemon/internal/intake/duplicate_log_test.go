@@ -123,7 +123,7 @@ func TestTheIntakeSaysSoWhenItDropsAFactDeliveredAgain(t *testing.T) {
 		consumer := githubConsumerName("CAPTURE")
 		applied := storedGiveUp(t, pool, consumer, reviewSubject, review, 7, 21)
 		dropped := storedGiveUp(t, pool, consumer, reviewSubject, review, 8, 23)
-		giveUps := giveUpsOf(t, pool, replaySpec(logs))
+		giveUps := giveUpsOf(t, pool, replaySpec(t, logs))
 		for _, given := range []record.IntakeFailure{applied, dropped} {
 			if _, err := giveUps.Replay(context.Background(), record.IntakeSelector{ID: given.ID}, "operator"); err != nil {
 				t.Fatalf("replay give-up %d: %v", given.ID, err)

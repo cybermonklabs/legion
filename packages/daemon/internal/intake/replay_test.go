@@ -17,18 +17,20 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // replayNow is the clock of the replay tests: the give-ups are recorded before it, and every
 // replay and discard happens at it.
 var replayNow = time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 
-// replaySpec is consumerSpec at replayNow, with the default acknowledgement window, so no
-// statement a replay makes, each bounded at AckWait, is cut at the 200 ms consumerSpec gives a
-// test's reads on a loaded runner.
-func replaySpec(logs *lockedBuffer) ConsumerSpec {
+// replaySpec is consumerSpec at replayNow, for the replay tests that t runs. Its acknowledgement
+// window is a hang guard, not the subject: it bounds each statement a replay makes, which
+// consumerSpec's 200 ms cuts on a loaded runner and any fixed span lets the machine decide, so it
+// is what is left of the test binary's deadline less 30 s (testwait.Remaining, docs/testing.md).
+func replaySpec(t *testing.T, logs *lockedBuffer) ConsumerSpec {
 	spec := consumerSpec(logs)
-	spec.AckWait = defaultAckWait
+	spec.AckWait = testwait.Remaining(t)
 	spec.Now = func() time.Time { return replayNow }
 	return spec
 }
@@ -175,7 +177,7 @@ func TestAReplayAppliesTheStoredMessageOnceThroughTheLiveHandling(t *testing.T) 
 	pool := store.NewPool(raw)
 	js, stream := testJetStream(t)
 	spec := boundSpec(&lockedBuffer{}, 1, time.Nanosecond)
-	spec.AckWait = defaultAckWait
+	spec.AckWait = testwait.Remaining(t)
 	var prepared atomic.Int32
 	spec.PrepareRepository = func(_ context.Context, issue DispatchIssue) (DispatchIssue, error) {
 		prepared.Add(1)
@@ -245,7 +247,7 @@ func TestASecondReplayAnswersAlreadyAppliedAndWritesTheDuplicateLine(t *testing.
 	pool := migratedPool(t)
 	logs := &lockedBuffer{}
 	handler := &keysHandler{}
-	giveUps := giveUpsOf(t, pool, replaySpec(logs), handler)
+	giveUps := giveUpsOf(t, pool, replaySpec(t, logs), handler)
 	dispatch := dispatchConsumerName("CAPTURE")
 	data := replayIssueEnvelope(t, "CAPTURE-3")
 	first := storedGiveUp(t, pool, dispatch, replayIssueSubject("CAPTURE-3"), data, 11, 21)
@@ -309,7 +311,7 @@ func TestAReplayOfAMessageHandledWithNoTransactionAnswersNoFact(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			pool := migratedPool(t)
-			spec := replaySpec(&lockedBuffer{})
+			spec := replaySpec(t, &lockedBuffer{})
 			if row.heard != nil {
 				spec.Repositories = row.heard
 			}
@@ -356,7 +358,7 @@ func TestAReplayThatFailsKeepsTheRecordOpenWithItsNewError(t *testing.T) {
 			pool := migratedPool(t)
 			given := row.given(t, pool)
 			handler := &keysHandler{fail: map[string]bool{"CAPTURE-3": true}}
-			answer, err := giveUpsOf(t, pool, replaySpec(&lockedBuffer{}), handler).Replay(context.Background(), record.IntakeSelector{ID: given.ID}, "operator")
+			answer, err := giveUpsOf(t, pool, replaySpec(t, &lockedBuffer{}), handler).Replay(context.Background(), record.IntakeSelector{ID: given.ID}, "operator")
 			if err != nil {
 				t.Fatalf("replay give-up %d: %v", given.ID, err)
 			}
@@ -386,7 +388,7 @@ func TestABulkReplayAppliesAConsumersRecordsInStreamOrder(t *testing.T) {
 			ids[seq] = storedGiveUp(t, pool, dispatch, replayIssueSubject(key), replayIssueEnvelope(t, key), seq, 21).ID
 		}
 		handler := &keysHandler{fail: map[string]bool{"CAPTURE-30": true}}
-		answer, err := giveUpsOf(t, pool, replaySpec(&lockedBuffer{}), handler).Replay(ctx, record.IntakeSelector{Consumer: dispatch, ThroughSeq: 50}, "operator")
+		answer, err := giveUpsOf(t, pool, replaySpec(t, &lockedBuffer{}), handler).Replay(ctx, record.IntakeSelector{Consumer: dispatch, ThroughSeq: 50}, "operator")
 		if err != nil {
 			t.Fatalf("replay %s through 50: %v", dispatch, err)
 		}
@@ -415,7 +417,7 @@ func TestABulkReplayAppliesAConsumersRecordsInStreamOrder(t *testing.T) {
 			key := fmt.Sprintf("CAPTURE-%d", seq)
 			storedGiveUp(t, pool, dispatch, replayIssueSubject(key), replayIssueEnvelope(t, key), seq, 21)
 		}
-		answer, err := giveUpsOf(t, pool, replaySpec(&lockedBuffer{}), &keysHandler{}).Replay(ctx, record.IntakeSelector{Consumer: dispatch, ThroughSeq: 1000}, "operator")
+		answer, err := giveUpsOf(t, pool, replaySpec(t, &lockedBuffer{}), &keysHandler{}).Replay(ctx, record.IntakeSelector{Consumer: dispatch, ThroughSeq: 1000}, "operator")
 		if err != nil {
 			t.Fatalf("replay %s through 1000: %v", dispatch, err)
 		}
@@ -446,7 +448,7 @@ func TestARecordAReplayClaimsIsNeitherReplayedAgainNorDiscarded(t *testing.T) {
 		}
 		return Result{}, nil
 	})
-	giveUps := giveUpsOf(t, pool, replaySpec(&lockedBuffer{}), handler)
+	giveUps := giveUpsOf(t, pool, replaySpec(t, &lockedBuffer{}), handler)
 	limit := giveUps.spec.HandlerLimit
 
 	type replayed struct {
@@ -507,7 +509,7 @@ func TestADiscardNeedsAReasonAndClosesTheRecord(t *testing.T) {
 	raw := migratedPool(t)
 	pool := &beginCountingPool{Pool: raw}
 	handler := &keysHandler{}
-	giveUps := giveUpsOf(t, pool, replaySpec(&lockedBuffer{}), handler)
+	giveUps := giveUpsOf(t, pool, replaySpec(t, &lockedBuffer{}), handler)
 	given := storedGiveUp(t, raw, dispatchConsumerName("CAPTURE"), replayIssueSubject("CAPTURE-3"), replayIssueEnvelope(t, "CAPTURE-3"), 7, 21)
 	selector := record.IntakeSelector{ID: given.ID}
 
@@ -550,7 +552,7 @@ func TestABulkDiscardClosesAConsumersOpenRecordsAtOrBelowASequence(t *testing.T)
 	ctx := context.Background()
 	pool := migratedPool(t)
 	dispatch, github := dispatchConsumerName("CAPTURE"), githubConsumerName("CAPTURE")
-	giveUps := giveUpsOf(t, pool, replaySpec(&lockedBuffer{}), &keysHandler{})
+	giveUps := giveUpsOf(t, pool, replaySpec(t, &lockedBuffer{}), &keysHandler{})
 	ids := map[uint64]int64{}
 	for _, seq := range []uint64{20, 10, 30, 5} {
 		key := fmt.Sprintf("CAPTURE-%d", seq)
@@ -589,7 +591,7 @@ func TestADiscardedRecordCanBeReplayedAndKeepsItsDiscard(t *testing.T) {
 	pool := migratedPool(t)
 	dispatch := dispatchConsumerName("CAPTURE")
 	handler := &keysHandler{fail: map[string]bool{"CAPTURE-20": true}}
-	giveUps := giveUpsOf(t, pool, replaySpec(&lockedBuffer{}), handler)
+	giveUps := giveUpsOf(t, pool, replaySpec(t, &lockedBuffer{}), handler)
 	ids := map[uint64]int64{}
 	for _, seq := range []uint64{10, 20, 30} {
 		key := fmt.Sprintf("CAPTURE-%d", seq)
@@ -632,7 +634,7 @@ func TestAClosedRecordIsRefusedWithHowAndWhenItClosed(t *testing.T) {
 	ctx := context.Background()
 	pool := migratedPool(t)
 	dispatch := dispatchConsumerName("CAPTURE")
-	giveUps := giveUpsOf(t, pool, replaySpec(&lockedBuffer{}), &keysHandler{})
+	giveUps := giveUpsOf(t, pool, replaySpec(t, &lockedBuffer{}), &keysHandler{})
 	replayed := storedGiveUp(t, pool, dispatch, replayIssueSubject("CAPTURE-10"), replayIssueEnvelope(t, "CAPTURE-10"), 10, 21)
 	discarded := storedGiveUp(t, pool, dispatch, replayIssueSubject("CAPTURE-20"), replayIssueEnvelope(t, "CAPTURE-20"), 20, 21)
 	if answer, err := giveUps.Replay(ctx, record.IntakeSelector{ID: replayed.ID}, "operator"); err != nil || answer.Replayed[0].Outcome != ReplayApplied {

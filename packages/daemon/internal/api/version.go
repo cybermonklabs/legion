@@ -3061,9 +3061,8 @@ package api
 // and an older one is placed by the lowest contract its pod records. Those are the callers the
 // strip serves.
 // A renumber moves `cachesSourceContract` in shaping.go with it, and that one constant alone: it
-// is the arrival answers.go's `capabilitySources` records for `caches`, and it is the last number
-// of answers.go's SupportedContracts, which names the constant rather than its number for that
-// reason.
+// is the arrival answers.go's `capabilitySources` records for `caches`, and answers.go's
+// SupportedContracts names the constant rather than its number, so the list moves with it.
 // (This entry first took 197, the lowest number above main's 189 that no open pull request
 // declared when the merge of 2026-11-20 brought main in at f21107b285, and took 201 at the merge
 // that brought main in at 193 (8a9540682d, #3659 having declared 193): a reading of `const
