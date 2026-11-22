@@ -75,7 +75,7 @@ A deployment can keep a secret's value back. The name then holds `agent-secrets-
 
 ## What the exit status means
 
-After a grant the client writes `agent-secrets: <names> from <source>` to stderr, and the status is then the command's own, unless a line `agent-secrets: exec <command>: …` follows it: the command could not start, and the status is 1. Without the grant line the status is the client's:
+After a grant the client writes `agent-secrets: <names> from <source>` to stderr, and the status is then the command's own, unless a line `agent-secrets: exec <command>: …` follows it: then the status is 1. Without the grant line the status is the client's:
 
 - **1**: a refusal or a failure that the message names.
   `UNKNOWN_SECRET` is final: do not ask again, and do not try a name of your own.

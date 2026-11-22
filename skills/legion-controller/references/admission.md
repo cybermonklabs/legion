@@ -21,7 +21,7 @@ Every issue the record holds in the workflow that is in neither `admission.activ
 
 | Word | Meaning | What ends it |
 |---|---|---|
-| `tree_closed` | Its tree's root is `done`, or still lingering after it left the workflow | An architect's `release_children` of the live tree its Dispatch parent reaches, where that release is accepted, or a `done` root's linger close |
+| `tree_closed` | Its tree's root is `done`, or still lingering after it left the workflow | An architect's `release_children` of the live tree its Dispatch parent reaches, where that release is accepted, the end of the root's linger, or a `todo` on the root |
 | `tree_parked` | Its tree was parked and the linger ran out | A `todo` on the root; your own hold, the parked-root walk decides |
 | `label_off` | A root whose `legion` label is off | A person's label |
 | `ancestry` | Its Dispatch chain reaches another live root: that tree's unreleased work | That tree's architect releasing it or its parent, or the chain leaving that tree |
