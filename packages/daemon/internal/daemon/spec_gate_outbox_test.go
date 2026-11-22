@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -331,6 +332,67 @@ func TestTheMergerStartWaitsWhileTheEndingWaits(t *testing.T) {
 	approved := newExemptGateRig(t, phase.Merging, record.GateRuleApproval)
 	if err := approved.runner.mergerWaitsForTheDesignGate(context.Background(), row, *issue, claim.RoleMerger); err != nil || len(approved.client.endingReads) != 0 {
 		t.Fatalf("the fence under a gate a person opened = %v, reads %q; want no read", err, approved.client.endingReads)
+	}
+}
+
+// A merger the start row starts under a tree whose spec gate stands open by exemption is given a
+// task that ends with the paragraph of the ending step (D10), whatever wrote the task: here the
+// resume task a re-admission hands a merger mid-phase (admit's startMidPhaseMembers), written
+// while the re-admitted tree held no gate, so it names no step. The start fence's own reading
+// tells the merger nothing beside it: the task says it. Under a gate a person opened the task is
+// given as it was written.
+func TestAMergerStartUnderAnExemptGateGivesTheEndingStep(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rule record.GateRule
+		step bool
+	}{
+		{name: "a gate open by exemption", rule: record.GateRuleChangeRequest, step: true},
+		{name: "a gate a person opened", rule: record.GateRuleApproval},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			r := newExemptGateRig(t, phase.Merging, tc.rule)
+			r.client.ending = &dispatch.SpecEnding{State: "ready", Version: 3}
+			var issue *record.Issue
+			if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+				var err error
+				issue, err = r.records.Issue(ctx, tx, specGateRoot)
+				return err
+			}); err != nil || issue == nil {
+				t.Fatalf("read the root: %v", err)
+			}
+			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+			token, err := claim.NewToken("legion", specGateRoot, claim.RoleMerger)
+			if err != nil {
+				t.Fatalf("claim token: %v", err)
+			}
+			machine, _, err := sup.Create(ctx, supervise.Claim{Token: token, Project: "legion", Tree: specGateRoot, Issue: specGateRoot,
+				Role: claim.RoleMerger, State: supervise.StateQueued}, "")
+			if err != nil {
+				t.Fatalf("create the merger's claim: %v", err)
+			}
+			r.runner.supervisor, r.runner.tokens, r.runner.stateDir = sup, outboxTokens{}, t.TempDir()
+			resume := workflow.ResumePhaseTask(*issue)
+			row := mustOutboxRow(t, specGateRoot, record.SuperviseRequest{Op: "start", Tree: specGateRoot, Role: claim.RoleMerger,
+				Generation: 1, Phase: phase.Merging, Task: resume, ResumeTask: true}, time.Now())
+			row.ID = 93
+			if err := r.runner.execute(ctx, row); err != nil {
+				t.Fatalf("run the merger's start row: %v", err)
+			}
+			want := resume
+			if tc.step {
+				want += " The design gate of " + specGateRoot + " opened with no person's approval: its change request proposes nothing. " +
+					"Before each merge and each enqueue, run `dispatch spec-ending --issue " + specGateRoot + " --head <head>`, " +
+					"and merge or enqueue only when its first line reads `ready`."
+			}
+			if got := machine.Claim().Pending; got == nil || got.Task != want {
+				t.Fatalf("the merger's task after its start = %+v, want %q", got, want)
+			}
+			if told := r.count(`kind = 'role_message'`); told != 0 {
+				t.Fatalf("role messages after the merger's start = %d, want none: the start's own task names the step", told)
+			}
+		})
 	}
 }
 

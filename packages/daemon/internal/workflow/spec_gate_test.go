@@ -528,3 +528,142 @@ func TestAnOpeningByExemptionTellsEveryRoleNoPersonApprovedIt(t *testing.T) {
 		{Role: tester, Body: closed5}, {Role: tester, Body: exempt}, {Role: tester, Body: closed7}, {Role: tester, Body: approved},
 	})
 }
+
+// endingExempted is the cause a read of the ending condition carries when the root's spec gate
+// turned open by exemption: a merger that already runs was started without the step its task
+// would name (D10).
+const endingExempted = record.SpecEndingCause("exempted")
+
+// mergerEndingMessages is the body of every role message the root's merger holds, in order.
+func mergerEndingMessages(t *testing.T, pool *pgxpool.Pool) []string {
+	t.Helper()
+	merger := treeRoleToken(t, gatedRoot, claim.RoleMerger)
+	rows, err := pool.Query(t.Context(), `select payload->>'body' from outbox where kind = 'role_message' and issue = $1 and payload->>'role' = $2 order by id`,
+		gatedRoot, merger)
+	if err != nil {
+		t.Fatalf("read the merger's role messages: %v", err)
+	}
+	bodies, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("scan the merger's role messages: %v", err)
+	}
+	return bodies
+}
+
+// The first reading of the ending condition a merger gets tells it how the condition stands,
+// whichever way it reads (D10): a ready one tells it the gate opened for that head, with the step
+// it takes before each merge and each enqueue, as a waiting one tells it the gate closed. A merger
+// that started before its tree's gate stood open by exemption has no other word of that step.
+func TestTheFirstReadingOfTheEndingTellsTheMergerTheStep(t *testing.T) {
+	pool := migratedPool(t)
+	apply := applyFacts(t, pool, specGateEngine())
+	const head = "1111111111111111111111111111111111111111"
+	mergingExemptRoot(t, pool, head)
+	apply("ready", intake.SpecEndingRead{Issue: gatedRoot, Head: head, State: record.SpecEndingReady, Version: 4, Cause: record.SpecEndingCauseOutcomes})
+	want := "The design gate of " + gatedRoot + " opened: the ending condition of its change request holds for head " + head + ". " +
+		"Before each merge and each enqueue, run `dispatch spec-ending --issue " + gatedRoot + " --head <head>`, and merge or enqueue only when its first line reads `ready`."
+	if got := mergerEndingMessages(t, pool); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the merger's messages after its first reading, a ready one = %q, want %q", got, want)
+	}
+}
+
+// A merger already running when its tree's spec gate turns open by exemption — a person approved
+// the version it started under, and a later version proposes nothing — has no word of the ending
+// step: its task was written under a person's approval, and the gate did not move, so nobody told
+// it the gate moved. The version queues the read of the ending condition under the cause that says
+// the gate turned exempt, and that read tells the merger how the condition stands, with the step,
+// whatever reading the record kept from an earlier time the gate stood exempt.
+func TestAMergerRunningWhenTheGateTurnsExemptIsToldTheStep(t *testing.T) {
+	const head = "1111111111111111111111111111111111111111"
+	step := "Before each merge and each enqueue, run `dispatch spec-ending --issue " + gatedRoot + " --head <head>`, " +
+		"and merge or enqueue only when its first line reads `ready`."
+	for _, tc := range []struct {
+		name  string
+		state string
+		codes []dispatch.EndingReason
+		want  string
+	}{
+		{name: "a ready reading", state: record.SpecEndingReady,
+			want: "The design gate of " + gatedRoot + " opened: the ending condition of its change request holds for head " + head + ". " + step},
+		{name: "a waiting reading", state: record.SpecEndingWaiting, codes: []dispatch.EndingReason{{Code: "no_conclusion", Detail: "No conclusion."}},
+			want: "The design gate of " + gatedRoot + " closed: the ending condition of its change request does not hold for head " + head + " (no_conclusion: No conclusion.). " +
+				"Merge nothing. Enqueue nothing. Take a queued pull request out of the merge queue. " + step},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			apply := applyFacts(t, pool, specGateEngine())
+			mergingExemptRoot(t, pool, head)
+			four := 4
+			seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: gateDoc, LatestVersion: 4,
+				Rule: record.GateRuleChangeRequest, ApprovedVersion: &four, EverOpened: true})
+			// The reading an earlier time the gate stood exempt left, in the state the read answers.
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				return record.NewStore().PutSpecEnding(t.Context(), tx, record.SpecEnding{Issue: gatedRoot, Head: head, State: tc.state,
+					ReadAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+			})
+
+			apply("v5", intake.DispatchArtifact{Key: gatedRoot, ArtifactID: gateDoc, Kind: intake.DispatchArtifactVersion, Version: 5,
+				Mark: record.EventMark{Seq: 15}, ChangeRequest: readOf(5, true, true)})
+			if gate := specGateOf(t, pool); !record.GateExempt(gate) {
+				t.Fatalf("the gate after a version that proposes nothing = %+v, want it exempt at 5", gate)
+			}
+			reads := endingReads(t, pool, gatedRoot)
+			if want := []record.SpecEndingRead{{Head: head, Cause: endingExempted}}; !reflect.DeepEqual(reads, want) {
+				t.Errorf("ending reads after the gate turned exempt = %+v, want %+v", reads, want)
+			}
+			if len(reads) != 1 {
+				t.FailNow()
+			}
+			apply("read", intake.SpecEndingRead{Issue: gatedRoot, Head: head, State: tc.state, Reasons: tc.codes, Version: 5, Cause: reads[0].Cause})
+			if got := mergerEndingMessages(t, pool); !slices.Equal(got, []string{tc.want}) {
+				t.Fatalf("the merger's messages after the read = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A registration, or the gate seed's reset of a gate above the version Dispatch holds, that leaves
+// the root's spec gate open by exemption queues the read of the ending condition for every member
+// in merging, as a version event does (D10): under the cause that says the gate turned exempt when
+// it stood otherwise before, and under the cause of a version when it stood exempt already.
+func TestARegistrationOrResetThatLeavesTheGateExemptQueuesTheEndingReads(t *testing.T) {
+	const head = "1111111111111111111111111111111111111111"
+	register := func(version int) intake.Fact {
+		return intake.GateRegistered{Issue: gatedRoot, ArtifactID: gateDoc, Version: version, DispatchVersion: version,
+			Since: record.EventMark{Seq: 30}, ChangeRequest: readOf(version, true, true)}
+	}
+	reset := intake.GateAboveDispatch{Generation: 1, Above: 6, Read: intake.DispatchArtifact{Key: gatedRoot, ArtifactID: gateDoc,
+		Kind: intake.DispatchArtifactVersion, Version: 5, ChangeRequest: readOf(5, true, true)}}
+	four, six := 4, 6
+	for _, tc := range []struct {
+		name  string
+		gate  record.DesignGate
+		fact  intake.Fact
+		cause record.SpecEndingCause
+	}{
+		{name: "a registration that opens a closed gate", gate: record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: gateDoc,
+			LatestVersion: 4, Rule: record.GateRuleChangeRequest, EverOpened: true}, fact: register(5), cause: endingExempted},
+		{name: "a registration that turns an approved gate exempt", gate: record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: gateDoc,
+			LatestVersion: 4, Rule: record.GateRuleChangeRequest, ApprovedVersion: &four, EverOpened: true}, fact: register(5), cause: endingExempted},
+		{name: "a registration of a newer version of an exempt gate", gate: record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: gateDoc,
+			LatestVersion: 4, Rule: record.GateRuleChangeRequest, ExemptVersion: &four, EverOpened: true}, fact: register(5), cause: record.SpecEndingCauseVersion},
+		{name: "a reset that opens a closed gate", gate: record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: gateDoc,
+			LatestVersion: 6, Rule: record.GateRuleChangeRequest, EverOpened: true}, fact: reset, cause: endingExempted},
+		{name: "a reset of an exempt gate", gate: record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: gateDoc,
+			LatestVersion: 6, Rule: record.GateRuleChangeRequest, ExemptVersion: &six, EverOpened: true}, fact: reset, cause: record.SpecEndingCauseVersion},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			apply := applyFacts(t, pool, specGateEngine())
+			mergingExemptRoot(t, pool, head)
+			seedGate(t, pool, tc.gate)
+			apply("fact", tc.fact)
+			if gate := specGateOf(t, pool); !record.GateExempt(gate) {
+				t.Fatalf("the gate after the fact = %+v, want it exempt", gate)
+			}
+			if got, want := endingReads(t, pool, gatedRoot), []record.SpecEndingRead{{Head: head, Cause: tc.cause}}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("ending reads = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
