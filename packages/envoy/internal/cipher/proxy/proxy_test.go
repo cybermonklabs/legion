@@ -394,6 +394,7 @@ func TestTheProxyRefusesTheAddressesItMustNeverDial(t *testing.T) {
 		{"169.254.169.254", "a link-local IPv4 address"},
 		{"fe80::1", "a link-local IPv6 address"},
 		{"100.64.1.2", "a cluster IPv4 address"},
+		{"0.1.2.3", "an IPv4 address of 0.0.0.0/8"},
 		{"224.0.0.1", "a link-local IPv4 address"},
 		{"239.1.2.3", "not a global unicast IPv4 address"},
 		{"::", "not a global unicast IPv6 address"},
