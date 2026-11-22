@@ -14,7 +14,7 @@ import (
 // process reaches GitHub before the reset. It is k7.
 func TestAGraphQLRateLimitStopsEveryProcess(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
@@ -41,8 +41,8 @@ func TestAGraphQLRateLimitStopsEveryProcess(t *testing.T) {
 	if got := number(t, line, "heads"); got != 0 {
 		t.Errorf("the pass read %d heads under a rate-limited query: %v", got, line)
 	}
-	if got := number(t, line, "mappings_skipped"); got != 0 {
-		t.Errorf("the pass skipped %d mappings; a rate limit stops the pass, it does not skip a repository: %v", got, line)
+	if got := number(t, line, "defaults_skipped"); got != 0 {
+		t.Errorf("the pass skipped %d repositories; a rate limit stops the pass, it does not skip a repository: %v", got, line)
 	}
 
 	limit, found, err := h.reconciler.Limits.Get(h.ctx, githubapp.GraphQLScope)
@@ -80,7 +80,7 @@ func TestAPrimaryGraphQLRateLimitLeavesRESTReadsAlone(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t, reviewerAppID)
-			h.mapRepository(rowRepository)
+			h.seedProjectDefault(rowRepository)
 			h.listHead()
 			other := h.replica()
 
@@ -138,7 +138,7 @@ func TestASecondaryQueryLimitHoldsTheInstallationsRESTReads(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t, reviewerAppID)
-			h.mapRepository(rowRepository)
+			h.seedProjectDefault(rowRepository)
 			h.listHead()
 			other := h.replica()
 
@@ -195,7 +195,7 @@ func TestASecondaryQueryLimitHoldsTheInstallationsRESTReads(t *testing.T) {
 // (githubapp.GraphQLRateLimit).
 func TestACheckRunNamedForTheLimitIsNotALimit(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, secondaryLimitMessage, "completed", "success", otherApp, "2026-11-05T03:01:00Z"),

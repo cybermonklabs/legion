@@ -43,8 +43,10 @@ type Service struct {
 	AllowedHosts []string
 	// EdgeProjects is ENVOY_EDGE_PROJECTS (parseEdgeProjects): the project keys an edge listener
 	// serves, sorted, each once. Non-empty is edge mode, in which the listener runs under the edge
-	// listener's NATS grant for these projects (natsgrant.Edge; cmd/listener's edge_nats.go). Empty,
-	// the variable unset or blank, is every other listener, which reads nothing of it.
+	// listener's NATS grant for these projects (natsgrant.Edge; cmd/listener's edge_nats.go) and
+	// /v1 admits only a broker token whose projects are all among these (cmd/listener's
+	// EdgeAdmits). Empty, the variable unset or empty, is every other listener, which reads
+	// nothing of it.
 	EdgeProjects []string
 }
 
@@ -189,12 +191,17 @@ const EdgeProjectsEnvVar = "ENVOY_EDGE_PROJECTS"
 
 // parseEdgeProjects reads ENVOY_EDGE_PROJECTS: project keys separated by commas or white space,
 // read by the rule a broker token's own list is read by (oauthwire.ParseProjects): sorted, each
-// once, at most oauthwire.MaxProjects, and nil when blank. A key that is not a project key, a key
-// named twice and a longer list are refused, naming the variable.
+// once, at most oauthwire.MaxProjects, and nil when empty. A key that is not a project key, a key
+// named twice and a longer list are refused, naming the variable, and so is a value other than
+// the empty string that names no project (a lone comma, white space): that is a misspelt edge
+// setting, and a listener started from it would serve with no edge rules.
 func parseEdgeProjects(raw string) ([]string, error) {
 	projects, err := oauthwire.ParseProjects(strings.ReplaceAll(raw, ",", " "))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", EdgeProjectsEnvVar, err)
+	}
+	if raw != "" && len(projects) == 0 {
+		return nil, fmt.Errorf("%s=%q names no project: set it to the project keys the edge listener serves, or to the empty string for a listener that is no edge", EdgeProjectsEnvVar, raw)
 	}
 	return projects, nil
 }

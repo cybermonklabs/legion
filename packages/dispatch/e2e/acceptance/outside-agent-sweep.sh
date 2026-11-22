@@ -11,17 +11,19 @@
 # runner. So this box runs the sweep's fills mode, which makes the full member's half of every
 # row, and passes the file to the workflow as `sweep_fills`; and it runs the sweep's writer, which
 # every 15 s comments on the write issue and sends a direct message to the fills' session, prints
-# `write <UTC> <comment id> <message id> delivered` for each the full member's own feed was sent,
+# `write <began> <ended> <comment id> <message id> delivered` for each the full member's own feed
+# was sent (`began` read before the comment's POST, `ended` after the message's POST answered),
 # and so is the live socket's control. Fills mode writes the full member's half of the GitHub proxy
 # rows (a `can_fail` line for each read that can fail) only with the full member's browser session,
 # since the proxy reads no token, so the sweep needs OUTSIDE_FULL_COOKIE_FILE.
 #
-# The contract this file reads is #4608's at cd8a041312, fills version 3: `routes`, the SHA-256 of
-# the routes.txt the fills were made from, and `deployment`, of the member's own projects' keys and
-# creation times. A runner refuses fills of another version, of another routes.txt than its own
-# checkout's, or of another deployment, and refuses a SWEEP_LIVE_SECONDS below 30; each such refusal
-# is its UNKNOWN, and the sweep row's. So the workflow's checkout must hold this checkout's
-# routes.txt, and this box sends the fills only when they are version 3.
+# The contract this file reads is #4608's at ca10a682ba, fills version 4: `routes`, the SHA-256 of
+# the routes.txt the fills were made from, `deployment`, of the member's own projects' keys and
+# creation times, and `origin_sha256`, of the origin they were made at. A runner refuses fills of
+# another version, of another routes.txt than its own checkout's, or of another deployment, and
+# refuses a SWEEP_LIVE_SECONDS below 45; each such refusal is its UNKNOWN, and the sweep row's. So
+# the workflow's checkout must hold this checkout's routes.txt, and this box sends the fills only
+# when they are version 4.
 
 # sweep_setup: sets sweep_script and sweep_problem, from the inputs and the browser's reading.
 sweep_setup() {
@@ -54,7 +56,7 @@ sweep_exec() {
 # sweep_prepare: the fills, and then the writer, which comments every 15 s on a scratch issue
 # (OUTSIDE_SWEEP_WRITE_ISSUE), about four comments a minute, until sweep_writer_stop.
 sweep_prepare() {
-  local first='' version=3
+  local first='' version=4
   [ -z "$sweep_problem" ] || return 0
   say "the sweep's fills mode"
   if ! (sweep_exec fills "$work/sweep-fills.log") || [ ! -s "$work/sweep-fills" ]; then
@@ -131,14 +133,17 @@ EOF
 }
 
 # sweep_row: the sweep row: the read sweep on the runner, held to this box's two controls: at
-# least one of the full member's comments delivered strictly inside the window the sweep read the
-# member's feed over, which is what makes its "nothing reached the member" mean something, and the
+# least one of the full member's writes (a comment and a direct message) delivered inside the
+# window the sweep read the member's feed over, with every write of the writer delivered, which is
+# what makes its "nothing reached the member" mean something, and the
 # proxy control, which is what makes its proxy rows' "answered as a repository the App is not
 # installed on" mean something. A FAIL of the sweep stands without either.
 sweep_row() {
-  local want="restricted-sweep.sh on the runner PASS, with a full member's comment delivered inside its live window, and the full member's browser answered 200 by the GitHub proxy for the repository its proxy rows read"
-  local log="$results/restricted-sweep.log" sweep_exit window='' w0 w1 inside='' line at verdict_line=''
-  local word comment message state rest
+  local want="restricted-sweep.sh on the runner PASS, with every write of the writer (a comment and a direct message) delivered and one inside its live window, and the full member's browser answered 200 by the GitHub proxy for the repository its proxy rows read"
+  local log="$results/restricted-sweep.log" sweep_exit window='' w0='' w1='' inside='' line verdict_line=''
+  local word began ended comment message state rest unread='' dropped=''
+  local stamp='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+  local id='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
   if [ -n "$sweep_problem" ]; then
     row sweep "$want" "$sweep_problem" UNKNOWN
     return
@@ -151,16 +156,38 @@ sweep_row() {
   while IFS= read -r line; do
     case $line in 'live window '*) window=${line#live window } ;; esac
   done <"$log"
-  w0=${window%% *}
-  w1=${window#* }
-  # The writer prints one line a write, `write <UTC> <comment id> <message id> delivered`, or
-  # `... not delivered` when the full member's feed was not sent both; only the first counts.
+  # The window's two ends, as `date -u +%Y-%m-%dT%H:%M:%SZ` prints them; any other window is none.
+  read -r w0 w1 rest <<<"$window"
+  [[ $w0 =~ $stamp && $w1 =~ $stamp && -z $rest && ! $w0 > $w1 ]] || window=''
+  # The writer prints one line a write: `write <began> <ended> <comment id> <message id>
+  # delivered`, `... not delivered` when the full member's feed was not sent both, or `write
+  # <began> <ended> - not written`. As #4608's own join reads them, every line must be readable and
+  # delivered: a write not delivered or not written anywhere, inside the window or across one of its
+  # ends or before it, means the feed lost one, and a line whose stamps are not of that form, or that
+  # began after it ended, or a delivered one whose ids are not of the lowercase 8-4-4-4-12 form
+  # Dispatch gives them, cannot be read; either holds the row UNKNOWN. Then one delivered write
+  # inside the window is the control: one that began after the window opened and ended before it
+  # closed (UTC whole seconds, compared as strings), so the whole write fell inside the window the
+  # sweep read the member's feed over.
   while IFS= read -r line; do
-    read -r word at comment message state rest <<<"$line"
-    if [ "$word" = write ] && [ -n "$comment" ] && [ -n "$message" ] && [ "$state" = delivered ] &&
-      [ -z "$rest" ] && [[ -n "$w0" && "$at" > "$w0" && "$at" < "$w1" ]]; then
-      inside="$at (comment $comment, message $message)"
+    read -r word began ended comment message state rest <<<"$line"
+    [ "$word" = write ] || continue
+    if ! [[ $began =~ $stamp && $ended =~ $stamp ]] || [[ $began > $ended ]]; then
+      unread=${unread:-$line}
+      continue
     fi
+    case $comment:$message:$state:$rest in
+      -:not:written: | ?*:?*:not:delivered) dropped=${dropped:-$line} ;;
+      -:*) unread=${unread:-$line} ;;
+      ?*:?*:delivered:)
+        if ! [[ $comment =~ $id && $message =~ $id ]]; then
+          unread=${unread:-$line}
+        elif [[ -n $window && $began > $w0 && $ended < $w1 ]]; then
+          inside="from $began to $ended (comment $comment, message $message)"
+        fi
+        ;;
+      *) unread=${unread:-$line} ;;
+    esac
   done <"$work/sweep-writer.log"
   # The verdict is the sweep's last line; the log's first is the workflow's own note.
   while IFS= read -r line; do
@@ -173,11 +200,15 @@ sweep_row() {
       if [ -n "$proxy_control_problem" ]; then
         row sweep "$want" "the sweep passed, and its GitHub proxy rows have no positive control: $proxy_control_problem" UNKNOWN
       elif [ -z "$window" ]; then
-        row sweep "$want" "the sweep passed and printed no live window, so the writer's control cannot be held to it" UNKNOWN
+        row sweep "$want" "the sweep passed and printed no readable live window, so the writer's control cannot be held to it" UNKNOWN
+      elif [ -n "$unread" ]; then
+        row sweep "$want" "the sweep passed, and the writer printed a line this leg cannot read (a stamp not of the form date -u +%Y-%m-%dT%H:%M:%SZ prints, one that began after it ended, or ids not of Dispatch's lowercase 8-4-4-4-12 form), so whether it dropped a write is not known: ${unread:0:200}" UNKNOWN
+      elif [ -n "$dropped" ]; then
+        row sweep "$want" "the sweep passed, and a write of the writer was not delivered, so the member's feed lost one and its live check proved nothing: ${dropped:0:200}" UNKNOWN
       elif [ -z "$inside" ]; then
         row sweep "$want" "the sweep passed, and no write of the writer was delivered inside its live window $window, so its live check proved nothing" UNKNOWN
       else
-        row sweep "$want" "the sweep passed; the writer's write at $inside was delivered inside its live window $window; $proxy_control" PASS
+        row sweep "$want" "the sweep passed; the writer's write $inside was delivered inside its live window $window; $proxy_control" PASS
       fi
       ;;
     *) row sweep "$want" "the sweep exited ${sweep_exit:-with no code read}: $verdict_line" UNKNOWN ;;

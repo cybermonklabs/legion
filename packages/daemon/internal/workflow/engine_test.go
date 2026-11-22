@@ -1021,6 +1021,67 @@ func TestABackwardMovesTaskNamesThePullRequestAndTheReason(t *testing.T) {
 	}
 }
 
+// A merged change never moves back: the backward move of an issue whose pull request has merged
+// is refused BACKWARD_REFUSED with that reason, in whichever phase the issue stands — a root in
+// merging, whose close can wait on the rest of its tree, an issue still in reviewing whose pull
+// request merged early, and an issue in accepting, where an approval of a merged pull request's
+// head ends the review round (TestAnApprovalStandingOnAMergedPullRequestsHeadEndsTheReviewRound)
+// — and nothing moves, is counted or is started. The controls are the same moves on an issue in
+// merging and in accepting whose pull request is still open: each goes back and starts the
+// phase's worker, so the merge alone is what refuses the others.
+func TestABackwardMoveOfAMergedIssueIsRefused(t *testing.T) {
+	const reason = "its pull request has merged; a merged change never moves back"
+	for _, tc := range []struct {
+		name    string
+		from    phase.Phase
+		to      phase.Phase
+		state   record.PullRequestState
+		refused bool
+	}{
+		{"the merger's on a root in merging whose pull request merged", phase.Merging, phase.Reviewing, record.PullRequestMerged, true},
+		{"the reviewer's on an issue in reviewing whose pull request merged early", phase.Reviewing, phase.Implementing, record.PullRequestMerged, true},
+		{"the architect's on an issue in accepting whose pull request merged", phase.Accepting, phase.Implementing, record.PullRequestMerged, true},
+		{"the merger's on an issue in merging whose pull request is open", phase.Merging, phase.Reviewing, record.PullRequestOpen, false},
+		{"the architect's on an issue in accepting whose pull request is open", phase.Accepting, phase.Implementing, record.PullRequestOpen, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			role := phase.RoleFor(tc.from)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "backward", Phase: tc.from, Generation: 1, Status: PhaseStatus(tc.from), Rank: "U"})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: role, Claim: claim.Token(string(role) + "-claim")})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
+			pr := record.PullRequest{State: tc.state, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headOne, Failing: []string{}}
+			if tc.state == record.PullRequestMerged {
+				pr.MergeSHA = "merge-42"
+			}
+			seedPR(t, pool, pr)
+			result, err := intake.ApplyFact(context.Background(), pool, "api", "backward", intake.BackwardMove{Issue: "LEGION-208", Requester: role, To: tc.to, Reason: "the spec changed"}, testEngine(config.DesignGateRootIssues, nil), admissionStub{})
+			if err != nil {
+				t.Fatalf("ApplyFact backward: %v", err)
+			}
+			if !tc.refused {
+				if result.Refusal != nil {
+					t.Fatalf("the move = %+v, want it applied: the pull request is open", result.Refusal)
+				}
+				if got, pass := issuePhase(t, pool), implementerPass(t, pool); got != tc.to || pass != 1 {
+					t.Fatalf("phase = %q, pass %d; want %q and one pass", got, pass, tc.to)
+				}
+				if started := superviseRequests(t, pool, "start"); started["LEGION-208/"+string(phase.RoleFor(tc.to))] != 1 {
+					t.Fatalf("the move back to %s started %v, want its %s started once", tc.to, started, phase.RoleFor(tc.to))
+				}
+				return
+			}
+			if refusalCode(result) != "BACKWARD_REFUSED" || !strings.Contains(result.Refusal.Message, reason) {
+				t.Fatalf("the move = %+v; want BACKWARD_REFUSED saying %q", result.Refusal, reason)
+			}
+			if got, pass := issuePhase(t, pool), implementerPass(t, pool); got != tc.from || pass != 0 {
+				t.Fatalf("phase = %q, pass %d; want %q and no pass", got, pass, tc.from)
+			}
+			assertOutboxKinds(t, pool, []string{})
+		})
+	}
+}
+
 // capPosts is what review_round_cap has told so far: every Dispatch message naming the cap, and
 // how many pr-blocked notices the architect was sent.
 func capPosts(t *testing.T, pool *pgxpool.Pool) (messages []string, blocked int) {

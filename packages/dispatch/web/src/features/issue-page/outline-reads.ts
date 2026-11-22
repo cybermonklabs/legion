@@ -91,6 +91,12 @@ export interface OutlineReads {
  *  opening, which read it, see one value; the tree's own where the page gives it none. */
 export const NO_FAILED_READS: readonly FailedRead[] = [];
 
+/** The key the line of a read rows come from is drawn under (`FailedRead.key`). */
+export type ReadKey = ReturnType<typeof sixReads>[number]["line"] | `blocks:${string}`;
+
+/** The key the line of the blocks read of the document `id` is drawn under. */
+export const blocksKey = (id: string): ReadKey => `blocks:${id}`;
+
 /** The six reads the tree's nodes other than the issue's children and the documents' blocks come
  *  from, in the order they are given, each under the key and with the freshness `useIssueTree`
  *  reads it by, so they cost no request of their own; and the key each one's line is drawn under,
@@ -220,7 +226,7 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
         const id = documentIds[index] ?? "";
         return {
           bringsQuestions: false,
-          key: `blocks:${id}`,
+          key: blocksKey(id),
           message: blocksUnreadable(issue, id),
         };
       }),
