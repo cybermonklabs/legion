@@ -529,7 +529,7 @@ pad=$(printf '%0100000d' 0)
 env -i LEGION_GRANT_FILE=/grant PADDING1="$pad" PADDING2="$pad" "$program" 600 </dev/null >/dev/null 2>&1 &
 pid=$!
 started+=("$pid")
-until_true 40 "the program's environment" laid_out "$program" "$pid"
+until_true 10 "the program's environment" sh -c '[ "$(readlink /proc/$1/exe)" = "$2" ]' sh "$pid" "$program"
 for name in LEGION_GRANT_FILE LEGION_GRANT; do st=0; env_has "$pid" "$name" || st=$?; echo "$name $st"; done
 echo "value $(env_of "$pid" LEGION_GRANT_FILE)"
 st=0; env_has "$(ended_pid)" HOME 2>/dev/null || st=$?; echo "unreadable $st"
@@ -639,7 +639,7 @@ started+=("$granted")
 env -i PADDING1="$pad" PADDING2="$pad" "$program" 600 </dev/null >/dev/null 2>&1 &
 clean=$!
 started+=("$clean")
-until_true 40 "both programs' environments" laid_out "$program" "$granted" "$clean"
+until_true 10 "both programs to run" sh -c '[ "$(readlink /proc/$1/exe)" = "$3" ] && [ "$(readlink /proc/$2/exe)" = "$3" ]' sh "$granted" "$clean" "$program"
 for p in "$granted" "$clean" "$(ended_pid)"; do
   st=0
   why=$(carries_no_grant "$p") || st=$?
@@ -680,7 +680,7 @@ keyed=$!
 env -i "\${rig[@]}" "$program" 600 </dev/null >/dev/null 2>&1 &
 ending=$!
 started+=("$clean" "$keyed" "$ending")
-until_true 40 "the three programs' environments" laid_out "$program" "$clean" "$keyed" "$ending"
+until_true 10 "the three programs to run" sh -c 'p=$1; shift; for pid; do [ "$(readlink /proc/$pid/exe)" = "$p" ] || exit 1; done' sh "$program" "$clean" "$keyed" "$ending"
 check() { local st=0; endpoint_mismatch "$2" >"$scratch/found" || st=$?; echo "$1: status $st: $(cat "$scratch/found")"; }
 check clean "$clean"
 check keyed "$keyed"
@@ -893,12 +893,7 @@ empty=$!
 env -i NAME=value "$program" 600 </dev/null >/dev/null 2>&1 &
 full=$!
 started+=("$empty" "$full")
-until_true 20 "the full one's environment" laid_out "$program" "$full"
-# The empty one has no variable to wait for. Its command line reads once its exec has laid out its
-# arguments and set where its environment starts and ends (fs/proc/base.c reads neither before),
-# which for an empty environment is all of it.
-args_laid_out() { local -a words; [ "$(readlink "/proc/$1/exe" 2>/dev/null || :)" = "$program" ] && process_args "$1" words; }
-until_true 20 "the empty one's arguments" args_laid_out "$empty"
+until_true 10 "both to run" sh -c '[ "$(readlink /proc/$1/exe)" = "$3" ] && [ "$(readlink /proc/$2/exe)" = "$3" ]' sh "$empty" "$full" "$program"
 for pid in "$empty" "$full"; do
   st=0; v=$(env_of "$pid" NAME) || st=$?; printf 'env_of %s [%s]; ' "$st" "$v"
   st=0; env_has "$pid" OTHER || st=$?; printf 'env_has %s; ' "$st"

@@ -67,9 +67,7 @@ start_cli() {
     if [ -n "$kid" ]; then
       omp=$(cat /proc/"$kid"/task/*/children 2>/dev/null || :)
       omp=\${omp%% *}
-      # Its environment, which every row reads next (controller_omp), only once the exec has laid it
-      # out (environ_laid_out, lib/process-tree.sh): the exe names EXE before that.
-      [ -n "$omp" ] && [ "$(readlink "/proc/$omp/exe" 2>/dev/null || :)" = "$want" ] && environ_laid_out "$omp" && break
+      [ -n "$omp" ] && [ "$(readlink "/proc/$omp/exe" 2>/dev/null || :)" = "$want" ] && break
       omp=
     fi
     sleep 0.05
