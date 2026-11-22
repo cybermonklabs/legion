@@ -528,8 +528,9 @@ const (
 )
 
 // ownHoldEntries is how many entries the one root of those sweeps holds: a few thousand, so the
-// deletions run past a second of the real clock and the set is read again while they run, after
-// the refresh the case forces before the first of them.
+// set is read again in the middle of the deletions (refreshMidway), with the deleter holding the
+// directories it opened for the requests before it, after the refresh the case forces before the
+// first of them.
 const ownHoldEntries = 2000
 
 // The sweep's own deleter is no hold on the roots it deletes from. The deleter child holds every
@@ -559,6 +560,16 @@ const ownHoldEntries = 2000
 // under go1.27.3. That process stands at / so that the descriptor is the only path it names on
 // the root: a process standing in a root is no hold on it (usedPaths.Holds,
 // TestAProcessStandingInARootIsNoHoldOnIt).
+//
+// The child's fixture, its 2000 entries among it, is on a memory filesystem of the child's own
+// mount namespace, over the empty temporary directory the case gives it
+// (TestASweepsOwnDeleterIsNoHoldHelper). The case's deadline is a hang guard over the child, and
+// on the machine's disk the child's time was the disk's: building the 2000 entries and removing
+// them again cost seconds to minutes, as busy as the disk was, and the control whose sweep deletes
+// none left all 2000 to its cleanup, after its sweep. On 2026-11-21, kernel 7.0.0-1017-gcp, under
+// go1.27.3, that control's child was killed by the three-minute guard after a sweep that had
+// returned in 6.38 s, and a child run alone took 25 s to build its entries and 24 s to remove
+// them, around a sweep of 0.19 s.
 func TestASweepsOwnDeleterIsNoHoldOnTheRootsItDeletesFrom(t *testing.T) {
 	requireRoleNamespaces(t)
 	self, err := os.Executable()
@@ -575,7 +586,11 @@ func TestASweepsOwnDeleterIsNoHoldOnTheRootsItDeletesFrom(t *testing.T) {
 			defer cancel()
 			child := exec.CommandContext(ctx, self, "-test.run=^TestASweepsOwnDeleterIsNoHoldHelper$", "-test.v")
 			child.Dir = "/"
-			child.Env = append(os.Environ(), volumeTrimOwnHoldEnv+"="+sweep)
+			// The child's temporary directory, under both names a test reads one by (t.TempDir
+			// reads GOTMPDIR first): an empty mount point here, which the child covers with a
+			// memory filesystem of its own before anything is made in it.
+			memory := t.TempDir()
+			child.Env = append(os.Environ(), volumeTrimOwnHoldEnv+"="+sweep, "TMPDIR="+memory, "GOTMPDIR="+memory)
 			child.SysProcAttr = attr
 			output, err := child.CombinedOutput()
 			if err != nil {
@@ -609,6 +624,16 @@ func TestASweepsOwnDeleterIsNoHoldHelper(t *testing.T) {
 	if err := mountProc("/proc"); err != nil {
 		t.Fatal(err)
 	}
+	// The temporary directory the case gave this child, which every directory of the fixture is
+	// made in: a memory filesystem of this namespace's own, which ends with it. t.TempDir reads
+	// GOTMPDIR before TMPDIR, and the case names the directory as both.
+	memory := os.Getenv("GOTMPDIR")
+	if memory == "" || os.Getenv("TMPDIR") != memory {
+		t.Fatalf("GOTMPDIR is %q and TMPDIR %q, want the one directory the case gave this sweep for its fixture", memory, os.Getenv("TMPDIR"))
+	}
+	if err := mountTmpfs(memory, "size=64m"); err != nil {
+		t.Fatal(err)
+	}
 	start := inProcessRemovals
 	if sweep != ownHoldInProcess {
 		useContainedDeleter(t)
@@ -637,7 +662,11 @@ func TestASweepsOwnDeleterIsNoHoldHelper(t *testing.T) {
 			holdOpen(t, root.Path)
 		}
 		ahead = volumeUsedPathsMaxAge + time.Millisecond
-		return start(cover, dirs)
+		remover, err := start(cover, dirs)
+		if err != nil {
+			return nil, err
+		}
+		return &refreshMidway{entryRemover: remover, at: ownHoldEntries / 2, advance: func() { ahead += volumeUsedPathsMaxAge }}, nil
 	}
 	began := time.Now()
 	out := tr.sweep(context.Background(), *trimSettings(), usageAt(90))
@@ -660,6 +689,25 @@ func TestASweepsOwnDeleterIsNoHoldHelper(t *testing.T) {
 		}
 	}
 	f.assertProtected()
+}
+
+// refreshMidway is a sweep's remover that moves the case's clock on by volumeUsedPathsMaxAge once,
+// as it makes its at-th removal, so the sweep reads the used-path set again before the removal
+// after it: in the middle of the deletions, whatever the speed of the filesystem they are made
+// on. The deleter then holds what it opened for the requests before it, besides what the listing
+// passed it, and the set read before the first deletion saw only the latter.
+type refreshMidway struct {
+	entryRemover
+	removals, at int
+	advance      func()
+}
+
+func (r *refreshMidway) removeAll(dir *sweepDir, name string) error {
+	r.removals++
+	if r.removals == r.at {
+		r.advance()
+	}
+	return r.entryRemover.removeAll(dir, name)
 }
 
 // holdOpen starts a process of its own that holds a descriptor open on dir, which is a hold on dir
