@@ -558,11 +558,12 @@ never read `role` from an inbound frame, so the rule for it is the listener's ow
 `"TOPIC"` key, an event id written as a number, or a value nested deeper than the 10,000 levels
 `encoding/json` reads does not change what it is. That read keeps the event id beside the two and
 no other field, so the relay's read of a frame makes no allocation for each key the frame holds,
-and its error names a field and its JSON type, or a key cut to 32 bytes, never a whole value: the
-walk logs it. Only for a role message to copy is the envelope then read, field by field from every
-field, a field whose value its type does not take left unset, so the message is still copied
-whatever the listener's wire rules or the envelope's own say of it. An `urgency` or `source` word
-a newer build adds is kept in the copy, for the holder's reader to judge, and an `issued_at`
+and its error names a field and its JSON type, or a key quoted and cut to 40 characters of the
+quote, never a whole value: the walk logs it. Only for a role message to copy is the envelope then
+read, field by field from every field, a field whose value its type does not take left unset, so
+the message is still copied whatever the listener's wire rules or the envelope's own say of it.
+An `urgency` or `source` word a newer build adds is kept in the copy, for the holder's reader to
+judge, and an `issued_at`
 written as `1795191371979.0` is read as that integer, while one written as a JSON string is left
 out, as `encoding/json` leaves it.
 An `expects_reply` word the envelope does not know is a value that field cannot hold, so the copy

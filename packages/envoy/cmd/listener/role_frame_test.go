@@ -154,13 +154,16 @@ func TestARoleMarkIsReadAsTheClaimKeyOfTheRoleItNames(t *testing.T) {
 // value can be as long as the message.
 const roleFrameErrorBound = 256
 
-// readRoleFrame's error names the field and the JSON type it holds, and at most a few dozen bytes
-// of a key, however long the value or the key: an 8 MiB topic nested 4 Mi deep, and a key of
-// 1 MiB with no colon, a bad escape or no value after it, each give an error of at most
-// roleFrameErrorBound bytes.
+// readRoleFrame's error names the field and the JSON type it holds, and at most a few dozen
+// characters of a key as the error quotes it, however long the value or the key, and whatever bytes
+// the key holds: an 8 MiB topic nested 4 Mi deep, a key of 1 MiB with no colon, a bad escape or no
+// value after it, and a key of bytes the quote writes as four characters each (0xff, a control
+// byte), each give an error of at most roleFrameErrorBound bytes.
 func TestAnUnreadableRoleFrameIsNamedInAFewDozenBytes(t *testing.T) {
 	nested := strings.Repeat("[", 4<<20) + strings.Repeat("]", 4<<20)
 	key := strings.Repeat("k", 1<<20)
+	invalid32, invalid1M := strings.Repeat("\xff", 32), strings.Repeat("\xff", 1<<20)
+	control32 := strings.Repeat("\x01\x1f", 16)
 	for _, c := range []struct{ name, data, names string }{
 		{"an 8 MiB nested topic", `{"topic":` + nested + `}`, "its topic is a JSON array, not a string"},
 		{"an 8 MiB nested role mark under a topic that names no role", `{"topic":"notifications.agent.ses_x","role":` + nested + `}`, "its role is a JSON array, not a string"},
@@ -169,6 +172,16 @@ func TestAnUnreadableRoleFrameIsNamedInAFewDozenBytes(t *testing.T) {
 		{"a 1 MiB key with no colon", `{"` + key + `" 1}`, "has no colon after it"},
 		{"a 1 MiB key with a bad escape", `{"` + key + `\q":1}`, "holds a bad escape"},
 		{"a 1 MiB key with no value", `{"` + key + `":}`, "it is missing"},
+		{"a key of 32 0xff bytes with no colon", `{"` + invalid32 + `" 1}`, "has no colon after it"},
+		{"a key of 32 0xff bytes with a bad escape", `{"` + invalid32 + `\q":1}`, "holds a bad escape"},
+		{"a key of 32 0xff bytes whose value has no end", `{"` + invalid32 + `":[`, "an object or array has no end"},
+		{"a key of 1 MiB 0xff bytes with no colon", `{"` + invalid1M + `" 1}`, "has no colon after it"},
+		{"a key of 1 MiB 0xff bytes whose value has no end", `{"` + invalid1M + `":[`, "an object or array has no end"},
+		{"a key of 32 control bytes with no colon", `{"` + control32 + `" 1}`, "has no colon after it"},
+		{"a key of 32 control bytes whose value has no end", `{"` + control32 + `":[`, "an object or array has no end"},
+		{"a key of 32 0xff bytes whose value is a string with no end", `{"` + invalid32 + `":"abc`, "has no end"},
+		{"a key of 1 MiB 0xff bytes whose value is a string with no end", `{"` + invalid1M + `":"abc`, "has no end"},
+		{"a key of 1 MiB control bytes whose value is a string with no end", `{"` + strings.Repeat("\x01", 1<<20) + `":"abc`, "has no end"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			_, err := readRoleFrame([]byte(c.data))

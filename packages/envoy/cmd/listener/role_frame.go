@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/store"
@@ -55,9 +56,9 @@ type roleFrame struct {
 // envelope: the session relay makes this read of every frame it judges, before it reads a claim
 // (sessionRelays.takeOverFrame), so it makes no allocation for each key a frame holds, and reads
 // the others only for a role message it copies. Its error names a field and the JSON type it
-// holds, or a key cut to shownBytes, and never a whole value or key, which can be as long as the
-// message: the kept lane's walk logs it (judgeKeptRoleCopy). The answer is errRoleFrameUnreadable
-// for a message no read can tell a role message or not.
+// holds, or a key quoted and cut to shownChars characters, and never a whole value or key, which
+// can be as long as the message: the kept lane's walk logs it (judgeKeptRoleCopy). The answer is
+// errRoleFrameUnreadable for a message no read can tell a role message or not.
 func readRoleFrame(data []byte) (roleFrame, error) {
 	frame := roleFrame{data: bytes.TrimPrefix(data, utf8BOM)}
 	err := eachTopLevelField(frame.data, func(key, value []byte) {
@@ -104,7 +105,7 @@ func readRoleFrame(data []byte) (roleFrame, error) {
 // missing colon or comma, a value that is missing, an object or array with no end, and text after
 // the object. It checks no more of a value than where it ends, so a value JSON.parse would refuse
 // is kept as its raw text, which the field's own read (fieldText, roleFrame.envelope) refuses in
-// turn. Its error names a key by its first shownBytes bytes and where it starts.
+// turn. Its error names a key by its first shownChars quoted characters and where it starts.
 func eachTopLevelField(data []byte, visit func(key, value []byte)) error {
 	i := skipJSONSpace(data, 0)
 	if i == len(data) || data[i] != '{' {
@@ -252,17 +253,34 @@ func hexDigit(digit byte) (rune, bool) {
 	return 0, false
 }
 
-// shownBytes is how much of a key an error of the read names: a key, like a value, can be as long
-// as the message, and the kept lane's walk logs the error whole (judgeKeptRoleCopy).
-const shownBytes = 32
+// shownChars is how many characters of a key, as an error of the read quotes it, the error holds: a
+// key, like a value, can be as long as the message, and the kept lane's walk logs the error whole
+// (judgeKeptRoleCopy). The bound is on the quoted text, not on the key's bytes: the quote writes a
+// byte that is no UTF-8 or a control byte as four characters (\xff), and a rune it cannot print as
+// up to ten (\U0010ffff).
+const shownChars = 40
 
-// shown is text quoted for an error, cut to its first shownBytes bytes and its length when it is
-// longer.
+// shown is text quoted for an error, with as many of its runes as fit in shownChars quoted
+// characters, whole, followed by its length when the quote holds less than all of it.
 func shown(text []byte) string {
-	if len(text) <= shownBytes {
-		return strconv.Quote(string(text))
+	var quoted strings.Builder
+	quoted.WriteByte('"')
+	i := 0
+	for i < len(text) {
+		_, size := utf8.DecodeRune(text[i:])
+		part := strconv.Quote(string(text[i : i+size]))
+		part = part[1 : len(part)-1]
+		if quoted.Len()-1+len(part) > shownChars {
+			break
+		}
+		quoted.WriteString(part)
+		i += size
 	}
-	return fmt.Sprintf("%q... (%d bytes)", text[:shownBytes], len(text))
+	quoted.WriteByte('"')
+	if i == len(text) {
+		return quoted.String()
+	}
+	return fmt.Sprintf("%s... (%d bytes)", quoted.String(), len(text))
 }
 
 // jsonKey is the key a JSON string token eachTopLevelField took names: its text, with any escape
