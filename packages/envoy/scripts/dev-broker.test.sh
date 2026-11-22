@@ -38,10 +38,12 @@
 # to enrol the same session by, and runs its --github-token example's curl in a shell of its
 # own, so the child expands the name the grant gave it; (i) each instance's broker binds its
 # metrics on a port the kernel picks (BROKER_METRICS_LISTEN_ADDR=127.0.0.1:0), and its banner
-# prints the metrics address that broker logged; and (j) each instance's broker lists that
+# prints the metrics address that broker logged; (j) each instance's broker lists that
 # service login's account as the registrar of its pod's account and of no other
 # (BROKER_POD_REGISTRARS), without which the broker refuses the one registration the script
-# makes, and exits on, 403 POD_REGISTRAR_NOT_LISTED.
+# makes, and exits on, 403 POD_REGISTRAR_NOT_LISTED; and (k) lib/pg-url.sh gives psql a URL
+# without its password and the password, decoded, in PGPASSWORD, so a DEV_BROKER_POSTGRES_URL
+# run's password is in no argument of any call it makes and no line it prints.
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -95,13 +97,19 @@ EOF
 chmod +x "${fake_bin_dir}/docker"
 
 # --- Fake psql, for the DEV_BROKER_POSTGRES_URL runs: records every call to the instance's own
-# call file (the one the fake docker writes), fails `create database` when
+# call file (the one the fake docker writes), and the PGPASSWORD each call was given, one line per
+# call, to DEV_BROKER_TEST_PSQL_PASSWORD_FILE when that is set; fails `create database` when
 # DEV_BROKER_TEST_CREATE_FAILS is set (the name already taken by another run), and answers
 # `select current_database()` with the database the URL in its first argument connects to, as
 # libpq does: a dbname= in the query string wins over the URL's path. ---
 cat >"${fake_bin_dir}/psql" <<'EOF'
 #!/usr/bin/env bash
 printf 'psql %s\n' "$*" >>"${DEV_BROKER_TEST_DOCKER_CALL_FILE:?}"
+if [[ -n "${PGPASSWORD+set}" ]]; then
+  printf 'PGPASSWORD=%s\n' "$PGPASSWORD"
+else
+  printf 'PGPASSWORD unset\n'
+fi >>"${DEV_BROKER_TEST_PSQL_PASSWORD_FILE:-/dev/null}"
 if [[ -n "${DEV_BROKER_TEST_CREATE_FAILS:-}" && "$*" == *"create database"* ]]; then
   echo 'ERROR:  database already exists' >&2
   exit 1
@@ -267,6 +275,115 @@ exit 0
 EOF
 chmod +x "${fake_bin_dir}/curl"
 
+# --- lib/pg-url.sh, the one split every psql call of dev-broker.sh (and of the scripts beside
+# it) goes through. Each case runs the fake psql above through pg_url_run, in a caller whose own
+# PGPASSWORD is a sentinel, and holds it to the arguments and the PGPASSWORD the fake was given,
+# and pg_url_without_password to the URL a banner would print. ---
+# shellcheck source-path=SCRIPTDIR source=lib/pg-url.sh
+. "${project_root}/packages/envoy/scripts/lib/pg-url.sh"
+readonly helper_calls="${temporary_dir}/helper-calls"
+readonly callers_own=the-callers-own-not-a-secret
+helper_case() { # <label> <url> <want URL argument> <want PGPASSWORD line>
+  local label="$1" url="$2" want_url="$3" want_password="$4" got_call got_password shown
+  : >"$helper_calls"
+  : >"${helper_calls}.passwords"
+  PGPASSWORD="$callers_own" PATH="${fake_bin_dir}:${PATH}" DEV_BROKER_TEST_DOCKER_CALL_FILE="$helper_calls" \
+    DEV_BROKER_TEST_PSQL_PASSWORD_FILE="${helper_calls}.passwords" pg_url_run "$url" psql -Atqc 'select 1'
+  got_call="$(<"$helper_calls")"
+  got_password="$(<"${helper_calls}.passwords")"
+  shown="$(pg_url_without_password "$url")"
+  if [[ "$got_call" != "psql ${want_url} -Atqc select 1" || "$got_password" != "$want_password" || "$shown" != "$want_url" ]]; then
+    echo "FAIL: pg_url_run, ${label}: psql got '${got_call}' with ${got_password}, and pg_url_without_password printed '${shown}'; want 'psql ${want_url} -Atqc select 1' with ${want_password}, and '${want_url}'" >&2
+    exit 1
+  fi
+  printf 'PASS: pg_url_run, %s\n' "$label"
+}
+helper_case 'an encoded password: psql gets the URL without it, and the password decoded in PGPASSWORD' \
+  'postgres://tester:not-a-secret%40%2Fw%25rd@127.0.0.1:5999/postgres?sslmode=disable' \
+  'postgres://tester@127.0.0.1:5999/postgres?sslmode=disable' 'PGPASSWORD=not-a-secret@/w%rd'
+helper_case 'a URL with no user and no password: psql gets it whole, and the caller'"'"'s own PGPASSWORD' \
+  'postgres://127.0.0.1:5999/postgres?sslmode=disable' \
+  'postgres://127.0.0.1:5999/postgres?sslmode=disable' "PGPASSWORD=$callers_own"
+helper_case 'a password= in the query string, however its name is encoded: each one is taken out with its &, the last one is in PGPASSWORD, and every other parameter is kept' \
+  'postgres://tester:not-a-secret-userinfo@127.0.0.1:5999/postgres?pass%77ord=not-a-secret-first&sslmode=disable&password=not-a-secret-q%26uery&application_name=a%3Db' \
+  'postgres://tester@127.0.0.1:5999/postgres?sslmode=disable&application_name=a%3Db' 'PGPASSWORD=not-a-secret-q&uery'
+helper_case 'a URL whose user has no password: psql gets it whole, and the caller'"'"'s own PGPASSWORD' \
+  'postgres://tester@127.0.0.1:5999/postgres?sslmode=disable' \
+  'postgres://tester@127.0.0.1:5999/postgres?sslmode=disable' "PGPASSWORD=$callers_own"
+# A password libpq cannot decode is refused before psql runs: libpq would quote it in its error.
+: >"$helper_calls"
+helper_status=0
+PATH="${fake_bin_dir}:${PATH}" DEV_BROKER_TEST_DOCKER_CALL_FILE="$helper_calls" \
+  pg_url_run 'postgres://tester:not-a-secret%zz@127.0.0.1:5999/postgres' psql -Atqc 'select 1' 2>"${helper_calls}.err" || helper_status=$?
+if [[ "$helper_status" -ne 2 || -s "$helper_calls" ]] || grep -qF 'not-a-secret' "${helper_calls}.err" \
+  || ! grep -qF 'refused a Postgres URL: its password holds a % that starts no %XX escape, or %00 (the URL is not printed)' "${helper_calls}.err"; then
+  cat "$helper_calls" "${helper_calls}.err" >&2
+  echo "FAIL: pg_url_run, a password with a % that starts no escape: exited ${helper_status}; want 2, no psql call, and a refusal that names the fault and prints nothing of the URL" >&2
+  exit 1
+fi
+printf 'PASS: pg_url_run, a password with a %% that starts no escape: refused with 2 before psql runs, printing nothing of the URL\n'
+# The shared corpus, fixtures/pg-url.json, which scripts/search-measure/pg_test.py and
+# packages/dispatch/e2e/__tests__/psql-password.test.ts read too, so the three splits are held to
+# one table, each case of which was checked against libpq's own PQconninfoParse. Each accepted
+# case goes through helper_case; each refused one must exit 2 before psql runs, naming its fault
+# and printing nothing of the URL.
+readonly corpus="${project_root}/packages/envoy/scripts/fixtures/pg-url.json"
+corpus_cases=0
+while IFS= read -r -d '' url && IFS= read -r -d '' bare && IFS= read -r -d '' password; do
+  corpus_cases=$((corpus_cases + 1))
+  if [[ "$password" == none ]]; then want="PGPASSWORD=$callers_own"; else want="PGPASSWORD=${password#=}"; fi
+  helper_case "the shared corpus's accepted case ${corpus_cases} (${bare})" "$url" "$bare" "$want"
+done < <(jq -j '.accepted[] | .url, "\u0000", .bare, "\u0000", (if .password == null then "none" else "=" + .password end), "\u0000"' "$corpus")
+while IFS= read -r -d '' url && IFS= read -r -d '' fault; do
+  corpus_cases=$((corpus_cases + 1))
+  : >"$helper_calls"
+  helper_status=0
+  PATH="${fake_bin_dir}:${PATH}" DEV_BROKER_TEST_DOCKER_CALL_FILE="$helper_calls" \
+    pg_url_run "$url" psql -Atqc 'select 1' 2>"${helper_calls}.err" || helper_status=$?
+  if [[ "$helper_status" -ne 2 || -s "$helper_calls" ]] || grep -qF 'not-a-secret' "${helper_calls}.err" ||
+    ! grep -qF "refused a Postgres URL: ${fault} (the URL is not printed)" "${helper_calls}.err"; then
+    cat "$helper_calls" "${helper_calls}.err" >&2
+    echo "FAIL: pg_url_run, the shared corpus's refused case ${corpus_cases} (${fault}): exited ${helper_status}; want 2, no psql call, and a refusal that names the fault and prints nothing of the URL" >&2
+    exit 1
+  fi
+  printf 'PASS: pg_url_run, the shared corpus'"'"'s refused case %d: %s\n' "$corpus_cases" "$fault"
+done < <(jq -j '.refused[] | .url, "\u0000", .fault, "\u0000"' "$corpus")
+if [[ "$corpus_cases" -eq 0 ]]; then
+  echo "FAIL: fixtures/pg-url.json gave no case" >&2
+  exit 1
+fi
+
+# Under xtrace, pg-url.sh traces neither the password nor the URL that holds it. A caller run
+# under bash -x hands pg_url_run and pg_url_without_password a URL whose password is
+# percent-encoded, from its environment; the trace may hold neither the decoded password nor
+# its encoded form, but in the caller's own call lines, which bash traces with their arguments
+# before any function runs. The caller also shows that pg_url_run returned COMMAND's status and
+# that tracing was back on after it.
+readonly trace_dir="${temporary_dir}/xtrace"
+mkdir -p "$trace_dir"
+cat >"${trace_dir}/caller" <<'EOF'
+#!/usr/bin/env bash
+. "$PG_URL_LIB"
+set -x
+stand_in() { return 3; }
+pg_url_run "$TRACE_URL" stand_in -c 'select 1'
+status=$?
+[[ $- == *x* ]] && traced=again
+pg_url_without_password "$TRACE_URL" >/dev/null
+set +x
+printf 'status=%s traced=%s\n' "$status" "${traced:-off}"
+EOF
+trace_said="$(PG_URL_LIB="${project_root}/packages/envoy/scripts/lib/pg-url.sh" \
+  TRACE_URL='postgres://tester:not-a-secret%40%2Ftrace@127.0.0.1:5999/postgres?sslmode=disable' \
+  bash "${trace_dir}/caller" 2>"${trace_dir}/trace")"
+traced_secret="$(grep -n -e 'not-a-secret@/trace' -e 'not-a-secret%40%2Ftrace' "${trace_dir}/trace" |
+  grep -v -E '^[0-9]+:\++ (pg_url_run|pg_url_without_password) ' || true)"
+if [[ "$trace_said" != "status=3 traced=again" || -n "$traced_secret" ]]; then
+  echo "FAIL: pg-url.sh under xtrace: the caller said '${trace_said}' (want 'status=3 traced=again'), and these trace lines hold the password: ${traced_secret:-none}" >&2
+  exit 1
+fi
+printf 'PASS: pg-url.sh under xtrace traces neither the password nor its encoded form, returns COMMAND'"'"'s status and turns tracing back on\n'
+
 # Sets the global instance_pid array (never wrapped in a subshell: the EXIT trap's safety-net
 # kill must see the same variable this assignment updates). The log is emptied here, before the
 # fork, not only by the background job's own redirect: a reused log still holds the previous
@@ -278,9 +395,11 @@ run_instance() {
   local which="$1" log_file="$2" docker_call_file="$3" curl_call_file="$4" postgres_url="${5:-}"
   : >"$log_file"
   : >"$docker_call_file"
+  : >"${docker_call_file}.passwords"
   : >"$curl_call_file"
   PATH="${fake_bin_dir}:${PATH}" DEV_BROKER_POSTGRES_URL="$postgres_url" TMPDIR="$temporary_dir" \
     DEV_BROKER_TEST_DOCKER_CALL_FILE="$docker_call_file" DEV_BROKER_TEST_CURL_CALL_FILE="$curl_call_file" \
+    DEV_BROKER_TEST_PSQL_PASSWORD_FILE="${docker_call_file}.passwords" \
     bash "$driver" >"$log_file" 2>&1 &
   instance_pid[which]=$!
 }
@@ -637,21 +756,54 @@ if [[ "$port1" == "$port2" ]]; then
 fi
 printf 'PASS: two concurrent instances of dev-broker.sh bind two different ports (%s, %s)\n' "$port1" "$port2"
 
+# --- A password DEV_BROKER_POSTGRES_URL carries, here in its query string, reaches psql in
+# PGPASSWORD alone: each of the run's three psql calls (create, the current_database() check,
+# drop) names the server without it, and the fake psql was given it in PGPASSWORD each time. No
+# argument of any call the run made, docker, psql or curl, holds it in either spelling, and no line
+# the run printed does: the banner names the database without it. ---
+password_url='postgres://tester@127.0.0.1:5999/postgres?sslmode=disable&password=not-a-secret%40canary'
+run_instance 1 "$log1" "$docker_calls1" "$curl_calls1" "$password_url"
+if ! wait_for_ready "$log1"; then
+  cat "$log1" >&2
+  echo "FAIL: a DEV_BROKER_POSTGRES_URL run with a password in its query string never reached ready" >&2
+  exit 1
+fi
+kill -TERM "${instance_pid[1]}"
+wait "${instance_pid[1]}" 2>/dev/null || true
+instance_pid[1]=""
+psql_calls="$(grep -c '^psql ' "$docker_calls1" || true)"
+bare_calls="$(grep -c '^psql postgres://tester@127\.0\.0\.1:5999/[a-z0-9_]*?sslmode=disable -' "$docker_calls1" || true)"
+password_calls="$(grep -cxF 'PGPASSWORD=not-a-secret@canary' "${docker_calls1}.passwords" || true)"
+if [[ "$psql_calls" -ne 3 || "$bare_calls" -ne 3 || "$password_calls" -ne 3 ]] || grep -q 'not-a-secret' "$docker_calls1" "$curl_calls1"; then
+  cat "$docker_calls1" "${docker_calls1}.passwords" "$curl_calls1" >&2
+  echo "FAIL: a DEV_BROKER_POSTGRES_URL password must reach each psql call in PGPASSWORD alone, and no argument of any call (${psql_calls} psql calls, ${bare_calls} naming the server without it, ${password_calls} given it in PGPASSWORD; want 3 of each)" >&2
+  exit 1
+fi
+printf 'PASS: a DEV_BROKER_POSTGRES_URL password reaches each of the run'"'"'s psql calls in PGPASSWORD alone, and no argument of any call\n'
+if grep -q 'not-a-secret' "$log1"; then
+  grep 'not-a-secret' "$log1" >&2
+  echo "FAIL: a DEV_BROKER_POSTGRES_URL run printed the password its URL's query string carries" >&2
+  exit 1
+fi
+printf 'PASS: a DEV_BROKER_POSTGRES_URL run prints no line holding the password its URL'"'"'s query string carries\n'
+
 # --- The same two concurrent instances against a Postgres server named by
 # DEV_BROKER_POSTGRES_URL, through the fake psql: each creates, points its broker at, checks and
-# drops only its own database on that server. ---
-admin_url='postgres://tester:s3cret@127.0.0.1:5999/postgres?sslmode=disable'
+# drops only its own database on that server, and every psql call names the server without the
+# URL's password. ---
+admin_url='postgres://tester:not-a-secret%40canary@127.0.0.1:5999/postgres?sslmode=disable'
+admin_url_bare='postgres://tester@127.0.0.1:5999/postgres?sslmode=disable'
 run_instance 1 "$log1" "$docker_calls1" "$curl_calls1" "$admin_url"
 run_instance 2 "$log2" "$docker_calls2" "$curl_calls2" "$admin_url"
-assert_instance_isolated 1 'URL instance 1' "$log1" "$docker_calls1" "$curl_calls1" "psql ${admin_url} -v ON_ERROR_STOP=1 -q"
+assert_instance_isolated 1 'URL instance 1' "$log1" "$docker_calls1" "$curl_calls1" "psql ${admin_url_bare} -v ON_ERROR_STOP=1 -q"
 url_db1="$db"
-assert_instance_isolated 2 'URL instance 2' "$log2" "$docker_calls2" "$curl_calls2" "psql ${admin_url} -v ON_ERROR_STOP=1 -q"
+assert_instance_isolated 2 'URL instance 2' "$log2" "$docker_calls2" "$curl_calls2" "psql ${admin_url_bare} -v ON_ERROR_STOP=1 -q"
 if [[ "$url_db1" == "$db" ]]; then
   echo "FAIL: the two DEV_BROKER_POSTGRES_URL instances minted the same database name ($db)" >&2
   exit 1
 fi
 for log in "$log1" "$log2"; do
-  if grep -q 's3cret' "$log"; then
+  if grep -q 'not-a-secret' "$log"; then
     echo "FAIL: a DEV_BROKER_POSTGRES_URL instance printed the URL's password" >&2
     exit 1
   fi
@@ -669,7 +821,7 @@ if [[ "$refused_status" -eq 0 ]] || ! grep -q "dev-broker: refused: the broker's
   echo "FAIL: a DEV_BROKER_POSTGRES_URL naming dbname=victim must be refused before the broker starts (exit $refused_status)" >&2
   exit 1
 fi
-if [[ -z "$refused_db" ]] || ! grep -qxF "psql ${admin_url}&dbname=victim -v ON_ERROR_STOP=1 -q -c drop database if exists ${refused_db};" "$docker_calls1" || grep -q 'database if exists victim\|database victim' "$docker_calls1"; then
+if [[ -z "$refused_db" ]] || ! grep -qxF "psql ${admin_url_bare}&dbname=victim -v ON_ERROR_STOP=1 -q -c drop database if exists ${refused_db};" "$docker_calls1" || grep -q 'database if exists victim\|database victim' "$docker_calls1"; then
   cat "$docker_calls1" >&2
   echo "FAIL: the refused run must drop its own database ($refused_db) and never touch victim" >&2
   exit 1

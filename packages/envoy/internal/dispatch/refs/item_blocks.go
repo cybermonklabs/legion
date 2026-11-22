@@ -73,6 +73,17 @@ func (kind ItemKind) WindowKind() string {
 	return kind.BlockKind()
 }
 
+// refsHoldBlockLinks is whether an item's own refs rows hold every mention its blocks hold: a
+// comment's and a message's do, since their rows and their blocks are read from the one body,
+// and an ask's do not, since its row holds its question's links alone (itemBlockLinks), so a
+// link written in an option or in the answer is in ask_block_refs and in no refs row of the
+// ask. The out statement of the references read reads the links of an item's blocks from its
+// block mentions table where this is false, and from its refs rows alone where it is true
+// (linksOutQuery).
+func (kind ItemKind) refsHoldBlockLinks() bool {
+	return kind == ItemComment || kind == ItemMessage
+}
+
 // WindowOwnerKey is the owner key of the windows of item itemID: `<kind>/<uuid>`, the id
 // grammar the item's block nodes already use (ParseItemBlockNode), so a window's id reads as
 // `<kind>/<uuid>#<the first block it covers>`.

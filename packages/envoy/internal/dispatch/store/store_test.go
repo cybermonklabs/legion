@@ -245,7 +245,7 @@ func TestMigrateCreatesEmptySchemaAndIsIdempotent(t *testing.T) {
 		"events_ask_answered_by_user",
 		"comments_ask_replies_by_user",
 		"document_blocks_node_id",
-		"block_refs_to",
+		"block_refs_to_source",
 		"block_refs_from_node",
 		"document_block_versions_owed",
 		"block_grammar_owed_enqueued",
@@ -283,11 +283,14 @@ func TestMigrateCreatesEmptySchemaAndIsIdempotent(t *testing.T) {
 	// events_person_words_with_declines instead. Migration 20261114081436 drops
 	// message_deliveries_session_created, 0147's index over a session's sent message deliveries:
 	// the same read takes queued ones too and reads message_deliveries_session_taken instead.
+	// Migration 20261120222733 drops block_refs_to, 0121's index of block_refs' targets on
+	// (to_kind, to_id): block_refs_to_source (20261120222732) keys the same two columns and then
+	// the citing document, so every read block_refs_to served reads through it.
 	assertDatabaseObjectsAbsent(t, ctx, store.Pool, `
 		select indexname
 		from pg_indexes
 		where schemaname = current_schema()
-	`, []string{"asks_open_artifact", "events_person_words", "message_deliveries_session_created"})
+	`, []string{"asks_open_artifact", "events_person_words", "message_deliveries_session_created", "block_refs_to"})
 	assertDatabaseObjects(t, ctx, store.Pool, `
 		select viewname
 		from pg_views

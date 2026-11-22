@@ -174,11 +174,16 @@ command line held, so it needs all three engines downloaded
 node while the same command line without `--ui` runs green.
 
 To point a session at a stack that is already up instead, start one, apply the
-variables it prints, and start the UI in that environment:
+variables it prints, and start the UI in that environment. The file holds the
+stack's `DATABASE_URL` with any password it carries, so it is made for you
+alone: the subshell creates it under `umask 077` and then runs the harness in
+its place, so `$!` is the harness, and a file an earlier run left is removed
+first, since an existing file keeps its mode:
 
 ```bash
 cd packages/dispatch
-bun e2e/harness-up.ts > exports.sh &
+rm -f exports.sh
+(umask 077 && exec bun e2e/harness-up.ts > exports.sh) &
 # wait for its last line, `export DISPATCH_E2E_REUSE_SERVERS=1`, then
 . ./exports.sh
 bunx playwright test --config e2e/playwright.config.ts --ui
@@ -846,6 +851,18 @@ OUTSIDE_EDGE_ADDRESS=192.0.2.10 OUTSIDE_EDGE_ROUTED=routed.txt \
 [`e2e/acceptance/outside-edge-refusals.md`](e2e/acceptance/outside-edge-refusals.md) says what its
 inputs are, how it reads an answer, when a signal ends it, and what its three test files hold;
 `cd packages/dispatch && bun test e2e/__tests__/outside-edge-refusals` runs them.
+
+`e2e/acceptance/outside-agent-tailnet.sh` and `e2e/acceptance/outside-agent-public.sh` are the two
+legs of the outside agent's acceptance: what a person from outside the sign-in domain gets when
+their agents, on their own machine and on the public internet, work with ours through the edge
+origins, and the gate both legs make before a real person from outside is named on an access
+list. The tailnet leg is the one command and runs on a developer box; it starts the public leg
+on a runner on the public internet. `e2e/acceptance/outside-agent-acceptance.md` says how to run
+them, what each row reads, and the controls. `cd packages/dispatch && bun test
+e2e/__tests__/outside-agent-acceptance.test.ts e2e/__tests__/outside-agent-public.test.ts` checks
+that each leg prints `UNKNOWN`, never `PASS`, for a row whose target is absent, and that each leg
+holds its rows to their controls (the public leg's P6, P7, P10 and T5 part; the tailnet leg's T2,
+T3, T5, P7, the sweep, the workflow's inputs and the pins) against stand-ins of what it drives.
 
 ## Acceptance run against the deployed image
 
