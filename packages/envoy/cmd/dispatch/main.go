@@ -1981,14 +1981,17 @@ var searchFillTables = [...]string{"search_text_versions", "search_text_versions
 // statement_timeout in a transaction of its own, so Postgres itself ends a read that waits for a
 // lock on its table (55P03, after searchFillTableLockTimeout) or that runs on for another reason
 // (57014, after searchFillTableStatementTimeout), and no wait is left at the server once the boot
-// moves on. searchFillTableReadTimeout, a second later again, is the client's own bound, for a
-// server that answers nothing: pgx then closes the connection. The reads run one after the other
-// before the server listens, so the boot waits at most searchFillTableLockTimeout for each table a
-// lock holds, and at most searchFillTableReadTimeout for each table whatever happens.
+// moves on. searchFillTableReadTimeout is the client's own bound, for a server that answers
+// nothing; pgx then closes the connection and asks the server to cancel the statement. It also
+// covers taking a connection, which can mean dialling one, so it sits 4 s past the statement
+// timeout: a slow dial still leaves the server's own errors to end the read. The reads run one
+// after the other before the server listens, so the boot waits at most searchFillTableLockTimeout
+// for each table a lock holds, and at most searchFillTableReadTimeout for each table whatever
+// happens.
 const (
 	searchFillTableLockTimeout      = 5 * time.Second
 	searchFillTableStatementTimeout = 6 * time.Second
-	searchFillTableReadTimeout      = 7 * time.Second
+	searchFillTableReadTimeout      = 10 * time.Second
 )
 
 // searchFillTableRows answers the deferral line's fields that say whether each of

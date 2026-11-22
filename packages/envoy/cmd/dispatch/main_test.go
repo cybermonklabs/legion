@@ -2351,11 +2351,11 @@ func TestATableTheKeywordFillDeferralCannotReadDoesNotStopTheBoot(t *testing.T) 
 	}
 }
 
-// A lock on a table the keyword fill writes ends the read at the server, within the lock timeout,
-// and the boot goes on. Another connection holds ACCESS EXCLUSIVE on search_text_versions_fill in
-// a transaction it keeps open for the whole test. searchFillTableRows then gives the cursor's table
-// unknown with Postgres's own lock timeout (55P03), in at least searchFillTableLockTimeout and less
-// than searchFillTableStatementTimeout, and the keyword table still none; once it returned, no
+// A lock on a table the keyword fill writes ends the read at the server, and the boot goes on.
+// Another connection holds ACCESS EXCLUSIVE on search_text_versions_fill in a transaction it keeps
+// open for the whole test. searchFillTableRows then gives the cursor's table unknown with
+// Postgres's own lock timeout (55P03) and the keyword table still none, and a read of the cursor's
+// table alone ends with 55P03 before the client's deadline could end it; once it returned, no
 // backend of the database waits for a lock on the cursor's table, though the lock is still held.
 // A process booted with DISPATCH_SEARCH_FILL=off under the same lock logs the same fields once,
 // then serves: it answers its health check and the registry of live server processes admits it,
@@ -2373,17 +2373,11 @@ func TestALockedKeywordFillTableEndsItsReadAtTheServerAndTheBootGoesOn(t *testin
 	}
 	const fields = `search_text_versions_rows=none search_text_versions_fill_rows=unknown search_text_versions_fill_rows_error=ERROR: canceling statement due to lock timeout (SQLSTATE 55P03)`
 
-	started := time.Now()
-	got := deferralFields(searchFillTableRows(ctx, database.Pool))
-	took := time.Since(started)
-	if got != fields {
+	if got := deferralFields(searchFillTableRows(ctx, database.Pool)); got != fields {
 		t.Errorf("under the lock, the deferral's fields are\n  %s\nwant\n  %s", got, fields)
 	}
-	if took < searchFillTableLockTimeout || took >= searchFillTableStatementTimeout {
-		t.Errorf("under the lock, the reads took %v; want at least the lock timeout, %v, and less than the statement timeout, %v",
-			took.Round(time.Millisecond), searchFillTableLockTimeout, searchFillTableStatementTimeout)
-	}
-	requireNoKeywordFillCursorLockWait(t, database, "after searchFillTableRows returned")
+	requireTheServerEndsTheRead(t, database, "search_text_versions_fill", "55P03")
+	requireNoKeywordFillCursorLockWait(t, database, "after the reads returned")
 
 	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "off"}})
 	process.waitHealthy(t)
@@ -2393,6 +2387,57 @@ func TestALockedKeywordFillTableEndsItsReadAtTheServerAndTheBootGoesOn(t *testin
 		t.Fatalf("the process logged the deferral %d times; want once, holding\n  %s\nin:\n%s", len(lines), want, process.Output.String())
 	}
 	requireNoKeywordFillCursorLockWait(t, database, "after the booted process logged the deferral")
+}
+
+// A read of a table the keyword fill writes that runs on with no lock to wait for is ended by
+// Postgres's statement timeout, and the boot goes on. search_text_versions_fill is replaced with a
+// view whose select sleeps 30 s, past the client's deadline. searchFillTableRows then gives that
+// table unknown with Postgres's own statement timeout (57014) and the keyword table still none,
+// and a read of that table alone ends with 57014 before the client's deadline could end it. A
+// process booted with DISPATCH_SEARCH_FILL=off on that database logs the same fields once, then
+// serves: it answers its health check and the registry of live server processes admits it.
+func TestASlowKeywordFillTableReadEndsAtTheServerAndTheBootGoesOn(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	for _, statement := range []string{
+		`drop table public.search_text_versions_fill`,
+		`create view public.search_text_versions_fill as select 1 as id from pg_sleep(30)`,
+	} {
+		if _, err := database.Pool.Exec(ctx, statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	const fields = `search_text_versions_rows=none search_text_versions_fill_rows=unknown search_text_versions_fill_rows_error=ERROR: canceling statement due to statement timeout (SQLSTATE 57014)`
+	if got := deferralFields(searchFillTableRows(ctx, database.Pool)); got != fields {
+		t.Errorf("with a read that runs on, the deferral's fields are\n  %s\nwant\n  %s", got, fields)
+	}
+	requireTheServerEndsTheRead(t, database, "search_text_versions_fill", "57014")
+
+	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "off"}})
+	process.waitHealthy(t)
+	awaitRegistryAdmission(t, database, process)
+	want := keywordFillDeferredLine + ` search_text_versions_rows=none search_text_versions_fill_rows=unknown search_text_versions_fill_rows_error="ERROR: canceling statement due to statement timeout (SQLSTATE 57014)"`
+	if lines := process.logLines(keywordFillDeferredLine); len(lines) != 1 || !strings.Contains(lines[0], want) {
+		t.Fatalf("the process logged the deferral %d times; want once, holding\n  %s\nin:\n%s", len(lines), want, process.Output.String())
+	}
+}
+
+// requireTheServerEndsTheRead reads table alone, as searchFillTableRows reads each table, and fails
+// the test unless Postgres itself ended the read: an error of the SQLSTATE code, before
+// searchFillTableReadTimeout, the client's own deadline, could end it. It judges the server's end
+// of the read by its error, not by a time that a slow box or a slow dial would stretch.
+func requireTheServerEndsTheRead(t *testing.T, database *store.Store, table, code string) {
+	t.Helper()
+	started := time.Now()
+	_, err := searchFillTableHoldsRow(context.Background(), database.Pool, table)
+	took := time.Since(started)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != code {
+		t.Errorf("the read of %s ended after %v with %v; want Postgres's own error %s", table, took.Round(time.Millisecond), err, code)
+	}
+	if took >= searchFillTableReadTimeout {
+		t.Errorf("the read of %s took %v; want less than the client's deadline, %v", table, took.Round(time.Millisecond), searchFillTableReadTimeout)
+	}
 }
 
 // requireNoKeywordFillCursorLockWait fails the test when a backend of the database waits for a
