@@ -13,7 +13,8 @@ inputs:
     description: >-
       How the action gets Go: `setup-go` (the default) installs Go with actions/setup-go, and
       `path` uses the Go already on PATH, refusing when its release differs from the release
-      packages/envoy/go.mod names. Any other value is refused.
+      packages/envoy/go.mod names. Any other value is refused. GitHub compares the input without
+      regard to case, so `Path` acts as `path`.
     default: 'setup-go'
   path:
     description: >-
@@ -67,24 +68,26 @@ runs:
       run: bash "$GITHUB_ACTION_PATH/check.sh" go-path
 
     # In setup-go mode, setup-go adds a `go` problem matcher; in path mode, the caller's own Go
-    # install registered the same matcher. The runner reads every later line of the job through
-    # it, so a file name or a front-matter value holding `.go: ` (for example
-    # `cmd.go: forged annotation`) would become an error annotation with the author's text. The
-    # action builds only this repository's command and needs no Go matcher, so it removes it.
-    # The runner keeps one matcher per owner, and this removal deletes the `go` matcher for the
-    # rest of the job (README.md, "The Go toolchain").
+    # install may have registered the same matcher (a go.dev archive install does not). The
+    # runner reads every later line of the job through it, so a file name or a front-matter
+    # value holding `.go: ` (for example `cmd.go: forged annotation`) would become an error
+    # annotation with the author's text. The action builds only this repository's command and
+    # needs no Go matcher, so it removes it. The runner keeps one matcher per owner, and this
+    # removal deletes the `go` matcher for the rest of the job (README.md, "The Go toolchain").
     - name: Remove the Go problem matcher
       shell: bash
       run: echo "::remove-matcher owner=go::"
 
     # The Go release for the cache key: `go env GOVERSION` stripped of its `go` prefix, which
-    # is the same form as setup-go's go-version output. It runs after either setup-go or the
-    # go-path check, so the Go on PATH is the one the action builds with.
+    # is the same form as setup-go's go-version output. It reads with GOTOOLCHAIN=local,
+    # GOWORK=off and GOENV=off, the same settings build-envoy-command.sh uses, so the caller's
+    # own GOTOOLCHAIN, go env -w file or workspace cannot change the version.
     - id: go-release
       name: Read the Go release for the cache key
       shell: bash
       run: |
-        v=$(go env GOVERSION)
+        cd "$GITHUB_ACTION_PATH/../../../packages/envoy"
+        v=$(GOTOOLCHAIN=local GOWORK=off GOENV=off go env GOVERSION)
         echo "go-version=${v#go}" >> "$GITHUB_OUTPUT"
 
     # The cache key carries the SHA-256 of this repository's packages/envoy/go.sum at the pinned

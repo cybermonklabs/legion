@@ -24,7 +24,10 @@
 #            then).
 #   go-path  Checks that the Go on PATH is the release packages/envoy/go.mod names. It reads the
 #            toolchain line of go.mod if present, else the go line, and compares with the output
-#            of `go env GOVERSION`. When the two differ, it exits 2 with a line naming both
+#            of `GOTOOLCHAIN=local GOWORK=off GOENV=off go env GOVERSION`, the same settings
+#            build-envoy-command.sh uses, so the caller's own GOTOOLCHAIN, go env -w file or
+#            workspace cannot change the version. It refuses a go line without a patch number
+#            (such as `go 1.27`). When the two differ, it exits 2 with a line naming both
 #            releases and saying to install go.mod's release before the action.
 #
 # build and run need GITHUB_ACTION_PATH and RUNNER_TEMP. run also needs GITHUB_WORKSPACE,
@@ -122,8 +125,18 @@ go_path() {
   fi
   [ -n "$want" ] || refuse "could not read the go or toolchain line from packages/envoy/go.mod"
 
+  # Path mode needs a full release (go1.N.N): a go line without a patch number such as `go 1.27`
+  # gives go1.27, which no release is named.
+  case "$want" in
+    go[0-9]*.[0-9]*.[0-9]*) ;;
+    *) refuse "packages/envoy/go.mod names $want, which is not a full release (such as go1.27.0): path mode needs a full release" ;;
+  esac
+
+  # Read with the build's own settings (GOTOOLCHAIN=local GOWORK=off GOENV=off), the same ones
+  # build-envoy-command.sh uses, so the caller's own GOTOOLCHAIN, go env -w file or workspace
+  # cannot change the version and GOTOOLCHAIN=auto cannot download an unchecked toolchain.
   local got
-  got=$(go env GOVERSION) || refuse "go env GOVERSION failed"
+  got=$(GOTOOLCHAIN=local GOWORK=off GOENV=off go env GOVERSION) || refuse "go env GOVERSION failed"
 
   if [ "$got" != "$want" ]; then
     refuse "the Go on PATH is $got and packages/envoy/go.mod names $want: install $want before the action"

@@ -46,6 +46,7 @@ So a note set that the action accepts is a note set that the server accepts, exc
   It refuses when the release of the Go on `PATH` differs from the release `packages/envoy/go.mod` names: the `toolchain` line if present, else the `go` line, compared with `go env GOVERSION`.
   The refusal names both releases and says to install `go.mod`'s release before the action.
   Any other value stops the action with exit 2 and a line that names the input.
+  GitHub compares the input without regard to case, so `Path` acts as `path`.
 
 - `path`: the notes directory.
   The default is `.dispatch/architecture`.
@@ -145,12 +146,12 @@ It refuses when the release of that Go differs from the release `packages/envoy/
 The refusal names both releases and says to install `go.mod`'s release before the action.
 A caller sets `go: path` when it has already installed a checked Go, for example with a digest-verified download, and wants the action to use that Go rather than installing another.
 
-In both modes, the Go setup adds a problem matcher with the owner `go` that [What the runner reads from the check's lines](#what-the-runner-reads-from-the-checks-lines) describes.
+In setup-go mode, setup-go adds a problem matcher with the owner `go` that [What the runner reads from the check's lines](#what-the-runner-reads-from-the-checks-lines) describes; in path mode, the caller's own Go install may have registered the same matcher (a go.dev archive install does not).
 The action builds only its own command and needs no Go matcher.
 So it removes the `go` matcher right after the Go setup.
 
 The runner keeps one problem matcher for each owner.
-In setup-go mode, the action's own setup-go replaced a `go` matcher an earlier step of the caller's job added; in path mode, the caller's own Go install registered the matcher.
+In setup-go mode, the action's own setup-go replaced a `go` matcher an earlier step of the caller's job added; in path mode, the caller's own Go install may have registered the matcher.
 The removal deletes it for the rest of the job, so a Go compiler error in the steps after the action gets no annotation.
 Put the action in a job of its own, or before the Go setup of the job, which adds the matcher again.
 The job must have no `container:`, as [Runners](#runners) says.
