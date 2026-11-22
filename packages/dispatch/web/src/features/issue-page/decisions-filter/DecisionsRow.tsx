@@ -13,6 +13,7 @@ import {
   pageWordsText,
 } from "../../../theme/classes";
 import { useAgentText } from "../../refs/AgentName";
+import { EditedMark } from "../../refs/PostBody";
 import { DecisionActions, rowActionSelector } from "../DecisionActions";
 import { NodeGlyph } from "../NodeGlyph";
 import {
@@ -459,7 +460,9 @@ function Declined({ by, note }: { by: RowPerson; note: string | undefined }): Re
  * The change a person asked of this decision, under its words (the tester's F6: "the change
  * must be drawn under, or tied to, the decision it changes"): who asked and when, as every
  * author is drawn (R9), what they wrote word for word, and a link to it in the conversation,
- * where it is replied to. The reader's own words carry the ink rule (R34).
+ * where it is replied to. The reader's own words carry the ink rule (R34). A change its author
+ * edited says ` · edited` after the words (`EditedMark`, INFRA-1523, R2), in the page's own
+ * words; a deleted one is no change of the decision (`decisionChanges`) and is not drawn here.
  */
 function Changed({ by, change }: { by: RowPerson; change: DecisionChange }): ReactNode {
   return (
@@ -497,6 +500,7 @@ function Changed({ by, change }: { by: RowPerson; change: DecisionChange }): Rea
         {...authorText}
       >
         {change.body}
+        <EditedMark at={change.editedAt} marks={pageChrome} />
       </p>
     </div>
   );

@@ -332,6 +332,7 @@ test("a decision the reader asked to change leaves the review list and carries t
     body: `Change ${block}, please.`,
     created_at: at,
     deleted_at: null,
+    edited_at: null,
     id,
   });
   const parts = partsOf(
@@ -358,6 +359,7 @@ test("a decision the reader asked to change leaves the review list and carries t
       at: "2026-11-12T09:00:00Z",
       body: "Change asked, please.",
       by: READER_ACTOR,
+      editedAt: null,
       id: "c-new",
       path: `/issues/${KEY}/comments/c-new`,
     },

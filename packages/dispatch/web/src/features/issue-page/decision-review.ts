@@ -37,10 +37,11 @@ import { storedReading } from "./stored-reading";
  * alone cannot, since two decisions can hold the same words.
  */
 
-/** The fields of a comment this module reads. */
+/** The fields of a comment this module reads, and when its author last edited it, which the
+ *  Decisions view draws a Change with (`decisions-parts.ts`'s `DecisionChange`). */
 export type ChangeComment = Pick<
   Comment,
-  "anchor" | "author" | "body" | "created_at" | "deleted_at" | "id"
+  "anchor" | "author" | "body" | "created_at" | "deleted_at" | "edited_at" | "id"
 >;
 
 /** The fields of a decision this module reads. */

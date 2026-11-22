@@ -30,7 +30,7 @@ import { artifactsBySlug } from "../issue-artifacts";
 import type { TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import { OutlineRequestProvider } from "../outline-request";
-import { KEY_REPORTS } from "../page-structure";
+import { KEY_REPORTS, PAGE_CHROME_ATTRIBUTE } from "../page-structure";
 import {
   ANSWER_LINES,
   CONTROL_LABELS,
@@ -226,6 +226,7 @@ function changeOf(block: string, at: string, body: string): Comment {
     author: READER_ACTOR,
     body,
     created_at: at,
+    edited_at: null,
     id: `change-${block}`,
   } as Comment;
 }
@@ -2000,6 +2001,27 @@ test("a decision the reader sent a Change on says so, leaves the review list and
     list.mockRestore();
     text.mockRestore();
   }
+});
+
+// INFRA-1523, R2: a Change its author edited says so after its words, as every surface marks an
+// edited post: the person's words as stored, then ` · edited` in the page's own words
+// (`EditedMark`). A Change nobody edited draws its words and nothing after them.
+test("a Change its author edited draws its words, then · edited, and one nobody edited no mark", async () => {
+  const edited: Comment = {
+    ...changeOf("second", "2026-11-16T09:00:00Z", "Name the read, please."),
+    edited_at: "2026-11-16T09:30:00Z",
+  };
+  const unedited = changeOf("first", "2026-11-16T10:00:00Z", "Keep it shorter.");
+  const view = renderBody({ ...wholeIssue(), comments: [edited, unedited] });
+  const changeWords = (block: string) => rowOf(view, D(block)).querySelector("[data-change-words]");
+  await waitFor(() =>
+    expect(changeWords("second")?.textContent).toBe("Name the read, please. · edited")
+  );
+  const mark = changeWords("second")?.lastElementChild;
+  expect(mark?.textContent).toBe(" · edited");
+  expect(mark?.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+  expect(changeWords("first")?.textContent).toBe("Keep it shorter.");
+  expect(changeWords("first")?.querySelector(`[${PAGE_CHROME_ATTRIBUTE}]`)).toBeNull();
 });
 
 // R2: the view draws four parts. What another person answered is no part of its own: it stands
