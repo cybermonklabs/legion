@@ -11,7 +11,7 @@
  *  Its waits are bounded so it always ends, and no verdict reads them: whatever run this reaper
  *  serves has already ended. */
 import { spawnSync } from "node:child_process";
-import { readFileSync, rmSync } from "node:fs";
+import { readFileSync, rmSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -23,6 +23,10 @@ const named = "e2e/reaper.ts";
 const awaitBoundMs = 120_000;
 /** How long one command may run: a `pg_ctl -w stop` waits up to that same PGCTLTIMEOUT. */
 const commandBoundMs = 120_000;
+/** How long `reap` waits, once the awaited starts have ended, for the files their commands need:
+ *  a hang guard only, for a start that ended before it forked its server, so the file will never
+ *  come. A postmaster writes `postmaster.pid` as one of the first things it does. */
+const needsBoundMs = 30_000;
 
 /** What `reap` signals, reads and runs with. `realCollaborators` are the machine's; the rows of
  *  e2e/__tests__/harness-reaper.test.ts that drive `reap` over a scripted machine pass their own. */
@@ -32,6 +36,8 @@ export interface Collaborators {
   /** `procStat`: when the process with this number started and whether it has ended, or
    *  undefined where no process has the number or there is no `/proc` to say. */
   readonly stat: (pid: number) => ProcStat | undefined;
+  /** Whether a file exists and holds something: a `postmaster.pid` the postmaster has written. */
+  readonly filled: (path: string) => boolean;
   /** Runs one command to its end, and answers why it failed, or undefined when it exited 0. */
   readonly run: (command: readonly string[]) => string | undefined;
   /** One interval between two reads of whether an awaited process still runs. */
@@ -73,7 +79,10 @@ function stillTheOne(machine: Collaborators, pid: number, start: string | undefi
  *     group is still the run's;
  *  2. waits for every awaited process to end - a `pg_ctl -w start` or a `docker run` that was
  *     still under way - so the commands after it find the server it started, rather than racing
- *     it to a data directory or a container name. A number another process holds now is ended;
+ *     it to a data directory or a container name. A number another process holds now is ended.
+ *     Then it waits for every file such an entry `needs`: a `pg_ctl` killed just after it forked
+ *     the postmaster ends before the postmaster has written `postmaster.pid`, which its stop
+ *     reads;
  *  3. runs the commands of each entry, the entries last-added first, as a stack unwinds: a
  *     `pg_ctl stop` before the removal of the run's directory, which was added before any
  *     database in it. */
@@ -122,6 +131,20 @@ export async function reap(
     notes.push(`${key}: process ${pid} still runs after ${awaitBoundMs / 1000} s`);
   }
 
+  const needed = entries.flatMap(([key, { awaits, needs }]) =>
+    awaits === undefined || needs === undefined ? [] : [{ key, needs }]
+  );
+  const missing = () => needed.filter(({ needs }) => !machine.filled(needs));
+  const needsDeadline = machine.now() + needsBoundMs;
+  while (missing().length > 0 && machine.now() < needsDeadline) {
+    await machine.pause();
+  }
+  for (const { key, needs } of missing()) {
+    notes.push(
+      `${key}: ${needs} did not appear within ${needsBoundMs / 1000} s of its start's end`
+    );
+  }
+
   let ran = 0;
   for (const [key, { commands = [] }] of [...entries].reverse()) {
     for (const command of commands) {
@@ -134,6 +157,13 @@ export async function reap(
 }
 
 const realCollaborators: Collaborators = {
+  filled: (path) => {
+    try {
+      return statSync(path).size > 0;
+    } catch {
+      return false;
+    }
+  },
   kill: (pid, signal) => process.kill(pid, signal),
   now: () => Date.now(),
   pause: async () => {

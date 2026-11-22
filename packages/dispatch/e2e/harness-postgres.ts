@@ -33,10 +33,10 @@
  *  With `DISPATCH_E2E_PG_STALL_DIR` set, each provider builds e2e/fsync-stall.c into that
  *  directory and starts every server with it preloaded, at the same path, so a row can make the
  *  disk stop answering (e2e/disk-stall.ts). */
-import { execFile } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { type ChildProcess, execFile, spawn } from "node:child_process";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -268,6 +268,64 @@ function clusterKey(data: string): string {
   return `Postgres ${data}`;
 }
 
+/** How many of a log's last lines a failure quotes. */
+const logTailLines = 20;
+
+/** One process `startLogged` started: its pid, which the reaper is handed, and its end. */
+export interface LoggedStart {
+  readonly pid: number | undefined;
+  /** Settles once the process has exited 0; rejects naming the command, its exit and the last
+   *  lines of its log otherwise. */
+  readonly ended: Promise<void>;
+}
+
+/** Starts `file` with `args`, its stdout and stderr appended to `log`.
+ *
+ *  WHY A FILE AND NOT A PIPE. A process whose output is a pipe this process reads dies of SIGPIPE
+ *  at its next write once this process is gone. `pg_ctl -w start` forks the postmaster and then
+ *  writes "waiting for server to start", so under `execFile` a runner killed while it waited
+ *  left a `pg_ctl` that died right after that fork, before the postmaster had written
+ *  `postmaster.pid`; the reaper, which waits for the start to end, then ran its `pg_ctl stop`
+ *  against no `postmaster.pid` and failed, and the postmaster ran on (measured on
+ *  `b392c07ea1` with each start held 8 s: 1 of 4 runs logged `pg_ctl … stop exited 1: … PID file
+ *  … does not exist`). A file has no reader to lose, so the start runs to its own end however
+ *  this process ends, and the reaper's wait for it is a wait for the server. */
+export function startLogged(
+  file: string,
+  args: readonly string[],
+  log: string,
+  env?: NodeJS.ProcessEnv
+): LoggedStart {
+  const output = openSync(log, "a");
+  let child: ChildProcess;
+  try {
+    child = spawn(file, args, { env, stdio: ["ignore", output, output] });
+  } finally {
+    closeSync(output);
+  }
+  const ended = Promise.withResolvers<void>();
+  const tail = (): string => {
+    try {
+      return readFileSync(log, "utf8").trimEnd().split("\n").slice(-logTailLines).join("\n");
+    } catch {
+      return "";
+    }
+  };
+  child.once("error", (error) => ended.reject(error));
+  child.once("exit", (code, signal) => {
+    if (code === 0) ended.resolve();
+    else {
+      ended.reject(
+        new Error(
+          `\`${[basename(file), ...args].join(" ")}\` exited ${code ?? signal} (${log}): ${tail()}`
+        )
+      );
+    }
+  });
+  ended.promise.catch(() => {});
+  return { ended: ended.promise, pid: child.pid };
+}
+
 /** Starts the cluster in `data`, with its log and its unix socket in `dir`, and returns the port
  *  it serves on. Returns or throws with no postmaster of `data` left running. `server` is the
  *  environment pg_ctl, and so the postmaster, runs with.
@@ -276,7 +334,10 @@ function clusterKey(data: string): string {
  *  this process starts or stops reaches it but a `pg_ctl stop`. That stop is the reaper's from
  *  the moment `pg_ctl start` is under way until a caller's stop has run (`clusterKey`), and while
  *  the start is under way the reaper waits for it to end before it stops anything: a stop that
- *  ran first would find no `postmaster.pid` yet and leave the server the start then finishes. */
+ *  ran first would find no `postmaster.pid` yet and leave the server the start then finishes.
+ *  The start's output goes to `pg_ctl.log` in `dir` (`startLogged` says why), and the reaper is
+ *  told the stop needs `postmaster.pid`: a start that ended without its server writing the file
+ *  (a `pg_ctl` killed with this process's group, after its fork) is followed by a wait for it. */
 async function startCluster(
   bin: string,
   data: string,
@@ -294,17 +355,19 @@ async function startCluster(
     const port = await freePort();
     const options = [`-p ${port}`, "-h 127.0.0.1", `-k ${dir}`, ...started.map((s) => `-c ${s}`)];
     try {
-      const starting = execFileAsync(
+      const starting = startLogged(
         pgCtl,
         ["-D", data, "-l", join(dir, "postgres.log"), "-o", options.join(" "), "-w", "start"],
-        { env: server }
+        join(dir, "pg_ctl.log"),
+        server
       );
       reapIfAbandoned(clusterKey(data), {
-        awaits: starting.child.pid,
+        awaits: starting.pid,
         commands: [stop],
-        start: startTimeOf(starting.child.pid),
+        needs: join(data, "postmaster.pid"),
+        start: startTimeOf(starting.pid),
       });
-      await starting;
+      await starting.ended;
       reapIfAbandoned(clusterKey(data), { commands: [stop] });
       return port;
     } catch (error) {

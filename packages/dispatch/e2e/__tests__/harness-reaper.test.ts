@@ -33,6 +33,7 @@ const makeDirectory = temporaryDirectories("harness-reaper");
 
 const supervisorModule = fileURLToPath(new URL("../local-instance-support.ts", import.meta.url));
 const reaperModule = fileURLToPath(new URL("../harness-reaper.ts", import.meta.url));
+const postgresModule = fileURLToPath(new URL("../harness-postgres.ts", import.meta.url));
 
 /** Whether this machine lists its processes under `/proc`, which a group's hand-over reads. */
 const procfs = existsSync("/proc/self/stat");
@@ -81,18 +82,21 @@ afterEach(() => {
 /** What a starter that is to be killed runs last: it stays up until its stdin ends. */
 const untilKilled = "for await (const _ of process.stdin) {}";
 
-/** Starts a starter that has `spawn`, `Supervisor` and the reaper's module as `reaper` in scope,
- *  runs `body`, which prints one line of JSON first, and answers that line with the starter. The
- *  starter is this very `bun`, named by its path, so a `PATH` of the row's own in `env` decides
- *  which `bun` the reaper is started with and nothing else. */
+/** Starts a starter that has `spawn`, `execFile`, `Supervisor` and the reaper's module as
+ *  `reaper` in scope, and the lines of `imports` above its `body`, runs `body`, which prints one
+ *  line of JSON first, and answers that line with the starter. The starter is this very `bun`,
+ *  named by its path, so a `PATH` of the row's own in `env` decides which `bun` the reaper is
+ *  started with and nothing else. */
 async function startStarter(
   body: string,
-  env: Record<string, string | undefined> = process.env
+  env: Record<string, string | undefined> = process.env,
+  imports: readonly string[] = []
 ): Promise<{ readonly starter: Starter; readonly said: Record<string, number | string> }> {
   const script = [
-    `import { spawn } from "node:child_process";`,
+    `import { execFile, spawn } from "node:child_process";`,
     `import { Supervisor } from ${JSON.stringify(supervisorModule)};`,
     `import * as reaper from ${JSON.stringify(reaperModule)};`,
+    ...imports,
     body,
   ].join("\n");
   const starter = Bun.spawn([process.execPath, "-e", script], {
@@ -379,18 +383,77 @@ test(
   rowLimit("short", "short")
 );
 
+test(
+  "a start begun with startLogged outlives its starter's death, where one begun through execFile dies of SIGPIPE at its next write",
+  async () => {
+    const directory = makeDirectory();
+    const go = join(directory, "go");
+    // Each start waits for the row's go, which comes once its starter is dead, then writes a line
+    // on its stdout, as `pg_ctl -w start` writes "waiting for server to start" after its fork,
+    // and then leaves its mark: the mark is what a start that ran to its end leaves.
+    const startScript = (mark: string) =>
+      `while [ ! -e ${go} ]; do sleep 0.05; done; echo waiting; echo done > ${join(directory, mark)}`;
+    const { said, starter } = await startStarter(
+      `
+      const logged = startLogged("sh", ["-c", ${JSON.stringify(startScript("logged"))}], ${JSON.stringify(join(directory, "logged.log"))});
+      // The control: the same start through execFile, as harness-postgres.ts ran pg_ctl before.
+      const piped = execFile("sh", ["-c", ${JSON.stringify(startScript("piped"))}]);
+      console.log(JSON.stringify({ logged: logged.pid, piped: piped.pid }));
+      ${untilKilled}
+    `,
+      process.env,
+      [`import { startLogged } from ${JSON.stringify(postgresModule)};`]
+    );
+    const logged = Number(said.logged);
+    const piped = Number(said.piped);
+    try {
+      process.kill(starter.pid, "SIGKILL");
+      const code = await beforeDeadline(starter.exited, performance.now() + bounds.short);
+      expect(code, "the starter did not end within the short bound").not.toBe(pastDeadline);
+      writeFileSync(go, "");
+      await eventually("both starts to end", () => !processAlive(logged) && !processAlive(piped));
+      expect(existsSync(join(directory, "piped")), "the control's start outlived its pipe").toBe(
+        false
+      );
+      expect(
+        existsSync(join(directory, "logged")),
+        "startLogged's start died with its starter"
+      ).toBe(true);
+      expect(readFileSync(join(directory, "logged.log"), "utf8")).toBe("waiting\n");
+    } finally {
+      killLeft(logged);
+      killLeft(piped);
+    }
+  },
+  // Three waits the short bound ends: the starter's line, its end, and the two starts' ends.
+  rowLimit("short", "short", "short")
+);
+
 /** A machine `reap` drives in place of this one: every call it makes, in order, in `events`.
  *  `stat` answers for each pid from `table`, given the number of reads of that pid so far; a pid
- *  absent from it names no process. `kill` of a group named in `gone` answers ESRCH. Each `pause`
- *  moves the clock 50 ms on, so a wait that never ends reaches the bound with no real time. */
+ *  absent from it names no process. `filled` answers for each path from `files`, given the number
+ *  of reads of that path so far; a path absent from it is never filled. `kill` of a group named
+ *  in `gone` answers ESRCH. Each `pause` moves the clock 50 ms on, so a wait that never ends
+ *  reaches the bound with no real time. */
 function scripted(
   table: Record<number, (read: number) => ProcStat | undefined>,
-  gone: readonly number[] = []
+  gone: readonly number[] = [],
+  files: Record<string, (read: number) => boolean> = {}
 ) {
   const events: string[] = [];
-  const reads = new Map<number, number>();
+  const reads = new Map<number | string, number>();
+  const readOf = (what: number | string): number => {
+    const read = (reads.get(what) ?? 0) + 1;
+    reads.set(what, read);
+    return read;
+  };
   let clock = 0;
   const machine: Collaborators = {
+    filled: (path) => {
+      const filled = files[path]?.(readOf(path)) ?? false;
+      events.push(`file ${path} ${filled ? "filled" : "absent"}`);
+      return filled;
+    },
     kill: (pid, signal) => {
       events.push(`kill ${pid} ${signal}`);
       if (gone.includes(-pid)) throw Object.assign(new Error("no such process"), { code: "ESRCH" });
@@ -404,9 +467,7 @@ function scripted(
       return command[0] === "docker" ? "exited 1: Error response from daemon" : undefined;
     },
     stat: (pid) => {
-      const read = (reads.get(pid) ?? 0) + 1;
-      reads.set(pid, read);
-      const seen = table[pid]?.(read);
+      const seen = table[pid]?.(readOf(pid));
       events.push(
         `read ${pid} ${seen === undefined ? "absent" : seen.ended ? "ended" : `started ${seen.start}`}`
       );
@@ -523,4 +584,81 @@ test("reap signals no number another process holds now, none no process holds, a
     ],
     ran: 0,
   });
+});
+
+test("reap runs a start's stop only once the file it needs is there, though the start has ended", async () => {
+  // The start, a `pg_ctl` killed just after its fork, has ended; its postmaster writes
+  // `postmaster.pid` by the third read.
+  const { events, machine } = scripted({}, [], { "a/postmaster.pid": (read) => read >= 3 });
+  const reaped = await reap(
+    [
+      [
+        "Postgres a",
+        {
+          awaits: 40,
+          commands: [["pg_ctl", "stop", "a"]],
+          needs: "a/postmaster.pid",
+          start: "400",
+        },
+      ],
+    ],
+    machine
+  );
+  expect(events).toEqual([
+    "read 40 absent",
+    "read 40 absent",
+    "file a/postmaster.pid absent",
+    "file a/postmaster.pid absent",
+    "file a/postmaster.pid filled",
+    "file a/postmaster.pid filled",
+    "run pg_ctl stop a",
+  ]);
+  expect(reaped).toEqual({ awaited: 1, killed: 0, leftAlone: 0, notes: [], ran: 1 });
+});
+
+test("reap names a needed file that never comes, at its bound, runs the commands anyway, and waits for none an entry with no start under way names", async () => {
+  const { events, machine } = scripted({}, [], { "a/postmaster.pid": (read) => read >= 3 });
+  const reaped = await reap(
+    [
+      [
+        "Postgres a",
+        {
+          awaits: 40,
+          commands: [["pg_ctl", "stop", "a"]],
+          needs: "a/postmaster.pid",
+          start: "400",
+        },
+      ],
+      [
+        "Postgres b",
+        {
+          awaits: 41,
+          commands: [["pg_ctl", "stop", "b"]],
+          needs: "b/postmaster.pid",
+          start: "410",
+        },
+      ],
+      // A start that had ended before the kill: the starter took its awaited process off.
+      ["Postgres c", { commands: [["pg_ctl", "stop", "c"]], needs: "c/postmaster.pid" }],
+    ],
+    machine
+  );
+  expect(reaped).toEqual({
+    awaited: 2,
+    killed: 0,
+    leftAlone: 0,
+    notes: ["Postgres b: b/postmaster.pid did not appear within 30 s of its start's end"],
+    ran: 3,
+  });
+  expect(events.filter((event) => event.startsWith("run "))).toEqual([
+    "run pg_ctl stop c",
+    "run pg_ctl stop b",
+    "run pg_ctl stop a",
+  ]);
+  // 30 s of 50 ms pauses, each followed by one read, and the read that names it.
+  expect(events.filter((event) => event === "file b/postmaster.pid absent")).toHaveLength(600 + 2);
+  expect(events.filter((event) => event.startsWith("file c/"))).toEqual([]);
+  expect(events.indexOf("run pg_ctl stop c")).toBeGreaterThan(
+    events.lastIndexOf("file b/postmaster.pid absent")
+  );
 });

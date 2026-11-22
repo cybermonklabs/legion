@@ -57,8 +57,15 @@ export interface Cleanup {
    *  group nothing unless its leader still runs with this start time, and waits for an awaited
    *  process only while it does. */
   readonly start?: string;
-  /** Commands run one after the other, once every group has had its SIGKILL and every awaited
-   *  process has ended: a `pg_ctl stop`, a `docker rm`, the removal of a data directory. */
+  /** A file the awaited start makes and `commands` need: a cluster's `postmaster.pid`, without
+   *  which `pg_ctl stop` finds no server to stop. Once the awaited start has ended, the reaper
+   *  waits for it, bounded, before it runs the commands, and names it where it never comes. A
+   *  start can end before the server it forked has written it: a `pg_ctl` killed with its
+   *  starter's process group just after its fork. */
+  readonly needs?: string;
+  /** Commands run one after the other, once every group has had its SIGKILL, every awaited
+   *  process has ended and every needed file is there: a `pg_ctl stop`, a `docker rm`, the
+   *  removal of a data directory. */
   readonly commands?: readonly (readonly string[])[];
 }
 
