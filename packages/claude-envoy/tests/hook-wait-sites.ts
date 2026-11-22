@@ -407,16 +407,34 @@ export function waitSites(
   }
 
   /** The call's own option `name`: a property of the object literal at `index` (or the last
-   *  object literal argument where `index` is undefined), spreads left out. */
+   *  object literal argument where `index` is undefined), spreads left out. An options argument
+   *  given by the name of a constant holding an object literal (`PS_OPTIONS`) is read as that
+   *  literal. */
   const ownOption = (
     call: ts.CallExpression | ts.NewExpression,
     name: string,
     index?: number,
   ): ts.Expression | undefined => {
-    const args = call.arguments ?? ts.factory.createNodeArray()
+    const literalOf = (
+      argument: ts.Expression | undefined,
+    ): ts.ObjectLiteralExpression | undefined => {
+      if (argument === undefined) return undefined
+      const node = unwrap(argument)
+      if (ts.isObjectLiteralExpression(node)) return node
+      if (!ts.isIdentifier(node)) return undefined
+      const initializer = constInitializer(resolvedSymbol(node))
+      const held = initializer === undefined ? undefined : unwrap(initializer)
+      return held !== undefined && ts.isObjectLiteralExpression(held) ? held : undefined
+    }
+    const args = [...(call.arguments ?? [])]
     const literal =
-      index === undefined ? [...args].reverse().find(ts.isObjectLiteralExpression) : args[index]
-    if (literal === undefined || !ts.isObjectLiteralExpression(literal)) return undefined
+      index === undefined
+        ? args
+            .reverse()
+            .map(literalOf)
+            .find((found) => found !== undefined)
+        : literalOf(args[index])
+    if (literal === undefined) return undefined
     let found: ts.Expression | undefined
     for (const property of literal.properties) {
       if (ts.isPropertyAssignment(property) && property.name.getText() === name)
@@ -540,7 +558,14 @@ export function waitSites(
     const file = relative(realRoot, realpathSync(source.fileName))
     const site = (node: ts.Node, kind: string, boundedBy: WaitSite["boundedBy"]): void => {
       const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1
-      const text = node.getText(source).split("\n")[0]?.trim().slice(0, 120) ?? ""
+      // The whole call with its line breaks folded, so a call laid out over lines reads as it
+      // would on one: no break after an opening bracket or before a closing one, one space else.
+      const text = node
+        .getText(source)
+        .replace(/([([])\s*\n\s*/g, "$1")
+        .replace(/\s*\n\s*([)\]])/g, "$1")
+        .replace(/\s*\n\s*/g, " ")
+        .slice(0, 160)
       sites.push({ file, line, kind, text, boundedBy })
     }
     const visit = (node: ts.Node): void => {

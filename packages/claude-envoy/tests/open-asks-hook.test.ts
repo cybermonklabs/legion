@@ -2022,6 +2022,15 @@ const REVIEWED_WAIT_SITES: readonly {
       "signal this scan traces to AbortSignal.timeout; `init` is that request's own",
   },
   {
+    file: "packages/envoy-client/src/envoy-config.ts",
+    text: 'Bun.spawnSync(["/bin/sh", "-c", command]',
+    count: 1,
+    bound:
+      "the `!` token command's start: its timeout is `commandTimeoutMs(env)` (envoy-config.ts:52), " +
+      "COMMAND_TIMEOUT_MS's 10 s unless a test sets ENVOY_COMMAND_TIMEOUT_MS, which nothing the hook " +
+      "runs under sets; the census's command row holds it at exactly 10 s in the hook's own process",
+  },
+  {
     file: "packages/envoy-client/src/dispatch-cwd.ts",
     text: "execFileAsync(file, args, { cwd, signal })",
     count: 1,
@@ -2172,15 +2181,15 @@ test(
       .find((hook) => hook.args?.at(-1) === "open-asks")?.timeout
     expect(budgetSeconds).toBeGreaterThan(0)
     const sites = waitSites(modules, repositoryRoot, packageTsconfig, (budgetSeconds ?? 0) * 1000)
-    // The scan read the hook's code: the token command's timed start and the read's fetch are in it.
+    // The scan read the hook's code: the read's fetch and the pool identity's are in it, bounded.
     expect(
       sites
         .filter((site) => site.boundedBy !== undefined)
         .map((site) => `${site.file} ${site.kind}`),
     ).toEqual(
       expect.arrayContaining([
-        "packages/envoy-client/src/envoy-config.ts Bun.spawnSync",
         "packages/envoy-client/src/dispatch-http.ts fetch",
+        "packages/cipher-client/src/pool-identity.ts fetch",
       ]),
     )
     const unbounded = sites.filter((site) => site.boundedBy === undefined)
