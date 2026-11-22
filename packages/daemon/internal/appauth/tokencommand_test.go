@@ -911,11 +911,17 @@ func TestTokenModeAWaiterOutlivesTheInitiatorsDeadline(t *testing.T) {
 	}
 }
 
-// Close ends a command still running and waits for it; a later mint is refused.
+// Close ends a command still running and waits for it; a later mint is refused. The command
+// ignores SIGTERM, so it ends only at the SIGKILL Close's stop sends a grace later
+// (procgroup.StopGrace). Its run ends only once the command has exited and been reaped
+// (execTokenCommand's Run), and Close waits for every run (Manager.runs), so the run has ended by
+// the time Close returns. A Close that stopped the command without waiting for it would return a
+// whole grace before that. The row reads the run's end, which Close's wait guarantees, rather than
+// the command's pid, which a quick exit and reap would show gone whether Close waited or not.
 func TestTokenModeCloseEndsARunningCommand(t *testing.T) {
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "pid")
-	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: fmt.Sprintf(`echo $$ >%q; sleep 600`, pidFile)}}, Options{})
+	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: fmt.Sprintf(`trap '' TERM; echo $$ >%q; sleep 600`, pidFile)}}, Options{})
 	if _, err := tokens.Token(endedContext(), Implement, "acme"); !errors.Is(err, ErrCommandPending) {
 		t.Fatalf("Token = %v, want ErrCommandPending", err)
 	}
@@ -923,9 +929,26 @@ func TestTokenModeCloseEndsARunningCommand(t *testing.T) {
 		pid, _ := os.ReadFile(pidFile)
 		return strings.TrimSpace(string(pid)) != ""
 	})
-	closed := make(chan struct{})
-	go func() { tokens.Close(); close(closed) }()
-	testwait.Receive(t, "Close to end the running command", closed)
+	tokens.mu.Lock()
+	run := tokens.commands[leaseScope(false, Implement, "acme")]
+	tokens.mu.Unlock()
+	if run == nil {
+		t.Fatal("no token_command run goes on after the caller past its deadline left")
+	}
+	// Whether the run had ended is read on Close's own goroutine the moment Close returns.
+	ended := make(chan bool, 1)
+	go func() {
+		tokens.Close()
+		select {
+		case <-run.done:
+			ended <- true
+		default:
+			ended <- false
+		}
+	}()
+	if !testwait.Receive(t, "Close to end the running command", ended) {
+		t.Fatal("Close returned before the command it ended had exited: its run was still going")
+	}
 	if _, err := tokens.Token(context.Background(), Implement, "acme"); err == nil || !strings.Contains(err.Error(), "closed") {
 		t.Fatalf("Token after Close = %v, want a refusal", err)
 	}
