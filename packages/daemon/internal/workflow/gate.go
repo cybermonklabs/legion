@@ -1084,7 +1084,7 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 		}
 	}
 	e.logOnCommit(ctx, "workflow: the design gate moved and every phase worker of the tree and the root's architect are told", "issue", key, "tree", root.Tree,
-		"step", string(step), "version", version, "open", open, "exempt", exempt, "told", len(told))
+		"step", string(step), "version", version, "open", open, "told", len(told))
 	return nil
 }
 
