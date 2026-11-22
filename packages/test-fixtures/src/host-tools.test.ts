@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { hostTool, requireHostTools, skipWithout } from "./host-tools";
+import { type HostGateNeeds, hostTool, requireHostTools, skipWithout } from "./host-tools";
 import { temporaryDirectories } from "./temporary-directories";
 
 const makeDirectory = temporaryDirectories("test-fixtures-host-tools");
@@ -83,33 +83,48 @@ test("the warning names the calling file under a path that holds a space", () =>
 });
 
 /**
- * Runs, in a `bun test` of its own, a test file whose rows are declared under `hostGate(needs)`: a
- * gated row, a gated block of two rows, and an ungated row. Each row's body appends its name to a
- * file beside the test, which is read back as `ran`: a gate that declared a row but dropped its
- * body would print the row's pass line and leave no name there. GITHUB_ACTIONS is set to
- * `actions`, or left unset for undefined, and nothing else of this process's environment reaches
- * it but PATH and HOME, so Bun prints each row's own pass, skip or fail line.
+ * The test file gatedRun runs, as constant text: a gated row, a gated block of two rows, and an
+ * ungated row, each of whose bodies appends its own name to the file HOSTGATE_MARKS names. The
+ * module it gates with (HOSTGATE_MODULE) and what the gate needs (HOSTGATE_NEEDS, JSON) are read
+ * from its environment, so no value is spliced into its code.
  */
-function gatedRun(needs: string, actions: string | undefined) {
+const GATED_TEST = `import { test } from "bun:test";
+import { appendFileSync } from "node:fs";
+
+const env = process.env;
+const mark = (name) => () => appendFileSync(env.HOSTGATE_MARKS, name + "\\n");
+// The file lives in a scratch directory, so a static import would need host-tools.ts's path
+// written into this text; it is read from the environment instead.
+const { hostGate } = await import(env.HOSTGATE_MODULE);
+const gate = hostGate(JSON.parse(env.HOSTGATE_NEEDS));
+gate.test("gated row", mark("gated row"));
+gate.describe("gated block", () => {
+  test("first", mark("gated block > first"));
+  test("second", mark("gated block > second"));
+});
+test("ungated row", mark("ungated row"));
+`;
+
+/**
+ * Runs GATED_TEST in a `bun test` of its own under `hostGate(needs)`. Each row's body appends its
+ * name to a file beside the test, which is read back as `ran`: a gate that declared a row but
+ * dropped its body would print the row's pass line and leave no name there. GITHUB_ACTIONS is set
+ * to `actions`, or left unset for undefined, and nothing else of this process's environment
+ * reaches it but PATH, HOME and the file's own three inputs, so Bun prints each row's own pass,
+ * skip or fail line.
+ */
+function gatedRun(needs: HostGateNeeds, actions: string | undefined) {
   const directory = makeDirectory("gated");
   const caller = join(directory, "gated.test.ts");
   const marks = join(directory, "ran.txt");
-  const body = (name: string) =>
-    `() => { appendFileSync(${JSON.stringify(marks)}, ${JSON.stringify(`${name}\n`)}); }`;
-  writeFileSync(
-    caller,
-    `import { test } from "bun:test";\n` +
-      `import { appendFileSync } from "node:fs";\n` +
-      `import { hostGate } from ${JSON.stringify(join(import.meta.dir, "host-tools.ts"))};\n` +
-      `const gate = hostGate(${needs});\n` +
-      `gate.test("gated row", ${body("gated row")});\n` +
-      `gate.describe("gated block", () => { test("first", ${body("gated block > first")}); test("second", ${body("gated block > second")}); });\n` +
-      `test("ungated row", ${body("ungated row")});\n`
-  );
+  writeFileSync(caller, GATED_TEST);
   const run = Bun.spawnSync([process.execPath, "test", caller], {
     env: {
       PATH: process.env["PATH"] ?? "",
       HOME: process.env["HOME"] ?? "",
+      HOSTGATE_MARKS: marks,
+      HOSTGATE_MODULE: join(import.meta.dir, "host-tools.ts"),
+      HOSTGATE_NEEDS: JSON.stringify(needs),
       ...(actions === undefined ? {} : { GITHUB_ACTIONS: actions }),
     },
     stdout: "pipe",
@@ -123,7 +138,7 @@ function gatedRun(needs: string, actions: string | undefined) {
 
 test("hostGate declares bun's own rows where nothing it needs is missing, and runs each one's body, in CI or not", () => {
   for (const actions of [undefined, "true"]) {
-    const r = gatedRun(`{ programs: ["sh"], never: ["sh"] }`, actions);
+    const r = gatedRun({ programs: ["sh"], never: ["sh"] }, actions);
     expect({ actions, code: r.code }).toEqual({ actions, code: 0 });
     for (const row of ["gated row", "gated block > first", "gated block > second", "ungated row"]) {
       expect(r.said).toContain(`(pass) ${row}`);
@@ -137,7 +152,7 @@ test("hostGate declares bun's own rows where nothing it needs is missing, and ru
 });
 
 test("hostGate outside CI skips each gated row, with one warning naming the missing programs and the file", () => {
-  const r = gatedRun(`{ programs: [${JSON.stringify(ABSENT)}, "sh"] }`, undefined);
+  const r = gatedRun({ programs: [ABSENT, "sh"] }, undefined);
   expect(r.code).toBe(0);
   expect(r.said).toContain(
     `Skipped the tests in ${r.caller}. This host does not have: ${ABSENT}. Install what is missing and run the tests again.`
@@ -150,10 +165,7 @@ test("hostGate outside CI skips each gated row, with one warning naming the miss
 });
 
 test("hostGate under GITHUB_ACTIONS fails each gated row by its own name, naming the missing programs, and skips none", () => {
-  const r = gatedRun(
-    `{ programs: [${JSON.stringify(ABSENT)}, ${JSON.stringify(ABSENT_TOO)}] }`,
-    "true"
-  );
+  const r = gatedRun({ programs: [ABSENT, ABSENT_TOO] }, "true");
   expect(r.code).toBe(1);
   expect(r.said).toContain(
     `This test cannot run on this host. This host does not have: ${ABSENT}, ${ABSENT_TOO}. Under GITHUB_ACTIONS a test this machine cannot run fails, never skips.`
@@ -168,7 +180,7 @@ test("hostGate under GITHUB_ACTIONS fails each gated row by its own name, naming
 });
 
 test("hostGate takes the caller's own reason under the same rule", () => {
-  const needs = `{ reason: "This host has no libpq." }`;
+  const needs = { reason: "This host has no libpq." };
   const outside = gatedRun(needs, undefined);
   expect(outside.code).toBe(0);
   expect(outside.said).toContain(`Skipped the tests in ${outside.caller}. This host has no libpq.`);
@@ -181,7 +193,7 @@ test("hostGate takes the caller's own reason under the same rule", () => {
 
 test("hostGate fails each gated row for a missing program of never on any host, naming it", () => {
   for (const actions of [undefined, "true"]) {
-    const r = gatedRun(`{ never: [${JSON.stringify(ABSENT)}] }`, actions);
+    const r = gatedRun({ never: [ABSENT] }, actions);
     expect({ actions, code: r.code }).toEqual({ actions, code: 1 });
     expect(r.said).toContain(
       `This test cannot run on this host. This host does not have: ${ABSENT}, which these tests never skip for. It fails rather than skips.`
