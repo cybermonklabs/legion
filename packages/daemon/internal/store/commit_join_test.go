@@ -224,6 +224,50 @@ func TestAJoinedWriteThatFailsKeepsNeitherItsWritesNorItsHooks(t *testing.T) {
 	}
 }
 
+// A joined write that fails once its own context has ended is still rolled back to its savepoint:
+// the rollback runs on the commit's context, which outlives the joined context by
+// commitReplyBound, so it reaches the server. An outer body that then returns nil commits neither
+// the joined write's row nor its hook. On the joined context alone, pgconn sends no rollback once
+// that context has ended, while the hook is cut, and the outer commit keeps the row without it.
+func TestAJoinedWriteWhoseContextEndedBeforeItsRollbackKeepsNeitherItsRowsNorItsHooks(t *testing.T) {
+	rig := newCommitRig(t)
+	ctx := WithTransactionTracking(context.Background())
+	var hooks joinedHooks
+	innerFails := errors.New("the inner body fails once its context has ended")
+	err := Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := insertProbe(ctx, tx, 1); err != nil {
+			return err
+		}
+		OnCommit(ctx, hooks.hook("A"))
+		joined, cancel := context.WithCancel(ctx)
+		defer cancel()
+		if err := Transact(joined, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+			if _, err := insertProbe(ctx, tx, 2); err != nil {
+				return err
+			}
+			OnCommit(ctx, hooks.hook("B"))
+			cancel()
+			return innerFails
+		}); !errors.Is(err, innerFails) {
+			t.Errorf("the joined Transact = %v, want its body's error", err)
+		}
+		if _, err := insertProbe(ctx, tx, 3); err != nil {
+			return err
+		}
+		OnCommit(ctx, hooks.hook("C"))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Transact = %v, want nil: the outer body swallowed the inner error", err)
+	}
+	if ids := rig.probeIDs(t); !slices.Equal(ids, []int{1, 3}) {
+		t.Fatalf("committed rows = %v, want [1 3]: the joined write whose context ended is rolled back all the same", ids)
+	}
+	if got := hooks.order(); !slices.Equal(got, []string{"A", "C"}) {
+		t.Fatalf("hooks ran %v, want [A C]: the failed joined write's hook is cut", got)
+	}
+}
+
 // A join keeps its outer transaction's options, so a join that asks for others is refused before
 // its body runs: a repeatable-read read joined into a read-committed transaction would lose the
 // snapshot it asked for, and a read-only one would lose PostgreSQL's refusal of its writes.

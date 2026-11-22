@@ -249,9 +249,11 @@ func runWrite(scoped context.Context, scope *commitScope, write func(ctx context
 // join runs write inside the scope's open transaction, on ctx, the scope's own context, under a
 // savepoint of that transaction. A write that fails is rolled back to the savepoint, and the hooks
 // it registered are cut from the scope's list, so an outer body that swallows its error commits
-// neither; its error is returned with the rollback's, if that failed too. A write that succeeds
-// releases the savepoint and keeps its hooks on the scope. A join on another pool, or with another
-// isolation level or access mode than the open transaction's, runs nothing.
+// neither; its error is returned with the rollback's, if that failed too. The rollback runs on the
+// commit's context (commitContext), as TransactWith's does: on ctx alone, a ctx that has ended
+// sends no rollback, and the outer commit would keep the rows whose hooks are cut. A write that
+// succeeds releases the savepoint and keeps its hooks on the scope. A join on another pool, or
+// with another isolation level or access mode than the open transaction's, runs nothing.
 func (s *commitScope) join(ctx context.Context, pool TxPool, options pgx.TxOptions, write func(ctx context.Context, tx pgx.Tx) error) error {
 	if !samePool(s.pool, pool) {
 		return errTransactionOnAnotherPool
@@ -266,7 +268,9 @@ func (s *commitScope) join(ctx context.Context, pool TxPool, options pgx.TxOptio
 	registered := len(s.hooks)
 	if err := write(ctx, savepoint); err != nil {
 		s.hooks = s.hooks[:registered]
-		return errors.Join(err, savepoint.Rollback(ctx))
+		rolling, stop := commitContext(ctx)
+		defer stop()
+		return errors.Join(err, savepoint.Rollback(rolling))
 	}
 	return savepoint.Commit(ctx)
 }
