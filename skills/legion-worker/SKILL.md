@@ -56,7 +56,7 @@ They override this skill, except: no deferrals; the base merged forward only as 
 
 ## References
 
-- You write or edit the PR body, record a result against a check, read another phase's results, or run the simplify pass: `skill://legion-worker/references/pr-body.md`.
+- PR body, a check's result, the simplify pass: `skill://legion-worker/references/pr-body.md`.
 - A check carrying `ci_check`: `skill://legion-worker/references/ci-checks.md`.
 - You review or approve, merge the pull request, or take a look of a closed issue's production check: `skill://legion-worker/references/merge-gate.md`.
 - Review threads, a bot's finding: `skill://legion-worker/references/review-threads.md`.
