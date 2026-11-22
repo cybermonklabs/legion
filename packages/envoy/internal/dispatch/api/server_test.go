@@ -132,6 +132,9 @@ type testServerOptions struct {
 	lifetime context.Context
 	// streamHeartbeat replaces the sockets' fifteen-second heartbeat.
 	streamHeartbeat time.Duration
+	// liveNoPongDeadline has the server's live sockets set no deadline for a page's pong
+	// (server.liveNoPongDeadline); false keeps production's two heartbeats.
+	liveNoPongDeadline bool
 	// takeoverWindow replaces the listener take-over window (Deps.ListenerTakeoverWindow); zero is
 	// testTakeoverWindow. A test proving the window itself passes its own, listenerTakeoverWindow
 	// for the production twelve seconds.
@@ -348,6 +351,11 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		served.agentWatchInterval = options.agentWatchInterval
 	}
 	served.duplicateBound = options.duplicateBound
+	// Only a test that asks for no pong deadline sets it: every other test, the pong rows among them,
+	// runs on the value register gives the server, which is production's own.
+	if options.liveNoPongDeadline {
+		served.liveNoPongDeadline = true
+	}
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a
 	// handler detached from its request, then the sockets, the hub, the relay and the test hooks'
 	// listener. A broadcast's deliveries and a keyed handler outlive the client that started them,

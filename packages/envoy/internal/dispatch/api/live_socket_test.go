@@ -1087,7 +1087,9 @@ func TestHubFramesAreWrittenAheadOfAFullStreamQueue(t *testing.T) {
 // A page that answers each ping keeps its socket, idle, across many heartbeats. The heartbeat is a
 // second, so the page's first pong has a heartbeat to arrive before the pong deadline, two
 // heartbeats after the socket opened, and a loaded runner that delays it most of a heartbeat still
-// meets it. A page that answers no ping, which a short heartbeat ends quickly, is the next test's.
+// meets it. This row checks only that pings keep an answering page's socket open; a socket with no
+// pong deadline at all would pass it too. That the deadline exists, and ends a page that answers no
+// ping, is the next test's (TestAPageThatAnswersNoPingLosesItsSocketWithNoCloseFrame).
 func TestPingsKeepAnIdleSocketOpen(t *testing.T) {
 	const heartbeat = time.Second
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat}, nil)
@@ -1099,8 +1101,8 @@ func TestPingsKeepAnIdleSocketOpen(t *testing.T) {
 	})
 	answering.read()
 
-	// Four heartbeats is twice the pong deadline, so the page still holds its socket only through
-	// its pongs.
+	// Four heartbeats is twice the pong deadline, so a page whose pongs did not count would have
+	// lost its socket by now; that a page answering none does is the next test's.
 	time.Sleep(4 * heartbeat)
 	if !answering.open() {
 		t.Fatalf("an idle page that answers every ping lost its socket: %v", answering.err)

@@ -1728,33 +1728,42 @@ func TestAHubActsOnAnEventOnlyOnceEveryLowerIDIsFinal(t *testing.T) {
 // on it is taken on a goroutine of the generation's own (seedEvents), so the hub is ready at once,
 // answers a page its snapshot and carries a delivery change to it while the transaction is open,
 // and the issue event committed meanwhile reaches the page once the horizon is proven.
+//
+// The transaction is released only after the delta and the retitle, so every frame read before
+// that came while it held the horizon, however slow the machine. A hub that waited on the horizon
+// sends none of them before the release, so each wait is the run's (testwait.Receive) and fails
+// by name. A hold that ended on a 3 s clock, a second's bound on readiness and a check of the time
+// elapsed decided this row by the machine's speed (dispatch://INFRA-3904).
 func TestAFreshHubServesDeliveryChangesWhileATransactionHoldsTheEventHorizon(t *testing.T) {
+	horizontest.UntilTheDeadline(t)
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	rig := hubOn(t, handler, database, deps, newNoonHubClock(), nil)
 	seedHubSettings(t, rig.database)
 	key := createHubIssue(t, rig.handler, map[string]any{"title": "Ship widgets"})
 	upsertPR(t, rig.database, prNaming(1, rig.clock.Now().Add(-3*time.Hour), key))
 
-	const hold = 3 * time.Second
-	heldAt := time.Now()
-	release := holdClusterTransactionID(t, hold)
+	release := holdClusterTransactionID(t)
 	// The page's subscribe starts the hub's generation.
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
 	rig.hub.mu.Lock()
 	ready := rig.hub.generation.ready
 	rig.hub.mu.Unlock()
-	select {
-	case <-ready:
-	case <-time.After(time.Second):
-		t.Fatal("the hub was not ready a second after it started, while a transaction held the event horizon")
+	testwait.Receive(t, "the hub's readiness while a transaction holds the event horizon", ready)
+	frame := testwait.Receive(t, "the snapshot of t while a transaction holds the event horizon", conn.frames)
+	snapshot, ok := frame.(DeliveryLiveSnapshot)
+	if !ok || snapshot.Sub != "t" {
+		raw, _ := json.Marshal(frame)
+		t.Fatalf("frame = %s, want the snapshot of t", raw)
 	}
-	held := conn.snapshot(t, hold, "t").Body
+	held := snapshot.Body
 
 	upsertPR(t, rig.database, hubPR(2, rig.clock.Now().Add(-time.Hour)))
-	delta := conn.delta(t, hold, "t")
-	if elapsed := time.Since(heldAt); elapsed >= hold {
-		t.Fatalf("the delivery change reached the page %s after the transaction began, once its %s hold could have ended", elapsed, hold)
+	frame = testwait.Receive(t, "the delivery change's delta while a transaction holds the event horizon", conn.frames)
+	delta, ok := frame.(DeliveryLiveDelta)
+	if !ok || delta.Sub != "t" {
+		raw, _ := json.Marshal(frame)
+		t.Fatalf("frame = %s, want a delta of t", raw)
 	}
 	if got := liveUpsertIDs(t, delta, "prs"); !slices.Equal(got, []string{"acme/widgets#2"}) {
 		t.Fatalf("the change's delta upserts %v, want acme/widgets#2", got)
@@ -1762,9 +1771,6 @@ func TestAFreshHubServesDeliveryChangesWhileATransactionHoldsTheEventHorizon(t *
 	held = requireLandsOnGET(t, rig.handler, deliveryLiveTimeline, held, delta, "")
 
 	patchHubIssue(t, rig.handler, key, map[string]any{"title": "Ship the widgets"})
-	if elapsed := time.Since(heldAt); elapsed >= hold {
-		t.Fatalf("the retitle committed %s after the transaction began, once its %s hold could have ended", elapsed, hold)
-	}
 	release()
 	delta = conn.eventDelta(t, rig.database, "t")
 	if got := liveMapValues(t, delta, "issue_titles"); got[key] != "Ship the widgets" {

@@ -5,7 +5,6 @@ import (
 	"os"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -67,9 +66,11 @@ func appendOutOfOrder(t *testing.T, database *store.Store, broker *events.Broker
 // holdClusterTransactionID opens a transaction in the test cluster's postgres database and takes
 // a transaction id, as a job in another database or another package's test does. Snapshots are
 // instance-wide, so until it ends no horizon on the cluster proves an observation taken after it
-// began. It commits when release runs or after hold, whichever comes first, and by the time the
-// test ends; release returns once it has.
-func holdClusterTransactionID(t *testing.T, hold time.Duration) (release func()) {
+// began. It commits when release runs, or when the test ends; release returns once it has. It has
+// no hold of its own: a test reads what the server does while the horizon is held, and a hold that
+// ended on a clock would end wherever a loaded machine had got to in the test by then, so the row
+// would either fail for its slowness or stop holding what it reads (dispatch://INFRA-3904).
+func holdClusterTransactionID(t *testing.T) (release func()) {
 	t.Helper()
 	config, err := pgx.ParseConfig(os.Getenv(storetest.DatabaseURLEnv))
 	if err != nil {
@@ -94,12 +95,7 @@ func holdClusterTransactionID(t *testing.T, hold time.Duration) (release func())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		timer := time.NewTimer(hold)
-		defer timer.Stop()
-		select {
-		case <-released:
-		case <-timer.C:
-		}
+		<-released
 		_ = tx.Commit(context.Background())
 		_ = conn.Close(context.Background())
 	}()

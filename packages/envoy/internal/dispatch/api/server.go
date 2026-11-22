@@ -534,6 +534,10 @@ type server struct {
 	// liveWriterBeforePick is each live socket's beforePick (live_socket.go): nil outside tests,
 	// and set by a test before the socket it drives opens.
 	liveWriterBeforePick func(socket *liveSocket, takesStream bool)
+	// liveNoPongDeadline is whether a live socket sets no deadline for its page's pong
+	// (serveLiveSocket): false, production's only value, keeps two heartbeats. A test whose verdict
+	// is not the page's liveness sets it, before any socket opens.
+	liveNoPongDeadline bool
 	// agentWatchInterval is how often an agent view re-arms its session: agentStreamWatchInterval,
 	// which a test replaces.
 	agentWatchInterval time.Duration

@@ -509,6 +509,63 @@ type Watch struct {
 	// -timeout 0), which has no drain to fail on.
 	drain   time.Time
 	current state
+	// untilTheDeadline is whether the watch's test asked for its waits to go on until the drain
+	// whatever the horizon says (UntilTheDeadline): silence ends nothing then.
+	untilTheDeadline bool
+	// probeErr is the error of the watch's latest read of the holder, nil once a read succeeds:
+	// a wait that silence no longer ends reads the holder on every poll, and its failure at the
+	// drain says whether those reads were failing.
+	probeErr error
+}
+
+// untilTheDeadline names every test that called UntilTheDeadline and has not yet ended.
+var untilTheDeadline struct {
+	sync.Mutex
+	tests map[string]bool
+}
+
+// UntilTheDeadline makes every wait on the horizon that t and its subtests make (Wait and Watch,
+// and so WaitInProcess, PollInProcess and AwaitPersisted) go on while the horizon says nothing,
+// until the drain before the run's own deadline, where it fails naming what it waited for: the
+// base bound and the extension window then end no wait, and only a hold of the test's own
+// database past OwnHoldBound, named by a warning or found by the wait's own read of the holder, or
+// the drain do. A run given no deadline (go test -timeout 0) has no drain, and such a wait then has
+// no end, as testwait.Until's has none. It is for a row whose verdict is what arrives, not how
+// soon. A server the machine is merely slow to run says nothing: no transaction holds the horizon
+// back, so it logs no stall warning and the wait's own read finds no holder, and Base would then
+// fail the row for the machine's speed (dispatch://INFRA-3904: api's replaced-log row failed so on
+// a box at load 650-860, and an event of its feed held 3.5 s with nothing holding the horizon fails
+// it the same way). It holds until t ends.
+func UntilTheDeadline(t *testing.T) {
+	t.Helper()
+	name := t.Name()
+	untilTheDeadline.Lock()
+	if untilTheDeadline.tests == nil {
+		untilTheDeadline.tests = map[string]bool{}
+	}
+	untilTheDeadline.tests[name] = true
+	untilTheDeadline.Unlock()
+	t.Cleanup(func() {
+		untilTheDeadline.Lock()
+		delete(untilTheDeadline.tests, name)
+		untilTheDeadline.Unlock()
+	})
+}
+
+// waitsUntilTheDeadline is whether t, or a test t is a subtest of, called UntilTheDeadline.
+func waitsUntilTheDeadline(t *testing.T) bool {
+	untilTheDeadline.Lock()
+	defer untilTheDeadline.Unlock()
+	for name := t.Name(); ; {
+		if untilTheDeadline.tests[name] {
+			return true
+		}
+		parent := strings.LastIndexByte(name, '/')
+		if parent < 0 {
+			return false
+		}
+		name = name[:parent]
+	}
 }
 
 // Querier is what a watch reads the holder through: the pool of the test's own server, or a
@@ -523,7 +580,8 @@ type Querier interface {
 func NewWatch(t *testing.T, warnings func() []Warning, ownDatabase string, probe Querier) *Watch {
 	t.Helper()
 	now := time.Now()
-	watch := &Watch{warnings: warnings, probe: probe, began: now, before: len(warnings()), rose: now, current: state{ownDatabase: ownDatabase}}
+	watch := &Watch{warnings: warnings, probe: probe, began: now, before: len(warnings()), rose: now, current: state{ownDatabase: ownDatabase},
+		untilTheDeadline: waitsUntilTheDeadline(t)}
 	if deadline, ok := t.Deadline(); ok {
 		watch.drain = deadline.Add(-Drain)
 	}
@@ -546,13 +604,19 @@ func (w *Watch) Failure(what string) string {
 	w.observe(now)
 	elapsed := w.current.elapsed.Round(time.Millisecond)
 	if !w.drain.IsZero() && !now.Before(w.drain) {
-		return fmt.Sprintf("%s did not arrive in the %v the run had left; the event horizon's newest stall warning was %s",
+		failure := fmt.Sprintf("%s did not arrive in the %v the run had left; the event horizon's newest stall warning was %s",
 			what, elapsed, w.current.lastText())
+		if w.probeErr != nil {
+			failure += fmt.Sprintf("; the wait's latest read of the instance's holder failed: %v", w.probeErr)
+		}
+		return failure
 	}
 	verdict := verdictOf(w.current)
 	var probed string
 	if (verdict == noSignal || verdict == signalStopped) && w.probe != nil {
-		switch held, found, err := readHolder(w.probe); {
+		held, found, err := readHolder(w.probe)
+		w.probeErr = err
+		switch {
 		case err != nil:
 			probed = fmt.Sprintf("; reading the instance's holder failed too: %v", err)
 		case !found:
@@ -565,6 +629,11 @@ func (w *Watch) Failure(what string) string {
 			w.observe(now)
 			verdict = verdictOf(w.current)
 		}
+	}
+	if w.untilTheDeadline && (verdict == noSignal || verdict == signalStopped) {
+		// Silence ends nothing for this test (UntilTheDeadline): the drain above does, and a holder
+		// of the test's own database the probe found past OwnHoldBound still does (ownHold).
+		return ""
 	}
 	switch verdict {
 	case noSignal:

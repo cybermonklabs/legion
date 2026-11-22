@@ -30,6 +30,14 @@ import (
 // nothing else, which is the whole point -- an in-process fan-out cannot cross between them.
 func secondProcessHandler(t *testing.T, database *store.Store) http.Handler {
 	t.Helper()
+	handler, _ := secondProcess(t, database)
+	return handler
+}
+
+// secondProcess is secondProcessHandler and the server it mounts, for a test that orders its writes
+// against that server's relay (awaitRelayStart) or sets one of its test fields before serving it.
+func secondProcess(t *testing.T, database *store.Store) (http.Handler, *server) {
+	t.Helper()
 	second := storetest.SecondProcess(t, database)
 	broker := events.NewBroker()
 	documentService := docs.New(docs.Deps{Store: second, Events: broker, ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond})
@@ -53,8 +61,9 @@ func secondProcessHandler(t *testing.T, database *store.Store) http.Handler {
 		t.Fatalf("new API dependencies for the second process: %v", err)
 	}
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
-	return mux
+	served := register(mux, t.Context(), deps)
+	t.Cleanup(served.waitBackground)
+	return mux, served
 }
 
 // TestEventCommittedOnAnotherProcessReachesAnOpenEventFeed is what the live feed is for with two

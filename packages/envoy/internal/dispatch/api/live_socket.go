@@ -375,13 +375,15 @@ func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 	defer s.deliveryHub.Close(socket)
 	defer s.endLiveSubscriptions(socket)
 
-	pongWait := 2 * s.deps.StreamHeartbeat
 	conn.SetReadLimit(liveSocketReadLimit)
-	socket.awaitPong(pongWait)
-	conn.SetPongHandler(func(string) error {
+	if !s.liveNoPongDeadline {
+		pongWait := 2 * s.deps.StreamHeartbeat
 		socket.awaitPong(pongWait)
-		return nil
-	})
+		conn.SetPongHandler(func(string) error {
+			socket.awaitPong(pongWait)
+			return nil
+		})
+	}
 	readerDone := make(chan struct{})
 	writerDone := make(chan struct{})
 	go func() {
