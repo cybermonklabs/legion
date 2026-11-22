@@ -561,32 +561,32 @@ type roleOfMessage struct {
 	Role    string `json:"role"`
 }
 
-// role is the role the frame is a role message of, and whether it is one: a frame whose topic is
-// a role's topic (roleOfLaneTopic), which the listener or Dispatch's outbox forwarded to its holder
-// as the role's holder, or whose role mark names a role, which Dispatch's API sent for a route to
-// that role, read in either form (contracts.CanonicalRole), as a claim is keyed by the bare name.
+// role is the role the frame is a role message of, keyed as its claim is (store.RoleClaimKeyOf),
+// and whether it is one: a frame whose topic is a role's topic (roleOfLaneTopic), which the
+// listener or Dispatch's outbox forwarded to its holder as the role's holder, or whose role mark
+// names a role, which Dispatch's API sent for a route to that role, read in either form.
 func (m roleOfMessage) role() (string, bool) {
 	if role, ok := roleOfLaneTopic(m.Topic); ok {
 		return role, true
 	}
 	if m.Role != "" {
-		_, role, _ := contracts.CanonicalRole(m.Role)
+		role := store.RoleClaimKeyOf(m.Role)
 		return role, role != ""
 	}
 	return "", false
 }
 
-// roleOfLaneTopic is the role a role lane's topic names, in its bare form, and whether topic is a
-// role's topic: the one rule the role lane's delivery (resolveRoleForward), the session relay and a
-// takeover pass read a role topic by, since the relay and the pass must read a frame's role as the
-// lane that forwarded it did. The topic names the role in either form (contracts.CanonicalRole);
-// a claim is keyed by the bare name.
+// roleOfLaneTopic is the key of the claim a role lane's topic names (store.RoleClaimKeyOf), and
+// whether topic is a role's topic: the one rule the role lane's delivery (resolveRoleForward), the
+// session relay and a takeover pass read a role topic by, since the relay and the pass must read a
+// frame's role as the lane that forwarded it did. The topic names the role in either form: the
+// key is the bare name, or <project>.<role> for a free-form role under a project.
 func roleOfLaneTopic(topic string) (string, bool) {
 	token, ok := strings.CutPrefix(topic, contracts.RoleTopicPrefix)
 	if !ok || token == "" {
 		return "", false
 	}
-	_, role, _ := contracts.CanonicalRole(token)
+	role := store.RoleClaimKeyOf(token)
 	return role, role != ""
 }
 

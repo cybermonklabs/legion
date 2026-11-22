@@ -1513,7 +1513,7 @@ func TestConfigCheckNamesTheRepositoryCache(t *testing.T) {
 func TestConfigCheckRefusesAnUnknownCapabilityDecision(t *testing.T) {
 	legionState(t)
 	for _, tc := range []struct{ name, extra, want string }{
-		{"a name that is no deployment capability", "capabilities: {decided: {nonsense: \"because\"}}\n", "legion config check: unknown key capabilities.decided.nonsense: a decision may name secrets, model-fallback, resource-limits or pool-capacity\n"},
+		{"a name that is no deployment capability", "capabilities: {decided: {nonsense: \"because\"}}\n", "legion config check: unknown key capabilities.decided.nonsense: a decision may name secrets, model-fallback, resource-limits, pool-capacity or repository-cache-room\n"},
 		{"a blank reason", "capabilities: {decided: {secrets: \"\"}}\n", "legion config check: capabilities.decided.secrets must not be empty\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

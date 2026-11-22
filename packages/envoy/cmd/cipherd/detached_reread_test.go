@@ -40,7 +40,7 @@ func TestStopWaitsForARereadRunAfterItsAnswer(t *testing.T) {
 	detached := &api.Detached{}
 	mux := http.NewServeMux()
 	api.Register(mux, api.Deps{Policy: current, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
-		Detached: detached, NotifyReread: func(context.Context, string) { ran.record(thePeersTold) }})
+		Detached: detached, NotifyReread: func(context.Context, string, []string) { ran.record(thePeersTold) }})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 

@@ -6,9 +6,19 @@
 # hex2 is a byte, 0 to 255, as two lowercase hex digits.
 def hex2: [(. / 16 | floor), (. % 16)] | map(. as $n | "0123456789abcdef"[$n:$n + 1]) | add;
 
+# masked_userinfo is a URL's userinfo, the text between its scheme's // and its host's @, as a line
+# prints it: a user and password as user:***, a token alone as ***.
+def masked_userinfo: if contains(":") then (split(":")[0]) + ":***" else "***" end;
+
 # printable is a text read from outside the gate with each control character written as \x<hh>,
-# so no name a cluster or a bus answers can start or rewrite a line of the gate's own.
-def printable: tostring | gsub("(?<c>[[:cntrl:]])"; "\\x" + (.c | explode[0] | hex2));
+# so no name a cluster or a bus answers can start or rewrite a line of the gate's own, and with the
+# userinfo of each URL in it masked (masked_userinfo), so no line prints a credential a URL carries:
+# a nats CLI error names the server it is connected to by its URL. The userinfo ends at the first
+# @ and holds no / and no comma: a URL prints its userinfo with an @ or a / escaped, and a NATS
+# client splits its servers at commas, so a comma ends one URL of a list.
+def printable: tostring
+  | gsub("(?<s>[A-Za-z][A-Za-z0-9+.-]*://)(?<i>[^\\s/@,]*)@"; "\(.s)\(.i | masked_userinfo)@")
+  | gsub("(?<c>[[:cntrl:]])"; "\\x" + (.c | explode[0] | hex2));
 
 # issue_filter_matches($lead) says whether an issue filter's tokens after the family's prefix match
 # some issue event's name whose tokens are of the classes $lead names ("key", "project") and then an

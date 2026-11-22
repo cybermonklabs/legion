@@ -172,7 +172,7 @@ func cmdGrantRevoke(args []string, stdout, stderr io.Writer) int {
 // another broker identity's grant by falling through to the operator's revoke.
 func grantRevokeInSession(form, grantID string, stdout, stderr io.Writer) int {
 	prefix := "agent-secrets " + form
-	c, failed, err := revokeAsSession(grantID)
+	c, failed, err := revokeAsSession(grantID, stderr)
 	var broker *apiError
 	switch {
 	case failed != nil:
