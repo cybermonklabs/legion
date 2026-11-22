@@ -1,4 +1,4 @@
-import { beforeEach, expect, test } from "bun:test"
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { BROKER_VARIABLES } from "@legion/cipher-client/environment"
@@ -44,7 +44,7 @@ import {
 } from "./channel-session-harness"
 import { FakeNatsServer } from "./fake-nats-server"
 import { isolatePaneEnvironment } from "./pane-environment"
-import { beforeTheGuard, collected, rowStarted } from "./row-deadline"
+import { beforeTheGuard, collected, ROW_GUARD_MS, rowStarted } from "./row-deadline"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 isolatePaneEnvironment()
@@ -829,10 +829,11 @@ const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 // The rows below run the channel server as a child process of its own, with Bun's transpiler cache
 // off (`./transpiler-cache.ts`), and wait for what it answers or does: one that ends first is
 // named with its exit, and an answer or an exit that never comes fails the row by name before its
-// hang guard, the `60_000` each row states (`./row-deadline.ts`). A fixed 20 s decided these rows
+// the hang guard this file sets as its rows' default (`ROW_GUARD_MS`, 120 s, `./row-deadline.ts`). A fixed 20 s decided these rows
 // before: at a load near 1,000 a server that wrote that cache into its empty HOME first had not
 // answered its `initialize` in 20 s.
 beforeEach(rowStarted)
+setDefaultTimeout(ROW_GUARD_MS)
 
 /**
  * Runs the channel server as Claude Code does, in `env.HOME` with `env` as its whole environment:
@@ -962,7 +963,7 @@ test("with CLAUDE_CONFIG_DIR holding no envoy.json the server names the unread o
     `envoy-channel: no envoy.json at ${file}: Dispatch and Envoy are off; ${notice}`,
   )
   expect(exitCode).toBe(0)
-}, 60_000)
+})
 
 test("an envoy.json that turns Envoy off opens no NATS connection and calls no listener, whatever the variables name", async () => {
   let stopBroker: (() => Promise<void>) | undefined
@@ -1003,7 +1004,7 @@ test("an envoy.json that turns Envoy off opens no NATS connection and calls no l
     listener?.stop(true)
     await stopBroker?.()
   }
-}, 60_000)
+})
 
 // The listener's bearer and the NATS seed are resolved once and handed to the client and the
 // connection: a server that dropped either would leave the session unregistered or signed out.
@@ -1107,7 +1108,7 @@ test("the server calls the listener with the file's envoy.token and signs in to 
     listener?.stop(true)
     await stopBroker?.()
   }
-}, 60_000)
+})
 
 /** A listener that answers `GET /v1/sessions` with no session and records every call. */
 function recordingListener(calls: string[]) {
@@ -1174,7 +1175,7 @@ test("with Envoy on and no NATS server the server serves its listener tools with
   } finally {
     listener?.stop(true)
   }
-}, 60_000)
+})
 
 test("a tool call the listener refused because its sender is rate limited answers a result with isError that holds the listener's sentence, and no JSON-RPC error", async () => {
   const sentence =
@@ -1236,7 +1237,7 @@ test("a tool call the listener refused because its sender is rate limited answer
   } finally {
     listener?.stop(true)
   }
-}, 60_000)
+})
 
 test("a refused NATS seed leaves the listener tools on, opens no NATS connection, and says why", async () => {
   let listener: Server<undefined> | undefined
@@ -1283,7 +1284,7 @@ test("a refused NATS seed leaves the listener tools on, opens no NATS connection
     listener?.stop(true)
     await stopBroker?.()
   }
-}, 60_000)
+})
 
 test("a Legion pane takes Aside and Send from the start and gains BTW when its mod connects", () => {
   // The pane's messages go through the bridge's inbox, which needs no mod; the side turn a BTW

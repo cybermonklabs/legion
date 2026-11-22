@@ -8,12 +8,12 @@
 // d-listener-url-userinfo, d-listener-env-userinfo, i-basic-listener-echo and
 // d-listener-url-at-in-password. Put it in packages/claude-envoy/tests/ and run
 // `bun test tests/envoy-send-url.test.ts` in packages/claude-envoy.
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test"
 import { randomBytes } from "node:crypto"
 import { writeFileSync } from "node:fs"
 import * as path from "node:path"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
-import { collected, exitBeforeTheGuard, rowStarted } from "./row-deadline"
+import { collected, exitBeforeTheGuard, ROW_GUARD_MS, rowStarted } from "./row-deadline"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 import { unresolvedNames } from "./unresolved-names"
 
@@ -25,10 +25,11 @@ const tempDir = temporaryDirectories("envoy-send-url")
 const command = path.join(import.meta.dir, "..", "bin", "envoy-send.ts")
 
 // Each row waits for the send to end, and for nothing else; a send that never ends fails the row
-// by name before its hang guard, the `60_000` each row states (`./row-deadline.ts`). A fixed 20 s
+// by name before the hang guard this file sets as its rows' default (`ROW_GUARD_MS`, 120 s, `./row-deadline.ts`). A fixed 20 s
 // decided the 401 row before: its child wrote Bun's transpiler cache into its empty HOME first
 // (`./transpiler-cache.ts`), and at a load of about 900 it had not reached the listener in 20 s.
 beforeEach(rowStarted)
+setDefaultTimeout(ROW_GUARD_MS)
 
 /** Runs envoy-send against `url` as the listener the session's envoy.json names, with `preload`
  *  given to Bun first where set. `ended` is how it ended: its exit code, or the signal that ended
@@ -93,7 +94,7 @@ describe("envoy-send's failure line names no part of the listener URL's user inf
     expect(stderr).toContain("Claude Envoy send failed")
     expect(stderr).not.toContain(user)
     expect(stderr).not.toContain(password)
-  }, 60_000)
+  })
 
   // The host the URL parser reads is the password's tail, under `.invalid`; the send's fetch of it
   // is answered by a stand-in that fails as Bun's resolver does (`unresolved-names.ts`), so the row
@@ -110,5 +111,5 @@ describe("envoy-send's failure line names no part of the listener URL's user inf
     expect(exitCode).toBe(1)
     expect(stderr).toContain("Claude Envoy send failed")
     expect(stderr).not.toContain(secret)
-  }, 60_000)
+  })
 })

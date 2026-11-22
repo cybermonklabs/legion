@@ -2,7 +2,7 @@
 // its NATS credential, which the session's own broker token makes a start can meet) closes the mod
 // link's socket and exits non-zero, and a server whose parent is gone (its stdin at end of file)
 // exits too, rather than living on with its socket bound for a session nobody runs.
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, setDefaultTimeout, test } from "bun:test"
 import { existsSync, realpathSync } from "node:fs"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { createRequire } from "node:module"
@@ -12,6 +12,7 @@ import { natsConnectionOptions } from "@legion/envoy-client/nats-connection"
 import type { Subprocess } from "bun"
 import { resolveModSocketPath } from "../hooks/mod-protocol"
 import { fakeHost } from "./fake-nats-server"
+import { ROW_GUARD_MS } from "./row-deadline"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const require = createRequire(import.meta.url)
@@ -20,6 +21,12 @@ const NATS_PROTOCOL = require.resolve("nats/lib/nats-base-client/protocol.js")
 const NATS_CONNECTION = realpathSync(require.resolve("@legion/envoy-client/nats-connection"))
 /** The dial timeout of the server's NATS dial (`natsDialTimeoutMs`). */
 const DIAL_TIMEOUT_MS = await natsDialTimeoutMs()
+
+// Each row waits on what the server does, with no deadline of its own, so its only bound is a hang
+// guard far above any real duration (`ROW_GUARD_MS`, 120 s, `./row-deadline.ts`). Fixed limits of
+// 20 s and 30 s stood here before, and each row overran its own with its file on one CPU that 200
+// busy loops share, where the rows take what they take.
+setDefaultTimeout(ROW_GUARD_MS)
 /** Each session's home, which is also its `XDG_RUNTIME_DIR`; `mkdtemp` adds six characters. */
 const HOME_PREFIX = "claude-envoy-fatal-"
 
@@ -360,7 +367,7 @@ test("a start the hub refuses closes the mod socket and exits non-zero, naming t
   expect(started.stderr()).not.toContain(hub)
   expect(code).not.toBe(0)
   expect(existsSync(started.socketPath)).toBe(false)
-}, 20_000)
+})
 
 test("a server whose parent is gone exits on its stdin's end of file, its socket removed", async () => {
   // Inbound off: the session runs with no NATS, so nothing but the parent ends it.
@@ -370,7 +377,7 @@ test("a server whose parent is gone exits on its stdin's end of file, its socket
   started.server.stdin.end()
   await started.server.exited
   expect(existsSync(started.socketPath)).toBe(false)
-}, 20_000)
+})
 
 test("a stop asked for while the start waits on a silent hub exits 0, its socket removed", async () => {
   // Admitted, then the hub answers no flush: the start waits, as on a path that dropped after
@@ -388,7 +395,7 @@ test("a stop asked for while the start waits on a silent hub exits 0, its socket
   expect(code, started.stderr()).toBe(0)
   expect(started.stderr()).not.toContain("channel server failed")
   expect(existsSync(started.socketPath)).toBe(false)
-}, 30_000)
+})
 
 /**
  * The mute-hub rows: a stop asked for while the server's first NATS dial waits on a hub that never
@@ -429,7 +436,7 @@ async function stopWhileTheDialWaits(lateMs: number): Promise<void> {
 
 test("a stop asked for while the dial waits on a mute hub exits 0, its socket removed", async () => {
   await stopWhileTheDialWaits(0)
-}, 30_000)
+})
 
 // The same stop from a parent that waits a second longer than the dial's timeout before it sends
 // it. Without the hold, the dial ends at its timeout and is dialed again before the stop comes.
@@ -438,5 +445,5 @@ test(
   async () => {
     await stopWhileTheDialWaits(DIAL_TIMEOUT_MS + 1_000)
   },
-  DIAL_TIMEOUT_MS + 1_000 + 30_000,
+  DIAL_TIMEOUT_MS + 1_000 + ROW_GUARD_MS,
 )

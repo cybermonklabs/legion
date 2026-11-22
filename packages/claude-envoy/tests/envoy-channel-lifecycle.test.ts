@@ -1,21 +1,22 @@
-import { beforeEach, expect, test } from "bun:test"
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { FakeNatsServer } from "./fake-nats-server"
-import { beforeTheGuard, collected, rowStarted } from "./row-deadline"
+import { beforeTheGuard, collected, ROW_GUARD_MS, rowStarted } from "./row-deadline"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
 // The row waits for the server's registration and then for its exit, and decides on what the
 // listener was asked; a server that ends before it registers is named with its exit, and a
-// registration or an exit that never comes fails the row by name before its hang guard, the
-// `60_000` it states (`./row-deadline.ts`). A fixed 20 s decided it before: at a load near 1,000
+// registration or an exit that never comes fails the row by name before
+// the hang guard this file sets as its rows' default (`ROW_GUARD_MS`, 120 s, `./row-deadline.ts`). A fixed 20 s decided it before: at a load near 1,000
 // the server, writing Bun's transpiler cache into its empty HOME first (`./transpiler-cache.ts`),
 // had not registered in 20 s.
 beforeEach(rowStarted)
+setDefaultTimeout(ROW_GUARD_MS)
 
 test("a hangup from the Claude process group deregisters the session before the server exits", async () => {
   // tmux kill-session (and a closing terminal) hang up the whole process group;
@@ -95,4 +96,4 @@ test("a hangup from the Claude process group deregisters the session before the 
     await broker.stop()
     await rm(stateDirectory, { recursive: true, force: true })
   }
-}, 60_000)
+})

@@ -6,7 +6,7 @@
 // in front of the broker refuses the redials until the test opens it (`./reopen-server`). A
 // `/clear` is the handoff file the server polls, which names this test's process, the server's
 // parent.
-import { expect, test } from "bun:test"
+import { beforeEach, expect, test } from "bun:test"
 import { agentStreamControlSubject, legacyAgentSubject } from "@legion/contracts"
 import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
 import { nkeys } from "nats"
@@ -22,6 +22,9 @@ import {
   sessionBroker,
   startReopenServer,
 } from "./reopen-server"
+import { rowStarted, untilTheGuard } from "./row-deadline"
+
+beforeEach(rowStarted)
 
 const SESSION = "ses_reopen"
 const CONTROL = agentStreamControlSubject(SESSION)
@@ -408,6 +411,11 @@ test(
       expect(run.requests).not.toContain(`DELETE /v1/sessions/${SESSION}`)
 
       gate.open()
+      // Until 5 s inside the row's own 600 s guard, not a step's 120 s: on a machine short of CPU
+      // the server's notices to the mod each wait out the product's 30 s for its answer
+      // (`session.message`), and the /clear's re-registration waits behind them. Four of them, with
+      // the whole file on one CPU that 200 busy loops share, took the 120 s this step had, as at
+      // the load near 1,000 where it failed at 122.2 s (dispatch://INFRA-3904).
       await waitFor(
         async () =>
           run.sessions.includes(next) &&
@@ -416,7 +424,7 @@ test(
           stderr().includes(`envoy: session id changed ${SESSION} -> ${next}; re-registered`),
         "the /clear completed on the new connection",
         state,
-        PROCESS_WAIT_MS,
+        untilTheGuard(ROW_TIMEOUT_MS),
       )
       expect(broker.liveConnections).toBe(1)
       expect(run.deliveries[run.sessions.lastIndexOf(next)]).toMatchObject({ consumer: true })

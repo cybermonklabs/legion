@@ -1,4 +1,4 @@
-import { beforeEach, expect, test } from "bun:test"
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { createServer, type Socket } from "node:net"
 import { tmpdir } from "node:os"
@@ -13,13 +13,14 @@ import { PHASE_HOOK_TOOL_NAME } from "../src/legion-phase-hook"
 import { waitFor } from "./channel-session-harness"
 import { FakeNatsServer } from "./fake-nats-server"
 import { connectedToServer } from "./mcp-connect"
-import { rowStarted, untilTheGuard } from "./row-deadline"
+import { ROW_GUARD_MS, rowStarted, untilTheGuard } from "./row-deadline"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 const SESSION = "6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
 
 beforeEach(rowStarted)
+setDefaultTimeout(ROW_GUARD_MS)
 
 async function daemonFixture(name: string): Promise<Record<string, unknown>> {
   const file = resolve(import.meta.dir, "../../contracts/fixtures/daemon-api", name)
@@ -32,7 +33,8 @@ async function daemonFixture(name: string): Promise<Record<string, unknown>> {
 // ready, offers the `legion` tool beside the Envoy tools, advertises the Send (steer) the bridge
 // serves, and hands an Envoy delivery to the inbox. The server runs with Bun's transpiler cache off
 // (`./transpiler-cache.ts`), and each wait on it, its MCP requests included, gives up by name 5 s
-// inside the row's 60 s hang guard (`untilTheGuard`, `./row-deadline.ts`), where a fixed 20 s and
+// inside the row's hang guard, this file's default (`ROW_GUARD_MS`, 120 s; `untilTheGuard`,
+// `./row-deadline.ts`), where a fixed 20 s and
 // 5 s waits stood before: the start that writes that cache into an empty HOME first is what failed
 // the other server rows (`envoy-channel-mcp.test.ts`).
 test("a Legion pane's server registers on its transcript, claims its role, serves the legion tool and delivers through the inbox", async () => {
@@ -296,4 +298,4 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     await broker.stop()
     await rm(root, { recursive: true, force: true })
   }
-}, 60_000)
+})

@@ -2,19 +2,20 @@
  * A wait of a row that starts a child process, which ends on what the child does and fails by name
  * when that never comes, before the row's hang guard does.
  *
- * The guard is the package test script's own `--timeout` (`bun test --timeout=60000`,
- * package.json), `ROW_GUARD_MS`, which the rows that use this module also state as their own
- * limit, a number at each row (Biome formats a `test(…)` call whose last argument is a number as a
- * test call), so a run of the file alone has it too. It is a hang guard and decides no verdict: a
- * wait here gives up `NAMED_BEFORE_GUARD_MS` before it, counted from the row's start
- * (`rowStarted`, which each such file calls from a `beforeEach` of its own), ends the child, and
- * fails naming what it waited for and what the child had written. A child that a loaded machine
- * merely slows takes what it takes up to there.
+ * The guard, `ROW_GUARD_MS`, is a hang guard and decides no verdict: 120 s, far above any real
+ * duration of these rows (the slowest, run with its whole file on one CPU that 200 busy loops
+ * share, took 39.7 s), and the value #4924's `HANG_GUARD_MS` holds. Each file that uses this module
+ * sets it as its rows' default (`setDefaultTimeout(ROW_GUARD_MS)`, which a row's own limit and the
+ * package script's `--timeout` both yield to and from), so the rows state no limit of their own. A
+ * wait here gives up `NAMED_BEFORE_GUARD_MS` before it, counted from the row's start (`rowStarted`,
+ * which each such file calls from a `beforeEach` of its own), ends the child, and fails naming what
+ * it waited for and what the child had written. A child that a loaded machine merely slows takes
+ * what it takes up to there.
  */
 import type { Subprocess } from "bun"
 
-/** The package test script's `--timeout`, each row's hang guard. */
-export const ROW_GUARD_MS = 60_000
+/** Each row's hang guard, which every file that uses this module sets as its rows' default. */
+export const ROW_GUARD_MS = 120_000
 /** How long before the guard a wait here gives up: room for the row's last steps after it and
  *  for its failure to be printed, where Bun's own timeout line would name nothing. */
 export const NAMED_BEFORE_GUARD_MS = 5_000
@@ -44,9 +45,11 @@ export function collected(stream: ReadableStream<Uint8Array>): {
 
 /** The milliseconds left until a wait here gives up, `NAMED_BEFORE_GUARD_MS` before the row's
  *  guard: the deadline to hand a wait that names itself when it gives up (`waitFor`, an MCP
- *  `connect`'s `timeout`), so it fails by its own name where Bun's line would name nothing. */
-export function untilTheGuard(): number {
-  return Math.max(0, rowStartedAt + ROW_GUARD_MS - NAMED_BEFORE_GUARD_MS - performance.now())
+ *  `connect`'s `timeout`), so it fails by its own name where Bun's line would name nothing.
+ *  `guardMs` is the limit the row states, `ROW_GUARD_MS` unless the row states another, such as
+ *  the 600 s of a row that chains whole server steps (`ROW_TIMEOUT_MS`, `./reopen-server.ts`). */
+export function untilTheGuard(guardMs: number = ROW_GUARD_MS): number {
+  return Math.max(0, rowStartedAt + guardMs - NAMED_BEFORE_GUARD_MS - performance.now())
 }
 
 /**

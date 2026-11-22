@@ -4,7 +4,8 @@
  * the clock. It wraps `setTimeout` and `clearTimeout`, `setInterval`, `setImmediate`, `Bun.sleep`,
  * `Bun.sleepSync`, `AbortSignal.timeout`, `Atomics.wait` and `Atomics.waitAsync`; `Bun.spawn`, `Bun.spawnSync` and
  * `Bun.$`; and
- * `Date.now`, `new Date()`, `Date()`, `performance.now`, `process.hrtime` and `Bun.nanoseconds`.
+ * `Date.now`, `new Date()`, `Date()`, `performance.now`, `performance.mark`, `performance.measure`,
+ * `process.hrtime`, `process.uptime` and `Bun.nanoseconds`.
  * When the process exits it writes, to the file `HOOK_TIMED_WAITS` names, a `Census`: one entry per
  * wait above zero and one per start (its kind, its declared bound, when it was made, how it ended,
  * and the line of the hook's code that made it), and how many zero-length timers it armed and how
@@ -37,6 +38,9 @@ export interface TimedWait {
   /** "fired": it ran to its bound; "cleared" or "ended": it ended sooner; "armed": the hook exited
    *  first; "repeating": a `setInterval`, which fired at least once. */
   outcome: "armed" | "fired" | "cleared" | "ended" | "repeating"
+  /** When it took its outcome, on the hook's `performance.now()` (a `setInterval`: when it first
+   *  fired, or was cleared); undefined while it is armed. */
+  endedAt?: number
   /** The frame of the hook's code that made it: the first one outside this file and Bun's own. */
   readonly at: string
 }
@@ -47,6 +51,11 @@ export interface Census {
   /** `setTimeout` or `setInterval` with no delay above zero, and `setImmediate`. */
   readonly zeroLengthTimers: number
   readonly clockReads: number
+  /** When the process exited, on the hook's `performance.now()`. */
+  readonly exitedAt: number
+  /** The CPU time the hook's process had used at its exit, over all its threads, user and system
+   *  together (`process.cpuUsage()`), in milliseconds. */
+  readonly cpuMs: number
 }
 
 const record = process.env["HOOK_TIMED_WAITS"]
@@ -67,6 +76,10 @@ if (record !== undefined && record !== "") {
       (frame) => !frame.includes(here) && /\(?\/[^():]+:\d+:\d+\)?$/.test(frame.trim()),
     )
     return own?.trim() ?? "unknown"
+  }
+  const ended = (wait: TimedWait, outcome: TimedWait["outcome"]): void => {
+    wait.outcome = outcome
+    wait.endedAt ??= now()
   }
   const made = (kind: string, ms: number, command?: string): TimedWait => {
     const wait: TimedWait = {
@@ -113,7 +126,7 @@ if (record !== undefined && record !== "") {
     }
     const wait = made("setTimeout", delay)
     const timer = realSetTimeout(() => {
-      wait.outcome = "fired"
+      ended(wait, "fired")
       handler(...rest)
     }, ms)
     byTimer.set(timer, wait)
@@ -121,7 +134,10 @@ if (record !== undefined && record !== "") {
   }) as unknown as typeof setTimeout
   globalThis.clearTimeout = ((timer: Parameters<typeof clearTimeout>[0]) => {
     const wait = byTimer.get(timer)
-    if (wait?.outcome === "armed") wait.outcome = "cleared"
+    if (wait !== undefined && (wait.outcome === "armed" || wait.outcome === "repeating")) {
+      wait.outcome = "cleared"
+      wait.endedAt = now()
+    }
     realClearTimeout(timer)
   }) as typeof clearTimeout
   globalThis.setInterval = ((
@@ -132,19 +148,34 @@ if (record !== undefined && record !== "") {
     const delay = Number(ms ?? 0)
     if (!(delay > 0)) counts.zeroLengthTimers++
     const wait = made("setInterval", delay)
-    return realSetInterval(() => {
-      wait.outcome = "repeating"
+    const interval = realSetInterval(() => {
+      // A repeating timer ends when it is cleared, not when it first fires.
+      if (wait.outcome === "armed") wait.outcome = "repeating"
       handler(...rest)
     }, ms)
+    byTimer.set(interval, wait)
+    return interval
   }) as unknown as typeof setInterval
+  const realClearInterval = globalThis.clearInterval
+  globalThis.clearInterval = ((timer: Parameters<typeof clearInterval>[0]) => {
+    const wait = byTimer.get(timer)
+    if (wait !== undefined && (wait.outcome === "armed" || wait.outcome === "repeating")) {
+      wait.outcome = "cleared"
+      wait.endedAt = now()
+    }
+    realClearInterval(timer)
+  }) as typeof clearInterval
   const realSetImmediate = globalThis.setImmediate
   globalThis.setImmediate = ((...args: Parameters<typeof setImmediate>) => {
     counts.zeroLengthTimers++
     return realSetImmediate(...args)
   }) as unknown as typeof setImmediate
 
-  // Every read of the clock the hook's code can make: Date.now, a Date made with no argument or
-  // Date() called, performance.now, process.hrtime and its bigint, and Bun.nanoseconds.
+  // Every read of the clock the hook's code can make through the process's own clocks: Date.now, a
+  // Date made with no argument or Date() called, performance.now, performance.mark and
+  // performance.measure, process.hrtime and its bigint, process.uptime, and Bun.nanoseconds. What
+  // reads time some other way (os.uptime, an Intl format given no date, a file's times) is not
+  // counted: a poll on it shows as the CPU it burns (`cpuMs`) or the timers it arms.
   const RealDate = Date
   const countedNow = (): number => {
     counts.clockReads++
@@ -166,6 +197,21 @@ if (record !== undefined && record !== "") {
   performance.now = () => {
     counts.clockReads++
     return now()
+  }
+  const realMark = performance.mark.bind(performance)
+  performance.mark = ((...args: Parameters<typeof performance.mark>) => {
+    counts.clockReads++
+    return realMark(...args)
+  }) as typeof performance.mark
+  const realMeasure = performance.measure.bind(performance)
+  performance.measure = ((...args: Parameters<typeof performance.measure>) => {
+    counts.clockReads++
+    return realMeasure(...args)
+  }) as typeof performance.measure
+  const realUptime = process.uptime.bind(process)
+  process.uptime = () => {
+    counts.clockReads++
+    return realUptime()
   }
   const realHrtime = process.hrtime
   process.hrtime = Object.assign(
@@ -190,14 +236,14 @@ if (record !== undefined && record !== "") {
   Bun.sleep = ((ms: number | Date) => {
     const wait = made("Bun.sleep", typeof ms === "number" ? ms : ms.getTime() - realDateNow())
     return realSleep(ms).then(() => {
-      wait.outcome = "fired"
+      ended(wait, "fired")
     })
   }) as typeof Bun.sleep
   const realSleepSync = Bun.sleepSync
   Bun.sleepSync = ((ms: number) => {
     const wait = made("Bun.sleepSync", ms)
     realSleepSync(ms)
-    wait.outcome = "fired"
+    ended(wait, "fired")
   }) as typeof Bun.sleepSync
 
   const realAbortTimeout = AbortSignal.timeout
@@ -205,7 +251,7 @@ if (record !== undefined && record !== "") {
     const wait = made("AbortSignal.timeout", ms)
     const signal = realAbortTimeout.call(AbortSignal, ms)
     signal.addEventListener("abort", () => {
-      wait.outcome = "fired"
+      ended(wait, "fired")
     })
     return signal
   }
@@ -217,7 +263,7 @@ if (record !== undefined && record !== "") {
     const bounded = typeof timeout === "number" && Number.isFinite(timeout) && timeout > 0
     const wait = made("Atomics.wait", bounded ? timeout : -1)
     const answer: string = Reflect.apply(realAtomicsWait, Atomics, args)
-    wait.outcome = answer === "timed-out" ? "fired" : "ended"
+    ended(wait, answer === "timed-out" ? "fired" : "ended")
     return answer
   }) as typeof Atomics.wait
 
@@ -232,7 +278,7 @@ if (record !== undefined && record !== "") {
       args,
     )
     void Promise.resolve(answer.value).then((settled) => {
-      wait.outcome = settled === "timed-out" ? "fired" : "ended"
+      ended(wait, settled === "timed-out" ? "fired" : "ended")
     })
     return answer
   }) as typeof Atomics.waitAsync
@@ -243,7 +289,7 @@ if (record !== undefined && record !== "") {
     const wait = made("Bun.spawn", timeout, command)
     const child: Subprocess = Reflect.apply(realSpawn, Bun, args)
     void child.exited.then(() => {
-      wait.outcome = timeout > 0 && child.signalCode !== null ? "fired" : "ended"
+      ended(wait, timeout > 0 && child.signalCode !== null ? "fired" : "ended")
     })
     return child
   }) as typeof Bun.spawn
@@ -252,7 +298,7 @@ if (record !== undefined && record !== "") {
     const { command, timeout } = startOf(args)
     const wait = made("Bun.spawnSync", timeout, command)
     const result: SyncSubprocess = Reflect.apply(realSpawnSync, Bun, args)
-    wait.outcome = result.exitedDueToTimeout === true ? "fired" : "ended"
+    ended(wait, result.exitedDueToTimeout === true ? "fired" : "ended")
     return result
   }) as typeof Bun.spawnSync
   Bun.$ = new Proxy(Bun.$, {
@@ -264,12 +310,19 @@ if (record !== undefined && record !== "") {
           : Array.isArray(strings) && typeof strings[0] === "string"
             ? strings[0]
             : ""
-      made("Bun.$", -1, text.trim().split(/\s+/)[0] ?? "unknown").outcome = "ended"
+      ended(made("Bun.$", -1, text.trim().split(/\s+/)[0] ?? "unknown"), "ended")
       return Reflect.apply(target, thisArg, args)
     },
   })
 
   process.on("exit", () => {
-    writeFileSync(record, JSON.stringify({ waits, ...counts }))
+    const cpu = process.cpuUsage()
+    const census: Census = {
+      waits,
+      ...counts,
+      exitedAt: now(),
+      cpuMs: Math.round((cpu.user + cpu.system) / 1000),
+    }
+    writeFileSync(record, JSON.stringify(census))
   })
 }
