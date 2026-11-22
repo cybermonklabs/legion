@@ -157,7 +157,7 @@ func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
 	// runs it against the database its server already migrated. This test gives it a database of
 	// its own and brings it to Dispatch's schema first, through a subcommand that migrates and then
 	// finds nothing to do on an empty database.
-	dispatchDSN := testdb.Database(t, "legion_intake_redelivered_dispatch")
+	dispatchDSN := testdb.PlainDatabase(t, "legion_intake_redelivered_dispatch")
 	home := t.TempDir()
 	migrate := exec.Command(binaries.dispatch, "backfill-block-ids")
 	migrate.Dir = home

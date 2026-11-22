@@ -628,7 +628,7 @@ func TestTheComposedPushingPromptsPinTheReadOfThePullRequestHead(t *testing.T) {
 		"once the branch has an open pull request",
 		"an empty one when your work is complete",
 		"tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
-		"The merger pushes nothing, so this step never falls to it; it reports a mismatch it sees to the architect.",
+		"The merger pushes only a merge of the base forward, and makes this read after that push as any role does",
 	}
 	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
 		claim.RoleReviewer, claim.RoleMerger} {

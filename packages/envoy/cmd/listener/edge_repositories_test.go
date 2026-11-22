@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
@@ -286,44 +287,104 @@ func TestAClearAfterAHandoverLeavesTheMarkOfALaterWithheldEvent(t *testing.T) {
 // (repositoryGapWriteTimeout) while the session bucket does not answer them, whatever the relay
 // run's own context allows, so a bucket that stops answering holds the session's frames no longer
 // than that: the mark's write is then the error, on which the relay gives the withheld event back
-// (giveBackWithheld), and the clear's is logged. Here the bucket's read of the session's entry
-// stalls until the test ends. The row's minute decides nothing at the head: it only ends the wait
-// for a write with no deadline. The relays' writes are every listener's, so the row passes with
-// edge mode off by design. Control: with both written under the relay run's context, which has no
-// deadline (noteRepositoryGap and repositoryGapSent before this row), the mark's write is still
-// waiting a minute later and the row fails.
+// (giveBackWithheld), and the clear's is logged. The mark and the clear each read the entry from
+// the stream's leader (session.SessionRegistry.SetRepositoryGap and ClearRepositoryGap), a read no
+// bucket handle carries, and then write it back, so a bucket can stop answering at either step:
+//   - the entry's conditional write stalls until the test ends (stalledSessionEntryKV), with the
+//     leader's read answering;
+//   - the leader's read stalls: the session bucket's handle reads the stream through a connection
+//     to a server that has stopped answering (testnats.Server.Freeze), with the bucket's own reads
+//     and writes answering.
+//
+// Each must end within its own bound, well before bus.RequestTimeout, the bound a read of the stream
+// with no deadline of its own takes, so the row tells the relay's own bound from the handle's. The
+// relays' writes are every listener's, so the row passes with edge mode off by design. Control: with
+// both written under the relay run's context, which has no deadline (noteRepositoryGap and
+// repositoryGapSent before this row), the stalled write never ends and the stalled leader read ends
+// only at bus.RequestTimeout, and both subtests fail.
 func TestARelaysGapMarkWritesEndWhileTheSessionBucketDoesNotAnswer(t *testing.T) {
-	rig := newEdgeRig(t)
-	const sessionID = "ses_edge_gap_unanswered"
-	requireStatus(t, rig.subscribe(t, rig.personToken(sessionID, "PRIV"), sessionID), http.StatusOK, "the registration")
-	// The clear reads the bucket only for an entry this listener's copy holds marked.
-	if err := rig.deps.sessions.SetRepositoryGap(t.Context(), sessionID, "an-earlier-mark"); err != nil {
-		t.Fatalf("mark %s's entry: %v", sessionID, err)
+	// The row's limit lies between the relay's own bound and a read's own, so it can tell them apart
+	// only while the first is the shorter: a bound raised past bus.RequestTimeout would otherwise set
+	// a limit as long as the bound it guards.
+	if repositoryGapWriteTimeout >= bus.RequestTimeout {
+		t.Fatalf("repositoryGapWriteTimeout is %s, not under bus.RequestTimeout (%s): the relay's gap writes are bounded no tighter than a read with no deadline of its own", repositoryGapWriteTimeout, bus.RequestTimeout)
 	}
-	released := make(chan struct{})
-	t.Cleanup(func() { close(released) })
-	swapSessionBucket(t, rig.deps.sessions, func(kv natsgo.KeyValue) natsgo.KeyValue {
-		return stalledSessionGetKV{KeyValue: kv, key: sessionID, released: released}
-	})
-	ends := func(what string, write func()) {
-		t.Helper()
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			write()
-		}()
-		select {
-		case <-done:
-		case <-time.After(time.Minute):
-			t.Fatalf("%s while the session bucket does not answer is still waiting a minute later: it holds the session's frames for as long as the bucket does not answer", what)
-		}
+	for _, stall := range []struct {
+		name string
+		// apply makes the session bucket stop answering the step the subtest names, for sessionID.
+		apply func(t *testing.T, rig *edgeRig, sessionID string)
+	}{
+		{"the entry's write", func(t *testing.T, rig *edgeRig, sessionID string) {
+			released := make(chan struct{})
+			t.Cleanup(func() { close(released) })
+			swapSessionBucket(t, rig.deps.sessions, func(kv natsgo.KeyValue) natsgo.KeyValue {
+				return stalledSessionEntryKV{stalledSessionGetKV{KeyValue: kv, key: sessionID, released: released}}
+			})
+		}},
+		{"the stream leader's read", func(t *testing.T, rig *edgeRig, _ string) {
+			server, uri := testnats.Start(t)
+			frozen, err := jetstream.New(testnats.Connect(t, uri))
+			if err != nil {
+				t.Fatalf("a jetstream context on the server that stops answering: %v", err)
+			}
+			t.Cleanup(server.Freeze(t))
+			swapSessionHandle(t, rig.deps.sessions, func(old bus.KeyValue) bus.KeyValue {
+				return bus.NewKeyValue(old.Legacy(), old.WatchHandle(), frozen)
+			})
+		}},
+	} {
+		t.Run(stall.name, func(t *testing.T) {
+			rig := newEdgeRig(t)
+			const sessionID = "ses_edge_gap_unanswered"
+			requireStatus(t, rig.subscribe(t, rig.personToken(sessionID, "PRIV"), sessionID), http.StatusOK, "the registration")
+			// The clear reads the bucket only for an entry this listener's copy holds marked.
+			if err := rig.deps.sessions.SetRepositoryGap(t.Context(), sessionID, "an-earlier-mark"); err != nil {
+				t.Fatalf("mark %s's entry: %v", sessionID, err)
+			}
+			stall.apply(t, rig, sessionID)
+			// Each write must end well before bus.RequestTimeout: halfway between that and the
+			// relay's own bound, so a write the relay's bound ends passes with seconds to spare, and
+			// one only a read's own bound ends fails with seconds to spare.
+			within := (repositoryGapWriteTimeout + bus.RequestTimeout) / 2
+			ends := func(what string, write func()) {
+				t.Helper()
+				done := make(chan struct{})
+				started := time.Now()
+				go func() {
+					defer close(done)
+					write()
+				}()
+				select {
+				case <-done:
+					t.Logf("%s ended after %s", what, time.Since(started).Round(time.Millisecond))
+				case <-time.After(within):
+					t.Fatalf("%s while %s does not answer is still waiting after %s, past its own bound (%s): it holds the session's frames as long as the bucket does not answer, or until a read's own bound (%s)",
+						what, stall.name, within, repositoryGapWriteTimeout, bus.RequestTimeout)
+				}
+			}
+			var markErr error
+			ends("the relay's mark of a withheld event", func() { _, markErr = rig.relays.noteRepositoryGap(t.Context(), sessionID) })
+			if !errors.Is(markErr, context.DeadlineExceeded) {
+				t.Errorf("the relay's mark of a withheld event while %s does not answer ended with %v, want its deadline", stall.name, markErr)
+			}
+			ends("the relay's clear of the mark a frame carried", func() { rig.relays.repositoryGapSent(t.Context(), sessionID, "an-earlier-mark") })
+		})
 	}
-	var markErr error
-	ends("the relay's mark of a withheld event", func() { _, markErr = rig.relays.noteRepositoryGap(t.Context(), sessionID) })
-	if !errors.Is(markErr, context.DeadlineExceeded) {
-		t.Errorf("the relay's mark of a withheld event while the session bucket does not answer ended with %v, want its deadline", markErr)
+}
+
+// stalledSessionEntryKV is stalledSessionGetKV whose conditional write of key does not answer
+// either until released is closed, as a bucket that stopped answering the entry's reads and
+// writes; every other call is the bucket's own.
+type stalledSessionEntryKV struct {
+	stalledSessionGetKV
+}
+
+func (kv stalledSessionEntryKV) Update(key string, value []byte, last uint64) (uint64, error) {
+	if key != kv.key {
+		return kv.stalledSessionGetKV.Update(key, value, last)
 	}
-	ends("the relay's clear of the mark a frame carried", func() { rig.relays.repositoryGapSent(t.Context(), sessionID, "an-earlier-mark") })
+	<-kv.released
+	return 0, errors.New("the session bucket's write of the entry never answered")
 }
 
 // A gap mark another relay of the session writes on the entry while this listener's relay run is

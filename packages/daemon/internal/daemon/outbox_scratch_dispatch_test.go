@@ -430,10 +430,11 @@ type scratchDispatch struct {
 }
 
 // startScratchDispatchOn gives the server a scratch database of its own on the test DSN's
-// Postgres (testdb.Database) and starts the cmd/dispatch this process built.
+// Postgres (testdb.PlainDatabase: a child process reads it) and starts the cmd/dispatch this
+// process built.
 func startScratchDispatchOn(t *testing.T, options scratchDispatchOptions) *scratchDispatch {
 	t.Helper()
-	database := testdb.Database(t, "dispatch_scratch_test")
+	database := testdb.PlainDatabase(t, "dispatch_scratch_test")
 	root := options.root
 	if root == "" {
 		root = filepath.Join("..", "..", "..", "..")
