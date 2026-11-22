@@ -164,6 +164,36 @@ type issueResultsQuery struct {
 	At string `query:"at"`
 }
 
+// changeRequestQuery is GET /api/v1/issues/{key}/change-request's query.
+type changeRequestQuery struct {
+	// Version is the version of the issue's spec to read, a whole number from 1; absent it is the
+	// latest. Any other value is 400 INVALID_VERSION, and one the spec does not hold 404
+	// VERSION_NOT_FOUND.
+	Version int `query:"version"`
+	// Head picks the final list the conclusion is judged against: the newest recorded at this
+	// commit, 40 lowercase hex characters (400 INVALID_HEAD otherwise). Absent, it is the newest
+	// final list at any head.
+	Head string `query:"head"`
+}
+
+// changeRequestEndingQuery is GET /api/v1/issues/{key}/change-request/ending's query.
+type changeRequestEndingQuery struct {
+	// Head is the commit that would land, 40 lowercase hex characters; it is required, and a
+	// missing or malformed one is 400 INVALID_HEAD.
+	Head string `query:"head"`
+}
+
+// outcomeRecordsQuery is GET /api/v1/issues/{key}/outcomes's query: each member narrows the
+// records to those that hold it.
+type outcomeRecordsQuery struct {
+	// PullRequest is owner/repo#number (400 INVALID_PULL_REQUEST otherwise).
+	PullRequest string `query:"pull_request"`
+	// Head is a commit, 40 lowercase hex characters (400 INVALID_HEAD otherwise).
+	Head string `query:"head"`
+	// List is author, reviewer or final (400 INVALID_LIST otherwise).
+	List string `query:"list" enum:"author,reviewer,final"`
+}
+
 // deliveryPipelineQuery is GET /api/v1/delivery/pipeline's query.
 type deliveryPipelineQuery struct {
 	// At fixes the day the seven-day Pipeline window ends on, RFC3339; absent it is now.
@@ -599,6 +629,18 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/projects/{key}/spec/{owner}/{repo}/nodes/{id}": {Status: http.StatusOK, Response: model.SpecNodeRead{}},
 	"POST /api/v1/issues/{key}/spec-import-level": {
 		Status: http.StatusOK, Response: model.SpecLevelImport{}, Request: importLevelInput{},
+	},
+	"GET /api/v1/issues/{key}/change-request": {
+		Status: http.StatusOK, Response: model.ChangeRequestRead{}, Params: changeRequestQuery{},
+	},
+	"GET /api/v1/issues/{key}/change-request/ending": {
+		Status: http.StatusOK, Response: model.ChangeRequestEnding{}, Params: changeRequestEndingQuery{},
+	},
+	"POST /api/v1/issues/{key}/outcomes": {
+		Status: http.StatusCreated, Response: model.SpecOutcomeRecord{}, Request: recordOutcomesInput{},
+	},
+	"GET /api/v1/issues/{key}/outcomes": {
+		Status: http.StatusOK, Response: []model.SpecOutcomeRecord{}, Params: outcomeRecordsQuery{},
 	},
 	// The architecture read answers architectureTreeRead, whose components carry the prose's
 	// tree, so the row names that read: the document describes the body the handler sends, and

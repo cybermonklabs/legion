@@ -349,6 +349,30 @@ export const SpecRequestStaleEventPayloadSchema = z.strictObject({
 
 export type SpecRequestStaleEventPayload = z.output<typeof SpecRequestStaleEventPayloadSchema>;
 
+/**
+ * `spec.outcomes_recorded`: a list of the outcomes of a pull request's head was recorded for the
+ * issue (`POST /api/v1/issues/{key}/outcomes`): the author's list, the reviewer's own list, or the
+ * reviewer's final list, which the ending of a change request that proposes nothing is judged by.
+ * Appended on the issue (so it is published on
+ * `notifications.dispatch.issue.<KEY>.spec.outcomes_recorded`) with the recording actor, in the
+ * record's own transaction. `record` is the record's id, and `outcomes` how many outcomes the list
+ * holds; a reader fetches the record for the outcomes themselves. Strict: the Go writer
+ * (`SpecOutcomesRecordedEventPayload` in `packages/envoy/internal/dispatch/model`) emits exactly
+ * these fields.
+ */
+export const SpecOutcomesRecordedEventPayloadSchema = z.strictObject({
+  issue: z.string(),
+  record: z.number().int().positive(),
+  pull_request: z.string(),
+  head: z.string(),
+  list: z.enum(["author", "reviewer", "final"]),
+  outcomes: z.number().int().nonnegative(),
+});
+
+export type SpecOutcomesRecordedEventPayload = z.output<
+  typeof SpecOutcomesRecordedEventPayloadSchema
+>;
+
 export const childStatusEventPayloadFields = {
   child_key: z.string(),
   from: z.string(),

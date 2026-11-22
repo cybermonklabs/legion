@@ -124,6 +124,8 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return `Deployed by run ${event.payload.run_id}`;
     case "spec.request_stale":
       return `Approval refused: the approved spec changed ${event.payload.statements.map((node) => node.id).join(", ")} after the change request was written; write it again and request approval`;
+    case "spec.outcomes_recorded":
+      return `Recorded the ${event.payload.list} list of outcomes of ${event.payload.pull_request} at ${event.payload.head.slice(0, 7)} (${event.payload.outcomes} ${event.payload.outcomes === 1 ? "outcome" : "outcomes"})`;
     case "handoff.recorded":
       return `Recorded the ${event.payload.phase} handoff, version ${event.payload.version}`;
     case "artifact.created":

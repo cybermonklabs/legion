@@ -108,6 +108,8 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `deployed ${event.payload.repo}#${event.payload.number} to production (run ${event.payload.run_id})`;
     case "spec.request_stale":
       return `could not approve the change request: the approved spec changed ${event.payload.statements.map((node) => node.id).join(", ")} after it was written`;
+    case "spec.outcomes_recorded":
+      return `recorded the ${event.payload.list} list of ${event.payload.pull_request} at ${event.payload.head.slice(0, 7)}: ${event.payload.outcomes} ${event.payload.outcomes === 1 ? "outcome" : "outcomes"}`;
     case "handoff.recorded":
       return `recorded the ${event.payload.phase} handoff, version ${event.payload.version}`;
     case "artifact.created":

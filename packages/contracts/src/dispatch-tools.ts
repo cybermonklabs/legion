@@ -9,6 +9,7 @@ import {
   PROJECT_NAME_MAX,
 } from "./dispatch-api-limits";
 import { LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST } from "./legion-roles";
+import { parseOutcomeLines } from "./spec-outcomes";
 import type { SchemaApi, SchemaNode, ToolArgumentsShape } from "./tool-schema";
 
 export interface DispatchToolSpec {
@@ -832,6 +833,32 @@ const projectKeyValidation: NonNullable<DispatchToolSpec["validation"]> = {
  *  managed user's login ends in `_<shortcode>` (`mona-cat_octo`): the server saves a source in
  *  such an account, and a refusal here would leave it saved and never synced. */
 const ARCHITECTURE_SOURCE_REPO_PATTERN = /^[A-Za-z0-9_-]+\/(?!\.\.?$)[A-Za-z0-9._-]+$/;
+
+/** A full commit id as Dispatch takes a pull request's head: 40 lowercase hex characters, the
+ *  rule the outcome routes and the ending of a change request hold it to (`INVALID_HEAD`). */
+const COMMIT_SHA_PATTERN = /^[0-9a-f]{40}$/;
+
+const OUTCOMES_RULE =
+  "A record names pull_request, head and list beside body, and each nonblank line of body is one outcome. head is 40 lowercase hex characters.";
+
+/** What `dispatch outcomes` refuses before it sends: a head that is no commit, a record that names
+ *  no pull request, head or list, and a line Dispatch would refuse (`parseOutcomeLines`). */
+function outcomesProblem(value: unknown): string | undefined {
+  const { pull_request, head, list, body } = value as {
+    readonly pull_request?: unknown;
+    readonly head?: unknown;
+    readonly list?: unknown;
+    readonly body?: unknown;
+  };
+  if (head !== undefined && !(typeof head === "string" && COMMIT_SHA_PATTERN.test(head))) {
+    return "head is not a commit: give the 40 lowercase hex characters of the pull request's head.";
+  }
+  if (body === undefined) return undefined;
+  if (typeof pull_request !== "string" || typeof head !== "string" || typeof list !== "string") {
+    return "A record names pull_request, head and list beside body.";
+  }
+  return typeof body === "string" ? parseOutcomeLines(body).problem : undefined;
+}
 
 /** Issue lifecycle statuses the Dispatch server accepts (`model.IssueStatuses`), in lifecycle order. */
 export const ISSUE_STATUSES = [
@@ -2618,6 +2645,103 @@ export const dispatchToolSpecs = [
         .string()
         .describe("The level's notes document, by its name or slug, such as notes.md."),
     }),
+    strict: true,
+  },
+  {
+    name: "dispatch_outcomes",
+    example: {
+      issue: "<KEY>",
+      pull_request: "acme/app#12",
+      head: "0123456789abcdef0123456789abcdef01234567",
+      list: "final",
+      body:
+        "(restored) A second payment of one order is refused again.\n" +
+        "(requires a-bill-names-its-order) The refusal names the order.\n",
+    },
+    description:
+      "Record or read the lists of outcomes of a pull request's head on an issue. An outcome is " +
+      "one thing the change makes different for a caller. With body, it records one list. List " +
+      "author is the author's list. List reviewer is the reviewer's own list: write it before you " +
+      "read the author's list. List final is the reviewer's final list, and the ending of the " +
+      "change request is judged by it. body holds one outcome per nonblank line: `(requires " +
+      "<statement-id>) <text>` for an outcome that an approved statement requires, `(restored) " +
+      "<text>` for an outcome that the change restores for the conclusion's statement, or " +
+      "`<text>` for an outcome that no approved statement covers. An empty body records an empty " +
+      "list. Write the list to a file outside your workspace and give it with --body-file (- reads " +
+      "stdin). Each list is a new record; the newest final list at a head is the final list of " +
+      "that head. Dispatch refuses an author's reviewer or final list (403 " +
+      "OUTCOME_LIST_BY_AUTHOR), a reviewer's author list (403 OUTCOME_LIST_BY_REVIEWER), a final " +
+      "list before an author list of the pull request (409 OUTCOME_AUTHOR_LIST_FIRST), and a " +
+      "final list before the reviewer's own list at that head (409 OUTCOME_REVIEWER_LIST_FIRST). " +
+      "Without body, it prints each list recorded for the issue, oldest first: the list, the pull " +
+      "request, the head, who recorded it and when, then each outcome in the line form; " +
+      `pull_request, head and list narrow it. ${ISSUE_REFERENCE}`,
+    arguments: (z) => ({
+      issue: z.string().describe(ISSUE_REFERENCE),
+      pull_request: z
+        .string()
+        .describe(
+          "The pull request whose head the list is of, owner/repo#number. A record needs it; a read takes it as a filter."
+        )
+        .optional(),
+      head: z
+        .string()
+        .describe(
+          "The 40-character lowercase hex commit the list is of. A record needs it; a read takes it as a filter."
+        )
+        .optional(),
+      list: z
+        .enum(["author", "reviewer", "final"])
+        .describe(
+          "Whose list: author, reviewer or final. A record needs it; a read takes it as a filter."
+        )
+        .optional(),
+      body: z
+        .string()
+        .describe(
+          "The list to record: one outcome per nonblank line, `(requires <statement-id>) <text>`, `(restored) <text>` or `<text>`. Empty records an empty list. Omit it to read the lists."
+        )
+        .optional(),
+    }),
+    validation: {
+      check: (value) => outcomesProblem(value) === undefined,
+      message: OUTCOMES_RULE,
+      refusal: (value) => outcomesProblem(value) ?? OUTCOMES_RULE,
+    },
+    strict: true,
+  },
+  {
+    name: "dispatch_spec_ending",
+    example: { issue: "<KEY>", head: "0123456789abcdef0123456789abcdef01234567" },
+    description:
+      "Read whether the change request of an issue may land at a pull request head. The first " +
+      "line is ready or waiting. Each next line is one reason it waits, `<code>: <detail>`: " +
+      "no_final_list_for_head (no final list of a reviewer is recorded for the issue or its " +
+      "descendants), final_list_of_another_head (the final lists are of other heads: the " +
+      "reviewer records its final list at this head), no_conclusion (the spec holds no " +
+      "conclusion block), incomplete (the conclusion breaks a rule: correct it), " +
+      "uncovered_without_approval (an outcome no approved statement covers, and no person " +
+      "approved the latest spec: request approval of the whole spec). Then each reason of the " +
+      "judgment of the conclusion, `<code>: <detail>`. Run it before each merge and each enqueue " +
+      "of a change whose design gate opened with no person's approval, and merge or enqueue only " +
+      "when the first line reads ready. It exits 0 for ready and for waiting. json prints the " +
+      `answer as Dispatch gave it. ${ISSUE_REFERENCE}`,
+    arguments: (z) => ({
+      issue: z.string().describe(ISSUE_REFERENCE),
+      head: z
+        .string()
+        .describe(
+          "The 40-character lowercase hex commit that would land: the pull request's head."
+        ),
+      json: z.boolean().describe("Print the answer as Dispatch gave it, as JSON.").optional(),
+    }),
+    validation: {
+      check: (value) => {
+        const { head } = value as { readonly head?: unknown };
+        return typeof head === "string" && COMMIT_SHA_PATTERN.test(head);
+      },
+      message: "head is 40 lowercase hex characters.",
+    },
     strict: true,
   },
   {

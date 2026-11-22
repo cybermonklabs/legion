@@ -32,6 +32,7 @@ import {
   resultsCommand,
   searchCommand,
 } from "./issues";
+import { outcomesCommand, specEndingCommand } from "./outcomes";
 import { plansCommand } from "./plans";
 import { prioritiesCommand } from "./priorities";
 import { architectureSyncCommand, projectCommand, projectsCommand } from "./projects";
@@ -98,6 +99,8 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_architecture_sync: acting(architectureSyncCommand),
   dispatch_spec_source: acting(specSourceCommand),
   dispatch_spec_import_level: acting(specImportLevelCommand),
+  dispatch_outcomes: acting(outcomesCommand),
+  dispatch_spec_ending: acting(specEndingCommand),
   dispatch_ask: acting(askCommand),
   dispatch_edit_ask: acting(editAskCommand),
   dispatch_resolve_ask: acting(resolveAskCommand),

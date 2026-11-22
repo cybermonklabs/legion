@@ -69,14 +69,22 @@ type Request struct {
 	Issue     string
 	Proposals []Proposal
 	Problems  []specgraph.Problem
+	// CheckStatements is, for each check block of the request by its address, the statement its
+	// `statement` attribute names, "" for none: what OfTheSpec judges whether the block is a check
+	// of The Spec by, read even where the block gives no node.
+	CheckStatements map[string]string
 }
 
 // FromBlocks reads the request of the issue from its blocks, in their order. A block whose opening
 // line no parser reads, or whose base is no whole number from 1, gives a problem and no node; a
 // block of another type is passed over.
 func FromBlocks(issue string, blocks []Block) Request {
-	request := Request{Issue: issue}
+	request := Request{Issue: issue, CheckStatements: map[string]string{}}
 	for _, block := range blocks {
+		first, _, _ := strings.Cut(strings.ReplaceAll(block.Text, "\r\n", "\n"), "\n")
+		if name, attrs, ok := pmdoc.ParseTypedDirectiveOpen(first); ok && name == KindCheck {
+			request.CheckStatements[block.Address] = strings.TrimSpace(attrText(attrs, "statement"))
+		}
 		proposal, problems, ok := fromBlock(block)
 		request.Problems = append(request.Problems, problems...)
 		if ok {
@@ -84,6 +92,59 @@ func FromBlocks(issue string, blocks []Block) Request {
 		}
 	}
 	return request
+}
+
+// OfTheSpec is request with the issue's own acceptance checks left out (R22, R25). A check block
+// is a check of The Spec only when its statement names a statement the request proposes or the
+// approved spec holds as a current statement; any other check block - one that names no
+// statement, or names one neither holds - is the issue's own acceptance check, which the change
+// request does not hold: no approval writes it or is refused for it, and it changes no approved
+// check. Its node and every problem of its block leave the request; every other node and problem
+// stays. It is the one predicate of this rule: the approval's write (specstore.Apply) and the read
+// of a change request (api's readChangeRequest) both judge the request it answers.
+func OfTheSpec(request Request, approved specgraph.Approved) Request {
+	proposed := map[string]bool{}
+	for _, proposal := range request.Proposals {
+		if proposal.Kind == KindStatement {
+			proposed[proposal.ID] = true
+		}
+	}
+	acceptance := map[string]bool{}
+	for address, statement := range request.CheckStatements {
+		if statement == "" || !proposed[statement] && !approvedStatement(approved, statement) {
+			acceptance[address] = true
+		}
+	}
+	if len(acceptance) == 0 {
+		return request
+	}
+	kept := Request{Issue: request.Issue, CheckStatements: request.CheckStatements}
+	for _, proposal := range request.Proposals {
+		if !acceptance[proposal.Block] {
+			kept.Proposals = append(kept.Proposals, proposal)
+		}
+	}
+	for _, problem := range request.Problems {
+		if !acceptance[problem.Pos.File] {
+			kept.Problems = append(kept.Problems, problem)
+		}
+	}
+	return kept
+}
+
+// approvedStatement is whether approved holds id as a current statement: held, not removed, and
+// a statement at its newest version.
+func approvedStatement(approved specgraph.Approved, id string) bool {
+	node, held := approved.Nodes[id]
+	if !held || node.Removed != nil && *node.Removed || len(node.Versions) == 0 {
+		return false
+	}
+	current, err := VersionNode(id, node.Versions[len(node.Versions)-1])
+	if err != nil {
+		return false
+	}
+	_, statement := current.(specgraph.Statement)
+	return statement
 }
 
 // fromBlock maps one block to its node: its opening line's attributes, renamed to the file form,

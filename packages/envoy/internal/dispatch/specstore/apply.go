@@ -114,6 +114,9 @@ func Apply(ctx context.Context, tx pgx.Tx, in Input, queue Queue) (Applied, erro
 	if err != nil {
 		return Applied{}, err
 	}
+	// The issue's own acceptance checks are no part of the change request: the approval neither
+	// writes them nor is refused for them (specchange.OfTheSpec, the one rule of it).
+	in.Request = specchange.OfTheSpec(in.Request, approved)
 	changes, stale, problems, err := specchange.Classify(in.Request, approved)
 	if err != nil {
 		return Applied{}, err

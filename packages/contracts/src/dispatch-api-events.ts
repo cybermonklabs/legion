@@ -37,6 +37,7 @@ import type {
   IssueEventPayload,
   IssuePullRequestAttributionEventPayload,
   IssueReleasedEventPayload,
+  SpecOutcomesRecordedEventPayload,
   SpecRequestStaleEventPayload,
 } from "./dispatch-api-issues";
 import type {
@@ -168,6 +169,10 @@ export type DispatchEvent =
   | (DispatchEventBase & {
       readonly type: "spec.request_stale";
       readonly payload: SpecRequestStaleEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "spec.outcomes_recorded";
+      readonly payload: SpecOutcomesRecordedEventPayload;
     })
   | (DispatchEventBase & {
       readonly type: "handoff.recorded";
@@ -395,6 +400,7 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "settings.architecture_source.updated": true,
   "settings.project_default_assignee.updated": true,
   "settings.repo_project.updated": true,
+  "spec.outcomes_recorded": true,
   "spec.request_stale": true,
   "subscription.remove_requested": true,
   "subscription.removed": true,

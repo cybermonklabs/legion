@@ -16,6 +16,8 @@ import type {
   ArtifactVersionText,
   AskRead,
   AskWithTrees,
+  ChangeRequestEnding,
+  ChangeRequestRead,
   CheckResultDryRun,
   CheckResultRecorded,
   CheckResultRetraction,
@@ -76,6 +78,7 @@ import type {
   NodeStateInput,
   NodeStateWritten,
   OpenAsksResponse,
+  OutcomeOfLine,
   PointerInput,
   PointerWritten,
   PremortemConvertInput,
@@ -93,6 +96,7 @@ import type {
   SpecFormFinding,
   SpecFormRead,
   SpecLevelImport,
+  SpecOutcomeRecord,
   SpecSource,
   Suggestions,
   UpdateIssueInput,
@@ -1528,6 +1532,64 @@ export class DispatchClient {
         notes,
         actor,
       }
+    );
+  }
+
+  /** `POST /api/v1/issues/{key}/outcomes`: record one list of outcomes of a pull request's head
+   *  for the issue - the author's, the reviewer's own, or the reviewer's final list. */
+  async recordOutcomes(
+    issue: string,
+    input: {
+      readonly pull_request: string;
+      readonly head: string;
+      readonly list: string;
+      readonly outcomes: readonly OutcomeOfLine[];
+    },
+    actor: Actor
+  ): Promise<SpecOutcomeRecord> {
+    return this.#json(
+      "POST",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "outcomes"],
+      { ...input, actor }
+    );
+  }
+
+  /** `GET /api/v1/issues/{key}/outcomes`: every list of outcomes recorded for the issue, oldest
+   *  first, narrowed by the pull request, head and list `filter` names. */
+  async listOutcomes(
+    issue: string,
+    filter: { readonly pull_request?: string; readonly head?: string; readonly list?: string } = {}
+  ): Promise<SpecOutcomeRecord[]> {
+    return this.#json(
+      "GET",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "outcomes"],
+      undefined,
+      Object.fromEntries(Object.entries(filter).filter(([, value]) => value !== undefined))
+    );
+  }
+
+  /** `GET /api/v1/issues/{key}/change-request`: what a version of the issue's spec proposes
+   *  against the approved spec, and the judgment of its conclusion. */
+  async changeRequest(
+    issue: string,
+    query: { readonly version?: number; readonly head?: string } = {}
+  ): Promise<ChangeRequestRead> {
+    return this.#json(
+      "GET",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "change-request"],
+      undefined,
+      Object.fromEntries(Object.entries(query).filter(([, value]) => value !== undefined))
+    );
+  }
+
+  /** `GET /api/v1/issues/{key}/change-request/ending`: whether the change of the issue may land
+   *  at `head`, ready or waiting with each reason. */
+  async changeRequestEnding(issue: string, head: string): Promise<ChangeRequestEnding> {
+    return this.#json(
+      "GET",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "change-request", "ending"],
+      undefined,
+      { head }
     );
   }
 

@@ -155,10 +155,15 @@ function unanswered(node: TreeNode): boolean {
     // its turn on the frontier as that ask's ancestor; a result is a record of what a run saw,
     // and its check carries the verdict; and the issue itself is the root, which is drawn
     // whatever this says. A document, an image and a handoff are nodes of the issue and not of
-    // its conversation, so the tree holds none of them (R1, R3).
+    // its conversation, so the tree holds none of them (R1, R3). A component is a part of the
+    // software that statements are about, and states nothing of its own to answer. A conclusion
+    // needs no person's approval (R23): the person may answer it, and nothing waits on that
+    // answer, so it holds the reader up for nothing.
     case "callout":
     case "child_issue":
     case "comment":
+    case "component":
+    case "conclusion":
     case "criterion":
     case "document":
     case "handoff":

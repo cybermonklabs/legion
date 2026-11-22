@@ -16,6 +16,7 @@ export * from "./legion-roles";
 export * from "./related-forms";
 export * from "./repo";
 export * from "./slack";
+export * from "./spec-outcomes";
 export * from "./subject";
 export * from "./subject-project";
 export * from "./tool-schema";
