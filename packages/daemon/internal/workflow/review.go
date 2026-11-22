@@ -507,7 +507,9 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // (dispatch://INFRA-714/spec R1). One message goes to three roles - the worker holding the issue's
 // phase, the implementer, whose code the checks ran on, and the architect that owns the issue
 // (owningArchitect) - each on its own role topic (record.RoleMessage), the way the daemon reaches
-// a role holder with a message. A role named twice, the implementer holding the phase, is told
+// a role holder with a message. In merging the implementer is not told: the merge and what breaks
+// it are the merger's to decide, and the merger asks the implementer when it needs it
+// (dispatch://INFRA-5218 R1). A role named twice, the implementer holding the phase, is told
 // once, and a phase no worker holds names none (addressRoles). told is what the settlement
 // standing for the head said before this one, so a second settlement of the same head that leaves
 // the same conclusions tells nobody again, and so does a settlement that stands for no head. Linger
@@ -548,7 +550,11 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 		}
 		recipients = append(recipients, roleRecipient{issue: owner, role: claim.RoleArchitect, row: issue.Key})
 	}
-	for _, role := range []claim.Role{RoleFor(issue.Phase), claim.RoleImplementer} {
+	roles := []claim.Role{RoleFor(issue.Phase)}
+	if !record.StandsIn(*issue, phase.Merging) {
+		roles = append(roles, claim.RoleImplementer)
+	}
+	for _, role := range roles {
 		if role == claim.RoleArchitect || role == woken {
 			continue
 		}
@@ -1084,10 +1090,10 @@ func stuckMergeStateReason(pr record.PullRequest) string {
 // never reads its state again (askMergeStateFor), so nothing it could wait on would ever come.
 // An approval of a head the record holds in a confirmed conflict with its base
 // (classify.ConflictRound) ends the round too, whatever GitHub's merge state for it
-// (dispatch://INFRA-4374 R0): nothing GitHub answers about that head changes until the
-// implementer merges the base forward, and the merge is what the issue needs next once its review
-// is over, so the move into accepting asks for it (transition, mergeForwardOnEntry,
-// record.ConflictMergeNext). While the first conflicting read of the head waits for its second
+// (dispatch://INFRA-4374 R0): nothing GitHub answers about that head changes until the base is
+// merged forward, and that merge is the merger's once the issue reaches merging, so the move into
+// merging asks the merger for it (transition, mergeForwardOnEntry, record.ConflictMergeNext,
+// dispatch://INFRA-5218). While the first conflicting read of the head waits for its second
 // (record.PullRequest.ConflictRead), the approval waits where it stands and is never reported
 // stuck: GitHub's `dirty` is not yet a conflict the daemon holds, and the second read decides it.
 // An approval that stands on the head of a pull request closed without merging keeps the round

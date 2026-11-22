@@ -2375,6 +2375,25 @@ So after the rollback a merger learns of a removal only when it reads the pull r
 The kind check keeps both names after the rollback, and the rollback needs no statement for it: an earlier release never writes either kind, so the check refuses nothing that release writes.
 This release's one-time start of the mergers that the `awaiting_merge` cutover left stopped ([Idle release](#idle-release)) adds no outbox kind and no payload field, and its one `processed_events` row is harmless to a rollback.
 
+#### Rolling back the release that asks the merger to merge the base forward
+
+This release asks the merger, not the implementer, to merge the base forward once the issue stands in `merging`, and asks nothing in `accepting` or `retro` (dispatch://INFRA-5218).
+It adds no migration: a `merge_forward` row's payload and `pull_requests.merge_forward` are JSON, and the ask names its role there (`role`).
+An earlier release refuses a `merge_forward` ask whose role is the merger when it decodes the row, and reads an ask that names the merger as the implementer's, already made, so it would ask nobody.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+begin;
+-- The merger's asks still queued, and the asks of the merger that have not landed.
+delete from outbox where kind = 'merge_forward' and payload->>'step' = 'ask' and payload->>'role' = 'merger';
+update pull_requests set merge_forward = null
+  where merge_forward->>'role' = 'merger' and coalesce(merge_forward->>'landed', '') = '';
+commit;
+```
+
+The earlier release decides again on the next read of each such head that finds it conflicting, and asks the implementer.
+An ask of the merger that has landed stays: the earlier release reads it as a landed merge forward, as it reads its own.
+
 #### Rolling back the release that merges a conflicting head forward in its phase
 
 This release stops a conflict from sending an issue back to `implementing`.

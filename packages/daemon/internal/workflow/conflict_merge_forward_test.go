@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -131,16 +132,21 @@ func assertNothingActed(t *testing.T, pool *pgxpool.Pool, at phase.Phase) {
 }
 
 // askedOnce is the one merge forward the record and the outbox hold, asked of conflictHead onto
-// main in at for why: the record's ask, the implementer's ask and, where hold names a role, that
-// role's hold, and the architect's one checks-red notice outside implementing. Nothing moved: the
-// issue is in at with the status it had, and no worker was started.
+// main in at for why: the record's ask, the ask to the role asked - the merger in merging, the
+// implementer in every phase before it (dispatch://INFRA-5218 R1) - and, where hold names a role,
+// that role's hold, and the architect's one checks-red notice outside implementing, which names the
+// role asked. Nothing moved: the issue is in at with the status it had, and no worker was started.
 func askedOnce(t *testing.T, pool *pgxpool.Pool, at phase.Phase, status string, why record.ConflictWhy, hold claim.Role) {
 	t.Helper()
-	asked := recordedPR(t, pool, "LEGION-208").MergeForward
-	if asked == nil || asked.Head != conflictHead || asked.Base != "main" || asked.Phase != at || asked.Why != why || asked.Landed != "" || asked.AskedAt.IsZero() {
-		t.Fatalf("the record's merge forward = %+v, want %s onto main in %s for %s, not landed", asked, conflictHead, at, why)
+	asker := claim.RoleImplementer
+	if at == phase.Merging {
+		asker = claim.RoleMerger
 	}
-	want := []record.MergeForwardMessage{{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: conflictHead, Base: "main", Phase: at, PullRequest: 42, Why: why}}
+	asked := recordedPR(t, pool, "LEGION-208").MergeForward
+	if asked == nil || asked.Head != conflictHead || asked.Base != "main" || asked.Role != asker || asked.Phase != at || asked.Why != why || asked.Landed != "" || asked.AskedAt.IsZero() {
+		t.Fatalf("the record's merge forward = %+v, want %s onto main asked of the %s in %s for %s, not landed", asked, conflictHead, asker, at, why)
+	}
+	want := []record.MergeForwardMessage{{Role: asker, Step: record.MergeForwardAsk, Head: conflictHead, Base: "main", Phase: at, PullRequest: 42, Why: why}}
 	if hold != "" {
 		want = append(want, record.MergeForwardMessage{Role: hold, Step: record.MergeForwardHold, Head: conflictHead, Base: "main", Phase: at, PullRequest: 42, Why: why})
 	}
@@ -156,8 +162,8 @@ func askedOnce(t *testing.T, pool *pgxpool.Pool, at phase.Phase, status string, 
 		if len(notices) != 1 || notices[0] != "checks-red" {
 			t.Fatalf("notices %v, want the one checks-red", notices)
 		}
-		if reason, stays := checksRedNotice(t, pool); stays != at || reason == "" {
-			t.Fatalf("the checks-red notice names phase %q with reason %q, want %s, the phase the issue stays in, and a reason", stays, reason, at)
+		if reason, stays := checksRedNotice(t, pool); stays != at || !strings.Contains(reason, "the "+string(asker)+" is asked to merge main forward") {
+			t.Fatalf("the checks-red notice names phase %q with reason %q, want %s, the phase the issue stays in, and a reason naming the %s", stays, reason, at, asker)
 		}
 	}
 	assertOutboxCount(t, pool, "supervise", 0)
@@ -294,12 +300,12 @@ func TestAConflictIsActedOnOnlyAfterASecondRead(t *testing.T) {
 	})
 }
 
-// A confirmed conflict that needs a merge keeps the issue in its phase (dispatch://INFRA-4374 R1):
-// the implementer is asked to merge the base forward on its own role topic, the worker of the phase
-// - the tester, the reviewer or the merger - is told to hold while the merge runs, and the
-// architect gets one checks-red notice naming the phase the issue stays in. No worker starts, no
-// status is written and no phase ends. In testing and reviewing the need is a check the base
-// requires that is not green; past the review it is the merge that comes next. The same read again
+// A confirmed conflict that needs a merge keeps the issue in its phase (dispatch://INFRA-4374 R1).
+// Before the review the work is still the implementer's: in testing and reviewing, where the need
+// is a check the base requires that is not green, the implementer is asked to merge the base
+// forward on its own role topic, the worker of the phase - the tester or the reviewer - is told to
+// hold while the merge runs, and the architect gets one checks-red notice naming the phase the
+// issue stays in. No worker starts, no status is written and no phase ends. The same read again
 // asks nothing a second time.
 func TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward(t *testing.T) {
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
@@ -311,9 +317,6 @@ func TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward(t *testing.T) {
 	}{
 		{phase.Testing, "testing", record.ConflictCheckNotGreen, claim.RoleTester},
 		{phase.Reviewing, "needs_review", record.ConflictCheckNotGreen, claim.RoleReviewer},
-		{phase.Accepting, "needs_review", record.ConflictMergeNext, ""},
-		{phase.Retro, "retro", record.ConflictMergeNext, ""},
-		{phase.Merging, "retro", record.ConflictMergeNext, claim.RoleMerger},
 	} {
 		t.Run(string(tc.at), func(t *testing.T) {
 			pool := seedConflictIssue(t, tc.at, tc.status, settledGreen("lint"))
@@ -326,14 +329,200 @@ func TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward(t *testing.T) {
 	}
 }
 
+// Past the review a conflict is the merger's (dispatch://INFRA-5218 R1). In merging the merger is
+// asked, on its own role topic, to merge the base forward and resolve the conflict itself: no ask
+// and no hold reach the implementer or anyone else, the architect's one checks-red notice names the
+// merger, and the issue stays in merging. In accepting and retro nothing is asked of anyone, whatever
+// the base's rules: the conflict is recorded for the move into merging, where the merger makes
+// that merge, and it never goes back to the implementer. The same read again asks nothing more.
+func TestAConflictPastTheReviewIsTheMergersToMergeForward(t *testing.T) {
+	t.Run("merging", func(t *testing.T) {
+		requiresCI := &record.BaseRules{Required: []string{"ci"}}
+		pool := seedConflictIssue(t, phase.Merging, "retro", settledGreen("lint"))
+		confirmsConflict(t, pool, requiresCI)
+		askedOnce(t, pool, phase.Merging, "retro", record.ConflictMergeNext, "")
+
+		applyRefusingNothing(t, pool, readsAfter(2*time.Minute), conflictingRead(requiresCI))
+		askedOnce(t, pool, phase.Merging, "retro", record.ConflictMergeNext, "")
+	})
+	for _, at := range []struct {
+		phase  phase.Phase
+		status string
+	}{{phase.Accepting, "needs_review"}, {phase.Retro, "retro"}} {
+		for _, rules := range []struct {
+			name  string
+			rules *record.BaseRules
+		}{
+			{"a required check not green", &record.BaseRules{Required: []string{"ci"}}},
+			{"rules unread", &record.BaseRules{Unread: "HTTP 502"}},
+			{"a strict ruleset", &record.BaseRules{Required: []string{"lint"}, Strict: true}},
+		} {
+			t.Run(string(at.phase)+", "+rules.name, func(t *testing.T) {
+				pool := seedConflictIssue(t, at.phase, at.status, settledGreen("lint"))
+				confirmsConflict(t, pool, rules.rules)
+				pr := recordedPR(t, pool, "LEGION-208")
+				if pr.ConflictingHead != conflictHead || pr.MergeForward != nil {
+					t.Fatalf("the record holds %q conflicting and the merge forward %+v, want the conflict at %s recorded and nothing asked",
+						pr.ConflictingHead, pr.MergeForward, conflictHead)
+				}
+				assertNothingActed(t, pool, at.phase)
+			})
+		}
+	}
+}
+
+// An ask of the implementer that has not landed when the issue stands in merging - one a daemon
+// before dispatch://INFRA-5218 made there, which names no role and so reads as the implementer's
+// (record.MergeForward.Asked) - stands until a confirmed read of the head acts again: then the
+// merger is asked, once, whose merge it is in merging, and the implementer's ask row still queued
+// goes undelivered (leftMergeForwardAt), so two roles are not sent to merge one base forward. Until
+// that read the implementer's row is still delivered, so the upgrade drops no ask in flight.
+func TestAnAskOfTheImplementerCarriedIntoMergingIsAskedOfTheMerger(t *testing.T) {
+	requiresCI := &record.BaseRules{Required: []string{"ci"}}
+	pool := seedConflictIssue(t, phase.Merging, "retro", askedBeforeTheMerger(phase.Merging))
+	left := func(role claim.Role) string {
+		t.Helper()
+		pr := recordedPR(t, pool, "LEGION-208")
+		return leftMergeForwardAt(storedIssue(t, pool, "LEGION-208"), false, &pr, role, record.MergeForwardAsk, conflictHead)
+	}
+	if why := left(claim.RoleImplementer); why != "" {
+		t.Fatalf("before any new read the implementer's ask is undelivered (%s), want it delivered: the ask the record holds is its own", why)
+	}
+
+	confirmsConflict(t, pool, requiresCI)
+	askedOnce(t, pool, phase.Merging, "retro", record.ConflictMergeNext, "")
+	if why := left(claim.RoleImplementer); !strings.Contains(why, "asked of the merger") {
+		t.Fatalf("after the merger's ask the implementer's ask row is left for %q, want it undelivered as asked of the merger", why)
+	}
+	if why := left(claim.RoleMerger); why != "" {
+		t.Fatalf("the merger's ask is undelivered (%s), want it delivered", why)
+	}
+}
+
+// The acceptance of dispatch://INFRA-5218: an issue whose pull request conflicts with its base
+// after the reviewer approved it reaches the merge through the merger, and the work never goes back
+// to the implementer. Every check the base requires passed on the head, so in reviewing the
+// conflict is recorded and the reviewer's approval ends the round; accepting and retro ask nothing
+// of anyone, and the architect signs off and retro completes at that head as at any other. The
+// move into merging starts the merger and asks it, once, to merge the base forward. Its merge
+// landing tells it so and asks the reviewer to read the merge and approve the new head, and
+// GitHub's merge of that head closes the issue. Across the whole run the implementer is sent no
+// merge-forward message, is started for no phase but retro, and counts no move back.
+func TestAConflictAfterTheReviewLandsThroughTheMerger(t *testing.T) {
+	every := &record.BaseRules{Required: []string{"ci", "pr-title"}}
+	pool := seedConflictIssue(t, phase.Reviewing, "needs_review", settledGreen("ci", "pr-title"))
+	confirmsConflict(t, pool, every)
+	apply := func(after time.Duration, fact intake.Fact) {
+		t.Helper()
+		applyRefusingNothing(t, pool, readsAfter(after), fact)
+	}
+	nothingAskedIn := func(at phase.Phase) {
+		t.Helper()
+		if got := issuePhase(t, pool); got != at {
+			t.Fatalf("the issue is in %s, want %s", got, at)
+		}
+		if messages := mergeForwardMessages(t, pool); len(messages) != 0 {
+			t.Fatalf("merge-forward messages %+v in %s, want none: the conflict waits for the merger", messages, at)
+		}
+		if told := capNotices(t, pool, "checks-red"); told != 0 {
+			t.Fatalf("%d checks-red notices in %s, want none: nothing was asked", told, at)
+		}
+	}
+
+	apply(2*time.Minute, intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1, State: "approved", CommitID: conflictHead,
+		HeadSHA: conflictHead, Author: "a-writer", AuthorCanWrite: true, Body: "ship it", SubmittedAt: firstConflictRead.Add(2 * time.Minute)})
+	nothingAskedIn(phase.Accepting)
+	apply(3*time.Minute, intake.SignOff{Issue: "LEGION-208"})
+	nothingAskedIn(phase.Retro)
+	// A base push in retro reads the head again, and a read that finds it still conflicting asks
+	// nothing either.
+	apply(4*time.Minute, conflictingRead(every))
+	nothingAskedIn(phase.Retro)
+	apply(5*time.Minute, intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim",
+		Summary: "retro done", Commit: conflictHead})
+	if got := issuePhase(t, pool); got != phase.Merging {
+		t.Fatalf("after retro's completion the issue is in %s, want merging", got)
+	}
+	if task := startTask(t, pool, claim.RoleMerger); task == "" {
+		t.Fatal("the move into merging started no merger")
+	}
+	ask := record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: conflictHead, Base: "main",
+		Phase: phase.Merging, PullRequest: 42, Why: record.ConflictMergeNext}
+	if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, []record.MergeForwardMessage{ask}) {
+		t.Fatalf("merge-forward messages %+v after the move into merging, want the one ask to the merger %+v", got, ask)
+	}
+	if reason, stays := checksRedNotice(t, pool); stays != phase.Merging || !strings.Contains(reason, "the merger is asked to merge main forward") {
+		t.Fatalf("the checks-red notice names %s with reason %q, want merging and the merger asked", stays, reason)
+	}
+
+	// The merger merges main forward and pushes, as the implement App.
+	landsMergeForward(t, pool)
+	landed := func(role claim.Role, step record.MergeForwardStep) record.MergeForwardMessage {
+		return record.MergeForwardMessage{Role: role, Step: step, Head: conflictHead, Landed: forwardHead, Base: "main",
+			Phase: phase.Merging, PullRequest: 42, Why: record.ConflictMergeNext}
+	}
+	want := []record.MergeForwardMessage{ask, landed(claim.RoleMerger, record.MergeForwardLanded), landed(claim.RoleReviewer, record.MergeForwardReview)}
+	if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
+		t.Fatalf("merge-forward messages %+v after the merger's merge landed, want %+v", got, want)
+	}
+	if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || mf.Role != claim.RoleMerger || mf.Landed != forwardHead || !mf.ReviewAsked {
+		t.Fatalf("the record's merge forward = %+v, want the merger's, landed at %s with the review asked", mf, forwardHead)
+	}
+	if got := issuePhase(t, pool); got != phase.Merging {
+		t.Fatalf("after the merge landed the issue is in %s, want merging", got)
+	}
+
+	apply(6*time.Minute, intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge"})
+	if got := issuePhase(t, pool); got != phase.Done {
+		t.Fatalf("after GitHub merged the pull request the issue is in %s, want done", got)
+	}
+	for _, message := range mergeForwardMessages(t, pool) {
+		if message.Role == claim.RoleImplementer {
+			t.Fatalf("merge-forward message %+v went to the implementer, want none: the conflict was the merger's", message)
+		}
+	}
+	// A move into implementing writes in_progress (PhaseStatus), so a status write of it is the
+	// trace of any phase handed back to the implementer.
+	if statuses := queuedStatuses(t, pool); slices.Contains(statuses, "in_progress") || !slices.Contains(statuses, "retro") || !slices.Contains(statuses, "done") {
+		t.Fatalf("the run wrote the statuses %q, want retro and done and never in_progress: no phase went back to the implementer", statuses)
+	}
+	if pass := implementerPass(t, pool); pass != 0 {
+		t.Fatalf("the implementer counts %d moves back, want none", pass)
+	}
+}
+
+// queuedStatuses is the status of every Dispatch status write the outbox holds for LEGION-208,
+// oldest first.
+func queuedStatuses(t *testing.T, pool *pgxpool.Pool) []string {
+	t.Helper()
+	rows, err := pool.Query(t.Context(), `select payload->>'status' from outbox where kind = 'dispatch_status' and issue = 'LEGION-208' order by id`)
+	if err != nil {
+		t.Fatalf("read the status writes: %v", err)
+	}
+	defer rows.Close()
+	statuses := []string{}
+	for rows.Next() {
+		var status string
+		if err := rows.Scan(&status); err != nil {
+			t.Fatalf("read a status write: %v", err)
+		}
+		statuses = append(statuses, status)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the status writes: %v", err)
+	}
+	return statuses
+}
+
 // A confirmed conflict is acted on only when the issue's next step needs a head that merges
 // (dispatch://INFRA-4374 R0). Where every check the base requires is green on the head and no rule
 // of the base requires the head to be current, the conflict is recorded and nothing is sent: the
 // tester and the reviewer go on at that head. The tester's next completion moves the issue as
 // before, and the reviewer's, with no approval, is recorded while its round waits on a decision,
 // as before. The reviewer's approval of that head ends its round whatever GitHub's merge state, and
-// the issue's move into accepting, where the merge is next, asks for the merge forward once. Any
-// required check not green, a strict ruleset, and rules the daemon could not read each act at once.
+// the issue's move into accepting asks nothing: the conflict waits for merging, where the merger
+// merges the base forward (dispatch://INFRA-5218, TestAConflictAfterTheReviewLandsThroughTheMerger).
+// Any required check not green, a strict ruleset, and rules the daemon could not read each act at once.
 // GitHub's refusal of rulesets to a plan that has none is no failed read: it reads as no rules, and
 // so records only. A classic protection rule is read as not strict, so its contexts decide; and a
 // required context is green by a success status the record keeps for the head as well as by a
@@ -427,30 +616,27 @@ func TestAConflictIsActedOnOnlyWhenNeeded(t *testing.T) {
 		applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1,
 			State: "approved", CommitID: conflictHead, HeadSHA: conflictHead, Author: "a-writer", AuthorCanWrite: true, Body: "ship it",
 			SubmittedAt: firstConflictRead.Add(2 * time.Minute)})
-		askedInAccepting := func() {
+		if got := issuePhase(t, pool); got != phase.Accepting {
+			t.Fatalf("after the approval the issue is in %s, want accepting: an approval of a conflicting head ends its round", got)
+		}
+		recordedNotAsked := func() {
 			t.Helper()
-			if got := issuePhase(t, pool); got != phase.Accepting {
-				t.Fatalf("after the approval the issue is in %s, want accepting: an approval of a conflicting head ends its round", got)
+			pr := recordedPR(t, pool, "LEGION-208")
+			if pr.ConflictingHead != conflictHead || pr.MergeForward != nil {
+				t.Fatalf("the record holds %q conflicting and the merge forward %+v, want the conflict recorded and nothing asked in accepting",
+					pr.ConflictingHead, pr.MergeForward)
 			}
-			want := []record.MergeForwardMessage{{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: conflictHead, Base: "main",
-				Phase: phase.Accepting, PullRequest: 42, Why: record.ConflictMergeNext}}
-			if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
-				t.Fatalf("merge-forward messages %+v, want the one ask in accepting, and no hold: accepting is the architect's", got)
+			if messages := mergeForwardMessages(t, pool); len(messages) != 0 {
+				t.Fatalf("merge-forward messages %+v, want none in accepting: the merger merges the base forward in merging", messages)
 			}
-			if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Phase != phase.Accepting || asked.Why != record.ConflictMergeNext {
-				t.Fatalf("the record's merge forward = %+v, want the one asked in accepting for merge-next", asked)
-			}
-			if told := capNotices(t, pool, "checks-red"); told != 1 {
-				t.Fatalf("%d checks-red notices, want one", told)
-			}
-			if _, stays := checksRedNotice(t, pool); stays != phase.Accepting {
-				t.Fatalf("the checks-red notice names %s, want accepting, the phase the issue stays in", stays)
+			if told := capNotices(t, pool, "checks-red"); told != 0 {
+				t.Fatalf("%d checks-red notices, want none: nothing was asked", told)
 			}
 		}
-		askedInAccepting()
+		recordedNotAsked()
 
 		applyRefusingNothing(t, pool, readsAfter(3*time.Minute), conflictingRead(every))
-		askedInAccepting()
+		recordedNotAsked()
 	})
 }
 
@@ -533,6 +719,17 @@ func landsMergeForward(t *testing.T, pool *pgxpool.Pool) {
 		Branch: "legion/LEGION-208", Base: "main", HeadSHA: forwardHead, Before: conflictHead, Sender: "legion-implementer[bot]"})
 }
 
+// askedBeforeTheMerger is a pull request settled green on lint at conflictHead whose record holds
+// the ask a daemon before dispatch://INFRA-5218 made in at: of the implementer, naming no role, not
+// landed. That daemon asked the implementer in accepting and retro too, and an ask it made stands
+// across the upgrade until it lands, so the completion fence and the landing's review still hold
+// for it, while this daemon makes no ask in either phase (TestAConflictPastTheReviewIsTheMergersToMergeForward).
+func askedBeforeTheMerger(at phase.Phase) record.PullRequest {
+	pr := settledGreen("lint")
+	pr.MergeForward = &record.MergeForward{Head: conflictHead, Base: "main", Phase: at, Why: record.ConflictMergeNext, AskedAt: firstConflictRead}
+	return pr
+}
+
 // readingEngine is the engine of these tests (mergingEngineAt, at the first conflicting read) with
 // a reader of GitHub's merge state, which appends the issue of each read the engine asks for to
 // asked once the fact's transaction commits (Config.ReadMergeState).
@@ -552,7 +749,8 @@ var basePushOntoMain = intake.BasePush{Repo: "sjawhar/legion", Branch: "main", A
 // names no head, which says nothing about which head its work judged. The completion at the new
 // head moves the issue as it would have: the tester's pass to reviewing, the reviewer's as its
 // round decides, retro to merging. The merger's completion moves nothing in merging, as ever, and
-// in accepting nothing moves at all.
+// in accepting nothing moves at all. Retro and accepting ask nothing now, so their rows land an
+// ask a daemon before dispatch://INFRA-5218 made there (askedBeforeTheMerger).
 func TestAConflictKeepsPhaseAndRefusesACompletionAtTheReplacedHead(t *testing.T) {
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
@@ -594,7 +792,11 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtTheReplacedHead(t *testing.T)
 		}},
 	} {
 		t.Run(string(tc.at), func(t *testing.T) {
-			pool := seedConflictIssue(t, tc.at, tc.status, settledGreen("lint"))
+			pr := settledGreen("lint")
+			if tc.at == phase.Retro {
+				pr = askedBeforeTheMerger(phase.Retro)
+			}
+			pool := seedConflictIssue(t, tc.at, tc.status, pr)
 			confirmsConflict(t, pool, requiresCI)
 			landsMergeForward(t, pool)
 			if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Head != conflictHead || asked.Landed != forwardHead {
@@ -645,7 +847,7 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtTheReplacedHead(t *testing.T)
 	})
 
 	t.Run("accepting", func(t *testing.T) {
-		pool := seedConflictIssue(t, phase.Accepting, "needs_review", settledGreen("lint"))
+		pool := seedConflictIssue(t, phase.Accepting, "needs_review", askedBeforeTheMerger(phase.Accepting))
 		confirmsConflict(t, pool, requiresCI)
 		landsMergeForward(t, pool)
 		if got := issuePhase(t, pool); got != phase.Accepting {
@@ -656,14 +858,15 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtTheReplacedHead(t *testing.T)
 }
 
 // The merge forward's completion fence is of the phase the issue stands in (dispatch://INFRA-4374
-// R1). The reviewer's approval moves the issue on to accepting before the reviewer completes, and
-// a conflict there asks for the merge forward, which lands; the review the landing then asks of
-// the reviewer is made with no completion (record.MergeForwardReview). The reviewer's completion
-// of reviewing that arrives after it, at the head the merge replaced, is the report of the review
-// it made of that head, which the next phase reads: it is recorded on the reviewer's own row and
-// moves nothing (engine's leftItsPhase), and the issue stays in accepting.
+// R1). The reviewer's approval moves the issue on past reviewing before the reviewer completes,
+// and in merging a conflict asks the merger for the merge forward (dispatch://INFRA-5218), which
+// lands; the review the landing then asks of the reviewer is made with no completion
+// (record.MergeForwardReview). The reviewer's completion of reviewing that arrives after it, at the
+// head the merge replaced, is the report of the review it made of that head, which the next phase
+// reads: it is recorded on the reviewer's own row and moves nothing (engine's leftItsPhase), and
+// the issue stays in merging.
 func TestAConflictKeepsPhaseAndRecordsALateCompletionOfALeftPhase(t *testing.T) {
-	pool := seedConflictIssue(t, phase.Accepting, "needs_review", settledGreen("lint"))
+	pool := seedConflictIssue(t, phase.Merging, "retro", settledGreen("lint"))
 	// The reviewer's row as its approval left it: entered, with no completion of its own, under a
 	// claim the daemon started on the issue (record.Store.RoleRun), which leftItsPhase asks for.
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Entry: 1})
@@ -683,19 +886,21 @@ func TestAConflictKeepsPhaseAndRecordsALateCompletionOfALeftPhase(t *testing.T) 
 	if row := entryRow(t, pool, claim.RoleReviewer); !row.Completed() || row.HandoffCommit != conflictHead || row.HandoffRecord != "review-1" {
 		t.Fatalf("the reviewer's row = %+v, want its completion at %s naming review-1 recorded", row, conflictHead)
 	}
-	if got := issuePhase(t, pool); got != phase.Accepting {
-		t.Fatalf("after the reviewer's late completion the issue is in %s, want accepting", got)
+	if got := issuePhase(t, pool); got != phase.Merging {
+		t.Fatalf("after the reviewer's late completion the issue is in %s, want merging", got)
 	}
 }
 
 // Once a merge forward lands on an issue past its review, the approval the issue stands on is of
 // the head the merge replaced, so the reviewer is asked to read the merge and approve the new head
 // or request changes (dispatch://INFRA-4374 R1), one review message naming both heads, and the
-// record keeps that the review was asked for. The merger, the worker of merging, is told the merge
-// landed; the architect in accepting and the implementer in retro are told nothing, since the
-// one asked for the merge and the other made it. A merger that enters merging while that review
-// stands for the head is told to merge the head only once the reviewer's approval of it is on the
-// pull request.
+// record keeps that the review was asked for. In merging the merger made the merge
+// (dispatch://INFRA-5218), and as the worker of merging it is told the merge landed, which holds
+// its merge to the reviewer's approval of the new head. An ask a daemon before that change made in
+// accepting or retro lands the same way (askedBeforeTheMerger): the architect in accepting and the
+// implementer in retro are told nothing, since the one asked for the merge and the other made it.
+// A merger that enters merging while that review stands for the head is told to merge the head only
+// once the reviewer's approval of it is on the pull request.
 func TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge(t *testing.T) {
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	landing := func(role claim.Role, step record.MergeForwardStep, at phase.Phase) record.MergeForwardMessage {
@@ -712,7 +917,11 @@ func TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge(t *testing.T) {
 		{phase.Merging, "retro", claim.RoleMerger},
 	} {
 		t.Run(string(tc.at), func(t *testing.T) {
-			pool := seedConflictIssue(t, tc.at, tc.status, settledGreen("lint"))
+			pr := settledGreen("lint")
+			if tc.at != phase.Merging {
+				pr = askedBeforeTheMerger(tc.at)
+			}
+			pool := seedConflictIssue(t, tc.at, tc.status, pr)
 			confirmsConflict(t, pool, requiresCI)
 			asked := len(mergeForwardMessages(t, pool))
 			landsMergeForward(t, pool)
@@ -742,7 +951,7 @@ func TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge(t *testing.T) {
 	}
 
 	t.Run("a merger entering merging while the review is owed", func(t *testing.T) {
-		pool := seedConflictIssue(t, phase.Retro, "retro", settledGreen("lint"))
+		pool := seedConflictIssue(t, phase.Retro, "retro", askedBeforeTheMerger(phase.Retro))
 		confirmsConflict(t, pool, requiresCI)
 		landsMergeForward(t, pool)
 		applyRefusingNothing(t, pool, readsAfter(4*time.Minute), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
@@ -1068,26 +1277,28 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtAReplacedHeadWhileASecondMerg
 }
 
 // A completion at a head an earlier merge forward replaced is refused (dispatch://INFRA-4374 R1),
-// and the refusal tells the role where to do its work. It tells the role to wait for the landed
-// message of a merge forward asked of the head the pull request stands at only when that ask's
-// hold reached the role, and in retro the role that completes is the implementer, which no hold
-// and no landed message reaches (record.MergeForwardReaches): it is the one asked to make the
-// merge. So when the head the first merge left conflicts in its turn and a second merge forward is
-// asked of it in retro, the refusal of the implementer's retro completion at the head the first
-// merge replaced sends it to do the phase's work at the head the pull request stands at, never to
-// wait for a message it is not sent. It records and moves nothing.
+// and the refusal tells the role where to do its work. In retro the role that completes is the
+// implementer, which no hold and no landed message reaches (record.MergeForwardReaches), so the
+// refusal sends it to do the phase's work at the head the pull request stands at, never to wait for
+// a message it is not sent, and it records and moves nothing. When the head an ask made before
+// dispatch://INFRA-5218 left in retro (askedBeforeTheMerger) conflicts in its turn, retro asks
+// nothing of anyone: retro's completion at that head moves the issue to merging, where the merger
+// is asked to merge the base forward onto it, and the implementer is asked nothing.
 func TestAConflictKeepsPhaseSendsARetroCompletionAtAReplacedHeadToTheCurrentHead(t *testing.T) {
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
-	pool := seedConflictIssue(t, phase.Retro, "retro", settledGreen("lint"))
+	pool := seedConflictIssue(t, phase.Retro, "retro", askedBeforeTheMerger(phase.Retro))
 	confirmsConflict(t, pool, requiresCI)
 	landsMergeForward(t, pool)
 	again := conflictingRead(requiresCI)
 	again.HeadSHA = forwardHead
 	applyRefusingNothing(t, pool, readsAfter(4*time.Minute), again)
 	applyRefusingNothing(t, pool, readsAfter(5*time.Minute), again)
-	if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Head != forwardHead || asked.Phase != phase.Retro || asked.Landed != "" {
-		t.Fatalf("the record's merge forward = %+v, want the second ask, of %s in retro and not landed", asked, forwardHead)
+	pr := recordedPR(t, pool, "LEGION-208")
+	if pr.ConflictingHead != forwardHead || pr.MergeForward == nil || pr.MergeForward.Head != conflictHead || pr.MergeForward.Landed != forwardHead {
+		t.Fatalf("the record holds %q conflicting and the merge forward %+v, want %s's conflict recorded and no second ask in retro, the first landed as %s",
+			pr.ConflictingHead, pr.MergeForward, forwardHead, forwardHead)
 	}
+	asked := len(mergeForwardMessages(t, pool))
 
 	row, rows := entryRow(t, pool, claim.RoleImplementer), len(queuedRows(t, pool))
 	result := applyFacts(t, pool, readsAfter(6*time.Minute))("at the head the first merge replaced", intake.HandoffComplete{Generation: 1,
@@ -1110,6 +1321,21 @@ func TestAConflictKeepsPhaseSendsARetroCompletionAtAReplacedHeadToTheCurrentHead
 	}
 	if got := issuePhase(t, pool); got != phase.Retro {
 		t.Fatalf("after the refused completion the issue is in %s, want retro", got)
+	}
+
+	applyRefusingNothing(t, pool, readsAfter(7*time.Minute), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
+		Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "retro done", Commit: forwardHead})
+	if got := issuePhase(t, pool); got != phase.Merging {
+		t.Fatalf("after retro's completion at %s the issue is in %s, want merging", forwardHead, got)
+	}
+	want := []record.MergeForwardMessage{{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: forwardHead, Base: "main",
+		Phase: phase.Merging, PullRequest: 42, Why: record.ConflictMergeNext}}
+	if got := mergeForwardMessages(t, pool)[asked:]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the move into merging queued %+v, want the merger's one ask %+v", got, want)
+	}
+	if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || mf.Head != forwardHead || mf.Role != claim.RoleMerger ||
+		!reflect.DeepEqual(mf.Earlier, []record.LandedMergeForward{{Head: conflictHead, Landed: forwardHead}}) {
+		t.Fatalf("the record's merge forward = %+v, want the merger's ask of %s after the first, of %s, landed as %s", mf, forwardHead, conflictHead, forwardHead)
 	}
 }
 
