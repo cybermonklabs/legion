@@ -43,7 +43,7 @@ export function skipWithoutIgnoreMasks(file: string): boolean {
     readable = false;
   }
   if (readable) return false;
-  if (process.env.GITHUB_ACTIONS === "true" && process.platform === "linux") {
+  if (process.env["GITHUB_ACTIONS"] === "true" && process.platform === "linux") {
     console.error(
       `${file}: this machine's /proc/self/status names no ignored signals (no SigIgn line, or no ` +
         "/proc) on GitHub Actions on Linux, where it must, so the rows that read them run and fail."

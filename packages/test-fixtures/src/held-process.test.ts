@@ -52,6 +52,6 @@ test("the mask rows skip exactly where /proc/self/status holds no SigIgn line, a
   } catch {
     readable = false;
   }
-  const onActions = process.env.GITHUB_ACTIONS === "true" && process.platform === "linux";
+  const onActions = process.env["GITHUB_ACTIONS"] === "true" && process.platform === "linux";
   expect(withoutMasks).toBe(!readable && !onActions);
 });
