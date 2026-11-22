@@ -5138,6 +5138,8 @@ The isolation rests on ownership and private mounts, not on a read-only root, wh
 An operator mount (`runtime.kubernetes.pod.volume_mounts`) at or above `/tmp`, `/var/tmp`, `/run/lock`, `/var/lock` or `/dev/shm`, or at or above the image's other spellings of them (`/var/run/lock`, `/run/shm`, `/var/run/shm`), is refused:
 `runtime.kubernetes.pod.volume_mounts[i].mount_path <p> is at or above <dir>, which every role's namespace in an issue pod covers with its own: mount under it instead`.
 A mount under `/tmp` and the like is allowed, and role-init carries it back.
+role-init carries only the mounts a path under the directory reaches (`mountsUnder`, `roleinit_linux.go`): a mount the container's mount table lists but another mount hides, at its mount point or above it, is not carried, since its path in the container reaches what that other mount holds there, or nothing, and the role starts without it.
+Of a mount inside another carried mount, role-init binds back only the outer one, whose recursive bind brings the inner one with it, so role-init follows no path inside a volume every role may write (`carryOver`).
 A mount at, under or above `/dev/mqueue`, `/dev/ptmx`, `/dev/pts` or `/proc` is refused (`roleReplacedPaths` in `internal/runtime/sandbox/manifest.go`), since role-init mounts a filesystem of the role's own there (a new devpts instance at `/dev/pts`, its `ptmx` bound over `/dev/ptmx`, the role's own IPC namespace's mqueue at `/dev/mqueue`, the role's own `/proc`) and carries nothing back onto it:
 `runtime.kubernetes.pod.volume_mounts[i].mount_path <p>
 overlaps /dev/pts, which every role's namespace in an issue pod replaces with a filesystem of its

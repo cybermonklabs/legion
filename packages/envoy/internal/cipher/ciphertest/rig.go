@@ -163,6 +163,7 @@ type rigConfig struct {
 	maxConns   int
 	minters    map[string]requests.Minter
 	personPods []personPod
+	profiles   string
 	edge       bool
 	// edgeDeviceLimit is the edge's bucket every caller of a device authorization shares
 	// (api.Edge.DeviceLimit); nil is api.DefaultEdgeDeviceLimit.
@@ -220,6 +221,17 @@ func WithMinters(minters map[string]requests.Minter) Option {
 	return func(c *rigConfig) { c.minters = minters }
 }
 
+// WithProfiles serves file as the deployment's profiles file, the JSON BROKER_PROFILES_FILE
+// names (policytest.ProfilesFile builds one), so a test asks for a profile by its name as a session
+// of a deployment that lists it does. Every github-app secret the policy serves is a profile's
+// (policy.ReasonGitHubAppNoProfile), so a test that releases one names its profile here. With no
+// such option, or with "", the rig has no profiles file, as a deployment that leaves the setting
+// unset has none. The rig wires no proxy rules (requests.Machine.Airlock), so a proxy block the
+// file holds keeps no value back here.
+func WithProfiles(file string) Option {
+	return func(c *rigConfig) { c.profiles = file }
+}
+
 // personPod is one WithPersonPod: an account that BROKER_POD_OPERATORS maps to person, and the
 // service the account logs in as.
 type personPod struct {
@@ -264,8 +276,9 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	local := secrets.NewLocal(fixtures...)
 	// The policy's metrics as main wires them: the store-read counter before the first load,
 	// which NewCurrent takes, and the gauge of unservable secrets once NewCurrent has answered.
+	// Its profiles are WithProfiles's file, or none.
 	registry := metrics.New()
-	cur := policytest.MeteredCurrent(t, local, registry)
+	cur := policytest.MeteredProfiledCurrent(t, local, registry, config.profiles)
 
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)

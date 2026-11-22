@@ -15,32 +15,36 @@ import (
 
 // TestATypeSecretIsNeverReleasedToAnotherOperator: an agent-tier type secret its owner's sessions
 // get at once is, for another operator's session, a request its owner must approve, which that
-// operator cannot approve; and that session cannot read the owner's live grant.
+// operator cannot approve; and that session cannot read the owner's live grant. The check mint the
+// pending request gets before its owner is asked (profile_check.go) releases nothing, so it is no
+// release this counts.
 func TestATypeSecretIsNeverReleasedToAnotherOperator(t *testing.T) {
-	machine, enrollmentID, key, _ := newFixture(t)
+	machine, enrollmentID, key, _ := newAppFixture(t, "OWNERS_APP_KEY")
 	retag(t, machine, requestTypeSecret("OWNERS_APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 	var calls atomic.Int32
 	machine.Minters = map[string]Minter{
-		policy.TypeGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
-			calls.Add(1)
+		policy.TypeGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
+			if !req.Check {
+				calls.Add(1)
+			}
 			return secrets.Minted{Value: "minted-token"}, nil
 		},
 	}
 	const other = "bob@example.com"
 	otherEnr, otherKey := newEnrollment(t, machine.Store, "session", "box-other-"+t.Name(), new(other), nil)
 
-	theirs, err := machine.Create(t.Context(), otherEnr, signRequest(t, machine, otherKey, "read the App key", "OWNERS_APP_KEY"), "", nil)
+	theirs, err := machine.Create(t.Context(), otherEnr, signRequest(t, machine, otherKey, "read the App key", "OWNERS_APP_KEY"), "")
 	if err != nil || theirs.State != "pending" || theirs.GrantID != nil || theirs.RecordID == nil {
 		t.Fatalf("Create by %s = %+v, %v; want pending on its owner's approval", other, theirs, err)
 	}
 	if decision, err := machine.ApplyDecision(t.Context(), *theirs.RecordID, true, other); !errors.Is(err, record.ErrNotApprover) || decision.GrantID != "" {
 		t.Fatalf("ApplyDecision by %s = %+v, %v; want ErrNotApprover", other, decision, err)
 	}
-	owners, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read the App key", "OWNERS_APP_KEY"), "", nil)
+	owners, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read the App key", "OWNERS_APP_KEY"), "")
 	if err != nil || owners.GrantID == nil {
 		t.Fatalf("Create by the owner = %+v, %v; want a grant", owners, err)
 	}
-	if release, err := machine.Values(t.Context(), *owners.GrantID, otherEnr, nil, ReleaseCall{}); !errors.Is(err, ErrNotYours) || release.Values != nil {
+	if release, err := machine.Values(t.Context(), *owners.GrantID, otherEnr, ReleaseCall{}); !errors.Is(err, ErrNotYours) || release.Values != nil {
 		t.Fatalf("Values of the owner's grant from %s's session = %v, %v; want ErrNotYours", other, release.Values, err)
 	}
 	if n := calls.Load(); n != 0 {
@@ -49,19 +53,21 @@ func TestATypeSecretIsNeverReleasedToAnotherOperator(t *testing.T) {
 }
 
 // TestAHumanTierGitHubAppSecretWaitsForItsOwnerThenMints: a human-tier github-app secret's
-// request waits on its owner, releases nothing meanwhile, and once approved mints for the owners
-// its github-owners tag lists.
+// request waits on its owner, releases nothing meanwhile, and once approved mints for the
+// accounts of the profile it is served as.
 func TestAHumanTierGitHubAppSecretWaitsForItsOwnerThenMints(t *testing.T) {
-	machine, enrollmentID, key, approver := newFixture(t)
+	machine, enrollmentID, key, approver := newAppFixture(t, "HUMAN_APP_KEY")
 	retag(t, machine, requestTypeSecret("HUMAN_APP_KEY", policy.TypeGitHubApp, policy.TierHuman, ""))
 	var owners []string
 	machine.Minters = map[string]Minter{
 		policy.TypeGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
-			owners = req.GitHubOwners
+			if req.GitHub != nil && !req.Check {
+				owners = req.GitHub.Accounts
+			}
 			return secrets.Minted{Value: "minted-token"}, nil
 		},
 	}
-	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read the App key", "HUMAN_APP_KEY"), "", nil)
+	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read the App key", "HUMAN_APP_KEY"), "")
 	if err != nil || request.State != "pending" || request.GrantID != nil || request.RecordID == nil {
 		t.Fatalf("Create = %+v, %v; want pending", request, err)
 	}
@@ -69,7 +75,7 @@ func TestAHumanTierGitHubAppSecretWaitsForItsOwnerThenMints(t *testing.T) {
 	if err != nil || decision.GrantID == "" {
 		t.Fatalf("ApplyDecision = %+v, %v; want a grant", decision, err)
 	}
-	release, err := machine.Values(t.Context(), decision.GrantID, enrollmentID, nil, ReleaseCall{})
+	release, err := machine.Values(t.Context(), decision.GrantID, enrollmentID, ReleaseCall{})
 	if err != nil || release.Values["HUMAN_APP_KEY"] != "minted-token" {
 		t.Fatalf("Values = %v, %v; want the minted token", release.Values, err)
 	}
@@ -81,7 +87,7 @@ func TestAHumanTierGitHubAppSecretWaitsForItsOwnerThenMints(t *testing.T) {
 // TestConcurrentReleasesOfOneTypeSecretAllMint: many releases of one grant at once each mint and
 // each succeeds, and none sees another's token.
 func TestConcurrentReleasesOfOneTypeSecretAllMint(t *testing.T) {
-	machine, enrollmentID, key, _ := newFixture(t)
+	machine, enrollmentID, key, _ := newAppFixture(t, "BUSY_APP_KEY")
 	retag(t, machine, requestTypeSecret("BUSY_APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 	var calls atomic.Int32
 	machine.Minters = map[string]Minter{
@@ -89,7 +95,7 @@ func TestConcurrentReleasesOfOneTypeSecretAllMint(t *testing.T) {
 			return secrets.Minted{Value: fmt.Sprintf("minted-token-%d", calls.Add(1))}, nil
 		},
 	}
-	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read the App key", "BUSY_APP_KEY"), "", nil)
+	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read the App key", "BUSY_APP_KEY"), "")
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create = %+v, %v", request, err)
 	}
@@ -99,7 +105,7 @@ func TestConcurrentReleasesOfOneTypeSecretAllMint(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range releases {
 		wg.Go(func() {
-			release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, nil, ReleaseCall{})
+			release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, ReleaseCall{})
 			tokens[i], errs[i] = release.Values["BUSY_APP_KEY"], err
 		})
 	}
