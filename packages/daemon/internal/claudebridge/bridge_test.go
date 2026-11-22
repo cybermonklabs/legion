@@ -333,8 +333,8 @@ func newRigWithEnv(t *testing.T, extra []string, args ...string) *rig {
 		_ = inW.Close()
 		select {
 		case <-r.done:
-		case <-time.After(10 * time.Second):
-			t.Error("the bridge did not end")
+		case <-time.After(deadlineWait(t)):
+			t.Errorf("the bridge did not end, %s before the test binary's deadline", deadlineMargin)
 		}
 	})
 	return r
@@ -351,14 +351,15 @@ func (r *rig) send(frame shimwire.Frame) {
 	}
 }
 
-// nextRaw is the next frame the bridge wrote, pane summaries (tool_execution_start) included.
+// nextRaw is the next frame the bridge wrote, pane summaries (tool_execution_start) included,
+// waited for until deadlineMargin before the test binary's deadline (deadlineWait).
 func (r *rig) nextRaw() map[string]any {
 	r.t.Helper()
 	select {
 	case frame := <-r.frames:
 		return frame
-	case <-time.After(10 * time.Second):
-		r.t.Fatal("the bridge wrote nothing within 10s")
+	case <-time.After(deadlineWait(r.t)):
+		r.t.Fatalf("the bridge wrote nothing, %s before the test binary's deadline; the bridge logged:\n%s", deadlineMargin, r.log)
 		return nil
 	}
 }
@@ -437,11 +438,12 @@ func (r *rig) recorded() string {
 	return string(raw)
 }
 
-// waitFor waits up to 10 s for holds, failing with what it waited for.
+// waitFor waits for holds until deadlineMargin before the test binary's deadline (deadlineWait),
+// failing with what it waited for.
 func (r *rig) waitFor(what string, holds func() bool) {
 	r.t.Helper()
-	if !testwait.Holds(10*time.Second, 5*time.Millisecond, holds) {
-		r.t.Fatalf("waited 10s for %s; the bridge logged:\n%s\nClaude Code recorded:\n%s", what, r.log, r.recorded())
+	if !testwait.Holds(deadlineWait(r.t), 5*time.Millisecond, holds) {
+		r.t.Fatalf("waited for %s until %s before the test binary's deadline; the bridge logged:\n%s\nClaude Code recorded:\n%s", what, deadlineMargin, r.log, r.recorded())
 	}
 }
 
@@ -497,10 +499,11 @@ func (c *inboxClient) deliverBlocks(id, content string, blocks []json.RawMessage
 	}
 }
 
-// answer is the inbox's next answer, which must come within 10 s.
+// answer is the inbox's next answer, waited for until deadlineMargin before the test binary's
+// deadline (deadlineWait).
 func (c *inboxClient) answer() InboxAnswer {
 	c.t.Helper()
-	if err := c.conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	if err := c.conn.SetReadDeadline(time.Now().Add(deadlineWait(c.t))); err != nil {
 		c.t.Fatal(err)
 	}
 	line, err := c.answers.ReadBytes('\n')
@@ -1174,7 +1177,7 @@ func TestTheBridgeEndsWithAnInboxClientConnected(t *testing.T) {
 	defer conn.Close()
 	// An answer proves the inbox accepted the connection and serves it, so its client is one the
 	// inbox's close waits for: a malformed delivery is answered with its refusal.
-	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(deadlineWait(t))); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := conn.Write([]byte("{}\n")); err != nil {
@@ -1187,8 +1190,8 @@ func TestTheBridgeEndsWithAnInboxClientConnected(t *testing.T) {
 	select {
 	case code := <-r.done:
 		r.done <- code
-	case <-time.After(10 * time.Second):
-		t.Fatal("the bridge did not end within 10s with an inbox client connected")
+	case <-time.After(deadlineWait(t)):
+		t.Fatalf("the bridge did not end with an inbox client connected, %s before the test binary's deadline", deadlineMargin)
 	}
 	if _, err := os.Stat(filepath.Dir(path)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the inbox's directory %s is still there (%v)", filepath.Dir(path), err)
@@ -1214,7 +1217,7 @@ func TestAClaudeCodeThatStopsReadingEndsTheBridge(t *testing.T) {
 	stdin, daemon := io.Pipe()
 	t.Cleanup(func() { _ = daemon.Close() })
 	logged := &lockedBuffer{}
-	cfg := Config{Argv: []string{"/bin/sh", "-c", "cat " + stream + "\nexec sleep 300\n"}, Env: os.Environ(),
+	cfg := Config{Argv: []string{"/bin/sh", "-c", "cat " + stream + "\nexec sleep 86400\n"}, Env: os.Environ(),
 		SessionID: sessionID, Stdin: stdin, Stdout: io.Discard, Log: logged}
 	done := make(chan int, 1)
 	go func() {
@@ -1229,13 +1232,13 @@ func TestAClaudeCodeThatStopsReadingEndsTheBridge(t *testing.T) {
 		if code != 128+int(syscall.SIGTERM) {
 			t.Errorf("exit status %d, want %d, Claude Code's once SIGTERM ended it:\n%s", code, 128+int(syscall.SIGTERM), logged)
 		}
-	case <-time.After(30 * time.Second):
+	case <-time.After(deadlineWait(t)):
 		// Claude Code still runs, unreaped, under a bridge that never ended.
 		if match := regexp.MustCompile(`\(pid (\d+)\)`).FindStringSubmatch(logged.String()); match != nil {
 			pid, _ := strconv.Atoi(match[1])
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 		}
-		t.Fatalf("the bridge did not end within 30s of Claude Code no longer reading:\n%s", logged)
+		t.Fatalf("the bridge did not end after Claude Code no longer read, %s before the test binary's deadline:\n%s", deadlineMargin, logged)
 	}
 	overflow := "Claude Code has left " + strconv.Itoa(claudeQueueLength) + " lines unread"
 	if n := strings.Count(logged.String(), overflow); n != 1 {
@@ -1251,6 +1254,19 @@ func TestAClaudeCodeThatStopsReadingEndsTheBridge(t *testing.T) {
 
 // lockedBuffer is a log the bridge's goroutines write while a test reads it.
 type lockedBuffer = testlog.Buffer
+
+// deadlineMargin is how long before the test binary's deadline a wait of these tests gives up:
+// the time a row whose fact never came has to fail by name, and its cleanups to run, before go
+// test's alarm panics the binary.
+const deadlineMargin = 30 * time.Second
+
+// deadlineWait is the bound of a wait for something the bridge or the fake Claude Code does: what
+// is left of the test binary's deadline less deadlineMargin. Each of these waits is for a fact, so
+// a step a loaded machine makes slow is waited for, and a fact that never comes fails its row by
+// name before go test's alarm.
+func deadlineWait(t *testing.T) time.Duration {
+	return testwait.Bounded(t, 1<<60, deadlineMargin)
+}
 
 // inboxPathOf is the inbox Claude Code was told, as the fake recorded it.
 func inboxPathOf(t *testing.T, r *rig) string {
@@ -1286,8 +1302,8 @@ func TestTheShimClosingInputEndsClaudeCode(t *testing.T) {
 			t.Errorf("exit status %d, want Claude Code's 0", code)
 		}
 		r.done <- code
-	case <-time.After(10 * time.Second):
-		t.Fatal("the bridge outlived its input")
+	case <-time.After(deadlineWait(t)):
+		t.Fatalf("the bridge outlived its input, %s before the test binary's deadline", deadlineMargin)
 	}
 }
 
