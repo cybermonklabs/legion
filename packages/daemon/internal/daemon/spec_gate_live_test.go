@@ -607,12 +607,35 @@ func (r *specGateRig) requireMergerHeld(key, what string) {
 	}
 }
 
+// architectNoticesOf is every notice of kind the daemon published to key's architect, oldest
+// first, each payload replaced by the notice's reason, as liveProof's architectNotices reads them.
+// The architect's topic carries role messages too, the design gate's moves among them
+// (workflow's tellGateMoved), whose payload is the message's text and not a notice: those are
+// passed over here, where liveProof's reader, written for proofs whose architects hear no role
+// message, fails on them.
+func (r *specGateRig) architectNoticesOf(key, kind string) []listenerPublish {
+	r.t.Helper()
+	var got []listenerPublish
+	for _, published := range r.notices.acceptedOn(notify.RoleTopicPrefix + string(r.tokenOf(key, claim.RoleArchitect))) {
+		var payload struct {
+			Kind   string `json:"kind"`
+			Reason string `json:"reason"`
+		}
+		if json.Unmarshal([]byte(published.Payload), &payload) != nil || payload.Kind != kind {
+			continue
+		}
+		published.Payload = payload.Reason
+		got = append(got, published)
+	}
+	return got
+}
+
 // endingNotices is the reason of each spec-ending-waits notice the daemon published to key's
 // architect, oldest first.
 func (r *specGateRig) endingNotices(key string) []string {
 	r.t.Helper()
 	var reasons []string
-	for _, notice := range r.architectNotices(key, "spec-ending-waits") {
+	for _, notice := range r.architectNoticesOf(key, "spec-ending-waits") {
 		reasons = append(reasons, notice.Payload)
 	}
 	return reasons
@@ -1137,9 +1160,13 @@ func TestAStaleRequestReachesItsOwner(t *testing.T) {
 			t.Fatalf("the approval of a request written against the changed statement = %d %s, want 409 SPEC_REQUEST_STALE", status, body)
 		}
 	}
-	told := r.waitArchitectNotices(secondKey, "spec-request-stale", 1)
+	var told []listenerPublish
+	testwait.WithinPolling(t, stepRecordsWait, 100*time.Millisecond, "the owner of "+secondKey+" to be told its stale request", func() bool {
+		told = r.architectNoticesOf(secondKey, "spec-request-stale")
+		return len(told) > 0
+	})
 	time.Sleep(liveSettle)
-	if again := r.architectNotices(secondKey, "spec-request-stale"); len(again) != 1 {
+	if again := r.architectNoticesOf(secondKey, "spec-request-stale"); len(again) != 1 {
 		t.Fatalf("the owner of %s was told the stale request %d times (%+v), want once", secondKey, len(again), again)
 	}
 	// The notice is the stale request's: published as it names its issue, and carrying Dispatch's
@@ -1147,7 +1174,7 @@ func TestAStaleRequestReachesItsOwner(t *testing.T) {
 	if !strings.Contains(told[0].Message, secondKey) || told[0].Payload == "" {
 		t.Fatalf("the owner's notice is %+v; want it to name %s and carry the reason of the refusal", told[0], secondKey)
 	}
-	if stray := r.architectNotices(firstKey, "spec-request-stale"); len(stray) != 0 {
+	if stray := r.architectNoticesOf(firstKey, "spec-request-stale"); len(stray) != 0 {
 		t.Fatalf("the owner of %s, whose request was approved, was told a stale request: %+v", firstKey, stray)
 	}
 	var toController []listenerPublish
