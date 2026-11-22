@@ -4,6 +4,7 @@ package gcp_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -64,9 +65,10 @@ const (
 )
 
 // installTool installs module, a main package at a pinned version, with go install into dir, and
-// returns the path of its binary, named binary, or why it did not install.
-func installTool(dir, module, binary string) (string, error) {
-	cmd := exec.Command("go", "install", module)
+// returns the path of its binary, named binary, or why it did not install. ctx bounds the install:
+// untilTheTestDeadline, since an install on an empty build cache takes minutes.
+func installTool(ctx context.Context, dir, module, binary string) (string, error) {
+	cmd := exec.CommandContext(ctx, "go", "install", module)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOBIN="+dir, "GOWORK=off")
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -89,8 +91,9 @@ func installTools(t *testing.T, dir string, tools ...liveTool) []string {
 	paths := make([]string, len(tools))
 	errs := make([]error, len(tools))
 	var wg sync.WaitGroup
+	ctx := gcp.UntilTheTestDeadline(t)
 	for i, tool := range tools {
-		wg.Go(func() { paths[i], errs[i] = installTool(dir, tool.module, tool.binary) })
+		wg.Go(func() { paths[i], errs[i] = installTool(ctx, dir, tool.module, tool.binary) })
 	}
 	wg.Wait()
 	require.NoError(t, errors.Join(errs...))
@@ -211,10 +214,10 @@ func helmTemplate(t *testing.T, archive, release, namespace string, values any) 
 	require.NoError(t, err)
 	valuesFile := filepath.Join(dir, "values.json")
 	require.NoError(t, os.WriteFile(valuesFile, encoded, 0o600))
-	helm, err := installTool(dir, helmTool, "helm")
+	helm, err := installTool(gcp.UntilTheTestDeadline(t), dir, helmTool, "helm")
 	require.NoError(t, err)
 	home := filepath.Join(dir, "helm-home")
-	cmd := exec.Command(helm, "template", release, archive, "-n", namespace, "-f", valuesFile)
+	cmd := exec.CommandContext(gcp.ScriptContext(t), helm, "template", release, archive, "-n", namespace, "-f", valuesFile)
 	cmd.Env = append(os.Environ(), "HELM_CACHE_HOME="+home, "HELM_CONFIG_HOME="+home, "HELM_DATA_HOME="+home)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

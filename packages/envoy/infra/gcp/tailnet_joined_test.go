@@ -37,8 +37,12 @@ type joinedHarness struct {
 	marker, key       string
 }
 
+// newJoinedHarness fails the test at once without jq on this machine (tool): the script reads
+// each state with it, and without it reads none, so it would ask again every 5 seconds forever,
+// its sleep stubbed to return at once, until the shell's deadline (gcp.ShellCommand).
 func newJoinedHarness(t *testing.T) *joinedHarness {
 	t.Helper()
+	tool(t, "jq")
 	var doc gcp.CloudConfig
 	require.NoError(t, yamlUnmarshalGolden(t, &doc))
 	h := &joinedHarness{
@@ -61,7 +65,7 @@ func (h *joinedHarness) run(t *testing.T, states ...string) (string, error) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(filepath.Join(h.logs, "docker"), nil, 0o600))
 	require.NoError(t, os.RemoveAll(filepath.Join(h.logs, "sleeps")))
-	cmd := shellCommand(t, h.script, h.marker, h.key)
+	cmd := gcp.ShellCommand(t, h.script, h.marker, h.key)
 	cmd.Env = []string{
 		"PATH=" + h.bin + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"DOCKER_LOG=" + filepath.Join(h.logs, "docker"),

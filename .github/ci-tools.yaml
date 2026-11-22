@@ -248,7 +248,9 @@ tools:
   # packages/daemon/docker/worker.Dockerfile after the `@`, and the release tag carries a leading
   # `v` that tool spec does not.
   # `primary` is empty because mise fetches the primary bytes: .github/actions/install-jj runs
-  # `mise x github:sjawhar/jj@<version>`, and nothing of this repository reaches that asset.
+  # `mise x github:sjawhar/jj@<version>`, and no CI job of this repository reaches that asset
+  # itself. (The worker image's tools stage fetches the same archive and holds it to its own
+  # `ARG JJ_SHA256`, a digest of the archive and not of the binary this row pins.)
   # The digest is of the binary mise installs, so the second source and the primary path are held
   # to one literal; `mirror_from` is the asset mise reads, and `mirror_member` is the binary inside
   # it, which is what the copy holds.

@@ -51,6 +51,10 @@ type updateIssueInput struct {
 	Components       json.RawMessage `json:"components"`
 	Repo             json.RawMessage `json:"repo"`
 	Actor            *model.Actor    `json:"actor"`
+	// RefuseOpenForeignChildren asks, beside a status of retro or done, that the write be refused
+	// while a child of another project is open (refuseOpenForeignChildren). The Legion daemon's
+	// sign_off and close_root send it; a person's status write does not, and is taken as before.
+	RefuseOpenForeignChildren bool `json:"refuse_open_foreign_children"`
 }
 
 func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
@@ -103,6 +107,10 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			writeError(w, "INVALID_STATUS", http.StatusBadRequest, "status is not in the Legion lifecycle")
 			return
 		}
+	}
+	if input.RefuseOpenForeignChildren && status != "retro" && status != "done" {
+		writeError(w, "INVALID_ISSUE", http.StatusBadRequest, "refuse_open_foreign_children goes only with status retro or done")
+		return
 	}
 	if input.Route != nil && *input.Route != "" {
 		if _, err := model.ParseRoute(*input.Route); err != nil {
@@ -181,7 +189,10 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
 
-	dependencyWrite := input.BlockedBy != nil || parentProvided
+	// A write that asks for the open-child check of an acceptance is a dependency write too: the
+	// check and the status it guards run under the deployment dependency lock that every create
+	// with a parent and every reparent takes, so no child is filed between the two.
+	dependencyWrite := input.BlockedBy != nil || parentProvided || input.RefuseOpenForeignChildren
 	// A credential that names one project is refused a target outside it where a target's
 	// project is read, since this route's own address names no target (project_scope.go): the
 	// lock step refuses it before any lock, and writeBlockedBy again under them.
@@ -264,6 +275,16 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		others := input.Title != nil || input.Labels != nil || input.LabelsAdd != nil || priorityProvided || input.Route != nil || addsLink || assigneeProvided || parentProvided || input.BlockedBy != nil || input.Advances != nil || repoProvided
 		if others || (input.Status != nil && !reopening) || (input.Status == nil && input.Rank == nil && !componentsProvided && input.ExternalLinks == nil) {
 			writeError(w, "ISSUE_CLOSED", http.StatusConflict, "issue is closed")
+			return
+		}
+	}
+	if input.RefuseOpenForeignChildren {
+		var open openForeignChildrenError
+		if err := refuseOpenForeignChildren(r.Context(), tx, key, before.Project); errors.As(err, &open) {
+			WriteJSON(w, http.StatusConflict, open.body())
+			return
+		} else if err != nil {
+			s.writeHandlerError(w, err)
 			return
 		}
 	}
