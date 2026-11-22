@@ -840,7 +840,6 @@ else
     OUTSIDE_CODEX_ENVOY_COMMIT="${OUTSIDE_CODEX_ENVOY_COMMIT:-}" \
     OUTSIDE_DEVICE_LOGIN_COMMIT="${OUTSIDE_DEVICE_LOGIN_COMMIT:-}" \
     OUTSIDE_CODEX_ENVOY_SOURCE="${OUTSIDE_CODEX_ENVOY_SOURCE:-}" \
-    ${OUTSIDE_NPM_REGISTRY:+"OUTSIDE_NPM_REGISTRY=$OUTSIDE_NPM_REGISTRY"} \
     OUTSIDE_CODEX_TSV="$work/codex.tsv" bash "$here/outside-agent-codex.sh" >/dev/null </dev/null
   codex_exit=$?
   for name in $codex_rows; do

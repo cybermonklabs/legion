@@ -1070,6 +1070,9 @@ EOF
     P4:*) held_by=$peer_problem ;;
     P5:PASS) passed issue || held_by="the issue row did not pass, so no repository is known to resolve to $project" ;;
     P6:PASS) held_by=$peer_problem${foreign_problem:+${peer_problem:+; }$foreign_problem} ;;
+    # C4's control is a send to <peer>-foreign answered 404, which says something only where that
+    # session exists outside the project: the session P6's absences rest on (foreign_start).
+    C4:PASS) [ -z "$foreign_problem" ] || held_by="its control's session outside the project: $foreign_problem" ;;
     P6:FAIL)
       case $(mark_word sub "$got") in
         refused | unread) [ -z "$foreign_in_project" ] || held_by=$foreign_in_project ;;

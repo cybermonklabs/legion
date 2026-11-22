@@ -18,12 +18,18 @@
  *  and, in the same file, not PASS where one crosses the rule the row reads. */
 
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { findTool, nextTurn, type Plan, whoamiOf } from "../acceptance/outside-agent-codex-model";
-import { compareTrees, provenanceOf } from "../acceptance/outside-agent-codex-provenance";
+import {
+  certificateProblem,
+  compareTrees,
+  fulcioExtensions,
+  provenanceOf,
+} from "../acceptance/outside-agent-codex-provenance";
+import { commentAuthor } from "../acceptance/outside-agent-probe";
 import { rowLimit, runBounded } from "./bounded-subprocess";
 import {
   codexLeg,
@@ -81,9 +87,11 @@ interface CodexScenario {
   readonly inboundDropped?: boolean;
   /** The control's send to `<peer>-foreign` reaches the session anyway (C4's control). */
   readonly controlDelivered?: boolean;
-  /** The comment the session writes is not on the issue, or was written with scopes (C3). */
+  /** The comment the session writes is not on the issue (C3). */
   readonly commentLost?: boolean;
-  readonly commentScopes?: number;
+  /** The comment's author, where it differs from what Dispatch records for the Codex session's
+   *  write with the outside person's token: a field set to null is absent. */
+  readonly commentAuthor?: Record<string, string | boolean | null>;
   /** The session's envoy_send fails, or succeeds and never reaches the probe (C5). */
   readonly sendFails?: boolean;
   readonly outboundDropped?: boolean;
@@ -134,6 +142,8 @@ const provenanceHelper = join(
   "acceptance",
   "outside-agent-codex-provenance.ts"
 );
+/** Where the real probe is: the stand-in probe reads Dispatch's comments with its reader. */
+const realProbe = join(import.meta.dir, "..", "acceptance", "outside-agent-probe.ts");
 
 /** The installed plugin's stand-in `dist/dispatch.js`, the terminal entry of C7: it keeps what it
  *  was run with and answers whoami as the scenario says. */
@@ -374,10 +384,15 @@ esac
 `;
 }
 
-/** The stand-in probe: answers each command the Codex leg runs, from the state directory. */
+/** The stand-in probe: answers each command the Codex leg runs, from the state directory. Its
+ *  `comment-find` serves the issue's comments as Dispatch answers them, the author as Dispatch
+ *  records a write made with a broker-issued token named with one project (kind `session`, the
+ *  session as id, proven, owner and project, no act: api/broker_token.go), and reads them with the
+ *  real probe's own reader. */
 function standInProbe(state: string): string {
   return `import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { commentAuthor } from ${JSON.stringify(realProbe)};
 const state = ${JSON.stringify(state)};
 const scenario = JSON.parse(readFileSync(join(state, "scenario.json"), "utf8"));
 const [command, ...args] = Bun.argv.slice(2);
@@ -417,10 +432,13 @@ switch (command) {
     break;
   }
   case "comment-find": {
-    const found = existsSync(join(state, "comment")) && readFileSync(join(state, "comment"), "utf8") === args.slice(1).join(" ");
-    print(found
-      ? { ...ok, found: true, id: "3f1c2a9e-8b7d-4c11-9e2a-5d6f7a8b9c0d", author_kind: "agent", owner: ${JSON.stringify(person)}, project: "EXAMPLE", session: "codex-thread-main", scope_count: scenario.commentScopes ?? 0 }
-      : { ...ok, found: false, id: null, author_kind: null, owner: null, project: null, session: null, scope_count: null });
+    const comments = [{ id: "5d0c7a1e-0000-4000-8000-000000000001", body: "an earlier comment", author: { kind: "person", id: ${JSON.stringify(person)}, proven: true } }];
+    if (existsSync(join(state, "comment"))) {
+      const author = { kind: "session", id: "codex-thread-main", owner: ${JSON.stringify(person)}, project: "EXAMPLE", proven: true, ...(scenario.commentAuthor ?? {}) };
+      for (const [name, value] of Object.entries(author)) if (value === null) delete author[name];
+      comments.push({ id: "3f1c2a9e-8b7d-4c11-9e2a-5d6f7a8b9c0d", body: readFileSync(join(state, "comment"), "utf8"), author });
+    }
+    print({ ...ok, ...commentAuthor(comments, args.slice(1).join(" ")) });
     break;
   }
   default:
@@ -520,8 +538,10 @@ const [command, first, second, third] = Bun.argv.slice(2);
 const print = (value) => console.log(JSON.stringify(value));
 if (command === "tree") print(compareTrees(first, second));
 else {
+  // What registry the leg named to this helper: none, whatever the leg was given.
+  require("node:fs").writeFileSync(${JSON.stringify(join(state, "helper-registry"))}, process.env.OUTSIDE_NPM_REGISTRY ?? "none");
   Bun.spawnSync(["tar", "-czf", third, "-C", ${JSON.stringify(join(state, "release"))}, "package"]);
-  print({ status: 200, integrity: "sha512-standin", tarball_matches: ${scenario.tarballMismatch !== true}, provenance: true, repository: "https://github.com/cybermonklabs/legion", workflow: ".github/workflows/release.yaml", ref: "refs/heads/main", commit: ${JSON.stringify(repo.built)}, subject_matches: true, ...${JSON.stringify(scenario.provenance ?? {})} });
+  print({ status: 200, integrity: "sha512-standin", tarball_matches: ${scenario.tarballMismatch !== true}, provenance: true, repository: "https://github.com/cybermonklabs/legion", workflow: ".github/workflows/release.yaml", ref: "refs/heads/main", commit: ${JSON.stringify(repo.built)}, subject_matches: true, certificate_matches: true, certificate_problem: "", ...${JSON.stringify(scenario.provenance ?? {})} });
 }
 `
   );
@@ -592,6 +612,8 @@ writeFileSync(join(prefix, "node_modules", ".package-lock.json"), ${JSON.stringi
       OUTSIDE_CODEX_LIST_SECONDS: "3",
       OUTSIDE_CODEX_START_SECONDS: String(scenario.startSeconds ?? 30),
       OUTSIDE_CODEX_TSV: rows,
+      // An input the leg no longer takes: the pass row reads that its provenance helper got none.
+      OUTSIDE_NPM_REGISTRY: "http://registry.invalid",
       ...(scenario.firstStart === undefined
         ? {}
         : { OUTSIDE_CODEX_FIRST_START: scenario.firstStart }),
@@ -696,10 +718,21 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
       );
       expect(rows.get("C0")?.got).toContain("npm audit signatures: the attestation is verified");
       expect(rows.get("C0")?.got).toContain("holds the device login");
+      expect(rows.get("C0")?.got).toContain(
+        "its signing certificate names the same repository, workflow, ref and commit"
+      );
+      // The leg names no registry to its provenance helper, whatever it is given.
+      expect(readFileSync(join(run.state, "helper-registry"), "utf8")).toBe("none");
       // The screens answered as the outside person is told to: the folder trust, the two first-run
       // screens and the envoy_send approval, each once; no later start asked again.
       expect(rows.get("C1")?.got).toContain(answeredScreens);
-      expect(rows.get("C2")?.got).toContain(`at ${run.inside} it exited 2`);
+      expect(rows.get("C2")?.got).toContain(
+        `at ${run.inside} the tool's dispatch whoami refused (exit 2)`
+      );
+      // C3 read the comment's author as Dispatch records the Codex session's write.
+      expect(rows.get("C3")?.got).toContain(
+        `by session codex-thread-main, proven, owner ${person}, project EXAMPLE`
+      );
       expect(rows.get("C4")?.got).toContain("example-peer-foreign answered 404");
       expect(rows.get("C5")?.got).toContain("read it from codex-thread-main");
       expect(rows.get("C6")?.got).toContain("ENVOY_URL at http://127.0.0.1:1, which refused");
@@ -822,23 +855,47 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
   );
 
   test(
-    "C6 fails where the whoami answers with the listener reachable and not with it refused, and C3 where the comment carried a scope",
+    "C6 fails where the whoami answers with the listener reachable and not with it refused, and C2 reads UNKNOWN where its control's call ended with no exit of the command",
     async () => {
-      const [refused, scoped] = await Promise.all([
+      const [refused, controlKilled] = await Promise.all([
         codexStandInRun({ whoami: { "edge-refused": { exit: 2 } } }),
-        codexStandInRun({ commentScopes: 2 }),
+        codexStandInRun({
+          whoami: { inside: { exit: -1, detail: "tool call error: the call timed out" } },
+        }),
       ]);
       expect({ row: rowsOf(refused.stdout).get("C6"), stdout: refused.stdout }).toMatchObject({
         row: { verdict: "FAIL" },
       });
       expect(rowsOf(refused.stdout).get("C6")?.got).toContain("exited 2");
-      expect({ row: rowsOf(scoped.stdout).get("C3"), stdout: scoped.stdout }).toMatchObject({
-        row: { verdict: "FAIL" },
-      });
-      expect(rowsOf(scoped.stdout).get("C3")?.got).toContain("2 scopes");
+      // A timeout, a cancel or a kill of the control's tool call is no refusal.
+      expect(rowOf(controlKilled, "C2")).toMatchObject({ row: { verdict: "UNKNOWN" } });
+      expect(rowOf(controlKilled, "C2").row?.got).toContain("which is no refusal");
     },
     // The two runs at once, each a bounded child under the Codex run's bound.
     rowLimit({ atOnce: ["codexRun", "codexRun"] })
+  );
+
+  test(
+    "C3 fails where the comment's author is another session, not proven, another person, or names no project (a broker that does not name a restricted member's trade)",
+    async () => {
+      const [otherSession, unproven, otherOwner, noProject] = await Promise.all([
+        codexStandInRun({ commentAuthor: { id: "codex-thread-other" } }),
+        codexStandInRun({ commentAuthor: { proven: null } }),
+        codexStandInRun({ commentAuthor: { owner: "someone@example.com" } }),
+        codexStandInRun({ commentAuthor: { project: null } }),
+      ]);
+      const failed = (run: CodexRun, words: string) => {
+        expect(rowOf(run, "C3")).toMatchObject({ row: { verdict: "FAIL" } });
+        expect(rowOf(run, "C3").row?.got).toContain(words);
+        expect(run.code).toBe(1);
+      };
+      failed(otherSession, "session codex-thread-other, not codex-thread-main");
+      failed(unproven, "not proven by its credential");
+      failed(otherOwner, "owner someone@example.com");
+      failed(noProject, "project null (a token naming no project");
+    },
+    // The four runs at once, each a bounded child under the Codex run's bound.
+    rowLimit({ atOnce: ["codexRun", "codexRun", "codexRun", "codexRun"] })
   );
 
   test(
@@ -1044,6 +1101,37 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
   );
 
   test(
+    "C0 fails where the attestation's signing certificate names another commit than its payload, and reads UNKNOWN where the certificate was not read",
+    async () => {
+      const [differs, unread] = await Promise.all([
+        codexStandInRun({
+          provenance: {
+            certificate_matches: false,
+            certificate_problem: `the certificate names the source commit ${"0".repeat(40)}, the payload another`,
+          },
+        }),
+        codexStandInRun({
+          provenance: {
+            certificate_matches: false,
+            certificate_unread: "a DER element runs past its parent",
+          },
+        }),
+      ]);
+      expect(rowOf(differs, "C0")).toMatchObject({ row: { verdict: "FAIL" } });
+      expect(rowOf(differs, "C0").row?.got).toContain(
+        `the certificate names the source commit ${"0".repeat(40)}`
+      );
+      expect(differs.code).toBe(1);
+      expect(rowOf(unread, "C0")).toMatchObject({ row: { verdict: "UNKNOWN" } });
+      expect(rowOf(unread, "C0").row?.got).toContain(
+        "the attestation's signing certificate was not read: a DER element runs past its parent"
+      );
+    },
+    // The two runs at once, each a bounded child under the Codex run's bound.
+    rowLimit({ atOnce: ["codexRun", "codexRun"] })
+  );
+
+  test(
     "with no input every row reads UNKNOWN and the leg exits 2, and the check fails on a copy that defaults to PASS",
     async () => {
       const env = {
@@ -1077,14 +1165,27 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
 });
 
 describe("the Codex leg's provenance reads", () => {
+  /** The signing certificate of @sjawhar/codex-envoy 5.1.0's SLSA provenance, as the registry
+   *  serves it (`verificationMaterial.certificate.rawBytes`): Fulcio's, for release.yaml at
+   *  refs/heads/main of cybermonklabs/legion, commit 61ca77bb5616b96605ecab86215240f417a88fe9. */
+  const releaseCertificate =
+    "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";
+  const releaseCommit = "61ca77bb5616b96605ecab86215240f417a88fe9";
   /** An attestations answer as the registry serves it: a publish attestation and a SLSA
-   *  provenance whose payload names `workflow`, `commit` and the tarball's sha512 `subject`. */
-  const attestations = (workflow: Record<string, string>, commit: string, subject: string) => ({
+   *  provenance whose payload names `workflow`, `commit` and the tarball's sha512 `subject`,
+   *  signed with `certificate` (base64 DER), the release's own by default. */
+  const attestations = (
+    workflow: Record<string, string>,
+    commit: string,
+    subject: string,
+    certificate = releaseCertificate
+  ) => ({
     attestations: [
       { predicateType: "https://github.com/npm/attestation/tree/main/specs/publish/v0.1" },
       {
         predicateType: "https://slsa.dev/provenance/v1",
         bundle: {
+          verificationMaterial: { certificate: { rawBytes: certificate } },
           dsseEnvelope: {
             payload: Buffer.from(
               JSON.stringify({
@@ -1120,21 +1221,66 @@ describe("the Codex leg's provenance reads", () => {
   };
 
   test("it reads the workflow, the source commit and whether the subject is the registry's tarball", () => {
-    expect(provenanceOf(attestations(release, "a".repeat(40), hex), integrity)).toEqual({
+    expect(provenanceOf(attestations(release, releaseCommit, hex), integrity)).toEqual({
       provenance: true,
       repository: "https://github.com/cybermonklabs/legion",
       workflow: ".github/workflows/release.yaml",
       ref: "refs/heads/main",
-      commit: "a".repeat(40),
+      commit: releaseCommit,
       subject_matches: true,
+      certificate_matches: true,
+      certificate_problem: "",
     });
     // Another tarball's digest, and an answer with no SLSA provenance, as a hand publish has.
     expect(
-      provenanceOf(attestations(release, "a".repeat(40), "0".repeat(128)), integrity)
+      provenanceOf(attestations(release, releaseCommit, "0".repeat(128)), integrity)
     ).toMatchObject({
       subject_matches: false,
     });
     expect(provenanceOf({ attestations: [] }, integrity)).toEqual({ provenance: false });
+  });
+
+  test("it holds the payload to the signing certificate's Fulcio extensions: another commit, ref or repository there differs, a missing extension is named, and a certificate it cannot walk is unread", () => {
+    const extensions = fulcioExtensions(new Uint8Array(Buffer.from(releaseCertificate, "base64")));
+    expect(Object.fromEntries([12, 13, 14, 18].map((arc) => [arc, extensions.get(arc)]))).toEqual({
+      12: "https://github.com/cybermonklabs/legion",
+      13: releaseCommit,
+      14: "refs/heads/main",
+      18: "https://github.com/cybermonklabs/legion/.github/workflows/release.yaml@refs/heads/main",
+    });
+    // A payload that names another commit, ref or repository than the certificate.
+    expect(provenanceOf(attestations(release, "a".repeat(40), hex), integrity)).toMatchObject({
+      certificate_matches: false,
+      certificate_problem: `the certificate names the source commit ${releaseCommit}, the payload ${"a".repeat(40)}`,
+    });
+    expect(
+      provenanceOf(
+        attestations({ ...release, ref: "refs/heads/feat/edited" }, releaseCommit, hex),
+        integrity
+      ).certificate_problem
+    ).toContain(
+      "the certificate names the source ref refs/heads/main, the payload refs/heads/feat/edited"
+    );
+    // A certificate that lacks an extension the payload is held to.
+    const lacking = new Map(extensions);
+    lacking.delete(13);
+    expect(
+      certificateProblem(lacking, {
+        repository: release.repository,
+        workflow: release.path,
+        ref: release.ref,
+        commit: releaseCommit,
+      })
+    ).toBe("the certificate names no source commit (1.3.6.1.4.1.57264.1.13)");
+    // A certificate cut short, and none at all: read as no reading, never as a match.
+    for (const certificate of [releaseCertificate.slice(0, 200), ""]) {
+      expect(
+        provenanceOf(attestations(release, releaseCommit, hex, certificate), integrity)
+      ).toMatchObject({
+        certificate_matches: false,
+        certificate_unread: expect.any(String),
+      });
+    }
   });
 
   test("it compares a tarball's tree with an installed one, every file by its path", () => {
@@ -1163,14 +1309,34 @@ describe("the Codex leg's provenance reads", () => {
     });
   });
 
+  test("it compares links by their targets, and reads an entry of another type as one that differs", () => {
+    const tarball = scratch("tarball");
+    const installed = scratch("installed");
+    for (const dir of [tarball, installed]) writeFileSync(join(dir, "real.js"), "same");
+    // The same target on both sides; another target; a link in one tree and a file in the other.
+    symlinkSync("real.js", join(tarball, "same.js"));
+    symlinkSync("real.js", join(installed, "same.js"));
+    symlinkSync("real.js", join(tarball, "moved.js"));
+    symlinkSync("elsewhere.js", join(installed, "moved.js"));
+    symlinkSync("real.js", join(tarball, "kind.js"));
+    writeFileSync(join(installed, "kind.js"), "same");
+    expect(compareTrees(tarball, installed)).toEqual({
+      equal: 2,
+      differ: "kind.js moved.js",
+      only_tarball: "",
+      only_installed: "",
+    });
+  });
+
   test(
-    "attestation downloads the release's tarball and reads whether it is the bytes the registry's integrity names",
+    "attestation downloads the release's tarball and reads whether it is the bytes the registry's integrity names, and reads no registry or tarball that is not https",
     async () => {
       const served = Buffer.from("the release's tarball, as the registry serves it");
       const good = `sha512-${new Bun.CryptoHasher("sha512").update(served).digest("base64")}`;
       // The same integrity with one character changed: the tarball is not its bytes.
       const bad = `${good.slice(0, 10)}${good[10] === "A" ? "B" : "A"}${good.slice(11)}`;
       let named = good;
+      let tarballAt = "";
       const registry = Bun.serve({
         hostname: "127.0.0.1",
         port: 0,
@@ -1178,10 +1344,13 @@ describe("the Codex leg's provenance reads", () => {
           new URL(request.url).pathname === "/release.tgz"
             ? new Response(served)
             : Response.json({
-                dist: { integrity: named, tarball: new URL("/release.tgz", request.url).href },
+                dist: {
+                  integrity: named,
+                  tarball: tarballAt || new URL("/release.tgz", request.url).href,
+                },
               }),
       });
-      const read = async () => {
+      const read = async (origin = `http://127.0.0.1:${registry.port}`) => {
         const file = join(scratch("tarball-file"), "release.tgz");
         const ran = await runBounded({
           argv: ["bun", provenanceHelper, "attestation", "@sjawhar/codex-envoy", "5.0.1", file],
@@ -1189,11 +1358,12 @@ describe("the Codex leg's provenance reads", () => {
           env: {
             PATH: process.env.PATH ?? "",
             HOME: scratch("home"),
-            OUTSIDE_NPM_REGISTRY: `http://127.0.0.1:${registry.port}`,
+            OUTSIDE_NPM_REGISTRY: origin,
           },
           from: import.meta.url,
         });
-        return { answer: JSON.parse(ran.stdout), written: readFileSync(file, "utf8") };
+        const written = Bun.file(file).size > 0 ? readFileSync(file, "utf8") : "";
+        return { answer: JSON.parse(ran.stdout), written };
       };
       try {
         expect(await read()).toEqual({
@@ -1207,13 +1377,63 @@ describe("the Codex leg's provenance reads", () => {
           tarball_matches: false,
           provenance: false,
         });
+        // A plain-http registry off this machine is never read, nor a tarball the record names
+        // at one.
+        expect((await read("http://registry.example")).answer).toEqual({
+          unknown: "OUTSIDE_NPM_REGISTRY is no https:// origin: http://registry.example",
+        });
+        tarballAt = "http://registry.example/release.tgz";
+        expect((await read()).answer).toEqual({
+          unknown:
+            "the registry's record names no https:// tarball: http://registry.example/release.tgz",
+        });
       } finally {
         registry.stop(true);
       }
     },
-    // The two reads, one after another, each a bounded child under the short bound.
-    rowLimit("short", "short")
+    // The four reads, one after another, each a bounded child under the short bound.
+    rowLimit("short", "short", "short", "short")
   );
+});
+
+describe("the probe's reading of a comment's author", () => {
+  test("it reads the author as Dispatch records a broker token's write: kind session, its id, proven, owner and project, and no act", () => {
+    // api/broker_token.go's actor for a token named with one project, as an issue's comments
+    // answer it; broker_token_test.go's requireSessionProven pins that it carries no act.
+    const comments = [
+      { id: "c-1", body: "another", author: { kind: "person", id: person, proven: true } },
+      {
+        id: "c-2",
+        body: "outside-e2e codex-comment n1",
+        author: { kind: "session", id: "th-1", owner: person, project: "EXAMPLE", proven: true },
+      },
+    ];
+    expect(commentAuthor(comments, "codex-comment n1")).toEqual({
+      found: true,
+      id: "c-2",
+      author_kind: "session",
+      author_id: "th-1",
+      proven: true,
+      owner: person,
+      project: "EXAMPLE",
+    });
+    // A field Dispatch leaves out reads null, and proven false: none of them reads as a match.
+    expect(
+      commentAuthor([{ id: "c-3", body: "x n1", author: { kind: "session", id: "th-1" } }], "n1")
+    ).toEqual({
+      found: true,
+      id: "c-3",
+      author_kind: "session",
+      author_id: "th-1",
+      proven: false,
+      owner: null,
+      project: null,
+    });
+    expect(commentAuthor(comments, "no such text")).toMatchObject({
+      found: false,
+      author_id: null,
+    });
+  });
 });
 
 describe("the Codex leg's stand-in model, on the requests Codex sends it", () => {

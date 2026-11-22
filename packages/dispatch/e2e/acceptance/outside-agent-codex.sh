@@ -67,10 +67,9 @@
 # naming the control; OUTSIDE_CODEX_LIST_SECONDS (default 30, as P4 waits for its session), how
 # long Codex may take to record its session once its turn began, and the edge to list it;
 # OUTSIDE_CODEX_START_SECONDS (default 90), how long an interactive start, its screens answered,
-# may take before its turn begins; OUTSIDE_NPM_REGISTRY
-# (default https://registry.npmjs.org), the registry C0 reads the release's record, tarball and
-# provenance from; OUTSIDE_ALLOW_HTTP=1, which lets http://127.0.0.1 origins through for a local
-# stack and this file's tests.
+# may take before its turn begins; OUTSIDE_ALLOW_HTTP=1, which lets http://127.0.0.1 origins
+# through for a local stack and this file's tests. C0 reads npm's own registry,
+# https://registry.npmjs.org, and the leg names no other registry to any npm call.
 #
 # Output: on stdout a TSV, the header `row want got verdict` and rows C0 to C7. Progress goes to
 # stderr. A row reads PASS, FAIL or UNKNOWN: UNKNOWN when it could not run, its `got` naming what it
@@ -216,10 +215,10 @@ nonce=$(od -An -N6 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
 [ -n "$nonce" ] || nonce=$$
 work=$(mktemp -d "${TMPDIR:-/tmp}/outside-agent-codex.XXXXXX") || work=''
 
-want0="$envoy_package@${envoy_version:-<OUTSIDE_CODEX_ENVOY_VERSION>} has npm provenance: built by $release_repository's $release_workflow on refs/heads/main from ${envoy_commit:-<OUTSIDE_CODEX_ENVOY_COMMIT>}, which holds ${login_commit:-<OUTSIDE_DEVICE_LOGIN_COMMIT>} (the device login); its attestation is verified (npm audit signatures) and attests the registry's tarball, which is the tree Codex installed, file by file"
+want0="$envoy_package@${envoy_version:-<OUTSIDE_CODEX_ENVOY_VERSION>} has npm provenance: built by $release_repository's $release_workflow on refs/heads/main from ${envoy_commit:-<OUTSIDE_CODEX_ENVOY_COMMIT>}, which holds ${login_commit:-<OUTSIDE_DEVICE_LOGIN_COMMIT>} (the device login), as its signing certificate names too; its attestation is verified (npm audit signatures) and attests the registry's tarball, which is the tree Codex installed, entry by entry"
 want1="the Codex session registers at ${listener:-<OUTSIDE_LISTENER_URL>} under its own session id, the Codex thread"
-want2="dispatch whoami through the plugin's dispatch tool, in the Codex session, names that session, ${person_lower:-<OUTSIDE_PERSON>} and ${project:-<OUTSIDE_PROJECT>}; with DISPATCH_URL at ${inside:-<OUTSIDE_INSIDE_DISPATCH_URL>} the same call does not"
-want3="a comment the Codex session writes through the dispatch tool on the scratch issue lands: the probe reads it, written by ${person_lower:-<OUTSIDE_PERSON>}'s agent as the Codex session, in ${project:-<OUTSIDE_PROJECT>}, with no scope"
+want2="dispatch whoami through the plugin's dispatch tool, in the Codex session, names that session, ${person_lower:-<OUTSIDE_PERSON>} and ${project:-<OUTSIDE_PROJECT>}; with DISPATCH_URL at ${inside:-<OUTSIDE_INSIDE_DISPATCH_URL>} the same call is refused (the command exits 1 or more)"
+want3="a comment the Codex session writes through the dispatch tool on the scratch issue lands: the probe reads it, written by the Codex session (author kind session, its id that session, proven), owner ${person_lower:-<OUTSIDE_PERSON>}, project ${project:-<OUTSIDE_PROJECT>}"
 want4="a message the probe sends the Codex session through the edge is in the model's next request (the plugin's PostToolUse hook) within $inbound_bound s; one sent to ${peer:-<OUTSIDE_PEER_SESSION>}-foreign, a session of another project, is answered 404 and never reaches it"
 want5="the Codex session's envoy_send to the probe's session reaches the probe within $outbound_bound s, from the Codex session"
 want6="with the edge listener refused (ENVOY_URL at $refused_origin, which refuses a connection), dispatch whoami through the tool still names ${person_lower:-<OUTSIDE_PERSON>} and ${project:-<OUTSIDE_PROJECT>}"
@@ -483,7 +482,6 @@ release=''
 integrity='not read'
 if [ "$source" = npm ]; then
   release=$(env -i "PATH=$tools_path" "HOME=$work/npm-home" "TMPDIR=${TMPDIR:-/tmp}" \
-    ${OUTSIDE_NPM_REGISTRY:+"OUTSIDE_NPM_REGISTRY=$OUTSIDE_NPM_REGISTRY"} \
     bun "$here/outside-agent-codex-provenance.ts" attestation "$envoy_package" "$envoy_version" "$work/release.tgz" \
     2>>"$work/provenance.log" </dev/null)
   integrity=$(json_field integrity "$release") || integrity='not read'
@@ -557,6 +555,21 @@ if [ "$source" = npm ]; then
       c0_wrong="${c0_wrong:+$c0_wrong; }the provenance names commit $attested_commit, not OUTSIDE_CODEX_ENVOY_COMMIT $envoy_commit"
     [ "$(json_field subject_matches "$release")" = true ] ||
       c0_wrong="${c0_wrong:+$c0_wrong; }the provenance attests another tarball than the registry's ($integrity)"
+    # The payload is what the builder wrote; its signing certificate is what Fulcio wrote of the
+    # workflow that signed it. npm audit signatures (below) verifies that certificate's chain and
+    # the signature; this holds the payload to the certificate's own extensions.
+    certificate_unread=$(json_field certificate_unread "$release")
+    case $(json_field certificate_matches "$release") in
+      true) c0_read="$c0_read; its signing certificate names the same repository, workflow, ref and commit" ;;
+      false)
+        if [ -n "$certificate_unread" ]; then
+          c0_unread="${c0_unread:+$c0_unread; }the attestation's signing certificate was not read: $certificate_unread"
+        else
+          c0_wrong="${c0_wrong:+$c0_wrong; }$(json_field certificate_problem "$release")"
+        fi
+        ;;
+      *) c0_unread="${c0_unread:+$c0_unread; }the provenance read gave no reading of its signing certificate" ;;
+    esac
   fi
   # The tree Codex installed is the tarball whose integrity the registry and the attestation name.
   if [ -n "$(json_field status "$release")" ] && [ -z "$(json_field unknown "$release")" ]; then
@@ -985,10 +998,24 @@ else
       row C2 "$want2" "$reading; OUTSIDE_INSIDE_DISPATCH_URL is unset, so the control at the inside origin did not run" UNKNOWN
     elif [ -z "$inside_line" ]; then
       row C2 "$want2" "$reading; the control's whoami at $inside got no output (${inside_end:-not run})" UNKNOWN
-    elif [ "$(json_field exit "$inside_line")" = 0 ] && [ -z "$(whoami_reading "$inside_line" '')" ]; then
-      row C2 "$want2" "$reading; at $inside the tool answered the same, so this reading does not tell the edge from the inside origin" UNKNOWN
     else
-      row C2 "$want2" "$reading; at $inside it exited $(json_field exit "$inside_line"), owner $(json_field owner "$inside_line")" PASS
+      # The control counts only a refusal: the dispatch command's own exit, 1 or more. -1 is a
+      # tool call that ended with no exit of the command (a timeout, a cancel or a kill), and an
+      # answer that exits 0 is no refusal, whatever it names.
+      inside_exit=$(json_field exit "$inside_line")
+      case $inside_exit in
+        [1-9] | [1-9][0-9] | [1-9][0-9][0-9])
+          row C2 "$want2" "$reading; at $inside the tool's dispatch whoami refused (exit $inside_exit): $(json_field detail "$inside_line")" PASS
+          ;;
+        0)
+          if [ -z "$(whoami_reading "$inside_line" '')" ]; then
+            row C2 "$want2" "$reading; at $inside the tool answered the same, so this reading does not tell the edge from the inside origin" UNKNOWN
+          else
+            row C2 "$want2" "$reading; at $inside the tool answered (exit 0, owner $(json_field owner "$inside_line"), project $(json_field project "$inside_line")), which is no refusal" UNKNOWN
+          fi
+          ;;
+        *) row C2 "$want2" "$reading; at $inside the tool's call ended with no exit of the command (exit ${inside_exit:-unread}: a timeout, a cancel or a kill), which is no refusal: $(json_field detail "$inside_line")" UNKNOWN ;;
+      esac
     fi
   fi
 fi
@@ -1004,30 +1031,35 @@ elif [ "$(json_field exit "$comment")" = 1 ]; then
 elif [ "$(json_field exit "$comment")" != 0 ]; then
   row C3 "$want3" "dispatch comment on $issue through the tool exited $(json_field exit "$comment")" UNKNOWN
 else
+  # Dispatch records a write made with a broker-issued token as the session itself: kind
+  # `session`, the session as its id, proven by the credential, the person as owner, and the
+  # project only for a token named with exactly one project (api/broker_token.go). The outside
+  # person is a restricted member, whose machine-login trade is named with the one project, so
+  # their comment carries it; against a broker that still mints a restricted member's token as
+  # acting for the person (no project), the row reads FAIL by design. Each field must equal what
+  # this leg expects; none absent matches.
   read_back=$(probe comment-find "$issue" "$comment_text")
   kind=$(json_field author_kind "$read_back")
+  written_as=$(json_field author_id "$read_back")
+  proven=$(json_field proven "$read_back")
   owner=$(json_field owner "$read_back")
   written_in=$(json_field project "$read_back")
-  written_as=$(json_field session "$read_back")
-  scopes=$(json_field scope_count "$read_back")
   wrong=''
-  [ "$kind" = agent ] || wrong="author kind ${kind:-none}"
-  [ "$owner" = "$person_lower" ] || wrong="${wrong:+$wrong, }owner ${owner:-none}"
-  case $written_in in '' | null | "$project") ;; *) wrong="${wrong:+$wrong, }project $written_in" ;; esac
-  # The session the write proved, held to the one Codex recorded; with no record (hooks that did
-  # not run) there is none to hold it to, and C1 says so.
-  if [ -n "$session" ]; then
-    case $written_as in '' | null | "$session") ;; *) wrong="${wrong:+$wrong, }session $written_as" ;; esac
-  fi
-  case $scopes in '' | null | 0) ;; *) wrong="${wrong:+$wrong, }$scopes scopes" ;; esac
+  [ "$kind" = session ] || wrong="author kind ${kind:-none}"
+  [ -z "$session" ] || [ "$written_as" = "$session" ] || wrong="${wrong:+$wrong, }session ${written_as:-none}, not $session"
+  [ "$proven" = true ] || wrong="${wrong:+$wrong, }not proven by its credential"
+  { [ "$owner" != null ] && [ "$owner" = "$person_lower" ]; } || wrong="${wrong:+$wrong, }owner ${owner:-none}"
+  [ "$written_in" = "$project" ] || wrong="${wrong:+$wrong, }project ${written_in:-none} (a token naming no project, as a broker that does not name a restricted member's trade mints, reads FAIL)"
   if [ -n "$(unknown_of "$read_back")" ] || [ "$(json_field status "$read_back")" != 200 ]; then
     row C3 "$want3" "dispatch comment exited 0; the probe's read of $issue's comments: ${read_back:0:200}" UNKNOWN
   elif [ "$(json_field found "$read_back")" != true ]; then
     row C3 "$want3" "dispatch comment exited 0, and no comment of $issue holds '$comment_text'" FAIL
   elif [ -n "$wrong" ]; then
     row C3 "$want3" "comment $(json_field id "$read_back") on $issue was written with $wrong" FAIL
+  elif [ -z "$session" ]; then
+    row C3 "$want3" "comment $(json_field id "$read_back") on $issue was written by $owner's session $written_as, and Codex filed no session record to hold it to" UNKNOWN
   else
-    row C3 "$want3" "comment $(json_field id "$read_back") on $issue: by $owner's agent as session ${written_as:-not named}, in ${written_in:-no project named}, ${scopes:-unread} scopes" PASS
+    row C3 "$want3" "comment $(json_field id "$read_back") on $issue: by session $session, proven, owner $owner, project $written_in" PASS
   fi
 fi
 

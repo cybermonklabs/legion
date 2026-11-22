@@ -64,10 +64,10 @@
  *                            <title>, or null (the Codex leg's scratch issue, row C3).
  *    comment-find <issue> <text>
  *                            GET /api/v1/issues/<issue>/comments: `found`, whether a comment
- *                            holds <text>, and its `id` and author: `author_kind`, `owner`,
- *                            `project`, `session` (the session the write proved) and
- *                            `scope_count`, the scopes of the credential it was written with
- *                            (row C3).
+ *                            holds <text>, its `id`, and its author as Dispatch records it:
+ *                            `author_kind`, `author_id` (the session, for a broker token's
+ *                            write), `proven`, `owner` and `project`, each null where absent
+ *                            (commentAuthor; row C3).
  *    receive <seconds> <text>
  *                            registers the session, opens its relay socket, prints {ready: true}
  *                            once the socket holds its own subject, and waits up to <seconds> for
@@ -583,6 +583,34 @@ async function scriptedModel(): Promise<never> {
   return Promise.withResolvers<never>().promise;
 }
 
+/** What `comment-find` reads of the first comment of `comments` (an issue's comments as Dispatch
+ *  answers them) whose body holds `wanted`: its id, and its author as Dispatch records a write
+ *  made with a broker-issued token (api/broker_token.go): kind `session`, the session as `id`,
+ *  `proven` true, the person as `owner`, and `project` only for a token mapped to one project.
+ *  Each field absent reads null. Exported for the Codex leg's tests, which give it Dispatch's
+ *  shape. */
+export function commentAuthor(
+  comments: unknown,
+  wanted: string
+): Record<string, string | boolean | null> {
+  const read = (value: unknown, name: string): unknown =>
+    typeof value === "object" && value !== null ? Reflect.get(value, name) : undefined;
+  const text = (value: unknown): string | null => (typeof value === "string" ? value : null);
+  const found = (Array.isArray(comments) ? comments : []).find((each) =>
+    String(read(each, "body") ?? "").includes(wanted)
+  );
+  const author = read(found, "author");
+  return {
+    found: found !== undefined,
+    id: text(read(found, "id")),
+    author_kind: text(read(author, "kind")),
+    author_id: text(read(author, "id")),
+    proven: read(author, "proven") === true,
+    owner: text(read(author, "owner")),
+    project: text(read(author, "project")),
+  };
+}
+
 async function main(): Promise<void> {
   const [command, ...args] = Bun.argv.slice(2);
   switch (command) {
@@ -877,23 +905,7 @@ async function main(): Promise<void> {
         "GET",
         dispatch(`/api/v1/issues/${encodeURIComponent(issue)}/comments`)
       );
-      const read = (value: unknown, name: string): unknown =>
-        typeof value === "object" && value !== null ? Reflect.get(value, name) : undefined;
-      const comments = Array.isArray(answer.body) ? answer.body : [];
-      const found = comments.find((each) => String(read(each, "body") ?? "").includes(wanted));
-      const author = read(found, "author");
-      const act = read(author, "act");
-      const scopes = read(act, "scopes");
-      print({
-        ...flat(answer),
-        found: found !== undefined,
-        id: read(found, "id") ?? null,
-        author_kind: read(author, "kind") ?? null,
-        owner: read(author, "owner") ?? null,
-        project: read(author, "project") ?? null,
-        session: read(act, "session") ?? null,
-        scope_count: Array.isArray(scopes) ? scopes.length : null,
-      });
+      print({ ...flat(answer), ...commentAuthor(answer.body, wanted) });
       return;
     }
     case "receive": {
@@ -942,10 +954,12 @@ async function main(): Promise<void> {
   }
 }
 
-try {
-  await main();
-  process.exit(0);
-} catch (error) {
-  print({ unknown: error instanceof Error ? error.message : String(error) });
-  process.exit(2);
+if (import.meta.main) {
+  try {
+    await main();
+    process.exit(0);
+  } catch (error) {
+    print({ unknown: error instanceof Error ? error.message : String(error) });
+    process.exit(2);
+  }
 }
