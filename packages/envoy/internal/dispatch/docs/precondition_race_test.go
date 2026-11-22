@@ -128,7 +128,13 @@ func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *
 				}}, actor, precondition)
 				result <- err
 			}()
-			waitForAsksQueryLock(t, database)
+			// The edit reads the table's anchors through its own transaction (queryFrom), so the
+			// wait is for that transaction's backend behind the asks gate: another session queued
+			// on the asks table would let the browser write below land before the edit's check
+			// waited, which is not the race this row is about.
+			if err, early := storetest.WaitForQueuedBehind(t, gate, conditionalTx.Conn().PgConn().PID(), result); early {
+				t.Fatalf("the edit answered (%v) before its table-anchor check queued behind the asks gate", err)
+			}
 			browserMutated := make(chan struct{})
 			browserResult := make(chan error, 1)
 			go func() {
@@ -212,26 +218,6 @@ func documentTokenForTest(t *testing.T, service *Service, artifactID, markdown s
 		t.Fatalf("document token read = markdown %q token %q, want markdown %q and token", read, token, markdown)
 	}
 	return token
-}
-
-func waitForAsksQueryLock(t *testing.T, database *store.Store) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		var waiting int
-		if err := database.Pool.QueryRow(context.Background(), `
-			select count(*)
-			from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock' and query like '%from asks%'
-		`).Scan(&waiting); err != nil {
-			t.Fatalf("inspect asks query lock: %v", err)
-		}
-		if waiting > 0 {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("conditional edit did not reach the table-anchor query lock")
 }
 
 func awaitRaceResult(t *testing.T, result <-chan error) error {

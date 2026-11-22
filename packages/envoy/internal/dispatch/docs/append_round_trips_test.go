@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A round trip is one exchange with Postgres: the client sends and waits for the server. It is
@@ -38,11 +39,11 @@ type roundTrip struct {
 	prepare bool
 }
 
-// names reports whether the trip sent room as one of its arguments, which every statement of one
-// document's store does.
-func (t roundTrip) names(room string) bool {
-	for _, arg := range t.args {
-		if text, ok := arg.(string); ok && text == room {
+// names reports whether the trip sent arg as one of its arguments: every statement of one
+// document's store sends the document's id, and an owner's lock sends the owner's key.
+func (t roundTrip) names(arg string) bool {
+	for _, value := range t.args {
+		if text, ok := value.(string); ok && text == arg {
 			return true
 		}
 	}
@@ -188,26 +189,58 @@ func (r *roundTripRecorder) roomLockRuns(room string) [][]roundTrip {
 	return runs
 }
 
-// connOf waits up to within for a round trip naming room whose SQL holds statement, and returns
-// the connection it went on: the one the call that made it runs on, whose backend a lock wait
-// watches (storetest.WaitForQueuedBehind). pgx reports a query as it starts, before the server
-// answers, so the connection is named while the call still waits on its lock. The caller resets
-// the recorder first, so the trip found is the call's own.
-func (r *roundTripRecorder) connOf(t *testing.T, room, statement string, within time.Duration) *pgx.Conn {
+// connOf waits for a round trip naming arg - any trip, when arg is empty, for a statement that
+// sends no value to name it by - whose first statement holds statement, a pipeline's when batch is
+// set and one sent on its own otherwise, and returns the connection it went on: the one the call
+// that made it runs on, whose backend a lock wait watches (storetest.WaitForQueuedBehind). pgx
+// reports a statement or a pipeline as it starts, before the server answers, so the connection is
+// named while the call still waits on its lock. The caller resets the recorder first, so the trip
+// found is the call's own. Its one bound is the test binary's deadline less testwait's margin.
+func (r *roundTripRecorder) connOf(t *testing.T, arg, statement string, batch bool) *pgx.Conn {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for {
-		for _, trip := range r.recorded() {
-			if !trip.batch && !trip.prepare && trip.names(room) && strings.Contains(trip.sql[0], statement) {
-				return trip.conn
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no round trip ran %q for document %s within %s", statement, room, within)
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+	return testwait.UntilPolling(t, 2*time.Millisecond, fmt.Sprintf("a round trip naming %s that runs %q", arg, statement), func() (*pgx.Conn, bool) {
+		return r.firstConnOf(arg, statement, batch)
+	})
 }
+
+// firstConnOf is connOf's reading at one moment: the connection of the first such trip the
+// recorder holds, and false while it holds none. It fails no test, so a hook running off the
+// test's goroutine can read it.
+func (r *roundTripRecorder) firstConnOf(arg, statement string, batch bool) (*pgx.Conn, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, trip := range r.trips {
+		if trip.matches(arg, statement, batch) {
+			return trip.conn, true
+		}
+	}
+	return nil, false
+}
+
+// latestConnOf is firstConnOf for the last such trip the recorder holds: the connection of the
+// latest call to make one, for a reader that cannot reset the recorder before that call starts.
+func (r *roundTripRecorder) latestConnOf(arg, statement string, batch bool) (*pgx.Conn, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for index := len(r.trips) - 1; index >= 0; index-- {
+		if trip := r.trips[index]; trip.matches(arg, statement, batch) {
+			return trip.conn, true
+		}
+	}
+	return nil, false
+}
+
+// matches reports whether the trip is a run, not a prepare, of the kind batch says, naming arg
+// unless arg is empty, whose first statement holds statement.
+func (t roundTrip) matches(arg, statement string, batch bool) bool {
+	return t.batch == batch && !t.prepare && (arg == "" || t.names(arg)) && strings.Contains(t.sql[0], statement)
+}
+
+// ownerReadStatement opens lockArtifactOwner: the read of a document's owner, a statement sent on
+// its own that names the document, on the connection whose transaction then takes the owner's
+// lock. Its trip names the backend of a call that locks a document's owner - a settlement, an
+// edit notice, a write (connOf).
+const ownerReadStatement = "select issue_key, coalesce(project_key, ''), slug, name"
 
 // labelsOn names, in order, the round trips the recorder holds for conn, which is how far the
 // call running on it had got.
@@ -326,6 +359,18 @@ func tracedRoomService(t *testing.T) (*Service, string, *roundTripRecorder) {
 	return service, artifactID, recorder
 }
 
+// tracedTestService is newTestService over a store whose every round trip, on every pool the
+// service opens from it, recorder records (storetest.TracedStore), so a test names the
+// connection a call of the service runs on (roundTripRecorder.connOf) and waits on that one
+// backend. database is the same database untraced, for the test's own reads and locks.
+func tracedTestService(t *testing.T) (database *store.Store, service *Service, artifactID string, recorder *roundTripRecorder) {
+	t.Helper()
+	database = storetest.Open(t)
+	artifactID = createDocument(t, database, "# First")
+	recorder = &roundTripRecorder{}
+	return database, newTestServiceOn(t, storetest.TracedStore(t, database, recorder)), artifactID, recorder
+}
+
 // A warm browser keystroke's store is three round trips, all of them under the document's
 // advisory lock the room's batch holds on a connection of the room-appends pool: the opening
 // pipeline, which takes the lock, begins the transaction and reads the gate; the writes
@@ -400,10 +445,15 @@ func TestALiveWriteAndAKeystrokeQueueOnTheRoomsLockAndNeitherIsLost(t *testing.T
 	}
 
 	// The keystroke's batch lingers for the room's next keystrokes before it goes
-	// (roomAppendLinger), so it reaches the lock a linger after the room applied it; roomWait
-	// covers that, as it covers the rest of the room's own work.
+	// (roomAppendLinger), so it reaches the lock a linger after the room applied it. The wait is
+	// for the keystroke's own backend, the connection its batch's opening pipeline took the lock in
+	// (appendRoomTx): a count of the backends queued behind the holder is met by any session of the
+	// server's own that queues there first, and the write would then start before the keystroke
+	// queued, which is not the order this row is about.
+	recorder.reset()
 	editAsConnectedPeer(t, service, artifactID, 1, storedOrderBob, replaceRun("Second.", "Second, bob."))
-	storetest.WaitForLockWaiters(t, holder, 1)
+	keystroke := recorder.connOf(t, artifactID, "pg_advisory_lock(hashtext", true)
+	storetest.WaitForEachQueuedBehind(t, holder, keystroke.PgConn().PID())
 	written := make(chan error, 1)
 	// The write's trips from here on are its own, so the first of them that takes the room's
 	// transaction-level lock names the connection it runs on (connOf).
@@ -419,7 +469,7 @@ func TestALiveWriteAndAKeystrokeQueueOnTheRoomsLockAndNeitherIsLost(t *testing.T
 	// that never waited at its read. The wait returns at once if the write answers without having
 	// queued, and the trips it has made say where it queued: its transaction, the document's
 	// owner row and the room's lock, with none of its append's.
-	writeConn := recorder.connOf(t, artifactID, "pg_advisory_xact_lock(hashtext", roomWait(t))
+	writeConn := recorder.connOf(t, artifactID, "pg_advisory_xact_lock(hashtext", false)
 	if err, early := storetest.WaitForQueuedBehind(t, holder, writeConn.PgConn().PID(), written); early {
 		t.Fatalf("the live write answered %v before it queued behind the room's lock: it waited on no lock of the room", err)
 	}

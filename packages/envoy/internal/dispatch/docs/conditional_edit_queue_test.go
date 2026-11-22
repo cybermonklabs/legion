@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -153,8 +154,13 @@ func TestConditionalEditAdmissionsOfADocumentWaitOnItsQueueLockThroughOneConnect
 	const pileUpWindow = time.Second
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
-	// The service's pool is its own, so its acquired connections are the admissions' alone.
-	service, _ := newTestServiceInstance(t, storetest.SecondProcess(t, database))
+	// The service's pool is its own, so its acquired connections are the admissions' alone, and
+	// its connections name themselves admissionsApplication, so the counts below are of the
+	// admissions' backends: a session of any other pool queued on the queue lock is not one of them.
+	const admissionsApplication = "conditional edit admissions"
+	service, _ := newTestServiceInstance(t, storetest.Reopened(t, database, func(config *pgxpool.Config) {
+		config.ConnConfig.RuntimeParams["application_name"] = admissionsApplication
+	}))
 	holder, err := database.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatalf("begin the queue lock's holder: %v", err)
@@ -175,13 +181,13 @@ func TestConditionalEditAdmissionsOfADocumentWaitOnItsQueueLockThroughOneConnect
 			results <- acquired{release: release, err: err}
 		}()
 	}
-	storetest.WaitForLockWaiters(t, holder, 1)
+	storetest.WaitForLockWaitersFrom(t, holder, 1, admissionsApplication)
 	// A reading, not a wait for a fact: the admissions get pileUpWindow to pile onto the lock, and
 	// a correct run never queues a second, so a loaded machine only shortens what the window sees
 	// and cannot fail it.
 	waiting := 0
 	testwait.Holds(pileUpWindow, 10*time.Millisecond, func() bool {
-		count, err := storetest.LockWaiters(context.Background(), holder)
+		count, err := storetest.LockWaitersFrom(context.Background(), holder, admissionsApplication)
 		if err != nil {
 			t.Fatal(err)
 		}

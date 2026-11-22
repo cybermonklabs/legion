@@ -49,7 +49,12 @@ func TestTwoExcerptReconciliationRunnersNeverPassAtOnceAndBothPass(t *testing.T)
 		t.Fatalf("index the document's mention: %v", err)
 	}
 	logs := captureLogs(t)
-	first, other := newExcerptService(t, database, nil), newExcerptService(t, second, nil)
+	// The first runner's service runs on a store whose round trips are recorded, so its pass's
+	// first statement, the marking of stale excerpts (refs.MarkStaleExcerpts), names the backend
+	// the pass waits on: the second runner starts only once that backend waits behind the gate,
+	// and no other session queued on refs passes for it.
+	recorder := &roundTripRecorder{}
+	first, other := newExcerptService(t, storetest.TracedStore(t, database, recorder), nil), newExcerptService(t, second, nil)
 
 	gate, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -60,8 +65,10 @@ func TestTwoExcerptReconciliationRunnersNeverPassAtOnceAndBothPass(t *testing.T)
 		t.Fatalf("hold refs: %v", err)
 	}
 
+	recorder.reset()
 	runExcerpts(t, func(ctx context.Context) { first.RunReferenceExcerptReconciliation(ctx, firstLeases, nil) })
-	storetest.WaitForLockWaiters(t, gate, 1)
+	pass := recorder.connOf(t, "", "update refs r set excerpt_version = null", false)
+	storetest.WaitForEachQueuedBehind(t, gate, pass.PgConn().PID())
 	runExcerpts(t, func(ctx context.Context) { other.RunReferenceExcerptReconciliation(ctx, secondLeases, nil) })
 	// The second runner's boot attempt and at least one retry find the lease held.
 	waitFor(t, 30*time.Second, "the second runner to find the lease held twice", func() bool {

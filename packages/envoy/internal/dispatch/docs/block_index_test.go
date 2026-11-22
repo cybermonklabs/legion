@@ -28,6 +28,23 @@ import (
 // documents live unless a test puts one on CORE-2, and CORE-2, which they cite.
 func blockIndexService(t *testing.T) (*store.Store, *Service) {
 	t.Helper()
+	database := blockIndexDatabase(t)
+	return database, blockIndexServiceOn(t, database)
+}
+
+// tracedBlockIndexService is blockIndexService on a store whose every round trip recorder records
+// (storetest.TracedStore), so a test names the connection a tick runs on (roundTripRecorder.connOf)
+// and waits on that one backend. database is the same database untraced.
+func tracedBlockIndexService(t *testing.T) (database *store.Store, service *Service, recorder *roundTripRecorder) {
+	t.Helper()
+	database = blockIndexDatabase(t)
+	recorder = &roundTripRecorder{}
+	return database, blockIndexServiceOn(t, storetest.TracedStore(t, database, recorder)), recorder
+}
+
+// blockIndexDatabase is a database holding project CORE and its issues CORE-1 and CORE-2.
+func blockIndexDatabase(t *testing.T) *store.Store {
+	t.Helper()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(context.Background(), `
 		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
@@ -37,13 +54,19 @@ func blockIndexService(t *testing.T) (*store.Store, *Service) {
 	`); err != nil {
 		t.Fatalf("seed project CORE: %v", err)
 	}
+	return database
+}
+
+// blockIndexServiceOn is blockIndexService's service on database.
+func blockIndexServiceOn(t *testing.T, database *store.Store) *Service {
+	t.Helper()
 	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
 	t.Cleanup(func() {
 		stop, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = service.Shutdown(stop)
 	})
-	return database, service
+	return service
 }
 
 // createOwedDocument creates document slug of issue (CORE-1 or CORE-2), id its uuid (empty: one
@@ -733,7 +756,7 @@ func TestOlderItemTextCitingABlockIsReindexed(t *testing.T) {
 // comment owed; the next tick indexes the edited text and settles it. Neither waits on the
 // other for good.
 func TestADrainedItemKeepsAConcurrentEdit(t *testing.T) {
-	database, service := blockIndexService(t)
+	database, service, recorder := tracedBlockIndexService(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var comment string
@@ -766,7 +789,15 @@ func TestADrainedItemKeepsAConcurrentEdit(t *testing.T) {
 		tick, err = service.ReconcileBlockIndex(ctx, BlockIndexCursors{}, liveAheadDocuments{})
 		ticked <- err
 	}()
-	waitForLockWait(t, ctx, database, "%owner_lock%", ticked)
+	// The tick re-indexes the comment in a transaction that reads the comment's owner first
+	// (refs.ReindexOwed, sourceOwner) and then takes its lock, so the wait is for that
+	// transaction's backend behind the edit's: another session queued on the owner's lock would
+	// let the edit commit before the tick read the comment, and the tick would then index the
+	// edited text rather than meet the edit.
+	reindex := recorder.connOf(t, comment, "select issue_key, artifact_id::text from comments", false)
+	if err, early := storetest.WaitForQueuedBehind(t, writer, reindex.PgConn().PID(), ticked); early {
+		t.Fatalf("the tick returned (%v) before it queued behind the edit's owner lock", err)
+	}
 	if err := writer.Commit(ctx); err != nil {
 		t.Fatalf("commit the edit: %v", err)
 	}
@@ -1331,7 +1362,7 @@ func TestTheBlockIndexArmsWaitForTheDocumentsOwnerLockHoldingNoTransactionID(t *
 		},
 	} {
 		t.Run(arm.name, func(t *testing.T) {
-			database, service := blockIndexService(t)
+			database, service, recorder := tracedBlockIndexService(t)
 			ctx := context.Background()
 			document := createOwedDocument(t, database, service, "CORE-1", "", "notes", "# Notes\n\nA paragraph.\n", "")
 			settle(t, database, document)
@@ -1352,16 +1383,26 @@ func TestTheBlockIndexArmsWaitForTheDocumentsOwnerLockHoldingNoTransactionID(t *
 				tick BlockIndexTick
 				err  error
 			}
+			// The arm reads the document's owner first in the transaction that then takes its
+			// lock (lockArtifactOwner), so its connection names the tick's backend: the wait is for
+			// that one backend behind the holder, and the transaction id is read off it alone, so
+			// another session queued on the owner's lock neither ends the wait nor answers for the
+			// tick's transaction.
+			recorder.reset()
 			ticked := make(chan answer, 1)
 			go func() {
 				tick, err := service.ReconcileBlockIndex(ctx, BlockIndexCursors{}, liveAheadDocuments{})
 				ticked <- answer{tick: tick, err: err}
 			}()
-			if early, answered, holdingXid := storetest.AwaitOwnerLockWaiter(t, database, "the block-index tick", ticked); answered {
+			tickBackend := recorder.connOf(t, document, ownerReadStatement, false).PgConn().PID()
+			if early, answered := storetest.WaitForQueuedBehind(t, holder, tickBackend, ticked); answered {
 				t.Fatalf("the tick answered (%#v, %v) while this test held the document's owner lock: %s wrote under no owner lock",
 					early.tick, early.err, arm.name)
-			} else if holdingXid != 0 {
-				t.Fatalf("%d backends wait on the owner lock holding a transaction id, want none", holdingXid)
+			}
+			if holding, err := storetest.HoldsTransactionID(ctx, database, tickBackend); err != nil {
+				t.Fatal(err)
+			} else if holding {
+				t.Fatalf("the tick waits on the document's owner lock holding a transaction id: %s wrote before it locked", arm.name)
 			}
 			if arm.meanwhile != nil {
 				arm.meanwhile(t, holder, document)

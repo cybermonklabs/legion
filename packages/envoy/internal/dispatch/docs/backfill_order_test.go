@@ -9,6 +9,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // The block-id backfill is a durable writer of the room like every other, so the rule this change
@@ -55,7 +56,7 @@ func TestStoredOrderBackfillStampOverAnUnstoredEdit(t *testing.T) {
 // backfill's service serves this browser, as any service may: nothing keeps a browser off the
 // rooms it stamps.
 func TestStoredOrderBackfillDoesNotStoreTheRoomsCommittedEditTwice(t *testing.T) {
-	service, artifactID := storedOrderService(t)
+	service, artifactID, recorder := tracedRoomService(t)
 	appends, ok := service.persistence.(*PgVersioned)
 	if !ok {
 		t.Fatalf("the service appends through %T, which holds no window between a commit and its mark", service.persistence)
@@ -85,6 +86,7 @@ func TestStoredOrderBackfillDoesNotStoreTheRoomsCommittedEditTwice(t *testing.T)
 	if first == "" {
 		t.Fatal("the document's first block has no id to repeat")
 	}
+	recorder.reset()
 	editAsConnectedPeer(t, service, artifactID, 1, storedOrderBob,
 		appendBlockWithCraftedID(t, "A paragraph repeating the first block's id.\n", first))
 	var edit persistence.Version
@@ -93,7 +95,10 @@ func TestStoredOrderBackfillDoesNotStoreTheRoomsCommittedEditTwice(t *testing.T)
 	case <-time.After(roomWait(t)):
 		t.Fatal("bob's edit never committed, so the window it is held in never opened")
 	}
+	// The worker holds the lock on the connection its batch's opening pipeline took it on.
+	worker := recorder.connOf(t, artifactID, "pg_advisory_lock(hashtext", true).PgConn().PID()
 
+	recorder.reset()
 	var report BlockIDBackfill
 	backfilled := make(chan error, 1)
 	go func() {
@@ -102,8 +107,13 @@ func TestStoredOrderBackfillDoesNotStoreTheRoomsCommittedEditTwice(t *testing.T)
 	}()
 	// The backfill waits on the document's advisory lock the worker holds, which it takes as
 	// soon as its transaction begins - before it reads the room's queue, which is the whole
-	// point. Taking it at the first append instead is what stored the edit twice.
-	waitForLockWait(t, context.Background(), service.store, "%pg_advisory_xact_lock%", backfilled)
+	// point. Taking it at the first append instead is what stored the edit twice. The wait is for
+	// the backfill's own backend, the one its transaction took the lock on, behind the worker's,
+	// so another session queued on the lock does not let the worker go before the backfill waits.
+	backfill := recorder.connOf(t, artifactID, "pg_advisory_xact_lock(hashtext", false).PgConn().PID()
+	if err, early := storetest.WaitForQueuedBehindBackend(t, service.store, worker, backfill, backfilled); early {
+		t.Fatalf("the backfill returned (%v) before it queued behind the worker's lock", err)
+	}
 	releaseWorker()
 	if err := <-backfilled; err != nil {
 		t.Fatalf("the backfill failed: %v", err)

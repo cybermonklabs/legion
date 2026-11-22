@@ -677,7 +677,7 @@ func TestEditNoticeSweepOfTwoServicesSendsEachNoticeOnce(t *testing.T) {
 func TestEditNoticeSweepDuringSettlement(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	service, artifactID := newTestService(t)
+	database, service, artifactID, recorder := tracedTestService(t)
 	service.settle = time.Hour
 	service.editNoticeQuiet = 500 * time.Millisecond
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -696,32 +696,30 @@ func TestEditNoticeSweepDuringSettlement(t *testing.T) {
 	}
 	swept := make(chan sweepResult, 1)
 	held := false
+	// The settlement and the sweep each read the document's owner first in the transaction that
+	// then takes its lock (lockArtifactOwner), so those reads name their backends, and the wait is
+	// for the sweep's own backend behind the settlement's: another session queued on the owner's
+	// lock does not pass for the sweep.
 	service.afterSettleVersionWrite = func(room string) error {
 		if room != artifactID || held {
 			return nil
 		}
 		held = true
+		settlement := recorder.connOf(t, artifactID, ownerReadStatement, false).PgConn().PID()
+		recorder.reset()
 		go func() {
 			sent, err := service.sendDueEditNotices(store.WithTransactionTracking(context.Background()))
 			swept <- sweepResult{sent, err}
 		}()
-		deadline := time.Now().Add(10 * time.Second)
-		for {
-			waiting, err := storetest.CountLockWaits(context.Background(), service.store, "%as owner_lock%")
-			if err != nil {
-				t.Errorf("count the sweep's lock waits: %v", err)
-				return nil
-			}
-			if waiting > 0 {
-				return nil
-			}
-			if time.Now().After(deadline) {
-				t.Error("the sweep never waited on the document owner's lock the settlement holds")
-				return nil
-			}
-			time.Sleep(5 * time.Millisecond)
+		sweep := recorder.connOf(t, artifactID, ownerReadStatement, false).PgConn().PID()
+		if result, early := storetest.WaitForQueuedBehindBackend(t, database, settlement, sweep, swept); early {
+			t.Errorf("the sweep finished (%d sent, %v) before it waited on the document owner's lock the settlement holds", result.sent, result.err)
+			// Handed back, so the reading of the sweep's result below sees it.
+			swept <- result
 		}
+		return nil
 	}
+	recorder.reset()
 	settleCurrentGeneration(t, service, artifactID)
 	service.afterSettleVersionWrite = nil
 	if !held {

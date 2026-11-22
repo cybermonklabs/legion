@@ -613,8 +613,9 @@ func TestARebuildIsRefusedWhileAnotherProcessHoldsTheRoom(t *testing.T) {
 func TestTwoRebuildsOnTwoProcessesAtOnceReplaceTheHistoryOnce(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
+	second := storetest.SecondProcess(t, database)
 	taskA, _ := newTestServiceInstance(t, database)
-	taskB, _ := newTestServiceInstance(t, storetest.SecondProcess(t, database))
+	taskB, _ := newTestServiceInstance(t, second)
 	seedServiceText(t, taskA, artifactID, "before\n")
 	corruptStoredHistory(t, database, artifactID)
 	head := storedHead(t, database, artifactID)
@@ -629,16 +630,26 @@ func TestTwoRebuildsOnTwoProcessesAtOnceReplaceTheHistoryOnce(t *testing.T) {
 	if _, _, err := lockArtifactOwner(ctx, gate, artifactID); err != nil {
 		t.Fatalf("lock the document's owner: %v", err)
 	}
+	// Each rebuild's transaction runs on a connection of its own, on its process's pool, so the
+	// gate is let go only once both rebuilds' own backends wait behind it: a count of the backends
+	// queued there is met by a settlement of either process's own, and one rebuild could then
+	// replace the history before the other had validated it.
 	results := make(chan error, 2)
-	for _, service := range []*Service{taskA, taskB} {
+	var backends []uint32
+	for _, process := range []struct {
+		service *Service
+		pool    *store.Pool
+	}{{taskA, database.Pool}, {taskB, second.Pool}} {
+		pool, backend := storetest.OneConnection(t, process.pool)
+		backends = append(backends, backend)
 		go func() {
-			results <- joinedWrite(service, func(ctx context.Context) error {
-				_, _, err := service.RebuildDocument(ctx, artifactID, nil, model.Actor{Kind: "user", ID: "alice"})
+			results <- joinedWriteOn(process.service, pool, func(ctx context.Context) error {
+				_, _, err := process.service.RebuildDocument(ctx, artifactID, nil, model.Actor{Kind: "user", ID: "alice"})
 				return err
 			})
 		}()
 	}
-	storetest.WaitForLockWaiters(t, gate, 2)
+	storetest.WaitForEachQueuedBehind(t, gate, backends...)
 	if err := gate.Rollback(ctx); err != nil {
 		t.Fatalf("release the issue's owner lock: %v", err)
 	}

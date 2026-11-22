@@ -307,7 +307,8 @@ func TestAKeystrokeTakenBeforeTheIssueClosedIsStoredWhenACompactionFoldedTheHist
 	ctx := context.Background()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
-	taskA, serverA := newTestServiceInstance(t, database)
+	recorder := &roundTripRecorder{}
+	taskA, serverA := newTestServiceInstance(t, storetest.TracedStore(t, database, recorder))
 	taskB, _ := newTestServiceInstance(t, storetest.SecondProcess(t, database))
 	seedServiceText(t, taskA, artifactID, "before")
 	waitForLandedAppends(t, taskA, artifactID)
@@ -328,10 +329,18 @@ func TestAKeystrokeTakenBeforeTheIssueClosedIsStoredWhenACompactionFoldedTheHist
 	if err := lockDocumentRoom(ctx, holder, artifactID); err != nil {
 		t.Fatalf("hold the document's lock: %v", err)
 	}
+	// Each wait is for one call's own backend, so the order is the one this row is about: the
+	// keystroke's append, on the connection its batch's opening pipeline took the lock on, then
+	// the close's record of the room's latest edit source, on the connection whose transaction
+	// takes the document's lock (persistLastActor). A count of the backends queued behind the
+	// holder is met by any other session queued there, and the close could then queue first.
+	recorder.reset()
 	typeOver(t, alice, "before", "typed before the close")
-	storetest.WaitForLockWaiters(t, holder, 1)
+	keystroke := recorder.connOf(t, artifactID, "pg_advisory_lock(hashtext", true)
+	storetest.WaitForEachQueuedBehind(t, holder, keystroke.PgConn().PID())
 	writeIssueClosed(t, taskB.store, "DOC-1", true)
-	storetest.WaitForLockWaiters(t, holder, 2)
+	closing := recorder.connOf(t, artifactID, "pg_advisory_xact_lock(hashtext", false)
+	storetest.WaitForEachQueuedBehind(t, holder, closing.PgConn().PID())
 
 	foldHistoryPastRoom(t, holder, artifactID, head)
 	alicesRoom := taskA.srv.GetDoc(artifactID)

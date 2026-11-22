@@ -144,6 +144,10 @@ type renderShadow struct {
 	// its latest operation left it.
 	ops       []shadowOp
 	lastAfter *string
+
+	// trips records every round trip of the service's store (newRenderReuseService), so a wait
+	// for a room append's lock names that append's own backend (awaitAppendLandedOrQueued).
+	trips *roundTripRecorder
 }
 
 // shadowRoom is the shadow of one room instance: its own copy of the room's document, moved
@@ -741,9 +745,10 @@ func sortedIDs(ids map[string]struct{}) []string {
 // before the document is seeded with renderReuseDocument. No room holds the document yet.
 func newRenderReuseService(t *testing.T) (*Service, string, *renderShadow) {
 	t.Helper()
-	service, artifactID := newTestService(t)
+	_, service, artifactID, recorder := tracedTestService(t)
 	service.settle = time.Hour
 	sh := watchRenders(t, service, artifactID)
+	sh.trips = recorder
 	seedServiceText(t, service, artifactID, renderReuseDocument())
 	return service, artifactID, sh
 }
@@ -882,7 +887,7 @@ func TestRenderReuseABrowserEditAfterTheForkReadIsRendered(t *testing.T) {
 				room := service.srv.GetDoc(artifactID)
 				clocks := room.StateVector()
 				editAsConnectedPeer(t, service, artifactID, 2, reuseBob, test.edit(t))
-				awaitAppendLandedOrQueued(t, service, artifactID)
+				awaitAppendLandedOrQueued(t, service, sh.trips, artifactID)
 				if test.deleteOnly && !maps.Equal(clocks, room.StateVector()) {
 					t.Error("the browser's delete moved the room's state vector, so it is not delete-only")
 				}
@@ -960,7 +965,7 @@ func TestRenderReuseAServiceCommitAfterTheForkReadIsRendered(t *testing.T) {
 			}
 			read = true
 			editAsConnectedPeer(t, service, artifactID, 2, reuseBob, appendBlockWithCraftedID(t, "A paragraph repeating the first block's id.\n", first))
-			awaitAppendLandedOrQueued(t, service, artifactID)
+			awaitAppendLandedOrQueued(t, service, sh.trips, artifactID)
 		}
 		// The repair appends in its own transaction, under the document's advisory lock the write
 		// holds from its fork read until it commits, so it runs in the window after that commit and
@@ -1083,7 +1088,7 @@ func TestRenderReuseARecoveredReplicaRendersThePublish(t *testing.T) {
 		replica := service.replicaOf(service.srv.GetDoc(artifactID))
 		forceRecover(replica)
 		editAsConnectedPeer(t, service, artifactID, 2, reuseBob, appendBlocks(t, "A paragraph the recovering replica could not place.\n"))
-		awaitAppendLandedOrQueued(t, service, artifactID)
+		awaitAppendLandedOrQueued(t, service, sh.trips, artifactID)
 		if replica.epoch.Load() == readEpoch {
 			t.Error("the recovered replica kept the epoch the fork read found")
 		}

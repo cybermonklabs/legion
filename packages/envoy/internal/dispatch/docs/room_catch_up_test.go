@@ -439,7 +439,8 @@ func TestACompactionLeavesACurrentRoomOpen(t *testing.T) {
 func TestACatchUpInsideThisProcessesOwnCommitWindowClosesNothing(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
-	service, _ := newTestServiceInstance(t, database)
+	recorder := &roundTripRecorder{}
+	service, _ := newTestServiceInstance(t, storetest.TracedStore(t, database, recorder))
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	ctx := context.Background()
 	if err := service.warmLiveDocument(ctx, artifactID); err != nil {
@@ -462,14 +463,20 @@ func TestACatchUpInsideThisProcessesOwnCommitWindowClosesNothing(t *testing.T) {
 	}
 	advanceRoomCursor(cursor, version)
 
+	// The catch-up confirms its verdict in a transaction that takes the document's lock
+	// (historyReplacedUnderLock), so the wait is for that transaction's backend behind the
+	// write's: another session queued on the lock would let the write commit before the catch-up
+	// read under the lock, and the row would not test the window.
+	recorder.reset()
 	caught := make(chan struct{})
 	go func() {
 		defer close(caught)
 		service.catchUps.catchUp(ctx, artifactID)
 	}()
-	waitFor(t, roomWait(t), "the catch-up to confirm its verdict under the document's lock", func() bool {
-		return waitingAdvisoryLocks(t, database) > 0
-	})
+	confirming := recorder.connOf(t, artifactID, "pg_advisory_xact_lock(hashtext", false)
+	if _, early := storetest.WaitForQueuedBehind(t, tx, confirming.PgConn().PID(), caught); early {
+		t.Fatal("the catch-up finished before it queued behind the write's lock to confirm its verdict")
+	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the write: %v", err)
 	}
@@ -494,7 +501,8 @@ func TestACatchUpInsideThisProcessesOwnCommitWindowClosesNothing(t *testing.T) {
 func TestACatchUpInsideARepairingSettlementsCommitWindowClosesNothing(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
-	service, _ := newTestServiceInstance(t, database)
+	recorder := &roundTripRecorder{}
+	service, _ := newTestServiceInstance(t, storetest.TracedStore(t, database, recorder))
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	seedServiceText(t, service, artifactID, "First.\n")
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
@@ -513,21 +521,28 @@ func TestACatchUpInsideARepairingSettlementsCommitWindowClosesNothing(t *testing
 
 	// The settlement's repair is appended and on the room's cursor, and its transaction, which
 	// holds the document's lock, has not committed. The catch-up reads the head through the pool
-	// there, finds it below the cursor, and confirms the verdict under that lock.
+	// there, finds it below the cursor, and confirms the verdict under that lock. The wait is for
+	// the catch-up's own backend behind the settlement's, each named by the connection its
+	// transaction took the document's lock on, so no other session queued on the lock passes for
+	// the catch-up.
 	caught := make(chan struct{})
 	service.beforeSettleCommit = func(settling string) {
 		if settling != artifactID {
 			return
 		}
 		service.beforeSettleCommit = nil
+		settlement := recorder.connOf(t, artifactID, "pg_advisory_xact_lock(hashtext", false).PgConn().PID()
+		recorder.reset()
 		go func() {
 			defer close(caught)
 			service.catchUps.catchUp(context.Background(), artifactID)
 		}()
-		waitFor(t, roomWait(t), "the catch-up to confirm its verdict under the document's lock", func() bool {
-			return waitingAdvisoryLocks(t, database) > 0
-		})
+		confirming := recorder.connOf(t, artifactID, "pg_advisory_xact_lock(hashtext", false).PgConn().PID()
+		if _, early := storetest.WaitForQueuedBehindBackend(t, database, settlement, confirming, caught); early {
+			t.Fatal("the catch-up finished before it queued behind the settlement's lock to confirm its verdict")
+		}
 	}
+	recorder.reset()
 	settleCurrentGeneration(t, service, artifactID)
 	select {
 	case <-caught:
@@ -544,20 +559,6 @@ func TestACatchUpInsideARepairingSettlementsCommitWindowClosesNothing(t *testing
 		t.Fatalf("latest version = %d, want %d, the repair's", latest, before+1)
 	}
 	requireRoomStillWrites(t, service, artifactID, 2)
-}
-
-// waitingAdvisoryLocks is how many advisory locks of this test's own database are waited for.
-func waitingAdvisoryLocks(t *testing.T, database *store.Store) int {
-	t.Helper()
-	var waiting int
-	if err := database.Pool.QueryRow(context.Background(), `
-		select count(*) from pg_locks
-		where locktype = 'advisory' and not granted
-		  and database = (select oid from pg_database where datname = current_database())
-	`).Scan(&waiting); err != nil {
-		t.Fatalf("read the advisory locks waited for: %v", err)
-	}
-	return waiting
 }
 
 // A catch-up whose read fails is tried again, the first time one catchUpRetryInterval later and

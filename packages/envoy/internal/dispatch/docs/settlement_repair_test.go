@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Settlement repairs an ask block's server-owned attributes into the document as it stands when
@@ -447,20 +448,36 @@ func TestSettlementThatStampsAndRepairsReleasesItsSlots(t *testing.T) {
 // settlement holds, waits for the repair's commit to reach the room's persistence rather than
 // retiring the room's worker under it (roomServer, LEGION-498).
 func TestARoomThatFailsWhileASettlementCommitsIntoItRecovers(t *testing.T) {
-	service, artifactID := newTestService(t)
+	database, service, artifactID, recorder := tracedTestService(t)
 	service.settle = time.Hour
 	pause := pauseRepairCommits(service)
 	generation := owedStamp(t, service, artifactID)
 	// Old rows give the eviction's compaction a fold to write, which waits for the lock.
 	ageUpdatesThrough(t, service.store, artifactID, everyVersion, time.Hour)
 
+	recorder.reset()
 	settled := settleUnderPause(t, service, pause, artifactID, generation)
+	// The settlement holds the document's lock on the connection its transaction took it on.
+	settlement := recorder.connOf(t, artifactID, "pg_advisory_xact_lock(hashtext", false).PgConn().PID()
 	service.failRoom(artifactID, errors.New("injected room failure"))
 	// The eviction goes as far as the held commit lets it: it retires the room's persistence worker,
 	// whose exit compaction then waits for the document's lock, or it waits for the commit to reach
-	// the room's persistence first.
-	waitFor(t, 10*time.Second, "the failed room's eviction to retire its worker or wait for the repair's commit", func() bool {
-		return closeWaitsForRepair() || lockWaits(t, context.Background(), service.store, "select pg_advisory_lock(%") > 0
+	// the room's persistence first. The compaction is named by its own backend, the connection its
+	// lockRoom statement went out on, and read queued behind the settlement's, so another session
+	// waiting on the document's lock does not pass for it.
+	testwait.UntilPolling(t, 2*time.Millisecond, "the failed room's eviction to retire its worker or wait for the repair's commit", func() (struct{}, bool) {
+		if closeWaitsForRepair() {
+			return struct{}{}, true
+		}
+		compaction, ok := recorder.firstConnOf(artifactID, "pg_advisory_lock(hashtext", false)
+		if !ok {
+			return struct{}{}, false
+		}
+		queued, err := storetest.QueuedBehindBackend(context.Background(), database, settlement, compaction.PgConn().PID())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return struct{}{}, queued
 	})
 	pause.let()
 	select {

@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 func TestApplyOpsEditsLiveDocumentAndSettlesVersion(t *testing.T) {
@@ -205,14 +206,17 @@ func TestCheckTableAnchorRowsRejectsCommentReopenedAfterPrevalidation(t *testing
 	}
 
 	// A writer of the comment takes the owner's lock first, as every comment mutation does, so it
-	// waits for the edit's transaction and changes nothing the check read until that ends.
+	// waits for the edit's transaction and changes nothing the check read until that ends. The
+	// wait is for the writer's own backend behind the edit's transaction, so no other session
+	// queued on the owner's lock passes for it.
+	writer, err := service.store.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin the comment writer: %v", err)
+	}
+	writerBackend := writer.Conn().PgConn().PID()
 	updateDone := make(chan error, 1)
 	go func() {
 		updateDone <- func() error {
-			writer, err := service.store.Pool.Begin(context.Background())
-			if err != nil {
-				return err
-			}
 			defer writer.Rollback(context.Background())
 			if err := store.LockOwner(context.Background(), writer, store.IssueOwner("DOC-1")); err != nil {
 				return err
@@ -223,7 +227,9 @@ func TestCheckTableAnchorRowsRejectsCommentReopenedAfterPrevalidation(t *testing
 			return writer.Commit(context.Background())
 		}()
 	}()
-	waitForLockWait(t, context.Background(), service.store, "%as owner_lock%", updateDone)
+	if err, early := storetest.WaitForQueuedBehind(t, tx, writerBackend, updateDone); early {
+		t.Fatalf("the comment writer returned (%v) before it queued behind the edit's owner lock", err)
+	}
 	if err := tx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the document owner's lock: %v", err)
 	}

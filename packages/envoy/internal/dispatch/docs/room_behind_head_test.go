@@ -1472,7 +1472,7 @@ func TestABrowserAppendQueuedBehindThisProcessesWriteIsNotRefused(t *testing.T) 
 // second browser edit the store has not taken, so a fork of the store is one the write can see is
 // not the whole document.
 func TestAWriteDoesNotForkFromTheStoreInsideAnAppendsCursorWindow(t *testing.T) {
-	service, artifactID := newTestService(t)
+	database, service, artifactID, recorder := tracedTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
@@ -1503,6 +1503,7 @@ func TestAWriteDoesNotForkFromTheStoreInsideAnAppendsCursorWindow(t *testing.T) 
 	// The browser's first edit commits its append and holds the window open from inside it. Its
 	// second reaches the room while that append is still there, so the room holds a paragraph the
 	// store has not taken.
+	recorder.reset()
 	if err := browserStyleWrite(service, artifactID, appendBlocks(t, "Alpha paragraph.\n"), make(chan struct{})); err != nil {
 		t.Fatalf("the browser's first edit: %v", err)
 	}
@@ -1511,6 +1512,9 @@ func TestAWriteDoesNotForkFromTheStoreInsideAnAppendsCursorWindow(t *testing.T) 
 	case <-time.After(roomWait(t)):
 		t.Fatal("the browser's append never committed, so no window opened")
 	}
+	// The append holds the document's lock on the connection its batch's opening pipeline took
+	// it on.
+	worker := recorder.connOf(t, artifactID, "pg_advisory_lock(hashtext", true).PgConn().PID()
 	if err := browserStyleWrite(service, artifactID, appendBlocks(t, "Bravo paragraph.\n"), make(chan struct{})); err != nil {
 		t.Fatalf("the browser's second edit: %v", err)
 	}
@@ -1518,8 +1522,10 @@ func TestAWriteDoesNotForkFromTheStoreInsideAnAppendsCursorWindow(t *testing.T) 
 	var cold bool
 	var forked string
 	written := make(chan error, 1)
+	// The write's transaction runs on a connection of its own, so the wait below names its backend.
+	writes, writeBackend := storetest.OneConnection(t, database.Pool)
 	go func() {
-		written <- joinedWrite(service, func(ctx context.Context) error {
+		written <- joinedWriteOn(service, writes, func(ctx context.Context) error {
 			if err := service.ProjectMark(ctx, artifactID, "mark-in-the-window", MarkRecord{
 				Kind: "comment", By: "user:bob", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Text: "note",
 			}, model.Actor{Kind: "user", ID: "bob"}); err != nil {
@@ -1537,7 +1543,11 @@ func TestAWriteDoesNotForkFromTheStoreInsideAnAppendsCursorWindow(t *testing.T) 
 	}()
 	// The write has made its fork's decision once it waits on the document's advisory lock: for
 	// the confirmation that decision needs, or, having taken it without one, for its own append.
-	waitForLockWait(t, context.Background(), service.store, "%pg_advisory_xact_lock%", written)
+	// Either way it waits behind the append's backend, and the wait names the write's own: another
+	// session queued on the lock would let the window close before the write decided.
+	if err, early := storetest.WaitForQueuedBehindBackend(t, database, worker, writeBackend, written); early {
+		t.Fatalf("the mark projection returned (%v) before it queued behind the append's lock", err)
+	}
 	releaseWindow()
 	if err := <-written; err != nil {
 		t.Fatalf("a mark projection made inside the window: %v", err)
@@ -2020,9 +2030,13 @@ func TestAFailedRoomsEvictionWaitsForTheStampsCommitAndReloadsIt(t *testing.T) {
 	artifactID := createDocument(t, database, "before")
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
 	// failingBrowserAppendStore fails nothing here; it is the hook that runs just before the
-	// backfill's append, inside the transaction that holds the document's advisory lock.
-	appends := &failingBrowserAppendStore{VersionedStore: NewPgVersioned(database)}
-	service := New(Deps{Store: database, Persistence: appends, Events: events.NewBroker(), Settle: time.Hour})
+	// backfill's append, inside the transaction that holds the document's advisory lock. The
+	// service and its store run on a traced store, so the backfill's connection and the eviction's
+	// compaction connection are named by the statements they send.
+	recorder := &roundTripRecorder{}
+	traced := storetest.TracedStore(t, database, recorder)
+	appends := &failingBrowserAppendStore{VersionedStore: NewPgVersioned(traced)}
+	service := New(Deps{Store: traced, Persistence: appends, Events: events.NewBroker(), Settle: time.Hour})
 	t.Cleanup(func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
@@ -2033,25 +2047,17 @@ func TestAFailedRoomsEvictionWaitsForTheStampsCommitAndReloadsIt(t *testing.T) {
 	var read int64
 	recovered := make(chan error, 1)
 	// The room the backfill stamped fails while the stamp's transaction holds the document's
-	// lock. Its eviction cannot finish there: the compaction it ends with queues on that lock.
+	// lock. Its eviction cannot finish there: the compaction it ends with queues on that lock. The
+	// wait is for the compaction's own backend behind the backfill's, so no other session queued
+	// on the document's lock passes for the eviction.
 	failUnderTheStamp := func() {
-		read = storedHead(t, service.store, artifactID)
+		read = storedHead(t, database, artifactID)
+		backfill := recorder.connOf(t, artifactID, "pg_advisory_xact_lock(hashtext", false).PgConn().PID()
 		service.failRoom(artifactID, errors.New("test: the stamped room failed under the backfill"))
 		go func() { recovered <- service.awaitRoomRecovery(context.Background(), artifactID) }()
-		queued := false
-		for deadline := time.Now().Add(roomWait(t)); !queued && time.Now().Before(deadline); {
-			waits, err := storetest.CountLockWaits(context.Background(), service.store, "%pg_advisory_lock(hashtext%")
-			if err != nil {
-				t.Errorf("inspect the document's lock waits: %v", err)
-				return
-			}
-			queued = waits > 0
-			if !queued {
-				time.Sleep(2 * time.Millisecond)
-			}
-		}
-		if !queued {
-			t.Error("the failed room's eviction never queued on the document's advisory lock")
+		compaction := recorder.connOf(t, artifactID, "pg_advisory_lock(hashtext", false).PgConn().PID()
+		if err, early := storetest.WaitForQueuedBehindBackend(t, database, backfill, compaction, recovered); early {
+			t.Errorf("the failed room was evicted while the stamp's transaction held the document's lock: %v", err)
 			return
 		}
 		select {
@@ -2061,6 +2067,7 @@ func TestAFailedRoomsEvictionWaitsForTheStampsCommitAndReloadsIt(t *testing.T) {
 		}
 	}
 	appends.beforeTx.Store(&failUnderTheStamp)
+	recorder.reset()
 	reports, err := service.BackfillBlockIDs(context.Background())
 	if err != nil {
 		t.Fatalf("backfill the document's block ids: %v", err)
@@ -2146,7 +2153,8 @@ func TestARoomIsReloadedOnceAKeystrokeLandsOnAHistoryACompactionFolded(t *testin
 	ctx := context.Background()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
-	service, server := newTestServiceInstance(t, database)
+	recorder := &roundTripRecorder{}
+	service, server := newTestServiceInstance(t, storetest.TracedStore(t, database, recorder))
 	seedServiceText(t, service, artifactID, "before")
 	waitForLandedAppends(t, service, artifactID)
 	appends, ok := service.persistence.(*PgVersioned)
@@ -2174,8 +2182,14 @@ func TestARoomIsReloadedOnceAKeystrokeLandsOnAHistoryACompactionFolded(t *testin
 	if err := lockDocumentRoom(ctx, holder, artifactID); err != nil {
 		t.Fatalf("hold the document's lock: %v", err)
 	}
+	// The wait is for the keystroke's own backend, the connection its batch's opening pipeline
+	// took the document's lock on: another session queued behind the holder would let the fold
+	// commit before the keystroke's append reached the lock, and the row would no longer be about
+	// an append that waited while the history was folded under it.
+	recorder.reset()
 	typeOver(t, alice, "before", "first keystroke")
-	storetest.WaitForLockWaiters(t, holder, 1)
+	keystroke := recorder.connOf(t, artifactID, "pg_advisory_lock(hashtext", true)
+	storetest.WaitForEachQueuedBehind(t, holder, keystroke.PgConn().PID())
 	foldHistoryPastRoom(t, holder, artifactID, head)
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("release the document's lock: %v", err)
