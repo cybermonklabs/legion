@@ -50,11 +50,12 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   Of those, the route check's staged hub (`clusteredhub_routecheck_fixture_live_test.go`) keeps each server's route port, and each peer's, on the `127.0.0.x` address the rows name it by, `127.0.0.1` being the pods' IP: the check takes a route connection from a pod IP as the hub's own, and a route from `127.0.0.1` reads as from `127.0.0.1` on any loopback (the Linux kernel's sources every loopback connection from `127.0.0.1` whatever `127/8` address it dials; gVisor's sources it from the address dialed). Their client and monitoring ports are at addresses of their own, and a test checks that a client at `127.0.0.1` reaches none of them (`requireNoStrayReaches`).
   A stray client can still dial such a route port: a reservation stops a second bind, not a dial. The check reads nothing of it: it skips a route connection from a pod IP, and counts a pod IP's refused route login only when the mesh is split (`infra/routes/log.go`, `routeConnections`). The route check's first row has a stray log in at each server's route port and requires the check to stay clean.
   A port another process binds, such as the host side of a port Docker publishes, is chosen by the kernel on that address (`testport.LoopbackPorts`): Docker asked for port 0 picks from its own record of what it has published there, and in envoy-infra-go it picked a port already held. The probe is released before the bind, so a start a taken port refuses (`testport.AddressInUse`) is tried again on a fresh address and port.
-  Four listeners stay where they were, each for its own reason.
+  Five exceptions stay where they were, each for its own reason.
   `internal/testnats/cmd/natsd`, the standalone server of the scripts and the TypeScript stacks, stays on `127.0.0.1`: no Go test runs it.
   `internal/smoke`'s NATS container keeps Docker's default binding: envoy-smoke runs that binary alone on its runner, and its one client, the listener container, reaches it over the Docker network.
   `infra/core`'s `nats_monitor_test.go` server keeps the address its start script binds, which is what that test checks.
   `infra/host/heldportwrapper`'s test address accepts no connection, so a stranger changes nothing it checks.
+  `internal/daemon`'s live rig server (`rig_nats_live_test.go`) and `internal/testenvoy`'s Envoy listener (`ENVOY_LISTEN_HOST`, its port handed over as `ENVOY_LISTEN_FD`) stay on `127.0.0.1`: the rig's file is tagged `e2e`, so only `scripts/e2e`'s live-rig scripts build it, never `go test ./...`, and it holds its server's client port bound while that server is stopped (`holdClientPort`); outside the rig, a testenvoy listener's only clients are its own test's one-off HTTP requests, which redial nothing.
   A test still closes every client it opens before its server, and registers the close as soon as the connect succeeds, so a setup that fails closes it too: `cmd/listener`'s `setupTestNATS` left ten tests' bus clients dialing for minutes after their tests had ended, and they reached the test servers of other packages' binaries.
   A container start tried again after a taken port refused it builds its container's options anew, a configuration file's reader among them: testcontainers reads a file's reader to its end as it creates the container, before Docker refuses the publish, so a retry handed the first attempt's reader copies an empty file in, and a server started from it enforces none of the users its configuration names.
 
@@ -543,6 +544,33 @@ key to the server, which refuses it, `psql` refuses the URL, and Dispatch refuse
 A test that needs one of envoy's binaries takes it from
 `packages/daemon/internal/testbuild`'s `EnvoyBinary`, which builds each command once per test
 process and removes the directory when `testbuild.Main` ends the run.
+
+A test that needs the Envoy listener itself, rather than the stand-in the daemon's live proofs
+read their own publishes back from, takes it from `packages/daemon/internal/testenvoy`'s `Start`,
+naming the binary it runs: `Start` runs it as its own process against a NATS server the test
+names, as the NATS user whose seed file the test names (`NATSSeedFile`) or as none, holds the
+loopback port open until the listener binds it, and returns once `/healthz` says healthy.
+The three session windows a check may move are its options
+(`ENVOY_SESSION_LIVE_WINDOW`, `ENVOY_SESSION_GONE_HORIZON` and `ENVOY_SESSION_MAX_AGE`), so a
+check that must watch a session read `unresponsive` in seconds says so rather than waiting out
+production's five minutes.
+The helper's own tests run this checkout's listener (`EnvoyBinary(t, "./cmd/listener")`).
+The live checks w1 to w5 of this change run on the rig that
+`packages/daemon/internal/daemon/RIG.md` describes: a listener that `scripts/e2e/lib/live-rig.sh`
+builds from a detached worktree and names in `LEGION_E2E_ENVOY_LISTENER`, a real nats-server with
+the grants that listener's commit renders, and the whole daemon with real Oh My Pi workers. The
+driver takes the listener from `testenvoy.RigBinary`.
+w1, w3, w4 and w5, and the rig's own smoke check, run the listener production pins
+(`testenvoy.PinnedBinary`): `pinned.go` records the image the deployment repository's
+`envoy-cluster/Pulumi.prod.yaml` pins, the commit its revision label names and the build, and
+refuses a binary whose Go build information names another commit or a modified tree.
+They run the pinned listener because a fix in the session's plugin has to work with the
+listener production runs, and because the daemon reads that listener's own session list to say
+which of its claims are out of reach.
+w2 (`scripts/e2e/cut-turn-note.sh`) sets `LEGION_E2E_LISTENER_FROM_CHECKOUT=1` and runs the
+listener of the checkout's own commit instead, built the same way: it tests this change's plugins
+and listener together, and the pinned listener predates the one that lets a controller register
+its notice lane.
 
 A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): the server
 `DISPATCH_TEST_DATABASE_URL` names can hold other databases, such as the local Dispatch's on

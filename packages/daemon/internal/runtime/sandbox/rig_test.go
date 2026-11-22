@@ -544,6 +544,10 @@ type rig struct {
 	// launcher that held the whole bundle and could not put it back.
 	refuseBundle string
 	failRestore  string
+	// outliveStop, when set, is the error every fake launcher of this rig answers a stop of its
+	// running generation with, keeping that child running, as the real launcher answers a stop
+	// whose signal could not end the child (internal/launcher's endGeneration).
+	outliveStop string
 	// leakCheckTag and leakCheckInstalled are what every fake launcher's hello says of the shared
 	// public leak check: its pin, "" for none, and whether it holds that pin installed
 	// (withLeakCheckHello). refuseLeakCheck, when set, is the cause every fake launcher answers
@@ -577,6 +581,12 @@ func withRefusedBundle(reason string) rigOption {
 // prerequisite commit does.
 func withFailedRestore(reason string) rigOption {
 	return func(g *rig, _ *Options) { g.failRestore = reason }
+}
+
+// withOutlivedStop has every fake launcher answer each stop of its running generation OK false
+// with answer and keep that child running, as a launcher whose child outlived the stop does.
+func withOutlivedStop(answer string) rigOption {
+	return func(g *rig, _ *Options) { g.outliveStop = answer }
 }
 
 // withLeakCheckHello has every fake launcher's hello name tag as its leak-check pin, saying the
@@ -1233,6 +1243,10 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 			case shimwire.LauncherStop:
 				if running != 0 && running != command.Generation {
 					_ = writer.WriteFrame(shimwire.LauncherStopResult{ID: command.ID, Error: fmt.Sprintf("generation %d is running, not %d", running, command.Generation)})
+					continue
+				}
+				if running != 0 && g.outliveStop != "" {
+					_ = writer.WriteFrame(shimwire.LauncherStopResult{ID: command.ID, Error: g.outliveStop})
 					continue
 				}
 				stopped := running

@@ -201,6 +201,13 @@ func (s *supervisor) Step(ctx context.Context, token claim.Token) (supervise.Ste
 	return s.store.ClaimStep(ctx, token)
 }
 
+// Reach is one claim's reach record as the store holds it, for the operator routes that answer one
+// claim (api.Supervisor): the reach keeper writes it through a narrow call of its own and never into
+// a machine's claim.
+func (s *supervisor) Reach(ctx context.Context, token claim.Token) (supervise.Reach, error) {
+	return s.store.ClaimReach(ctx, token)
+}
+
 // restore builds the machine of every claim the store held at boot, and reports the claims whose
 // launch the last daemon began and never finished: live with no locator — launching, its process,
 // if one opened at all, never recorded, or in any later live state a daemon wrote with no process
@@ -546,7 +553,10 @@ func superviseEvent(ev stream.Event) (supervise.Event, error) {
 		}
 		return supervise.StreamAnswered{Claim: ev.Claim, Model: model, Generation: ev.Generation}, nil
 	case stream.Closed:
-		return supervise.StreamClosed{Claim: ev.Claim}, nil
+		// The generation rides along so the close of a connection the claim has left — an older
+		// process whose newer one binds, or waits to — is not read as the claim's close
+		// (supervise's fence, R3).
+		return supervise.StreamClosed{Claim: ev.Claim, Generation: ev.Generation}, nil
 	}
 	return nil, fmt.Errorf("worker stream: no supervise event for a %T", ev)
 }

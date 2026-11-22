@@ -11,6 +11,7 @@ import {
   publishEnvoyPluginInterface,
   readEnvoyPluginInterface,
   resetEnvoyPluginInterfaceForTests,
+  waitForCutTurnNote,
 } from "./interface";
 import {
   claimEnvoyRole,
@@ -46,6 +47,7 @@ function foreignInterface(version: number, from: string): EnvoyPluginInterface {
     injectedUserTurns: new Map(),
     bootstrappedSession: { file: undefined },
     startupTurn: undefined,
+    cutTurnNote: undefined,
   };
 }
 
@@ -189,5 +191,38 @@ describe("the Envoy plugin interface", () => {
     store[ENVOY_PLUGIN_INTERFACE_KEY] = foreign;
     clearStartupTurn("ses_controller");
     expect(foreign.startupTurn).toEqual({ session: "ses_controller", sentAt: undefined });
+  });
+});
+
+// The cut-turn note the Envoy entry sent and the host has not yet written (R2): every turn start
+// that waits on it reads it through this one wait.
+describe("the wait for a cut-turn note on its way", () => {
+  test("ends at once when no note is on its way", async () => {
+    expect(await waitForCutTurnNote(envoyPluginInterface().cutTurnNote, "ses_a", 60_000)).toBe(
+      "none"
+    );
+  });
+
+  test("ends at once for a session the note is not for", async () => {
+    const iface = envoyPluginInterface();
+    iface.cutTurnNote = { session: "ses_other", written: Promise.withResolvers<void>().promise };
+    expect(await waitForCutTurnNote(iface.cutTurnNote, "ses_a", 60_000)).toBe("none");
+  });
+
+  test("ends once the note is written", async () => {
+    const written = Promise.withResolvers<void>();
+    const iface = envoyPluginInterface();
+    iface.cutTurnNote = { session: "ses_a", written: written.promise };
+    const waiting = waitForCutTurnNote(iface.cutTurnNote, "ses_a", 60_000);
+    written.resolve();
+    expect(await waiting).toBe("written");
+  });
+
+  // A real 20 ms clock, deliberately: the bound is a wall-clock bound on a promise nothing may
+  // ever settle, and the proposition is that the wait gives up on it.
+  test("gives up at its bound on a note that is never written", async () => {
+    const iface = envoyPluginInterface();
+    iface.cutTurnNote = { session: "ses_a", written: Promise.withResolvers<void>().promise };
+    expect(await waitForCutTurnNote(iface.cutTurnNote, "ses_a", 20)).toBe("bound");
   });
 });

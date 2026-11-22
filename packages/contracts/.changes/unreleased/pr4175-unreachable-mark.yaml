@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+    Daemon API contract 226. Every claim view of `GET /legion/v1/state` and the controller's
+    locator take an optional `unreachable`, `{since, lastSeen?}`: the daemon's mark of a claim
+    whose session has not registered with Envoy for more than 20 minutes, which the daemon
+    relaunches on its same session, absent while the claim is reachable. The daemon API fixtures
+    carry a marked claim in `state.json`, contract 226 in `version.json`, and in
+    `stall-defaults.json` `daemonWaitBudgetMs`, the hour a worker's call waits for a daemon that is
+    not serving.
+time: 2026-11-18T13:20:10Z
+custom:
+    Issue: pr4175

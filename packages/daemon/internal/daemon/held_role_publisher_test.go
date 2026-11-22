@@ -51,13 +51,15 @@ func TestTheOutboxPublishesNothingToTheRoleOfAClaimThatDoesNotHoldItsSession(t *
 	}
 }
 
-// A hook's prompt publishes with keep (publishKeptToRole), and a kept copy waits on the role's
-// kept lane for the role's next live holder, which is the unheld session's process while it lives.
-// So the gate holds a kept publish as it holds every other (outbox.publishKept, the merge of
+// A hook's prompt publishes through the gate either way it goes: with keep (publishKeptToRole) for
+// a claim that does not keep its session, and without keep for one that does, whose prompt the
+// daemon holds (hookPrompt, keepsItsSession). A kept copy waits on the role's kept lane for the
+// role's next live holder, which is the unheld session's process while it lives. So the gate holds
+// a kept publish as it holds every other (outbox.publishKept, the merge of
 // cybermonklabs/legion#4088 into #4220): to a claim that records a session it does not hold, a
 // hook prompt publishes nothing, kept or not, and finishes undelivered. To a claim holding its own
-// session, it is published with keep as before (R9). One hook prompt to each claim stands in for
-// the kept rows, since a hook prompt is the one kind publishKeptToRole publishes
+// session, it is published without keep, the daemon being its keeper (R5). One hook prompt to each
+// claim stands in for the kept rows, since a hook prompt is the one kind publishKeptToRole publishes
 // (dispatch://INFRA-4374 removed the phase-ended message, the other).
 //
 // The control (the pull request records the run): publishKeptToRole calling the publisher's
@@ -88,10 +90,11 @@ func TestTheOutboxKeepsNothingForTheRoleOfAClaimThatDoesNotHoldItsSession(t *tes
 		t.Fatalf("published %d messages, want 1, to %s: %s records a session another claim holds, so nothing goes to its role, kept or not: %+v",
 			len(published), want, unheld, published)
 	}
-	for _, p := range published {
-		if p.topic != want || !p.keep {
-			t.Fatalf("published to %s (keep %v), want %s with keep: %s records a session another claim holds", p.topic, p.keep, want, unheld)
-		}
+	// The prompt to the claim that holds its own session keeps nothing: that claim keeps its
+	// session, so the daemon, not the listener, holds its prompt (hookPrompt, keepsItsSession).
+	if p := published[0]; p.topic != want || p.keep {
+		t.Fatalf("published to %s (keep %v), want %s without keep: %s records a session another claim holds, and %s's hook prompt is the daemon's to hold",
+			p.topic, p.keep, want, unheld, held)
 	}
 }
 

@@ -395,10 +395,10 @@ func TestAnOperatorsDaemonRefusesTheRegistrationOfALaunchedController(t *testing
 }
 
 // A daemon that launches its own controller (`controller: daemon`) registers no controller through
-// the capability path, which is the operator's: a token no launch resolves is refused there before
-// the controller record is read. A daemon restart forgets the tokens of launches since replaced, so
-// the token of a controller pod the daemon replaced is such a token, and the record's registration
-// is left as it was.
+// the capability path, which is the operator's. The token of a controller pod the daemon replaced
+// is known after a restart as a launch the claim has left — the store keeps the previous launches'
+// boot tokens (R3) — so its registration is refused as of a stale generation, and the record's
+// registration is left as it was.
 func TestASupersededControllerLaunchNeverRegistersAfterARestart(t *testing.T) {
 	h := newControllerHarness(t, true)
 	token, first := h.launchController()
@@ -410,7 +410,7 @@ func TestASupersededControllerLaunchNeverRegistersAfterARestart(t *testing.T) {
 	h.relaunch(token)
 	h.restartAPI(true)
 
-	wantRefusal(t, h.register(first, "ses_stale"), claim.InvalidBootToken.Status, claim.InvalidBootToken.Message)
+	wantRefusal(t, h.register(first, "ses_stale"), claim.StaleGeneration.Status, claim.StaleGeneration.Message)
 
 	after, _, err := h.store.Controller(context.Background(), testProject)
 	if err != nil {
@@ -422,10 +422,12 @@ func TestASupersededControllerLaunchNeverRegistersAfterARestart(t *testing.T) {
 }
 
 // The capability a launched controller's registration records is no launch's boot token but the
-// hash of a secret nobody holds. The operator's capability path compares a token with it, and a
-// daemon restarted under `controller: operator` forgets the tokens of launches since replaced, so a
-// boot token recorded there would register through that path, outside its claim's generation
-// fence, whatever state the restart found the claim in: here one nothing has stopped.
+// hash of a secret nobody holds. The operator's capability path compares a token with it, so a boot
+// token recorded there would register through that path, outside its claim's generation fence,
+// whatever state a restart found the claim in: here one nothing has stopped. A daemon restarted
+// under `controller: operator` knows the replaced launch's token from the store as that launch's,
+// and refuses it as a launch of the controller it leaves to its operator, never through the
+// capability path.
 func TestALaunchedControllersBootTokenNeverRegistersAsTheOperatorsCapability(t *testing.T) {
 	h := newControllerHarness(t, true)
 	token, first := h.launchController()
@@ -433,7 +435,11 @@ func TestALaunchedControllersBootTokenNeverRegistersAsTheOperatorsCapability(t *
 	h.relaunch(token)
 	h.restartAPI(false)
 
-	wantRefusal(t, h.register(first, "ses_stale"), claim.InvalidBootToken.Status, claim.InvalidBootToken.Message)
+	recorder := h.register(first, "ses_stale")
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "leaves the controller to its operator") {
+		t.Fatalf("the replaced launch's registration = %d %s, want it refused as a launch of the controller this daemon leaves to its operator",
+			recorder.Code, recorder.Body)
+	}
 }
 
 // Every credential and workflow route refuses a missing field in the one shape its other

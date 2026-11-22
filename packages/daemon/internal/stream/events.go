@@ -146,8 +146,14 @@ type Answered struct {
 // Closed is a registered connection gone, whichever side ended it. It is emitted exactly once
 // per Hello, after every other event of that connection and before the Hello of any connection
 // that replaces it.
+//
+// Generation is the launch the closing connection's boot token was minted for, as its Hello
+// carried it. A close of a generation the claim has left is the end of a lock-out's older
+// process, which is not the claim's own close: the claim's current process binds on its next hello
+// (R3).
 type Closed struct {
-	Claim claim.Token
+	Claim      claim.Token
+	Generation uint64
 }
 
 // Drained is the mark Listener.Drain queued: every event the listener had queued when it was

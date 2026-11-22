@@ -48,6 +48,14 @@ var (
 	// ErrAuthorityHeld is an open lifecycle of the other authority: a workflow root whose key names
 	// a tree the operator opened, or the reverse. It refuses only that tree.
 	ErrAuthorityHeld = errors.New("tree lifecycle is open under another authority")
+	// ErrEpochStale is a claim bound to an epoch that is no longer its tree's open one: the
+	// tree's cleanup confirmed and a fresh admission opened the next lifetime, which only the
+	// claim's next start binds (Store.AdmitClaim). It refuses that claim's launch, and every try of
+	// it until that start, so it is no wait.
+	ErrEpochStale = errors.New("the bound tree lifecycle epoch is stale")
+	// ErrEpochUnbound is a claim bound to no epoch at all, which no launch may start before an
+	// admission binds it.
+	ErrEpochUnbound = errors.New("unbound lifecycle epoch")
 )
 
 // Serialize is the same global fact serializer intake.ApplyFact uses. Facts promote other trees
@@ -209,19 +217,37 @@ func BindWork(ctx context.Context, tx pgx.Tx, project, tree string) (uint64, err
 
 // CheckWork confirms a bound claim may start or resume. It is deliberately a short transaction
 // separate from runtime work: a cleanup reservation makes the outbox retry the start without
-// consuming a launch-failure budget.
+// consuming a launch-failure budget. Each refusal of the tree's own wraps its sentinel
+// (ErrEpochUnbound, ErrEpochStale, and BindWork's), so a caller tells it from a store that did not
+// answer by Refuses.
 func CheckWork(ctx context.Context, tx pgx.Tx, project, tree string, epoch uint64) error {
 	if epoch == 0 {
-		return fmt.Errorf("check work of tree %s: unbound lifecycle epoch", tree)
+		return fmt.Errorf("check work of tree %s: %w", tree, ErrEpochUnbound)
 	}
 	bound, err := BindWork(ctx, tx, project, tree)
 	if err != nil {
 		return err
 	}
 	if bound != epoch {
-		return fmt.Errorf("check work of tree %s: bound epoch %d is stale; current is %d", tree, epoch, bound)
+		return fmt.Errorf("check work of tree %s: %w: bound epoch %d, current is %d", tree, ErrEpochStale, epoch, bound)
 	}
 	return nil
+}
+
+// Refuses is whether err, an answer of CheckWork, is the tree's own refusal of the claim's work
+// rather than a store that did not answer: a lifecycle absent, a cleanup reserved or confirmed, or
+// the claim bound to a stale epoch or to none. Each meets every later check the same way until the
+// tree's close or its next start decides the claim; every other error — a dropped connection, a
+// pool that timed out, a lock wait past the caller's time — is the store's, which a later check
+// may get past. It names exactly the refusals CheckWork and BindWork answer, so a refusal either
+// adds is named here too.
+func Refuses(err error) bool {
+	for _, refusal := range []error{ErrLifecycleAbsent, ErrCleanupReserved, ErrLifecycleClosed, ErrEpochStale, ErrEpochUnbound} {
+		if errors.Is(err, refusal) {
+			return true
+		}
+	}
+	return false
 }
 
 // ReserveCleanup is the irreversible durable reservation. A retry returns the existing

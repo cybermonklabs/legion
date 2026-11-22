@@ -391,6 +391,9 @@ status=$?
 set -e
 proofs=$(sed -n 's/^proofs=//p' "$real_output")
 check "a schedule run of the repository's own data passes" "$(is "$status" 0)"
+# The script's refusals name what the repository's data lacks; the checks after this one read the
+# matrix the refusal left empty, so without them a failure here names no cause.
+[ "$status" -eq 0 ] || printf '    %s\n' "${out//$'\n'/$'\n'    }"
 check "and emits every hosted row" "$(is "$(proof_scripts)" "$hosted_scripts")"
 for name in $hosted_scripts; do
   : > "$real_output"

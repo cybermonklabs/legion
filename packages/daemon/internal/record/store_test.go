@@ -1504,6 +1504,52 @@ func TestUnfinishedLanesNamesEachLaneWithARowLeft(t *testing.T) {
 	})
 }
 
+// A row of a kind no lane of this binary holds — one a newer daemon of a rolling restart queued, or
+// one an earlier build left whose kind this release dropped — is never listed and never run: the
+// runner starts no executor for it (UnfinishedLanes), no lane lists it (DueRows asked for any
+// lane's kinds), and it holds back no row of its issue, whose due notice is still listed. The row
+// stays in the table as it stands.
+func TestARowOfAKindNoLaneHoldsIsNeitherListedNorRun(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	inTx(t, st, func(tx pgx.Tx) {
+		_, err := tx.Exec(ctx, `alter table outbox drop constraint outbox_kind_check`)
+		must(t, err)
+		_, err = tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+			values ('reach_notice', 'LEGION-210', '{"kind":"claim-out-of-reach"}', 0, $1, ''),
+				('reach_notice', 'LEGION-211', '{"kind":"claim-out-of-reach"}', 0, $1, '')`, now.Add(-time.Minute))
+		must(t, err)
+		must(t, records.Enqueue(ctx, tx, OutboxRow{Kind: OutboxKindNotice, Issue: "LEGION-210",
+			Payload: json.RawMessage(`{"kind":"phase-finished"}`), NextAt: now}))
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		lanes, err := records.UnfinishedLanes(ctx, tx, "LEGION")
+		must(t, err)
+		if want := []LaneKey{{Issue: "LEGION-210", Lane: LaneBoard}}; !reflect.DeepEqual(lanes, want) {
+			t.Errorf("LEGION's unfinished lanes = %v, want %v: the board lane of the notice alone", lanes, want)
+		}
+		for _, lane := range OutboxLanes() {
+			due, err := records.DueRows(ctx, tx, "LEGION", "", LaneKinds(lane), now)
+			must(t, err)
+			for _, row := range due {
+				if row.Kind == "reach_notice" {
+					t.Errorf("the %s lane lists row %d of a kind it does not hold", lane, row.ID)
+				}
+			}
+			if lane == LaneBoard && (len(due) != 1 || due[0].Kind != OutboxKindNotice) {
+				t.Errorf("the board lane lists %+v, want the notice of LEGION-210 alone", due)
+			}
+		}
+		var left int
+		must(t, tx.QueryRow(ctx, `select count(*) from outbox where kind = 'reach_notice'`).Scan(&left))
+		if left != 2 {
+			t.Errorf("%d rows of the kind no lane holds are left, want both as they stand", left)
+		}
+	})
+}
+
 // NextDue is when a lane with nothing to run next has something: the earliest next_at after now
 // among the issue's rows of its kinds that no live lease holds. A row due already is not it, nor one
 // under a live lease, nor another issue's or another lane's row; a lapsed lease does not hide a row.
@@ -2349,7 +2395,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 		"dispatch_claims":        {"key", "claimed_by", "claim_seq"},
 		"slots":                  {"issue", "index", "admitted_at"},
 		"processed_events":       {"source", "event_id", "processed_at"},
-		"outbox":                 {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_by_pause"},
+		"outbox":                 {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_at", "stored_for", "stored_generation", "held_by_pause"},
 	}
 	inTx(t, st, func(tx pgx.Tx) {
 		for table, expected := range want {
@@ -2621,15 +2667,15 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 	if known, err := st.PutClaimStep(ctx, tester, supervise.StepRecord{At: stepped, TurnStartedAt: turnStarted}); err != nil || !known {
 		t.Fatalf("record the step of the tester's claim = %t, %v", known, err)
 	}
-	// The activity columns are written by their own call too (store's PutClaimActivity), and a
-	// report dated ahead of the daemon's clock is bounded to it, so the fixture reports in the
-	// past: a session that found background work running with its phase reminder armed.
+	// The activity columns are written by their own call too (store's PutClaimActivity), dated by
+	// the moment the daemon received the report: a session that found background work running
+	// with its phase reminder armed, received a minute ago.
 	reported := time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)
 	reminder := reported.Add(10 * time.Minute)
 	if known, err := st.PutClaimActivity(ctx, tester, held.Generation, claim.SessionActivity{At: reported,
 		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"async-job"}},
 		Phase:          claim.PhaseActivity{NextReminderAt: &reminder},
-	}); err != nil || !known {
+	}, reported); err != nil || !known {
 		t.Fatalf("record the activity of the tester's claim = %t, %v", known, err)
 	}
 	inTx(t, st, func(tx pgx.Tx) {
@@ -2658,7 +2704,7 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 				read.Step, stepped, turnStarted)
 		}
 		if !read.ActivityAt.Equal(reported) || !read.ActivityBackground || !read.ActivityNextReminderAt.Equal(reminder) {
-			t.Fatalf("the activity of the tester's claim = %s, background %v, reminder %s, want the report of background work at %s with its reminder due at %s",
+			t.Fatalf("the activity of the tester's claim = %s, background %v, reminder %s, want the report of background work received at %s with its reminder due at %s",
 				read.ActivityAt, read.ActivityBackground, read.ActivityNextReminderAt, reported, reminder)
 		}
 		if _, found := claims[merger]; found {

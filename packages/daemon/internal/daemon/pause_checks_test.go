@@ -78,7 +78,7 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 		Task: "Q's own start.", WakeKind: pods.WakeRoleMessage})
 	r.boot()
 	if known, err := r.st.PutClaimActivity(r.ctx, A, 1, claim.SessionActivity{At: now,
-		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"async-job"}}}); err != nil || !known {
+		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"async-job"}}}, now); err != nil || !known {
 		t.Fatalf("record A's report of background work = %v, %v", known, err)
 	}
 	controllerShim := r.controllerUp()

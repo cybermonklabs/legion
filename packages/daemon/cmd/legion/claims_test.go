@@ -120,6 +120,14 @@ func (s *memoryClaims) Step(_ context.Context, token legionclaim.Token) (supervi
 	return s.rows[token].Step, nil
 }
 
+// Reach is the reach record the rows hold, as the store's own narrow read answers it
+// (store.Store.ClaimReach): what the operator routes serve for one claim.
+func (s *memoryClaims) Reach(_ context.Context, token legionclaim.Token) (supervise.Reach, error) {
+	s.rowsMu.Lock()
+	defer s.rowsMu.Unlock()
+	return s.rows[token].Reach, nil
+}
+
 func (s *memoryClaims) PutClaim(_ context.Context, c supervise.Claim) error {
 	s.rowsMu.Lock()
 	defer s.rowsMu.Unlock()

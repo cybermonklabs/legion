@@ -1987,6 +1987,79 @@ test("the controller reads the state without a grant and sets an issue's status 
   expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller"]);
 });
 
+// R5: `read_state` shows a claim Envoy cannot reach as unreachable, with the time the daemon
+// found it so. The summary is what read_state answers with no field, so it carries the mark on
+// the claim's own line, and the controller's own mark, which stands on no issue, on a line of its
+// own. A reachable claim's line is as it was.
+test("read_state's summary marks each claim Envoy cannot reach, and the controller", async () => {
+  const claim = (session: string, unreachable?: Record<string, string>) => ({
+    session,
+    state: "working",
+    locator: {
+      runtime: "sandbox",
+      claim: `legion-acme-acme-209-${session}`,
+      incarnation: "uid-209/1",
+      sandbox: {
+        namespace: "legion",
+        name: "acme-209",
+        podUid: "uid-209",
+        container: "roles",
+        generation: 1,
+      },
+    },
+    pluginContract: 208,
+    lastTurnStart: "2026-11-12T15:45:39Z",
+    ...(unreachable === undefined ? {} : { unreachable }),
+  });
+  const state = legionState({
+    controllerLocator: {
+      runtime: "kubernetes",
+      external: true,
+      sessionId: "ses_controller",
+      registeredAt: "2026-11-12T10:00:00Z",
+      pluginContract: 208,
+      unreachable: { since: "2026-11-12T18:20:00Z", lastSeen: "2026-11-12T17:59:00Z" },
+    },
+    issues: {
+      "ACME-209": {
+        key: "ACME-209",
+        generation: 1,
+        phase: "implementing",
+        status: "in_progress",
+        repo: "acme/widgets",
+        defaultBranch: "main",
+        architect: claim("architect"),
+        workers: {
+          implementer: {
+            claim: claim("implementer", {
+              since: "2026-11-12T16:11:01Z",
+              lastSeen: "2026-11-12T15:51:01Z",
+            }),
+            pass: 1,
+            rounds: 0,
+          },
+        },
+      },
+    },
+  });
+  const { daemon } = recordingDaemon({ state });
+  const result = await controllerTool(daemon, []).execute(
+    "",
+    { op: "read_state" },
+    undefined,
+    undefined,
+    context("ses_controller")
+  );
+  const [block] = result.content;
+  const lines = (block !== undefined && block.type === "text" ? block.text : "").split("\n");
+
+  expect(lines).toContain("controller unreachable 2026-11-12T18:20:00Z");
+  expect(lines).toContain("  architect working 2026-11-12T15:45:39Z -");
+  expect(lines).toContain(
+    "  implementer working 2026-11-12T15:45:39Z - unreachable 2026-11-12T16:11:01Z"
+  );
+});
+
 // R6: a role reads which plugin build its own process runs. The build is the manifest of the
 // module this process loaded: `tools.ts` imports `../package.json` and takes `pluginBuildOf` of
 // it, never the image's copy at `/opt/legion/pi-legion`, which a relaunch never updates. For this

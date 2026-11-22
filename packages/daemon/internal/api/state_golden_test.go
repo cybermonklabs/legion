@@ -230,6 +230,9 @@ func populatedState(t *testing.T) State {
 	implementerFailedAt := time.Date(2026, 9, 22, 8, 47, 3, 0, time.UTC)
 	// When LEGION-207's linger runs out: its work finished and its tree lingers until then.
 	lingerUntil := time.Date(2026, 9, 22, 10, 10, 12, 0, time.UTC)
+	// When LEGION-207's implementer's session last registered with Envoy, more than 20 minutes
+	// before the read, which its claim's unreachable mark counts from.
+	unreachableSince := time.Date(2026, 9, 22, 8, 51, 40, 0, time.UTC)
 	// When the controller paused the project, nine minutes before the state was read.
 	pausedSince := time.Date(2026, 9, 22, 9, 9, 0, 0, time.UTC)
 	// The two flags the line's members write: LEGION-212 kept the slot it took when the daemon
@@ -726,10 +729,14 @@ func populatedState(t *testing.T) State {
 				Workers: map[claim.Role]PhaseView{
 					// The pacing holds this claim's relaunch onto this daemon's plugin, which the
 					// stale-plugin lane's own gate admitted for it: a wake stands over a claim no
-					// round has asked yet, which reads `none` with its wake beside it.
+					// round has asked yet, which reads `none` with its wake beside it. Its session
+					// has not registered with Envoy for more than 20 minutes either, so the daemon
+					// marks it unreachable with the moment the count ran from and the last
+					// registration it read, and the claim keeps its state (R5).
 					claim.RoleImplementer: {Claim: ClaimView{
 						Session: "ses_implementer_207", State: "working", UpdateState: UpdateStateNone,
-						Wake: &WakeView{Kind: supervise.WakePluginRefresh, DueAt: time.Date(2026, 9, 22, 9, 17, 56, 0, time.UTC)},
+						Wake:        &WakeView{Kind: supervise.WakePluginRefresh, DueAt: time.Date(2026, 9, 22, 9, 17, 56, 0, time.UTC)},
+						Unreachable: &UnreachableView{Since: unreachableSince, LastSeen: &unreachableSince},
 					}, HandoffCommit: "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40", Pass: 1, Rounds: 1},
 				},
 				PullRequest: &PullRequestView{

@@ -4,6 +4,7 @@ import type {
   LegionSessionActivityBody,
 } from "@legion/contracts/legion-api";
 import type { ClaimCapability } from "./legion-phase-ops";
+import { integerSetting, type StallLimitsLog } from "./stall-limits";
 
 /**
  * What a live role's session reports of what it is doing (INFRA-945), so the daemon can decide
@@ -11,13 +12,41 @@ import type { ClaimCapability } from "./legion-phase-ops";
  * background, and the phase reminder's armed wake.
  *
  * The module is pure. It builds a report, compares two of them and renders the request that
- * carries one; the hosts — `packages/pi-legion/extensions/legion.ts` at `session_stop` and on a
- * change, `packages/claude-envoy/src/legion-phase-hook.ts` at the `Stop` hook — are what send it.
+ * carries one; the hosts — `packages/pi-legion/extensions/legion.ts` at `session_stop`, on a
+ * change, and every {@link TURN_ACTIVITY_HEARTBEAT_MS} while a turn is open,
+ * `packages/claude-envoy/src/legion-phase-hook.ts` at the `Stop` hook — are what send it.
  * Neither host decides what the report says, so the two say the same thing about the same session.
  *
  * A claim with no report after its last turn is never released, so a host that reports nothing
  * holds its pod rather than losing it: every failure here is a report not sent.
  */
+
+/**
+ * How often an Oh My Pi session sends its report again while a turn is open, whatever it says:
+ * 5 minutes. The daemon's relaunch guard (R5, `RelaunchGuard` in
+ * `packages/daemon/internal/supervise/reach.go`) reads a report made in the turn in the last 20
+ * minutes as the process still running that turn, since a `wait` on a named `bash` service blocks
+ * with no step on the pinned Oh My Pi and no report names the service. A quarter of those 20
+ * minutes leaves three reports that can be lost before the guard reads a live turn as a quiet one.
+ * The report goes from a timer of the process's own, so a process that is frozen or whose event
+ * loop is held sends none, and the guard lets it through 20 minutes after its last.
+ */
+export const TURN_ACTIVITY_HEARTBEAT_MS = 300_000;
+
+/** The one variable that moves {@link TURN_ACTIVITY_HEARTBEAT_MS}, which a test on the real binary
+ * shortens so a turn's reports come in seconds. No production path sets it, and the daemon copies
+ * it to no session. */
+const TURN_ACTIVITY_HEARTBEAT_VARIABLE = "LEGION_TURN_ACTIVITY_HEARTBEAT_MS";
+
+/** The period this session's turn heartbeat runs on, read from its own environment: the default
+ * when the variable is unset, and the default with one `warn` naming it when it is not an
+ * integer of 1 or more (`integerSetting`). */
+export function turnActivityHeartbeatMs(
+  env: Record<string, string | undefined>,
+  log: StallLimitsLog
+): number {
+  return integerSetting(env, log, TURN_ACTIVITY_HEARTBEAT_VARIABLE, TURN_ACTIVITY_HEARTBEAT_MS, 1);
+}
 
 /** A backgrounded shell command, or anything else the host's async-job manager runs that is not a
  * subagent (`AsyncJob.type` on Oh My Pi: `bash`, `eval`). */

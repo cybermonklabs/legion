@@ -9,7 +9,8 @@ import {
 import { z } from "zod";
 import { PlanRatingCases } from "../../contracts/src/plan-rating-cases";
 import { stateAtPhase } from "../test/daemon-state";
-import { createLegionDaemonClient } from "./daemon-client";
+import { createLegionDaemonClient, DAEMON_ATTEMPT_LIMIT_MS } from "./daemon-client";
+import { daemonWaitMs, forgetDaemonWaitsForTests } from "./daemon-wait";
 import type { HandoffReport } from "./handoff-record";
 import {
   type ClaimCapability,
@@ -335,6 +336,329 @@ test("handoff_complete reads the issue's phase, finds the record and commit for 
     verdict: "pass",
     ...REPORT,
   });
+});
+
+// An attempt the retry gave up on at its limit must mint nothing and post nothing afterwards,
+// even over a transport that does not end a request on the attempt's abort and hands its answer
+// on late: each step of the attempt reads the attempt's signal first, so the late state answer
+// goes no further. The next attempt is the one that completes.
+test("a handoff_complete attempt given up at its limit mints and posts nothing when its state read answers late, over a transport that ignores the abort", async () => {
+  const routes: string[] = [];
+  const lookups: string[] = [];
+  const asked = Promise.withResolvers<void>();
+  const late = Promise.withResolvers<Response>();
+  const answers: Record<string, Record<string, unknown>> = {
+    "/legion/v1/issues/LEGION-208/record": daemonFixture("issue-record.json"),
+    "/legion/v1/grants": daemonFixture("grant.json"),
+    "/legion/v1/handoff/complete": daemonFixture("handoff-complete.json"),
+  };
+  // The first state read is answered only when the case says so, whatever its signal does.
+  const stub = (async (input) => {
+    const route = new URL(input.toString()).pathname;
+    routes.push(route);
+    if (routes.length === 1) {
+      asked.resolve();
+      return late.promise;
+    }
+    return Response.json(answers[route] ?? {});
+  }) as typeof fetch;
+  let attempts = 0;
+  const ops: PhaseOpRuntime = {
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: CONTRACT,
+      fetch: stub,
+    }),
+    claim: implementer,
+    build: BUILD,
+    handoffReport: async (phase, role) => {
+      lookups.push(`${phase} ${role}`);
+      return REPORT;
+    },
+    branchHead: async () => {
+      throw new Error("no branch-head lookup expected");
+    },
+    restart: {
+      now: () => 0,
+      sleep: async () => undefined,
+      // The first attempt's limit runs out once its state read is open.
+      attemptLimit: () => {
+        attempts += 1;
+        return attempts === 1 ? asked.promise : Promise.withResolvers<void>().promise;
+      },
+    },
+  };
+
+  await expect(
+    executePhaseOp(ops, { op: "handoff_complete", summary: "Done.", verdict: "pass" })
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  late.resolve(Response.json(answers["/legion/v1/issues/LEGION-208/record"]));
+  // Everything the abandoned attempt would do next is in memory here (its answer, the lookup,
+  // the client), so one turn of the event loop is all it needs to send a request.
+  const turn = Promise.withResolvers<void>();
+  setImmediate(turn.resolve);
+  await turn.promise;
+
+  expect(routes).toEqual([
+    "/legion/v1/issues/LEGION-208/record",
+    "/legion/v1/issues/LEGION-208/record",
+    "/legion/v1/grants",
+    "/legion/v1/handoff/complete",
+  ]);
+  expect(lookups).toEqual(["implementing implementer"]);
+});
+
+// A completion's report is read in the pane, by jj and from Dispatch, and is no request to the
+// daemon: a read that runs past the attempt's limit (a jj waiting on a working-copy lock) is not
+// a daemon that stopped serving. So it is neither ended nor made again as one, the agent is not
+// told the daemon is restarting, and none of its time is taken off the call's stall clock: the
+// stall watch still sees the hang.
+test("a handoff report that runs past the attempt's limit is no daemon outage: it is not retried, the agent is not told, and its time is no wait for the daemon", async () => {
+  forgetDaemonWaitsForTests();
+  const { ops: answering, routes, lookups } = runtime();
+  const reading = Promise.withResolvers<void>();
+  const read = Promise.withResolvers<HandoffReport>();
+  const told: string[] = [];
+  const sleeps: number[] = [];
+  let clock = 0;
+  let limits = 0;
+  const ops: PhaseOpRuntime = {
+    ...answering,
+    handoffReport: async (phase, role) => {
+      lookups.push(`${phase} ${role}`);
+      reading.resolve();
+      return read.promise;
+    },
+    restart: {
+      now: () => clock,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        clock += ms;
+      },
+      onRetrying: (message) => told.push(message),
+      toolCallId: "toolu_legion",
+      // The first limit armed runs out once the report read is open; no later one runs out.
+      attemptLimit: () => {
+        limits += 1;
+        return limits === 1 ? reading.promise : Promise.withResolvers<void>().promise;
+      },
+    },
+  };
+
+  const completing = executePhaseOp(ops, {
+    op: "handoff_complete",
+    summary: "Done.",
+    verdict: "pass",
+  });
+  await reading.promise;
+  // Six minutes of jj waiting on a lock, and a turn of the event loop for the limit to act in.
+  clock += 6 * 60_000;
+  const turn = Promise.withResolvers<void>();
+  setImmediate(turn.resolve);
+  await turn.promise;
+  read.resolve(REPORT);
+
+  await expect(completing).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  expect(told).toEqual([]);
+  expect(sleeps).toEqual([]);
+  expect(lookups).toEqual(["implementing implementer"]);
+  expect(routes).toEqual([
+    "/legion/v1/issues/LEGION-208/record",
+    "/legion/v1/grants",
+    "/legion/v1/handoff/complete",
+  ]);
+  expect(daemonWaitMs("toolu_legion", 0, clock)).toBe(0);
+});
+
+// The limit stops for the report read and starts again, whole, once the read is over: the
+// requests after the read are the daemon's, and a daemon that takes the grant and never answers
+// is still given up on at the attempt's limit, five minutes after the read and not five minutes
+// after the attempt began. A limit that did not start again would leave that grant open for as
+// long as the daemon held it.
+test("the attempt's limit starts again, whole, once the report read is over, so a grant the daemon then holds is given up on", async () => {
+  const routes: string[] = [];
+  const answers: Record<string, Record<string, unknown>> = {
+    "/legion/v1/issues/LEGION-208/record": daemonFixture("issue-record.json"),
+    "/legion/v1/grants": daemonFixture("grant.json"),
+    "/legion/v1/handoff/complete": daemonFixture("handoff-complete.json"),
+  };
+  const granting = Promise.withResolvers<void>();
+  const held = Promise.withResolvers<Response>();
+  // The first grant is taken and not answered until the case ends, whatever its signal does.
+  const stub = (async (input) => {
+    const route = new URL(input.toString()).pathname;
+    routes.push(route);
+    if (route === "/legion/v1/grants" && routes.filter((sent) => sent === route).length === 1) {
+      granting.resolve();
+      return held.promise;
+    }
+    return Response.json(answers[route] ?? {});
+  }) as typeof fetch;
+  const reading = Promise.withResolvers<void>();
+  const read = Promise.withResolvers<HandoffReport>();
+  let reads = 0;
+  const limits: { ms: number; answered: AbortSignal; runOut: () => void }[] = [];
+  const ops: PhaseOpRuntime = {
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: CONTRACT,
+      fetch: stub,
+    }),
+    claim: implementer,
+    build: BUILD,
+    // The first attempt's read waits on the case; the next attempt's answers at once.
+    handoffReport: async () => {
+      reads += 1;
+      if (reads > 1) return REPORT;
+      reading.resolve();
+      return read.promise;
+    },
+    branchHead: async () => {
+      throw new Error("no branch-head lookup expected");
+    },
+    restart: {
+      now: () => 0,
+      sleep: async () => undefined,
+      // Each limit armed runs out only when the case says so.
+      attemptLimit: (ms, answered) => {
+        const overdue = Promise.withResolvers<void>();
+        limits.push({ ms, answered, runOut: () => overdue.resolve() });
+        return overdue.promise;
+      },
+    },
+  };
+
+  const completing = executePhaseOp(ops, {
+    op: "handoff_complete",
+    summary: "Done.",
+    verdict: "pass",
+  });
+  await reading.promise;
+  // The limit armed with the state read is ended for the read, and no other runs meanwhile.
+  expect(limits).toHaveLength(1);
+  expect(limits[0]?.answered.aborted).toBe(true);
+  read.resolve(REPORT);
+  await granting.promise;
+
+  // Once the read is over, a whole limit times the grant.
+  expect(limits).toHaveLength(2);
+  expect(limits[1]?.ms).toBe(DAEMON_ATTEMPT_LIMIT_MS);
+  expect(limits[1]?.answered.aborted).toBe(false);
+  limits[1]?.runOut();
+
+  await expect(completing).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  held.resolve(Response.json(answers["/legion/v1/grants"]));
+  expect(routes).toEqual([
+    "/legion/v1/issues/LEGION-208/record",
+    "/legion/v1/grants",
+    "/legion/v1/issues/LEGION-208/record",
+    "/legion/v1/grants",
+    "/legion/v1/handoff/complete",
+  ]);
+  expect(reads).toBe(2);
+});
+
+// The report's own failure is the pane's answer, whatever it looks like: a Dispatch the pane
+// cannot reach fails the read with the error a dropped connection to the daemon fails with, and
+// that failure is handed to the agent at once rather than waited out as a daemon restart.
+test("a handoff report's own failure is passed on at once and never waited out as the daemon's, though it reads as a dropped connection", async () => {
+  const { ops: answering, routes, lookups } = runtime();
+  const unreachableDispatch = new TypeError("fetch failed");
+  const told: string[] = [];
+  const sleeps: number[] = [];
+  let clock = 0;
+  const ops: PhaseOpRuntime = {
+    ...answering,
+    handoffReport: async (phase, role) => {
+      lookups.push(`${phase} ${role}`);
+      throw unreachableDispatch;
+    },
+    restart: {
+      now: () => clock,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        clock += ms;
+      },
+      onRetrying: (message) => told.push(message),
+      attemptLimit: () => Promise.withResolvers<void>().promise,
+    },
+  };
+
+  const refused = await executePhaseOp(ops, {
+    op: "handoff_complete",
+    summary: "Done.",
+    verdict: "pass",
+  }).catch((error: unknown) => error);
+
+  expect(refused).toBe(unreachableDispatch);
+  expect(told).toEqual([]);
+  expect(sleeps).toEqual([]);
+  expect(lookups).toEqual(["implementing implementer"]);
+  expect(routes).toEqual(["/legion/v1/issues/LEGION-208/record"]);
+});
+
+// A call that waits out an outage keeps its whole wait, however many attempts it makes. Each
+// attempt of a completion reads the state, then its report in the pane, which is the call's own
+// time and no wait for the daemon, then mints its grant. Here the daemon answers the state and
+// drops every grant for 40 attempts, more than the record holds entries (`daemon-wait.ts`), so a
+// record that counted each attempt's wait as an entry of its own would lose the oldest of them
+// while the call is still open, and the stall watch would charge the call for that outage.
+test("a completion that waits out an outage over more attempts than the wait record holds keeps its whole wait, less its report reads", async () => {
+  forgetDaemonWaitsForTests();
+  const routes: string[] = [];
+  const answers: Record<string, Record<string, unknown>> = {
+    "/legion/v1/issues/LEGION-208/record": daemonFixture("issue-record.json"),
+    "/legion/v1/grants": daemonFixture("grant.json"),
+    "/legion/v1/handoff/complete": daemonFixture("handoff-complete.json"),
+  };
+  const DROPPED_GRANTS = 40;
+  let grants = 0;
+  const stub = (async (input) => {
+    const route = new URL(input.toString()).pathname;
+    routes.push(route);
+    if (route === "/legion/v1/grants" && ++grants <= DROPPED_GRANTS) {
+      throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+    }
+    return Response.json(answers[route] ?? {});
+  }) as typeof fetch;
+  const READ_MS = 1_000;
+  const sleeps: number[] = [];
+  let clock = 0;
+  const ops: PhaseOpRuntime = {
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: CONTRACT,
+      fetch: stub,
+    }),
+    claim: implementer,
+    build: BUILD,
+    // Each report read takes a second of the call's own time.
+    handoffReport: async () => {
+      clock += READ_MS;
+      return REPORT;
+    },
+    branchHead: async () => {
+      throw new Error("no branch-head lookup expected");
+    },
+    restart: {
+      now: () => clock,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        clock += ms;
+      },
+      toolCallId: "toolu_legion",
+      attemptLimit: () => Promise.withResolvers<void>().promise,
+    },
+  };
+
+  await expect(
+    executePhaseOp(ops, { op: "handoff_complete", summary: "Done.", verdict: "pass" })
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+
+  const attempts = DROPPED_GRANTS + 1;
+  expect(routes.filter((route) => route === "/legion/v1/issues/LEGION-208/record")).toHaveLength(
+    attempts
+  );
+  expect(sleeps).toHaveLength(DROPPED_GRANTS);
+  expect(clock).toBe(sleeps.reduce((sum, ms) => sum + ms, 0) + attempts * READ_MS);
+  expect(daemonWaitMs("toolu_legion", 0, clock)).toBe(clock - attempts * READ_MS);
 });
 
 // The agent that does the retro rates the plan the issue ran in the completion that ends the

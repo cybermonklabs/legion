@@ -1,5 +1,10 @@
 package api
 
+import (
+	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/timewords"
+)
+
 // This file is the decision, field by field, about what the daemon's surfaces serve of the
 // three durable records a reader of this wire acts on: `supervise.Claim`, `record.Issue` and
 // `record.Assignment`. It is data and nothing else — no route, no view and no projection reads
@@ -149,6 +154,13 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "ActivityBackground", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "ActivityKinds", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "ActivityNextReminderAt", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "Reach", Column: ColumnAgents, Keys: []string{"unreachable"},
+		Reason: "the mark of a claim whose session Envoy has not heard from for " + timewords.Words(supervise.UnreachableAfter) + ", which keeps its state and which the daemon relaunches on its same session (R5)"},
+	// The relaunch's own record: the reach keeper reads LastRelaunch for its six-hour refusal and
+	// counts the claim's later launches from LastRelaunchGeneration. No reader of these routes acts
+	// on either.
+	{Field: "LastRelaunch", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "LastRelaunchGeneration", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "LastTurnStart", Column: ColumnAgents, Keys: []string{"lastTurnStart"},
 		Reason: "when the agent last began a turn, which tells a worker still making progress from one wedged in a turn"},
 	{Field: "LastTurnEnd", Column: ColumnAgents, Keys: []string{"lastTurnEnd"},

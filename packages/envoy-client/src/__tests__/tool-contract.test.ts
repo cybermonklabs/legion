@@ -171,6 +171,15 @@ describe("envoyToolSpecs", () => {
     expect(publish?.description).toContain("the listener keeps nothing and errs");
     expect(publish?.description).not.toContain("nothing waits for it");
     expect(publish?.description).not.toContain("in the hour that follows");
+    // Nothing replaces a holder that is not live while its last_seen is 20 minutes old or less, the
+    // bound past the longest measured heartbeat gap, 1,148 s; past that, a Legion claim it holds is
+    // started again on that same session (R5).
+    expect(publish?.description).toContain(
+      "For a holder that is not live, start no replacement for that session while its last_seen is 20 minutes old or less."
+    );
+    expect(publish?.description).toContain(
+      "For a Legion claim, skill://envoy/references/legion.md says what happens past that."
+    );
   });
 
   test("says what the recipient counts and the stopped state mean", () => {

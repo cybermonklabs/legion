@@ -313,7 +313,7 @@ type ReleaseRecordStore interface {
 // launch generation names and answers whether the store holds the claim at that launch at all;
 // a report older than the one recorded is dropped and still answers true.
 type ClaimActivityStore interface {
-	PutClaimActivity(ctx context.Context, token claim.Token, generation uint64, activity claim.SessionActivity) (bool, error)
+	PutClaimActivity(ctx context.Context, token claim.Token, generation uint64, activity claim.SessionActivity, received time.Time) (bool, error)
 }
 
 type server struct {

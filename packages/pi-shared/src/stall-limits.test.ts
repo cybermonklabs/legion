@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { LEGION_ROLES } from "@legion/contracts";
+import { DAEMON_RESTART_BUDGET_MS } from "./daemon-client";
 import { DEFAULT_STALL_LIMITS, defaultCallBoundMs, stallLimits } from "./stall-limits";
 import { DECLARED_DEADLINE_MOST_MS } from "./stall-watchdog";
 
@@ -118,6 +119,7 @@ function daemonFixture(): {
   readonly callBoundMs: number;
   readonly stepMs: number;
   readonly declaredDeadlineMostMs: number;
+  readonly daemonWaitBudgetMs: number;
   readonly callBoundMsByRole: Record<string, number>;
 } {
   return JSON.parse(
@@ -165,4 +167,14 @@ test("the daemon's fixture carries the same defaults and the same per-role bound
 // call.
 test("the daemon's fixture carries the hour the host clamps a declared deadline to", () => {
   expect(daemonFixture().declaredDeadlineMostMs).toBe(DECLARED_DEADLINE_MOST_MS);
+});
+
+// The fifth is the hour a call waits for a daemon that is not serving
+// (`src/daemon-client.ts`, DAEMON_RESTART_BUDGET_MS). The worker's own watch does not judge a
+// call for that wait (`src/daemon-wait.ts`), so the daemon's floor carries it
+// (`packages/daemon/internal/config/stallbackstop.go`, StallLadderFor) and the two copies are
+// held together here: a floor computed from an hour the client no longer waits would let the
+// daemon end a turn that is waiting for that daemon to come back.
+test("the daemon's fixture carries the hour a call waits for a daemon that is not serving", () => {
+  expect(daemonFixture().daemonWaitBudgetMs).toBe(DAEMON_RESTART_BUDGET_MS);
 });

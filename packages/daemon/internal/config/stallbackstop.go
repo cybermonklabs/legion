@@ -246,8 +246,9 @@ func jsDigits(s string) bool {
 
 // StallLadderFor is the whole of what a working plugin can legitimately take for role before
 // anything is left for the daemon to do, and so the floor of the daemon's own backstop bound
-// (checkStallBackstops): the longest a call of that worker can run unjudged, the grace over it,
-// and the two gaps between the ladder's three recovery steps.
+// (checkStallBackstops): the longest a call of that worker can run unjudged, the hour such a
+// call may spend waiting for a daemon that is not serving, the grace over it, and the two gaps
+// between the ladder's three recovery steps.
 //
 // The longest a call can run is the larger of two numbers, because a worker judges a call by
 // whichever of them applies to it: the bound it holds a call no deadline judges to
@@ -256,23 +257,31 @@ func jsDigits(s string) bool {
 // hour has not shortened the deadline a `pty` call may declare, so a floor reckoned from the
 // bound alone would let the daemon end a working call an hour into its declared `timeout 3600`.
 //
+// The daemon wait (stalldefaults.go's StallDaemonWait) is on top of either, because the
+// worker's watch does not count it: a `legion` tool call that waits out a daemon restart is
+// stopped rather than stuck, and its own watch judges it only by the time it was working
+// (`packages/pi-shared/src/daemon-wait.ts`, R1). Without it here the daemon would end the very turn
+// that is waiting for the daemon to come back.
+//
 // The sum saturates (saturatingSum): the bound can be the largest number of milliseconds a
-// Duration holds (maxStallMilliseconds), which leaves nothing of the Duration for the grace and
-// the two gaps on top of it.
+// Duration holds (maxStallMilliseconds), which leaves nothing of the Duration for the wait, the
+// grace and the two gaps on top of it.
 func (c Config) StallLadderFor(role claim.Role) time.Duration {
-	return saturatingSum(max(c.StallLimits.CallBoundFor(role), StallDeclaredDeadlineCap), c.StallLimits.CallGrace, c.StallLimits.Step, c.StallLimits.Step)
+	return saturatingSum(max(c.StallLimits.CallBoundFor(role), StallDeclaredDeadlineCap), StallDaemonWait, c.StallLimits.CallGrace, c.StallLimits.Step, c.StallLimits.Step)
 }
 
 // StallBackstopFor is how long after a claim's recorded last step the daemon ends role's turn
 // itself: the bound `worker_stall_backstop_hours` names for that role, and twice the role's own
 // bound (StallLimits.CallBoundFor) where the file names none, which is what the approved spec's
 // Design says — the daemon's backstop bound is twice the role's, so the worker acts first
-// wherever it can act at all. That is eight hours for an implementer and a reviewer and two for
-// every other role and the controller, on the shipped numbers.
+// wherever it can act at all. That is eight hours for an implementer and a reviewer on the
+// shipped numbers; every other role's two hours is below its own floor, so those roles run on
+// the floor itself, 2h9m.
 //
 // It is never below the floor every named bound must clear (StallLadderFor), which twice the
-// role's bound falls under wherever that bound is below about 35 minutes on the shipped grace
-// and gaps — the ladder starts from the hour a declared deadline may run — or where a deployment
+// role's bound falls under wherever that bound is below about 1 h 5 min on the shipped grace,
+// gaps and daemon wait — the ladder starts from the hour a declared deadline may run and adds
+// the hour a call may wait for a daemon that is not serving — or where a deployment
 // has stretched the grace or the step gaps: a default below that floor would have the daemon do
 // the very thing the file is refused for. 0 is the backstop off for that role, which only the
 // file can ask for: no sweep acts on a role whose bound is 0.
@@ -369,11 +378,14 @@ func readStallBackstops(value *yaml.Node, key string) (map[claim.Role]time.Durat
 // checkStallBackstops refuses a backstop bound below the whole ladder the role's own plugin runs
 // (StallLadderFor), once the daemon's environment is settled: the longest a call of that worker
 // can legitimately run — the larger of the bound a call no deadline judges runs on and the hour
-// the host clamps a declared deadline to — plus the grace over it and the two gaps between the
+// the host clamps a declared deadline to — plus the hour such a call may spend waiting for a
+// daemon that is not serving, the grace over it and the two gaps between the
 // ladder's steps. A shorter bound would have the daemon end a turn while the plugin it exists to
-// back up is still recovering it, or while a call of its own declared deadline is still running,
-// and the daemon can see neither, so the floor is the whole of what keeps the two apart. The
-// message names which of the two numbers the floor was reckoned from, since neither is in the
+// back up is still recovering it, while a call of its own declared deadline is still running,
+// or while a call is waiting for this very daemon to come back,
+// and the daemon can see none of the three, so the floor is the whole of what keeps them apart.
+// The message names which of the two numbers the floor was reckoned from and what the wait is,
+// since none of them is in the
 // file the operator is reading. 0 is the backstop off for that role and is refused nothing.
 func checkStallBackstops(cfg Config) error {
 	for _, role := range RoleConfigRoles {
@@ -390,9 +402,9 @@ func checkStallBackstops(cfg Config) error {
 		if StallDeclaredDeadlineCap > called {
 			from = fmt.Sprintf("the hour the host clamps a call's own declared deadline to, longer here than the %s bound a call no deadline judges runs on", called)
 		}
-		return fmt.Errorf("%s.%s (%s) is below the whole stall ladder the %s's own plugin runs (%s + %s + 2 × %s = %s, where the first number is %s): the daemon's backstop would end a turn the plugin it backs up is still recovering; set 0 to switch the backstop off for that role",
+		return fmt.Errorf("%s.%s (%s) is below the whole stall ladder the %s's own plugin runs (%s + %s + %s + 2 × %s = %s, where the first number is %s and the second is the %s a call waits for a daemon that is not serving): the daemon's backstop would end a turn the plugin it backs up is still recovering; set 0 to switch the backstop off for that role",
 			stallBackstopKey, role, bound, role,
-			max(called, StallDeclaredDeadlineCap), cfg.StallLimits.CallGrace, cfg.StallLimits.Step, ladder, from)
+			max(called, StallDeclaredDeadlineCap), StallDaemonWait, cfg.StallLimits.CallGrace, cfg.StallLimits.Step, ladder, from, StallDaemonWait)
 	}
 	return nil
 }

@@ -191,12 +191,15 @@ const schemas: Record<string, z.ZodType> = {
   // source — to the numbers the daemon computes its backstop floor from. The three defaults are
   // `src/stall-limits.ts`'s; `declaredDeadlineMostMs` is the hour the host clamps a call's own
   // declared deadline to (`src/stall-watchdog.ts`, DECLARED_DEADLINE_MOST_MS), the other half of
-  // that floor.
+  // that floor; `daemonWaitBudgetMs` is the hour a worker's call waits for a daemon that is not
+  // serving (`src/daemon-client.ts`, DAEMON_RESTART_BUDGET_MS, R1), which the backstop's floor
+  // grows by.
   "stall-defaults.json": z.strictObject({
     callGraceMs: z.number().int().positive(),
     callBoundMs: z.number().int().positive(),
     stepMs: z.number().int().positive(),
     declaredDeadlineMostMs: z.number().int().positive(),
+    daemonWaitBudgetMs: z.number().int().positive(),
     callBoundMsByRole: z.record(
       z.enum([...LEGION_ROLES, "controller"]),
       z.number().int().nonnegative()
@@ -1659,6 +1662,45 @@ test("a claim carries the leak check's cause beside its failure", () => {
   expect(LegionOperatorClaimsResponse.safeParse(listing).success).toBeFalse();
 });
 
+// R5: a claim whose Envoy session has registered with the listener for none of the last 20 minutes
+// is unreachable, and the state says so on every claim view and on the controller's locator:
+// `since`, when the daemon found it so, and `lastSeen`, the last registration of its session the
+// daemon read, absent where it read none. The key is absent while the claim is reachable, so a
+// reachable claim parses as it did; it must be named, since a key the schema does not name is
+// stripped and `read_state` would never show it; and a mark with no `since`, or a time that is no
+// RFC 3339 instant, is refused.
+test("a claim and the controller's locator carry when the daemon found them unreachable", () => {
+  const state = fixture("state.json") as {
+    controllerLocator: Record<string, unknown>;
+    issues: Record<string, { workers: Record<string, { claim: Record<string, unknown> }> }>;
+  };
+  const worker = state.issues["LEGION-208"]?.workers.implementer?.claim;
+  if (worker === undefined) {
+    throw new Error("state fixture lacks LEGION-208's implementer");
+  }
+  expect(worker.unreachable).toBeUndefined();
+  const marked = { since: "2026-11-12T16:11:01Z", lastSeen: "2026-11-12T15:51:01Z" };
+  worker.unreachable = marked;
+  state.controllerLocator.unreachable = { since: "2026-11-12T18:07:00Z" };
+
+  const parsed = LegionStateResponse.parse(state);
+  expect(parsed.issues["LEGION-208"]?.workers?.implementer?.claim?.unreachable).toEqual(marked);
+  expect(parsed.controllerLocator?.unreachable).toEqual({ since: "2026-11-12T18:07:00Z" });
+  expect(droppedFromState(state)).toBeUndefined();
+
+  for (const malformed of [
+    { lastSeen: "2026-11-12T15:51:01Z" },
+    { since: "an hour ago" },
+    { since: "2026-11-12T16:11:01Z", lastSeen: "" },
+  ]) {
+    worker.unreachable = malformed;
+    expect(LegionStateResponse.safeParse(state).success, JSON.stringify(malformed)).toBeFalse();
+  }
+  worker.unreachable = undefined;
+  state.controllerLocator.unreachable = { lastSeen: "2026-11-12T15:51:01Z" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+});
+
 // The mark of the narrowing, the last key of contract 75: the body the daemon serves a caller at
 // or above the contract carries the two numbers — the contract the daemon declares and the one
 // it shaped the body to — and the body it narrows for a caller below it carries no such key at
@@ -2601,11 +2643,13 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // aside: the mark names the contract the caller is served at, 199, the recorded contract below
   // the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's
   // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
-  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. No band stands
-  // between 199 and 202 but the repositories block's, so the narrowing changes this one block and
-  // no other key. One value strip stands above 199 as well: `caches`, the source of the
+  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Two bands stand
+  // between 199 and this daemon's contract: the repositories block's at 202, and at 226 the
+  // `unreachable` of the claim views and the controller's locator, which the golden carries on one
+  // claim. One value strip stands above 199 as well: `caches`, the source of the
   // repository-cache-room row, arrived at contract 213, so that row is served here without its
-  // `source`, every other field of it and every other row as the state golden holds them.
+  // `source`. So the narrowing changes the repositories block, takes `unreachable` off and the
+  // caches source, and nothing beside.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2636,7 +2680,20 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     const { source: _source, ...kept } = row;
     return kept;
   });
-  expect(narrowedRest).toEqual({ ...rest, capabilities: withoutCachesSource });
+  const withoutUnreachable = (value: unknown): unknown =>
+    Array.isArray(value)
+      ? value.map(withoutUnreachable)
+      : isJsonObject(value)
+        ? Object.fromEntries(
+            Object.entries(value)
+              .filter(([key]) => key !== "unreachable")
+              .map(([key, entry]) => [key, withoutUnreachable(entry)])
+          )
+        : value;
+  expect(JSON.stringify(rest)).toContain('"unreachable"');
+  expect(narrowedRest).toEqual(
+    withoutUnreachable({ ...rest, capabilities: withoutCachesSource }) as typeof rest
+  );
 
   // What serving the current block would do: the reader of 152 refuses it for the three keys it
   // requires beside the `withoutWebhookApp` and `caches` the block keeps, so a caller from 152 to

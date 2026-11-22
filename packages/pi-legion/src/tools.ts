@@ -207,12 +207,15 @@ const SUMMARY_LEGEND =
   "legion state summary. Lines: project; paused: while the project is paused (the pause, since " +
   "when, by whom and why, the roles whose stop it still waits on, how many rows it holds) or " +
   "last pause: once a pause has ended (that pause, then when and by whom it was ended); " +
-  "admission cap; active/waiting/blocked; wakes waiting <count> [next <earliest due time>], the " +
+  "admission cap; active/waiting/blocked; " +
+  "controller unreachable <since> while Envoy cannot reach the controller; " +
+  "wakes waiting <count> [next <earliest due time>], the " +
   "wakes the daemon's pacing holds until their turn, 0 outside a wave; " +
   "capability <name> <status> [detail] [config <legion.yaml line>]; issues <count>; then " +
   "<KEY> <phase> <status> for every issue the daemon records, and under each issue Legion still " +
   "runs its slot, hold, gate <current> approved <version|none> and <role> <claim state> " +
-  "<last turn start> <last turn end> lines, - for a value the daemon has none for. " +
+  "<last turn start> <last turn end> [unreachable <since>] lines, - for a value the daemon has " +
+  "none for. " +
   "read_state with issue, issues, phase or settings returns the full records it names.";
 
 /**
@@ -250,6 +253,10 @@ function stateSummary(state: LegionState): string {
       lines.push(`blocked ${blocked.issue} on ${blocked.blockedBy?.join(" ") ?? "(none)"}`);
     }
   }
+  // The daemon relaunches its own controller once in 6 hours; a mark still standing after that is
+  // a person's case, and the controller holds no issue line to carry it on.
+  const controllerMark = state.controllerLocator?.unreachable;
+  if (controllerMark !== undefined) lines.push(`controller unreachable ${controllerMark.since}`);
   const wakesWaiting = wakesWaitingSummary(state);
   if (wakesWaiting !== undefined) lines.push(wakesWaiting);
   for (const capability of state.capabilities ?? []) {
@@ -283,9 +290,11 @@ function stateSummary(state: LegionState): string {
     }
     for (const [role, claim] of claims) {
       // A working claim whose last turn began hours ago is wedged; an idle claim's end is when
-      // it last did anything, and a dash is a turn the daemon recorded none of.
+      // it last did anything, and a dash is a turn the daemon recorded none of. A claim Envoy
+      // cannot reach carries when the daemon found it so.
+      const mark = claim.unreachable === undefined ? "" : ` unreachable ${claim.unreachable.since}`;
       lines.push(
-        `  ${role} ${claim.state} ${claim.lastTurnStart ?? "-"} ${claim.lastTurnEnd ?? "-"}`
+        `  ${role} ${claim.state} ${claim.lastTurnStart ?? "-"} ${claim.lastTurnEnd ?? "-"}${mark}`
       );
     }
   }
@@ -436,8 +445,14 @@ export function createLegionTool(deps: {
    * the commit the workspace stands on, alone. Throws
    * naming the remedy when the phase the role works has no record, Dispatch does not answer, or,
    * in implementing, the implementer's record names no head, the commit its workspace stands on
-   * is not pushed, or its record's head is not that pushed commit. */
-  readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
+   * is not pushed, or its record's head is not that pushed commit. `signal` is the
+   * `handoff_complete` attempt's, which stops the read once the agent aborts the call; the read
+   * runs off the attempt's limit, since it is no request to the daemon (`OutsideTheDaemon`). */
+  readonly handoffReport: (
+    phase: LegionPhase,
+    role: LegionRole,
+    signal?: AbortSignal
+  ) => Promise<HandoffReport>;
   /** The head of `legion/<issue>@origin` an update signal reports, read with the pane's jj
    * (`findPushedBranchHead`), and `""` when the branch is not on the remote. */
   readonly branchHead: () => Promise<string>;
@@ -445,8 +460,9 @@ export function createLegionTool(deps: {
    * looked up in Dispatch as a `dispatch` command's `--artifact` is; throws naming the reference
    * when none matches, or when it names two documents. */
   readonly resolveDocument: (issue: string, reference: string) => Promise<string>;
-  /** The clock `handoff_complete` and `sign_off` wait out a daemon restart on; a test's own. */
-  readonly restartClock?: Pick<DaemonRestartRetry, "now" | "sleep">;
+  /** The clock `handoff_complete`, `sign_off` and `register_gate` wait out a daemon restart on,
+   * and how one attempt's limit is timed; a test's own. */
+  readonly restartClock?: Pick<DaemonRestartRetry, "now" | "sleep" | "attemptLimit">;
 }): RegisteredTool {
   const {
     pi,
@@ -579,14 +595,17 @@ export function createLegionTool(deps: {
     }),
     defaultInactive: true,
     parameters: toolSchema(pi),
-    execute: async (_id, parameters, signal, onUpdate, context) => {
+    execute: async (toolCallId, parameters, signal, onUpdate, context) => {
       // The three writes the daemon applies at most once however often they arrive
-      // (handoff_complete, sign_off, register_gate) wait out its restart until the agent's abort.
-      // The retry notice goes out once as a partial result, which Oh My Pi shows in its TUI and
-      // RPC event stream; the model sees only the final result.
+      // (handoff_complete, sign_off, register_gate) wait out its restart until the agent's abort,
+      // which also ends the attempt in flight. The retry notice goes out once as a partial
+      // result, which Oh My Pi shows in its TUI and RPC event stream; the model sees only the
+      // final result. The call's time on the daemon, from its first request, is recorded under
+      // this call's id, so the stall watch takes it off this call's clock and no other's.
       const restart: DaemonRestartRetry = {
         ...restartClock,
         ...(signal === undefined ? {} : { signal }),
+        ...(toolCallId === "" ? {} : { toolCallId }),
         onRetrying: (message) => {
           if (typeof onUpdate === "function") {
             onUpdate({ content: [{ type: "text", text: message }], details: {} });
@@ -700,17 +719,21 @@ export function createLegionTool(deps: {
             const step = named.data;
             // The fact is keyed by the gate's issue, generation, step, document, version and
             // Dispatch sequence; a repeat after the sequence moved is a re-registration the gate
-            // absorbs.
+            // absorbs. The grant and the registration carry the attempt's signal, so an attempt
+            // given up on registers nothing.
             await retryWhileDaemonRestarts(
               "register_gate",
-              async () =>
-                client.gateRegister({
-                  grantId: await mintClaimGrant(client, active),
-                  issue,
-                  artifactId,
-                  version,
-                  ...(step === undefined ? {} : { step }),
-                }),
+              async (attempt) =>
+                client.gateRegister(
+                  {
+                    grantId: await mintClaimGrant(client, active, attempt),
+                    issue,
+                    artifactId,
+                    version,
+                    ...(step === undefined ? {} : { step }),
+                  },
+                  { signal: attempt }
+                ),
               restart
             );
             return jsonSuccess({});
@@ -746,10 +769,16 @@ export function createLegionTool(deps: {
           }
           case "sign_off": {
             // A repeat after a sign-off that landed finds the issue in retro and changes nothing.
+            // The grant and the sign-off carry the attempt's signal, so an attempt given up on
+            // signs off nothing.
             const issue = requiredString(parameters, operation, "issue");
             await retryWhileDaemonRestarts(
               "sign_off",
-              async () => client.signOff({ grantId: await mintClaimGrant(client, active), issue }),
+              async (attempt) =>
+                client.signOff(
+                  { grantId: await mintClaimGrant(client, active, attempt), issue },
+                  { signal: attempt }
+                ),
               restart
             );
             return jsonSuccess({});

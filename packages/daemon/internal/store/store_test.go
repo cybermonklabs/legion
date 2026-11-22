@@ -1117,6 +1117,9 @@ var thisRelease = map[int]bool{
 	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261116144907: true,
 	20261116165926: true, 20261117000528: true, 20261117004117: true, 20261117023932: true,
 	20261117064152: true, 20261119003157: true, 20261119203047: true,
+	// this change's 20261116092312 rewrites no kind check: it is named so that each case below
+	// applies it in the upgrade, over the outbox rows the case seeds.
+	20261116092312: true,
 }
 
 const idleRelease = 20261101222956

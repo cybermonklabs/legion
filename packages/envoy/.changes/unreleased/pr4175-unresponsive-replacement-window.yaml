@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+    The `unresponsive` session state's rule in `docs/architecture.md` says that nothing starts a
+    replacement for an unresponsive session while its last registration is 20 minutes old or less,
+    and names Legion's Envoy guide for what becomes of a Legion claim past that. The listener's
+    behaviour does not change: it reads the states as before.
+time: 2026-11-18T13:20:10Z
+custom:
+    Issue: pr4175

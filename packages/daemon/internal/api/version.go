@@ -3095,4 +3095,29 @@ package api
 // 208 by #4175, 209 by #4049, 210 by #4661, 211 by #2230, 212 by #4030, #4392, #4540 and #4580,
 // and no open head but this change's own declaring 213. Read the base's own number and every open
 // pull request again at the next merge rather than from this line.)
-const DaemonAPIVersion = 213
+// 226: a claim Envoy cannot reach, which the daemon relaunches on its same session.
+// Every claim view of `GET /legion/v1/state` (`read_state` and `read_record`) and the controller's
+// locator gain `unreachable`, `{since, lastSeen?}`: the daemon's mark of a claim whose session's
+// last registration with Envoy is more than 20 minutes old, counted from the latest of that
+// registration, the daemon's boot, the session's first ready and the daemon's last failed or empty
+// read of Envoy's list (supervise.Reach, the daemon's reach keeper). The claim keeps its state;
+// the key is absent while it is reachable, and absent from every view the route serves a caller
+// below 226 (api.stateFor, withoutUnreachableLocator, withoutUnreachableClaims), whose plugin
+// reads claim views with a schema that knows no such key. The controller's plugin starts to post
+// `POST /legion/v1/claims/activity` as a worker's does, under the registration a daemon-launched
+// controller holds, which the relaunch guard reads. Every plugin session, a worker's and that
+// controller's, posts the same report again every 5 minutes while a turn is open, whatever it
+// says, and the guard refuses a claim in a turn whose last report of that turn is less than 20
+// minutes old; the body is the one it already posted, so a plugin before it sends none of them
+// and its claim is judged by the rules before it.
+// (This change takes 226 at its forward merge of 2026-11-22 that brings main in at cf62dbe313,
+// which declares 213; main at b23827dda34 still declares 213. A reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head for each of the 447 open pull requests of
+// cybermonklabs/legion, the count GitHub's search gives, 0 unread, made between
+// 2026-11-22T13:39:53Z and 13:41:29Z, gave each number from 214 to 225 at one head or more and
+// 226 at none, so 226 is the lowest number above main's that no open head declares. This change
+// held 222 until that reading found 222 declared by #4661 as well. That is a reading and never the
+// rule: read the base's own number and every open pull request again at the next merge. Its band
+// of the state's shape is the last row of shaping.go's stateNarrowings, and 226 is the last
+// number of answers.go's SupportedContracts.)
+const DaemonAPIVersion = 226

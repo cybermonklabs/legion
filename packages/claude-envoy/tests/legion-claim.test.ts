@@ -521,12 +521,17 @@ test("a claim under this session's own id that is never granted stops the pane o
   expect(stops).toBe(1)
 })
 
+// A 5xx the daemon itself answered is the daemon serving and refusing, which no wait cures, so
+// it fails the boot at once and leaves the pane to the registration deadline, as it always did.
+// An uncoded 502, 503 or 504 is a proxy in front of a daemon that is not serving, and the claim
+// boot waits that out for up to an hour instead (R1,
+// `packages/pi-shared/src/legion-claim-core.test.ts`).
 test("a registration the daemon failed (5xx) is logged and leaves the pane to the registration deadline", async () => {
   const configDir = await tempDir()
   await mkdir(join(configDir, "projects", "p"), { recursive: true })
   await writeFile(join(configDir, "projects", "p", `${SESSION}.jsonl`), "{}\n")
   const { fetch } = daemonAnswering(() =>
-    Response.json({ error: "register failed" }, { status: 503 }),
+    Response.json({ error: "register failed" }, { status: 500 }),
   )
   const lines: string[] = []
   let stops = 0
@@ -551,8 +556,8 @@ test("a registration the daemon failed (5xx) is logged and leaves the pane to th
   // leaving a caller waiting for a step that is never coming.
   await claim.claimed
   expect(lines).toEqual([
-    "claims/register registration failed (503): register failed",
-    "claim boot failed before a registration; the daemon's registration deadline relaunches the pane: POST /legion/v1/claims/register failed with 503: register failed",
+    "claims/register registration failed (500): register failed",
+    "claim boot failed before a registration; the daemon's registration deadline relaunches the pane: POST /legion/v1/claims/register failed with 500: register failed",
   ])
   expect(stops).toBe(0)
 })

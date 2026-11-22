@@ -168,8 +168,9 @@ func (r *readyWorkerRig) report(kinds ...string) {
 // the kinds named, or nothing running when it names none.
 func putActivity(t *testing.T, st *store.Store, token claim.Token, launch uint64, kinds ...string) {
 	t.Helper()
+	now := time.Now()
 	known, err := st.PutClaimActivity(context.Background(), token, launch, claim.SessionActivity{
-		At: time.Now(), BackgroundWork: claim.BackgroundWork{Running: len(kinds) > 0, Kinds: kinds}})
+		At: now, BackgroundWork: claim.BackgroundWork{Running: len(kinds) > 0, Kinds: kinds}}, now)
 	if err != nil || !known {
 		t.Fatalf("report the activity of %s: known=%v, %v", token, known, err)
 	}

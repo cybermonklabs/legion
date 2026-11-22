@@ -365,6 +365,10 @@ export interface Rpc {
   send(command: Record<string, unknown>): void;
   /** Closes omp's stdin and waits for it to exit. */
   end(): Promise<void>;
+  /** Sends omp `signal` and returns at once, for a case whose proposition is a process that ends
+   *  where it stands, as SIGKILL ends one in the middle of its turn; `end()` instead closes stdin
+   *  and waits for the exit the host chooses. Await `exited` for its end. */
+  kill(signal: NodeJS.Signals): void;
   /**
    * Rejects, naming omp's stderr, once omp closes its RPC stream, as it does when it exits. Race it
    * against a step's own settle; it carries a handler, so a case that has settled never sees it.
@@ -442,6 +446,9 @@ export function spawnRpc(
     async end() {
       child.stdin.end();
       await child.exited;
+    },
+    kill(signal) {
+      child.kill(signal);
     },
     closed,
     exited: child.exited,

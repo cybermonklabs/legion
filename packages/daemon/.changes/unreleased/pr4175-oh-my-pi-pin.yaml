@@ -1,0 +1,18 @@
+kind: Changed
+body: |-
+    The worker image carries an Oh My Pi build of cybermonklabs/oh-my-pi that includes
+    `18.18.6-sami.20261120-192530`, the build this change needs (`.omp-pin` names
+    `18.18.6-sami.20261122-091943`, which includes it), in place of `18.18.6-sami.20261119-162325`.
+    From that build on, an explicit
+    `--resume` of a session another live process holds waits for the holder on file session
+    storage too, as it did only on SQL storage before, so under `OMP_SESSION_EXCLUSIVE=1` a resume
+    that starts while the older process is still ending no longer stops at once and is no longer
+    charged a death. The SQL session store of that build gains three schema statements, for
+    PostgreSQL, MySQL and SQLite (its `docs/session.md`): `CREATE TABLE omp_session_files_blobs`,
+    `CREATE TABLE omp_session_files_refs`, and the index `omp_session_files_rhash` on
+    `omp_session_files_refs (sha256)`. A deployment whose session-store login does not own its
+    schema must have the schema's owner run them before its pods start that build; otherwise the
+    first agent login creates the tables as its own, and the owner cannot grant reads on them.
+time: 2026-11-20T20:24:42Z
+custom:
+    Issue: pr4175

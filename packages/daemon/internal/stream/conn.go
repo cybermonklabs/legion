@@ -13,6 +13,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -84,8 +85,11 @@ const protocolVersion = 2
 type Conn struct {
 	// seq is the order the listener registered the connection in (Sequence).
 	seq uint64
-	// generation is the launch the connection's hello was registered for (Hello.Generation),
-	// which each Answered it reads carries.
+	// generation is the launch this connection's boot token was minted for, the one its hello was
+	// registered for (Hello.Generation): which process of the claim is on the other end. It is what
+	// tells a second process of the claim's current generation from the older process of a lock-out
+	// (listener.refuseBound), whose close a Closed event is (R3), and which launch each Answered it
+	// reads carries.
 	generation uint64
 	claim      claim.Token
 	nc         net.Conn
@@ -93,6 +97,10 @@ type Conn struct {
 	rpcTimeout time.Duration
 	log        *slog.Logger
 	events     *eventQueue
+	// heard counts the lines the reader has read from the peer, whatever they hold: a count that
+	// moved says a process is still writing on the other end. The listener reads it for an older
+	// generation's connection it has told to stop (lockout.go).
+	heard atomic.Uint64
 
 	mu      sync.Mutex
 	pending map[string]pendingRequest
@@ -125,9 +133,10 @@ type ackedPrompt struct {
 	deliveryID string
 }
 
-func newConn(nc net.Conn, token claim.Token, rpcTimeout time.Duration, log *slog.Logger, events *eventQueue) *Conn {
+func newConn(nc net.Conn, token claim.Token, generation uint64, rpcTimeout time.Duration, log *slog.Logger, events *eventQueue) *Conn {
 	return &Conn{
 		claim:       token,
+		generation:  generation,
 		nc:          nc,
 		writer:      shimwire.NewWriter(connWriter{nc: nc, timeout: rpcTimeout}),
 		rpcTimeout:  rpcTimeout,
@@ -480,8 +489,8 @@ func (c *Conn) write(frame shimwire.Frame) error {
 	return nil
 }
 
-// read is the connection's reader: every line from the shim, rpc_chunk sequences reassembled,
-// dispatched in wire order until the stream ends.
+// read is the connection's reader: every line from the shim counted (heard), rpc_chunk sequences
+// reassembled, dispatched in wire order until the stream ends.
 func (c *Conn) read(src io.Reader) {
 	reader := shimwire.NewReader(src)
 	var chunks shimwire.Reassembler
@@ -493,6 +502,7 @@ func (c *Conn) read(src io.Reader) {
 			}
 			return
 		}
+		c.heard.Add(1)
 		frame, err := shimwire.Decode(line)
 		if err != nil {
 			c.logNotAFrame(line, err)

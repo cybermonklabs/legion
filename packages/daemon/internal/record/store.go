@@ -2566,7 +2566,7 @@ func (s *Postgres) RecentClaimIssues(ctx context.Context, tx pgx.Tx, dispatchPro
 // outboxColumns is an outbox row as scanOutbox reads it. held_by_pause is read as 0 for the null
 // of a row no pause held (OutboxRow.HeldByPause).
 const outboxColumns = `id, kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until,
-	coalesce(held_by_pause, 0) as held_by_pause`
+	held_at, stored_for, stored_generation, coalesce(held_by_pause, 0) as held_by_pause`
 
 func (s *Postgres) Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error {
 	if !json.Valid(row.Payload) {
@@ -3379,6 +3379,31 @@ func (s *Postgres) RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseTo
 	return nil
 }
 
+// HoldOutbox marks the row held for a claim that keeps its session (OutboxRow.HeldAt), at the
+// database's now, the first time a try holds it, under the try's lease and in the transaction
+// that returns the row to the outbox after that try. A later mark leaves the first as it stands.
+func (s *Postgres) HoldOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error {
+	if _, err := tx.Exec(ctx, `update outbox set held_at = coalesce(held_at, now()) where id = $1 and lease_token = $2`,
+		id, leaseToken); err != nil {
+		return fmt.Errorf("hold outbox row %d: %w", id, err)
+	}
+	return nil
+}
+
+// StoreOutboxCopy records that the listener stored the row's publish for holder
+// (OutboxRow.StoredFor), with generation the claim's process then, under the try's lease and in the
+// transaction that returns the row to the outbox after that try. A record naming the holder the row
+// already names keeps the first generation, since the copy the stream holds is the first; one
+// naming another holder replaces both. Every expression reads the row as it stood before the update.
+func (s *Postgres) StoreOutboxCopy(ctx context.Context, tx pgx.Tx, id int64, leaseToken, holder string, generation uint64) error {
+	if _, err := tx.Exec(ctx, `update outbox set stored_for = $3,
+		stored_generation = case when stored_for = $3 then stored_generation else $4 end
+		where id = $1 and lease_token = $2`, id, leaseToken, holder, int64(generation)); err != nil {
+		return fmt.Errorf("record the stored copy of outbox row %d: %w", id, err)
+	}
+	return nil
+}
+
 // RoleRun reads one role's run of an issue generation as the store holds it. RoleRuns owns the
 // query shape, so the one-role caller and a state-report batch share it.
 func (s *Postgres) RoleRun(ctx context.Context, tx pgx.Tx, token claim.Token, issue string, role claim.Role, generation uint64) (RoleRun, error) {
@@ -3656,12 +3681,16 @@ func scanOutbox(row scanner, extra ...any) (OutboxRow, error) {
 	var out OutboxRow
 	var kind string
 	var payload []byte
+	var heldAt *time.Time
 	if err := row.Scan(append([]any{&out.ID, &kind, &out.Issue, &payload, &out.Attempts, &out.NextAt, &out.LastError,
-		&out.CreatedAt, &out.LeaseToken, &out.LeaseUntil, &out.HeldByPause}, extra...)...); err != nil {
+		&out.CreatedAt, &out.LeaseToken, &out.LeaseUntil, &heldAt, &out.StoredFor, &out.StoredGeneration, &out.HeldByPause}, extra...)...); err != nil {
 		return OutboxRow{}, err
 	}
 	out.Kind = OutboxKind(kind)
 	out.Payload = append(json.RawMessage(nil), payload...)
+	if heldAt != nil {
+		out.HeldAt = *heldAt
+	}
 	return out, nil
 }
 

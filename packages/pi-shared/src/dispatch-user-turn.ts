@@ -39,18 +39,38 @@ export function handledAttemptKey(messageId: string, attempt: number): string {
   return `${messageId}#${attempt}`;
 }
 
+/** What one `HANDLED_ATTEMPT_ENTRY` records, or undefined for every other entry. */
+function handledAttemptOf(
+  entry: unknown
+): { readonly messageId: string; readonly attempt: number } | undefined {
+  if (typeof entry !== "object" || entry === null) return undefined;
+  if (!("type" in entry) || entry.type !== "custom") return undefined;
+  if (!("customType" in entry) || entry.customType !== HANDLED_ATTEMPT_ENTRY) return undefined;
+  if (!("data" in entry) || typeof entry.data !== "object" || entry.data === null) return undefined;
+  const { data } = entry;
+  if (!("message_id" in data) || typeof data.message_id !== "string") return undefined;
+  if (!("attempt" in data) || typeof data.attempt !== "number") return undefined;
+  return { messageId: data.message_id, attempt: data.attempt };
+}
+
 /** The attempts a session's entries record it handled (`HANDLED_ATTEMPT_ENTRY`), by key. */
 export function handledAttempts(entries: readonly unknown[]): Set<string> {
   const handled = new Set<string>();
   for (const entry of entries) {
-    if (typeof entry !== "object" || entry === null) continue;
-    if (!("type" in entry) || entry.type !== "custom") continue;
-    if (!("customType" in entry) || entry.customType !== HANDLED_ATTEMPT_ENTRY) continue;
-    if (!("data" in entry) || typeof entry.data !== "object" || entry.data === null) continue;
-    const { data } = entry;
-    if (!("message_id" in data) || typeof data.message_id !== "string") continue;
-    if (!("attempt" in data) || typeof data.attempt !== "number") continue;
-    handled.add(handledAttemptKey(data.message_id, data.attempt));
+    const handledAttempt = handledAttemptOf(entry);
+    if (handledAttempt === undefined) continue;
+    handled.add(handledAttemptKey(handledAttempt.messageId, handledAttempt.attempt));
+  }
+  return handled;
+}
+
+/** The Dispatch messages a session's entries record it handled an attempt of
+ *  (`HANDLED_ATTEMPT_ENTRY`), by message id. */
+export function handledMessages(entries: readonly unknown[]): Set<string> {
+  const handled = new Set<string>();
+  for (const entry of entries) {
+    const handledAttempt = handledAttemptOf(entry);
+    if (handledAttempt !== undefined) handled.add(handledAttempt.messageId);
   }
   return handled;
 }

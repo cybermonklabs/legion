@@ -49,15 +49,16 @@ func TestTheRefusedRunIsTheSameWhateverOrderTheReportsArriveIn(t *testing.T) {
 	}
 }
 
-// A report that arrives after the next turn has already reported lands in its own place: the run
-// counts the turns, not the calls, so a late refusal of turn 2 beside refusals of 1 and 3 is the
-// third refusal in a row and fails the claim, exactly as the three in order would.
+// A report that arrives after the next turn has already reported lands in its own place. Until it
+// lands its turn is a gap, which the run ends at, so refusals of turns 1 and 3 are a run of one;
+// the late refusal of turn 2 fills the gap and is the third refusal in a row, and fails the claim
+// exactly as the three in order would.
 func TestALateReportLandsInItsOwnPlaceAndFailsTheClaimAsAnInOrderOneWould(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)
 	h.report(1, true, "first")
 	h.report(3, true, "third")
-	h.wantRefusedRun(2)
+	h.wantRefusedRun(1)
 	h.wantState(StateIdle)
 
 	h.report(2, true, "second, reported late")
@@ -65,6 +66,47 @@ func TestALateReportLandsInItsOwnPlaceAndFailsTheClaimAsAnInOrderOneWould(t *tes
 	h.wantState(StateFailed)
 	if want := "the provider refused 3 turns in a row: third"; h.claim().Failure != want {
 		t.Fatalf("failure %q, want %q: the newest refused report names the message, whichever arrived last", h.claim().Failure, want)
+	}
+}
+
+// A report still on its way leaves a gap in the sequence, and a run of refused turns ends at the
+// gap: during an outage each turn's report waits to be sent again on a backoff of its own, so a
+// clean turn's report and the refused turn's after it can land in either order. A refusal that
+// lands first, read across the gap, would be the third in a row after the two before the outage
+// and fail a claim whose provider took the turn between them. At the gap it is a run of one, and
+// the clean report, once it lands, ends the run before it. A relaunched generation's own first
+// turn is the same gap: its second refusal lands before its first turn's clean report.
+func TestARefusalThatLandsBeforeAnEarlierTurnsReportCompletesNoRun(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// relaunch is the claim relaunched after the two refusals, so the two turns below are the
+		// new generation's first and second.
+		relaunch bool
+		// clean is the turn whose report is still on its way, refused the turn after it.
+		clean, refused uint64
+	}{
+		{name: "within one generation", clean: 3, refused: 4},
+		{name: "the relaunched generation's first turn", relaunch: true, clean: 1, refused: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateIdle)
+			h.report(1, true, "refused before the outage")
+			h.report(2, true, "refused before the outage")
+			if tc.relaunch {
+				h.observe(runtime.Gone)
+				h.relaunched()
+			}
+			live := h.claim().State
+
+			h.report(tc.refused, true, "refused after the outage, landing first")
+
+			h.wantState(live)
+			h.wantRefusedRun(1)
+			h.report(tc.clean, false, "")
+			h.wantState(live)
+			h.wantRefusedRun(1)
+		})
 	}
 }
 
@@ -129,19 +171,19 @@ func TestACleanTurnBetweenRefusalsStartsTheRunAgain(t *testing.T) {
 	h.wantRefusedRun(2)
 }
 
-// A turn no report arrived for — the process died before it could send one — counts neither way:
-// the run is of the reports the daemon holds, so the turns around a missing one are a run of two,
-// not three, and the claim goes on.
-func TestATurnWithNoReportCountsNothing(t *testing.T) {
+// A turn whose report never lands — the daemon refused it, or it was given up on after the hour a
+// report waits for a daemon that is not serving — is a gap the run ends at, whatever the turn was:
+// the refusals on either side of it are runs of one, not one run of two, and the claim goes on.
+func TestATurnWithNoReportEndsTheRun(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)
 
 	h.report(1, true, "refused")
-	// Turn 2 reported nothing.
+	// Turn 2's report never landed.
 	h.report(3, true, "refused")
 
 	h.wantState(StateIdle)
-	h.wantRefusedRun(2)
+	h.wantRefusedRun(1)
 }
 
 // The run carries across generations, in generation order: a session the provider refused is

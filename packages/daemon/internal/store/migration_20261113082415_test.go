@@ -71,7 +71,7 @@ func TestARelaunchRecordsItsEndedWorkOnTheClaimRow(t *testing.T) {
 
 		reported := claim.SessionActivity{At: at(10),
 			BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"subagent", "async-job"}}}
-		if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, reported); err != nil || !known {
+		if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, reported, reported.At); err != nil || !known {
 			t.Fatalf("PutClaimActivity = %t, %v", known, err)
 		}
 		report, held, err := store.ClaimActivity(ctx, c.Token, c.Generation)

@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+    The `envoy_publish` tool's description, which both plugins show their model, says that for a
+    role holder that is not live, a session starts no replacement for that holder's session while
+    its `last_seen` is 20 minutes old or less, and names `skill://envoy/references/legion.md` for
+    what happens to a Legion claim past that.
+time: 2026-11-18T13:20:10Z
+custom:
+    Issue: pr4175

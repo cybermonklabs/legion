@@ -157,6 +157,11 @@ func (s *testSupervisor) Step(ctx context.Context, token claim.Token) (supervise
 	return s.store.ClaimStep(ctx, token)
 }
 
+// Reach is the narrow read of one claim's reach record, the store's own (store.Store.ClaimReach).
+func (s *testSupervisor) Reach(ctx context.Context, token claim.Token) (supervise.Reach, error) {
+	return s.store.ClaimReach(ctx, token)
+}
+
 // refuseStep has every later read of one claim's step record fail with err, as a store that
 // refuses that narrow read does. The claims read the listing makes is a different read and is
 // left alone: a route about one claim makes this one and no other.
@@ -194,6 +199,9 @@ type harness struct {
 	// handoffs is the Dispatch a completion route's harness reads handoff records from
 	// (newHandoffHarness), which writeHandoff fills; nil for a harness serving no completion.
 	handoffs *statusRecorder
+	// decisions is the server's record of the claims whose decisions a route is running
+	// (Options.Decisions), which a test reads to know a request has reached its decision.
+	decisions *RouteDecisions
 	// serverLog is every line the server's own logger wrote (Options.Log), as text.
 	serverLog *lockedLog
 }
@@ -275,6 +283,7 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 	reported, reportedContextErr := &[]capabilities.Report{}, &[]error{}
 	roleHolders, roleHoldersErr := &[]supervise.Claim{}, new(error)
 	rounds := &PodUpdateRounds{}
+	decisions := NewRouteDecisions()
 	serverLog := &lockedLog{}
 	h := &harness{
 		t: t, ctx: ctx, store: st, runtime: rt, conns: conns, tokens: tokens, supervisor: sup,
@@ -284,6 +293,7 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 		roleHolders:        roleHolders,
 		roleHoldersErr:     roleHoldersErr,
 		podUpdateRounds:    rounds,
+		decisions:          decisions,
 		serverLog:          serverLog,
 	}
 	server := NewServer("127.0.0.1", 8437, Options{
@@ -292,6 +302,7 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 		Log:  slog.New(slog.NewTextHandler(serverLog, nil)),
 		Pool: st.Pool(), Record: record.NewStore(), Releaser: rt, Trees: st, ReleaseRecords: st, ClaimActivity: st,
 		PluginRelaunchable: relaunchable,
+		Decisions:          decisions,
 		ClaimReady:         func(c supervise.Claim) { *readied = append(*readied, c) },
 		PromptAgents:       testPromptAgents,
 		PodUpdateRounds:    func() PodUpdateRounds { return *rounds },

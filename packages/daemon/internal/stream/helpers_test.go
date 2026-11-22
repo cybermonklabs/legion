@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/fleetalert"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
 )
@@ -99,6 +100,10 @@ type harnessOptions struct {
 	// launcherWait is Options.LauncherWait, for the tests that measure how long a launcher's
 	// hello waits for an acceptor; zero leaves the listener's own default.
 	launcherWait time.Duration
+	// clock and alerts are the lock-out's: the time its report waits on, and the writer of R6's
+	// line.
+	clock  Clock
+	alerts *fleetalert.Writer
 }
 
 func startListener(t *testing.T, options harnessOptions) *harness {
@@ -118,6 +123,8 @@ func startListener(t *testing.T, options harnessOptions) *harness {
 		RPCTimeout:   options.rpcTimeout,
 		LauncherWait: options.launcherWait,
 		Log:          slog.New(logs),
+		Clock:        options.clock,
+		Alerts:       options.alerts,
 	})
 	if err != nil {
 		cancel()
@@ -233,21 +240,28 @@ func (p *peer) hello(bootToken string) {
 	p.send(shimwire.Hello2{BootToken: bootToken})
 }
 
-// expect is the daemon's next frame, which must be of the given type.
+// expect is the daemon's next frame, which must be of the given type. A frame the daemon wrote
+// just before it hung up is still the next frame: the peer's reader hands every frame over before
+// it closes p.closed, so once the close is seen a frame read ahead of it is already waiting, and
+// is taken first rather than left to select's random pick between the two.
 func (p *peer) expect(frameType string) shimwire.Frame {
 	p.t.Helper()
+	var frame shimwire.Frame
 	select {
-	case frame := <-p.frames:
-		if frame.FrameType() != frameType {
-			p.t.Fatalf("the daemon sent %s (%#v), want %s", frame.FrameType(), frame, frameType)
-		}
-		return frame
+	case frame = <-p.frames:
 	case <-p.closed:
-		p.t.Fatalf("the daemon closed the connection while %s was expected", frameType)
+		select {
+		case frame = <-p.frames:
+		default:
+			p.t.Fatalf("the daemon closed the connection while %s was expected", frameType)
+		}
 	case <-time.After(wait):
 		p.t.Fatalf("the daemon sent no %s within the wait", frameType)
 	}
-	return nil
+	if frame.FrameType() != frameType {
+		p.t.Fatalf("the daemon sent %s (%#v), want %s", frame.FrameType(), frame, frameType)
+	}
+	return frame
 }
 
 // awaitClosed is the daemon hanging up, with nothing sent first.
@@ -262,6 +276,17 @@ func (p *peer) awaitClosed() {
 	case frame := <-p.frames:
 		p.t.Fatalf("the daemon sent %s before closing", frame.FrameType())
 	default:
+	}
+}
+
+// awaitHangUp is the daemon closing the connection, whatever it wrote first: the refusal that
+// tells a shim of an older generation to stop writes its stop frame before it closes.
+func (p *peer) awaitHangUp() {
+	p.t.Helper()
+	select {
+	case <-p.closed:
+	case <-time.After(wait):
+		p.t.Fatal("the daemon did not close the connection")
 	}
 }
 

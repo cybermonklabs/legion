@@ -1,4 +1,5 @@
 import { messageFor } from "@legion/envoy-client/errors";
+import { daemonWaitMs } from "./daemon-wait";
 import type {
   ToolCallEvent,
   ToolExecutionEndEvent,
@@ -302,6 +303,11 @@ export interface StallWatchdogDeps {
   readonly teller: StallWatchdogTeller;
   readonly aborter: StallWatchdogAborter;
   readonly exits: StallWatchdogExits;
+  /** How much of a window the tool call `toolCallId` spent waiting for a daemon that was not
+   * serving, which no rule judges that call by. It defaults to the record `src/daemon-client.ts`
+   * writes (`src/daemon-wait.ts`, `daemonWaitMs`), which is a module and no field because the
+   * two sides never meet; a test names its own. */
+  readonly daemonWaitMs?: (toolCallId: string, from: number, to: number) => number;
   /** Ends this process (`process.exit` behind `packages/pi-legion`'s test seam). */
   readonly exitProcess: (code: number) => void;
   readonly log: StallWatchdogLog;
@@ -366,14 +372,21 @@ export function effectiveDeadlineMs(
  * `callGraceMs` where it promised one, and its role's bound where it promised none. The watch's
  * off switch is not here: a `callBoundMs` of 0 keeps the two handlers from writing a call down
  * at all (`createStallWatchdog`, `watching`), so nothing this rule could judge exists.
+ *
+ * `daemonWaitMs` is how much of the call's own window that call spent waiting for a daemon
+ * that was not serving (`src/daemon-wait.ts`), which is time the call was stopped rather than
+ * stuck: an outage charges the worker nothing (R1), so it comes off the call's clock before either
+ * rule judges it, and the owner is told the time the call was working. The daemon's own backstop
+ * floor is raised by the hour such a wait can last, so a paused watch still finishes first.
  */
 export function callOverdue(
   call: StallCall,
   now: number,
-  limits: StallLimits
+  limits: StallLimits,
+  daemonWaitMs = 0
 ): StallOverdue | undefined {
   if (call.startedAt === undefined) return undefined;
-  const openMs = now - call.startedAt;
+  const openMs = now - call.startedAt - daemonWaitMs;
   if (call.deadlineMs !== undefined) {
     const allowed = call.deadlineMs + limits.callGraceMs;
     const rule: StallRule = {
@@ -494,6 +507,15 @@ export function createStallWatchdog(deps: StallWatchdogDeps): StallWatchdog {
   /** The open calls, by the id that is the only thing pairing a call's events. Closing one deletes
    * it, which clears its ladder: a later stuck call starts again at the first step. */
   const calls = new Map<string, StallCall>();
+  /** How much of a call's own window that call spent waiting for a daemon that was not serving,
+   * which is time no rule judges (`src/daemon-wait.ts`); another call's wait, and a wait no
+   * tool call owns, are no part of it. A call whose clock has not started waited nothing:
+   * nothing judges it either. Both readings of a call, the sweep's and the step's, take it from
+   * here, so neither can judge a call the other would not. */
+  const waitedFor = (call: StallCall, now: number): number =>
+    call.startedAt === undefined
+      ? 0
+      : (deps.daemonWaitMs ?? daemonWaitMs)(call.toolCallId, call.startedAt, now);
   /** Whether a turn is running. No step runs for a call of a turn that is over. */
   let turnOpen = false;
   /** Whether the turn running now has had its `abort()`, and which of its calls that one act
@@ -676,7 +698,7 @@ export function createStallWatchdog(deps: StallWatchdogDeps): StallWatchdog {
   async function advance(toolCallId: string, now: number): Promise<void> {
     const open = calls.get(toolCallId);
     if (open === undefined) return;
-    const overdue = callOverdue(open, now, deps.limits);
+    const overdue = callOverdue(open, now, deps.limits, waitedFor(open, now));
     if (overdue === undefined) return;
 
     let call = open;
@@ -745,7 +767,7 @@ export function createStallWatchdog(deps: StallWatchdogDeps): StallWatchdog {
       if (deps.isIdle()) return;
       const now = deps.now();
       const overdue = [...calls.values()]
-        .filter((call) => callOverdue(call, now, deps.limits) !== undefined)
+        .filter((call) => callOverdue(call, now, deps.limits, waitedFor(call, now)) !== undefined)
         .map((call) => call.toolCallId);
       if (overdue.length === 0) return;
       sweeping = true;
