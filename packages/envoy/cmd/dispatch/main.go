@@ -1117,12 +1117,14 @@ func main() {
 	// once ctx is cancelled, a fill still waiting for serving returns at once, having taken
 	// nothing, and a serving fill commits or rolls back its batch in flight and releases its hold
 	// through the pool, before the pool closes. DISPATCH_SEARCH_FILL=off starts no fill at all:
-	// the process says so once, and fillStopped is closed from the start, so nothing waits for it.
+	// the process says so once, with whether each table the fill writes holds a row
+	// (searchFillTableRows), and fillStopped is closed from the start, so nothing waits for it.
 	serving := make(chan struct{})
 	fillStopped := make(chan struct{})
 	if boot.SearchFillOff {
 		close(fillStopped)
-		slog.Info(searchFillDeferredLine, "setting", "DISPATCH_SEARCH_FILL", "value", "off")
+		slog.Info(searchFillDeferredLine, append([]any{"setting", "DISPATCH_SEARCH_FILL", "value", "off"},
+			searchFillTableRows(ctx, database.Pool)...)...)
 	} else {
 		go func() {
 			defer close(fillStopped)
@@ -1969,6 +1971,43 @@ func positiveSetting(env settingValues, name string) (int, error) {
 // searchFillDeferredLine is the line a process logs once at boot when DISPATCH_SEARCH_FILL=off
 // keeps it from starting the keyword fill.
 const searchFillDeferredLine = "dispatch: the keyword fill is deferred; this process fills no keyword table"
+
+// searchFillTables are the tables the keyword fill writes: search_text_versions, the keyword
+// table, and search_text_versions_fill, its cursor. searchFillTableRows writes their names into
+// SQL, so they are fixed here and never read from input.
+var searchFillTables = [...]string{"search_text_versions", "search_text_versions_fill"}
+
+// searchFillTableReadTimeout bounds each read of searchFillTableRows, so a table a lock holds
+// delays the boot by at most this and never stops it.
+const searchFillTableReadTimeout = 5 * time.Second
+
+// searchFillTableRows answers the deferral line's fields that say whether each of
+// searchFillTables holds a row: <table>_rows=none or some, read by
+// `select exists(select 1 from public.<table>)`, which stops at the first row and reads no
+// column, so a filled table costs the read no more than an empty one. A read that fails, its
+// timeout included, gives <table>_rows=unknown and the error in <table>_rows_error, and the boot
+// goes on: the line reports the tables and never decides whether the process starts. The line is
+// how a deployment learns, from the boot log alone, that a process booted with the fill off found
+// both tables empty.
+func searchFillTableRows(ctx context.Context, pool *store.Pool) []any {
+	fields := make([]any, 0, 4*len(searchFillTables))
+	for _, table := range searchFillTables {
+		key := table + "_rows"
+		readCtx, cancel := context.WithTimeout(ctx, searchFillTableReadTimeout)
+		var holdsRow bool
+		err := pool.QueryRow(readCtx, "select exists(select 1 from public."+table+")").Scan(&holdsRow)
+		cancel()
+		switch {
+		case err != nil:
+			fields = append(fields, key, "unknown", key+"_error", err.Error())
+		case holdsRow:
+			fields = append(fields, key, "some")
+		default:
+			fields = append(fields, key, "none")
+		}
+	}
+	return fields
+}
 
 // searchFillOff reads DISPATCH_SEARCH_FILL: on, or unset, starts the keyword fill, and off defers
 // it. Any other value refuses the boot, naming the variable.

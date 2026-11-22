@@ -1606,6 +1606,9 @@ The fill starts only after the server listens and the registry of live server pr
 So the fill never runs inside a migration, and it never runs in a process that the registry refuses or has not admitted yet.
 A process that the registry has not admitted serves no answers read, so the pause below would read nothing.
 `DISPATCH_SEARCH_FILL=off`, read once at boot, defers the fill: the process starts no fill, takes no hold, writes no row of the table or its cursor, and logs `dispatch: the keyword fill is deferred; this process fills no keyword table` once (`setting=DISPATCH_SEARCH_FILL value=off`).
+The same line says whether each table holds a row: `search_text_versions_rows` and `search_text_versions_fill_rows`, each `none` or `some`, read by `select exists(select 1 from public.<table>)`, which stops at the first row and reads no column.
+A read that fails, or takes more than 5 s, gives `unknown` and the error in `search_text_versions_rows_error` or `search_text_versions_fill_rows_error`, and the boot goes on.
+So the boot log alone, with no read of the database, shows whether a process started with the fill off found both tables empty.
 No route reads the table yet (Search, below), so search answers alike with the fill off, and a later boot with it `on` or unset starts the fill from the cursor where it stands.
 `on` and unset start the fill; any other value refuses the boot, naming the variable.
 

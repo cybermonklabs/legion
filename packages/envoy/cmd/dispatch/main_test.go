@@ -2232,13 +2232,19 @@ func writeKeywordFillComments(t *testing.T, database *store.Store, count int) []
 // started takes the hold the moment its process serves and writes the waiting events' rows.
 const keywordFillDeferredWatch = 15 * time.Second
 
+// keywordFillTablesEmpty is the end of the deferral line of a process booted with
+// DISPATCH_SEARCH_FILL=off on a database where neither table the keyword fill writes holds a row
+// (searchFillTableRows).
+const keywordFillTablesEmpty = "search_text_versions_rows=none search_text_versions_fill_rows=none"
+
 // DISPATCH_SEARCH_FILL decides whether a serving process starts the keyword fill. Booted with it
 // off, a process that the registry of live server processes admitted, and so serves, logs once
-// that the fill is deferred, and for keywordFillDeferredWatch takes no hold of the fill's and
-// writes no row and no cursor row, though 50 events wait for their rows and 50 more are written
-// while it serves. Booted with it on, on a database of its own holding the same events, a process
-// takes the hold, writes every event's row and the cursor row, and logs no deferral; the same read
-// that finds none of them in the off row counts each of them there.
+// that the fill is deferred, saying that neither table the fill writes holds a row, and for
+// keywordFillDeferredWatch takes no hold of the fill's and writes no row and no cursor row, though
+// 50 events wait for their rows and 50 more are written while it serves. Booted with it on, on a
+// database of its own holding the same events, a process takes the hold, writes every event's row
+// and the cursor row, and logs no deferral; the same read that finds none of them in the off row
+// counts each of them there.
 func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
 	t.Run("off", func(t *testing.T) {
 		database := storetest.Open(t)
@@ -2256,6 +2262,9 @@ func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
 		requireNoKeywordFillWrite(t, database, "at the end of the watch")
 		if lines := process.logLines(keywordFillDeferredLine); len(lines) != 1 {
 			t.Fatalf("the process logged the deferral %d times; want once:\n%s", len(lines), process.Output.String())
+		}
+		if !process.logged(keywordFillDeferredLine + " " + keywordFillTablesEmpty) {
+			t.Fatalf("the deferral does not end with %s, though neither table holds a row:\n%s", keywordFillTablesEmpty, process.Output.String())
 		}
 		for _, line := range []string{keywordFillTookLine, keywordFillStandbyLine} {
 			if process.logged(line) {
@@ -2279,6 +2288,72 @@ func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
 			t.Fatalf("the process logged the deferral with DISPATCH_SEARCH_FILL=on:\n%s", process.Output.String())
 		}
 	})
+}
+
+// searchFillTableRows answers the deferral line's fields, one read per table the keyword fill
+// writes. On a migrated database that no fill has written, both say none. A row of the keyword
+// table makes its field some and leaves the cursor's none, and the cursor's row alone does the
+// reverse. A table the read cannot read, here the keyword table dropped, makes its field unknown
+// with the read's error, and the cursor's field still reads. The steps run in order on one
+// database, each on what the one before left.
+func TestTheKeywordFillDeferralSaysWhetherEachTableHoldsARow(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	for _, step := range []struct {
+		name       string
+		statements []string
+		want       string
+	}{
+		{"no row in either table", nil, keywordFillTablesEmpty},
+		{"a row of the keyword table", []string{`
+			insert into search_text_versions (kind, id, project_key, event_id, event_seq, started_at, body, body_from, search)
+			values ('comment', 'a-comment', 'PROJ', 1, 1, now(), 'the signing keys rotate', 'event', to_tsvector('simple', 'the signing keys rotate'))`},
+			"search_text_versions_rows=some search_text_versions_fill_rows=none"},
+		{"the cursor's row alone", []string{
+			`delete from search_text_versions`,
+			`insert into search_text_versions_fill (id, event_id, rules) values (1, 0, 1)`},
+			"search_text_versions_rows=none search_text_versions_fill_rows=some"},
+		{"the keyword table dropped", []string{`drop table search_text_versions`},
+			`search_text_versions_rows=unknown search_text_versions_rows_error=ERROR: relation "public.search_text_versions" does not exist (SQLSTATE 42P01) search_text_versions_fill_rows=some`},
+	} {
+		for _, statement := range step.statements {
+			if _, err := database.Pool.Exec(ctx, statement); err != nil {
+				t.Fatalf("%s: %s: %v", step.name, statement, err)
+			}
+		}
+		fields := searchFillTableRows(ctx, database.Pool)
+		pairs := make([]string, 0, len(fields)/2)
+		for i := 0; i+1 < len(fields); i += 2 {
+			pairs = append(pairs, fmt.Sprintf("%v=%v", fields[i], fields[i+1]))
+		}
+		if got := strings.Join(pairs, " "); got != step.want {
+			t.Errorf("%s: the deferral's fields are\n  %s\nwant\n  %s", step.name, got, step.want)
+		}
+	}
+}
+
+// A failed read of a table the keyword fill writes does not stop the boot. Booted with
+// DISPATCH_SEARCH_FILL=off on a database whose keyword table was dropped and whose cursor holds its
+// row, a process logs the deferral once, saying the keyword table is unknown with the read's error
+// and the cursor holds a row, and then serves: it answers its health check and the registry of
+// live server processes admits it.
+func TestATableTheKeywordFillDeferralCannotReadDoesNotStopTheBoot(t *testing.T) {
+	database := storetest.Open(t)
+	for _, statement := range []string{
+		`insert into search_text_versions_fill (id, event_id, rules) values (1, 0, 1)`,
+		`drop table search_text_versions`,
+	} {
+		if _, err := database.Pool.Exec(context.Background(), statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "off"}})
+	process.waitHealthy(t)
+	awaitRegistryAdmission(t, database, process)
+	want := keywordFillDeferredLine + ` search_text_versions_rows=unknown search_text_versions_rows_error="ERROR: relation \"public.search_text_versions\" does not exist (SQLSTATE 42P01)" search_text_versions_fill_rows=some`
+	if lines := process.logLines(keywordFillDeferredLine); len(lines) != 1 || !strings.Contains(lines[0], want) {
+		t.Fatalf("the process logged the deferral %d times; want once, holding\n  %s\nin:\n%s", len(lines), want, process.Output.String())
+	}
 }
 
 // awaitRegistryAdmission waits up to 30 s for the registry of live server processes to hold a row,
