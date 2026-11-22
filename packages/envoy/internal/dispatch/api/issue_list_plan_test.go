@@ -166,11 +166,12 @@ func TestAPagedListingResolvesItsPageAlone(t *testing.T) {
 }
 
 // An unpaged listing resolves every issue its filters match, and reads each of the three tables
-// its joins reach once for all of them rather than once per issue.
+// its joins reach once for all of them rather than once per issue: the blockers' issue_links, the
+// components' issue_components, and projects, for each project's default repository.
 func TestAnUnpagedListingReadsEachResolvedTableOnce(t *testing.T) {
 	fixture := newIssueListFixture(t)
 	plan, text := analyzePlan(t, fixture.database, listIssuesQuery, "LIST", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false)
-	for _, relation := range []string{"issue_links", "issue_components", "repo_projects"} {
+	for _, relation := range []string{"issue_links", "issue_components", "projects"} {
 		read := 0
 		for _, node := range plan.everyNode() {
 			if node.RelationName != relation {

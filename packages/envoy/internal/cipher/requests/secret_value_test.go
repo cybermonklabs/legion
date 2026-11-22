@@ -19,7 +19,7 @@ func TestASecretWithNoValueIsRefusedBeforeAnyoneApprovesIt(t *testing.T) {
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	retag(t, m, policytest.Secret("UNSEEDED_KEY", fixtureOperator, policy.TierHuman, ""))
-	if req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "UNSEEDED_KEY"), "", nil); !errors.Is(err, policy.ErrUnknownSecret) {
+	if req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "UNSEEDED_KEY"), ""); !errors.Is(err, policy.ErrUnknownSecret) {
 		t.Fatalf("Create(UNSEEDED_KEY) while it has no value = %+v, %v; want policy.ErrUnknownSecret", req, err)
 	}
 	var written int
@@ -28,7 +28,7 @@ func TestASecretWithNoValueIsRefusedBeforeAnyoneApprovesIt(t *testing.T) {
 	}
 
 	retag(t, m, policytest.Secret("UNSEEDED_KEY", fixtureOperator, policy.TierHuman, "unseeded-v1"))
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it now", "UNSEEDED_KEY"), "", nil)
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it now", "UNSEEDED_KEY"), "")
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("Create(UNSEEDED_KEY) once it has a value = %+v, %v; want pending", req, err)
 	}
@@ -36,7 +36,7 @@ func TestASecretWithNoValueIsRefusedBeforeAnyoneApprovesIt(t *testing.T) {
 	if err != nil || dec.GrantID == "" {
 		t.Fatalf("ApplyDecision(%s) = %+v, %v; want granted", approver, dec, err)
 	}
-	if release, err := m.Values(ctx, dec.GrantID, enr, nil, ReleaseCall{}); err != nil || release.Values["UNSEEDED_KEY"] != "unseeded-v1" {
+	if release, err := m.Values(ctx, dec.GrantID, enr, ReleaseCall{}); err != nil || release.Values["UNSEEDED_KEY"] != "unseeded-v1" {
 		t.Fatalf("Values = %v, %v; want UNSEEDED_KEY=unseeded-v1", release.Values, err)
 	}
 }
@@ -60,7 +60,7 @@ func TestAGrantStopsWhileItsSecretHasNoValueAndResumesOnceItHasOne(t *testing.T)
 			m, enr, key, approver := newFixture(t)
 			ctx := context.Background()
 			retag(t, m, policytest.Secret("SECOND_KEY", fixtureOperator, policy.TierHuman, "second-v1"))
-			req, err := m.Create(ctx, enr, signRequest(t, m, key, "need both", "DEEL_API_KEY", "SECOND_KEY"), "", nil)
+			req, err := m.Create(ctx, enr, signRequest(t, m, key, "need both", "DEEL_API_KEY", "SECOND_KEY"), "")
 			if err != nil || req.RecordID == nil {
 				t.Fatalf("Create = %+v, %v; want pending", req, err)
 			}
@@ -69,12 +69,12 @@ func TestAGrantStopsWhileItsSecretHasNoValueAndResumesOnceItHasOne(t *testing.T)
 				t.Fatalf("ApplyDecision(%s) = %+v, %v; want granted", approver, dec, err)
 			}
 			decided := m.Policy.Get().Version
-			if release, err := m.Values(ctx, dec.GrantID, enr, nil, ReleaseCall{}); err != nil || release.Values["DEEL_API_KEY"] != "deel-v1" || release.Values["SECOND_KEY"] != "second-v1" {
+			if release, err := m.Values(ctx, dec.GrantID, enr, ReleaseCall{}); err != nil || release.Values["DEEL_API_KEY"] != "deel-v1" || release.Values["SECOND_KEY"] != "second-v1" {
 				t.Fatalf("Values while both have values = %v, %v; want both released", release.Values, err)
 			}
 
 			retag(t, m, policytest.Secret("SECOND_KEY", fixtureOperator, policy.TierHuman, ""))
-			if release, err := m.Values(ctx, dec.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || !strings.Contains(err.Error(), "SECOND_KEY") {
+			if release, err := m.Values(ctx, dec.GrantID, enr, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || !strings.Contains(err.Error(), "SECOND_KEY") {
 				t.Fatalf("Values while SECOND_KEY has no value = %v, %v; want ErrGrantNotLive naming SECOND_KEY", release.Values, err)
 			}
 
@@ -83,7 +83,7 @@ func TestAGrantStopsWhileItsSecretHasNoValueAndResumesOnceItHasOne(t *testing.T)
 			if got := m.Policy.Get().Version == decided; got != c.decidedVersion {
 				t.Fatalf("policy version is the decided one: %v, want %v", got, c.decidedVersion)
 			}
-			if release, err := m.Values(ctx, dec.GrantID, enr, nil, ReleaseCall{}); err != nil || release.Values["DEEL_API_KEY"] != "deel-v1" || release.Values["SECOND_KEY"] != "second-v2" {
+			if release, err := m.Values(ctx, dec.GrantID, enr, ReleaseCall{}); err != nil || release.Values["DEEL_API_KEY"] != "deel-v1" || release.Values["SECOND_KEY"] != "second-v2" {
 				t.Fatalf("Values once SECOND_KEY has a value again = %v, %v; want DEEL_API_KEY=deel-v1 and SECOND_KEY=second-v2", release.Values, err)
 			}
 		})

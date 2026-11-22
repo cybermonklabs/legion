@@ -93,11 +93,21 @@
  *   `short` those runs read 1.94 s to 55.52 s, slowed by the start of the 20 or so Bun processes
  *   each run starts and by the leg's polls. Three times 55.52 s, rounded up to the minute, is
  *   180 s. A run that stops before any Codex starts, at an input it refuses, stays under `short`.
+ * - `stoppedLeg`, against 28.24 s: the slowest of 35 drivers of the stop rows of
+ *   `unit-repeat.test.ts`, each a copy of the repeat tool over a package of one or two files with
+ *   its Bun, the stop, the kill or the cancel the row sends, its names runs and its count of what
+ *   was left: the seven rows that run such a driver, 5 runs each, on 3 CPUs (`taskset`) with 9
+ *   busy loops on them, on a dev box of 288 CPUs at a 1-minute load of 1,233 to 1,466 on
+ *   2026-11-21. The others took 6.15 s to 15.92 s. Three times 28.24 s, rounded up to the next
+ *   half minute, is 90 s. That driver counted what was left with one `find` over every process's
+ *   `/proc/<pid>/cwd`, which took 1.3 to 11.5 s alone on that box; the driver since walks its own
+ *   tree instead, and its 35 runs on 8 CPUs (`taskset`, under a CPU quota of 8) with 16 busy loops
+ *   on them, on that box at a load of about 400 the same day, took 0.28 s to 2.81 s.
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
- * laptop as in CI: a `short` child after 60 s, a listing after 6 minutes, the generation after
- * 6.5 minutes, a run of the Codex leg after 3 minutes, a run of the edge check after 9 minutes, and
- * the two-stack build after 30 minutes.
+ * laptop as in CI: a `short` child after 60 s, a stop row's driver (`stoppedLeg`) after 90 s, a
+ * listing after 6 minutes, the generation after 6.5 minutes, a run of the Codex leg after 3
+ * minutes, a run of the edge check after 9 minutes, and the two-stack build after 30 minutes.
  * A row's limit is what `rowLimit` reads from the bounds of what the row waits for, plus 30 s for
  * its own work, so the child's bound fires before the row's limit and the failure names the child.
  * The lane runs in the `dispatch-ui` job of `.github/workflows/ci.yaml`, whose limit is 15
@@ -137,6 +147,9 @@ export const bounds = Object.freeze({
   edgeRun: 540_000,
   /** One run of `e2e/acceptance/outside-agent-codex.sh` against the stand-ins of its tests. */
   codexRun: 180_000,
+  /** One driver of a stop row of `unit-repeat.test.ts`: a copy of the repeat tool, its Bun, the
+   *  stop or kill the row sends, and its names runs. */
+  stoppedLeg: 90_000,
 });
 
 /** The name of a bound, which is what a row and a run name rather than a number. */
