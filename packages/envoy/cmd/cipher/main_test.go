@@ -536,13 +536,19 @@ func (k *proofKey) verify(r *http.Request, publicURL string) error {
 }
 
 // runAgentSecrets runs the built binary against broker and keyDir, returning its separate
-// stdout/stderr and exit code (0 for a clean exit). extraEnv, when non-nil, is appended after the
-// fixed AGENT_SECRETS_* variables, so a test can set an inherited variable the CLI must not let
-// leak into (or shadow) a granted secret.
+// stdout/stderr and exit code (0 for a clean exit). Its home, state and runtime directories are the
+// test's own and AGENT_SECRETS_HELPER_SOCK, AGENT_SECRETS_SIGNIN_DIR and
+// AGENT_SECRETS_MACHINE_IDENTITY are empty, as startExecForm's are, so no sign-in, machine cache or
+// helper of the machine running the test answers for a key dir a row leaves empty: on a machine
+// where a person has signed in, the chain would otherwise take that sign-in before a helper the
+// row names. extraEnv, when non-nil, is appended after all of that, so a test can set an
+// inherited variable the CLI must not let leak into (or shadow) a granted secret, or name a helper.
 func runAgentSecrets(t *testing.T, binary, broker, keyDir string, extraEnv []string, args ...string) (stdout, stderr string, exitCode int) {
 	t.Helper()
 	cmd := exec.Command(binary, args...)
-	cmd.Env = append(append(os.Environ(), "AGENT_SECRETS_URL="+broker, "AGENT_SECRETS_KEY_DIR="+keyDir), extraEnv...)
+	cmd.Env = append(append(os.Environ(), "AGENT_SECRETS_URL="+broker, "AGENT_SECRETS_KEY_DIR="+keyDir,
+		"AGENT_SECRETS_HELPER_SOCK=", "XDG_RUNTIME_DIR="+t.TempDir(), "HOME="+t.TempDir(), "XDG_STATE_HOME="+t.TempDir(),
+		"AGENT_SECRETS_SIGNIN_DIR=", "AGENT_SECRETS_MACHINE_IDENTITY="), extraEnv...)
 	var out, errOut strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &errOut
