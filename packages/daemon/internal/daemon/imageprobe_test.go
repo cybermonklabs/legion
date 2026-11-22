@@ -146,7 +146,8 @@ func imageEnv(home string) map[string]string {
 
 // imageGateUnder is the image probe's gate over the image's HOME, loading the image's plugin roots
 // as a pod does, run through f, with budgets that cost the suite little: attempts bounds the retry
-// (0 for none).
+// (0 for none). Each attempt's budget is answerBudget, which no answer of the fake reaches however
+// loaded the box; a case whose fake must be cut off sets cutOffLimit instead.
 func imageGateUnder(t *testing.T, f imageOmp, legion string, attempts int) (pluginGate, *bytes.Buffer) {
 	t.Helper()
 	var logged bytes.Buffer
@@ -157,11 +158,57 @@ func imageGateUnder(t *testing.T, f imageOmp, legion string, attempts int) (plug
 		envoyPluginRoot: envoyRootOf(home),
 		workDir:         t.TempDir(),
 		invocation:      f.path,
-		timeout:         1500 * time.Millisecond,
+		timeout:         answerBudget(t),
 		retry:           bootprobe.Retry{Initial: 10 * time.Millisecond, Max: 40 * time.Millisecond, Attempts: attempts},
 		contract:        3,
 		log:             slog.New(slog.NewTextHandler(&logged, nil)),
 	}, &logged
+}
+
+// answerBudget is a probe attempt's budget where the fake answers every attempt: the time left
+// before the test binary's deadline (a day under -timeout 0), so an attempt the box is slow to
+// run is never cut off before the test itself would end, and a case counts the attempts of its
+// fake's plan alone. A fixed 1.5 s was cut off on a box at a load of about 600, and the probe then
+// ran a second attempt the case did not count on.
+func answerBudget(t *testing.T) time.Duration {
+	if deadline, ok := t.Deadline(); ok {
+		return time.Until(deadline)
+	}
+	return 24 * time.Hour
+}
+
+// cutOffLimit is a probe attempt's budget in a case whose fake holds a step only the budget ends
+// (cutsOff): short, so the case cuts that step off in a second and a half. On a loaded box it
+// can also cut off an attempt the fake answers, which the probe then waits out like the hang, so
+// such a case reads each attempt it did not plan as one more cut-off (cutOffAttempts).
+const cutOffLimit = 1500 * time.Millisecond
+
+// cutsOff reports whether plan holds a step the fake never finishes by itself (`hang`,
+// `missing-then-hang`), which only the probe's budget ends.
+func cutsOff(plan []string) bool {
+	return slices.ContainsFunc(plan, func(step string) bool { return strings.HasSuffix(step, "hang") })
+}
+
+// cutOffAttempts checks a case run under cutOffLimit, where the probe named probe ran n attempts
+// and its plan holds at least planned: every attempt but the last was cut off by the budget and
+// waited out, each logged as a transient failure that names the budget, so the probe ran at least
+// the plan's attempts and any more were attempts the box was too slow to answer within the budget.
+func cutOffAttempts(t *testing.T, logged, probe string, n, planned int) {
+	t.Helper()
+	var cut []string
+	for line := range strings.SplitSeq(logged, "\n") {
+		if strings.Contains(line, "failed transiently") && strings.Contains(line, `probe="`+probe+`"`) {
+			cut = append(cut, line)
+		}
+	}
+	if n < planned || len(cut) != n-1 {
+		t.Errorf("the %s probe ran %d times with %d transient failures, want at least %d times, each but the last waited out:\n%s", probe, n, len(cut), planned, logged)
+	}
+	for _, line := range cut {
+		if !strings.Contains(line, "timed out after "+cutOffLimit.String()) {
+			t.Errorf("a transient failure of the %s probe is no cut-off by its %s budget: %s", probe, cutOffLimit, line)
+		}
+	}
 }
 
 // A pod loads the Envoy and Legion plugins as its two explicit extension roots, in that order,
@@ -399,6 +446,10 @@ func TestTheAgentsProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 		t.Run(strings.Join(testCase.plan, ","), func(t *testing.T) {
 			f := newImageOmp(t, testCase.plan, []string{"yes"}, []string{"refuses"})
 			gate, logged := imageGateUnder(t, f, contractCurrent, 0)
+			cut := cutsOff(testCase.plan)
+			if cut {
+				gate.timeout = cutOffLimit
+			}
 
 			err := gate.verifyImage(context.Background())
 
@@ -413,7 +464,12 @@ func TestTheAgentsProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 			if testCase.refusal != nil && !strings.Contains(err.Error(), f.path) {
 				t.Errorf("the refusal does not name the launch command %s: %v", f.path, err)
 			}
-			if n := f.attempts(t, "agents"); n != testCase.attempts {
+			n := f.attempts(t, "agents")
+			if cut {
+				cutOffAttempts(t, logged.String(), "OMP pi.agents", n, testCase.attempts)
+				return
+			}
+			if n != testCase.attempts {
 				t.Errorf("the pi.agents probe ran %d times, want %d", n, testCase.attempts)
 			}
 			if got, want := strings.Count(logged.String(), "failed transiently"), testCase.attempts-1; got != want {
@@ -439,7 +495,11 @@ func TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 	} {
 		t.Run(strings.Join(testCase.plan, ","), func(t *testing.T) {
 			f := newImageOmp(t, []string{"available"}, []string{"yes"}, testCase.plan)
-			gate, _ := imageGateUnder(t, f, contractCurrent, 0)
+			gate, logged := imageGateUnder(t, f, contractCurrent, 0)
+			cut := cutsOff(testCase.plan)
+			if cut {
+				gate.timeout = cutOffLimit
+			}
 
 			err := gate.verifyImage(context.Background())
 
@@ -451,7 +511,10 @@ func TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 					t.Errorf("verifyImage = %v, want a refusal saying %q", err, want)
 				}
 			}
-			if n := f.attempts(t, "session"); n != testCase.attempts {
+			n := f.attempts(t, "session")
+			if cut {
+				cutOffAttempts(t, logged.String(), "OMP session storage setting", n, testCase.attempts)
+			} else if n != testCase.attempts {
 				t.Errorf("the session-storage probe ran %d times, want %d", n, testCase.attempts)
 			}
 		})
@@ -477,6 +540,9 @@ func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			f := newImageOmp(t, testCase.agents, []string{"yes"}, testCase.session)
 			gate, _ := imageGateUnder(t, f, contractCurrent, 3)
+			if cutsOff(testCase.agents) {
+				gate.timeout = cutOffLimit
+			}
 
 			err := gate.verifyImage(context.Background())
 
