@@ -3,7 +3,7 @@
 # says what they are). No go command runs here.
 GATE = gate("dispatch_ui", "dispatch-ui", reads=reads(
     ("packages/dispatch/**", f"{at('dispatch-ui', 'Typecheck dispatch dashboard')}, test, build, check:classes and check:asset-sizes in packages/dispatch"),
-    ("packages/proof-editor/**", f"{at('dispatch-ui', 'Typecheck proof editor')} and test; packages/dispatch/web/vite.config.ts:127-150"),
+    ("packages/proof-editor/**", f"{at('dispatch-ui', 'Typecheck proof editor')} and test; packages/dispatch/web/vite.config.ts:124-150"),
     # packages/contracts/src is no read of this gate's: which of its modules this job compiles is
     # what its two tsc programs list, so the changes job lists them into the filter's listed block
     # and check-ts-filters.sh holds the block to them (ci_ts_programs.py, LISTED).
@@ -20,6 +20,10 @@ GATE = gate("dispatch_ui", "dispatch-ui", reads=reads(
     ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
     ("scripts/e2e/lib/process-tree.sh", "packages/dispatch/e2e/acceptance/replace-blocks.sh:109 sources it, and "
                                         f"e2e/__tests__/replace-blocks-guard.test.ts, which {at('dispatch-ui', 'Test dispatch dashboard')} runs, runs that script"),
+    (".github/workflows/dispatch-unit-repeat.yaml",
+     "packages/dispatch/e2e/__tests__/unit-repeat-budgets.test.ts:207, the new URL there, holds the workflow's "
+     "budgets to the measurements beside them, and e2e/__tests__/unit-repeat.test.ts:1364 runs the test step's own "
+     f"text as GitHub's runner cancels it, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
     (f"{ENVOY}/scripts/lib/pg-url.sh", "packages/dispatch/e2e/__tests__/psql-password.test.ts:161 sources it, and "
                                        "packages/dispatch/e2e/acceptance/replace-blocks.sh:113 does, which e2e/__tests__/replace-blocks-guard.test.ts runs; "
                                        f"{at('dispatch-ui', 'Test dispatch dashboard')} runs both"),

@@ -1980,7 +1980,7 @@ func TestSessionsHandler_ReportsSelfSubscribedSession(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, map[string][]string{
 		"ses_omp": {"notifications.test.>"},
 	}, nil)
-	if err := sessions.Put("ses_omp", session.SessionEntry{SelfSubscribed: true}); err != nil {
+	if err := sessions.Put("ses_omp", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
 		t.Fatalf("register self-subscribed session: %v", err)
 	}
 	handler := sessionsHandler(registry, sessions, nil)
@@ -3608,16 +3608,6 @@ func TestListenerDeliveryHandler_FanoutRefusalOfATeamTopicIsStoredOnItsException
 // a redelivery with the same key cannot emit another refusal.
 func TestListenerDeliveryHandler_FanoutRefusalDedupesAfterExceptionDelivery(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
-	// Both copies refill from their buckets on a goroutine the harness's registries start
-	// (kvwatch.Watcher.Start), and a write that lands while that first read runs carries no mark
-	// of it, so the sweep ending the read takes it back out of the copy
-	// (kvwatch.Copy.CompleteRead) until the watcher delivers the write's own record. The fan-out
-	// reads both copies for the message below, and a session whose record it cannot read is one
-	// it reports dead and sends no exception for ("listener delivery failed ... no session record
-	// for session ses_incapable", merge-queue job 127694167470), so both reads are waited out
-	// here, before registerFanoutTarget's two writes.
-	waitForRegistry(t, harness.registry)
-	waitForSessions(t, harness.sessions)
 	const (
 		topic     = "notifications.github.owner.repo.issue.4"
 		incapable = "ses_incapable"
@@ -3662,13 +3652,6 @@ func TestListenerDeliveryHandler_FanoutAllowsUntaggedPayload(t *testing.T) {
 		firstTarget = "ses_first"
 		nextTarget  = "ses_next"
 	)
-	// Both copies the fan-out reads refill on the goroutine the watcher starts, and a write that
-	// lands while that first read runs is taken back out of the copy until the watcher delivers
-	// its own record, so a target registered before the reads end is one the fan-out cannot see
-	// ("the untagged message was not given to ses_first", envoy-go-race job 128250468046). Both
-	// reads are waited out here, before registerConsumerTarget's writes, as the rows above do.
-	waitForRegistry(t, harness.registry)
-	waitForSessions(t, harness.sessions)
 	harness.registerConsumerTarget(t, firstTarget, topic, nil)
 	harness.registerConsumerTarget(t, nextTarget, topic, nil)
 	// The fan-out reaches only what these two registries answer for, so they are read here: a
@@ -3890,10 +3873,9 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptio
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
-	// Both caches are waited for here, as the listener's own start waits for them: a Put that
-	// lands after a watch fixed its initial snapshot and before the read that turns its marks on
-	// is unmarked, and the sweep that completes the read drops it, so an interest or a session
-	// registered in that window would be missing from what Match and Lookup answer.
+	// Both caches are waited for here, as the listener's own start waits for them: until a cache's
+	// first read completes, the role claim view refuses RolesHeldBy and the session routes answer
+	// their refilling 503 (waitForRegistry, waitForSessions).
 	waitForRegistry(t, registry)
 	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, append([]session.SessionRegistryOption{session.WithSessionReplicas(1)}, sessionOptions...)...)
 	if err != nil {

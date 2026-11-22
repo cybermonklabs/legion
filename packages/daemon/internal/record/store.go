@@ -1479,9 +1479,9 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		// nothing of the old generation's counting survives it. conflict_read, a first conflicting
 		// read still waiting for its second (PullRequest.ConflictRead), stays for the same reason:
 		// it is GitHub's answer, and the second read that confirms or releases it is still owed.
-		// merge_forward goes (PullRequest.MergeForward): it is the old run's ask that its
-		// implementer merge the base forward, and the new generation decides afresh, on its own
-		// confirmed conflict, whether to ask again.
+		// merge_forward goes (PullRequest.MergeForward): it is the old run's ask that a role
+		// merge the base forward, and the new generation decides afresh, on its own confirmed
+		// conflict, whether to ask again.
 		"update pull_requests set " +
 			"head_run = null, planned_red = false, checked_head = '', failing = '[]'::jsonb, cancelled = '[]'::jsonb, " +
 			"check_runs = '[]'::jsonb, statuses = '[]'::jsonb, merge_forward = null where " + where,

@@ -68,12 +68,12 @@ GATE = gate("dispatch_browser", BROWSER_JOB, exact=[
     ("packages/dispatch/**", f"{BROWSER_SUITE_STEPS} run the suite, "
      f"{at_browser('Build dispatch dashboard')} builds the SPA the rows read, and "
      f"{at_browser(BROWSER_MERGE_STEP, BROWSER_MERGE)} merges their reports, in packages/dispatch"),
-    ("packages/proof-editor/**", "packages/dispatch/web/vite.config.ts:127-150 (build:web)"),
+    ("packages/proof-editor/**", "packages/dispatch/web/vite.config.ts:124-150 (build:web)"),
     # packages/contracts/src is no read of this gate's either: the filter's listed block holds
     # the modules dispatch_ui's tsc programs compile and the dispatch command's bundle loads,
     # which the changes job lists, and ci_ts_programs.py's LISTED says why this suite loads
     # those and no other; each job's `Build contracts for dispatch e2e` step runs
-    # `build:dispatch`, whose four entries compile nothing outside dispatch_ui's.
+    # `build:dispatch`, whose three entries compile nothing outside dispatch_ui's.
     ("packages/envoy-client/bin/dispatch.ts", "packages/dispatch/e2e/inbox-cli.e2e.ts:328 runs it through e2e/dispatch-cli.ts:8"),
     (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
     (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),

@@ -3,8 +3,8 @@ import type { ReactNode } from "react";
 import type { Project } from "../../api/types";
 import { inputClasses, textPrimaryOnSurface } from "../../theme/classes";
 
-/** The "Choose a project" picker both Settings forms use; `disabled` is omitted from the DOM
- *  when not given. */
+/** The "Choose a project" picker of the Settings page's architecture sources form and its Legion
+ *  daemons form; `disabled` is omitted from the DOM when not given. */
 export function ProjectSelect({
   disabled,
   id,

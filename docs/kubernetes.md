@@ -2377,6 +2377,25 @@ So after the rollback a merger learns of a removal only when it reads the pull r
 The kind check keeps both names after the rollback, and the rollback needs no statement for it: an earlier release never writes either kind, so the check refuses nothing that release writes.
 This release's one-time start of the mergers that the `awaiting_merge` cutover left stopped ([Idle release](#idle-release)) adds no outbox kind and no payload field, and its one `processed_events` row is harmless to a rollback.
 
+#### Rolling back the release that asks the merger to merge the base forward
+
+This release asks the merger, not the implementer, to merge the base forward once the issue stands in `merging`, and asks nothing in `accepting` or `retro` (cybermonklabs/legion#4979).
+It adds no migration: a `merge_forward` row's payload and `pull_requests.merge_forward` are JSON, and the ask names its role there (`role`).
+An earlier release refuses a `merge_forward` ask whose role is the merger when it decodes the row, and reads an ask that names the merger as the implementer's, already made, so it would ask nobody.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+begin;
+-- The merger's asks still queued, and the asks of the merger that have not landed.
+delete from outbox where kind = 'merge_forward' and payload->>'step' = 'ask' and payload->>'role' = 'merger';
+update pull_requests set merge_forward = null
+  where merge_forward->>'role' = 'merger' and coalesce(merge_forward->>'landed', '') = '';
+commit;
+```
+
+The earlier release decides again on the next read of each such head that finds it conflicting, and asks the implementer.
+An ask of the merger that has landed stays: the earlier release reads it as a landed merge forward, as it reads its own.
+
 #### Rolling back the release that merges a conflicting head forward in its phase
 
 This release stops a conflict from sending an issue back to `implementing`.
@@ -5113,7 +5132,7 @@ The one exception is the account that holds the role's own issue repository: tha
 Until then every bundle built for that role succeeds and the refresh keeps writing the role's Secret, that directory holding a token GitHub would no longer mint.
 The first build that mints that owner for real fails, naming the owner; from then every bundle built for that role fails, the refresh writes none of the role's Secret, and the pod keeps its last tokens until they expire.
 The controller's default owner is refused at once instead, because `ControllerCredential` reads the installations before it mints anything.
-A daemon that takes its tokens from the secrets broker through `token_command` is bounded by the broker, which releases a token only for the accounts the secret's `github-owners` tag lists, so an install by any other account gives nothing there.
+A daemon that takes its tokens from the secrets broker through `token_command` is bounded by the broker, which releases a token only for the accounts the profile its command names lists, each an account of the secret's `github-owners` tag, so an install by any other account gives nothing there.
 The issue's `-boot` Secret holds the provisioning token, projected into `workspace-fetch` alone.
 
 **Each role in namespaces of its own.**
@@ -7877,8 +7896,8 @@ An installation that refuses the reading lease — GitHub answers 422 to a token
 The failure shows as the launch's `mint the provisioning token for <owner>/<repo>` and the refresher's `sandbox runtime: provisioning token mint failed`, as it does below for a command that releases no token.
 An installation that has not been granted issues, Actions, checks, commit statuses or attestations needs no second call: the mint reads what the installation is granted and asks for that alone, so the permission is left out of the request rather than refused with it (`exchangeGranted`, `internal/appauth/permissions.go`).
 A deployment whose Apps are configured by `token_command` (docs/deployment.md, "The `legion-implementer` and `legion-reviewer` Apps") asks GitHub for no token itself:
-`ReadToken` asks the command for its read-only release (`LEGION_GITHUB_READ_ONLY=1`) and takes what that release holds, be it narrower or wider than the read set it asks for with a key, and no wider token is asked for in its place.
-Such a command must therefore release a read-only token for every owner it serves: an owner it releases none for fails every launch that makes an issue pod on that owner, at the provisioning mint (`mint the provisioning token for <owner>/<repo>`), and the refresher logs `sandbox runtime: provisioning token mint failed` for that repository each minute.
+`ReadToken` asks the command for its read-only release (`LEGION_GITHUB_READ_ONLY=1`, which the command maps onto the role's read profile) and takes what that release holds, be it narrower or wider than the read set it asks for with a key, and no wider token is asked for in its place.
+Such a command must therefore release a read-only token for every owner it serves, so the read profile names every account the write profile names: an owner it releases none for fails every launch that makes an issue pod on that owner, at the provisioning mint (`mint the provisioning token for <owner>/<repo>`), and the refresher logs `sandbox runtime: provisioning token mint failed` for that repository each minute.
 
 The Go coordinator's pods (`packages/daemon`) keep to that rule with two init containers:
 

@@ -25,12 +25,12 @@ GATE = gate("dispatch_two_builds", TWO_BUILDS_JOB, runs=[
     ]),
 ], reads=reads(
     ("packages/dispatch/**", at(TWO_BUILDS_JOB, "Browser-test each build's page against the other build's server")),
-    ("packages/proof-editor/**", "packages/dispatch/web/vite.config.ts:127-150 (build:web)"),
+    ("packages/proof-editor/**", "packages/dispatch/web/vite.config.ts:124-150 (build:web)"),
     # packages/contracts/src is no read of this gate's either: the filter's listed block holds
     # the modules dispatch_ui's tsc programs compile and the dispatch command the Go step runs
     # loads, which the changes job lists, and ci_ts_programs.py's LISTED says why this job
     # loads that union and no other. Its `Build contracts for dispatch e2e` step runs
-    # `build:dispatch`, whose four entries compile nothing outside it, and reads the package's
+    # `build:dispatch`, whose three entries compile nothing outside it, and reads the package's
     # manifest, which bun_job declares.
     (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
     ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80,89 holds the server's port through it"),
