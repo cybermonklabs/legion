@@ -128,12 +128,15 @@ func reentryUntil(end time.Time, helper string) []string {
 	return append(args, "-test.timeout="+max(time.Until(end).Truncate(time.Second), time.Second).String())
 }
 
-// exitHelper ends a helper test that runs as a process of its own and ends by os.Exit: with 0, or
-// with 1 when t has failed. os.Exit never returns to the test framework, so without it a failure t
-// recorded there with t.Error would end as a pass.
+// exitHelper ends a helper test that runs as a process of its own: with os.Exit(0) when it passed,
+// so the test framework writes nothing more on an output a starter may read as a protocol (the
+// deleter's replies), and through t.FailNow when it failed. A re-entered helper runs without
+// -test.v, so the framework keeps its t.Error lines until the test ends, and os.Exit would end the
+// process with exit 1 and drop them; FailNow ends the test, and the framework writes its
+// `--- FAIL` and those lines on the helper's output, which its starter prints with the rest.
 func exitHelper(t *testing.T) {
 	if t.Failed() {
-		os.Exit(1)
+		t.FailNow()
 	}
 	os.Exit(0)
 }
