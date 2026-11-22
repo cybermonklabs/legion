@@ -1598,6 +1598,7 @@ dispatch_browser:
   - 'packages/envoy/internal/oidc/oidctest/*'
   - 'packages/envoy/internal/ratelimit/*'
   - 'packages/envoy/internal/testpg/testdb/*'
+  - 'packages/envoy/internal/testwait/*'
   - 'packages/envoy/internal/cipher/rulehost/*'
   - 'packages/envoy/internal/cipher/logmask/*'
   - 'packages/envoy/internal/weborigin/*'
