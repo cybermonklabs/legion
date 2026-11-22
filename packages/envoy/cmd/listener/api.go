@@ -3054,7 +3054,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 			writeJSONError(w, http.StatusBadRequest, "port is not supported: this listener delivers nothing to a session's port. Register with no port (port 0) and receive the session's messages from its own consumer (delivery.consumer).", "port")
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
+		ctx, cancel := context.WithTimeout(r.Context(), d.registrationBudgetOr())
 		defer cancel()
 		// At the edge each topic the registration names is held to the token's projects, and a
 		// GitHub topic to the repositories their issues resolve to, read fresh for it within this

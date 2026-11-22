@@ -103,6 +103,22 @@ type listenerDeps struct {
 	// resolve to (the broker's GET /v1/project-repositories, edge_repositories.go), nil on every
 	// listener but an edge one.
 	repositories *edgeRepositories
+	// registrationBudget is the store work budget of POST /v1/interests/subscribe
+	// (subscribeHandler), timed from the request's arrival: zero is sendRequestBudget, which every
+	// listener main builds runs with. It is a seam for a test whose own work runs inside that
+	// budget, as a session's consumer lock it holds while it writes, or a hook a pass calls: such a
+	// test gives the registration what is left of the test binary's deadline here, so the budget
+	// does not count the test's work, which a loaded machine slows as it slows the bus.
+	registrationBudget time.Duration
+}
+
+// registrationBudgetOr is the registration's store work budget (registrationBudget):
+// sendRequestBudget unless a test set one.
+func (d *listenerDeps) registrationBudgetOr() time.Duration {
+	if d.registrationBudget == 0 {
+		return sendRequestBudget
+	}
+	return d.registrationBudget
 }
 
 // kvCache is what the listener asks of each KV-backed cache it keeps.
