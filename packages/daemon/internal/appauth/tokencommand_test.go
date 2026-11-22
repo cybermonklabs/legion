@@ -904,6 +904,11 @@ func TestTokenModeAWaiterOutlivesTheInitiatorsDeadline(t *testing.T) {
 	if lease := testwait.Receive(t, "the waiter's lease once the command finished", waiter); lease.Token != "ghs_waited" {
 		t.Fatalf("the waiter's lease = %+v, want the running command's token", lease)
 	}
+	// The waiter joined the command still running: a waiter that ran the command again would get
+	// the same token, so the count of runs is what tells the two apart.
+	if data, _ := os.ReadFile(runs); strings.Count(string(data), "run") != 1 {
+		t.Fatalf("the command ran %d times, want once: the waiter ran it again rather than join the run still going", strings.Count(string(data), "run"))
+	}
 }
 
 // Close ends a command still running and waits for it; a later mint is refused.
