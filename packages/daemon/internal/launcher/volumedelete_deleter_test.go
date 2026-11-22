@@ -566,7 +566,7 @@ const ownHoldEntries = 2000
 // Build and remove the child's fixture on a memory filesystem in its own mount namespace
 // (TestASweepsOwnDeleterIsNoHoldHelper). The separate-holder control leaves all 2000 entries to
 // cleanup, so putting them on the machine's disk would make fixture I/O, not the sweep, consume
-// the child's hang guard. refreshMidway forces the used-path refresh independently of the
+// the child's deadline. refreshMidway forces the used-path refresh independently of the
 // filesystem's speed.
 func TestASweepsOwnDeleterIsNoHoldOnTheRootsItDeletesFrom(t *testing.T) {
 	requireRoleNamespaces(t)
@@ -580,9 +580,9 @@ func TestASweepsOwnDeleterIsNoHoldOnTheRootsItDeletesFrom(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), beforeDeadline(t))
-			defer cancel()
-			child := exec.CommandContext(ctx, self, append(reentry(t, "TestASweepsOwnDeleterIsNoHoldHelper"), "-test.v")...)
+			// No bound of the case's own on the child's end (reentry): its -test.timeout ends it,
+			// and so its sweep, its cleanups and its alarm all reach the case's output.
+			child := exec.Command(self, append(reentry(t, "TestASweepsOwnDeleterIsNoHoldHelper"), "-test.v")...)
 			child.Dir = "/"
 			// The child's temporary directory, under both names a test reads one by (t.TempDir
 			// reads GOTMPDIR first): an empty mount point here, which the child covers with a

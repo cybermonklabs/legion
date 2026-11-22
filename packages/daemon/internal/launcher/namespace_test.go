@@ -126,15 +126,11 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 	go func() { g.result <- command.Wait() }()
 	t.Cleanup(func() {
 		g.cancel()
-		select {
-		case err := <-g.result:
-			if err != nil {
-				t.Errorf("PID 1 launcher exited: %v\n%s", err, output.String())
-			}
-		case <-time.After(cleanupBeforeDeadline(t)):
-			_ = command.Process.Kill()
-			<-g.result
-			t.Error("PID 1 launcher did not stop after its context ended")
+		// No bound of the case's own on the launcher's end (reentry): one that does not stop after
+		// its context ended is ended by its own -test.timeout, with its alarm's goroutine dump in
+		// its output, and its namespace with it.
+		if err := <-g.result; err != nil {
+			t.Errorf("PID 1 launcher exited: %v (one that did not stop after its context ended ends at its own deadline, its panic below)\n%s", err, output.String())
 		}
 	})
 	g.accept()

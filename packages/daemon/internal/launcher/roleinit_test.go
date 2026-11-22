@@ -3,7 +3,6 @@
 package launcher
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1634,8 +1633,10 @@ func roleDrainEnd(output string) (string, time.Duration) {
 
 // roleDrainReport runs that row's stage in a user and mount namespace of its own, as the role
 // namespace check's helper runs, and answers every `drain <key>=<value>` line it printed, with
-// its whole output for a failure to print. Its deadline is a hang guard alone, the test binary's
-// own less a margin: a stage that never ends fails here, by name, rather than as the binary's panic.
+// its whole output for a failure to print. It waits for the stage to end with no bound of its own
+// (reentry): the stage's own -test.timeout ends it, and its role-init's ends role-init before
+// that, so a stage or a role-init that never ends fails here with its own alarm and goroutine
+// dump, rather than as the binary's panic, and nothing of it outlives the test.
 func roleDrainReport(t *testing.T, plan roleDrainPlan) (map[string]string, string) {
 	t.Helper()
 	self, err := os.Executable()
@@ -1646,10 +1647,9 @@ func roleDrainReport(t *testing.T, plan roleDrainPlan) (map[string]string, strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	guard := beforeDeadline(t)
-	ctx, cancel := context.WithTimeout(context.Background(), guard)
-	defer cancel()
-	stage := exec.CommandContext(ctx, self, reentry(t, "TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills")...)
+	stage := exec.Command(self, reentry(t, "TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills")...)
+	// Once the stage has exited, its output is read for a second more at most: a process of the
+	// role's that still held the pipe would otherwise hold this wait.
 	stage.WaitDelay = time.Second
 	stage.Env = append(os.Environ(), roleDrainEnv+"="+string(encoded))
 	stage.SysProcAttr = &syscall.SysProcAttr{
@@ -1659,9 +1659,6 @@ func roleDrainReport(t *testing.T, plan roleDrainPlan) (map[string]string, strin
 		GidMappingsEnableSetgroups: false,
 	}
 	output, err := stage.CombinedOutput()
-	if ctx.Err() != nil {
-		t.Fatalf("the stage had not ended %s after it started, the hang guard: role-init or the role's shim never finished\n%s", guard, output)
-	}
 	if err != nil {
 		t.Fatalf("the stage: %v\n%s", err, output)
 	}
