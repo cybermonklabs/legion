@@ -446,7 +446,9 @@ func (z *summarizer) logHeldLocked(logger *logging.Logger, key string, st State)
 // A publication that succeeded logs `checks settlement published`, one INFO line naming the head,
 // the generation and snapshot it settled, and whether it superseded an earlier settlement of the
 // record, so a settlement that never became a role message is shown to have left the listener; a
-// publication refused or failed logs no such line.
+// publication refused or failed logs no such line. A mark that did not apply (MarkSettled, whose
+// decline the stream leader's read confirmed) logs `checks settlement not marked` at WARN: the
+// claim it marks is gone, so another pass may publish the head again.
 func (z *summarizer) settle(pub Publisher, logger *logging.Logger, key string, cached State, now int64) {
 	store, debounce := z.store, z.debounce
 	staleBefore := now - (2 * debounce).Milliseconds()
@@ -524,8 +526,19 @@ func (z *summarizer) settle(pub Publisher, logger *logging.Logger, key string, c
 		slog.String("snapshot", snapshot),
 		slog.Bool("superseded", state.EmittedCount > 0),
 	)
-	if _, err := store.MarkSettled(key, state.Generation); err != nil {
-		logger.Warn("checks mark-settled failed", slog.String("error", err.Error()))
+	marked, err := store.MarkSettled(key, state.Generation)
+	if err != nil {
+		logger.Warn("checks mark-settled failed", slog.String("error", err.Error()), slog.String("sha", state.SHA))
+		return
+	}
+	if !marked {
+		logger.Warn("checks settlement not marked",
+			slog.String("owner", state.Owner),
+			slog.String("repo", state.Repo),
+			slog.String("number", state.Number),
+			slog.String("sha", state.SHA),
+			slog.Uint64("generation", state.Generation),
+		)
 	}
 }
 

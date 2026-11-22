@@ -952,11 +952,26 @@ func casBackoff(attempt int) time.Duration {
 // while the bucket the write went to is the one the watcher reads (kvwatch.Watcher.Handle): a
 // revision of a bucket since recreated would fence out the new bucket's, which number from 1
 // again.
+//
+// The first read is a direct get, which any copy of a replicated bucket near enough to current
+// answers (bus.KeyValue.Get). A write over a copy's stale answer is refused by the compare-and-swap,
+// but a decline is not: apply declining on a record a copy has not brought up to date would answer
+// "no" for a record the bucket holds otherwise, and a mark of a published settlement that declines
+// so leaves its claim standing, which a later pass reclaims and publishes again. So a decline
+// stands only on the stream leader's read (bus.KeyValue.GetFromLeader), which holds every write
+// the bucket took, and every read after a lost compare-and-swap is the leader's too.
 func (s *Store) casState(key string, apply func(st *State) (ok bool, err error)) (State, bool, error) {
 	kv, epoch := s.watcher.Handle()
 	deadline := time.Now().Add(recordBudget)
+	fromLeader := false
 	for attempt := 0; ; attempt++ {
-		entry, err := kv.Get(key)
+		var entry nats.KeyValueEntry
+		var err error
+		if fromLeader {
+			entry, err = kv.GetFromLeader(context.Background(), key)
+		} else {
+			entry, err = kv.Get(key)
+		}
 		if err != nil {
 			return State{}, false, err
 		}
@@ -969,6 +984,10 @@ func (s *Store) casState(key string, apply func(st *State) (ok bool, err error))
 			return State{}, false, err
 		}
 		if !ok {
+			if !fromLeader {
+				fromLeader = true
+				continue
+			}
 			return state, false, nil
 		}
 		buf, err := encodeRecord(&state)
@@ -992,6 +1011,7 @@ func (s *Store) casState(key string, apply func(st *State) (ok bool, err error))
 		if time.Now().After(deadline) {
 			return State{}, false, errors.New("cistore: state transition exceeded CAS budget")
 		}
+		fromLeader = true
 		time.Sleep(casBackoff(attempt))
 	}
 }
@@ -1021,10 +1041,13 @@ func (s *Store) ClaimSettlement(key, expectedHash string, expectedGeneration uin
 }
 
 // ClaimStillHeld verifies from durable KV that this exact snapshot retains the
-// settlement right immediately before an external publication.
+// settlement right immediately before an external publication. The read is the stream leader's
+// (bus.KeyValue.GetFromLeader): a copy of a replicated bucket that has not applied a reclaim, or a
+// re-arm that replaced the claimed snapshot, would answer that the claim still holds, and the
+// listener would publish a snapshot it no longer has the right to.
 func (s *Store) ClaimStillHeld(key string, generation uint64, hash string) (bool, error) {
 	kv := s.kv()
-	entry, err := kv.Get(key)
+	entry, err := kv.GetFromLeader(context.Background(), key)
 	if err != nil {
 		return false, err
 	}
