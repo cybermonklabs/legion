@@ -390,18 +390,45 @@ func (c *relaySocketClient) ping() {
 	}
 }
 
-// next is the next frame within the bound, failing the test when none arrives.
+// next is the next frame within the bound, failing the test when none arrives. A frame the reader
+// queued before the close came first on the wire, and is the next frame: the reader puts each frame
+// on frames before it reads on, so once the close is on closed, every frame before it is already on
+// frames. A select over both would pick either at random when both are ready - under load, where
+// the reader queues the server's last frame and its close before the row asks - and report a frame
+// that did arrive as missing; so next takes a queued frame first, and on the close looks at frames
+// once more before it fails, putting the close back for closeCode.
 func (c *relaySocketClient) next(within time.Duration) relayFrameRead {
 	c.t.Helper()
 	select {
 	case frame := <-c.frames:
 		return frame
+	default:
+	}
+	select {
+	case frame := <-c.frames:
+		return frame
 	case err := <-c.closed:
+		select {
+		case frame := <-c.frames:
+			c.closed <- err
+			return frame
+		default:
+		}
 		c.t.Fatalf("the socket closed (%v) before a frame arrived", err)
 	case <-time.After(within):
 		c.t.Fatalf("no frame arrived within %s", within)
 	}
 	return relayFrameRead{}
+}
+
+// closeQueued waits within the bound for the reader to have read the server's close, after every
+// frame before it: the state in which next must still answer the frames first. A row calls it to
+// stand where load puts it.
+func (c *relaySocketClient) closeQueued(within time.Duration) {
+	c.t.Helper()
+	if !testwait.Holds(within, time.Millisecond, func() bool { return len(c.closed) == 1 }) {
+		c.t.Fatalf("the reader read no close within %s", within)
+	}
 }
 
 // none fails the test when a frame arrives within the window.
