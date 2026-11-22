@@ -2321,12 +2321,7 @@ func TestTheKeywordFillDeferralSaysWhetherEachTableHoldsARow(t *testing.T) {
 				t.Fatalf("%s: %s: %v", step.name, statement, err)
 			}
 		}
-		fields := searchFillTableRows(ctx, database.Pool)
-		pairs := make([]string, 0, len(fields)/2)
-		for i := 0; i+1 < len(fields); i += 2 {
-			pairs = append(pairs, fmt.Sprintf("%v=%v", fields[i], fields[i+1]))
-		}
-		if got := strings.Join(pairs, " "); got != step.want {
+		if got := deferralFields(searchFillTableRows(ctx, database.Pool)); got != step.want {
 			t.Errorf("%s: the deferral's fields are\n  %s\nwant\n  %s", step.name, got, step.want)
 		}
 	}
@@ -2354,6 +2349,77 @@ func TestATableTheKeywordFillDeferralCannotReadDoesNotStopTheBoot(t *testing.T) 
 	if lines := process.logLines(keywordFillDeferredLine); len(lines) != 1 || !strings.Contains(lines[0], want) {
 		t.Fatalf("the process logged the deferral %d times; want once, holding\n  %s\nin:\n%s", len(lines), want, process.Output.String())
 	}
+}
+
+// A lock on a table the keyword fill writes ends the read at the server, within the lock timeout,
+// and the boot goes on. Another connection holds ACCESS EXCLUSIVE on search_text_versions_fill in
+// a transaction it keeps open for the whole test. searchFillTableRows then gives the cursor's table
+// unknown with Postgres's own lock timeout (55P03), in at least searchFillTableLockTimeout and less
+// than searchFillTableStatementTimeout, and the keyword table still none; once it returned, no
+// backend of the database waits for a lock on the cursor's table, though the lock is still held.
+// A process booted with DISPATCH_SEARCH_FILL=off under the same lock logs the same fields once,
+// then serves: it answers its health check and the registry of live server processes admits it,
+// and still no backend waits for the lock.
+func TestALockedKeywordFillTableEndsItsReadAtTheServerAndTheBootGoesOn(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("open the transaction that holds the lock: %v", err)
+	}
+	t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
+	if _, err := holder.Exec(ctx, `lock table public.search_text_versions_fill in access exclusive mode`); err != nil {
+		t.Fatalf("lock search_text_versions_fill: %v", err)
+	}
+	const fields = `search_text_versions_rows=none search_text_versions_fill_rows=unknown search_text_versions_fill_rows_error=ERROR: canceling statement due to lock timeout (SQLSTATE 55P03)`
+
+	started := time.Now()
+	got := deferralFields(searchFillTableRows(ctx, database.Pool))
+	took := time.Since(started)
+	if got != fields {
+		t.Errorf("under the lock, the deferral's fields are\n  %s\nwant\n  %s", got, fields)
+	}
+	if took < searchFillTableLockTimeout || took >= searchFillTableStatementTimeout {
+		t.Errorf("under the lock, the reads took %v; want at least the lock timeout, %v, and less than the statement timeout, %v",
+			took.Round(time.Millisecond), searchFillTableLockTimeout, searchFillTableStatementTimeout)
+	}
+	requireNoKeywordFillCursorLockWait(t, database, "after searchFillTableRows returned")
+
+	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "off"}})
+	process.waitHealthy(t)
+	awaitRegistryAdmission(t, database, process)
+	want := keywordFillDeferredLine + ` search_text_versions_rows=none search_text_versions_fill_rows=unknown search_text_versions_fill_rows_error="ERROR: canceling statement due to lock timeout (SQLSTATE 55P03)"`
+	if lines := process.logLines(keywordFillDeferredLine); len(lines) != 1 || !strings.Contains(lines[0], want) {
+		t.Fatalf("the process logged the deferral %d times; want once, holding\n  %s\nin:\n%s", len(lines), want, process.Output.String())
+	}
+	requireNoKeywordFillCursorLockWait(t, database, "after the booted process logged the deferral")
+}
+
+// requireNoKeywordFillCursorLockWait fails the test when a backend of the database waits for a
+// lock on search_text_versions_fill. when says at which moment the test reads it.
+func requireNoKeywordFillCursorLockWait(t *testing.T, database *store.Store, when string) {
+	t.Helper()
+	var waiting int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*) from pg_locks
+		 where database = (select oid from pg_database where datname = current_database())
+		   and relation = 'public.search_text_versions_fill'::regclass
+		   and not granted`).Scan(&waiting); err != nil {
+		t.Fatalf("read the lock waits on search_text_versions_fill: %v", err)
+	}
+	if waiting != 0 {
+		t.Fatalf("%s, %d backends still wait for a lock on search_text_versions_fill; want none", when, waiting)
+	}
+}
+
+// deferralFields writes the fields searchFillTableRows answers as `key=value` pairs, one space
+// between, in their order.
+func deferralFields(fields []any) string {
+	pairs := make([]string, 0, len(fields)/2)
+	for i := 0; i+1 < len(fields); i += 2 {
+		pairs = append(pairs, fmt.Sprintf("%v=%v", fields[i], fields[i+1]))
+	}
+	return strings.Join(pairs, " ")
 }
 
 // awaitRegistryAdmission waits up to 30 s for the registry of live server processes to hold a row,

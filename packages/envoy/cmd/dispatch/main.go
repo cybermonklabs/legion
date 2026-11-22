@@ -1973,30 +1973,35 @@ func positiveSetting(env settingValues, name string) (int, error) {
 const searchFillDeferredLine = "dispatch: the keyword fill is deferred; this process fills no keyword table"
 
 // searchFillTables are the tables the keyword fill writes: search_text_versions, the keyword
-// table, and search_text_versions_fill, its cursor. searchFillTableRows writes their names into
+// table, and search_text_versions_fill, its cursor. searchFillTableHoldsRow writes their names into
 // SQL, so they are fixed here and never read from input.
 var searchFillTables = [...]string{"search_text_versions", "search_text_versions_fill"}
 
-// searchFillTableReadTimeout bounds each read of searchFillTableRows, so a table a lock holds
-// delays the boot by at most this and never stops it.
-const searchFillTableReadTimeout = 5 * time.Second
+// The bounds of each read of searchFillTableRows. Each read sets lock_timeout and
+// statement_timeout in a transaction of its own, so Postgres itself ends a read that waits for a
+// lock on its table (55P03, after searchFillTableLockTimeout) or that runs on for another reason
+// (57014, after searchFillTableStatementTimeout), and no wait is left at the server once the boot
+// moves on. searchFillTableReadTimeout, a second later again, is the client's own bound, for a
+// server that answers nothing: pgx then closes the connection. The reads run one after the other
+// before the server listens, so the boot waits at most searchFillTableLockTimeout for each table a
+// lock holds, and at most searchFillTableReadTimeout for each table whatever happens.
+const (
+	searchFillTableLockTimeout      = 5 * time.Second
+	searchFillTableStatementTimeout = 6 * time.Second
+	searchFillTableReadTimeout      = 7 * time.Second
+)
 
 // searchFillTableRows answers the deferral line's fields that say whether each of
-// searchFillTables holds a row: <table>_rows=none or some, read by
-// `select exists(select 1 from public.<table>)`, which stops at the first row and reads no
-// column, so a filled table costs the read no more than an empty one. A read that fails, its
-// timeout included, gives <table>_rows=unknown and the error in <table>_rows_error, and the boot
-// goes on: the line reports the tables and never decides whether the process starts. The line is
-// how a deployment learns, from the boot log alone, that a process booted with the fill off found
-// both tables empty.
+// searchFillTables holds a row: <table>_rows=none or some, read by searchFillTableHoldsRow. A read
+// that fails, a timeout included, gives <table>_rows=unknown and the error in <table>_rows_error,
+// and the boot goes on: the line reports the tables and never decides whether the process starts.
+// The line is how a deployment learns, from the boot log alone, that a process booted with the
+// fill off found both tables empty.
 func searchFillTableRows(ctx context.Context, pool *store.Pool) []any {
 	fields := make([]any, 0, 4*len(searchFillTables))
 	for _, table := range searchFillTables {
 		key := table + "_rows"
-		readCtx, cancel := context.WithTimeout(ctx, searchFillTableReadTimeout)
-		var holdsRow bool
-		err := pool.QueryRow(readCtx, "select exists(select 1 from public."+table+")").Scan(&holdsRow)
-		cancel()
+		holdsRow, err := searchFillTableHoldsRow(ctx, pool, table)
 		switch {
 		case err != nil:
 			fields = append(fields, key, "unknown", key+"_error", err.Error())
@@ -2007,6 +2012,28 @@ func searchFillTableRows(ctx context.Context, pool *store.Pool) []any {
 		}
 	}
 	return fields
+}
+
+// searchFillTableHoldsRow reads whether table holds a row by
+// `select exists(select 1 from public.<table>)`, which stops at the first row and reads no
+// column, so a filled table costs the read no more than an empty one. It reads in a read-only
+// transaction of its own that first sets the bounds above, local to that transaction.
+func searchFillTableHoldsRow(ctx context.Context, pool *store.Pool, table string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, searchFillTableReadTimeout)
+	defer cancel()
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `select set_config('lock_timeout', $1, true), set_config('statement_timeout', $2, true)`,
+		fmt.Sprintf("%dms", searchFillTableLockTimeout.Milliseconds()),
+		fmt.Sprintf("%dms", searchFillTableStatementTimeout.Milliseconds())); err != nil {
+		return false, err
+	}
+	var holdsRow bool
+	err = tx.QueryRow(ctx, "select exists(select 1 from public."+table+")").Scan(&holdsRow)
+	return holdsRow, err
 }
 
 // searchFillOff reads DISPATCH_SEARCH_FILL: on, or unset, starts the keyword fill, and off defers
