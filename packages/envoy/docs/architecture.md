@@ -378,6 +378,24 @@ rollback and its old holder's topic cleanup are best-effort tidying of interest 
 same budget: a claim that landed answers 200 whatever the cleanup did, and a topic left behind
 gives nobody the role.
 
+## Webhook bodies
+
+Every webhook route reads its body, checks the sender's signature on the bytes it read, and only
+then parses them: an event whose signature does not check is a `401` whatever its body holds,
+Slack's `url_verification` handshake included, which Slack signs as it signs every request. The
+three routes read against one byte budget the listener holds, `ENVOY_WEBHOOK_BODY_BUDGET` bytes
+(64 MiB when unset), which the start logs as `listener webhook body budget: <bytes> bytes (<MiB>
+MiB) held at once across every webhook route` (`webhook.BodyBudget`). A body is charged as its
+bytes arrive, never past its route's cap (GitHub 25 MiB, Slack and Ghost Wispr 1 MiB) or its
+declared length, and stays charged until its handler returns, a refusal included, so a sender
+that sends only headers holds nothing. One read at a time may take the total past the budget, by
+at most its own body. A delivery whose next bytes do not fit waits for room at most its route's
+room wait, in all: Slack 1 s, GitHub 5 s, Ghost Wispr 4 s. It is then answered `503` with
+`Retry-After: 1`, and the listener logs `webhook body refused path=<route> ...`. Slack retries a
+failed event nearly at once, then after one minute and after five; GitHub does not redeliver, and
+the redelivery sweep (`internal/dispatch/redeliver`) asks it again; Ghost Wispr documents no
+retry.
+
 ## Webhook and health check bounds
 
 The webhook routes and `/healthz` do their bus work within the request; the last two rows below

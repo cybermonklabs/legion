@@ -781,24 +781,29 @@ type webhookRoute struct {
 // before NATS is up, so they answer 503 while it connects, and builds the handlers once NATS and,
 // for the GitHub route, the CI store are open.
 //
+// Every route reads its bodies against one budget of cfg.BodyBudget bytes, made here once for the
+// listener (webhook.BodyBudget), so what anonymous senders can make the listener hold before any
+// signature is checked is bounded across every route at once, not per route.
+//
 // Every route publishes through the rename publisher, which costs the Slack and the Ghost Wispr
 // routes nothing: a pair names a GitHub repository, and a subject that is not
 // `notifications.github.<owner>.<name>.…` names none, so those two publish exactly as they did.
 func webhookRoutes(cfg *webhook.WebhookConfig) []webhookRoute {
+	bodies := webhook.NewBodyBudget(cfg.BodyBudget)
 	var routes []webhookRoute
 	if github := cfg.GitHub; github != nil {
 		routes = append(routes, webhookRoute{"/webhook/github", func(publisher webhook.Publisher, ciStore *cistore.Store) http.Handler {
-			return webhook.GitHubHandler(github.Secret, github.MentionTrigger, github.ReviewerAppID, publisher, ciStore)
+			return webhook.GitHubHandler(github.Secret, github.MentionTrigger, github.ReviewerAppID, publisher, ciStore, bodies)
 		}})
 	}
 	if slack := cfg.Slack; slack != nil {
 		routes = append(routes, webhookRoute{"/webhook/slack", func(publisher webhook.Publisher, _ *cistore.Store) http.Handler {
-			return webhook.SlackHandler(slack.Secret, publisher)
+			return webhook.SlackHandler(slack.Secret, publisher, bodies)
 		}})
 	}
 	if ghostWispr := cfg.GhostWispr; ghostWispr != nil {
 		routes = append(routes, webhookRoute{"/webhook/ghostwispr", func(publisher webhook.Publisher, _ *cistore.Store) http.Handler {
-			return webhook.GhostWisprHandler(ghostWispr.Secret, publisher)
+			return webhook.GhostWisprHandler(ghostWispr.Secret, publisher, bodies)
 		}})
 	}
 	return routes
@@ -1112,6 +1117,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	logger.Info(webhook.DescribeBodyBudget(webhookCfg.BodyBudget))
 	// The renames a deployment configures belong beside the other settings lines: an operator who
 	// reads from the top sees from them alone whether ENVOY_GITHUB_REPOSITORY_RENAMES took, and a
 	// value that configures none logs nothing, as every other repository's publishing is unchanged.

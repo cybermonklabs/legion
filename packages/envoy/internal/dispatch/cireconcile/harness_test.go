@@ -202,7 +202,7 @@ func (h *harness) startListener() {
 	cistore.StartSummaryLoop(loop, listener, h.bus, 100*time.Millisecond, 20*time.Millisecond,
 		metrics.New().NewGauge("held", ""), logging.New("loop"))
 	h.listener = listener
-	h.webhook = webhook.GitHubHandler(webhookSecret, "@legion", h.reviewer, h.bus, listener)
+	h.webhook = webhook.GitHubHandler(webhookSecret, "@legion", h.reviewer, h.bus, listener, webhook.NewBodyBudget(webhook.DefaultBodyBudget))
 }
 
 // replica is a second Reconciler standing for the other Dispatch process of a deployment: a
