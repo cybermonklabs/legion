@@ -76,6 +76,14 @@ echo "case: the wrapper's own path is read from its end, as a step writes it"
 check "a deeper relative path is still the wrapper" \
   "$(is "$(command_of '../../../.github/scripts/race_memory.py go test ./pkg')" "go test ./pkg")"
 
+echo "case: the events writer every go test step runs under, alone and before the memory wrapper"
+check "the writer is dropped" \
+  "$(is "$(command_of '../../.github/scripts/go_test_events.py go test -count=1 ./pkg')" "go test -count=1 ./pkg")"
+check "a variable, the writer and the sampler are all dropped" \
+  "$(is "$(command_of 'RACE_MEM_LIMIT_KB=1 ../../.github/scripts/go_test_events.py ../../.github/scripts/race_memory.py go test -json ./pkg')" "go test -json ./pkg")"
+check "the writer before a script is left in place, for the caller to read" \
+  "$(is "$(command_of '../../../.github/scripts/go_test_events.py scripts/race-unit.sh run')" "../../../.github/scripts/go_test_events.py scripts/race-unit.sh run")"
+
 echo "case: a -run pattern keeps its quoting"
 line="GODEBUG=checkfinalizers=1 go test -run '^(TestOne|TestTwo)\$' ./pkg"
 check "the text keeps the quotes the line wrote" \

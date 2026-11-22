@@ -28,6 +28,9 @@ It has no options of its own: everything after the script name is the command. R
 sets the limit in kB, 8388608 (8 GiB) when it is unset or empty. The command's stdout is read
 line by line, so a `go test -json` stream is unwrapped back into the test log it carries and the
 running tests are known; the command's stderr is not touched and goes straight to this script's.
+With TEST_EVENTS_FILE set, as .github/scripts/go_test_events.py sets it for the CI step that runs
+this script under it, each -json event line is also appended to that file as it came, so the
+step keeps every test's result; no other line is.
 """
 
 import json
@@ -39,6 +42,7 @@ import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
 
 # Half of a 16 GiB runner, so a run that grows past it but still fits on the runner turns the
 # step red after it ends, with the peak and the tests named, rather than passing unnoticed.
@@ -198,13 +202,14 @@ class Log:
         self.write(text + "\n")
 
 
-def pump(stream: Iterable[str], tests: RunningTests, log: Log) -> None:
+def pump(stream: Iterable[str], tests: RunningTests, log: Log, events: TextIO | None = None) -> None:
     """Pass the command's stdout through, unwrapping a `go test -json` stream as it goes.
 
     A line that parses as a JSON object with an `Action` key is a -json event: its `Output`, when
     it has one, is written as it stands (it carries its own newline) so the test log reads as it
-    would without -json, and the event itself tells the sampler which tests are running. Any other
-    line is the command's own and is written whole.
+    would without -json, the event itself tells the sampler which tests are running, and the line
+    is appended to `events` when the step keeps them. Any other line is the command's own and is
+    written whole.
     """
     for line in stream:
         event = None
@@ -217,6 +222,8 @@ def pump(stream: Iterable[str], tests: RunningTests, log: Log) -> None:
         if event is None:
             log.write(line)
             continue
+        if events is not None:
+            events.write(line if line.endswith("\n") else line + "\n")
         tests.record(event)
         output = event.get("Output")
         if output:
@@ -283,7 +290,9 @@ def main(argv: list[str]) -> int:
         return 127
 
     tests = RunningTests()
-    reader = threading.Thread(target=pump, args=(process.stdout, tests, log), daemon=True)
+    events_path = os.environ.get("TEST_EVENTS_FILE", "")
+    events = open(events_path, "a", encoding="utf-8", buffering=1) if events_path else None
+    reader = threading.Thread(target=pump, args=(process.stdout, tests, log, events), daemon=True)
     reader.start()
 
     # The peak and the highest sample are folded in walk by walk rather than kept as every text
@@ -315,6 +324,8 @@ def main(argv: list[str]) -> int:
         break
 
     reader.join()
+    if events is not None:
+        events.close()
     if process.stdout is not None:
         process.stdout.close()
     status = process.wait()

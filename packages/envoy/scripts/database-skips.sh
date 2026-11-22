@@ -51,6 +51,11 @@
 # output and, for a run of its own, its stderr. Each of those is read per run of a test, so a test
 # a binary runs twice under one name - with -count, or a TestMain that calls m.Run twice - that
 # fails in one run and passes in the other still has its failure's lines printed.
+#
+# TEST_EVENTS_FILE, which .github/scripts/go_test_events.py sets for the CI steps it runs this
+# script in, is a file a run of its own appends each of go test's events to as go writes it (tee),
+# so the step keeps every test's result, those of a run cut short among them; with it unset, or
+# with --report, nothing else is written.
 set -euo pipefail
 # sort and comm compare the test lists under one collation, whatever the caller's locale.
 export LC_ALL=C
@@ -276,7 +281,7 @@ if [ -z "$report" ]; then
     mapfile -t tested < <(cut -d' ' -f1 "$work/listed" | cat "$work/kept" - | awk '!seen[$0]++')
   fi
   go_test_exit=0
-  go test -json -count=1 "${race[@]}" "${skip[@]}" -timeout "${timeout:-${GO_TEST_TIMEOUT:-15m}}" "${tested[@]}" >"$report" 2>"$work/stderr" || go_test_exit=$?
+  go test -json -count=1 "${race[@]}" "${skip[@]}" -timeout "${timeout:-${GO_TEST_TIMEOUT:-15m}}" "${tested[@]}" 2>"$work/stderr" | tee -a "${TEST_EVENTS_FILE:-/dev/null}" >"$report" || go_test_exit=$?
 fi
 
 [ -e "$report" ] || unknown "the report $report does not exist"

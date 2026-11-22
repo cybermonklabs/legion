@@ -55,6 +55,60 @@
 #      max_prepared_transactions), and the step reads them back from the running server; that
 #      script's header says what each setting costs or buys. A service the check cannot tell is
 #      Postgres by its key or its image is not its business.
+#   8. in ci.yaml and every workflow of this repository it reaches through its calls (the run a
+#      pull request and the merge queue get), a step that runs `go test` (a `go test -c` or a
+#      `-list` with a pattern runs none, a -c after -args being the binary's), itself, through a
+#      command .github/scripts/harness-pool.sh starts, or through a repository script it runs,
+#      sources or hands a shell (followed through the scripts that run each other), other than
+#      through .github/scripts/go_test_events.py; a script that step runs under that writer whose
+#      go test neither runs under it nor tees into TEST_EVENTS_FILE on its own line; a go test that
+#      writer runs under a go word other than `go` (`"$GO"`, a path to go), which its first form
+#      does not take; a step that sets TEST_EVENTS_FILE itself; a go test step, through the writer
+#      or not, with no `id:` of its own, which names its events file; and a job holding such a step
+#      with no step after it
+#      (after the pool's next `harness-pool.sh wait`, for a command the pool starts) that runs
+#      `uses: ./.github/actions/go-test-events-upload` with `check-run-id: ${{ job.check_run_id }}`
+#      and `if: always()` (or `always() && ` the one condition every such step of the job
+#      carries). That action uploads `${{ runner.temp }}/go-test-events/` as the artifact
+#      `go-test-events-<the job's check run id>`, with `if-no-files-found: error`. A go test's
+#      flags are read as the shell splits its words. A command stands where bash runs it: at a
+#      line's start or after an operator, behind `!`, `{`, a case pattern's `)`, a function's
+#      `name()` or a keyword (if, while, until, then, do, else), after a redirection
+#      (`>/dev/null go test`), or after find's -exec, -execdir, -ok or -okdir; go test's go may be
+#      `go`, a variable (`$GO`, `"${GO}"`) or a path to go (`"$GOROOT/bin/go"`), but a variable the
+#      step or script assigns only literal values that are no go (`TOOL=true`). A go test behind
+#      assignments, or behind timeout, nice, sudo, xargs, env, nohup, setsid, exec, command or
+#      time, is read past every option of theirs that still runs it (after --help, --version or
+#      sudo -l it runs nothing); env -S's string and the words after it are read as a command line
+#      of its own, and so is the string of `bash -c` or `sh -c` behind any options (`bash -o
+#      pipefail -c`), but those after which the shell runs nothing (--help, --version, -n, -o
+#      noexec). A go test that runs detached is refused: behind `setsid -f` with no -w, or in the
+#      background (`&`, of its own list, of a compound it stands in, or of a `bash -c`, env -S or
+#      heredoc shell that runs it) with no wait for it: a `wait` of the same shell after it, where
+#      it runs whenever the `&` did (not in a subshell, a pipeline, a function's body, an if, a
+#      loop or a case the `&` does not stand in), in the foreground, naming no job or `$!`. Such
+#      a step can end before its events are written, and does not fail when go test does. A
+#      script named as `"$(dirname "$0")/x.sh"` is looked for by its name beside the script that
+#      names it. A go test inside quotes or a heredoc of text runs nothing; a heredoc a shell takes
+#      is a script, and an unquoted one's `$(...)` runs. These forms are not seen, each with its
+#      reason in .github/go-test-step-misses.tsv: eval, coproc, flock, a shell's script from a pipe
+#      (`| bash`) or a here-string (`<<<`), python3 -c, stdbuf, ionice and taskset; and a go test
+#      no run reaches (`if false`, an uncalled function) is refused as if it ran. Without -v or
+#      -json a go test step's log says only `ok <package> <time>`, so the events that writer keeps,
+#      uploaded under the job's id, are the one record of which tests the step ran, passed and
+#      skipped; a step without it keeps none, and its tests read as run nowhere. Each refusal
+#      names the file, the job, the step's number, its name and its line. It reads shell, and a
+#      Python script for the argv it runs go test with (`["go", "test", ...]`); a Python script
+#      Python cannot parse is refused as such, and is no go test step. A program in another
+#      language, a Python script that builds its argv another way, and a local action's steps
+#      (none runs go test) are not followed.
+#      Every script it reads must be one the ci_filters filter selects, the filter that starts the
+#      job this check runs in, or the step that reaches it is refused: a change to such a script
+#      could otherwise merge unread by this rule. The rule is .github/scripts/go_test_steps.py,
+#      whose FIXTURES names the harnesses whose go test runs are their own fixtures, and
+#      .github/scripts/go_test_step_forms.py generates the shell forms it is held to. The
+#      artifacts it holds steps to are public for 90 days, unmasked (docs/testing.md, "Which tests
+#      a CI job ran").
 #
 # A file that is not valid YAML is still measured for its bytes, and cannot be read for the other
 # faults.
@@ -71,9 +125,10 @@ set -euo pipefail
 # The repeated-key test is workflow_paths.repeated_keys, the same one the loader every filter
 # check reads the changes job's filters and the workflows with runs, imported from beside this script's own file: a
 # test fixture links only this script in, and the link leads back to the module CI runs. Rule 7's
-# command line is read the same way, from the postgres-service-settings.sh beside this file.
-# Resolved before the cd, which would leave a relative $0 naming nothing. PYTHONDONTWRITEBYTECODE
-# keeps the import from leaving a __pycache__ in the tree.
+# command line is read the same way, from the postgres-service-settings.sh beside this file, and
+# rule 8 is go_test_steps.py, imported from there the same way. Resolved before the cd, which would
+# leave a relative $0 naming nothing. PYTHONDONTWRITEBYTECODE keeps the import from leaving a
+# __pycache__ in the tree.
 scripts=$(dirname "$(readlink -f "$0")")
 
 cd "$(dirname "$0")/../.."
@@ -86,7 +141,8 @@ import sys
 from pathlib import Path
 
 import yaml
-from workflow_paths import repeated_keys
+from go_test_steps import check_go_test_events, hold_scripts_to_filter, total
+from workflow_paths import mapping_get, repeated_keys, scalar
 
 WORKFLOWS = Path(".github/workflows")
 SUFFIXES = {".yaml", ".yml"}
@@ -167,15 +223,6 @@ def composed(path: Path) -> tuple[object, object]:
     return nodes[path]
 
 
-def mapping_get(node: object, key: str) -> object:
-    if not isinstance(node, yaml.MappingNode):
-        return None
-    for name, value in node.value:
-        if isinstance(name, yaml.ScalarNode) and name.value == key:
-            return value
-    return None
-
-
 def check_folded_keys(path: Path, root: object) -> None:
     """Every mapping reachable from the document, sequences included: two keys equal after
     upper-casing are two keys GitHub's parser reads as one, and it refuses the file. Each node is
@@ -247,10 +294,6 @@ def unique_callees(start: Path) -> list[str]:
                 read.add(callee)
                 queue.append(callee)
     return list(called)
-
-
-def scalar(node: object) -> str | None:
-    return node.value.strip() if isinstance(node, yaml.ScalarNode) else None
 
 
 HELPER = "gh-read.sh"
@@ -492,6 +535,17 @@ REACHERS = helper_reachers()
 COMMAND = service_command()
 
 
+# Rule 8 of the header (.github/scripts/go_test_steps.py) reads ci.yaml and every workflow of this
+# repository it reaches through its calls, or nothing when the directory holds no ci.yaml. Each
+# file's census is kept for the last line, and the reads of the scripts its steps run are kept
+# for the files after it (SCRIPT_READS).
+ROUTER = WORKFLOWS / "ci.yaml"
+SCOPE = ({ROUTER} | {Path(called) for called in unique_callees(ROUTER) if Path(called).is_file()}
+         if ROUTER.is_file() else set())
+CENSUSES = []
+SCRIPT_READS = {}
+
+
 for path in targets:
     size = path.stat().st_size
     if size > GITHUB_CAP:
@@ -532,6 +586,8 @@ for path in targets:
     check_folded_keys(path, node)
     check_timeout_variables(path, node, REACHERS)
     check_postgres_services(path, node, COMMAND)
+    if path in SCOPE:
+        CENSUSES.append(check_go_test_events(path, node, problem, SCRIPT_READS))
 
     called = unique_callees(path)
     if len(called) > CALL_LIMIT:
@@ -543,6 +599,9 @@ for path in targets:
             f"starts no run." + limits(path),
         )
 
+census = total(CENSUSES)
+selected = hold_scripts_to_filter(census.scripts, problem) if SCOPE else ""
+
 if problems:
     for annotation in problems:
         print(annotation)
@@ -552,11 +611,16 @@ if problems:
     )
     sys.exit(1)
 
+kept = (
+    f"keep the events of {census.commands} go test command(s) in {census.steps} step(s) of "
+    f"{census.jobs} job(s) of ci.yaml's run{selected}" if SCOPE else
+    f"keep go test events UNKNOWN: there is no {ROUTER}, so rule 8 read no step"
+)
 print(
     f"all {len(targets)} workflow files under {WORKFLOWS} are within {LIMIT:,} bytes and GitHub's "
     f"{GITHUB_CAP:,}-byte cap, parse as YAML, repeat no mapping key after upper-casing, call "
     f"at most {CALL_LIMIT} unique reusable workflows, set JOB_TIMEOUT_MINUTES and "
-    f"STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for, and start every Postgres service "
-    f"on {SETTINGS}'s command line with a step that reads it back"
+    f"STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for, start every Postgres service "
+    f"on {SETTINGS}'s command line with a step that reads it back, and {kept}"
 )
 PY

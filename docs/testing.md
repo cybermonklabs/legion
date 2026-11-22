@@ -1197,6 +1197,39 @@ A job that carries `.github/scripts/disk_watch.py` through its steps prints the 
 `tool-fallback` and `tool-fallback-arm` carry it from before their first faulted install to after their last, and `envoy-smoke` carries it around its live-tests step alone.
 It says nothing about the run that was lost: the series goes to the log, and that run has none (dispatch://INFRA-2605).
 
+## Which tests a CI job ran
+
+A go test step's log says `ok <package> <time>` for a package that passed, and nothing about which of its tests ran, passed or skipped.
+Each go test step of ci.yaml's run runs its go test under `.github/scripts/go_test_events.py`, which runs it with `-json`, keeps every test2json event in `go-test-events/<step id>.jsonl` and prints the log go test prints without `-json`.
+Its job uploads those files as the artifact `go-test-events-<job id>` with `.github/actions/go-test-events-upload`, failed and cancelled runs included, and `.github/scripts/check-workflow-files.sh` refuses a go test step that keeps none, and a job that does not end its go test steps with that upload (its rule 8, `.github/scripts/go_test_steps.py`).
+Rule 8 reads a go test in every form `.github/scripts/go_test_step_forms.py` generates and runs under bash: at a command's place (behind `!`, a redirection, a keyword, a case arm or a runner it knows), in a script a step runs, in a `bash -c` or env -S string or a heredoc a shell runs, and in each of those inside another; it refuses one that runs detached, in the background with no `wait` of the same shell that waits for it.
+It does not see a go test behind eval, coproc, flock, a shell that reads its script from a pipe (`| bash`) or a here-string (`<<<`), python3 -c, stdbuf, ionice or taskset, and it refuses a go test no run reaches (`if false`, an uncalled function) as if it ran.
+`.github/go-test-step-misses.tsv` gives each of those its reason; a form the generator does not make is not held, so a shell construct none of its forms uses may be read wrongly.
+One such is a `wait` after a command that fails under the step's `bash -e`: the shell exits before it, and rule 8 reads the wait as one that runs.
+A step that wrote no event fails, so an empty or missing file never reads as a step that ran no test.
+
+To run a step's command by hand, as `.github/scripts/go_test_events.py go test ./...`, set `TEST_EVENTS_FILE` to the file its events go to.
+Off a runner the writer exits 2 without it, since `GITHUB_ACTION` and `RUNNER_TEMP`, which name the file in CI, are not set.
+
+To read one job's results, with the job id from its URL (`.../job/<job id>`) or the jobs API:
+
+```sh
+job=<job id>
+run=$(gh api repos/cybermonklabs/legion/actions/jobs/$job --jq .run_id)
+dir=$(mktemp -d)
+gh run download "$run" -R cybermonklabs/legion -n "go-test-events-$job" -D "$dir"
+jq -c --arg t '<the test full name, subtests included>' 'select(.Action == "pass" and .Test == $t)' "$dir"/*.jsonl
+```
+
+A skipped test's own event says `"Action":"skip"`, so a skip is no pass.
+Each test's `pass`, `fail` and `skip` event carries test2json's `Elapsed`, its seconds, and `Time`, so a CI run's per-test times can be read from the same files.
+
+Neither the upload step nor the action's own step under it has `continue-on-error`, so an artifact upload that fails fails its job, as a step that keeps no event does: a run whose record cannot be kept does not read as green.
+
+The artifacts of this public repository can be downloaded by anyone for 90 days, and GitHub's log masking does not reach them: every event is kept, a passing test's `t.Log` lines included.
+No go test step's environment holds a secret today.
+A step that is ever given one must keep it out of its tests' output, since its events are uploaded as every go test step's are: rule 8 refuses a go test step that does not keep them.
+
 ## A test asserts no count of work a broker may repeat
 
 A message broker that gives at-least-once delivery may hand one message to a handler twice. NATS

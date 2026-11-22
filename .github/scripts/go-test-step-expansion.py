@@ -103,9 +103,10 @@ How it reads a step:
   * `go list … | grep -Ev '…' | xargs go test …` is run as written, in the step's own directory,
     and the packages it prints are the command's packages;
   * a line that sets variables before its command (`GODEBUG=checkfinalizers=1 go test …`) or runs
-    it under one of the wrappers GO_WRAPPERS names (`race_memory.py go test …`) is the go command
-    behind them: neither changes which test functions run. A value holding `$` and a wrapper that
-    tuple does not name are refused rather than guessed at;
+    it under the wrappers GO_WRAPPERS names (`race_memory.py go test …`, `go_test_events.py go
+    test …`, or both, one behind the other) is the go command behind them: neither changes which
+    test functions run. A value holding `$` and a wrapper that tuple does not name are refused
+    rather than guessed at;
   * a step of a matrix job that writes `${{ matrix.<key> }}` in its run: is one step per row of
     the job's matrix, each with the row's value written in, since each row is a job of its own:
     a legs job's go test step (`go_legs.py … ${{ matrix.leg }} ${{ strategy.job-total }} |
@@ -115,9 +116,9 @@ How it reads a step:
     has;
   * a step whose run: is the path of a script AUDITED_SCRIPTS names
     (`packages/envoy/scripts/database-skips.sh` and `packages/envoy/scripts/backend-count.sh`), alone
-    or followed by one of the argument lists
-    its entry reads, is read as the `go test` command that entry gives for those arguments, in
-    the module it names. A step whose run: holds that script's file name anywhere else, or with
+    or after the path of .github/scripts/go_test_events.py, and followed by one of the argument
+    lists its entry reads, is read as the `go test` command that entry gives for those arguments,
+    in the module it names. A step whose run: holds that script's file name anywhere else, or with
     arguments its entry does not list, is refused, since each entry reads its script only as
     called with what it lists; the test is on the run's raw text, so no quoting, substitution or
     comment hides the script from it. A
@@ -147,6 +148,7 @@ from __future__ import annotations
 
 import hashlib
 import itertools
+import os
 import re
 import shlex
 import subprocess
@@ -156,6 +158,7 @@ from pathlib import Path
 
 import yaml
 from ci_filter_coverage import called_workflows, script_lines, step_workdir
+from workflow_paths import EVENTS_WRITER
 
 ROOT = Path(__file__).resolve().parents[2]
 # Repository-relative, as the documents below are keyed and as every message names them.
@@ -356,7 +359,6 @@ STATUS = re.compile(r"^(ok|FAIL|\?)\s+(\S+)")
 SHELL_VAR = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
 FOR_LINE = re.compile(r"^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?)\s*;\s*do$")
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=\$\((.+)\)$")
-XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?P<test>go\s+test\b.*)$")
 # A matrix value as a run: writes it, which GitHub replaces before the shell reads the line.
 MATRIX_VALUE = re.compile(r"\$\{\{\s*matrix\.([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}")
 # How many jobs the matrix makes, as a run: writes it (a legs step hands it to go_legs.py).
@@ -414,9 +416,11 @@ AUDITED_SCRIPTS = {
     # whether it runs at all. `--module-except P` adds to the run every package of
     # `go list ./... | grep -Ev P`, in that order, and then each counted package P took out; P
     # keeps every counted package here (ci_job_reads.hold_counted_in_unit_run), so the run is the
-    # listing alone. With `--report FILE` it reads a report and runs no test. envoy-go's unit step
-    # passes the first argument list below, whose command is that run in the listing form this
-    # script reads, and envoy-go-race-api's race step the second.
+    # listing alone. With `--report FILE` it reads a report and runs no test. With
+    # TEST_EVENTS_FILE set, a run of its own also appends each event of that report to the file as
+    # go writes it (tee), which changes no test it runs. envoy-go's unit step passes the first
+    # argument list below, whose command is that run in the listing form this script reads, and
+    # envoy-go-race-api's race step the second, each under .github/scripts/go_test_events.py.
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
         commands={
@@ -425,13 +429,15 @@ AUDITED_SCRIPTS = {
             "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
                 "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
         },
-        sha256="b640fd0d9f4d7604a9114c1cd51f5334ef8e506ccddcf9ac8aafe12c5fdb2fc9",
+        sha256="97abe2ed16c9a078b193cefeb5f587bb865027efa59c501147114d4543ca4c94",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
     # `--`, the -run built from the test names after it, then counts each test's `aws` and `gcp`
     # passes. GO_TEST_SKIP adds a -skip, which no step sets, and envoy-go's job sets neither
-    # variable. envoy-go's count step passes the argument list below.
+    # variable; with TEST_EVENTS_FILE set it also appends each event to that file as go writes it
+    # (tee), which changes no test it runs. envoy-go's count step passes the argument list below,
+    # under .github/scripts/go_test_events.py.
     "packages/envoy/scripts/backend-count.sh": AuditedScript(
         module="packages/envoy",
         commands={
@@ -439,12 +445,13 @@ AUDITED_SCRIPTS = {
                 f"go test -json -count=1 -timeout 5m -run '^({'|'.join(BACKEND_COUNT_TESTS)})$' "
                 "./cmd/cipher/ ./internal/cipher/api/",
         },
-        sha256="bea62eaf32791a70c86e0350053bda35bae7dfa81685ad3338022849f0587a0e",
+        sha256="9df1d3a18ffe20c85c296c798d849d4a77ee0d104298fbc84bd9d6d2a786b955",
     ),
     # It moves into packages/envoy/infra (`cd "$(dirname "$0")/.."`) and, given `run`, runs one
     # `go test -count=1 -race` over the packages `go list ./...` prints less those its EXCLUDE,
     # '/internal/textcheck$' (ci_job_reads.INFRA_PLAIN_PATTERN), matches, with no -tags, -run or
-    # -skip. envoy-infra-build's unit step passes `run`. Until this entry the reader skipped that
+    # -skip, under .github/scripts/go_test_events.py, which adds -json and changes no test it runs.
+    # envoy-infra-build's unit step passes `run`, under that writer too. Until this entry the reader skipped that
     # step, so neither verdict saw the module's race run: every untagged test of infra/core,
     # infra/seed and infra/gcp read as compiled by the natslive step and run by no step, and
     # infra/host's untagged tests, which envoy-smoke's pulumilive step runs plain, as run once.
@@ -453,17 +460,22 @@ AUDITED_SCRIPTS = {
         commands={
             "run": "go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1 -race",
         },
-        sha256="3e9946d3482859bdab444ee99341955f982e70e86cb6e93c2138040cd015753b",
+        sha256="3e6907af86346b1a6a6436afe98ff6af4368d6b601a0178baa3862908fe5964d",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
 # A value holding `$` is left for the caller to refuse, since what it expands to is the shell's.
 ENV_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[^$]*$")
-# The wrappers a step runs a go command under. Each bounds how the test binary runs and changes
-# which tests it runs in no way, so the command behind it is read as though it stood alone; one
-# this tuple does not name is refused rather than guessed at. Matched by the end of the word,
-# since a step writes the path from its own working directory.
-GO_WRAPPERS = (".github/scripts/race_memory.py",)
+# The wrappers a step runs a go command under, the events writer (workflow_paths.EVENTS_WRITER)
+# among them. Each bounds how the test binary runs or keeps its events, and changes which tests it
+# runs in no way, so the command behind it is read as though it stood alone; one this tuple does
+# not name is refused rather than guessed at. Matched by the end of the word, since a step writes
+# the path from its own working directory.
+GO_WRAPPERS = (".github/scripts/race_memory.py", EVENTS_WRITER)
+# `go list … | xargs go test …`, the go test behind the wrappers above where xargs runs it under them.
+XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+"
+                   rf"(?:\S*(?:{'|'.join(re.escape(wrapper) for wrapper in GO_WRAPPERS)})\s+)*"
+                   r"(?P<test>go\s+test\b.*)$")
 # go commands that run no test, so a step may hold one and this script need not read it.
 NO_TEST_GO = ("build", "vet", "list", "install", "mod", "work", "env", "generate", "tool", "run")
 # go test flags whose value is the next argument.
@@ -653,6 +665,13 @@ def audited_step(workflow: str, job: str, name: str, workdir: str, script: str) 
     # Only the shell's own blanks and the line's end: Python's strip() also takes Unicode spaces,
     # which bash reads as part of the name.
     alone = script.strip(" \t\n")
+    # The events writer runs the script as it stands, handing it only the file its report goes to,
+    # so a run: that names the writer's path first, as the step's directory reaches it, reads as
+    # the script's own.
+    writer, _, behind = alone.partition(" ")
+    relative = os.path.relpath(EVENTS_WRITER, workdir or ".")
+    if writer in {relative, f"./{relative}"}:
+        alone = behind
     # The path is the text up to the first space, and the arguments the text after it, compared
     # with each listed argument list as written: one space between words, nothing else.
     spelled, _, arguments = alone.partition(" ")
@@ -727,16 +746,17 @@ def read_block(step: Step, lines: list[str], variables: dict[str, str],
 
 
 def go_command(line: str) -> tuple[list[str], str]:
-    """The command a line runs, with the variables it sets before it and the wrapper it runs it
+    """The command a line runs, with the variables it sets before it and the wrappers it runs it
     under dropped: its words, and its text with those words removed.
 
-    A step writes `GODEBUG=checkfinalizers=1 go test …` and
-    `RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test …`. Neither the
-    variables nor the wrapper changes which test functions the command runs, which is all this
-    script reads, so both are dropped and what is left is the go command. A value holding `$`,
-    and a wrapper GO_WRAPPERS does not name, are left where they are, so the caller refuses the
-    line rather than guessing. The text is cut word by word off the line itself, so the quoting
-    of what is left - a `-run` pattern above all - is the line's own.
+    A step writes `GODEBUG=checkfinalizers=1 ../../.github/scripts/go_test_events.py go test …`
+    and `RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/go_test_events.py
+    ../../.github/scripts/race_memory.py go test …`. Neither the variables nor the wrappers change
+    which test functions the command runs, which is all this script reads, so all are dropped and
+    what is left is the go command. A value holding `$`, and a wrapper GO_WRAPPERS does not name,
+    are left where they are, so the caller refuses the line rather than guessing. The text is cut
+    word by word off the line itself, so the quoting of what is left - a `-run` pattern above all -
+    is the line's own.
     """
     rest = line.strip()
     while True:
@@ -745,9 +765,12 @@ def go_command(line: str) -> tuple[list[str], str]:
             rest = head[1]
             continue
         break
-    head = rest.split(None, 1)
-    if len(head) == 2 and head[0].endswith(GO_WRAPPERS) and head[1].split(None, 1)[0] == "go":
-        rest = head[1]
+    # The wrappers, one behind another, dropped only where a go command stands behind the last.
+    behind = rest
+    while len(head := behind.split(None, 1)) == 2 and head[0].endswith(GO_WRAPPERS):
+        behind = head[1]
+    if behind != rest and behind.split(None, 1)[0] == "go":
+        rest = behind
     return rest.split(), rest
 
 

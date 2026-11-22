@@ -421,17 +421,24 @@ jobs:
           token: ''
           cache: false
 
-      # The filters this run's changes job computed, which no file of the repository holds: one
-      # case of the check below holds them to what this repository's Bun jobs compile and read, and
-      # the router outputs' harness reads the filter names from them, both reading the run's own
-      # file rather than computing them a second time. Before those two harnesses are queued: each
-      # takes the file's path in its step's env, and reads the file when the pool starts it.
+      # The filters this run's changes job computed, which no file of the repository holds: two
+      # cases of the check below hold them to what this repository's Bun jobs compile and read and
+      # to the scripts the workflow file check's go test events rule reads, and the router outputs'
+      # harness reads the filter names from them, each reading the run's own file rather than
+      # computing them a second time. Before those two harnesses are queued: each takes the file's
+      # path in its step's env, and reads the file when the pool starts it.
       - name: Fetch the filters the changes job selected this run's jobs by
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_ci_filters_test"') || contains(inputs.matched-filters, '"ci_router_outputs_test"')
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ci-filters
           path: ${{ runner.temp }}/ci-filters
+
+      # Its generated forms run bash with a stand-in go, and its kept forms the events writer, each
+      # in a scratch tree of its own; the runner variables the writer reads are taken off them.
+      - name: Test the workflow file check's go test events rule
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_test_steps_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/go_test_steps.test.sh .github/scripts/go_test_steps.test.sh
 
       # After setup-go: its fixtures run go list over a scratch module.
       - name: Test the CI filter check
@@ -468,6 +475,14 @@ jobs:
       - name: Test the go test step expansion
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_test_step_expansion_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/go-test-step-expansion.test.sh .github/scripts/go-test-step-expansion.test.sh
+
+      # After setup-go: its cases run go test over a scratch module of their own and compare the
+      # events writer's log with go test's, and run the real backend-count.sh under the writer
+      # with a stand-in go. Each case sets the runner variables it reads (RUNNER_TEMP,
+      # GITHUB_ACTION, TEST_EVENTS_FILE), so the step's own do not reach the writer it runs.
+      - name: Test the go test events writer
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_test_events_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/go_test_events.test.sh .github/scripts/go_test_events.test.sh
 
       # The label terms of ci.yaml's changes outputs, evaluated from ci.yaml itself: full-ci, the
       # lane labels and a label that names nothing. After the fetch above: the filter names are the

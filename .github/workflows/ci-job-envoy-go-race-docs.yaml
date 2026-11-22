@@ -99,9 +99,10 @@ jobs:
       # the run it writes the peak, and fails this step when the peak passed RACE_MEM_LIMIT_KB,
       # 8388608 kB, half the runner, naming the tests that were running at the highest sample.
       # -json is the stream the sampler reads to know them; it writes every Output field back
-      # out, so the log still carries the --- FAIL lines and the package's own line. -count=1
-      # because the job restores the Go build cache above, and a cached pass must not stand in
-      # for a run.
+      # out, so the log still carries the --- FAIL lines and the package's own line, and it
+      # appends every event to the file .github/scripts/go_test_events.py hands it in
+      # TEST_EVENTS_FILE. -count=1 because the job restores the Go build cache above, and a cached
+      # pass must not stand in for a run.
       # Under Go's cleanup detector too, GODEBUG=checkfinalizers=1: at each collection the runtime
       # reports a cleanup or a finalizer whose closure or argument reaches the object it is
       # attached to, a cycle that keeps that object alive for the life of the process, which is the
@@ -112,8 +113,15 @@ jobs:
       # step "Test what the race build cannot run at all or at full size" runs plain, under the
       # cleanup detector as well: the two render-reuse storms run in both, at two sizes.
       - name: Race-test the document service
-        run: GODEBUG=checkfinalizers=1 RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/
+        id: race-docs
+        run: GODEBUG=checkfinalizers=1 RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/go_test_events.py ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/
         working-directory: packages/envoy
+
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

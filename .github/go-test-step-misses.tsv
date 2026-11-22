@@ -1,0 +1,17 @@
+# The forms .github/scripts/go_test_step_forms.py generates that rule 8 of
+# .github/scripts/check-workflow-files.sh (.github/scripts/go_test_steps.py) does not read, and the
+# negative forms it refuses where bash runs no go test: a pattern of form ids (fnmatch:
+# <indirection>/<context>/<spelling>, composed/<outer>/<context>/go, negative/<name>/<indirection>),
+# a tab, and why the form is a known limit. The generator fails on a miss or a refused negative
+# form no row matches and on a row that matches neither, so a fix that reads one of these forms
+# removes its row.
+*/eval/*	eval runs a string the shell builds when the step runs: rule 8 reads no string eval is handed
+*/coproc/*	coproc runs its command beside the shell, which talks to it through a pipe: rule 8 reads no command behind coproc
+*/flock/*	flock runs the command after its lock file and options: rule 8 reads no command behind flock
+*/pipe-to-bash/*	a shell reading its script from a pipe (`| bash`) runs text another command writes when the step runs: rule 8 reads no such text
+*/here-string/*	a here-string a shell takes as its script (`bash <<<`) is a word the shell expands when the step runs: rule 8 reads no here-string
+*/python3-c/*	python3 -c runs a program in another language, here one that runs its arguments: rule 8 reads a Python script's go test argv, and no -c program or the words after it
+*/stdbuf/*	stdbuf runs the command after its options: rule 8 reads no command behind stdbuf
+*/ionice/*	ionice runs the command after its options: rule 8 reads no command behind ionice
+*/taskset/*	taskset runs the command after its mask or list: rule 8 reads no command behind taskset
+negative/dead-*/*	rule 8 reads a go test in every branch and body, as it cannot tell when the step is checked which ones the step will run: a go test no run reaches (`if false`, `false &&`, an uncalled function, an unmatched case arm, after `exit`) is refused as one that runs, an over-refusal that costs a step only the writer before that go test

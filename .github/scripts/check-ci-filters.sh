@@ -392,8 +392,11 @@
 #
 # A claimed go command is reduced only in its simple forms, never parsed further: one line of
 # `go test|vet|build`, or of `go -C <directory>` and one of those three, under a leading run of
-# NAME=value assignments whose every name is in ENV_ALLOWED, then relative package paths and only
-# -v, -race, -count=N, -timeout D, -buildvcs=false and one -tags T, that is its step's whole run:
+# NAME=value assignments whose every name is in ENV_ALLOWED, `go test` behind the path of
+# .github/scripts/go_test_events.py too (which runs it with -json and moves nothing it compiles;
+# a job that runs that script reads it, ci_job_reads.py's events_writer), then relative package
+# paths and only -v, -race, -count=N, -timeout D, -buildvcs=false and one -tags T, that is its
+# step's whole run:
 # script (split at \n alone, stripped of spaces and tabs, comments and blank lines aside; a
 # script holding any character outside printable ASCII, tab and \n is not simple), with no shell:
 # on the step and no defaults.run.shell on the job or the workflow, no container: on the job, no

@@ -107,7 +107,8 @@ jobs:
       # database variable above is unset, and on a failed run prints the failed tests' output, a
       # timed-out binary's goroutine dump among it.
       - name: Race-test the Dispatch API
-        run: scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/
+        id: race-api
+        run: ../../.github/scripts/go_test_events.py scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/
         working-directory: packages/envoy
       - name: Report the service's peak connections
         if: always()
@@ -118,6 +119,12 @@ jobs:
           else
             echo "pg connections: UNKNOWN, no sample was taken (max_connections ${allowed})"
           fi
+
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

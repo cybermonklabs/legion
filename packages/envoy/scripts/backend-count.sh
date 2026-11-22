@@ -19,6 +19,10 @@
 # failed; 0 otherwise. GO_TEST_SKIP is go test's -skip pattern, which a negative control sets to
 # take the `aws` subtests away ('^(TestA|TestB)$/^aws$'). GO_TEST_TIMEOUT is go test's -timeout,
 # 5m unless set: the named tests take seconds, and CI's job budget counts this step at that bound.
+# TEST_EVENTS_FILE, which .github/scripts/go_test_events.py sets for the CI step it runs this
+# script in, is a file this script appends each of go test's events to as go writes it (tee), so
+# the step keeps every test's result, those of a run cut short among them; with it unset nothing
+# else is written.
 set -euo pipefail
 
 usage="usage: backend-count.sh PACKAGE... -- TEST..."
@@ -54,7 +58,7 @@ trap 'rm -rf "$work"' EXIT
 events="$work/events.json"
 
 go_test_exit=0
-go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run "$run" ${GO_TEST_SKIP:+-skip "$GO_TEST_SKIP"} "${packages[@]}" >"$events" 2>"$work/stderr" || go_test_exit=$?
+go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run "$run" ${GO_TEST_SKIP:+-skip "$GO_TEST_SKIP"} "${packages[@]}" 2>"$work/stderr" | tee -a "${TEST_EVENTS_FILE:-/dev/null}" >"$events" || go_test_exit=$?
 if [ ! -s "$events" ]; then
   echo "backend-count.sh: go test wrote no events (exit $go_test_exit), so nothing was counted:" >&2
   cat "$work/stderr" >&2

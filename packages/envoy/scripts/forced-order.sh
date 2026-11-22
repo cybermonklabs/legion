@@ -41,6 +41,12 @@
 # CI jobs that run this script count in their time budgets. The copies of go.mod and go.sum, or of
 # go.work and go.work.sum, may gain the checksums the build needs; the repository's own files are
 # never written. scripts/forced-order.test.sh holds it to these refusals.
+#
+# The test run goes through .github/scripts/go_test_events.py (so it needs python3), which adds
+# -json, keeps every test2json event and prints the -v log this script reads: in TEST_EVENTS_FILE,
+# which that writer sets for a CI step that runs this script under it; under a runner without
+# one, in the step's own file the writer names by the step's id; and elsewhere, in a file of the
+# script's own work directory, which nothing uploads, so it goes with that directory.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -130,12 +136,16 @@ if [ -n "$in_workspace" ]; then
     go work edit -dropuse="$use" -use="$(cd "$workspace_dir" && cd "$use" && pwd)" "$work/go.work"
   done
   go_cmd=(env "GOWORK=$work/go.work" go)
+  gowork="$work/go.work"
+  goflags="${GOFLAGS:-}"
   modflags=()
   build="a copy of $workspace"
 else
   cp go.mod "$work/go.mod"
   [ ! -f go.sum ] || cp go.sum "$work/go.sum"
   go_cmd=(env GOWORK=off "GOFLAGS=${GOFLAGS:+$GOFLAGS }-mod=mod" go)
+  gowork=off
+  goflags="${GOFLAGS:+$GOFLAGS }-mod=mod"
   modflags=(-modfile="$work/go.mod")
   build="a copy of $module/go.mod, with no workspace"
 fi
@@ -237,9 +247,11 @@ empty="$(awk '
 # package's output, which it prints as one block, with that package's own `ok` or `FAIL` line. A
 # package whose every forced-order test skipped would end in `ok`: its line is printed as a FAIL
 # line instead, and the run fails. The go command stays a line of its own, the text
-# .github/scripts/ci_job_reads.py pins.
+# .github/scripts/ci_job_reads.py pins, under the events writer with the environment go_cmd
+# gives the other go commands.
+[ -n "${TEST_EVENTS_FILE:-}${RUNNER_TEMP:-}" ] || export TEST_EVENTS_FILE="$work/events.jsonl"
 run_forced_order_tests() {
-  "${go_cmd[@]}" test "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" -run '^TestForcedOrder' "$@"
+  env GOWORK="$gowork" GOFLAGS="$goflags" "$envoy/../../.github/scripts/go_test_events.py" go test "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" -run '^TestForcedOrder' "$@"
 }
 run_forced_order_tests "$@" 2>&1 | awk '
   /^--- (PASS|FAIL): TestForcedOrder/ { ran++ }

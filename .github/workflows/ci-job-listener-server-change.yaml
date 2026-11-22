@@ -56,10 +56,16 @@ jobs:
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
       - name: Server-change soak of the listener
+        id: soak
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh serverchange ./cmd/listener)
-          go test -tags serverchange -count=1 -timeout 15m -v -run "$pattern" ./cmd/listener
+          ../../.github/scripts/go_test_events.py go test -tags serverchange -count=1 -timeout 15m -v -run "$pattern" ./cmd/listener
         working-directory: packages/envoy
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

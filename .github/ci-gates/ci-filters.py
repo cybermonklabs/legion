@@ -20,6 +20,18 @@ GATE = gate("ci_filters", "ci-filters", runs=[
      at("ci-filters", "Check every workflow file GitHub can read and its size")),
     (".github/scripts/postgres-service-settings.sh", "check-workflow-files.sh runs its --command for rule 7, "
                                                      "the command line every Postgres service must carry"),
+    # Rule 8 of that check (.github/scripts/go_test_steps.py, which it imports) reads every
+    # repository script a step of ci.yaml's run runs, sources or hands a shell, the harnesses
+    # harness-pool.sh starts among them, and the scripts those run, and refuses a step whose script
+    # this filter does not select: a go test added to such a script would otherwise merge on a pull
+    # request that starts no ci-filters job, and fail the next one that does on a step it never
+    # touched. Of the scripts it reads, the reads below and two this gate holds besides
+    # (.github/actions/** and packages/envoy/**, which hold the architecture-check action's harness
+    # and envoy's deploy, loadtest and infra scripts) select every one.
+    (".github/scripts/**", "check-workflow-files.sh's rule 8 reads the scripts the steps of ci.yaml's run reach here"),
+    ("scripts/**", "check-workflow-files.sh's rule 8 reads the scripts the steps of ci.yaml's run reach here"),
+    ("packages/*/scripts/**", "check-workflow-files.sh's rule 8 reads the scripts the steps of ci.yaml's run reach here"),
+    ("packages/dispatch/e2e/visual-run.sh", "check-workflow-files.sh's rule 8 reads it: dispatch-browser.yaml's visual job runs it"),
     (".github/actionlint.yaml", f"{at('ci-filters', ACTIONLINT_STEP)}: actionlint reads its configuration "
                                 "from the project it runs in"),
     (".github/actions/**", f"{at('ci-filters', ACTIONLINT_STEP)}: actionlint reads the action.yml of every "

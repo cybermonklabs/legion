@@ -152,4 +152,25 @@ check "the --- FAIL line shows" "$(contains "$out" '^--- FAIL: TestA (0.00s)$')"
 check "the package's own line shows" "$(contains "$out" '^FAIL.*legion/internal/dispatch/docs')"
 check "the -json envelope does not" "$(is "$(contains "$out" '"Action"')" false)"
 
+echo "case: with TEST_EVENTS_FILE set, each -json event line is appended to it, and no other line"
+events=$(mktemp)
+stream='
+import json, sys
+sys.stdout.write("the command spoke\n")
+for event in [
+    {"Action": "run", "Test": "TestA"},
+    {"Action": "output", "Test": "TestA", "Output": "--- PASS: TestA (0.00s)\n"},
+    {"Action": "pass", "Test": "TestA"},
+]:
+    sys.stdout.write(json.dumps(event) + "\n")
+'
+TEST_EVENTS_FILE="$events" run_sampler '' python3 -c "$stream"
+check "exits 0" "$(is "$status" 0)"
+check "the log is as it is without the file" "$(contains "$out" '^--- PASS: TestA (0.00s)$')"
+check "the file holds the three events" "$(is "$(wc -l <"$events" | tr -d ' ')" 3)"
+check "the pass event is in it as the command wrote it" \
+  "$(is "$(grep -c '^{"Action": "pass", "Test": "TestA"}$' "$events")" 1)"
+check "the command's own line is not" "$(is "$(grep -c 'the command spoke' "$events")" 0)"
+rm -f "$events"
+
 summary "race_memory.py"

@@ -81,10 +81,17 @@ jobs:
       - name: Check the service allows this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Two-process tests of the Dispatch server
+        id: two-process-tests
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh multiprocess ./cmd/dispatch)
-          go test -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/dispatch
+          ../../.github/scripts/go_test_events.py go test -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
+
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

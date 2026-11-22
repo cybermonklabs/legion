@@ -11,6 +11,11 @@ envoy="$(dirname "$here")"
 out="$(mktemp -d)"
 trap 'rm -rf -- "$out"' EXIT
 failed=0
+# The one case that gets as far as a test run runs it over a fixture package. Its events are the
+# fixture's, kept in this harness's own directory as a run off a runner keeps them, never in a CI
+# step's uploaded file.
+export TEST_EVENTS_FILE="$out/events.jsonl"
+unset RUNNER_TEMP
 
 # The stand-in: a line forced-order.sh prints when go mod download fails, and its exit status.
 early="$out/early-failure.sh"

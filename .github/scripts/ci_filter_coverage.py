@@ -47,7 +47,7 @@ from pathlib import Path
 
 import yaml
 from go_build_tags import constraint_names, decode_stream, go_files, go_skips_dir, is_tag, platforms
-from workflow_paths import PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns
+from workflow_paths import EVENTS_WRITER, PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns
 
 WORKFLOW = ".github/workflows/ci.yaml"
 # The workflow that fills, on a push to main, the Go cache families WORKFLOW's jobs restore.
@@ -1652,6 +1652,11 @@ PACKAGE = re.compile(r"\.\.?(/[A-Za-z0-9_./-]*)?")
 FLAG = re.compile(r"-v|-race|-count=[0-9]+|-timeout=[0-9]+[smh]|-buildvcs=false")
 DURATION = re.compile(r"[0-9]+[smh]")
 TAGS = re.compile(r"[A-Za-z0-9_,]+")
+# The script every go test step of CI runs its go test under (workflow_paths.EVENTS_WRITER): it
+# runs `go test -json` with the step's own flags and packages, so the command compiles what the go
+# test behind it does. Named by its path from the step's directory, `../` repeated or nothing
+# before it; the gate that claims the line declares the script as a read of its own.
+EVENTS_WRITER_WORD = re.compile(rf"(?:\.\./)*{re.escape(EVENTS_WRITER)}")
 
 
 def reduce_line(line: str) -> tuple:
@@ -1671,6 +1676,10 @@ def reduce_line(line: str) -> tuple:
     while words and (assignment := ASSIGNMENT.fullmatch(words[0])):
         if assignment.group(1) not in ENV_ALLOWED:
             return *unreduced, f"it sets {assignment.group(1)}, which can change what go compiles"
+        words = words[1:]
+    # The events writer runs the go test behind it with its flags and packages unchanged (and
+    # -json, which moves no file go compiles), so the go command is what is left.
+    if len(words) > 2 and EVENTS_WRITER_WORD.fullmatch(words[0]) and words[1:3] == ["go", "test"]:
         words = words[1:]
     if not words or words[0] != "go":
         return *unreduced, f"it starts with `{words[0] if words else line}`, not go"
