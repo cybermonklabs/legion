@@ -202,7 +202,7 @@ func newRoomReleaseService(t *testing.T) (*Service, *store.Store) {
 	service := New(Deps{
 		Store:     database,
 		Events:    events.NewBroker(),
-		Identity:  identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
+		Identity:  identity.HeaderIdentity{People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
 		ServerURL: "https://dispatch.example",
 		Settle:    20 * time.Millisecond,
 	})

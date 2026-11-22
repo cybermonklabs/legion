@@ -173,7 +173,7 @@ func newRig(t *testing.T) *rig {
 	}
 	deps, err := api.NewDeps(api.DepsInput{
 		Store:                 database,
-		Identity:              identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		Identity:              identity.HeaderIdentity{People: people},
 		AgentTokens:           tokens,
 		ServerURL:             "https://dispatch.example",
 		EnvoyURL:              listener.URL,

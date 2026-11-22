@@ -14,6 +14,7 @@ package accesslog
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -55,6 +56,12 @@ const Message = "dispatch: request"
 // (auth.previousTokenCallerBytes).
 const fieldBytes = 256
 
+// StatusClientClosed is the status the line gives a request whose client closed it before its
+// answer (MarkClosedByClient): nginx's 499. No answer carries it: the request is still answered
+// with the status its handler wrote, which reaches the client only where it half-closed and
+// still reads.
+const StatusClientClosed = 499
+
 // callerKey carries the request's recorder, which the authentication layer names the caller on.
 // A nil *recorder under it masks the request's recorder (Detached).
 type callerKey struct{}
@@ -77,6 +84,12 @@ type recorder struct {
 	credential string
 	status     int
 	written    int64
+	// request is the request's own context as net/http gave it, which net/http cancels when the
+	// connection stops reading or writing (MarkClosedByClient), and which no layer of Dispatch
+	// cancels.
+	request context.Context
+	// closedByClient is set by MarkClosedByClient, on the handler's goroutine as status is.
+	closedByClient bool
 }
 
 func (rec *recorder) WriteHeader(status int) {
@@ -146,7 +159,7 @@ func (rec *recorder) Unwrap() http.ResponseWriter { return rec.ResponseWriter }
 func Handler(route string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		rec := &recorder{ResponseWriter: w, kind: KindAnonymous}
+		rec := &recorder{ResponseWriter: w, kind: KindAnonymous, request: r.Context()}
 		completed := false
 		defer func() { rec.write(route, r, time.Since(start), !completed) }()
 		next.ServeHTTP(rec, r.WithContext(context.WithValue(r.Context(), callerKey{}, rec)))
@@ -194,12 +207,47 @@ func Detached(ctx context.Context) context.Context {
 	return context.WithValue(ctx, callerKey{}, (*recorder)(nil))
 }
 
+// MarkClosedByClient reports whether the client of the request that w answers closed it before
+// its answer, and when it did, gives the request's line StatusClientClosed in place of the status
+// the request is answered with, whether that status was written before the close or after it.
+// It changes nothing the client is sent. It reads the request's own context, which only the client
+// ends while the handler runs. net/http cancels it when the connection fails a read or a write:
+// the client closed the connection, half-closed its side (a read that meets the end of the
+// stream), or reset the stream, or a deadline set on the connection ran out. A client that gives
+// up waiting - a page at its own deadline, a proxy at its timeout - closes the same way, so a 499
+// says the client left, and its line's elapsed_ms says how long it waited. No Dispatch route
+// leaves a deadline set on its connection past the end of the body while its handler works (api's
+// readFor), and Dispatch shuts down without closing a connection under a
+// request (cmd/dispatch's shutdown). A cancel that Dispatch makes - a handler's own context, the
+// server's lifetime - leaves it live. w is the writer a handler was given: the walk follows each
+// layer's Unwrap, as http.ResponseController does, and a writer this package did not wrap, or one
+// that hides what it wraps (api.keyedAnswer, whose answer a key keeps), reports false.
+func MarkClosedByClient(w http.ResponseWriter) bool {
+	for {
+		switch layer := w.(type) {
+		case *recorder:
+			if !errors.Is(layer.request.Err(), context.Canceled) {
+				return false
+			}
+			layer.closedByClient = true
+			return true
+		case interface{ Unwrap() http.ResponseWriter }:
+			w = layer.Unwrap()
+		default:
+			return false
+		}
+	}
+}
+
 func (rec *recorder) write(route string, r *http.Request, elapsed time.Duration, aborted bool) {
 	rec.mu.Lock()
 	kind, id, credential := rec.kind, rec.id, rec.credential
 	rec.mu.Unlock()
 	status := rec.status
-	if status == 0 {
+	switch {
+	case rec.closedByClient:
+		status = StatusClientClosed
+	case status == 0:
 		// A handler that wrote nothing answered 200 with an empty body. One that panicked is
 		// logged as 500, though net/http writes no status: it closes the connection (HTTP/1)
 		// or resets the stream (HTTP/2).

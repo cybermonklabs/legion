@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+  Dispatch no longer logs a request that its client closed as a server fault. A page that
+  navigated away, or a search the bar replaced, cancelled its request while the request's database
+  statement ran, and Dispatch logged
+  `level=ERROR msg="dispatch: API handler failed" error="context canceled"`. Such a request now
+  logs one debug line in place of the ERROR line, and its request line gives status `499`. It is
+  still answered the error it met, so a client that only half-closed its side reads that error. A
+  client that gave up waiting closes the same way: a request the web page abandoned at its
+  30-second deadline, or a proxy timed out, also logs `499`, and its `elapsed_ms` (about `30000`
+  for the page) tells a slow request from a page that moved on. A cancel or a deadline that
+  Dispatch made itself is still a `500` with its `ERROR` line. A request whose person could not be
+  recorded no longer writes the person's email to the `ERROR` line.
+time: 2026-11-21T11:11:26Z
+custom:
+    Issue: pr4815

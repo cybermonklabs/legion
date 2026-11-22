@@ -75,16 +75,22 @@ func (i CookieIdentity) Login(r *http.Request) (string, error) {
 	return session.Login, nil
 }
 
-// HeaderIdentity resolves the person a test or local harness names in Header, by email. Every
-// person it resolves is recorded as having signed in.
+// UserHeader is the one header HeaderIdentity reads a person from. It is fixed, not a setting, so
+// header identity can never read a credential header (Authorization, Cookie) as a person: the
+// login it yields reaches the request's access line and the errors that name their caller, and a
+// header named by a setting could carry a bearer token or a session cookie there.
+// DISPATCH_IDENTITY=header:X-Dispatch-User selects it, and boot refuses any other header name.
+const UserHeader = "X-Dispatch-User"
+
+// HeaderIdentity resolves the person a test or local harness names in UserHeader, by email.
+// Every person it resolves is recorded as having signed in.
 type HeaderIdentity struct {
-	Header string
 	People auth.PeopleStore
 }
 
 // Login returns the header's person, lowercased, or ErrNoIdentity when the header is absent.
 func (i HeaderIdentity) Login(r *http.Request) (string, error) {
-	email := strings.ToLower(strings.TrimSpace(r.Header.Get(i.Header)))
+	email := strings.ToLower(strings.TrimSpace(r.Header.Get(UserHeader)))
 	if email == "" {
 		return "", ErrNoIdentity
 	}

@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  Header identity, which tests and local harnesses use, reads `X-Dispatch-User` alone. A server
+  with `DISPATCH_IDENTITY=header:<name>` for any other name now refuses to boot, naming the value
+  and `header:X-Dispatch-User`, so a credential header such as `Authorization` or `Cookie` can
+  never be read as a person and written to the log in the caller's place. Every setting in this
+  repository already names `X-Dispatch-User`. The load-test driver `browsertype` refuses an
+  `-identity-header` other than `X-Dispatch-User` the same way.
+time: 2026-11-22T00:11:07Z
+custom:
+    Issue: pr4815

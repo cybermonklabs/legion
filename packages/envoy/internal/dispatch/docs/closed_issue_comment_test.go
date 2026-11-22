@@ -469,7 +469,7 @@ func closedIssueRoomService(t *testing.T, database *store.Store, artifactID stri
 	}
 	service := New(Deps{
 		Store: database, Persistence: held, Events: events.NewBroker(),
-		Identity: identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
+		Identity: identity.HeaderIdentity{People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
 		Settle:   time.Hour,
 	})
 	t.Cleanup(func() {

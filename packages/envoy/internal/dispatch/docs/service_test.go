@@ -38,7 +38,7 @@ var testSigningKey = auth.SingleSigningKey("signing-key")
 
 // headerIdentity is the test header identity that records each named person in the database.
 func headerIdentity(database *store.Store) identity.HeaderIdentity {
-	return identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)}
+	return identity.HeaderIdentity{People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)}
 }
 
 // testServiceDeps are the dependencies every document service of this package's tests is built

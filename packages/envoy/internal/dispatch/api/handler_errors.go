@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -116,6 +118,22 @@ type editLostError struct {
 }
 
 func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
+	// A request that its own client closed before the answer (a page that navigated away, a
+	// search the bar replaced) failed for that alone. It is answered as any other failure is, so
+	// a client that only half-closed its side and still reads gets the error rather than an empty
+	// 200 that would read as success (net/http ends the request's context on that half-close
+	// too). Only what the operator reads changes: its request line says 499
+	// (accesslog.MarkClosedByClient), and it logs one debug line in place of the ERROR line a
+	// server fault writes. The debug line carries no part of the error: its chain carries
+	// whatever the request wrapped it in, the caller's own identity among it, and the request
+	// line already names the route and the caller (CodeQL go/clear-text-logging). A cancel the
+	// client did not cause - a handler's own context, the server's lifetime - leaves the
+	// request's context live and logs its ERROR line, as does a keyed write, whose handler runs
+	// on in a context of its own and answers a writer that hides the request's.
+	closedByClient := errors.Is(err, context.Canceled) && accesslog.MarkClosedByClient(w)
+	if closedByClient {
+		slog.Debug("dispatch: API request closed by its client")
+	}
 	var apiErr *apiError
 	if errors.As(err, &apiErr) {
 		if apiErr.retryAfter > 0 {
@@ -127,7 +145,7 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		}
 		writeError(w, apiErr.code, apiErr.status, apiErr.message)
 		// A 500 the handler named is a server fault like any other, so the operator's log shows it.
-		if apiErr.status == http.StatusInternalServerError {
+		if apiErr.status == http.StatusInternalServerError && !closedByClient {
 			slog.Error("dispatch: API handler failed", "code", apiErr.code, "error", err)
 		}
 		return
@@ -276,7 +294,9 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		return
 	}
 	writeError(w, codeInternal, http.StatusInternalServerError, "internal server error")
-	slog.Error("dispatch: API handler failed", "error", err)
+	if !closedByClient {
+		slog.Error("dispatch: API handler failed", "error", err)
+	}
 }
 
 // ambiguousTargetError is the 409 TARGET_AMBIGUOUS body a write answers a quote or heading

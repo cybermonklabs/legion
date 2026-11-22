@@ -685,8 +685,9 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   The reopened socket's upgrade carries a fresh assertion, judged again as any upgrade is, so no socket is served past its assertion, and an IAP user's sockets each reopen about every ten minutes.
   Any other refusal on a heartbeat closes the socket as before, an expired assertion that IAP's keys no longer verify (a key IAP withdrew) or whose person the rule no longer admits included: `1008` on the live socket, and no close frame (`1006`) on the document socket.
 
-- `header:<Header-Name>` is for tests and local harnesses only, never for a production Dispatch deployment.
-  It accepts a header value, lowercases it and records the person.
+- `header:X-Dispatch-User` is for tests and local harnesses only, never for a production Dispatch deployment.
+  It accepts the `X-Dispatch-User` header's value, lowercases it and records the person.
+  It reads that header alone: boot refuses any other header name, so header identity never reads a credential header such as `Authorization` or `Cookie` as a person, and no such header's value reaches the access line or an error the log writes.
   The harness must set `DISPATCH_IDENTITY_HEADER_TRUSTED=1`;
   Dispatch refuses header identity when that flag is absent or when any `DISPATCH_SIGNIN_*` setting is present, so it cannot share a deployment with Google sign-in.
 
@@ -3382,7 +3383,7 @@ Exit 0 when every document checked is clean, 1 on any mismatch, refusal, read fa
 So exit 0 always means the check compared something.
 
 `packages/envoy/loadtest/browsertype` is the browser side of a load test this check judges:
-it connects peers to documents' rooms as people, each named in the server's identity header (`-identity-header`, `X-Dispatch-User` by default, on a server run with `DISPATCH_IDENTITY=header:<name>` and `DISPATCH_IDENTITY_HEADER_TRUSTED=1`, since a room admits no agent token), and types inside existing paragraphs at a set rate (`browsertype -h` lists its flags).
+it connects peers to documents' rooms as people, each named in the server's identity header (`-identity-header`, `X-Dispatch-User` by default, on a server run with `DISPATCH_IDENTITY=header:X-Dispatch-User` and `DISPATCH_IDENTITY_HEADER_TRUSTED=1`, since a room admits no agent token), and types inside existing paragraphs at a set rate (`browsertype -h` lists its flags).
 A paragraph whose text holds a `-protect` value (repeatable) is never edited, so the text a load generator's own writes quote stays as it wrote it.
 
 ## Reference graph
@@ -3930,6 +3931,9 @@ Each item below names a field of the line, then what it holds.
 
   The response status.
   A handler that panicked before writing is logged as `500`; the client gets a closed connection, not a status.
+  A request that its client closed before the answer (a page that navigated away, a search the bar replaced) and that failed for that reason is logged as `499`, nginx's status for it, and no `ERROR` line calls it a server fault; it is still answered the error it met, which reaches the client only where the client half-closed and still reads.
+  A client that gave up waiting closes the same way, so a `499` also covers a request the web page abandoned at its 30-second deadline, one a proxy timed out, and one whose commit the close interrupted with its outcome unknown: its `elapsed_ms` tells a slow request (about `30000` for the page) from a page that moved on.
+  A cancel that Dispatch made itself (a handler's own deadline or context) is still a `500` with its `msg="dispatch: API handler failed"` line.
 
 - `elapsed_ms`
 

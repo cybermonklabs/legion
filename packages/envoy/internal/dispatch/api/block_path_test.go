@@ -14,6 +14,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -193,8 +194,8 @@ func TestCommentAndAskReadsStandWhenTheAnchorDocumentCannotBeRead(t *testing.T) 
 // A room fails with the cause that failed it, and a writer whose client went away during its
 // commit fails the room with a cause that holds context.Canceled. That cancellation is the
 // writer's, so a live read of the same document still answers 200 without the position, while a
-// read whose own request has gone away fails. The two reads meet the same error; only the request
-// differs.
+// read whose own request has gone away fails with 500 INTERNAL, and its request line says 499
+// (writeHandlerError). The two reads meet the same error; only the request differs.
 func TestAnAnchoredReadDecidesCancellationByItsOwnRequest(t *testing.T) {
 	writer, database, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, writer, "TEST", "Cancelled writer", "Intro.\n\nThe quoted line.\n")
@@ -233,12 +234,16 @@ func TestAnAnchoredReadDecidesCancellationByItsOwnRequest(t *testing.T) {
 		gone := readingServer(t, database, docs.NewPgVersioned(database), func(documents docs.API) docs.API {
 			return failingBlockPath{API: documents, err: failedRoom, during: cancel}
 		})
+		logged := captureLog(t)
 		request := httptest.NewRequest(http.MethodGet, read.path, nil).WithContext(ctx)
 		request.Header.Set("X-Dispatch-User", "alice")
 		cancelled := httptest.NewRecorder()
 		gone.ServeHTTP(cancelled, request)
-		if cancelled.Code != http.StatusInternalServerError || !strings.Contains(cancelled.Body.String(), `"code":"`+codeInternal+`"`) {
-			t.Fatalf("cancelled GET %s: status=%d body=%s, want 500 %s", read.path, cancelled.Code, cancelled.Body.String(), codeInternal)
+		lines := accessLines(t, logged)
+		if cancelled.Code != http.StatusInternalServerError || !strings.Contains(cancelled.Body.String(), `"code":"`+codeInternal+`"`) ||
+			len(lines) != 1 || !strings.Contains(lines[0], fmt.Sprintf(" status=%d ", accesslog.StatusClientClosed)) {
+			t.Fatalf("cancelled GET %s: status=%d body=%s, request lines %q, want 500 %s and status=%d on its line",
+				read.path, cancelled.Code, cancelled.Body.String(), lines, codeInternal, accesslog.StatusClientClosed)
 		}
 	}
 }

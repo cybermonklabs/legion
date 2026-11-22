@@ -35,7 +35,7 @@ func newAssetRouter(t *testing.T, pool *store.Pool, distDir string, assets route
 		WebDistDir: distDir,
 		AssetStore: assets,
 		People:     people,
-		Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		Identity:   identity.HeaderIdentity{People: people},
 		Lifetime:   t.Context(),
 	})
 	if err != nil {

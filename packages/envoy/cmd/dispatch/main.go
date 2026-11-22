@@ -43,6 +43,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -1519,11 +1520,16 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		if boot.IdentityHeader == "" {
 			return bootConfig{}, errors.New("DISPATCH_IDENTITY header name required")
 		}
+		// The header is fixed (identity.UserHeader), so header identity never reads a credential
+		// header such as Authorization or Cookie as a person.
+		if http.CanonicalHeaderKey(boot.IdentityHeader) != identity.UserHeader {
+			return bootConfig{}, fmt.Errorf("DISPATCH_IDENTITY=%q: header identity reads %s alone; set DISPATCH_IDENTITY=header:%s", mode, identity.UserHeader, identity.UserHeader)
+		}
 		if env.get("DISPATCH_IDENTITY_HEADER_TRUSTED") != "1" {
 			return bootConfig{}, errors.New("DISPATCH_IDENTITY_HEADER_TRUSTED=1 required: header identity is only for tests and local harnesses")
 		}
 	default:
-		return bootConfig{}, fmt.Errorf("DISPATCH_IDENTITY=%q (expected cookie, iap or header:<Header-Name>)", mode)
+		return bootConfig{}, fmt.Errorf("DISPATCH_IDENTITY=%q (expected cookie, iap or header:%s)", mode, identity.UserHeader)
 	}
 	if iapAudience != "" && boot.IAPAudience == "" {
 		return bootConfig{}, errors.New("DISPATCH_IAP_AUDIENCE is read only with DISPATCH_IDENTITY=iap; unset it, or set DISPATCH_IDENTITY=iap")

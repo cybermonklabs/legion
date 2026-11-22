@@ -1,7 +1,7 @@
 // Command browsertype types into Dispatch documents as browsers do, so a load test can run
 // concurrent browser edits beside the agents it drives over HTTP. It connects peers to each
 // document's websocket room as a person of its own, named in the server's identity header (a
-// server run with DISPATCH_IDENTITY=header:<name> and DISPATCH_IDENTITY_HEADER_TRUSTED=1, as a load
+// server run with DISPATCH_IDENTITY=header:X-Dispatch-User and DISPATCH_IDENTITY_HEADER_TRUSTED=1, as a load
 // test's stack is: the room admits a person alone, never an agent token), and each peer, once it
 // holds the room's document, sends keystroke updates at a set rate: most type one character into an
 // existing paragraph's text, some replace a short range (an insert and a delete in one
@@ -31,6 +31,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 	ygsync "github.com/reearth/ygo/sync"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
@@ -126,7 +127,7 @@ func parseFlags(args []string) (config, error) {
 	var rawURL, artifactsFile string
 	var artifacts, protect stringList
 	flags.StringVar(&rawURL, "url", "", "Dispatch base URL, http(s)://host:port; peers connect to <url>/ws/doc/<artifact>")
-	flags.StringVar(&cfg.identityHeader, "identity-header", "X-Dispatch-User", "the header the server's DISPATCH_IDENTITY=header:<name> reads a person from")
+	flags.StringVar(&cfg.identityHeader, "identity-header", identity.UserHeader, "the header the peers name their person in: "+identity.UserHeader+", the one header a server run with DISPATCH_IDENTITY=header:"+identity.UserHeader+" reads; any other is refused")
 	flags.StringVar(&cfg.person, "person", "browsertype", "login prefix of the people the peers are: peer n of every document is <person>-<n>")
 	flags.Var(&artifacts, "artifact", "document artifact id to type into (repeatable)")
 	flags.StringVar(&artifactsFile, "artifacts-file", "", "file of document artifact ids, one per line (blank lines and lines starting with # skipped); adds to -artifact")
@@ -148,9 +149,12 @@ func parseFlags(args []string) (config, error) {
 		return config{}, fmt.Errorf("-url must be http(s)://host:port, got %q", rawURL)
 	}
 	cfg.baseURL = base
-	if strings.TrimSpace(cfg.identityHeader) == "" {
-		return config{}, errors.New("-identity-header must name a header")
+	// A server's header identity reads identity.UserHeader alone, so a peer naming its person in
+	// any other header would be refused by every room it opens.
+	if http.CanonicalHeaderKey(strings.TrimSpace(cfg.identityHeader)) != identity.UserHeader {
+		return config{}, fmt.Errorf("-identity-header %q: Dispatch's header identity reads %s alone", cfg.identityHeader, identity.UserHeader)
 	}
+	cfg.identityHeader = identity.UserHeader
 	if strings.TrimSpace(cfg.person) == "" {
 		return config{}, errors.New("-person must name a login prefix")
 	}

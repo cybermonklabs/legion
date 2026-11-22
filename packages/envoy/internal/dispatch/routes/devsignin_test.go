@@ -337,7 +337,7 @@ func TestBuildAppContextDevSignInNeedsSessions(t *testing.T) {
 	_, err := BuildAppContext(AppContextOptions{
 		SigningKey: testSigningKey,
 		People:     newMemoryPeople(),
-		Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User"},
+		Identity:   identity.HeaderIdentity{},
 		ServerURL:  devSignInOrigin,
 		DevSignIn:  true,
 	})
@@ -352,7 +352,7 @@ func TestBuildAppContextDevSignInRefusesAPublicOrigin(t *testing.T) {
 			SigningKey: testSigningKey,
 			People:     newMemoryPeople(),
 			Sessions:   &memorySessionStore{generations: map[string]int64{}},
-			Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User"},
+			Identity:   identity.HeaderIdentity{},
 			ServerURL:  serverURL,
 			DevSignIn:  true,
 		})

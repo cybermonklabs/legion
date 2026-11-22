@@ -219,7 +219,7 @@ func retirePlainRefreshTokens(ctx context.Context, people *store.PgPeopleStore, 
 // deployment configured, and not from signIn.
 func requestIdentityFor(boot bootConfig, signingKey auth.SigningKeys, people auth.PeopleStore, sessions auth.SessionStore, signIn *oidc.CodeFlow) identity.Identity {
 	if boot.IdentityHeader != "" {
-		return identity.HeaderIdentity{Header: boot.IdentityHeader, People: people}
+		return identity.HeaderIdentity{People: people}
 	}
 	if boot.IAPAudience != "" {
 		return identity.IAPIdentity{

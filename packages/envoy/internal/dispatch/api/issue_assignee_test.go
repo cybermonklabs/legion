@@ -408,7 +408,7 @@ func TestListUsersAnswersAnEmptyListWhenNobodyHasSignedIn(t *testing.T) {
 	mux := http.NewServeMux()
 	t.Cleanup(Register(mux, t.Context(), Deps{
 		Store:    storetest.Open(t),
-		Identity: identity.HeaderIdentity{Header: "X-Dispatch-User", People: unrecordedPeople{}},
+		Identity: identity.HeaderIdentity{People: unrecordedPeople{}},
 	}).Wait)
 	response := dispatchRequest(t, mux, http.MethodGet, "/api/v1/users", nil, "alice")
 	if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != `{"users":[]}` {
