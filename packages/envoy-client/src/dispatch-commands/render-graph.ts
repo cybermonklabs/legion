@@ -6,7 +6,7 @@ import type {
   GraphNode,
   GraphReferences,
   IssueCoverage,
-  IssueReferences,
+  IssueReferencesAnswer,
 } from "@legion/contracts";
 import { actorText } from "../actor-text";
 import { textHead } from "../ask-answer";
@@ -53,7 +53,7 @@ export function edgeLine(edge: GraphEdge): string {
 }
 
 /**
- * How a read degrades a graph or closure section the server cannot serve. Dispatch's own 404 is a
+ * How a read degrades a graph or references section the server cannot serve. Dispatch's own 404 is a
  * server without the route; any other failure, a gateway's 404 page included, is named.
  */
 function unavailableReason(error: unknown): string {
@@ -76,7 +76,7 @@ export async function graphReferences(
 export async function issueReferencesOrUnavailable(
   client: DispatchClient,
   key: string
-): Promise<IssueReferences | string> {
+): Promise<IssueReferencesAnswer | string> {
   try {
     return await client.getIssueReferences(key);
   } catch (error) {
@@ -87,7 +87,7 @@ export async function issueReferencesOrUnavailable(
 /**
  * What the issue's requirements lack, or why the server could not say: a Dispatch that does not
  * serve the coverage read yet answers `unavailable`, and any other failure is named, as the
- * closure and graph sections do (unavailableReason). A swallowed failure would make a spec with
+ * references and graph sections do (unavailableReason). A swallowed failure would make a spec with
  * uncovered requirements read exactly like a fully covered one.
  */
 export async function issueCoverageOrReason(
@@ -105,8 +105,8 @@ export async function issueCoverageOrReason(
  * The sections every read ends with: the `Node:` line (the read node's maker, last change and
  * parent), `Referenced by:` (edges pointing at the node, mentions and structure alike) and
  * `Links:` (edges it writes), read from the reference graph in both directions. A graph the
- * server cannot serve degrades to one "unavailable" row, like the closure section, so the read
- * itself still answers.
+ * server cannot serve degrades to one "unavailable" row, like the References section, so the
+ * read itself still answers.
  */
 export async function graphSections(client: DispatchClient, ref: string): Promise<string[]> {
   const [incoming, outgoing] = await Promise.all([
@@ -116,14 +116,19 @@ export async function graphSections(client: DispatchClient, ref: string): Promis
   return graphSectionLines(incoming, outgoing);
 }
 
+/** The `Node:` line, `Referenced by:` and `Links:` of a node's graph read in both directions.
+ *  `Referenced by:` lists every edge into the node unless the read gives the section's lines
+ *  (`referencedBy`): an issue's read lists there the rows of its references read's `linked_from`
+ *  with the issue node's structural edges (`issueSummary`). */
 export function graphSectionLines(
   incoming: GraphReferences | string,
-  outgoing: GraphReferences | string
+  outgoing: GraphReferences | string,
+  referencedBy: readonly string[] = referenceLines(incoming)
 ): string[] {
   return [
     ...(typeof incoming === "string" ? [] : nodeLine(incoming.node)),
     "Referenced by:",
-    ...referenceLines(incoming),
+    ...referencedBy,
     "Links:",
     ...referenceLines(outgoing),
   ];
