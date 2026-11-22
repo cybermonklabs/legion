@@ -21,8 +21,31 @@
  *  beside the exceptions so that one file holds both halves of the claim: the generation
  *  writes it, and `e2e/__tests__/row-map.test.ts` holds a row with a note to carrying its note
  *  and not that sentence. */
+import { layoutRoutes } from "../layout-routes";
+
 export const unchangedByTheMove =
   "unchanged - the move renames the file, lifts the shared seeding into the fixture and adds the lane tag to the title, and touches no line of what the row asserts";
+
+/** What the map says of a row written in the stubbed layer from the start: it moved from
+ *  nowhere, so the usual sentence would claim a move that never happened. */
+const NEW_IN_THE_STUBBED_LAYER =
+  "new - written in the stubbed layer from the start (dispatch://INFRA-5200), with no real-stack copy that moved";
+
+/** The layout layer's stubbed rows (`e2e/layout-rule.stub.e2e.ts`, one per route a recording can
+ *  draw) and the instrument's controls (`e2e/layout-measure.stub.e2e.ts`). */
+const newInTheStubbedLayer: Record<string, string> = Object.fromEntries(
+  [
+    ...layoutRoutes
+      .filter((route) => route.needsStack === undefined)
+      .map(
+        (route) =>
+          `layout-rule.stub.e2e.ts › ${route.name} breaks no layout rule from 360 to 1920 px @pr`
+      ),
+    "layout-measure.stub.e2e.ts › the layout measure reports each defect the rule names, by kind and by locator @pr",
+    "layout-measure.stub.e2e.ts › the layout measure reports nothing of what the rule allows @pr",
+    "layout-measure.stub.e2e.ts › a layout reading fails on a blank page, on a required group no element marks, and keeps a stale entry @pr",
+  ].map((key) => [key, NEW_IN_THE_STUBBED_LAYER])
+);
 
 /** The rows the sentence above is false for, keyed by the spec file and the title the listing
  *  gives, joined by ` › `. */
@@ -51,4 +74,5 @@ export const movedRowNotes: Record<string, string> = {
     "the Issues tab draws the table rather than a collapsed filter strip, so the row waits for the table instead of opening the strip, and the Status option it measures carries its count in its name; the fit and every other touch target are main's",
   "keyboard-palette.stub.e2e.ts › g d opens the route's project Documents, from an issue key or a project path, and g p picks a project @pr":
     "changed in one assertion, and this is the one row of the move that changed at all: the count of rows the query leaves is the Projects group's rather than main's dialog-wide one. Measured in this issue's pod, the row runs in two modes and they differ: on replay the bar's search is aborted, because no recording answers `/api/v1/search`, and `Operations` is the only row; in a recording run against the real harness the bar also offers `Make a new issue from \"operations\"`. The Projects group holds one row in both. Everything else is main's, Enter included: `g d` reads the route's project before and after, the group is visible, and Enter on the highlighted row opens `/projects/OPS/issues`",
+  ...newInTheStubbedLayer,
 };

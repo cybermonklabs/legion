@@ -1151,6 +1151,20 @@ claims. A baseline comes only from the pinned container, through
 `e2e/visual-run.sh --update-snapshots`; the script's header says how to take one from CI on a
 machine with no container.
 
+A third layer, `e2e/layout.e2e.ts`, holds every page to the layout rule of `AGENTS.md`
+("Layout"). It reads the routes of `e2e/layout-routes.ts` - every reviewed route, the excluded
+ones whose reason argues only against a shot or a scan, and three states a reader chooses in this
+browser (the new issue page, the project's board, a project with an architecture source) - over
+the review corpus and a stress layer that writes production's lengths (`e2e/layout-seed.ts`), at
+360, 900, 1280, 1440 and 1920 px. At each width it loads the page fresh, waits for
+`waitForRouteSettled`, and runs `measureLayout` (`e2e/layout-measure.ts`) in the page: a page that
+scrolls sideways, a box that does (bar a code block, a picture, a data table and a board's lanes),
+an element cut off with no ellipsis, and a `data-layout-group` showing more entries than its cap.
+A row fails on each breach `e2e/layout-breaches.ts` does not list, on a page that drew fewer than
+100 elements, and, after its worker's rows, on an entry whose route and width it measured and
+which matched nothing. That list holds the breaches main still has, each naming the INFRA-5200
+slice that removes it; a slice deletes its entries, and the list and its use go once it is empty.
+
 ## Phone check
 
 Browser emulation covers responsive layout. A phone acceptance check runs against

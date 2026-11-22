@@ -33,3 +33,31 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
 - Each route of `app.tsx` is in `packages/dispatch/e2e/review-routes.ts`, reviewed or excluded with a reason.
 
 - In a unit test, silence `console.error` only with `quietConsoleError()` (`__tests__/act-warnings.ts` says why): a row's own spy or replacement turns the act rule off.
+
+## Layout (paths under `web/src/`)
+
+One rule for every row of elements.
+`packages/dispatch/e2e/layout-routes.ts` lists every route the check reads, with the states a reader opens on it and the groups it must mark; `e2e/layout-rule.stub.e2e.ts` reads them against a recording of a stress seed on every pull request, `e2e/layout.e2e.ts` reads on the real stack the few a recording cannot draw.
+
+1. A component that shows several elements in a row names its groups, in a fixed order, in its doc comment.
+   Each element belongs to one group.
+
+2. A row too narrow for its groups gives way one whole group at a time: the group moves to the next line as a whole; the entries inside a group may wrap within it.
+   Text that does not fit truncates inside its own element (`components/TruncatedText.tsx`, with the whole text as its title) or wraps inside it; it never pushes the next element out.
+
+3. A list of chips that comes from data (labels, components, pull requests, checks, links, roles, chosen agents) shows at most 10 entries while it is closed, then "+N", which shows the rest in place (INFRA-1196's R13, dispatch://INFRA-1196/spec#b-r-properties).
+   A paged list (an Inbox band, a table) and a list a reader moves through (tabs, a machine's windows) are not such lists: a paged list pages, and a navigation list wraps and shows every entry.
+   Use `components/CappedGroup.tsx`.
+   The group carries `data-layout-group="<name>"` (`data-layout-max` when its cap is below 10, `data-layout-open` while the reader has it open); its "+N" control carries `data-layout-more`.
+
+4. Nothing scrolls sideways, and nothing is cut off at a side without an ellipsis, at any width from 360 to 1920 px (INFRA-1196's R18, dispatch://INFRA-1196/spec#b-r-reflow); the check samples 360, 900, 1280, 1440 and 1920 px, and reads sideways only.
+   Exempt, when it is what overflows the box: a code block (`pre`, `code`), a picture (`img`, `picture`, `canvas`, `video`; not an inline `svg` icon), a data table (a `table`, `role=table` or `role=grid`, its key columns pinned at the left) and a board's lanes (the box marked `data-layout-scroll="board"`).
+   No other `overflow-x-auto` row, and no `flex-nowrap` or `overflow-hidden` row that can outgrow its box.
+
+5. An element earns its place in a header or a row only when a reader acts on it there, or it says something is wrong now (a failing check, a route nobody holds).
+   Every other property goes in the component's Details, as a label and a value; nothing is removed, so every property and control stays reachable.
+
+6. Nothing appears, hides or moves on state the reader cannot see or set.
+   Width is the reader's to set; a disclosure the reader opens is the reader's.
+
+- `packages/dispatch/e2e/layout-breaches.ts` lists the breaches main still holds, each with the INFRA-5200 slice that removes it; a fix deletes its entries, and a new breach is fixed, not listed.
