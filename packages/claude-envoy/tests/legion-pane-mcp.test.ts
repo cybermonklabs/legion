@@ -31,10 +31,10 @@ async function daemonFixture(name: string): Promise<Record<string, unknown>> {
 // environment. It registers once the transcript exists, claims the claim token's role, says
 // ready, offers the `legion` tool beside the Envoy tools, advertises the Send (steer) the bridge
 // serves, and hands an Envoy delivery to the inbox. The server runs with Bun's transpiler cache off
-// (`./transpiler-cache.ts`), and each wait on it gives up, by name, 5 s inside the row's 60 s hang
-// guard (`untilTheGuard`, `./row-deadline.ts`), where a fixed 20 s and 5 s waits stood before: the
-// start that writes that
-// cache into an empty HOME first is what failed the other server rows (`envoy-channel-mcp.test.ts`).
+// (`./transpiler-cache.ts`), and each wait on it, its MCP requests included, gives up by name 5 s
+// inside the row's 60 s hang guard (`untilTheGuard`, `./row-deadline.ts`), where a fixed 20 s and
+// 5 s waits stood before: the start that writes that cache into an empty HOME first is what failed
+// the other server rows (`envoy-channel-mcp.test.ts`).
 test("a Legion pane's server registers on its transcript, claims its role, serves the legion tool and delivers through the inbox", async () => {
   const root = await mkdtemp(join(tmpdir(), "claude-envoy-legion-pane-"))
   const configDir = join(root, "claude")
@@ -151,23 +151,31 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
 
   try {
     await connectedToServer(client, transport, () => stderr)
-    const { tools } = await client.listTools()
+    const { tools } = await client.listTools(undefined, { timeout: untilTheGuard() })
     expect(tools.map(({ name }) => name)).toEqual([
       ...envoyToolSpecs.map(({ name }) => name),
       "legion",
       "legion_phase_hook",
     ])
     await expect(
-      client.callTool({ name: "legion", arguments: { op: "read_record", issue: "LEGION-208" } }),
+      client.callTool(
+        { name: "legion", arguments: { op: "read_record", issue: "LEGION-208" } },
+        undefined,
+        { timeout: untilTheGuard() },
+      ),
     ).rejects.toThrow("this session has no Legion claim yet")
 
     // The bridge's /rename seed, as a fresh pane's Claude Code submits it: a prompt before any
     // claim exists, since the seed is what writes the transcript the pane registers with. It
     // says a turn started, and the server has no step to run for it yet (INFRA-1573).
-    const seed = await client.callTool({
-      name: PHASE_HOOK_TOOL_NAME,
-      arguments: { event: "UserPromptSubmit", prompt: "/rename legion" },
-    })
+    const seed = await client.callTool(
+      {
+        name: PHASE_HOOK_TOOL_NAME,
+        arguments: { event: "UserPromptSubmit", prompt: "/rename legion" },
+      },
+      undefined,
+      { timeout: untilTheGuard() },
+    )
     expect(seed.content).toEqual([{ type: "text", text: "{}" }])
     const transcript = join(configDir, "projects", "-work", `${SESSION}.jsonl`)
     await mkdir(join(configDir, "projects", "-work"), { recursive: true })
@@ -204,10 +212,14 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     // the role is handed over inside a running turn rather than ahead of the daemon's task
     // (INFRA-1573).
     expect(roles).toEqual([])
-    const turn = await client.callTool({
-      name: PHASE_HOOK_TOOL_NAME,
-      arguments: { event: "UserPromptSubmit", prompt: "Start implementing" },
-    })
+    const turn = await client.callTool(
+      {
+        name: PHASE_HOOK_TOOL_NAME,
+        arguments: { event: "UserPromptSubmit", prompt: "Start implementing" },
+      },
+      undefined,
+      { timeout: untilTheGuard() },
+    )
     expect(turn.content).toEqual([{ type: "text", text: "{}" }])
     await waitFor(
       async () => roles.length > 0,
@@ -228,16 +240,24 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     expect(advertised.length).toBeGreaterThan(0)
     for (const modes of advertised) expect(modes).toEqual(["aside", "steer"])
 
-    const record = await client.callTool({
-      name: "legion",
-      arguments: { op: "read_record", issue: "LEGION-208" },
-    })
+    const record = await client.callTool(
+      {
+        name: "legion",
+        arguments: { op: "read_record", issue: "LEGION-208" },
+      },
+      undefined,
+      { timeout: untilTheGuard() },
+    )
     const state = (await daemonFixture("state.json")) as { issues: Record<string, unknown> }
     expect(record.content).toEqual([
       { type: "text", text: JSON.stringify({ record: state.issues["LEGION-208"] }) },
     ])
     // A read that leaves `issue` out answers the claim's own issue, LEGION-208 here.
-    const own = await client.callTool({ name: "legion", arguments: { op: "read_record" } })
+    const own = await client.callTool(
+      { name: "legion", arguments: { op: "read_record" } },
+      undefined,
+      { timeout: untilTheGuard() },
+    )
     expect(own.content).toEqual(record.content)
 
     // Nothing this pane's server asks the daemon is the whole project body: `read_record` and

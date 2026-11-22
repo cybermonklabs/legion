@@ -55,9 +55,10 @@ test("a session home's mod socket fits however deep TMPDIR is", async () => {
 
 // Each row below starts a channel server of its own, with Bun's transpiler cache off
 // (`./transpiler-cache.ts`), and waits for what that server does: its answer to `initialize`
-// (`connectedToServer`) and each later step until 5 s inside the row's 60 s hang guard
-// (`untilTheGuard`, `./row-deadline.ts`), so a step that never comes fails naming itself before Bun's
-// line would (the later rows keep their own waits and limits). The first two rows had 5 s waits and a
+// (`connectedToServer`), each later step and each MCP request in the first two rows, until 5 s
+// inside the row's 60 s hang guard (`untilTheGuard`, `./row-deadline.ts`), so a step that never comes
+// fails naming itself before Bun's line would. The later rows keep their own waits and limits, and
+// their requests the MCP SDK's 60 s. The first two rows had 5 s waits and a
 // 20 s limit, and at loads of 720 to 1,150 the first row's server, writing that cache into its
 // empty HOME, had not started within them.
 
@@ -134,19 +135,23 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
     // The server answers tool calls only once its channel session has started.
     await waitFor(
       () =>
-        client.callTool({ name: "envoy_whoami", arguments: {} }).then(
-          () => true,
-          (error: unknown) => {
-            if (String(error).includes("still starting")) return false
-            throw error
-          },
-        ),
+        client
+          .callTool({ name: "envoy_whoami", arguments: {} }, undefined, {
+            timeout: untilTheGuard(),
+          })
+          .then(
+            () => true,
+            (error: unknown) => {
+              if (String(error).includes("still starting")) return false
+              throw error
+            },
+          ),
       "the channel session to start",
       () => stderr,
       untilTheGuard(),
     )
 
-    const { tools } = await client.listTools()
+    const { tools } = await client.listTools(undefined, { timeout: untilTheGuard() })
     expect(tools.map(({ name }) => name)).toEqual(envoyToolSpecs.map(({ name }) => name))
     // Nothing until the mod connects: without one no message reaches the model at all.
     expect(advertised.length).toBeGreaterThan(0)
@@ -172,7 +177,11 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
     expect(instructions).not.toContain("Dispatch tools")
 
     await expect(
-      client.callTool({ name: "dispatch_ask", arguments: { issue: "DSP-3", question: "Ship?" } }),
+      client.callTool(
+        { name: "dispatch_ask", arguments: { issue: "DSP-3", question: "Ship?" } },
+        undefined,
+        { timeout: untilTheGuard() },
+      ),
     ).rejects.toThrow("Unsupported Envoy tool: dispatch_ask")
     expect(dispatchRequests).toEqual([])
   } finally {
@@ -241,13 +250,17 @@ test("the session advertises its delivery modes for a mod that polls and never s
     await connectedToServer(client, transport, () => stderr)
     await waitFor(
       () =>
-        client.callTool({ name: "envoy_whoami", arguments: {} }).then(
-          () => true,
-          (error: unknown) => {
-            if (String(error).includes("still starting")) return false
-            throw error
-          },
-        ),
+        client
+          .callTool({ name: "envoy_whoami", arguments: {} }, undefined, {
+            timeout: untilTheGuard(),
+          })
+          .then(
+            () => true,
+            (error: unknown) => {
+              if (String(error).includes("still starting")) return false
+              throw error
+            },
+          ),
       "the channel session to start",
       () => stderr,
       untilTheGuard(),

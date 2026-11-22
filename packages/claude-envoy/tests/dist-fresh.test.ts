@@ -318,7 +318,7 @@ test("bin/dispatch is executable and runs a fresh dist/dispatch.js without node_
     expect((await stat(join(packageRoot, "bin", "dispatch"))).mode & 0o111).toBe(0o111)
     const run = Bun.spawn([shim, "--help"], {
       cwd: scratch,
-      env: { PATH: process.env["PATH"] ?? "", HOME: scratch },
+      env: { PATH: process.env["PATH"] ?? "", HOME: scratch, ...NO_TRANSPILER_CACHE },
       stdout: "pipe",
       stderr: "pipe",
     })

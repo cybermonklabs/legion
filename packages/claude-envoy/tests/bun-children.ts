@@ -1,7 +1,9 @@
 /**
  * The places in this package's tests that start a Bun process with an environment of their own:
- * a `Bun.spawn` or `Bun.spawnSync` whose command's first word is `"bun"` or `process.execPath`, or a
- * `StdioClientTransport` whose `command` is one of those, with an `env` option. Such a child gets
+ * a `Bun.spawn` or `Bun.spawnSync` whose command's first word is `"bun"`, `process.execPath`, or a
+ * launcher of this package's `bin/` that execs bun (`bin/dispatch`), named by a `join(…, "bin",
+ * "<name>")` there or in the constant it is held in, or a `StdioClientTransport` whose `command`
+ * is one of those, with an `env` option. Such a child gets
  * only that environment, so it keeps Bun's transpiler cache under the HOME the test gives it unless
  * the environment turns the cache off (`NO_TRANSPILER_CACHE`, `./transpiler-cache.ts`), or hands on
  * this process's own (`...process.env`), whose HOME is the person's own.
@@ -10,8 +12,16 @@
  * a command array built elsewhere and passed by name, and an `env` passed by a name whose value is
  * built elsewhere, which counts as carrying neither.
  */
-import { readFileSync } from "node:fs"
+import { readdirSync, readFileSync, statSync } from "node:fs"
+import { join } from "node:path"
 import ts from "typescript"
+
+/** The launchers in this package's `bin/` that exec bun: a child they start is a Bun child. */
+const binDirectory = join(import.meta.dir, "..", "bin")
+const launchers = readdirSync(binDirectory).filter((name) => {
+  const path = join(binDirectory, name)
+  return statSync(path).isFile() && /^exec bun\b/m.test(readFileSync(path, "utf8"))
+})
 
 export interface BunChild {
   readonly line: number
@@ -43,8 +53,32 @@ function property(options: ts.ObjectLiteralExpression, name: string): ts.Express
 /** Every Bun child `file` starts with an environment of its own. */
 export function bunChildren(file: string): BunChild[] {
   const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true)
-  const isBun = (node: ts.Node | undefined): boolean =>
-    node !== undefined && /^("bun"|'bun'|process\.execPath)$/.test(node.getText(source))
+  /** The text a command names: its own, or the initializer of the constant it is held in. */
+  const named = (node: ts.Node): string => {
+    if (!ts.isIdentifier(node)) return node.getText(source)
+    let found = node.getText(source)
+    const visit = (inner: ts.Node): void => {
+      if (
+        ts.isVariableDeclaration(inner) &&
+        ts.isIdentifier(inner.name) &&
+        inner.name.text === node.text &&
+        inner.initializer
+      ) {
+        found = inner.initializer.getText(source)
+      }
+      ts.forEachChild(inner, visit)
+    }
+    visit(source)
+    return found
+  }
+  const isBun = (node: ts.Node | undefined): boolean => {
+    if (node === undefined) return false
+    const text = named(node)
+    return (
+      /^("bun"|'bun'|process\.execPath)$/.test(text) ||
+      launchers.some((name) => text.includes(`"bin", ${JSON.stringify(name)}`))
+    )
+  }
   const children: BunChild[] = []
   const visit = (node: ts.Node): void => {
     let options: ts.ObjectLiteralExpression | undefined
