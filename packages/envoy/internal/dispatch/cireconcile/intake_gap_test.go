@@ -154,7 +154,9 @@ func TestAHeadWhoseWebhookWriteFailedWaitsForAReconcileRead(t *testing.T) {
 // its walk of the order, over REST; a head that is not ready is not read early. The start stamps
 // the whole intake (MarkIntakeGap): deliveries made while the listener was down are lost, and no
 // record names their heads. The summary loop names the ready head in the bucket's gap-held list,
-// and the pass reads the heads that list names first.
+// and the pass reads the heads that list names first. The harness's one pass also completes a
+// cycle, which lifts the stamp, so the settlement alone does not show the early read: the REST
+// read, the pass's gap_heads and the record's own ReadAt do.
 func TestAStartStampHoldsAReadyHeadUntilOnePassReadsItFirst(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.mapRepository(rowRepository)
@@ -189,6 +191,9 @@ func TestAStartStampHoldsAReadyHeadUntilOnePassReadsItFirst(t *testing.T) {
 	}
 	if read := h.github.sincePath(before, "/repos/"+gitHubRepository+"/commits/"+waiting.sha+"/check-runs"); len(read) != 0 {
 		t.Fatalf("the pass read the head that is not ready over REST %d times: it was read early", len(read))
+	}
+	if state := h.recordOf(ready, ready.number); state == nil || state.ReadAt == 0 {
+		t.Fatalf("the ready head's record is %+v, want the read that freed it (ReadAt)", state)
 	}
 }
 

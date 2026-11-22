@@ -2,11 +2,10 @@ package cistore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
-
-	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvwatch"
@@ -167,22 +166,24 @@ func TestAListenerWithNoReconcileSettlesRightAfterItsStart(t *testing.T) {
 	}
 }
 
-// failingStartRead makes the start's read of the read cycle fail failures times and then read the
-// bucket.
-func failingStartRead(s *Store, failures int) {
-	s.startRead = func(ctx context.Context) ([]byte, bool, error) {
+// failingStartRead makes the start's read of the read cycle fail failures times and then answer
+// cycleBegan, or no key at all when it is zero. The bucket holds no read cycle, so the store's
+// watcher delivers none: the start's read is the only way the store learns of one.
+func failingStartRead(t *testing.T, s *Store, failures int, cycleBegan time.Time) {
+	t.Helper()
+	var answer []byte
+	if !cycleBegan.IsZero() {
+		var err error
+		if answer, err = json.Marshal(stamp{Kind: readCycleKey, At: cycleBegan.UnixMilli()}); err != nil {
+			t.Fatalf("encode the read cycle: %v", err)
+		}
+	}
+	s.startRead = func(context.Context) ([]byte, bool, error) {
 		if failures > 0 {
 			failures--
 			return nil, false, errors.New("nats: timeout")
 		}
-		entry, err := s.kv().Get(readCycleKey)
-		if errors.Is(err, nats.ErrKeyNotFound) {
-			return nil, false, nil
-		}
-		if err != nil {
-			return nil, false, err
-		}
-		return entry.Value(), true, nil
+		return answer, answer != nil, nil
 	}
 }
 
@@ -195,10 +196,7 @@ func TestAStartReadThatFailsHoldsEveryHeadUntilItAnswers(t *testing.T) {
 	defer cleanup()
 	s := openStore(t, conn)
 	s.MarkIntakeGap(time.UnixMilli(1000))
-	if err := s.raiseStamp(context.Background(), readCycleKey, time.Now().UnixMilli()); err != nil {
-		t.Fatalf("write the read cycle: %v", err)
-	}
-	failingStartRead(s, 2)
+	failingStartRead(t, s, 2, time.Now())
 	ended, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := s.Record(ended, recordRunsCheck("test", 2, "queued", "", "2026-11-22T00:02:06Z")); err == nil {
@@ -225,7 +223,7 @@ func TestAStartReadThatFailsThenFindsNoReconcileResumesSettling(t *testing.T) {
 	defer cleanup()
 	s := openStore(t, conn)
 	s.MarkIntakeGap(time.Now())
-	failingStartRead(s, 1)
+	failingStartRead(t, s, 1, time.Time{})
 	settleable(t, s)
 	pub := &recPub{}
 
