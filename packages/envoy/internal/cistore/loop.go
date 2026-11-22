@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -122,12 +121,13 @@ func (b *backlogHeld) observe(held int, logger *logging.Logger) {
 	}
 }
 
-// claimFresh reports whether st carries a claim of its own generation made within 2*debounce of
-// now, which no pass reclaims. A claim of an older generation is never fresh.
+// claimFresh reports whether st carries a claim of its own generation made within its window of
+// now (claimWindow: 2*debounce, longer for a claim waiting for a GitHub read), which no pass
+// reclaims. A claim of an older generation is never fresh.
 func claimFresh(st State, now int64, debounce time.Duration) bool {
 	return st.Claim != nil &&
 		st.Claim.Generation == st.Generation &&
-		st.Claim.ClaimedAt >= now-(2*debounce).Milliseconds()
+		st.Claim.ClaimedAt >= now-claimWindow(st.Claim, debounce).Milliseconds()
 }
 
 // heldAfter is how long after its last event a record the loop does not settle waits before the
@@ -184,7 +184,7 @@ func schedule(st State, now int64, debounce time.Duration) (verdict, int64) {
 		return verdictHeld, 0
 	}
 	if claimFresh(st, now, debounce) {
-		at := st.Claim.ClaimedAt + (2 * debounce).Milliseconds() + 1
+		at := st.Claim.ClaimedAt + claimWindow(st.Claim, debounce).Milliseconds() + 1
 		if g := st.LastEventAt + (debounce + handoverGrace).Milliseconds(); st.Schema == 0 && g < at {
 			at = g
 		}
@@ -269,13 +269,15 @@ type summarizer struct {
 	// key's entry is dropped when its record settles or leaves the cache, and every entry when the
 	// cache is emptied for a recreated bucket (takeChanges).
 	heldLogged map[string]heldMark
-	// gapHeld holds the records that are due but held by a gap alone (gapHoldsFor), which wait
-	// for a GitHub read and on nothing else: a reconcile write of the head, a gap written into the
-	// record, or a stamp moving (gapEpoch) files them again. gapHeldSaved says the bucket's list
-	// of them (gapHeldKey) is what gapHeld holds.
-	gapHeld      map[string]gapHeldHead
-	gapHeldSaved bool
-	gapEpoch     uint64
+	// verifying holds the settlements this loop has claimed and asked Dispatch to verify, by key
+	// (verify.go): each waits for the record's VerifiedRev to reach its request. A wait is looked
+	// at when its record changes and when it falls due (verifyWait.due), and is dropped once it
+	// publishes or its claim is gone. Every wait goes when the cache is emptied for a recreated
+	// bucket, whose records hold none of the claims.
+	verifying map[string]verifyWait
+	// verifyTimeout and verifyAlarm are verify.go's verifyTimeout and verifyAlarm, which a test
+	// shortens.
+	verifyTimeout, verifyAlarm time.Duration
 }
 
 // heldMark is what a held line was logged for (logHeldLocked): the record's snapshot (State.Hash)
@@ -288,44 +290,37 @@ type heldMark struct {
 
 func newSummarizer(store *Store, debounce time.Duration) *summarizer {
 	return &summarizer{
-		store:      store,
-		debounce:   debounce,
-		queue:      deadlineQueue{index: map[string]int{}},
-		held:       map[string]struct{}{},
-		heldLogged: map[string]heldMark{},
-		gapHeld:    map[string]gapHeldHead{},
+		store:         store,
+		debounce:      debounce,
+		queue:         deadlineQueue{index: map[string]int{}},
+		held:          map[string]struct{}{},
+		heldLogged:    map[string]heldMark{},
+		verifying:     map[string]verifyWait{},
+		verifyTimeout: verifyTimeout,
+		verifyAlarm:   verifyAlarm,
 	}
 }
 
-// pass runs one pass at now (wall-clock milliseconds). It first writes into the bucket the gaps
-// the store holds that the bucket does not (persistGaps). It files each record the change feed
-// names by its verdict, and every record a gap held when a stamp has moved since the last pass,
+// pass runs one pass at now (wall-clock milliseconds). It looks at each verify wait whose record
+// changed or that is due (checkVerify), files each record the change feed names by its verdict,
 // takes every queued record due by now, and attempts the due ones in key order, queueing each
 // attempted record at now so the next pass looks at it again. Filing a record it holds past
-// heldAfter logs what holds it, once (logHeldLocked). It then writes the list of records due but
-// held by a gap alone where that changed (saveGapHeld). It returns how many records it holds back
-// (verdictHeld) and, when the queue is not empty or a gap or the list is not written yet, the
-// earliest millisecond it has to run again.
+// heldAfter logs what holds it, once (logHeldLocked). It returns how many records it holds back
+// (verdictHeld) and, when the queue or a verify wait is not empty, the earliest millisecond it has
+// to run again.
 func (z *summarizer) pass(pub Publisher, logger *logging.Logger, now int64) (held int, next int64, ok bool) {
-	written, cancel := context.WithTimeout(context.Background(), recordWait)
-	defer cancel()
-	gapsSaved := z.store.persistGaps(written)
 	z.mu.Lock()
 	keys, reset := z.store.takeChanges()
 	if reset {
 		z.queue = deadlineQueue{index: map[string]int{}}
 		z.held = map[string]struct{}{}
 		z.heldLogged = map[string]heldMark{}
-		z.gapHeld = map[string]gapHeldHead{}
-		z.gapHeldSaved = false
+		z.verifying = map[string]verifyWait{}
 	}
-	if epoch := z.store.gapsMoved(); epoch != z.gapEpoch {
-		z.gapEpoch = epoch
-		for key := range z.gapHeld {
-			if keys == nil {
-				keys = map[string]struct{}{}
-			}
-			keys[key] = struct{}{}
+	var waits []string
+	for key, wait := range z.verifying {
+		if _, changed := keys[key]; changed || wait.due(now, z.verifyTimeout) {
+			waits = append(waits, key)
 		}
 	}
 	var batch []string
@@ -338,6 +333,16 @@ func (z *summarizer) pass(pub Publisher, logger *logging.Logger, now int64) (hel
 		batch = append(batch, heap.Pop(&z.queue).(queueEntry).key)
 	}
 	z.mu.Unlock()
+
+	sort.Strings(waits)
+	for _, key := range waits {
+		z.mu.Lock()
+		wait, waiting := z.verifying[key]
+		z.mu.Unlock()
+		if waiting {
+			z.checkVerify(pub, logger, key, wait, now)
+		}
+	}
 
 	sort.Strings(batch)
 	for _, key := range batch {
@@ -355,32 +360,13 @@ func (z *summarizer) pass(pub Publisher, logger *logging.Logger, now int64) (hel
 	}
 
 	z.mu.Lock()
-	listSaved := z.gapHeldSaved
-	var list map[string]gapHeldHead
-	if !listSaved {
-		list = maps.Clone(z.gapHeld)
-	}
-	z.mu.Unlock()
-	if !listSaved {
-		if err := z.store.saveGapHeld(written, list); err != nil {
-			logger.Warn("checks gap-held list not written yet", slog.String("error", err.Error()))
-		} else {
-			z.mu.Lock()
-			listSaved = maps.Equal(list, z.gapHeld)
-			z.gapHeldSaved = listSaved
-			z.mu.Unlock()
-		}
-	}
-
-	z.mu.Lock()
 	defer z.mu.Unlock()
 	if z.queue.Len() > 0 {
 		next, ok = z.queue.entries[0].at, true
 	}
-	if !gapsSaved || !listSaved {
-		// A gap or the list the bus did not take is written again at the next pass.
-		if !ok || now+1 < next {
-			next, ok = now+1, true
+	for _, wait := range z.verifying {
+		if at := wait.dueAt(z.verifyTimeout); !ok || at < next {
+			next, ok = at, true
 		}
 	}
 	return len(z.held), next, ok
@@ -396,12 +382,9 @@ func (z *summarizer) pass(pub Publisher, logger *logging.Logger, now int64) (hel
 func (z *summarizer) fileLocked(logger *logging.Logger, key string, now int64) (State, bool) {
 	z.queue.remove(key)
 	delete(z.held, key)
-	gapHeld, wasGapHeld := z.gapHeld[key]
-	delete(z.gapHeld, key)
 	st, cached := z.store.cachedState(key)
 	if !cached {
 		delete(z.heldLogged, key)
-		z.gapHeldSaved = z.gapHeldSaved && !wasGapHeld
 		return State{}, false
 	}
 	switch v, at := schedule(st, now, z.debounce); v {
@@ -419,18 +402,8 @@ func (z *summarizer) fileLocked(logger *logging.Logger, key string, now int64) (
 			z.logHeldLocked(logger, key, st)
 		}
 	case verdictAttempt:
-		if !z.store.gapHoldsFor(key, st) {
-			z.gapHeldSaved = z.gapHeldSaved && !wasGapHeld
-			return st, true
-		}
-		// Due, but a gap holds it: it waits for a GitHub read, which the reconcile makes first for
-		// the heads the bucket's list names.
-		head := gapHeldHead{head: headOf(st), since: st.LastEventAt + z.debounce.Milliseconds()}
-		z.gapHeld[key] = head
-		z.gapHeldSaved = z.gapHeldSaved && wasGapHeld && gapHeld == head
-		return State{}, false
+		return st, true
 	}
-	z.gapHeldSaved = z.gapHeldSaved && !wasGapHeld
 	return State{}, false
 }
 
@@ -512,15 +485,13 @@ func (z *summarizer) logHeldLocked(logger *logging.Logger, key string, st State)
 }
 
 // settle tries to settle the record cached under key at now: it reclaims a stale claim, claims the
-// record, and publishes and marks its settlement, releasing the claim when the publication fails.
-// A publication that succeeded logs `checks settlement published`, one INFO line naming the head,
-// the generation and snapshot it settled, and whether it superseded an earlier settlement of the
-// record, so a settlement that never became a role message is shown to have left the listener; a
-// publication refused or failed logs no such line.
+// record, and publishes and marks its settlement (publish). With verify on it publishes nothing
+// yet: it writes the claim's verify request and leaves the claim waiting for Dispatch's answer
+// (ask, checkVerify), which publishes it.
 func (z *summarizer) settle(pub Publisher, logger *logging.Logger, key string, cached State, now int64) {
 	store, debounce := z.store, z.debounce
-	staleBefore := now - (2 * debounce).Milliseconds()
 	if cached.Claim != nil {
+		staleBefore := now - claimWindow(cached.Claim, debounce).Milliseconds()
 		claimGeneration := cached.Claim.Generation
 		reclaimed, err := store.ReclaimSettlement(key, claimGeneration, staleBefore)
 		if err != nil {
@@ -540,6 +511,23 @@ func (z *summarizer) settle(pub Publisher, logger *logging.Logger, key string, c
 	if !claimed {
 		return
 	}
+	if store.verify {
+		z.ask(logger, key, state, now, verifyWait{generation: state.Generation, hash: state.Hash(), since: now})
+		return
+	}
+	z.publish(pub, logger, key, state, 0)
+}
+
+// publish publishes the settlement of state, whose claim this loop holds, and marks it, releasing
+// the claim when the publication fails. requested is the revision of the claim's verify request,
+// zero where verify is off; the authorization point (ClaimStillHeld) reads the record fresh and
+// refuses unless it still holds the claim and, for a request, its answer. A publication that
+// succeeded logs `checks settlement published`, one INFO line naming the head, the generation and
+// snapshot it settled, whether it superseded an earlier settlement of the record, and the verify
+// request it was published on, so a settlement that never became a role message is shown to have
+// left the listener; a publication refused or failed logs no such line.
+func (z *summarizer) publish(pub Publisher, logger *logging.Logger, key string, state State, requested uint64) {
+	store := z.store
 	env, err := settlementEnvelope(state, contracts.NowMillis())
 	if err != nil {
 		logger.Error("checks payload failed", slog.String("error", err.Error()))
@@ -553,7 +541,7 @@ func (z *summarizer) settle(pub Publisher, logger *logging.Logger, key string, c
 		return
 	}
 	snapshot := state.Hash()
-	held, err := store.ClaimStillHeld(key, state.Generation, snapshot)
+	held, err := store.ClaimStillHeld(key, state.Generation, snapshot, requested)
 	if err != nil {
 		logger.Warn("checks claim verification failed", slog.String("error", err.Error()), slog.String("sha", state.SHA))
 		return
@@ -593,6 +581,7 @@ func (z *summarizer) settle(pub Publisher, logger *logging.Logger, key string, c
 		slog.Uint64("generation", state.Generation),
 		slog.String("snapshot", snapshot),
 		slog.Bool("superseded", state.EmittedCount > 0),
+		slog.Uint64("verify_request", requested),
 	)
 	if _, err := store.MarkSettled(key, state.Generation); err != nil {
 		logger.Warn("checks mark-settled failed", slog.String("error", err.Error()))

@@ -60,9 +60,6 @@ type counts struct {
 	// building that name for each of them would be a string a head thrown away at once.
 	firstHead headName
 	lastHead  headName
-	// gapHeads counts the heads the listener held by an intake gap alone that the pass read first
-	// (readGapHeld), before its walk of the order.
-	gapHeads int
 }
 
 // headName is one head as the pass's line names it: the repository in the casing GitHub itself
@@ -167,7 +164,6 @@ func (r *Reconciler) report(c *counts, at *stop, took time.Duration) {
 		"heads_over_rest", c.restHeads,
 		"heads_unchanged", c.unchanged,
 		"duration", took.String(),
-		"repositories_without_app", c.withoutApp,
-		"gap_heads", c.gapHeads)
+		"repositories_without_app", c.withoutApp)
 	r.Logger.Info("ci reconcile pass", attrs...)
 }

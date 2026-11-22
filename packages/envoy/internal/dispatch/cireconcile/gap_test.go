@@ -6,9 +6,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
-	"time"
 
-	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -30,7 +28,7 @@ type unansweringWriter struct {
 	failures int
 }
 
-func (w *unansweringWriter) RecordRuns(ctx context.Context, head cistore.Head, readAt time.Time, observations []contracts.CIObservation) (bool, error) {
+func (w *unansweringWriter) RecordRuns(ctx context.Context, observations []contracts.CIObservation) (bool, error) {
 	w.mu.Lock()
 	failing := w.failures > 0 && slices.ContainsFunc(observations, func(observation contracts.CIObservation) bool {
 		return observation.CheckName == w.check
@@ -42,7 +40,7 @@ func (w *unansweringWriter) RecordRuns(ctx context.Context, head cistore.Head, r
 	if failing {
 		return false, errors.New("cistore: the KV call did not answer: context deadline exceeded")
 	}
-	return w.Writer.RecordRuns(ctx, head, readAt, observations)
+	return w.Writer.RecordRuns(ctx, observations)
 }
 
 // A pass whose write of a head's failed run did not land publishes no settlement. GitHub holds two

@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"slices"
 	"strconv"
 	"time"
@@ -141,13 +140,6 @@ func (r *Reconciler) resolve(ctx context.Context, row string, mapped bool, c *co
 		// installed: the next pass asks again
 		// (TestALookupGitHubFailedToAnswerIsAskedAgainAtTheNextPass).
 		c.mappingsSkipped++
-		var refused *githubapp.StatusError
-		if !errors.As(err, &refused) || refused.Status != http.StatusForbidden {
-			// A token GitHub refuses with 403 is an installation suspended, which GitHub sends
-			// no webhook for; any other failure leaves the heads of an installed repository
-			// unread (Reconciler.missedRepository).
-			r.missedRepository()
-		}
 		r.Logger.Warn("ci reconcile skipped a repository it holds no token for", "repository", row, "error", err)
 		githubreads.NoteFailure(ctx, err)
 		return reconciled{}, nil
@@ -167,7 +159,6 @@ func (r *Reconciler) resolve(ctx context.Context, row string, mapped bool, c *co
 			return reconciled{}, nil
 		}
 		c.mappingsSkipped++
-		r.missedRepository()
 		r.Logger.Warn("ci reconcile skipped a repository GitHub did not answer for", "repository", row, "error", err)
 		githubreads.NoteFailure(ctx, err)
 		delete(r.rows, row)
@@ -188,7 +179,6 @@ func (r *Reconciler) resolve(ctx context.Context, row string, mapped bool, c *co
 	ownerOf, nameOf, ok := splitRepo(state.fullName)
 	if !ok {
 		c.mappingsSkipped++
-		r.missedRepository()
 		r.Logger.Warn("ci reconcile skipped a repository GitHub named oddly", "repository", row, "full_name", state.fullName)
 		githubreads.NoteFailure(ctx, fmt.Errorf("ci reconcile skipped %s: GitHub named it %q, which is not owner/name", row, state.fullName))
 		return reconciled{}, nil

@@ -183,9 +183,6 @@ type queryHead struct {
 	// to a REST read: a head whose fingerprint is the one the pass already holds is written
 	// nothing at all (walk.visitHead).
 	fingerprint uint64
-	// readAt is when the pass sent the query that answered this head, which the head's run write
-	// keeps as the record's ReadAt (cistore.Writer.RecordRuns): GitHub's answer is no older.
-	readAt time.Time
 }
 
 // graphQLAnswer is GitHub's `{data, errors}` envelope for headsQuery and headsQueryWithStatuses.
@@ -334,9 +331,7 @@ func (r *Reconciler) query(ctx context.Context, repository reconciled, after str
 			return page, fmt.Errorf("GitHub answered no readable pull request at node %d of the page for %s/%s: %s",
 				index, repository.owner, repository.repo, errorText(answer.Errors))
 		}
-		head := headOf(pull, pullRefused, statusesRefused[index])
-		head.readAt = started
-		page.heads = append(page.heads, head)
+		page.heads = append(page.heads, headOf(pull, pullRefused, statusesRefused[index]))
 	}
 	return page, nil
 }

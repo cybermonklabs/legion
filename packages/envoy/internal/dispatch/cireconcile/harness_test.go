@@ -84,6 +84,11 @@ type harness struct {
 	// issues counts the issues issueInRepository has recorded, so each one it records has a key
 	// and a number of its own without its caller passing them.
 	issues int
+	// verify says startListener opens the listener's store with ENVOY_CI_VERIFY on
+	// (cistore.WithVerify), so its summary loop publishes only after a verify pass answers.
+	verify bool
+	// loopLogs is what the listener's summary loop logged.
+	loopLogs *syncBuffer
 }
 
 // newHarness is the whole stack with the listener already running, which every test wants but
@@ -93,6 +98,25 @@ func newHarness(t *testing.T, reviewer string) *harness {
 	h := newHarnessBeforeTheListener(t, reviewer)
 	h.startListener()
 	return h
+}
+
+// newVerifyHarness is newHarness with the listener's ENVOY_CI_VERIFY on. GitHub answers a
+// repository's installation and identity under any casing of its name, and a verify request names
+// the repository as GitHub spells it, where a pass reads it under the mapping's lower-cased row;
+// the stand-in answers only the names it was given, so it is given GitHub's spelling too.
+func newVerifyHarness(t *testing.T, reviewer string) *harness {
+	t.Helper()
+	h := newHarnessBeforeTheListener(t, reviewer)
+	h.verify = true
+	h.github.setRepository(gitHubRepository, gitHubRepository, repositoryID)
+	h.startListener()
+	return h
+}
+
+// verifyPass runs one pass of the verify loop (Reconciler.Verify).
+func (h *harness) verifyPass() {
+	h.t.Helper()
+	h.reconciler.Verify(h.ctx)
 }
 
 // newHarnessBeforeTheListener is the stack with no CI bucket: NATS is up, so a pass runs, but
@@ -178,9 +202,9 @@ type holdingWriter struct {
 	hold func(ctx context.Context)
 }
 
-func (w *holdingWriter) RecordRuns(ctx context.Context, head cistore.Head, readAt time.Time, observations []contracts.CIObservation) (bool, error) {
+func (w *holdingWriter) RecordRuns(ctx context.Context, observations []contracts.CIObservation) (bool, error) {
 	w.hold(ctx)
-	return w.Writer.RecordRuns(ctx, head, readAt, observations)
+	return w.Writer.RecordRuns(ctx, observations)
 }
 
 // startListener opens the listener's own store, which makes the bucket and watches it, and its
@@ -188,7 +212,7 @@ func (w *holdingWriter) RecordRuns(ctx context.Context, head cistore.Head, readA
 // to make this listener settle, and a record alone does not prove that.
 func (h *harness) startListener() {
 	h.t.Helper()
-	listener, err := cistore.Open(h.ctx, h.bus.Conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
+	listener, err := cistore.Open(h.ctx, h.bus.Conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithVerify(h.verify))
 	if err != nil {
 		h.t.Fatalf("open the listener's CI store: %v", err)
 	}
@@ -199,8 +223,9 @@ func (h *harness) startListener() {
 	}
 	loop, endLoop := context.WithCancel(h.ctx)
 	h.t.Cleanup(endLoop)
+	h.loopLogs = &syncBuffer{}
 	cistore.StartSummaryLoop(loop, listener, h.bus, 100*time.Millisecond, 20*time.Millisecond,
-		metrics.New().NewGauge("held", ""), logging.New("loop"))
+		metrics.New().NewGauge("held", ""), logging.NewWithWriter("loop", h.loopLogs))
 	h.listener = listener
 	h.webhook = webhook.GitHubHandler(webhookSecret, "@legion", h.reviewer, h.bus, listener)
 }

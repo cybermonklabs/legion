@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -24,18 +23,17 @@ const maxPages = 100
 // that a caller may put its own writer in the pass's way, as every other collaborator of a
 // Reconciler is its caller's to choose; *cistore.Writer satisfies it. Its three record calls
 // answer whether what they wrote changed the head's record, which is how the pass knows a head to
-// count. RecordRuns writes every check run of one head in one compare-and-swap, with the time the
-// pass began reading them (recordRuns). NeedsRead says a head must be read and written in full:
-// its record is gone, or an intake gap holds it until a GitHub read (kept). GapHeldHeads names
-// the heads the listener holds by a gap alone, which a pass reads first (readGapHeld), and
-// MarkReadCycle says a cycle that began at a time has read every open head (Reconciler.reconcile).
+// count. RecordRuns writes every check run of one head in one compare-and-swap (recordRuns).
+// VerifyRequests, MarkVerified and DoneVerifying are the verify loop's (Reconciler.Verify): the
+// heads a listener holds until a GitHub read, the answer to one, and the request's delete.
 type Writer interface {
-	RecordRuns(context.Context, contracts.CIHead, time.Time, []contracts.CIObservation) (bool, error)
+	RecordRuns(context.Context, []contracts.CIObservation) (bool, error)
 	RecordSuite(context.Context, contracts.CIObservation) (bool, error)
 	RecordStatus(context.Context, contracts.StatusObservation) (bool, error)
-	NeedsRead(owner, repo, number, sha string) (bool, error)
-	GapHeldHeads() ([]contracts.CIHead, error)
-	MarkReadCycle(context.Context, time.Time) error
+	HasRecord(owner, repo, number, sha string) (bool, error)
+	VerifyRequests(context.Context) ([]contracts.CIVerifyRequest, error)
+	MarkVerified(context.Context, contracts.CIHead, uint64) (bool, error)
+	DoneVerifying(context.Context, contracts.CIHead, uint64) error
 }
 
 // object is one GitHub check run, check suite or commit status as its listing answers it, the
@@ -169,9 +167,6 @@ func readPages[T any](ctx context.Context, r *Reconciler, c *counts, tally *int,
 // for every other outcome: a head the pass could not read is named at WARN and the pass goes on
 // to the next.
 func (r *Reconciler) readHead(ctx context.Context, writer Writer, head pullHead, c *counts) *stop {
-	// GitHub's answers below are no older than this, which the head's run write keeps as the
-	// record's ReadAt (cistore.Writer.RecordRuns).
-	readAt := time.Now()
 	kept := r.kept(writer, head)
 	runs, err := readPages(ctx, r, c, &c.headRequests, kept.runs, func(ctx context.Context, page int, etag string) (conditionalPage[object], error) {
 		answer, err := r.GitHub.CommitCheckRuns(ctx, head.token, head.owner, head.repo, head.sha, page, etag)
@@ -198,7 +193,7 @@ func (r *Reconciler) readHead(ctx context.Context, writer Writer, head pullHead,
 		// leaves the next pass to read it on the same ETags.
 		hold.statuses = kept.statuses
 	}
-	changed, ok := r.recordHead(ctx, writer, head, readAt, runs, suites, nil, kept, hold, c)
+	changed, ok := r.recordHead(ctx, writer, head, runs, suites, nil, kept, hold, c)
 	if !ok {
 		// Both check listings were read, and a write of them did not land: the head was read,
 		// and recordHead dropped what the pass held of it.
@@ -299,8 +294,7 @@ func (r *Reconciler) statusesUnread(ctx context.Context, head pullHead, cause er
 // fingerprint of one a query answered whole -- and an empty state when neither may be used:
 // the record they stand for is gone (the bucket's seven-day TTL, or a delete), so a conditional
 // read would answer 304, and a fingerprint that matched would write nothing, either of which
-// leaves the head with no record at all; or an intake gap holds the record until a GitHub read
-// after it (cistore.Writer.NeedsRead), which only a write of the head's runs records.
+// leaves the head with no record at all.
 func (r *Reconciler) kept(writer Writer, head pullHead) headState {
 	state, ok := r.heads[head.key()]
 	if !ok {
@@ -310,13 +304,13 @@ func (r *Reconciler) kept(writer Writer, head pullHead) headState {
 		// Nothing was recorded from this head's last answer, so there is no record to have lost.
 		return state
 	}
-	needs, err := writer.NeedsRead(head.owner, head.repo, head.number, head.sha)
+	has, err := writer.HasRecord(head.owner, head.repo, head.number, head.sha)
 	if err != nil {
 		r.Logger.Warn("ci reconcile did not read whether a head still has its CI record",
 			"repository", head.repository(), "pr", head.number, "sha", head.sha, "error", err)
 		return headState{}
 	}
-	if needs {
+	if !has {
 		return headState{}
 	}
 	return state
@@ -333,8 +327,7 @@ func (r *Reconciler) kept(writer Writer, head pullHead) headState {
 //
 // Every other failure is the head's own. It drops what the pass kept of that head, so the next
 // pass reads it in full, and leaves the pass to the head after it. It is a GitHub read the pass
-// gave up, so it is noted on the pass's attempt (githubreads), and the cycle running can no longer
-// say it read every open head (Reconciler.cycleBegan).
+// gave up, so it is noted on the pass's attempt (githubreads).
 func (r *Reconciler) headFailed(ctx context.Context, err error, head pullHead, c *counts) *stop {
 	// A limit GitHub answered is read before the pass's own end, as every other read of the pass
 	// reads it (identify, openPullRequests, the query): it is GitHub's answer, not a request the
@@ -348,7 +341,6 @@ func (r *Reconciler) headFailed(ctx context.Context, err error, head pullHead, c
 	}
 	c.heads++
 	delete(r.heads, head.key())
-	r.cycleBegan = time.Time{}
 	githubreads.NoteFailure(ctx, err)
 	var tooLarge *githubapp.ResponseTooLargeError
 	if errors.As(err, &tooLarge) {
@@ -378,8 +370,8 @@ func (r *Reconciler) headFailed(ctx context.Context, err error, head pullHead, c
 // and whether every write landed: one that did not must be hidden behind neither an ETag nor a
 // fingerprint, so the pass then holds nothing of the head and the next reads it in full and
 // writes it again.
-func (r *Reconciler) recordHead(ctx context.Context, writer Writer, head pullHead, readAt time.Time, runs, suites, statuses []pageOf[object], kept, hold headState, c *counts) (changedRecord, ok bool) {
-	wanted, changedRecord, ok := r.record(ctx, writer, head, readAt, runs, suites, statuses)
+func (r *Reconciler) recordHead(ctx context.Context, writer Writer, head pullHead, runs, suites, statuses []pageOf[object], kept, hold headState, c *counts) (changedRecord, ok bool) {
+	wanted, changedRecord, ok := r.record(ctx, writer, head, runs, suites, statuses)
 	if changedRecord {
 		// A head's runs, suites and statuses all write the one record cistore.Key names, so a
 		// head whose writes changed that record counts once here however many of them changed
@@ -389,9 +381,6 @@ func (r *Reconciler) recordHead(ctx context.Context, writer Writer, head pullHea
 	}
 	if !ok {
 		delete(r.heads, head.key())
-		// The head was read and not written, so the cycle running did not record it after its
-		// start, and can no longer say it read every open head (Reconciler.cycleBegan).
-		r.cycleBegan = time.Time{}
 		return changedRecord, false
 	}
 	// Once a head's answer has held something to record, it holds it in every later answer too,
@@ -413,8 +402,8 @@ func (r *Reconciler) recordHead(ctx context.Context, writer Writer, head pullHea
 // A head whose runs did not land is written nothing more in the pass: a completed suite or a
 // status written after it would re-arm a record that lacks the runs GitHub holds, and the listener
 // would settle the head on what the record held before.
-func (r *Reconciler) record(ctx context.Context, writer Writer, head pullHead, readAt time.Time, runs, suites, statuses []pageOf[object]) (wanted int, changedRecord, ok bool) {
-	wantedRuns, changedRuns, runsOK := r.recordRuns(ctx, writer, head, readAt, runs)
+func (r *Reconciler) record(ctx context.Context, writer Writer, head pullHead, runs, suites, statuses []pageOf[object]) (wanted int, changedRecord, ok bool) {
+	wantedRuns, changedRuns, runsOK := r.recordRuns(ctx, writer, head, runs)
 	if !runsOK {
 		return wantedRuns, changedRuns, false
 	}
@@ -475,10 +464,8 @@ func (r *Reconciler) recordStatuses(ctx context.Context, writer Writer, head pul
 // one beside it, or the finished runs without the unfinished ones -- which the listener would
 // settle as a head greener, or further along, than GitHub holds it. A write past the record's
 // bound is refused whole, and cistore writes the record marked Overflowed, so the head never
-// settles (refused). readAt, when the pass began reading these runs from GitHub, goes in the same
-// write (cistore.Writer.RecordRuns), so a head an intake gap held settles only on runs read after
-// the gap.
-func (r *Reconciler) recordRuns(ctx context.Context, writer Writer, head pullHead, readAt time.Time, pages []pageOf[object]) (wanted int, changedRecord, ok bool) {
+// settles (refused).
+func (r *Reconciler) recordRuns(ctx context.Context, writer Writer, head pullHead, pages []pageOf[object]) (wanted int, changedRecord, ok bool) {
 	listed := 0
 	for _, page := range pages {
 		if page.modified {
@@ -504,7 +491,7 @@ func (r *Reconciler) recordRuns(ctx context.Context, writer Writer, head pullHea
 	if len(runs) == 0 {
 		return 0, false, true
 	}
-	changed, err := writer.RecordRuns(ctx, contracts.CIHead{Owner: head.owner, Repo: head.repo, Number: head.number, SHA: head.sha}, readAt, runs)
+	changed, err := writer.RecordRuns(ctx, runs)
 	if err != nil {
 		r.Logger.Warn("ci reconcile did not record the check runs of a head",
 			"runs", len(runs), "repository", head.repository(),

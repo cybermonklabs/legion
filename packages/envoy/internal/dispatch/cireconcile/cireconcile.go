@@ -235,11 +235,11 @@ type Reconciler struct {
 	seenRows         map[string]struct{}
 	seenRepositories map[int64]struct{}
 	seenHeads        map[string]struct{}
-	// cycleBegan is when the pass that began the cycle now running started, and zero when this
-	// process did not see the cycle begin (it started in the middle of one). The pass closing a
-	// cycle with a start writes it as the bucket's read cycle (cistore.Writer.MarkReadCycle),
-	// since that cycle has read every open pull request's head after it.
-	cycleBegan time.Time
+	// verifyFailed is the verify requests the verify loop could not answer, by head
+	// (pullHead.key), each with the revision it failed at and when the loop reads that head again
+	// (Verify, verifyRetry). Only Verify touches it, never a pass, and a request the store no
+	// longer lists is forgotten.
+	verifyFailed map[string]verifyFailure
 }
 
 // stop is the rate limit that ended a pass: the scope it was found or answered under, and when

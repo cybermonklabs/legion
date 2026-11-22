@@ -103,6 +103,14 @@ type CIHead struct {
 	SHA    string `json:"sha"`
 }
 
+// CIVerifyRequest is one verify request of the CI store: a head whose settlement a listener holds
+// until Dispatch's CI reconcile has read it from GitHub, and the KV revision of the request as the
+// reconcile read it, which its answer carries back (cistore.Writer.MarkVerified).
+type CIVerifyRequest struct {
+	Head     CIHead
+	Revision uint64
+}
+
 // CIObservation is a per-PR check_run or check_suite fact for the CI state
 // aggregator.
 type CIObservation struct {
