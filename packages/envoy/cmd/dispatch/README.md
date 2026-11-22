@@ -1611,8 +1611,11 @@ The read reads no column and stops at the first visible row, but it may scan dea
 Each read runs in a read-only transaction of its own, under three bounds:
 
 - `lock_timeout` of 5 s: Postgres ends a wait for a lock on the table with 55P03.
+
 - `statement_timeout` of 6 s: Postgres ends a read that runs on for any reason with 57014, so no read is left running at the server.
-- A client deadline of 10 s for each table, which also covers taking a connection from the pool, a dial or a wait for a free one included. At that deadline pgx closes the connection and asks the server to cancel the statement.
+
+- A client deadline of 10 s for each table, which also covers taking a connection from the pool, a dial or a wait for a free one included.
+  At that deadline pgx closes the connection and asks the server to cancel the statement.
 
 The two reads run one after the other before the server listens, so they delay the boot by at most 20 s in all; a lock on a table alone delays it by about 5 s for that table.
 The read takes ACCESS SHARE on its table for its statement: row writes go on beside it, but a `TRUNCATE` or another statement that wants ACCESS EXCLUSIVE waits behind it, for at most the statement timeout.
