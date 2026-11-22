@@ -49,8 +49,8 @@ func listedSources(listed []DaemonDeployment) []string {
 // annotation, for the readers of the daemon stores to refuse by name. A ConfigMap that does not
 // exist holds no retired project, and the Deployments are still listed. A ConfigMap read the API
 // server refuses, and a key of neither form (<project>.database, <project>.instance), are the
-// reader's error, naming the ConfigMap. Control: 2b1d598844's reader, which lists the Deployments
-// alone and never reads the ConfigMap, fails each part but the one with no ConfigMap.
+// reader's error, naming the ConfigMap. A reader that lists the Deployments alone and never reads
+// the ConfigMap, as the one before did, fails each part but the one with no ConfigMap.
 func TestKubeDaemonDeploymentsReadsTheRetiredStores(t *testing.T) {
 	ctx := context.Background()
 	live := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "legion-daemon-live", Namespace: DaemonNamespace,
