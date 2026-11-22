@@ -598,13 +598,13 @@ func TestTheLeakCheckInstallsVerificationIsHeldFromThePodsReaperWhileItRuns(t *t
 		// The check is let go on every path, so the install the test waits on below ends.
 		defer func() { _ = os.WriteFile(release, nil, 0o600) }()
 		var pid int
-		if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
+		if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 10*time.Millisecond, func() bool {
 			body, err := os.ReadFile(pidFile)
 			n, convErr := strconv.Atoi(strings.TrimSpace(string(body)))
 			pid = n
 			return err == nil && convErr == nil && pid > 0
 		}) {
-			read <- reading{err: fmt.Errorf("the served check wrote no pid to %s within 10s", pidFile)}
+			read <- reading{err: fmt.Errorf("the served check wrote no pid to %s under the test's hang guard", pidFile)}
 			return
 		}
 		guard.mu.Lock()

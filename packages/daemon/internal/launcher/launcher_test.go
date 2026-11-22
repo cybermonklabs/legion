@@ -480,7 +480,7 @@ func TestTheLauncherLogsOneLineForEachAcknowledgedHello(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := unacknowledged.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	if err := unacknowledged.SetReadDeadline(time.Now().Add(testwait.Bounded(t, time.Minute, time.Second))); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := bufio.NewReader(unacknowledged).ReadBytes('\n'); err != nil {
@@ -626,7 +626,7 @@ func (g *rig) told(generation uint64, expansion string, env []string, resume str
 		g.t.Fatalf("start of generation %d = %#v", generation, got)
 	}
 	var said string
-	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+	if !testwait.Holds(testwait.Bounded(g.t, time.Minute, time.Second), testwait.Poll, func() bool {
 		body, err := os.ReadFile(told)
 		if err != nil {
 			return false

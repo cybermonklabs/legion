@@ -93,7 +93,7 @@ func TestASessionDatabaseServesItsChildThroughTheChildsShutdownGrace(t *testing.
 
 func waitForFile(t *testing.T, path string) {
 	t.Helper()
-	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
 		_, err := os.Stat(path)
 		return err == nil
 	}) {

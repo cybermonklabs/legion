@@ -632,7 +632,7 @@ func raceSwaps(t *testing.T, victim, target string, enough, tries int, at time.T
 		trials++
 		buildRacedEntry(t, victim, sub, at)
 		swapped := make(chan bool, 1)
-		go raceTheSwap(sub, target, time.Now().Add(testwait.Bounded(t, 30*time.Second, time.Second)), swapped)
+		go raceTheSwap(sub, target, time.Now().Add(testwait.Bounded(t, time.Minute, time.Second)), swapped)
 		if trial(trials, swapped) {
 			landed++
 		}

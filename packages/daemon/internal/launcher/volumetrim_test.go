@@ -641,7 +641,7 @@ func (f *trimFixture) start(tr *trimmer) (context.CancelFunc, <-chan struct{}) {
 		cancel()
 		select {
 		case <-done:
-		case <-time.After(testwait.Bounded(f.t, 10*time.Second, time.Second)):
+		case <-time.After(testwait.Bounded(f.t, time.Minute, time.Second)):
 			f.t.Error("the trimmer's loop did not return after the case cancelled it")
 		}
 	})
@@ -685,7 +685,7 @@ func (f *trimFixture) tick(ends string) {
 func (f *trimFixture) tickUntil(ends string) (int, int) {
 	f.t.Helper()
 	before := f.logged(ends)
-	deadline := time.Now().Add(testwait.Bounded(f.t, 30*time.Second, time.Second))
+	deadline := time.Now().Add(testwait.Bounded(f.t, time.Minute, time.Second))
 	at, reads, taken := -1, 0, false
 	for !taken && time.Now().Before(deadline) {
 		var running bool
@@ -946,7 +946,7 @@ func TestTheTrimmerRefusesSettingsOutsideItsRangesAndStaysOff(t *testing.T) {
 			cancel()
 			select {
 			case <-done:
-			case <-time.After(testwait.Bounded(t, 10*time.Second, time.Second)):
+			case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 				t.Fatal("run did not return when the container's own context ended")
 			}
 			f.assertPrefixed()
@@ -1016,7 +1016,7 @@ func TestAnAgeWhoseCutoffWouldOverflowNeverSweepsAnEntryWrittenMomentsAgo(t *tes
 	// interval clock to take one on. A trimmer that refuses these settings makes no such clock
 	// — only the one it asks for settings on again — so nothing is offered and the wait ends
 	// at the refusal instead.
-	deadline := time.Now().Add(testwait.Bounded(t, 30*time.Second, time.Second))
+	deadline := time.Now().Add(testwait.Bounded(t, time.Minute, time.Second))
 	for time.Now().Before(deadline) && f.logged("stays off") == 0 && f.logged("the sweep ended") == 0 {
 		if at, running := f.ticks.live(settingsInterval(*set)); running {
 			f.ticks.offer(t, at, 200*time.Millisecond)
@@ -1238,7 +1238,7 @@ func TestAnAgeAMinutePastTheGreatestIsRefusedAndSweepsNothing(t *testing.T) {
 	// interval clock to take one on. A trimmer that refuses these settings makes no such clock
 	// — only the one it asks for settings on again — so nothing is offered and the wait ends
 	// at the refusal instead.
-	deadline := time.Now().Add(testwait.Bounded(t, 30*time.Second, time.Second))
+	deadline := time.Now().Add(testwait.Bounded(t, time.Minute, time.Second))
 	for time.Now().Before(deadline) && f.logged("stays off") == 0 && f.logged("the sweep ended") == 0 {
 		if at, running := f.ticks.live(settingsInterval(*set)); running {
 			f.ticks.offer(t, at, 200*time.Millisecond)
@@ -3314,7 +3314,7 @@ func TestTheThreeEndingsTakeEffectAtTheNextEntryBoundary(t *testing.T) {
 		f.tickUntil("sweeping") // the wait for run to return below is this case's own claim
 		select {
 		case <-done:
-		case <-time.After(testwait.Bounded(t, 20*time.Second, time.Second)):
+		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 			t.Fatal("run did not return on the container's stop: it is waiting out the sweep's budget")
 		}
 		if !stopped {
@@ -3577,7 +3577,7 @@ func TestNoSweepStartsWhileOneRunsAndTheNextReadingIsAnIntervalAfterItEnds(t *te
 	f.start(tr)
 
 	testwait.Eventually(t, "the trimmer to start its interval clock", func() bool { return f.ticks.count() > 0 })
-	if !f.ticks.offer(t, 0, testwait.Bounded(t, 10*time.Second, time.Second)) {
+	if !f.ticks.offer(t, 0, testwait.Bounded(t, time.Minute, time.Second)) {
 		f.t.Fatal("the trimmer took no tick on the clock it started with")
 	}
 	<-reached

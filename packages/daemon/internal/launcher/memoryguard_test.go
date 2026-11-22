@@ -782,7 +782,7 @@ func TestMemoryGuardSparesTheAgentAndEndsItsCommand(t *testing.T) {
 		cancel()
 		select {
 		case <-done:
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 			t.Error("the memory guard did not return after its context ended")
 		}
 	})
@@ -1258,7 +1258,7 @@ func waitingKillReport(t *testing.T, microVM bool, report shimwire.LauncherMemor
 		cancel()
 		select {
 		case <-served:
-		case <-time.After(30 * time.Second):
+		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 			t.Errorf("the tester's manager did not return after its context ended; its log: %s", stderr.String())
 		}
 	})
@@ -1366,7 +1366,7 @@ func TestAMicroVMLauncherRaisesTheAgentsWorkAndKeepsItsOwnProcessesAtTheStarting
 		cancel()
 		select {
 		case <-done:
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 			t.Error("the guest watch did not return after its context ended")
 		}
 	})

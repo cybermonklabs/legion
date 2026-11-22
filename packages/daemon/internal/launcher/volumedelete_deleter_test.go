@@ -380,7 +380,7 @@ func removeWhileFilling(t *testing.T, held *os.File, filling string) error {
 
 	answered := make(chan error, 1)
 	go func() { answered <- removeEntryAt(held, "entry", make([]byte, volumeRemovalNamesBytes)) }()
-	bound := testwait.Bounded(t, 30*time.Second, 5*time.Second)
+	bound := testwait.Bounded(t, time.Minute, 5*time.Second)
 	select {
 	case removal := <-answered:
 		close(stop)
@@ -902,7 +902,7 @@ func TestADeleterThatIgnoresTheEndOfItsRequestsIsKilledAtTheGrace(t *testing.T) 
 	go func() { remover.close(); close(closed) }()
 	select {
 	case <-closed:
-	case <-time.After(volumeRemoverGrace + testwait.Bounded(t, 30*time.Second, 5*time.Second)):
+	case <-time.After(volumeRemoverGrace + testwait.Bounded(t, time.Minute, 5*time.Second)):
 		t.Fatalf("the remover's close had not returned %v after it began, with a child that ignores the end of its requests", time.Since(began))
 	}
 	if took := time.Since(began); took < volumeRemoverGrace {

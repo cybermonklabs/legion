@@ -677,8 +677,11 @@ func TestSessionPeerStandInHelper(t *testing.T) {
 	if err != nil {
 		fail(err)
 	}
+	// Each wait of a stand-in is under the hang guard of its own test binary, the one the agent's
+	// shim started (testwait.Bounded): how soon the proxy answers is not what the case reads.
+	guard := testwait.Bounded(t, time.Minute, time.Second)
 	if which == "child" {
-		if err := sayInTmp(peerChildSaw, "connect="+peerConnect(socket)); err != nil {
+		if err := sayInTmp(peerChildSaw, "connect="+peerConnect(socket, guard)); err != nil {
 			fail(err)
 		}
 		for {
@@ -698,13 +701,11 @@ func TestSessionPeerStandInHelper(t *testing.T) {
 	if err := child.Start(); err != nil {
 		fail(err)
 	}
-	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-		if _, err := os.Stat(filepath.Join("/tmp", peerChildSaw)); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			fail(errors.New("the child never reported its connection"))
-		}
+	if !testwait.Holds(guard, 20*time.Millisecond, func() bool {
+		_, err := os.Stat(filepath.Join("/tmp", peerChildSaw))
+		return err == nil
+	}) {
+		fail(errors.New("the child never reported its connection"))
 	}
 	token := "read"
 	if _, err := os.ReadFile(filepath.Join(plan.RolesDir, SessionWriterDirName, SessionWriterTokenFile)); err != nil {
@@ -713,7 +714,7 @@ func TestSessionPeerStandInHelper(t *testing.T) {
 	if err := sayInTmp(peerAgentEnviron, strings.Join(os.Environ(), "\x00")); err != nil {
 		fail(err)
 	}
-	if err := sayInTmp(peerAgentSaw, "token="+token+" connect="+peerConnect(socket)); err != nil {
+	if err := sayInTmp(peerAgentSaw, "token="+token+" connect="+peerConnect(socket, guard)); err != nil {
 		fail(err)
 	}
 	_ = child.Wait()
@@ -739,14 +740,15 @@ func peerSocket(path string) (string, error) {
 }
 
 // peerConnect connects to socket and answers "admitted" when the proxy carries a round trip to
-// the upstream, which echoes it, and otherwise what ended the connection.
-func peerConnect(socket string) string {
-	conn, err := net.DialTimeout("unix", socket, 10*time.Second)
+// the upstream, which echoes it, and otherwise what ended the connection. guard bounds the dial
+// and the round trip, and is the caller's hang guard.
+func peerConnect(socket string, guard time.Duration) string {
+	conn, err := net.DialTimeout("unix", socket, guard)
 	if err != nil {
 		return "unreachable: " + err.Error()
 	}
 	defer func() { _ = conn.Close() }()
-	if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	if err := conn.SetDeadline(time.Now().Add(guard)); err != nil {
 		return "unreachable: " + err.Error()
 	}
 	if _, err := conn.Write([]byte("ping")); err != nil {
@@ -825,7 +827,7 @@ func (g *peerGeneration) roleTmp(name string) string {
 func (g *peerGeneration) said(name string) string {
 	g.t.Helper()
 	var said string
-	if !testwait.Holds(30*time.Second, testwait.Poll, func() bool {
+	if !testwait.Holds(testwait.Bounded(g.t, time.Minute, time.Second), testwait.Poll, func() bool {
 		body, err := os.ReadFile(g.roleTmp(name))
 		said = string(body)
 		return err == nil
@@ -883,7 +885,7 @@ func TestARealRolesAgentIsAdmittedAndItsChildIsRefused(t *testing.T) {
 	child := table.Children(agent.PID)[0]
 	want := fmt.Sprintf("sessionproxy: refused a connection to %s from pid %d (%q): pid %d is not the agent of generation 1, which is pid %d",
 		testInstance, child.PID, child.Name, child.PID, agent.PID)
-	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool { return strings.Contains(g.log.String(), want) }) {
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool { return strings.Contains(g.log.String(), want) }) {
 		t.Fatalf("the launcher's log holds no line %q: %s", want, g.log.String())
 	}
 	if refusals := strings.Count(g.log.String(), "refused a connection"); refusals != 1 {

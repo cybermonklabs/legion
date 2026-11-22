@@ -116,7 +116,7 @@ func (l *launchedTrimmer) await() *trimmer {
 	select {
 	case trim := <-l.started:
 		return trim
-	case <-time.After(testwait.Bounded(l.t, 30*time.Second, time.Second)):
+	case <-time.After(testwait.Bounded(l.t, time.Minute, time.Second)):
 		l.t.Fatal("the launcher started no trimmer")
 		return nil
 	}
@@ -189,7 +189,7 @@ func offerSettingsTicksUntil(t *testing.T, f *trimFixture, what string, done fun
 
 func offerTickOf(t *testing.T, f *trimFixture, period time.Duration, what string) {
 	t.Helper()
-	deadline := time.Now().Add(testwait.Bounded(t, 30*time.Second, time.Second))
+	deadline := time.Now().Add(testwait.Bounded(t, time.Minute, time.Second))
 	for time.Now().Before(deadline) {
 		at, live := f.ticks.live(period)
 		if !live {
@@ -208,7 +208,7 @@ func awaitClosed(t *testing.T, done <-chan struct{}, what string) {
 	t.Helper()
 	select {
 	case <-done:
-	case <-time.After(testwait.Bounded(t, 30*time.Second, time.Second)):
+	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 		t.Fatalf("timed out waiting for %s", what)
 	}
 }
@@ -626,7 +626,7 @@ func TestNoTrimmerRunsWithoutSettingsOrInTheControllersPod(t *testing.T) {
 			cancel()
 			select {
 			case <-result:
-			case <-time.After(testwait.Bounded(t, 10*time.Second, time.Second)):
+			case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 				t.Errorf("the launcher did not leave after its context ended; its log: %s", stderr.String())
 			}
 		})

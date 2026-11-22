@@ -1774,7 +1774,7 @@ func TestASwitchOffWhoseBoundPanicsSendsNoOlderReportInItsPlace(t *testing.T) {
 	}
 	// The trimmer ends, or, where run took the held report for the last one, waits to try it: a
 	// try is offered so that such a copy sends it.
-	deadline := time.Now().Add(testwait.Bounded(t, 10*time.Second, time.Second))
+	deadline := time.Now().Add(testwait.Bounded(t, time.Minute, time.Second))
 	for ended := false; !ended && time.Now().Before(deadline); {
 		select {
 		case <-done:

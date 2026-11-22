@@ -922,7 +922,7 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 			if path != running {
 				t.Fatalf("the sweep's clock held at the removal of %s, not of %s; the launcher's log:\n%s", path, running, f.stderr.String())
 			}
-		case <-time.After(testwait.Bounded(t, 30*time.Second, time.Second)):
+		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 			t.Fatalf("the sweep's clock never reached the removal of %s; the launcher's log:\n%s", running, f.stderr.String())
 		}
 
@@ -941,7 +941,7 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 		// at once. The half second below bounds how long such a Run has to show itself, and a Run
 		// that waits cannot return in it, however loaded the machine is.
 		conn := f.role("tester")
-		if err := conn.conn.SetReadDeadline(time.Now().Add(testwait.Bounded(t, 30*time.Second, time.Second))); err != nil {
+		if err := conn.conn.SetReadDeadline(time.Now().Add(testwait.Bounded(t, time.Minute, time.Second))); err != nil {
 			t.Fatal(err)
 		}
 		for {
@@ -965,7 +965,7 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 			if !taken {
 				t.Fatalf("Run returned before the pass of its sweep it was ended inside had taken its lock")
 			}
-		case <-time.After(testwait.Bounded(t, 30*time.Second, time.Second)):
+		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 			t.Fatalf("Run did not return after its context ended and its sweep's pass was let go; the launcher's log:\n%s", f.stderr.String())
 		}
 		if !swept(running) {
@@ -1142,8 +1142,9 @@ func TestAClockPassKeepsALockAProcessHoldsOpen(t *testing.T) {
 		s := c.sweep(log, procRoot(t, os.Getpid()))
 		// An hour's recheck this pass must never reach: a lock the first read found a holder
 		// for is decided there and never read again, where a lock that reaches the second read
-		// would hold the pass for that hour. A row that gave the sweep its usual millisecond
-		// would read the same keep line whichever of the two reads wrote it.
+		// would hold the pass for that hour, far past the hang guard awaitPass waits under. A row
+		// that gave the sweep its usual millisecond would read the same keep line whichever of
+		// the two reads wrote it.
 		s.recheck = time.Hour
 		done := make(chan struct{})
 		go func() { defer close(done); s.pass(context.Background(), false) }()

@@ -314,14 +314,16 @@ func TestRoleInitStageHelper(t *testing.T) {
 		fmt.Println("stage error:", err)
 		os.Exit(2)
 	}
-	if err := runStage(plan); err != nil {
+	if err := runStage(plan, testwait.Bounded(t, time.Minute, time.Second)); err != nil {
 		fmt.Println("stage error:", err)
 		os.Exit(1)
 	}
 	os.Exit(0)
 }
 
-func runStage(plan stagePlan) error {
+// runStage is the stage's whole run; guard is the hang guard of the stage's own test binary, which
+// each of its waits is under.
+func runStage(plan stagePlan, guard time.Duration) error {
 	if err := privateMounts(); err != nil {
 		return err
 	}
@@ -503,7 +505,7 @@ func runStage(plan stagePlan) error {
 	fmt.Printf("stage container-home=%s\n", presence(filepath.Join(home, "planted")))
 	fmt.Printf("stage container-tmp=%s\n", presence(filepath.Join("/tmp", "planted")))
 	fmt.Printf("stage container-shm=%s\n", presence(filepath.Join("/dev/shm", "planted")))
-	fmt.Printf("stage detached=%s\n", detachedProcess(plan.Detached))
+	fmt.Printf("stage detached=%s\n", detachedProcess(plan.Detached, guard))
 	// The log's lines go on the one line a report carries (oneLine), here and in the agent.
 	fmt.Printf("stage testpg-source=%s\n", oneLine(content(serverLog)))
 	// Read without following a link: a link the role had put in the file's place would name
@@ -550,7 +552,7 @@ func runStage(plan stagePlan) error {
 	if relaunched != nil {
 		return relaunched
 	}
-	fmt.Printf("stage2 detached=%s\n", detachedProcess(layout.Detached))
+	fmt.Printf("stage2 detached=%s\n", detachedProcess(layout.Detached, guard))
 
 	// The sibling role's first generation, after the role's two have written their own config
 	// home: what the role wrote there never reaches the sibling, nor the pod's shared one. A
@@ -573,7 +575,7 @@ func runStage(plan stagePlan) error {
 	if err := runGeneration(siblingPlan, siblingLayout, 1, "agent-sibling"); err != nil {
 		return err
 	}
-	fmt.Printf("stage-sibling detached=%s\n", detachedProcess(siblingLayout.Detached))
+	fmt.Printf("stage-sibling detached=%s\n", detachedProcess(siblingLayout.Detached, guard))
 	fmt.Printf("stage shared-config-planted=%s\n", presence(filepath.Join(shared, "git", "config")))
 	fmt.Printf("stage own-config-planted=%s\n", presence(filepath.Join(homes, RoleConfigHomeDir, "git", "config")))
 	if mqueue == "present" {
@@ -658,10 +660,12 @@ func runGeneration(plan stagePlan, layout agentPlan, generation uint64, label st
 }
 
 // detachedProcess says whether any process of the machine still runs the detached command the
-// role started, once the role's init has exited.
-func detachedProcess(marker string) string {
+// role started, once the role's init has exited. The command sleeps far longer than any wait of
+// the case, so nothing but the end of the role's namespace ends it, and how soon the kernel shows
+// that is not the claim: the wait for it is under guard, the stage's hang guard.
+func detachedProcess(marker string, guard time.Duration) string {
 	var unreadable string
-	gone := testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool {
+	gone := testwait.Holds(guard, 50*time.Millisecond, func() bool {
 		entries, err := os.ReadDir("/proc")
 		if err != nil {
 			unreadable = "unreadable: " + err.Error()
@@ -824,7 +828,7 @@ func TestRoleInitAgentHelper(t *testing.T) {
 	detached.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := detached.Start(); err != nil {
 		say("detached-start", err.Error())
-	} else if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
+	} else if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 10*time.Millisecond, func() bool {
 		_, err := os.Stat(trapped)
 		return err == nil
 	}) {
