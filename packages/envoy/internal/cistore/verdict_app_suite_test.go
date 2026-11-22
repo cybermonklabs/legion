@@ -127,6 +127,39 @@ func (l *verdictListener) suite(id int, action, status, conclusion string, app i
 	}`, action, id, status, conclusion, verdictHead, app))
 }
 
+// suiteWithoutApp delivers a check suite of the head in action and status that names no App, as
+// a record written before the record carried a suite's App holds one.
+func (l *verdictListener) suiteWithoutApp(id int, action, status, conclusion string) {
+	l.t.Helper()
+	l.handler("check_suite", fmt.Sprintf(`{
+		"action": %q,
+		"check_suite": {"id": %d, "status": %q, "conclusion": %q, "updated_at": "2026-11-20T03:00:00Z",
+			"head_sha": %q, "latest_check_runs_count": 0, "pull_requests": [{"number": 42}]},
+		"repository": {"name": "widgets", "owner": {"login": "acme"}, "full_name": "acme/widgets"}
+	}`, action, id, status, conclusion, verdictHead))
+}
+
+// A queued suite whose record names no App is no suite of the verdict App's: with
+// ENVOY_VERDICT_APP_ID set it still holds the head, as any App's queued suite does, and the head
+// settles once it completes. The test reads the settlement it then requires, which shows the
+// subscription would have seen one.
+func TestASuiteWithNoAppIDStillHoldsTheHead(t *testing.T) {
+	l := newVerdictListener(t)
+	l.suiteWithoutApp(820, "requested", "queued", "")
+	l.suite(900, "completed", "completed", "success", actionsApp)
+	l.run(1, "build", "success", actionsApp)
+	if settled, ok := l.settlement(2 * time.Second); ok {
+		t.Fatalf("the head settled as %+v while a suite naming no App was queued, want it held", settled)
+	}
+	if strings.Contains(l.logged.String(), "ci: left out the verdict App's own check suite") {
+		t.Fatalf("the listener left a suite naming no App out:\n%s", l.logged.String())
+	}
+	l.suiteWithoutApp(820, "completed", "completed", "success")
+	if _, ok := l.settlement(3 * time.Second); !ok {
+		t.Fatal("no settlement was published once the suite naming no App completed")
+	}
+}
+
 // settlement is the head's next settlement within wait, and false when none arrives.
 func (l *verdictListener) settlement(wait time.Duration) (cistore.Summary, bool) {
 	l.t.Helper()
