@@ -162,7 +162,7 @@
     "routes": [
       "POST /legion/v1/intake/replay"
     ],
-    "since": 217,
+    "since": 228,
     "noBody": false
   },
   {
@@ -170,7 +170,7 @@
     "routes": [
       "POST /legion/v1/intake/discard"
     ],
-    "since": 217,
+    "since": 228,
     "noBody": false
   }
 ]

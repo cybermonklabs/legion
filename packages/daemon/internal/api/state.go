@@ -135,7 +135,7 @@ type State struct {
 	// consumer's (the `throughSeq` a bulk replay or discard of them all names), and the newest of
 	// them listed (IntakeGiveUpsView). Always written, its lists empty rather than null; a daemon
 	// with no workflow has none, and a body served a caller below intakeGiveUpsContract carries no
-	// such key (shaping.go's withoutIntakeGiveUps, contract 217).
+	// such key (shaping.go's withoutIntakeGiveUps, contract 228).
 	IntakeGiveUps IntakeGiveUpsView `json:"intakeGiveUps"`
 	// wakesWaitingHidden is set on the copy the state route serves a caller whose plugin is older
 	// than the contract that added WakesWaiting (api's withoutWakesWaiting, below shaping.go's
@@ -489,8 +489,10 @@ func (r RepositoriesView) at152() repositoriesAt152 {
 // reach the state); Detail is the row's evidence whatever the status; Decision is the operator's
 // reason on a decided row; ConfigLine is, on an open deployment row, the legion.yaml line that
 // records a decision (`capabilities.decided.<name>: "<reason>"`); an open live row has none.
-// Source is, on a deployment row, "configuration" (what legion.yaml alone decides) or "boot"
-// (what boot measured); absent on every other row.
+// Source is, on a deployment row, "configuration" (what legion.yaml alone decides), "boot" (what
+// boot measured) or "caches" (what the repository caches' last health reads said of their room,
+// served without the word to a caller whose stated contract, else its pod's lowest, is below
+// cachesSourceContract: withoutUnadmittedCapabilitySources); absent on every other row.
 type CapabilityState struct {
 	Name       string `json:"name"`
 	Status     string `json:"status"`
@@ -561,7 +563,7 @@ type AgentSecretsLoginView struct {
 // not write the empty array, since an empty slice is what `omitempty` drops, so the pointer is
 // what lets one type serve every key — each field set when its key is not hidden and left nil
 // when it is — rather than a struct per set of flags. The bands compose, so a caller below
-// wakesWaitingContract (53) is below claimsToRefreshContract (73) and intakeGiveUpsContract (217)
+// wakesWaitingContract (53) is below claimsToRefreshContract (73) and intakeGiveUpsContract (228)
 // as well and is served none of the three.
 //
 // A body that hides none of them is marshaled through the embedded value alone. The shadow's own
@@ -813,12 +815,13 @@ type Issue struct {
 	Workers     map[claim.Role]PhaseView `json:"workers"`
 	PullRequest *PullRequestView         `json:"pullRequest,omitempty"`
 	DesignGate  *GateView                `json:"designGate,omitempty"`
-	// GatedSteps is the deployment's design gate as this issue stands in it: one entry for each
-	// step the deployment gates, in the order it gates them (contract 55). It is absent, as the
-	// gate itself is, for an issue that is not its tree's root, for a deployment that gates no
-	// step and for an issue the workflow does not record, so the wire never carries an empty
-	// list. DesignGate is unchanged beside it: it is the spec step's row, which every reader that
-	// asks one question of one gate still takes.
+	// GatedSteps is the tree's design gate as this issue stands in it: one entry for each step
+	// the tree is gated on (record.TreeSteps), in the order the deployment gates them with a
+	// criteria row the root's architect registered beside a deployment that gates spec and not
+	// criteria after them (contract 55). It is absent, as the gate itself is, for an issue that
+	// is not its tree's root, for a deployment that gates no step and for an issue the workflow
+	// does not record, so the wire never carries an empty list. DesignGate is unchanged beside it:
+	// it is the spec step's row, which every reader that asks one question of one gate still takes.
 	GatedSteps []GatedStepView `json:"gatedSteps,omitempty"`
 	Slot       *SlotView       `json:"slot,omitempty"`
 	// WaitingLine is where this issue stands in `admission.waiting` (contract 58). It is present
@@ -1398,8 +1401,8 @@ type GateView struct {
 	ApprovedVersion *int   `json:"approvedVersion"`
 }
 
-// GatedStepStatus is where one gated step of a deployment stands, as the issue's gate records say
-// it: the four answers a record can give.
+// GatedStepStatus is where one step of a tree's design gate (record.TreeSteps) stands, as the
+// issue's gate records say it: the four answers a record can give.
 type GatedStepStatus string
 
 const (
@@ -1419,9 +1422,9 @@ const (
 	GatedStepChangesRequested GatedStepStatus = "changes_requested"
 )
 
-// GatedStepView is one step of the deployment's design gate as one issue stands in it: the step,
-// the document its architect registered for the step, that document's current version, the
-// version a person approved, where the step stands and, for a step whose reviewer asked for
+// GatedStepView is one step of a tree's design gate (record.TreeSteps) as its root stands in it:
+// the step, the document its architect registered for the step, that document's current version,
+// the version a person approved, where the step stands and, for a step whose reviewer asked for
 // changes, the reason they gave. A step nobody has registered carries no document, no version and
 // no approval.
 type GatedStepView struct {
@@ -1433,15 +1436,18 @@ type GatedStepView struct {
 	ChangesReason   string            `json:"changesReason,omitempty"`
 }
 
-// GatedStepViewsOf is steps, the design-gate steps a deployment gates, as one issue stands in
-// them: gates are that issue's gate rows by step (record.Store.GatesOf), and the answer is one
-// entry for each step, in the order the deployment gates them, never nil.
+// GatedStepViewsOf is steps, the design-gate steps one tree is gated on (record.TreeSteps), as
+// its root stands in them: gates are that issue's gate rows by step (record.Store.GatesOf), and
+// the answer is one entry for each step, in the order steps names them, never nil.
 //
-// The entries are the deployment's steps and not the issue's rows. A row of a step the deployment
-// no longer gates stays in the record — a deployment that gates that step again reads its true
+// The entries are the tree's steps and not the issue's rows. A row of a step the deployment no
+// longer gates stays in the record — a deployment that gates that step again reads its true
 // state — and appears in no entry here, because it holds no work: every reader of the gate asks
-// the configured steps (classify.DesignGatesOpen). A configured step with no row is the other
-// direction, and is answered unregistered: it holds the tree's work, so a reader must see it.
+// the tree's steps (classify.DesignGatesOpen). A criteria row the architect registered beside a
+// deployment that gates spec and not criteria is one of the tree's steps, because it holds the
+// work, so the caller passes record.TreeSteps' answer and the row is an entry. A step with no row
+// is the other direction, and is answered unregistered: it holds the tree's work, so a reader must
+// see it.
 func GatedStepViewsOf(steps []record.DesignStep, gates map[record.DesignStep]record.DesignGate) []GatedStepView {
 	views := make([]GatedStepView, 0, len(steps))
 	for _, step := range steps {

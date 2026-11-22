@@ -30,14 +30,22 @@ func init() { lifeCheckEvery.Store(int64(10 * time.Second)) }
 // nats.go sends a report to a listener only when its channel has room, and drops the report
 // otherwise; it removes a listener only once that listener's channel is closed (nats.go@v1.55.0
 // sendStatusEvent and notifyStatusListener, nats.go:6877-6900). The channel holds ten reports
-// (StatusChanged) and the drain does nothing but take them, so it normally has room. The watch
-// handles the exceptional dropped report: the first window pinned in a life records nats.go's
-// reconnect count after it has read CONNECTED. A later count means that connection has reconnected
-// in that pinned life, whether the drain took the report or not, so the watch ends the life, with
-// a new listener in place of the old. A new window then records the count of the new life. The
-// watch holds no window lock while it reads nats.go.
+// (StatusChanged) and the drain does nothing but take them, so it normally has room. The listener
+// stays registered while the connection is open, so a report nats.go dropped is followed by the
+// reports the full channel held, each of which the drain takes after the drop. The watch is the
+// check that does not count on them: the first window pinned in a life records nats.go's reconnect
+// count after it has read CONNECTED. A later count means that connection has reconnected in that
+// pinned life, whether the drain took the report or not, so the life ends. A new window then records
+// the count of the new life. The watch holds no window lock while it reads nats.go, and hands the
+// count it read to the drain, which ends a life at it only between two reports (check).
 type connLife struct {
 	conn *nats.Conn
+	// reports is the listener the drain takes nats.go's reports from, and checks carries the
+	// watch's reads of the reconnect count to the drain. quit closes when the connection closes, and
+	// ends the drain.
+	reports chan nats.Status
+	checks  chan reconnectRead
+	quit    chan struct{}
 
 	mu sync.Mutex
 	// life is closed when the current life ends; end makes the next one at once.
@@ -46,10 +54,18 @@ type connLife struct {
 	// window has read CONNECTED and recorded that count (pin).
 	reconnects uint64
 	pinned     bool
-	// reports is the listener the drain reads, and quit ends that drain.
-	reports chan nats.Status
-	quit    chan struct{}
-	closed  bool
+	closed     bool
+
+	// checkRead, when set, runs once check has read nats.go's reconnect count and before the drain
+	// acts on it. It is nil outside the row that ends the life and pins the next one in that gap.
+	checkRead atomic.Pointer[func()]
+}
+
+// reconnectRead is the reconnect count check read, and the channel the drain closes once it has
+// acted on that count.
+type reconnectRead struct {
+	reconnects uint64
+	acted      chan struct{}
 }
 
 // connLives holds the life of every connection some window has pinned, until nats.go closes it.
@@ -79,10 +95,10 @@ func lifeOf(conn *nats.Conn) *connLife {
 	if connLives.of == nil {
 		connLives.of = map[*nats.Conn]*connLife{}
 	}
-	life = &connLife{conn: conn, life: make(chan struct{}), reports: reports, quit: make(chan struct{})}
+	life = &connLife{conn: conn, reports: reports, checks: make(chan reconnectRead), quit: make(chan struct{}), life: make(chan struct{})}
 	connLives.of[conn] = life
 	connLives.mu.Unlock()
-	go life.drain(reports, life.quit)
+	go life.drain()
 	go life.watch(time.Duration(lifeCheckEvery.Load()))
 	return life
 }
@@ -114,21 +130,43 @@ func (l *connLife) current() <-chan struct{} {
 	return l.life
 }
 
-// drain takes each report on reports until quit closes, the connection closes or nats.go closes
-// the channel, ending the current life at each.
-func (l *connLife) drain(reports chan nats.Status, quit chan struct{}) {
+// drain takes each report on reports and ends the current life at it, and acts on each count the
+// watch read (endReconnected), one at a time, until the connection closes. A listener removed while
+// the connection is open ends the reports and not the drain, which still acts on the watch's reads.
+func (l *connLife) drain() {
+	reports := l.reports
 	for {
 		select {
-		case <-quit:
+		case <-l.quit:
 			return
 		case status, open := <-reports:
 			if !open {
-				return
+				reports = nil
+				continue
 			}
 			if l.end(status) {
 				return
 			}
+		case read := <-l.checks:
+			l.endReconnected(read.reconnects)
+			close(read.acted)
 		}
+	}
+}
+
+// endReconnected ends the current life when the first window pinned in it read a reconnect count
+// below reconnects, the count the watch read: nats.go reconnected in that life. The drain calls it
+// between two reports. A report still waiting in the listener ends the current life when the drain
+// takes it, so the life is left to that report: ending it here as well would leave the report to
+// end the next life, which a window may have pinned on the reconnected connection by then.
+func (l *connLife) endReconnected(reconnects uint64) {
+	if len(l.reports) > 0 {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.pinned && reconnects > l.reconnects {
+		l.endLocked()
 	}
 }
 
@@ -143,40 +181,28 @@ func (l *connLife) watch(every time.Duration) {
 	}
 }
 
-// check reads the connection itself and reports whether it is closed, which ends the following. A
-// count past the first pin of a life means nats.go reconnected in that life without the drain
-// ending it, a report dropped, so check ends the life and puts a new listener in place of the old.
+// check reads the connection itself and reports whether it is closed, which ends the following. It
+// reads nats.go's reconnect count on the watch's goroutine, since the read waits for nats.go's
+// connection lock, and the drain acts on that count between two reports (endReconnected). So the
+// life the count is compared with is the one current when the drain acts, not one a report or a
+// window's pin has replaced since the read, and no report the drain has already taken is left to
+// end a life the count ended.
 func (l *connLife) check() (closed bool) {
 	if l.conn.IsClosed() {
 		l.end(nats.CLOSED)
 		return true
 	}
-	count := l.conn.Stats().Reconnects
-	l.mu.Lock()
-	if l.closed {
-		l.mu.Unlock()
-		return true
+	read := reconnectRead{reconnects: l.conn.Stats().Reconnects, acted: make(chan struct{})}
+	if hook := l.checkRead.Load(); hook != nil {
+		(*hook)()
 	}
-	if !l.pinned || count <= l.reconnects {
-		l.mu.Unlock()
+	select {
+	case l.checks <- read:
+		<-read.acted
 		return false
-	}
-	old, quit := l.reports, l.quit
-	l.mu.Unlock()
-	l.conn.RemoveStatusListener(old)
-	reports := l.conn.StatusChanged(nats.RECONNECTING, nats.DISCONNECTED, nats.CLOSED)
-	l.mu.Lock()
-	if l.closed {
-		l.mu.Unlock()
-		go l.conn.RemoveStatusListener(reports)
+	case <-l.quit:
 		return true
 	}
-	close(quit)
-	l.reports, l.quit = reports, make(chan struct{})
-	l.endLocked()
-	go l.drain(reports, l.quit)
-	l.mu.Unlock()
-	return false
 }
 
 // end ends the current life at status, nats.go's report, and starts the next, or, once the
@@ -186,11 +212,7 @@ func (l *connLife) end(status nats.Status) bool {
 	closed := status == nats.CLOSED
 	if closed && !l.closed {
 		l.closed = true
-		select {
-		case <-l.quit:
-		default:
-			close(l.quit)
-		}
+		close(l.quit)
 	}
 	l.endLocked()
 	l.mu.Unlock()

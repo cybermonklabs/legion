@@ -946,11 +946,19 @@ func populatedState(t *testing.T) State {
 		// one role unreserved, and no session's report yet, so the fixture carries a decided row and
 		// an open row beside the present, unchecked and withheld ones, rendered by the report
 		// itself: a wording change there rewrites the fixture rather than leaving the pinned words
-		// stale.
+		// stale. Its one repository cache, acme/widgets' (Ready and read, as `repositories` below
+		// says), last answered its health with a repack that failed for lack of space, so the
+		// repository-cache-room row is open too, with the third source, `caches`, which a caller
+		// below cachesSourceContract is served without.
 		Capabilities: CapabilityStatesOf(capabilities.Deployment{
 			Runtime: "kubernetes", Probed: true, ModelFallback: "on",
 			Decided:        map[capabilities.Name]string{capabilities.Secrets: "pods are enrolled with the secrets broker once dispatch://LEGION-205 lands; until then no pod reads a secret"},
 			UnreservedPods: []capabilities.Pod{capabilities.PodIssue},
+			Caches: []capabilities.Cache{{
+				Repo: "acme/widgets", Claim: "cache-legion-legion-cache-acme-widgets-d782c874", Read: true, Reported: true,
+				VolumeBytes: 20 << 30, AvailableBytes: 107374182, Bytes: 6612345678,
+				RepackOutOfSpaceAt: time.Date(2026, 10, 16, 2, 15, 33, 0, time.UTC),
+			}},
 		}.Report()),
 		// Five repositories the live records name, of three owners, sorted by name, each showing
 		// an answer the block carries: acme/gadgets, the review App not installed on it, which
@@ -1093,7 +1101,7 @@ func populatedState(t *testing.T) State {
 		issue.TreeMovedAt, issue.QuietHours = &movedAt, &hours
 		state.Issues[key] = issue
 	}
-	// The intake's open give-ups (contract 217): the Dispatch consumer has two, a decoded event
+	// The intake's open give-ups (contract 228): the Dispatch consumer has two, a decoded event
 	// given up at its bound and a newer message that did not decode, which carries no event id;
 	// the GitHub consumer has one, which the sweep gave up once its durable was made again past it.
 	// Each consumer's newest sequence is the `throughSeq` of a bulk replay or discard of all of
@@ -1663,7 +1671,8 @@ func operatorClaim() OperatorClaim {
 			Interrupted: true,
 			// The record of the sends that failed, carried here beside the confirmation the way
 			// this fixture carries every other optional at once. A live delivery shows one or
-			// the other: the send that confirms a task clears all three (supervise's confirm).
+			// the other: the send that confirms a task clears all three (supervise's
+			// confirmCarrying).
 			SendFailures:      2,
 			LastSendFailureAt: &lastSendFailure,
 			LastSendError:     "prompt the agent: context deadline exceeded",

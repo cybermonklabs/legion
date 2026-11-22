@@ -604,6 +604,10 @@
         "since": 46
       },
       {
+        "value": "caches",
+        "since": 213
+      },
+      {
         "value": "configuration",
         "since": 46
       }
@@ -1121,23 +1125,23 @@
     "values": [
       {
         "value": "bound",
-        "since": 217
+        "since": 228
       },
       {
         "value": "consumer moved past",
-        "since": 217
+        "since": 228
       },
       {
         "value": "did not end",
-        "since": 217
+        "since": 228
       },
       {
         "value": "retention",
-        "since": 217
+        "since": 228
       },
       {
         "value": "undecodable",
-        "since": 217
+        "since": 228
       }
     ]
   },
@@ -2003,19 +2007,19 @@
     "values": [
       {
         "value": "already applied",
-        "since": 217
+        "since": 228
       },
       {
         "value": "applied",
-        "since": 217
+        "since": 228
       },
       {
         "value": "failed",
-        "since": 217
+        "since": 228
       },
       {
         "value": "no fact",
-        "since": 217
+        "since": 228
       }
     ]
   }

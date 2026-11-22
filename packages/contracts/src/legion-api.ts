@@ -479,12 +479,12 @@ const legionGateView = z.object({
  * its primary document. */
 const legionDesignStep = z.enum(GATED_STEPS);
 
-/** `api.GatedStepView` — one step of the deployment's design gate as one issue stands in it
- * (contract 55). `artifactId` and `currentVersion` are the document its architect registered for
- * the step and that document's current version, absent until one is registered; `approvedVersion`
- * is the version a person approved, null until one does. `status` is where the step stands:
- * `unregistered` (the deployment gates it and the issue holds no record of it, so it holds the
- * tree's work), `waiting` (registered, and no person has reviewed its current version),
+/** `api.GatedStepView` — one step of a tree's design gate (`record.TreeSteps`) as its root
+ * stands in it (contract 55). `artifactId` and `currentVersion` are the document its architect
+ * registered for the step and that document's current version, absent until one is registered;
+ * `approvedVersion` is the version a person approved, null until one does. `status` is where the
+ * step stands: `unregistered` (the deployment gates it and the issue holds no record of it, so it
+ * holds the tree's work), `waiting` (registered, and no person has reviewed its current version),
  * `approved` (a person approved its current version, the one status that lets the work past the
  * step) or `changes_requested` (its reviewer asked for changes at its current version, with
  * `changesReason` the reason they gave; absent under every other status). */
@@ -775,12 +775,15 @@ const legionIssue = z.object({
   workers: z.partialRecord(z.string(), legionPhaseView).optional(),
   pullRequest: legionPullRequestView.optional(),
   designGate: legionGateView.optional(),
-  /** The deployment's design gate as this issue stands in it, one entry for each step the
-   * deployment gates, in the order it gates them (contract 55). This daemon always writes it, and
-   * it is empty for an issue that is not its tree's root, for a deployment that gates no step and
-   * for an issue the workflow does not record; a daemon before contract 55 writes none, which is
-   * why a reader takes it as absent rather than as an empty list. `designGate` above is unchanged
-   * beside it, the `spec` step's row, which a reader that asks one question of one gate takes. */
+  /** The design gate as this issue stands in it, one entry for each step that holds its tree: the
+   * steps the deployment gates, in the order it gates them (contract 55), then `criteria` where
+   * the deployment's list names `spec` and not `criteria` and the root registered its
+   * Verification document. This daemon always writes it, and it is empty for an issue that is not
+   * its tree's root, for a deployment that gates no step and for an issue the workflow does not
+   * record; a daemon before contract 55 writes none, which is why a reader takes it as absent
+   * rather than as an empty list.
+   * `designGate` above is unchanged beside it, the `spec` step's row, which a reader that asks one
+   * question of one gate takes. */
   gatedSteps: z.array(legionGatedStepView).optional(),
   slot: legionSlotView.optional(),
   /** Where the issue stands in `admission.waiting` (contract 58): present only for an issue that
@@ -1065,15 +1068,18 @@ const legionAgentSecretsLoginView = z.object({
  * `mcp`, `repository-extensions`, `dispatch-envoy-tools`, `github`) is `present` or `open` from the
  * sessions' reports (`legionCapabilityReportView`), and carries no `configLine`; `live` is no
  * status since contract 21. `source` is, on a deployment row, `configuration` (what legion.yaml
- * alone decides) or `boot` (what boot measured); absent on every other row (contract 25). A gap is
- * reported here, never refused (contract 16). */
+ * alone decides) or `boot` (what boot measured), absent on every other row (contract 25), or, on
+ * `repository-cache-room`, `caches`: what the repository caches' last health reads said of their
+ * room (contract 213). A caller below 213 is served that row without `source`, since the enum it
+ * was built with names two words: a value follows the contract the caller states, else its pod's
+ * lowest recorded contract. A gap is reported here, never refused (contract 16). */
 const legionCapabilityState = z.object({
   name: nonEmptyString.optional(),
   status: z.enum(["present", "unchecked", "withheld", "decided", "open"]).optional(),
   detail: nonEmptyString.optional(),
   decision: nonEmptyString.optional(),
   configLine: nonEmptyString.optional(),
-  source: z.enum(["configuration", "boot"]).optional(),
+  source: z.enum(["configuration", "boot", "caches"]).optional(),
 });
 
 /** `api.Settings` — the daemon's resolved legion.yaml with every credential, credential source and
@@ -1197,7 +1203,7 @@ const LEGION_INTAKE_GIVE_UP_REASONS = [
   "consumer moved past",
 ] as const;
 
-/** `api.IntakeGiveUpCountView` — one durable consumer's open give-ups (contract 217): its `name`,
+/** `api.IntakeGiveUpCountView` — one durable consumer's open give-ups (contract 228): its `name`,
  * how many are `open`, and `newestSeq`, the newest stream sequence among them, which a replay or a
  * discard of all of them names as its `throughSeq`. A consumer with none open is not listed. The
  * controller's `read_state` summary prints all three, so each is required (LEGION_ANSWER_READS). */
@@ -1227,7 +1233,7 @@ const legionIntakeGiveUp = z.object({
   lastError: z.string().optional(),
 });
 
-/** `api.IntakeGiveUpsView` — the intake's open give-ups (contract 217), the messages it gave up on
+/** `api.IntakeGiveUpsView` — the intake's open give-ups (contract 228), the messages it gave up on
  * that no replay or discard has closed: `consumers`, each consumer with one open, by name, and
  * `newest`, the newest of them, latest given up first, at most 50. The daemon writes both lists
  * on every body, never null and empty while nothing is open. The controller's summary reads
@@ -1363,10 +1369,10 @@ const legionPaused = z.object({
  * same way (`api.stateFor`, `withoutPause`), so a reader below 178 learns nothing of the pause
  * from a state that carries neither. `intakeGiveUps` is the intake's open give-ups, the messages
  * it gave up on that no replay or discard has closed, counted by consumer and the newest of them
- * listed (contract 217). The daemon writes it on every body, its two lists empty while nothing is
+ * listed (contract 228). The daemon writes it on every body, its two lists empty while nothing is
  * open, and it is optional for the reason `wakesWaiting` is: the route strips it for a caller
- * below 217, read the same way (`api.stateFor`, `withoutIntakeGiveUps`), since a reader before
- * 217 refuses the key whether its lists are empty or not. */
+ * below 228, read the same way (`api.stateFor`, `withoutIntakeGiveUps`), since a reader before
+ * 228 refuses the key whether its lists are empty or not. */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo.optional(),
   contract: legionContract.optional(),
@@ -1948,7 +1954,7 @@ const LEGION_INTAKE_REPLAY_OUTCOMES = ["applied", "already applied", "no fact", 
 
 /** `api.IntakeReplayResponse`, the answer to a replay of give-ups, the controller's `POST
  * /legion/v1/intake/replay` and the operator's `POST /legion/v1/operator/intake/replay` alike
- * (contract 217): `replayed`, each record the replay took, in stream order, with its id, consumer,
+ * (contract 228): `replayed`, each record the replay took, in stream order, with its id, consumer,
  * stream sequence and outcome, and for `failed` the `error`, which the record keeps as its last
  * error; and `remaining`, the open records of the selection left after it, which another call
  * takes. The controller's `replay_give_up` hands the daemon's answer to its agent whole
@@ -1973,7 +1979,7 @@ export type LegionIntakeReplay = z.output<typeof LegionIntakeReplayResponse>;
 
 /** `api.IntakeDiscardResponse`, the answer to a discard of give-ups, the controller's `POST
  * /legion/v1/intake/discard` and the operator's `POST /legion/v1/operator/intake/discard` alike
- * (contract 217): `discarded`, the id of each record it closed, in stream order. The controller's
+ * (contract 228): `discarded`, the id of each record it closed, in stream order. The controller's
  * `discard_give_up` hands it to its agent whole, so the field is optional, as the replay's are. */
 export const LegionIntakeDiscardResponse = z.object({
   discarded: z.array(z.number().int().positive()).optional(),
@@ -2161,10 +2167,11 @@ export const LegionOperatorProjectPauseRequest = z.strictObject({
 });
 
 /** `api.GateRegisterRequest`, the tree root's architect's current Dispatch document approval
- * target, for one step of the deployment's design gate; the daemon refuses it from a child's own
- * architect (`GATE_ROOT_ONLY`). `step` is the step the document is for; a deployment
- * that gates one step alone takes a request that leaves it out, and one that gates several
- * refuses it (`GATE_STEP_REQUIRED`). */
+ * target, for one step of the tree's design gate (`record.TreeSteps`); the daemon refuses it from
+ * a child's own architect (`GATE_ROOT_ONLY`). `step` is the step the document is for; the
+ * deployment's list says which steps a registration takes, with `criteria` beside a list that
+ * names `spec` and not `criteria`. A deployment that gates one step alone takes a request that
+ * leaves it out, and one that gates several refuses it (`GATE_STEP_REQUIRED`). */
 export const LegionGateRegisterRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
@@ -2215,7 +2222,8 @@ export const LegionEscalateRequest = z.strictObject({
  * it to `retro`; the daemon refuses it in every other phase (`SIGNOFF_OUTSIDE_ACCEPTING`). Since
  * contract 51 it is also refused while an issue beneath that one is still in the workflow
  * (`SIGNOFF_CHILD_IN_WORKFLOW`, naming them): children are accepted and merged before their
- * parent, whose own head proves their merged work (dispatch://INFRA-980). */
+ * parent, since a parent is accepted only once no issue beneath it is still in the workflow
+ * (dispatch://INFRA-980). */
 export const LegionSignOffRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
@@ -2375,9 +2383,9 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "lastPause.endedBy|0.kind",
     "lastPause.endedBy|1.kind",
     "lastPause.endedBy|0.session",
-    // The summary's lines on the intake's open give-ups (contract 217) print each consumer's
+    // The summary's lines on the intake's open give-ups (contract 228) print each consumer's
     // name, open count and newest sequence. `intakeGiveUps` stays optional: the daemon strips it
-    // for a caller below 217. The lag view of the state's `consumers` has a `name` too, and the
+    // for a caller below 228. The lag view of the state's `consumers` has a `name` too, and the
     // census matches a read by the field's name under its parent's, so the summary's read of a
     // give-up count's `name` is read as one of the lag view's as well, which is why this set
     // names `consumers[].name`; the lag view keeps the field optional all the same.
