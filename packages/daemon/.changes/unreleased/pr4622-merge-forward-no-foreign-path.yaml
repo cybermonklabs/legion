@@ -1,0 +1,6 @@
+kind: Changed
+custom:
+  Issue: pr4622
+body: |-
+  The merge-forward message no longer asks the implementer for the working-copy check of a
+  reference that this release deletes.

@@ -5,5 +5,4 @@ body: |-
   The role prompts' turn-start step now runs `jj new @-`, never `jj new`, when the working copy is
   not empty: it sets that change aside with an `aside/<change id>` bookmark, so the pod update round's
   read of unpushed work counts it, takes back only the role's own paths with `jj squash`, and tells
-  the architect the change id and every path left in it. A planner whose issue moved back from
-  implementing starts on the remote tip instead.
+  the architect the change id and every path left in it.
