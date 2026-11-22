@@ -109,10 +109,8 @@ export function StageSlot({
           <BodySlot {...props} acts={swapped && undrawn.viewsFocus ? undefined : acts} />
         </StageBox>
       ) : (
-        <ViewStage key={preset}>
-          <div className="contents" ref={viewBox}>
-            <View {...props} onAddressDrawn={onAddressDrawn} />
-          </div>
+        <ViewStage box={viewBox} key={preset}>
+          <View {...props} onAddressDrawn={onAddressDrawn} />
         </ViewStage>
       )}
     </DocumentStages>
@@ -194,8 +192,16 @@ const SLOT_TREE = '[role="tree"]';
  * stage's box does (`StageBox`), and the view draws its own measure. The stage draws one for each
  * view, keyed on it, so a view turned on is a new one, which takes the focus once.
  */
-export function ViewStage({ children }: { children: ReactNode }): ReactNode {
-  const box = useRef<HTMLDivElement>(null);
+export function ViewStage({
+  box: given,
+  children,
+}: {
+  /** The box's element, for a caller that reads it too (`StageSlot`); else the stage's own. */
+  box?: RefObject<HTMLDivElement | null>;
+  children: ReactNode;
+}): ReactNode {
+  const own = useRef<HTMLDivElement>(null);
+  const box = given ?? own;
   useEffect(() => {
     const stage = box.current;
     if (stage === null) return;
@@ -273,7 +279,7 @@ export function ViewStage({ children }: { children: ReactNode }): ReactNode {
       stage.removeEventListener("focusin", treeFocused);
       for (const frame of ending) cancelAnimationFrame(frame);
     };
-  }, []);
+  }, [box]);
   return <StageBox box={box}>{children}</StageBox>;
 }
 

@@ -1,5 +1,4 @@
-import type { QueryStatus } from "@tanstack/react-query";
-import { useQuery } from "@tanstack/react-query";
+import { type QueryStatus, useQuery } from "@tanstack/react-query";
 
 import { whoAmIQuery } from "../api/queries";
 
