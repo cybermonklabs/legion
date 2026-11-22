@@ -118,16 +118,13 @@
 # makes it write nothing, since the blocks would then be computed from a source that is
 # unknown. Any other word, or more than one, fails naming both.
 #
-# Why ci.yaml's lint job and not ci-filters: the ci-filters job has no Bun and no node_modules -
-# its steps are the checkout, actions/setup-go, check-ci-filters.sh, check-workflow-files.sh,
-# the actionlint step and the ci-ok report - so
-# `bunx tsc` there would install Bun and the dependency tree first, while lint already runs
-# `bun install --frozen-lockfile` for the Biome pass; lint is gated by no `changes` output, so a
-# change anywhere starts it, which is what a check of every filter needs; and the cost is small
-# against that job's 30 minutes, 36.9 s measured over the nine package programs and 55 s over
-# all fourteen programs this table held when that was measured, in a pod with node_modules
-# already installed, and the bundle of the dispatch command builds in under a second (`bun
-# build` reported 236 modules in 631 ms in such a pod).
+# Why ci.yaml's lint job and not ci-filters: lint is gated by no `changes` output, so a change
+# anywhere starts it, which is what a check of every filter needs, where ci-filters runs only on a
+# change its own filter selects; lint already runs `bun install --frozen-lockfile` for the Biome
+# pass; and the cost is small against that job's 30 minutes, 36.9 s measured over the nine package
+# programs and 55 s over all fourteen programs this table held when that was measured, in a pod
+# with node_modules already installed, and the bundle of the dispatch command builds in under a
+# second (`bun build` reported 236 modules in 631 ms in such a pod).
 #
 # Run from anywhere: .github/scripts/check-ts-filters.sh
 #                    .github/scripts/check-ts-filters.sh write

@@ -43,7 +43,8 @@ from pathlib import Path
 
 import yaml
 from go_build_tags import constraint_names, decode_stream, go_files, go_skips_dir, is_tag, platforms
-from workflow_paths import PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns
+from workflow_paths import (PATHS_FILTER_JS_YAML, PathsFilter, UniqueKeyLoader, events, glob_regex, load_paths_filter,
+                            unread_filter_patterns)
 
 WORKFLOW = ".github/workflows/ci.yaml"
 # The workflow that fills, on a push to main, the Go cache families WORKFLOW's jobs restore.
@@ -136,6 +137,16 @@ def load_repository_yaml_text(path: str, text: str):
     key is refused, as load_repository_yaml refuses it."""
     try:
         return yaml.load(text, Loader=UniqueKeyLoader)
+    except yaml.YAMLError as exc:
+        raise RepositoryInputError(path, exc) from exc
+
+
+def load_repository_filters_text(path: str, text: str):
+    """Parse dorny/paths-filter's filters, retaining their file's path: read by the action's own
+    js-yaml as well as by PyYAML, and refused where js-yaml refuses them or the two readings differ
+    (workflow_paths.load_paths_filter)."""
+    try:
+        return load_paths_filter(text)
     except yaml.YAMLError as exc:
         raise RepositoryInputError(path, exc) from exc
 
@@ -844,7 +855,7 @@ def changes_filters(document: dict, problems: list[Annotation]) -> tuple:
                                             f"it means two things; give every such step the same quantifier"))
         return {}, {}, lines
     quantifier = declared.pop()
-    loaded = load_repository_yaml_text(FILTERS_FILE, text)
+    loaded = load_repository_filters_text(FILTERS_FILE, text)
     if not isinstance(loaded, dict) or not loaded:
         problems.append(error(FILTERS_FILE, "this file holds no filter: dorny/paths-filter reads it as a mapping of "
                                             "filter name to patterns, and the changes job selects every job by it"))
@@ -868,6 +879,63 @@ def check_filter_inputs(workflows: dict, problems: list[Annotation]) -> None:
                                             f"`filters` input that is not exactly {FILTERS_FILE}; every filter is read "
                                             f"from that file, so one declared anywhere else is covered by no rule of "
                                             f"this check and gates its job on whatever it says, unread"))
+
+
+# What a step's `uses:` names when it pins dorny/paths-filter to a commit. GitHub resolves an
+# action's owner and repository without regard to case, so the name is matched so too.
+PATHS_FILTER_PIN = re.compile(r"dorny/paths-filter@([0-9A-Fa-f]{40})", re.IGNORECASE)
+
+
+def paths_filter_uses(document) -> list[str]:
+    """Every step's `uses` value naming dorny/paths-filter, in any case, in a parsed workflow (each
+    job's `steps`) or action (a composite action's `runs.steps`): a step written as a flow mapping
+    or its value as a block scalar is the same mapping once parsed. Only steps are read, so a key
+    named `uses` in an `env`, a `with` or a `run:` script's text is no step of the action."""
+    steps = []
+    if isinstance(document, dict):
+        jobs = document.get("jobs")
+        for job in (jobs.values() if isinstance(jobs, dict) else []):
+            if isinstance(job, dict) and isinstance(job.get("steps"), list):
+                steps += job["steps"]
+        runs = document.get("runs")
+        if isinstance(runs, dict) and isinstance(runs.get("steps"), list):
+            steps += runs["steps"]
+    return [step["uses"].strip() for step in steps
+            if isinstance(step, dict) and isinstance(step.get("uses"), str)
+            and step["uses"].strip().lower().startswith("dorny/paths-filter@")]
+
+
+def check_paths_filter_pins(files: list, problems: list[Annotation]) -> None:
+    """Rule 21's pin half: every dorny/paths-filter step pinned to a commit, in a workflow of
+    .github/workflows or in an action file (action.yml, action.yaml) of any directory, since a
+    composite action's steps run as its caller's do, pins one whose js-yaml
+    workflow_paths.PATHS_FILTER_JS_YAML records. The filters are read with that js-yaml
+    (load_paths_filter), so a bump of the pin is refused until its js-yaml is recorded and
+    package.json's alias installs it. Each file is parsed and its steps read (paths_filter_uses);
+    a file that does not parse is refused here too, since its pins could not be read."""
+    for path in files:
+        name = path.rsplit("/", 1)[-1]
+        workflow = path.startswith(".github/workflows/") and name.endswith((".yml", ".yaml"))
+        if not (workflow or name in ("action.yml", "action.yaml")):
+            continue
+        text = read_repository_text(REPO / path)
+        try:
+            document = yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            problems.append(error(path, f"{path} is not valid YAML ({' '.join(str(exc).split())}), so the "
+                                        f"dorny/paths-filter commits it pins could not be read"))
+            continue
+        for uses in paths_filter_uses(document):
+            match = PATHS_FILTER_PIN.fullmatch(uses)
+            if match is None or match.group(1).lower() in PATHS_FILTER_JS_YAML:
+                continue
+            at = text.find(uses)
+            where = f"{path}:{text.count(chr(10), 0, at) + 1}" if at >= 0 else path
+            problems.append(error(path, f"{where} pins dorny/paths-filter@{match.group(1)}, whose js-yaml "
+                                        f"workflow_paths.PATHS_FILTER_JS_YAML does not record; read that commit's "
+                                        f"package-lock.json (node_modules/js-yaml), record the pair there, and set "
+                                        f"package.json's js-yaml-paths-filter alias to that version, so this check "
+                                        f"reads the filters as the action does"))
 
 
 # A `steps.<id>.outputs.<name>` of an output of the changes job: which step's verdict it hands on.
@@ -2277,9 +2345,9 @@ def rule_required_files(data, filters: dict, gate_files: dict, selection: Select
     And .github/scripts/check-ts-filters.sh does it from outside: it writes into a filter a
     listed block (TS_LISTED below) of the files of a tree that a job's tsc programs compile or the
     entry it runs with Bun loads, and refuses a committed block that is not exactly that, in
-    ci.yaml's lint job, since this one has no Bun to run tsc or `bun build` with. Those files are
-    reads of the job this check cannot compute, so the patterns of such a block, one file each,
-    are passed over here; the filter's coverage of them is that check's to prove
+    ci.yaml's lint job, which every change starts; this check runs no tsc and no `bun build`. Those
+    files are reads of the job this check cannot compute, so the patterns of such a block, one file
+    each, are passed over here; the filter's coverage of them is that check's to prove
     (ci_ts_programs.py, LISTED).
 
     This widens to nothing else. A pattern is passed over only when every file it matches is in
@@ -2816,6 +2884,7 @@ def check() -> int:
     check_ci_ok(documents, problems)
     check_output_steps(document, filters, problems)
     check_filter_inputs(rules.directory_workflows(), problems)
+    check_paths_filter_pins(files, problems)
     rules.check_push_conditions(documents, problems)
     rules.check_rerun_guard(document, problems)
     rules.check_cache_round_trip(documents, problems)
@@ -2934,12 +3003,16 @@ def check() -> int:
 
 
 def main() -> int:
-    """Run the checker without allowing repository text into an unprotected workflow log."""
+    """Run the checker without allowing repository text into an unprotected workflow log. A
+    SystemExit is let through: workflow_paths.js_yaml_reading ends the check with one when what it
+    reads the filters with is missing, and its `::error::` line must stay an annotation."""
     try:
         return check()
     except RepositoryInputError as exc:
         print_annotation(exc.annotation())
         return 1
+    except SystemExit:
+        raise
     except BaseException:
         token = secrets.token_hex(16)
         print(f"::stop-commands::{token}", flush=True)

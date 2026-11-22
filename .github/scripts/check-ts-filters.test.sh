@@ -23,7 +23,9 @@
 # listed by a stand-in bunx on the fixture's PATH, which prints the list the fixture wrote for
 # the project, and the bundles built by a stand-in bun beside it, which writes the metafile of
 # the list the fixture wrote beside the entry: a case's input is then the file list itself, and
-# the harness needs no Bun, no node_modules and no tsc. It needs a python3 with PyYAML.
+# the harness needs no Bun and no tsc. It needs a python3 with PyYAML, and node with the
+# repository's node_modules (bun install --frozen-lockfile), which the engine reads the fixture's
+# filters with (workflow_paths.load_paths_filter).
 #
 # Run from anywhere: .github/scripts/check-ts-filters.test.sh
 # CI runs it in ci.yaml's test job.

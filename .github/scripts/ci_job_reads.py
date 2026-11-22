@@ -3774,6 +3774,9 @@ GATES = [
                                     "from the project it runs in"),
         (".github/actions/**", f"{at('ci-filters', ACTIONLINT_STEP)}: actionlint reads the action.yml of every "
                                "local action a step's `uses:` names, for the inputs it checks"),
+        ("**/action.y*ml", f"{at('ci-filters', CHECK_STEP)}: check_paths_filter_pins reads every action file "
+                           "(action.yml, action.yaml) of the repository for a dorny/paths-filter pin whose js-yaml "
+                           "is not recorded"),
         (".github/scripts/ci_filter_coverage.py", "check-ci-filters.sh's engine"),
         (".github/scripts/ci_job_reads.py", "check-ci-filters.sh's data"),
         (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and "
@@ -3806,7 +3809,10 @@ GATES = [
                          "test files, so one added or deleted changes this check's own answer"),
     ) + reads(*((path, f"check-ci-filters.sh holds its on.push.paths equal to the {name} filter (PUSH_WORKFLOWS)")
                 for name, path in PUSH_WORKFLOWS.items()))
-      + setup_go("ci-filters", f"{DAEMON}/go.mod")),
+      + setup_go("ci-filters", f"{DAEMON}/go.mod")
+      # The check reads the filters with node_modules' js-yaml-paths-filter under Node 24
+      # (workflow_paths.load_paths_filter), which the job's frozen install puts there.
+      + bun_job("ci-filters")),
 
     # The proof-sdk-offline job: a frozen install behind a proxy that answers 504 for every host
     # the proof editor's old `github:sjawhar/proof-sdk#<sha>` route used, which proves the

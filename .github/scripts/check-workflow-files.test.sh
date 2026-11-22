@@ -196,6 +196,96 @@ check "names the anchored mapping's second key" \
   "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=5::.github/workflows/ci.yaml:5: the mapping key 'HTTP_PROXY' is the key 'http_proxy' of line 4 again")"
 check "reports it once, not once per alias" "$(is "$(errors "$out")" 1)"
 
+echo "case: a key written again as an alias of itself"
+# PyYAML composes the alias to the very node its anchor composed, so the two copies are one node,
+# and that node carries the anchor's line alone; the report names the alias's own line. GitHub's
+# workflow parser refuses the file.
+root=$(fixture aliased-key)
+cat > "$root/.github/workflows/ci.yaml" <<'YAML'
+name: Build
+on: push
+env:
+  &proxy HTTP_PROXY: http://proxy.invalid:3128
+  *proxy : http://proxy.invalid:3128
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the alias's line, the alias, and the key and line it repeats" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=5::.github/workflows/ci.yaml:5: the mapping key 'HTTP_PROXY', written as the alias \*proxy, is the key 'HTTP_PROXY' of line 4 again\. GitHub's workflow parser refuses a mapping key written as an alias, while YAML keeps the last of the two")"
+check "reports it once" "$(is "$(errors "$out")" 1)"
+
+echo "case: an alias of a key anchored in another mapping, beside the plain key"
+root=$(fixture aliased-key-elsewhere)
+cat > "$root/.github/workflows/ci.yaml" <<'YAML'
+name: Build
+on: push
+env:
+  NO_PROXY: localhost
+  &proxy HTTP_PROXY: http://proxy.invalid:3128
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      HTTP_PROXY: http://proxy.invalid:3128
+      *proxy : http://proxy.invalid:3128
+    steps:
+      - run: echo build
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the alias's own line and the plain key's, not the anchor's" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=11::.github/workflows/ci.yaml:11: the mapping key 'HTTP_PROXY', written as the alias \*proxy, is the key 'HTTP_PROXY' of line 10 again\. ")"
+check "reports it once" "$(is "$(errors "$out")" 1)"
+
+echo "case: an alias of a value that repeats a plain key"
+root=$(fixture aliased-value-key)
+cat > "$root/.github/workflows/ci.yaml" <<'YAML'
+name: Build
+on: push
+env:
+  ANCHOR: &key HTTP_PROXY
+  HTTP_PROXY: http://proxy.invalid:3128
+  *key : http://proxy.invalid:3128
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the alias's own line and the plain key's, not the anchor's" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=6::.github/workflows/ci.yaml:6: the mapping key 'HTTP_PROXY', written as the alias \*key, is the key 'HTTP_PROXY' of line 5 again\. ")"
+check "reports it once" "$(is "$(errors "$out")" 1)"
+
+echo "case: a key written as an alias that repeats no key"
+# GitHub's published workflow parser (@actions/workflow-parser 0.3.61) refuses a mapping key
+# written as an alias whether or not it repeats one ("Unexpected value 'undefined'"); YAML reads
+# it as the key its anchor names.
+root=$(fixture aliased-key-once)
+cat > "$root/.github/workflows/ci.yaml" <<'YAML'
+name: Build
+on: push
+env:
+  NAME: &key HTTP_PROXY
+  *key : http://proxy.invalid:3128
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the key, its line and the alias it is written as" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=5::.github/workflows/ci.yaml:5: the mapping key 'HTTP_PROXY' is written as the alias \*key\. GitHub's workflow parser refuses a mapping key written as an alias, ")"
+check "reports it once" "$(is "$(errors "$out")" 1)"
+
 echo "case: a key holding a newline and a workflow command, and its upper-case twin"
 # The message repeats both keys, and the runner reads each line of a step's output as a command
 # of its own: unescaped, the newline in each key would start a ::warning the file never asked for.

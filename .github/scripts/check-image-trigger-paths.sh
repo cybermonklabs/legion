@@ -197,8 +197,8 @@ import sys
 from pathlib import Path
 
 import yaml
-from workflow_paths import (Filter, PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns,
-                            unread_patterns, walk)
+from workflow_paths import (Filter, PathsFilter, UniqueKeyLoader, events, glob_regex, load_paths_filter,
+                            unread_filter_patterns, unread_patterns, walk)
 
 WORKFLOWS = Path(".github/workflows")
 # Where ci.yaml's changes job keeps the filters it gates its jobs by: its one dorny/paths-filter
@@ -1280,13 +1280,14 @@ def step_filters(step: dict) -> dict | None:
     `filters` input (src/main.ts, isPathInput): the path of a file when the text holds no newline
     and no colon, and inline YAML otherwise. ci.yaml's changes job hands it .github/ci-filters.yaml
     that way. Empty when inline filters are not a mapping. None when inline filters are not valid
-    YAML, a repeated key included, or when the file a step names is absent, refuses the open, is
-    not valid YAML or holds no mapping, each refused here naming the file and which, so the gate it
-    decides is refused rather than read as one with no filter."""
+    YAML, a repeated key included, or the action's js-yaml refuses them or reads them otherwise than
+    PyYAML (load_paths_filter), or when the file a step names is absent, refuses the open, is not
+    valid YAML so read or holds no mapping, each refused here naming the file and which, so the gate
+    it decides is refused rather than read as one with no filter."""
     given = str((step.get("with") or {}).get("filters", "")).strip()
     if not given or "\n" in given or ":" in given:
         try:
-            filters = yaml.load(given, Loader=UniqueKeyLoader) or {}
+            filters = load_paths_filter(given) or {}
         except yaml.YAMLError as error:
             problems.append(f"::error::a dorny/paths-filter step's inline filters are not "
                             f"valid YAML: {' '.join(str(error).split())}, so no gate that step decides can be read")
@@ -1312,7 +1313,7 @@ def filters_file(path: str) -> dict | None:
                         f"{why}), and {reads}, so no gate that step decides can be read")
         return None
     try:
-        filters = yaml.load(text, Loader=UniqueKeyLoader)
+        filters = load_paths_filter(text)
     except yaml.YAMLError as error:
         problems.append(f"::error file={path}::{path} is not valid YAML: {' '.join(str(error).split())}, and "
                         f"{reads}, so no gate that step decides can be read")
