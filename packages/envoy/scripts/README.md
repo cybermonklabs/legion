@@ -909,9 +909,11 @@ in silence:
   `claude-envoy@legion-plugins` prints `SKIPPED`. A pi-envoy in `~/.omp/plugins` or a profile's
   plugin tree that is not the dotfiles' copy, a claude-envoy recorded in `~/.claude` or another
   `CLAUDE_CONFIG_DIR`, a link that does not resolve, a directory the gate may not search, a
-  marketplace entry it cannot read, and a marketplace that names claude-envoy twice print
-  `UNKNOWN`. A session started before a pin moved still runs the plugin it loaded: the gate reads
-  pins and installs, not processes.
+  marketplace entry it cannot read, a marketplace that names claude-envoy twice, and a profile,
+  `HOME`, dotfiles directory or `CLAUDE_CONFIG_DIR` whose name is not UTF-8 print `UNKNOWN`. The
+  gate hands each path to `python3` and `jq` as an argument, and a launcher that reads its
+  arguments as text (a mise shim) changes a name that is not UTF-8. A session started before a pin
+  moved still runs the plugin it loaded: the gate reads pins and installs, not processes.
 
 It prints a line per pin or surface (`PASS`, `GATE SHUT`, `UNKNOWN`, `SKIPPED`, `VM HUB` or
 `NO VM HUB`) and the verdict on the last: `GATE OPEN` (exit 0) only when every pin it read passed
@@ -1102,6 +1104,12 @@ it is restored, whether or not the restore succeeded. `DISPATCH_CORPUS_CONTAINER
 `DISPATCH_CORPUS_DATABASE` (default `dispatch_corpus`) name the copy. Run again while the container
 holds the database, it prints the URL and restores nothing; `docker rm -f -v <container>` deletes the
 copy and its data volume.
+
+`corpus-copy.sh` restores the dump with `restore-dispatch-dump.sh <dump-file> [database-name]`,
+which restores one dump on any server: into a database of its own on the server
+`DISPATCH_ADMIN_URL` names (default: `dispatch-pg`'s), after which it prints that database's
+`DATABASE_URL`. The printed URL leaves out any password `DISPATCH_ADMIN_URL` carries, which its
+operator already holds, and keeps the default's fixed dev password `dispatch`.
 
 `search-smoke.sh` prints what a searcher sees for each query in a file
 (`search-smoke-queries.txt` is one): it starts `envoy-dispatch` against the copy, built from this

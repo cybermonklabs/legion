@@ -84,7 +84,8 @@ type documentPlan struct {
 	Versions int
 	Primary  bool
 	Large    bool
-	// Chain is the document this one's text mentions, for the chains refs.Closure walks, or -1.
+	// Chain is the document this one's text mentions, for the chains main's eight-hop closure
+	// statement walked (mainClosureQuery in refs/closure_test.go), or -1.
 	Chain int
 }
 
@@ -152,9 +153,10 @@ type componentPlan struct {
 	Depends string
 }
 
-// chainLength is how many documents one mention chain holds. refs.Closure follows mentions for
-// eight hops and marks a ninth truncated, so a chain of nine documents is exactly a closure that
-// reaches its bound.
+// chainLength is how many documents one mention chain holds. main's closure statement
+// (mainClosureQuery in refs/closure_test.go) followed mentions for eight hops and marked a ninth
+// truncated, so a chain of nine documents is exactly a walk of that statement that reaches its
+// bound. refs.Closure reads one hop, so it follows no chain past the first document it reaches.
 const chainLength = 9
 
 // parentChainCap is the deepest parent chain the seed writes. The spec asks for chains of one to
@@ -293,7 +295,8 @@ func removeIndex(values []int, value int) []int {
 
 // planDocuments gives every issue its primary document and spreads the rest over the issues and
 // the projects. The first documents are the ones with 28 versions and the ones whose latest
-// version is large, and the first chains of them are the mention chains the closure walks.
+// version is large, and the first chains of them are the mention chains main's closure statement
+// walked.
 func (p *seedPlan) planDocuments() {
 	s := p.sizes
 	p.documents = make([]documentPlan, s.Documents)
@@ -326,8 +329,8 @@ func (p *seedPlan) planDocuments() {
 		}
 		p.documents[index] = document
 	}
-	// The chains: document j of a chain mentions document j+1, so a closure from the head walks
-	// chainLength-1 hops of artifact-to-artifact mentions and the same number of
+	// The chains: document j of a chain mentions document j+1, so main's closure statement walked
+	// chainLength-1 hops of artifact-to-artifact mentions from the head and the same number of
 	// artifact-to-block ones.
 	chains := max(1, len(p.documents)/200)
 	for chain := range chains {

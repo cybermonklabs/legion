@@ -96,6 +96,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# psql is given a database URL without its password, and the password in PGPASSWORD.
+# shellcheck source-path=SCRIPTDIR source=lib/pg-url.sh
+. "$SCRIPT_DIR/lib/pg-url.sh"
 
 usage() {
 	cat <<'EOF'
@@ -295,7 +298,7 @@ STANDS_BIN="$DEV_BROKER_DIR/bin/dev-airlock-stands"
 # The database dev-broker.sh made for this run, which the one property about what the broker
 # itself wrote is read from. The name is the one dev-broker.sh logged as it created it, and the
 # server, the role and any password are DEV_BROKER_POSTGRES_URL's own, left exactly as the
-# caller gave them: the banner stars a password out, so a URL built from the banner could not
+# caller gave them: the banner leaves a password out, so a URL built from the banner could not
 # connect, and one parsed back out of it would put that password through this script.
 BROKER_DB_NAME="$(sed -n 's/^dev-broker: created isolated database \(.*\)$/\1/p' "$STACK_LOG" | head -n 1)"
 if [ -z "$BROKER_DB_NAME" ] || ! [[ "$DEV_BROKER_POSTGRES_URL" =~ ^(postgres(ql)?://[^/?]+)/[^/?]*(\?.*)?$ ]]; then
@@ -427,7 +430,7 @@ standin_read() { # <token> <owner/repository>
 # writes none, so the count before a run and after it is how that is read. The broker serves no
 # count of its own, so it comes from the broker's own database (BROKER_DB_URL).
 pending_records() {
-	psql "$BROKER_DB_URL" -v ON_ERROR_STOP=1 -Atqc 'select count(*) from credential_requests'
+	pg_url_run "$BROKER_DB_URL" psql -v ON_ERROR_STOP=1 -Atqc 'select count(*) from credential_requests'
 }
 
 # answers sets what the stand-in answers every token request from then on: ordinary, refuse,
