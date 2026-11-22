@@ -1366,8 +1366,10 @@ test("an answer a read out at a delete lands with the post's words keeps the del
 // "references"]`, the Artifacts tab's) names a comment on another issue that links to it by the
 // head of the comment's words. The comment's delete is that other issue's event, which names the
 // issue among those whose references it changed (`references_changed`), so the feed sends the
-// issue's references read again, and here that read fails: the answer the tab draws keeps the
-// delete's mark and an empty name, and none of the comment's words.
+// issue's references read again, and here that read fails. The tab then draws "References
+// unavailable" (`ArtifactsTab.tsx`, `QueryError`), not the rows; the answer the cache keeps, which
+// the tab draws while the read is retried and once a later read answers, holds the delete's mark
+// and an empty name, and none of the comment's words.
 test("an issue's references read whose refetch fails after a linking comment's delete keeps the delete's mark, an empty name and none of its words", async () => {
   const deleted = {
     ...correction("comment", POST, false, {
