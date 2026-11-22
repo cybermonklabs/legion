@@ -462,8 +462,10 @@ func TestProbeImageProbesAnOmpWhosePathHoldsAShellCharacter(t *testing.T) {
 	// probe builds it (tlsClientSpec.build, here among stand-ins for the other clients), and the
 	// role overlay read (--role-config-files, capabilities.CheckOverlays). Under a directory whose
 	// name holds a space, a quote and a '?', the omp answers the TLS client's `--eval` as a client
-	// refusing the compromised chains and reaching the control, marking that it ran, and hands
-	// every other call to the stand-in omp; the role's overlay sits in the same directory.
+	// refusing the compromised chains and reaching the control (with the line the fetch program
+	// prints, tlsFetchAnswer), marking that it ran, and hands every other call to the stand-in omp;
+	// the role's overlay sits in the same directory. The stand-in makes no handshake, so it is
+	// counted as having reached the probe's server (reachingTLSClient), as the other stand-ins are.
 	t.Run("the TLS omp client and the role overlays under x y'q?x", func(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "x y'q?x")
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -473,7 +475,7 @@ func TestProbeImageProbesAnOmpWhosePathHoldsAShellCharacter(t *testing.T) {
 		script := "#!/bin/sh\n" +
 			"if [ \"$1\" = --eval ]; then\n" +
 			"  : >" + shellprefix.Literal(ran) + "\n" +
-			"  [ \"$LEGION_TLS_URL\" != " + shellprefix.Literal(controlTLSSite.url) + " ] || exit 0\n" +
+			"  if [ \"$LEGION_TLS_URL\" = " + shellprefix.Literal(controlTLSSite.url) + " ]; then echo 'legion-tls-probe: answered 200' >&2; exit 0; fi\n" +
 			"  echo 'certificate verify failed' >&2\n  exit 1\nfi\n" +
 			"exec " + shellprefix.Literal(imageOmp(t)) + " \"$@\"\n"
 		if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
@@ -484,11 +486,14 @@ func TestProbeImageProbesAnOmpWhosePathHoldsAShellCharacter(t *testing.T) {
 		}
 		seen := filepath.Join(t.TempDir(), "seen")
 		t.Setenv("LEGION_TEST_SEEN", seen)
+		// No PI_CONFIG_FILES of the operator's: the caller's own (a dev box's omp config) would be
+		// the role's list's head, and Oh My Pi would read the role's file alone only once.
+		t.Setenv("PI_CONFIG_FILES", "")
 		realOmpClient := func(invocation string, env []string, stateDir string) []tlsClient {
 			clients := passingImageTLSClients(invocation, env, stateDir)
 			for index, spec := range workerTLSClients {
 				if spec.name == "omp" {
-					clients[index] = spec.build(invocation, env, stateDir)
+					clients[index] = reachingTLSClient{spec.build(invocation, env, stateDir)}
 				}
 			}
 			return clients
@@ -507,8 +512,8 @@ func TestProbeImageProbesAnOmpWhosePathHoldsAShellCharacter(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// With no PI_CONFIG_FILES of the operator's, the role's whole list is its one file, so Oh My
-		// Pi reads it twice: alone, and as the whole list.
+		// With no PI_CONFIG_FILES of the operator's (emptied above), the role's whole list is its
+		// one file, so Oh My Pi reads it twice: alone, and as the whole list.
 		if got := len(regexp.MustCompile(`(?m)^`+regexp.QuoteMeta(overlay)+` written file$`).FindAllString(string(raw), -1)); got != 2 {
 			t.Errorf("Oh My Pi ran %d times on the implementer's overlay %s, want twice (alone and as the whole list): %q", got, overlay, raw)
 		}
