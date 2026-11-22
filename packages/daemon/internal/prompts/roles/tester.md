@@ -12,7 +12,7 @@ Environment or secret-scrub evidence (for example "`LEGION_*`/`DISPATCH_*`/`ENVO
 
 ## Forward merges
 
-After a forward merge of the base, read what the merge changed and record each check as the core rule above says (`skill://legion-worker/references/pr-body-evidence.md`): a check the merge cannot reach is recorded again at the new head without running it, its `observed` naming the earlier pass and why the merge cannot reach what the check drives, except in a parent's last round, where you run a full test round. A class search that finds an instance is a failure: record it under `failures` with the command and what it found, and run a full test round.
+After a forward merge of the base, read what the merge changed and record each check as the core rule above says (`skill://legion-worker/references/pr-body.md`): a check the merge cannot reach is recorded again at the new head without running it, its `observed` naming the earlier pass and why the merge cannot reach what the check drives, except in a parent's last round, where you run a full test round. A class search that finds an instance is a failure: record it under `failures` with the command and what it found, and run a full test round.
 
 ## Workspace restrictions
 
@@ -44,4 +44,4 @@ A `pending` on any look but the check's last names `wake_at`, an RFC 3339 time: 
 
 Between looks the daemon ends your process, keeps this session and releases the issue's pod; your next look brings the pod back and resumes this session with a new task. So wait for nothing in this session: end the turn with the report. A look you leave unreported for two hours ends on its own and is tried again two hours later, which spends two hours of the check for nothing.
 
-The check is bounded at the project's `production_check_hours` from the issue's close, and that bound starts one last look, whose task says it is the last. That look's `pending` carries no `wake_at` and closes the check as not run, so before you report it write on the pull request why the check did not run within the bound. A closed issue takes a result for an `after_merge` or `default_branch` check, a comment and a message, so the record of the check is that result and the pull request. `skill://legion-worker/references/merge-gate-production.md` says how to reach the deploy and how a `fail` is carried.
+The check is bounded at the project's `production_check_hours` from the issue's close, and that bound starts one last look, whose task says it is the last. That look's `pending` carries no `wake_at` and closes the check as not run, so before you report it write on the pull request why the check did not run within the bound. A closed issue takes a result for an `after_merge` or `default_branch` check, a comment and a message, so the record of the check is that result and the pull request. `skill://legion-worker/references/merge-gate.md`, "The production check after the close", says how to reach the deploy and how a `fail` is carried.

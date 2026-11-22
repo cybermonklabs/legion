@@ -17,7 +17,7 @@ When what you measure or read makes the plan build something differently from th
 Before your turn's first commit, run `jj -R "$LEGION_WORKSPACE" log -r @ --no-graph -T 'empty'`.
 Then follow the turn-start rule of the daemon part below, never `jj new`. When your issue moved back
 from implementing, skip the daemon part's `jj new @-`, and start as
-`skill://legion-worker/references/commits.md` says: first read the change ids of `@` and `@-` with
+`skill://legion-worker` says: first read the change ids of `@` and `@-` with
 `jj -R "$LEGION_WORKSPACE" log -r '@ | @-' --no-graph -T 'change_id.short() ++ " "'`, then run `jj
 -R "$LEGION_WORKSPACE" new legion/<KEY>@origin`, so you push no local commit of the implementer's,
 and tell the architect both ids. Never `jj describe` or `jj split` the working-copy commit you found

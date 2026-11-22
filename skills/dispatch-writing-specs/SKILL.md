@@ -10,9 +10,9 @@ description: "Use when you write or change a spec, ask, comment or message a per
 Reach shared understanding at the least cost of the person's time. A spec is a conversation, not a document you write and then ask about. A Legion phase worker writes none (`skill://legion-worker`).
 
 1. Read the issue, the code that already does the nearest thing, and what the person wrote.
-2. Send what you found and the questions it leaves open, two or three at a time, before the spec states a design.
+2. Send what you found and the questions it leaves open, a few at a time, before the spec states a design.
 3. Write each part only after the answers it rests on.
-4. A wrong premise or a changed request changes the issue's request before the spec.
+4. A wrong premise or a changed request changes the request first.
 
 ## The outline
 
@@ -50,18 +50,18 @@ For each spec, ask, comment and message:
 - Name the concrete case and its numbers, then the choice in those terms, never "Which option?".
 - Ask with an [ask block](skill://dispatch/SKILL.md#asks-and-ask-blocks): 2 to 4 options, short and self-contained: a person answers it with no other reading.
 - For each technical term you coined in this session, count by exact match the files holding it, in the repositories the work touches and in Dispatch. Expand or drop a term with a single-digit count. Read the draft for a coinage of common words too.
-- Before you pass a question on as one only a person or an elevated credential answers, try the source that answers it, then the other records holding it. Keep a privileged read for what only the live system knows.
+- Before you pass a question on as one only an attended or privileged act answers, try the source that answers it, then the other records holding it. Keep a privileged read for what only the live system knows.
 
 ## Each version
 
 1. After a person's answer, comment or edit, reread the problem and rewrite what the answer touches, deleting what it contradicts. Answer each comment in its thread. Never narrate an edit.
-2. Before each spec write, paste the whole spec, never a path, into a fresh subagent to list gaps, conflicts, uncheckable requirements, unclear text and needless questions. Fix or record each in the spec.
+2. Before each spec write, paste the whole spec, never a path, into a fresh subagent to list gaps, conflicts, uncheckable requirements, unclear text and needless questions. Fix or record each.
 3. Before each approval request, `wait` for a read-only fact check: `task(agent="scout")`.
 4. Name each version with `dispatch doc-edit --summary`.
 
 ## Decisions
 
-A choice earns an entry in the spec's `## Decisions` part only if a disagreeing reader would act differently; keep others to one spec line each. Write it there, never in a separate document: the choice first, then the reason and the options weighed. A person's answered ask is their decision: it stays in the spec where it was asked.
+A choice earns an entry in the spec's `## Decisions` part only if a disagreeing reader would act differently; keep others to one spec line each. Write it in the spec, never in a separate document: the choice first, then the reason and the options weighed. A person's answered ask is their decision: it stays in the spec where it was asked.
 
 ## Old specs
 

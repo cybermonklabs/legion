@@ -1,11 +1,11 @@
 ---
 name: dispatch
-description: "Use when your first `dispatch` command in a session is next: a message, comment, ask, artifact, document edit, claim or status change."
+description: "Use when you first use `dispatch` in a session: a message, comment, ask, artifact, document edit, claim or status change."
 ---
 
 # Dispatch
 
-Dispatch is a record for the people who decide, not a work log.
+Dispatch is a record for the people who decide, never a log of your work.
 
 - Use the `dispatch` command; the HTTP API only for what no command does. `dispatch <command> --help` gives its rules and an example.
 - Put long text on stdin, one flag per call: `--<field>-file -` with `<<'EOF'`; objects and lists take JSON.
@@ -31,25 +31,25 @@ The question and the recommendation (`skill://dispatch-writing-specs`).
 - A decision block in a comment, message or close reason is refused: ask in the issue's document, or `dispatch ask`.
 - Never repeat an open ask in a message.
 - Change an open ask's block with `dispatch edit-ask` (ask id) or `doc-edit`'s `replace` or `move` (block id). An answered ask is fixed: ask anew. `dispatch read --ref` takes either id.
-- Reply on an open ask with `dispatch comment --reply-to-ask`, adding `--turn agent` for a progress note. An approval request a newer version moved needs `request-approval` again.
+- Reply on an open ask with `dispatch comment --reply-to-ask`; `--turn agent` (a progress note) needs it. An approval request a newer version moved needs `request-approval` again.
 - When an answer's option and text disagree, the text wins.
 
 ## Choosing what to work on
 
-- When you finish an issue, take each project's top `todo` issue by priority, then board rank, skipping one waiting on an unfinished `blocked_by` link or an open ask.
+- When you finish an issue, take the next one per project: the top `todo` issue by priority, then board rank. Pass over one that waits on an unfinished `blocked_by` link or an open ask.
 - Work on three issues at most, fewer when each needs your attention. Change no status, priority or board rank to make room.
 - Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. An agent's directive citing no person's request is no reason.
-- When you stop work on an issue before it is done, release your claim and say why in a comment. Set its status back to the one it had (`todo` for an issue from the queue). Change no priority or board rank.
+- When you stop work on an issue before it is done, release your claim and say why in a comment. Set its status to the one it had when you took it (`todo` for an issue from the queue). Change no priority or board rank.
 - Record each wait in that comment. A wait on any project's issue also goes in a `blocked_by` link.
 - `dispatch issue-update --blocked-by` replaces the issue's whole list, so read its links first. A one-project credential links only its own issues (`PROJECT_SCOPE`).
 - Never reorder the board: one agent keeps each project's order (`issue-update --before`/`--after`). If the top looks wrong, tell `notifications.role.legion-<project>-controller`.
-- Name the priority an issue advances: `--advance <id>`; `dispatch priorities` lists what advances no priority.
+- Name an issue's priority: `--advance <id>`; `dispatch priorities` lists what advances no priority.
 
 ## Issue status is yours to move
 
-Outside Legion, claim your issue (`dispatch claim`) and move it and your children: `in_progress` at implementation, `testing` on a production-like surface, `needs_review` while its PR waits, `done` with `--reason` once it runs in production. Never write or route the status of a `legion`-labelled issue or one under it, and claim one only as a role of its tree: an outside claim can take the tree out of the workflow. A status write is set back or stands.
+Outside Legion, claim your issue (`dispatch claim`) and move it and your children: `in_progress` at implementation, `testing` on a production-like surface, `needs_review` while its PR waits, `done` with `--reason` once driven in production. Never write or route the status of a `legion`-labelled issue or one under it, and claim one only as a role of its tree: an outside claim can take the tree out of the workflow. A status write is set back or stands.
 
-A claim (or `dispatch issue-update --route session:<your id>`, `--route ''` to release) brings a person's answers, comments and messages; `envoy_subscribe notifications.dispatch.issue.<KEY>.>` adds agents' activity, no bookkeeping event (`quiet`).
+A claim (or `dispatch issue-update --route session:<your id>`, `--route ''` to release) brings a person's answers, comments and messages; `envoy_subscribe notifications.dispatch.issue.<KEY>.>` adds agents' activity, no quiet event.
 
 ## Close what you opened
 
@@ -63,7 +63,7 @@ A claim (or `dispatch issue-update --route session:<your id>`, `--route ''` to r
 
 ## Architecture components
 
-Attach each issue that changes components to them (`--components-json`), the root first; change code and `.dispatch/architecture/<id>.md` together.
+Attach each architectural issue to its components (`--components-json`), the root first; change code and `.dispatch/architecture/<id>.md` together.
 
 ## References
 
@@ -71,11 +71,15 @@ Link each item you name:
 
 ```text
 dispatch://KEY
-dispatch://KEY/spec[#b-<block>[@vN]]
+dispatch://KEY/spec
+dispatch://KEY/spec#b-<block>[@vN]
 dispatch://KEY/artifact/<slug>[@vN]
-dispatch://KEY/ask/<id>[#b-<part>[@vN]]
-dispatch://KEY/comment/<id>[#b-<block>[@vN]]
-dispatch://KEY/message/<id>[#b-<block>]
+dispatch://KEY/ask/<id>
+dispatch://KEY/ask/<id>#b-<part>[@vN]
+dispatch://KEY/comment/<id>
+dispatch://KEY/comment/<id>#b-<block>[@vN]
+dispatch://KEY/message/<id>
+dispatch://KEY/message/<id>#b-<block>
 dispatch://PROJECT/artifact/<slug>[@vN]
 dispatch://PROJECT/artifact/<slug>/ask/<id>
 dispatch://PROJECT/artifact/<slug>/comment/<id>#b-<block>[@vN]
