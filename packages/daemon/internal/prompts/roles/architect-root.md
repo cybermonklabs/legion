@@ -191,10 +191,10 @@ request, because the approved spec changed after you wrote the request. It names
 version that its `base` read and the current approved version. Write the request again against the
 approved spec. Read the current approved text of each node, as the change request is read above,
 at `"$DISPATCH_URL/api/v1/projects/<project>/spec/<o>/<r>/nodes/<id>"`, and carry your change onto
-that text. Then set the block's `base` to the node's current approved version. A node whose current
-version is 0 has no approved text now: write it with no `base`, as a node you add, or take it out
-of the request. Run the two reviews, then open a new approval request with
-`dispatch request-approval`, and register the version it returned.
+that text. Then set the block's `base` to the node's current approved version. A node that the
+notice names as removed from the approved spec has no approved text now: write it with no `base`,
+as a node you add, or take it out of the request. Run the two reviews, then open a new approval
+request with `dispatch request-approval`, and register the version it returned.
 
 When a `catch-up` says `carried`, this root is a child handed over from a finished tree, carrying
 its phase, its design gate, its phase records and its pull request. Register each step the

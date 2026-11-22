@@ -1435,12 +1435,13 @@ notices_reach_architects_alone() {
 # ---- a change request that proposes nothing ---------------------------------------------------
 # spec_source_spec is the spec of the spec-source root: the smoke spec's one-file change, which the
 # spec says proposes nothing of The Spec of the smoke repository and makes no outcome different for
-# a caller, so its architect writes no `requirement` or `check` block for it.
+# a caller, so its architect writes no `requirement` block for it and no `check` block that names a
+# statement. A check that names no statement is the root's own acceptance check and proposes nothing.
 spec_source_spec() {
   printf '%s\n' "## Summary" "" \
     "A Legion smoke proof on a spec source. Make one tiny, concrete one-file change in \`$repo\`: add one new Markdown file under \`smoke/\` holding a single line that names this issue." "" \
     "## The change request" "" \
-    "This change proposes nothing: it adds, changes and removes no statement, component, interface or check of The Spec of \`$repo\`. It is an operational change that no statement covers, and it makes no outcome different for a caller. Write no \`requirement\` block and no \`check\` block for it. Its spec ends in a \`conclusion\` block, written once the work proves it."
+    "This change proposes nothing: it adds, changes and removes no statement, component, interface or check of The Spec of \`$repo\`. It is an operational change that no statement covers, and it makes no outcome different for a caller. Write no \`requirement\` block for it, and no \`check\` block that names a statement. Its spec ends in a \`conclusion\` block, written once the work proves it."
 }
 # admission_has_room: the daemon holds fewer issues than its cap, so the next root takes a slot.
 admission_has_room() { daemon_state | jq -e '(.admission.active | length) < .admission.cap' >/dev/null; }
