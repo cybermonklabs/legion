@@ -513,6 +513,9 @@ func TestAStampReadInABucketSinceCreatedAgainAuthorizesNothing(t *testing.T) {
 		t.Fatalf("rewatch: %v", err)
 	}
 	readyHead(t, s)
+	// The copy keeps the old bucket's record, claimed, until the new read delivers the new one,
+	// which carries no claim: the pass must see the new record and the read's reset together.
+	waitHeadCached(t, func(st State) bool { return st.Claim == nil }, s)
 	z.pass(pub, logger, time.Now().UnixMilli())
 	fresh := asked(t, z)
 	if stale.Revision <= fresh {
