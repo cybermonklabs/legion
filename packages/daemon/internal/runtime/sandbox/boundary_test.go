@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"math/big"
 	"net"
 	"net/http"
@@ -1181,17 +1182,28 @@ func TestAKeptVolumeCarriesItsWorkspaceToTheIssuesNextPod(t *testing.T) {
 
 // The rig stands in for each container's CPU limit, the cgroup quota a pod's processes size their
 // threads to, by giving each process it starts GOMAXPROCS and RAYON_NUM_THREADS from that limit
-// (podCPUs). This row fails by name when the two do not reach a process: each init container of an
-// issue pod, which runContainer starts with its own container's limit, and an agent's own command,
-// which agent() starts with the issue pod's limit. Without the row a lost cap shows only on a host
-// whose CPU count carries the rig's processes past a task limit, and no CI runner has that many
-// CPUs. Each child prints the two variables as it has them. The rig builds each child's environment
-// from nothing; the test process's own values are emptied here all the same, so that a child that
-// took them would not pass for one that has the cap.
+// (podCPUs). This row fails by name when the two do not reach a process, or are not what the limit
+// gives: each init container of an issue pod, which runContainer starts with its own container's
+// limit, and an agent's own command, which agent() starts with the issue pod's limit. Without the
+// row a lost cap shows only on a host whose CPU count carries the rig's processes past a task
+// limit, and no CI runner has that many CPUs. Each child prints the two variables as it has them.
+// The rig builds each child's environment from nothing; the test process's own values are emptied
+// here all the same, so that a child that took them would not pass for one that has the cap.
+//
+// The row works out what each limit gives from the limit itself, not through podCPUs, so a podCPUs
+// that gives the wrong count fails it too: Go takes the host's CPUs or max(ceil(limit), 2),
+// whichever is fewer (runtime/cgroup_linux.go), and jj one thread for each CPU of the quota, at
+// least one, and never more than the host has. On a host with no more CPUs than a limit, the count
+// a limit gives is the host's own, which is then also what a process with no cap takes.
 func TestEveryProcessTheRigStartsHasItsContainersCPULimit(t *testing.T) {
 	t.Setenv("GOMAXPROCS", "")
 	t.Setenv("RAYON_NUM_THREADS", "")
 	const report = `printf 'GOMAXPROCS=%s RAYON_NUM_THREADS=%s' "${GOMAXPROCS-unset}" "${RAYON_NUM_THREADS-unset}"`
+	host := float64(goruntime.NumCPU())
+	gives := func(limit resource.Quantity) string {
+		cores := math.Ceil(limit.AsApproximateFloat64())
+		return fmt.Sprintf("GOMAXPROCS=%.0f RAYON_NUM_THREADS=%.0f", min(host, max(cores, 2)), min(host, max(cores, 1)))
+	}
 	// The stand-in for the Go legion appends one line for each init container that runs it.
 	record := filepath.Join(t.TempDir(), "record")
 	standIn := filepath.Join(t.TempDir(), "legion")
@@ -1213,12 +1225,12 @@ func TestEveryProcessTheRigStartsHasItsContainersCPULimit(t *testing.T) {
 	}
 	for i, c := range pod.spec.InitContainers {
 		limit := c.Resources.Limits[corev1.ResourceCPU]
-		if want := strings.Join(podCPUs(limit), " "); lines[i] != want {
+		if want := gives(limit); lines[i] != want {
 			t.Errorf("init container %s ran with %q, want %q from its CPU limit %s", c.Name, lines[i], want, limit.String())
 		}
 	}
 	issue := goldenOptions().Resources.Issue.Limits[corev1.ResourceCPU]
-	if got, want := rig.agent().Out(rig.root, "/bin/sh", "-c", report), strings.Join(podCPUs(issue), " "); got != want {
+	if got, want := rig.agent().Out(rig.root, "/bin/sh", "-c", report), gives(issue); got != want {
 		t.Errorf("an agent's own command ran with %q, want %q from the issue pod's CPU limit %s", got, want, issue.String())
 	}
 }
