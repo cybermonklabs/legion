@@ -258,11 +258,17 @@ func TestGuardReapsAHeldGroupsOrphanPIDOneHelper(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			guard := &pidGuard{}
-			orphanFile := filepath.Join(t.TempDir(), "orphan")
-			// The subshell starts a short sleep in the background, writes its pid and exits, so the
-			// sleep is orphaned to PID 1 in the held child's process group; the held child then
-			// exits too, and its exit waits for its own wait.
-			held := exec.CommandContext(context.Background(), "/bin/sh", "-c", `(sleep 0.1 & echo $! >"$1"); exit 5`, "sh", orphanFile)
+			marks := t.TempDir()
+			orphanFile, released := filepath.Join(marks, "orphan"), filepath.Join(marks, "released")
+			// The subshell starts the orphan in the background, writes its pid and exits, so the
+			// orphan is adopted by PID 1 in the held child's process group; the held child then
+			// exits too, and its exit waits for its own wait. The orphan ends only once the case
+			// releases it, after PID 1 has adopted it: a shell reaps a background child that ends
+			// while the shell still runs, so an orphan that ended before its subshell did, as a
+			// short sleep does when a loaded machine is slow to run the subshell's last line, was
+			// the subshell's to reap, and no zombie of PID 1's was ever there to find.
+			held := exec.CommandContext(context.Background(), "/bin/sh", "-c",
+				`(sh -c 'while [ ! -e "$1" ]; do sleep 0.01; done' sh "$2" & echo $! >"$1"); exit 5`, "sh", orphanFile, released)
 			procgroup.Configure(held)
 			pid, err := guard.start(held)
 			if err != nil {
@@ -270,16 +276,19 @@ func TestGuardReapsAHeldGroupsOrphanPIDOneHelper(t *testing.T) {
 			}
 			var orphan int
 			// Both exits must be in place before the pass; setup is not timed.
-			testwait.Eventually(t, "the held child and its orphan to exit", func() bool {
+			testwait.Eventually(t, "the held child to exit and PID 1 to adopt its orphan", func() bool {
 				body, err := os.ReadFile(orphanFile)
 				if err != nil {
 					return false
 				}
 				orphan, err = strconv.Atoi(strings.TrimSpace(string(body)))
-				// A zombie its subshell has not left yet is the subshell's to reap, not PID 1's.
 				ppid, _, ok := statParentAndGroup("/proc", orphan)
-				return err == nil && ok && ppid == 1 && zombie(orphan) && zombie(pid)
+				return err == nil && ok && ppid == 1 && zombie(pid)
 			})
+			if err := os.WriteFile(released, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			testwait.Eventually(t, "the orphan PID 1 adopted to exit", func() bool { return zombie(orphan) })
 			if err := tc.pass(guard); err != nil {
 				t.Fatal(err)
 			}
