@@ -14,15 +14,18 @@ import {
 } from "../../../theme/classes";
 import { useAgentText } from "../../refs/AgentName";
 import { EditedMark } from "../../refs/PostBody";
+import { postDeletion } from "../../refs/post-marks";
 import { DecisionActions, rowActionSelector } from "../DecisionActions";
 import { NodeGlyph } from "../NodeGlyph";
 import {
   AskAnswer,
   BodyAuthor,
+  DeletedLine,
   KeepOpen,
   MoreWords,
   NODE_ROW_LAYOUT,
   NodeOptions,
+  ParentLink,
   RowActs,
   RowMargin,
   type Tone,
@@ -84,7 +87,12 @@ interface RowPerson {
  * with no reader's ink on its author. It draws its kind where its kind is a typed one, who wrote
  * it and when - a child issue its key alone, a link to its own page, as the outline's row does -
  * its words whole, its parent and its link, and no state, no Keep and no Change, since it is no
- * entry of the list.
+ * entry of the list. A comment or a message its author corrected carries its mark as the
+ * outline's row does (INFRA-1523, R2 and R3): a deleted one draws the deleted line in place of
+ * its words (`DeletedLine`), from the delete and never from its text, which names the actor as
+ * no registry knows it and the time as stored; an edited one says ` · edited` after its time in
+ * the margin (`RowMargin`), outside its words. The model holds both marks on a comment or a
+ * message alone (`TreeNode.deletedAt`, `editedAt`), so no other row draws either.
  *
  * The focus opens the row's body, for a decision as for an ask: who made the node where the
  * margin does not say it whole, and the control that keeps the body open.
@@ -159,6 +167,7 @@ export function DecisionsRow({
   const author = person(node.author);
   const ownAnswer = isReader(node.answer?.by, reader);
   const standing = entryStanding(entry, agentText.author);
+  const deleted = postDeletion({ deleted_at: node.deletedAt, deleted_by: node.deletedBy });
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
   // Where the reader writes: an open question's options and Answer set it (R16).
@@ -218,7 +227,18 @@ export function DecisionsRow({
             ref={words}
             style={clamped ? { maxHeight: clamp.height } : undefined}
           >
-            <RowText focused={focused} markdown={node.text} source={node.source} tree={node.tree} />
+            {deleted === null ? (
+              <RowText
+                focused={focused}
+                markdown={node.text}
+                source={node.source}
+                tree={node.tree}
+              />
+            ) : (
+              <p className="break-words" {...authorText}>
+                <DeletedLine deleted={deleted} />
+              </p>
+            )}
             {clamped && !clamp.pictures ? (
               <span
                 aria-hidden="true"
@@ -250,8 +270,14 @@ export function DecisionsRow({
             <Changed by={person(entry.change.by)} change={entry.change} />
           )}
           {/* The node's parent in the conversation, as one line: its kind's word and its first
-              line (R2, R1's first-line rule). A parent with no words of its own is named by its
-              kind's word once, which is the line G gives it, and never by its id (R7). */}
+              line (R2, R1's first-line rule), drawn by the outline's own `ParentLink`: the link
+              a reader follows to the parent where the model gives it an address, out of the tab
+              order as everything inside a row is, which the row's own keys reach. A parent its
+              author deleted is drawn as the deleted line, and one its author edited says
+              ` · edited` after its line, as the outline's parent line draws them (INFRA-1523,
+              R2 and R3). A parent with no words of its own is named by its kind's word once,
+              which is the line G gives it, and never by its id (R7); an edited one says
+              ` · edited` after that word. */}
           {entry.parent === undefined ? null : (
             <p
               className={`flex min-w-0 items-baseline gap-1 text-xs leading-5 ${pageQuietText}`}
@@ -259,13 +285,18 @@ export function DecisionsRow({
               data-parent-id={entry.parent.id}
               data-parent-type={entry.parent.type}
             >
-              <span className="shrink-0" {...pageChrome}>
-                {NODE_TYPE_NAMES[entry.parent.type]}
-              </span>
-              {entry.parent.line === NODE_TYPE_NAMES[entry.parent.type] ? null : (
-                <span className="min-w-0 break-words" {...authorText}>
-                  {entry.parent.line}
+              {entry.parent.line === NODE_TYPE_NAMES[entry.parent.type] ? (
+                <span className="shrink-0" {...pageChrome}>
+                  {NODE_TYPE_NAMES[entry.parent.type]}
+                  <EditedMark at={entry.parent.editedAt} />
                 </span>
+              ) : (
+                <>
+                  <span className="shrink-0" {...pageChrome}>
+                    {NODE_TYPE_NAMES[entry.parent.type]}
+                  </span>
+                  <ParentLink line={entry.parent} tabStops={false} />
+                </>
               )}
             </p>
           )}
