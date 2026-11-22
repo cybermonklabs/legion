@@ -1,0 +1,5 @@
+kind: Fixed
+body: The boot and image probes' cut-off message, `timed out after <budget> (ran N s)`, counts the attempt's time from before its budget starts, so an attempt the budget ended reads the whole budget or more. It counted from just before the command started, so on a loaded machine a cut-off could read less than its own budget.
+time: 2026-11-22T19:52:41.959144981Z
+custom:
+    Issue: pr5008
