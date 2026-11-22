@@ -195,16 +195,21 @@ func cutsOff(plan []string) bool {
 // killed it ("timed out after <budget> (ran <seconds> s)", bootgate's ran.killed).
 var cutOffRan = regexp.MustCompile(`timed out after ` + regexp.QuoteMeta(cutOffLimit.String()) + ` \(ran ([0-9.]+) s\)`)
 
-// cutOffAttempts checks a case run under cutOffLimit, where the probe named probe ran n attempts
-// and its plan holds at least planned: every attempt but the last was cut off by the budget and
-// waited out, each logged as a transient failure that names the budget and ran the whole of it, so
-// the probe ran at least the plan's attempts and any more were attempts the box was too slow to
-// answer within the budget. An attempt the box answered inside the budget is no cut-off, whatever
-// its line says: a probe that waits out an answer and names it a cut-off fails here by name. The
-// time is printed to a tenth of a second, so an attempt the budget ended reads cutOffLimit or more.
-// refused, where not empty, is an answer the probe refuses at once even when the budget then cut
-// the attempt off (the pi.agents probe's noAgentsMarker): no waited-out attempt may carry it, so a
-// probe that waits out such an answer fails here by name, however slow the box.
+// cutOffAttempts checks a case run under cutOffLimit, where the fake answered the probe named probe
+// n times and its plan holds at least planned: every attempt but the last was cut off by the
+// budget and waited out, each logged as a transient failure that names the budget and ran the
+// whole of it, so the fake ran at least the plan's steps and any more attempts were ones the box
+// was too slow to answer within the budget. The attempts are counted from the probe's own lines,
+// not the fake's: an attempt the budget ends before the fake has counted itself, as a loaded box
+// can, is a cut-off the fake never saw. An attempt the probe made and logged no failure for is
+// counted by the fake alone, so a fake that ran more often than the probe's lines say fails here.
+// An attempt the box answered inside the budget is no cut-off, whatever its line says: a probe
+// that waits out an answer and names it a cut-off fails here by name. The probe reads an
+// attempt's clock before its budget starts (pluginGate.run), so an attempt the budget ended reads
+// cutOffLimit or more, to the tenth of a second the time is printed to. refused, where not
+// empty, is an answer the probe refuses at once even when the budget then cut the attempt off
+// (the pi.agents probe's noAgentsMarker): no waited-out attempt may carry it, so a probe that
+// waits out such an answer fails here by name, however slow the box.
 func cutOffAttempts(t *testing.T, logged, probe string, n, planned int, refused string) {
 	t.Helper()
 	var cut []string
@@ -213,8 +218,8 @@ func cutOffAttempts(t *testing.T, logged, probe string, n, planned int, refused 
 			cut = append(cut, line)
 		}
 	}
-	if n < planned || len(cut) != n-1 {
-		t.Errorf("the %s probe ran %d times with %d transient failures, want at least %d times, each but the last waited out:\n%s", probe, n, len(cut), planned, logged)
+	if attempts := len(cut) + 1; n < planned || n > attempts {
+		t.Errorf("the fake answered the %s probe %d times over its %d attempts (%d waited out), want at least the plan's %d and at most one for each attempt the probe logged:\n%s", probe, n, attempts, len(cut), planned, logged)
 	}
 	for _, line := range cut {
 		ran := cutOffRan.FindStringSubmatch(line)
