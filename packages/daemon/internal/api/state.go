@@ -427,8 +427,10 @@ func (r RepositoriesView) at152() repositoriesAt152 {
 // reach the state); Detail is the row's evidence whatever the status; Decision is the operator's
 // reason on a decided row; ConfigLine is, on an open deployment row, the legion.yaml line that
 // records a decision (`capabilities.decided.<name>: "<reason>"`); an open live row has none.
-// Source is, on a deployment row, "configuration" (what legion.yaml alone decides) or "boot"
-// (what boot measured); absent on every other row.
+// Source is, on a deployment row, "configuration" (what legion.yaml alone decides), "boot" (what
+// boot measured) or "caches" (what the repository caches' last health reads said of their room,
+// served without the word to a caller whose stated contract, else its pod's lowest, is below
+// cachesSourceContract: withoutUnadmittedCapabilitySources); absent on every other row.
 type CapabilityState struct {
 	Name       string `json:"name"`
 	Status     string `json:"status"`

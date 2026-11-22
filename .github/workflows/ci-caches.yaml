@@ -497,9 +497,18 @@ jobs:
         arch: [x64, arm64]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
+    env:
+      JOB_TIMEOUT_MINUTES: 5 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     permissions:
       actions: write
     steps:
+      # For .github/scripts/gh-read.sh alone: this repository is public, so the checkout needs no
+      # scope beyond the one the deletes need.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.envoy-infra.outputs[format('filled-{0}', matrix.arch)] == 'true'
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
       - name: Delete this ref's go-envoy-infra entries the new one supersedes
         if: needs.envoy-infra.outputs[format('filled-{0}', matrix.arch)] == 'true'
         env:
@@ -509,7 +518,10 @@ jobs:
           REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          entries=$(gh cache list --ref "$REF" --key go-envoy-infra- --limit 100 --json id,key,ref)
+          # Each call waits out a spent API budget within this job's limit, and fails by name
+          # past it.
+          source .github/scripts/gh-read.sh
+          entries=$(gh_wait_reset gh cache list --ref "$REF" --key go-envoy-infra- --limit 100 --json id,key,ref)
           if ! jq -e --arg keep "$KEEP" --arg ref "$REF" 'any(.[]; .key == $keep and .ref == $ref)' <<<"$entries" >/dev/null; then
             echo "::warning::the new go-envoy-infra entry is not among this ref's entries, so none is deleted"
             exit 0
@@ -524,7 +536,7 @@ jobs:
                 exit 1
               fi
               echo "Deleting go-envoy-infra entry $id, which the new entry supersedes"
-              gh cache delete "$id"
+              gh_wait_reset gh cache delete "$id"
             done
 
   # The elan home ci.yaml's airlock-lean job restores, the Lean toolchain that job's `lake build`

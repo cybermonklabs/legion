@@ -63,6 +63,8 @@ jobs:
     # restore it, and that download is the 2 s above.
     # dispatch://INFRA-2125 shortens the suite and is the fix; this line is the stopgap.
     timeout-minutes: 28
+    env:
+      JOB_TIMEOUT_MINUTES: 28 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # The NATS server the Envoy role claim of extensions/controller-start-omp.test.ts's controller
     # needs (LEGION_TEST_NATS_URL on the test step), on the image the envoy-client job pulls.
     services:
