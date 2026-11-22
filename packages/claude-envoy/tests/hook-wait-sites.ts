@@ -380,6 +380,61 @@ export function waitSites(modules: readonly string[], root: string, tsconfig: st
     return signal !== undefined && traceSignal(signal, none) ? "signal" : undefined
   }
 
+  /** The declaration a call reaches when its type was cast away (`(Bun as any).spawnSync`), or
+   *  held in a variable first (`const run = (Bun as any)["spawnSync"]`): the property, read on the
+   *  type of the object before the cast. */
+  const throughCasts = (callee: ts.Expression, depth: number): ts.Declaration | undefined => {
+    const node = unwrap(callee)
+    if (depth > 8) return undefined
+    if (ts.isIdentifier(node)) {
+      const declaration = resolvedSymbol(node)?.valueDeclaration
+      const initializer =
+        declaration !== undefined && ts.isVariableDeclaration(declaration)
+          ? declaration.initializer
+          : undefined
+      return initializer === undefined ? undefined : throughCasts(initializer, depth + 1)
+    }
+    const name = ts.isPropertyAccessExpression(node)
+      ? node.name.text
+      : ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)
+        ? node.argumentExpression.text
+        : undefined
+    if (
+      name === undefined ||
+      !(ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node))
+    ) {
+      return undefined
+    }
+    let object = unwrap(node.expression)
+    for (let step = 0; step < 8 && ts.isIdentifier(object); step++) {
+      if (!(checker.getTypeAtLocation(object).flags & ts.TypeFlags.Any)) break
+      const declaration = resolvedSymbol(object)?.valueDeclaration
+      const initializer =
+        declaration !== undefined && ts.isVariableDeclaration(declaration)
+          ? declaration.initializer
+          : undefined
+      if (initializer === undefined) break
+      object = unwrap(initializer)
+    }
+    const property = checker.getTypeAtLocation(object).getProperty(name)
+    return property?.valueDeclaration ?? property?.declarations?.[0]
+  }
+  /** A call no declaration explains, through an `any` the scan cannot see behind, whose name is a
+   *  wait's: a site, unbounded. */
+  const WAIT_NAMES =
+    /^(spawn|spawnSync|exec|execSync|execFile|execFileSync|fork|fetch|request|connect|createConnection|\$)$/
+  const unresolvedWait = (callee: ts.Expression): string | undefined => {
+    const node = unwrap(callee)
+    const name = ts.isIdentifier(node)
+      ? node.text
+      : ts.isPropertyAccessExpression(node)
+        ? node.name.text
+        : ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)
+          ? node.argumentExpression.text
+          : undefined
+    return name !== undefined && WAIT_NAMES.test(name) ? `unresolved ${name}` : undefined
+  }
+
   const sites: WaitSite[] = []
   for (const source of sources) {
     const file = relative(realRoot, realpathSync(source.fileName))
@@ -394,13 +449,19 @@ export function waitSites(modules: readonly string[], root: string, tsconfig: st
         ts.isNewExpression(node) ||
         ts.isTaggedTemplateExpression(node)
       ) {
-        const declaration = declarationOf(node)
+        const callee = ts.isTaggedTemplateExpression(node) ? node.tag : node.expression
+        const declaration = declarationOf(node) ?? throughCasts(callee, 0)
         const kind =
           declaration === undefined
-            ? undefined
+            ? unresolvedWait(callee)
             : waitKind(qualifiedName(declaration), inLibrary(declaration))
-        if (kind !== undefined)
-          site(node, kind, ts.isTaggedTemplateExpression(node) ? undefined : boundOf(node, kind))
+        if (kind !== undefined) {
+          const bounded =
+            ts.isTaggedTemplateExpression(node) || kind.startsWith("unresolved")
+              ? undefined
+              : boundOf(node, kind)
+          site(node, kind, bounded)
+        }
       }
       if (ts.isCallExpression(node)) {
         const callee = unwrap(node.expression)

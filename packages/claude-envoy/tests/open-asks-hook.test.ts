@@ -5,7 +5,7 @@ import { join, relative, resolve } from "node:path"
 import { COMMAND_TIMEOUT_MS } from "@legion/envoy-client/envoy-config"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { JJ_BASE_CHAIN_TIMEOUT_MS, OPEN_ASKS_TIMEOUT_MS } from "../hooks/open-asks-bounds"
-import type { TimedWait } from "./hook-timed-waits"
+import type { Census, TimedWait } from "./hook-timed-waits"
 import { reachedModules, type WaitSite, waitSites } from "./hook-wait-sites"
 import { collected, exitBeforeTheGuard, rowStarted } from "./row-deadline"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
@@ -1064,6 +1064,7 @@ async function runToItsTimedWaits(
   scratch: string,
   env: Record<string, string> & { readonly HOME: string },
   expected: readonly CensusEntry[],
+  ceilings: { readonly zeroLengthTimers: number; readonly clockReads: number },
 ): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }> {
   const record = join(scratch, "timed-waits.json")
   const result = await runHook(
@@ -1078,8 +1079,8 @@ async function runToItsTimedWaits(
     )
   })
   // Written by this package's own preload in the hook's process, a step ago.
-  const census: TimedWait[] = JSON.parse(recorded)
-  const counted = census.filter(
+  const census: Census = JSON.parse(recorded)
+  const counted = census.waits.filter(
     (wait) => wait.ms !== 0 && (wait.ms > 0 || wait.command !== undefined),
   )
   const key = (wait: TimedWait): string => {
@@ -1112,6 +1113,16 @@ async function runToItsTimedWaits(
     counted.map(key).sort(),
     `the hook's starts and timed waits: ${counted.map((wait) => `${wait.kind}${wait.command === undefined ? "" : ` ${wait.command}`} ${wait.ms} ms, ${wait.outcome}, at ${wait.at}`).join("; ")}`,
   ).toEqual(expected.map(censusKey).sort())
+  // A wait made of turns of the event loop or of a loop on the clock arms no timer above zero:
+  // the counts show it, far above what the path makes. Each ceiling is the path's own count with
+  // room for a few more reads, so no wait of more than a few turns passes.
+  expect(
+    { zeroLengthTimers: census.zeroLengthTimers, clockReads: census.clockReads },
+    `the hook's zero-length timers and clock reads, against the ceilings ${JSON.stringify(ceilings)}`,
+  ).toEqual({
+    zeroLengthTimers: Math.min(census.zeroLengthTimers, ceilings.zeroLengthTimers),
+    clockReads: Math.min(census.clockReads, ceilings.clockReads),
+  })
   return result
 }
 
@@ -1127,6 +1138,12 @@ const JJ_WAIT: CensusEntry = {
   kind: "setTimeout",
   ms: JJ_BASE_CHAIN_TIMEOUT_MS,
 }
+/** Each census row's ceilings on zero-length timers and clock reads: the path's own counts (no
+ *  zero-length timer; 1, 4 and 4 clock reads), the same in every run measured, idle, on 2 loaded
+ *  CPUs and starved, with room for four more of each. A wait of five turns or five reads fails. */
+const COMMAND_ROW_CEILINGS = { zeroLengthTimers: 4, clockReads: 5 }
+const READ_ROW_CEILINGS = { zeroLengthTimers: 4, clockReads: 8 }
+const SUCCESS_ROW_CEILINGS = { zeroLengthTimers: 4, clockReads: 8 }
 /** The Dispatch read's deadline, and its credential's, which `credentialDeadline` (bearer.ts)
  *  computes from the read's time left less a reserve of min(1 s, half the deadline). */
 const DISPATCH_READ: CensusEntry = {
@@ -1201,6 +1218,7 @@ test("a hook whose jj and token command each run out their time waits on exactly
           ms: COMMAND_TIMEOUT_MS,
         },
       ],
+      COMMAND_ROW_CEILINGS,
     )
 
     // It met both waits: it gave up on jj, and its token command ran out its time.
@@ -1247,6 +1265,7 @@ test("a hook whose jj and Dispatch read each run out their time waits on exactly
         DISPATCH_TOKEN,
       },
       [JJ_START, JJ_WAIT, DISPATCH_READ, CREDENTIAL_WAIT],
+      READ_ROW_CEILINGS,
     )
 
     // It met both waits: it gave up on jj, and its read reached Dispatch and was never answered.
@@ -1257,6 +1276,79 @@ test("a hook whose jj and Dispatch read each run out their time waits on exactly
       [],
     )
     expect(result.stdout).toStartWith("Dispatch authored-ask summary unavailable: ")
+  } finally {
+    dispatch.stop(true)
+    await rm(scratch, { recursive: true, force: true })
+  }
+}, 60_000)
+
+// The success path, end to end: jj answers at once and Dispatch answers the read with one ask, so
+// the hook writes its exports and its summary and exits. Its census must hold the same starts and
+// waits as the read row, none of them run to its bound, and nothing more: a wait the hook makes
+// after the summary is written, or anywhere else on this path, fails here by name.
+test("a hook whose jj and Dispatch answer at once writes its summary with no start or wait beyond theirs", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-waits-answered-"))
+  const stateDir = join(scratch, "state")
+  await mkdir(stateDir)
+  const bin = await jjDirectory(
+    scratch,
+    `printf '%s\\n' ${JSON.stringify(join(scratch, "jj-user.toml"))}`,
+  )
+  const reads: string[] = []
+  const dispatch = Bun.serve({
+    port: 0,
+    fetch: (request) => {
+      reads.push(request.headers.get("authorization") ?? "")
+      return Response.json({
+        session_id: "s-1",
+        as_of: "2026-09-14T00:00:00Z",
+        opened_since: false,
+        count: 1,
+        waiting_on_human: 1,
+        waiting_on_agent: 0,
+        asks: [
+          {
+            id: "ask-9",
+            ref: "/issues/LEGION-9#ask-9",
+            question: "Ship the bundle?",
+            kind: "decision",
+            urgency: "med",
+            created_at: "2026-09-14T00:00:00Z",
+            age_seconds: 90,
+            priority: 1,
+            owner: { issue: { key: "LEGION-9", title: "Bundle" } },
+            human_replied: false,
+            last_reply: null,
+            waiting_on: "human",
+          },
+        ],
+      })
+    },
+  })
+  const envFile = join(scratch, "session-env.sh")
+  try {
+    const result = await runToItsTimedWaits(
+      scratch,
+      {
+        HOME: scratch,
+        TMPDIR: scratch,
+        PATH: `${bin}:${process.env["PATH"] ?? ""}`,
+        CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
+        CLAUDE_ENV_FILE: envFile,
+        LEGION_STATE_DIR: stateDir,
+        LEGION_ISSUE_TRAILER: "ACME-7",
+        DISPATCH_URL: `http://127.0.0.1:${dispatch.port}`,
+        DISPATCH_TOKEN,
+      },
+      [JJ_START, JJ_WAIT, DISPATCH_READ, CREDENTIAL_WAIT],
+      SUCCESS_ROW_CEILINGS,
+    )
+
+    // It took both answers: jj's chain is in the env file, and the summary names the ask.
+    expect(result.exitCode).toBe(0)
+    expect(await readFile(envFile, "utf8")).toContain("export JJ_CONFIG=")
+    expect(reads).toEqual([`Bearer ${DISPATCH_TOKEN}`])
+    expect(result.stdout).toContain("Ship the bundle?")
   } finally {
     dispatch.stop(true)
     await rm(scratch, { recursive: true, force: true })

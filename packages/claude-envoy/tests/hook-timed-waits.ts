@@ -1,18 +1,22 @@
 /**
  * A preload for a hook process a row starts (`bun --preload <this file> …`): a census of the timed
- * waits the hook makes and of the processes it starts. It wraps `setTimeout` and `clearTimeout`,
- * `setInterval`, `Bun.sleep`, `Bun.sleepSync` and `AbortSignal.timeout`, and `Bun.spawn`,
- * `Bun.spawnSync` and `Bun.$`; when the process exits it writes, to the file `HOOK_TIMED_WAITS`
- * names, one entry per wait and one per start: its kind, its declared bound, when it was made on
- * the hook's own clock, how it ended, and the line of the hook's code that made it.
+ * waits the hook makes, of the processes it starts, and of its turns of the event loop and reads of
+ * the clock. It wraps `setTimeout` and `clearTimeout`, `setInterval`, `setImmediate`, `Bun.sleep`,
+ * `Bun.sleepSync` and `AbortSignal.timeout`; `Bun.spawn`, `Bun.spawnSync` and `Bun.$`; and
+ * `Date.now`, `new Date()`, `Date()`, `performance.now`, `process.hrtime` and `Bun.nanoseconds`.
+ * When the process exits it writes, to the file `HOOK_TIMED_WAITS` names, a `Census`: one entry per
+ * wait above zero and one per start (its kind, its declared bound, when it was made, how it ended,
+ * and the line of the hook's code that made it), and how many zero-length timers it armed and how
+ * many times it read the clock.
  *
  * In Bun 1.4.4 `node:timers/promises` arms its timers through the global `setTimeout`, and
  * `node:child_process` starts its children through the global `Bun.spawn` and `Bun.spawnSync`, so
  * both are counted here (`tests/open-asks-hook.test.ts`'s census rows rely on it).
  *
  * The census counts what the hook asks for, not how long anything took, so a loaded or starved
- * machine changes no entry. What it cannot see: a wait made through none of these (a socket, a
- * stream read), which `hook-wait-sites.ts` finds in the code instead, and the hook's own CPU work.
+ * machine changes no entry and no count. What it cannot see: a wait made through none of these (a
+ * socket, a stream read), which `hook-wait-sites.ts` finds in the code instead, and the hook's own
+ * CPU work that reads no clock.
  */
 import { writeFileSync } from "node:fs"
 import type { Subprocess, SyncSubprocess } from "bun"
@@ -36,9 +40,23 @@ export interface TimedWait {
   readonly at: string
 }
 
+/** What the census file holds. */
+export interface Census {
+  readonly waits: TimedWait[]
+  /** `setTimeout` or `setInterval` with no delay above zero, and `setImmediate`. */
+  readonly zeroLengthTimers: number
+  readonly clockReads: number
+}
+
 const record = process.env["HOOK_TIMED_WAITS"]
 if (record !== undefined && record !== "") {
   const waits: TimedWait[] = []
+  // The hook's turns of the event loop and its reads of the clock, which no entry above holds: a
+  // wait made of many zero-length timers, or of a loop on the clock, shows as a count far above
+  // the path's own. The census's own times come from the real clock, read before it is wrapped.
+  const counts = { zeroLengthTimers: 0, clockReads: 0 }
+  const now = performance.now.bind(performance)
+  const realDateNow = Date.now
   const here = import.meta.path
   const caller = (): string => {
     const frames = (new Error().stack ?? "").split("\n").slice(1)
@@ -54,7 +72,7 @@ if (record !== undefined && record !== "") {
       kind,
       ms,
       ...(command === undefined ? {} : { command }),
-      armedAt: performance.now(),
+      armedAt: now(),
       outcome: "armed",
       at: caller(),
     }
@@ -87,7 +105,12 @@ if (record !== undefined && record !== "") {
     ms?: number,
     ...rest: unknown[]
   ) => {
-    const wait = made("setTimeout", Number(ms ?? 0))
+    const delay = Number(ms ?? 0)
+    if (!(delay > 0)) {
+      counts.zeroLengthTimers++
+      return realSetTimeout(handler, ms, ...rest)
+    }
+    const wait = made("setTimeout", delay)
     const timer = realSetTimeout(() => {
       wait.outcome = "fired"
       handler(...rest)
@@ -105,16 +128,66 @@ if (record !== undefined && record !== "") {
     ms?: number,
     ...rest: unknown[]
   ) => {
-    const wait = made("setInterval", Number(ms ?? 0))
+    const delay = Number(ms ?? 0)
+    if (!(delay > 0)) counts.zeroLengthTimers++
+    const wait = made("setInterval", delay)
     return realSetInterval(() => {
       wait.outcome = "repeating"
       handler(...rest)
     }, ms)
   }) as unknown as typeof setInterval
+  const realSetImmediate = globalThis.setImmediate
+  globalThis.setImmediate = ((...args: Parameters<typeof setImmediate>) => {
+    counts.zeroLengthTimers++
+    return realSetImmediate(...args)
+  }) as unknown as typeof setImmediate
+
+  // Every read of the clock the hook's code can make: Date.now, a Date made with no argument or
+  // Date() called, performance.now, process.hrtime and its bigint, and Bun.nanoseconds.
+  const RealDate = Date
+  const countedNow = (): number => {
+    counts.clockReads++
+    return realDateNow()
+  }
+  globalThis.Date = new Proxy(RealDate, {
+    construct(target, args, newTarget) {
+      if (args.length === 0) counts.clockReads++
+      return Reflect.construct(target, args, newTarget)
+    },
+    apply(target, thisArg, args) {
+      counts.clockReads++
+      return Reflect.apply(target, thisArg, args)
+    },
+    get(target, property, receiver) {
+      return property === "now" ? countedNow : Reflect.get(target, property, receiver)
+    },
+  })
+  performance.now = () => {
+    counts.clockReads++
+    return now()
+  }
+  const realHrtime = process.hrtime
+  process.hrtime = Object.assign(
+    (time?: [number, number]) => {
+      counts.clockReads++
+      return realHrtime(time)
+    },
+    {
+      bigint: () => {
+        counts.clockReads++
+        return realHrtime.bigint()
+      },
+    },
+  )
+  const realNanoseconds = Bun.nanoseconds
+  Bun.nanoseconds = () => {
+    counts.clockReads++
+    return realNanoseconds()
+  }
 
   const realSleep = Bun.sleep
   Bun.sleep = ((ms: number | Date) => {
-    const wait = made("Bun.sleep", typeof ms === "number" ? ms : ms.getTime() - Date.now())
+    const wait = made("Bun.sleep", typeof ms === "number" ? ms : ms.getTime() - realDateNow())
     return realSleep(ms).then(() => {
       wait.outcome = "fired"
     })
@@ -169,6 +242,6 @@ if (record !== undefined && record !== "") {
   })
 
   process.on("exit", () => {
-    writeFileSync(record, JSON.stringify(waits))
+    writeFileSync(record, JSON.stringify({ waits, ...counts }))
   })
 }
