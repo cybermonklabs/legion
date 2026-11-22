@@ -328,8 +328,8 @@ export function liveStandInDispatches(): number {
 }
 
 /** The stand-in Dispatch (`outside-agent-stand-in-dispatch.ts`) as a process of its own, its
- *  /healthz naming the commit `serving` says: no event loop of a test worker holds its answers,
- *  the bounded runner's synchronous stop of a sibling run included. The child binds a port of the
+ *  /healthz naming the commit `serving` says: no event loop of a test worker holds its answers.
+ *  The child binds a port of the
  *  kernel's choosing and writes it to `<state>/dispatch-port`, so no port chosen here and closed
  *  can be taken by another process before the child binds it; and it answers `/_ready` with a
  *  nonce made here, so another run's stand-in on that port can never pass for this one. It
