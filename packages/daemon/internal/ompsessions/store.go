@@ -184,12 +184,9 @@ func (e Endpoint) AgentURL() string {
 
 // ClientURL is the same endpoint for the launcher's own pgx client. The two spellings are not
 // interchangeable: pgx takes libpq's `host` as the socket's directory and appends SocketName
-// itself, where AgentURL names the socket whole. pgx, as libpq does, percent-decodes the query and
-// reads a '+' as itself, so a space is written %20, never the form encoding's '+': a socket
-// directory whose path holds a space is reached at that path. url.Values.Encode writes a '+' of
-// the value itself as %2B, so every '+' it leaves is a space.
+// itself, where AgentURL names the socket whole.
 func (e Endpoint) ClientURL() string {
 	u := url.URL{Scheme: "postgres", Path: "/" + e.Database}
-	u.RawQuery = strings.ReplaceAll(url.Values{"host": {e.SocketDir}, "sslmode": {"disable"}, "user": {e.User}}.Encode(), "+", "%20")
+	u.RawQuery = url.Values{"host": {e.SocketDir}, "sslmode": {"disable"}, "user": {e.User}}.Encode()
 	return u.String()
 }
