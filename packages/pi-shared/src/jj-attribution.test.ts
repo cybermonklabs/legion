@@ -606,6 +606,10 @@ describe("userConfigChain", () => {
   /** How long each wait below gives its fact before it fails naming it: a hang guard far above
    *  what a loaded machine takes to write a pid or reap a child, inside each row's own timeout. */
   const WAIT_MS = 30_000;
+  /** How long a wrapper's child sleeps: far past every wait and row timeout here, so a child the
+   *  group kill missed is still running when `reaped` or `afterEach` looks. A `sleep 30` ended by
+   *  itself inside the 30 s `reaped` gives it, which read as a kill. */
+  const CHILD_SLEEP_S = 3_600;
   /** Every child pid a row read. Bun runs `afterEach` after a row's timeout, where it skips the
    *  row's own `finally`, so the end of a child that outlived its row is here. */
   const children: number[] = [];
@@ -696,7 +700,9 @@ describe("userConfigChain", () => {
     async () => {
       const pidFile = path.join(await mkdtemp(path.join(tmpdir(), "jj-attribution-child-")), "pid");
       dirs.push(path.dirname(pidFile));
-      const env = await withJj(`sleep 30 & echo $! > ${JSON.stringify(pidFile)}; wait`);
+      const env = await withJj(
+        `sleep ${CHILD_SLEEP_S} & echo $! > ${JSON.stringify(pidFile)}; wait`
+      );
       const giveUp = new AbortController();
       const chain = userConfigChain(JJ_CONFIG_PATH_TIMEOUT_MS, env, giveUp.signal);
       const pid = await pidFrom(pidFile);
@@ -718,7 +724,7 @@ describe("userConfigChain", () => {
       const pidFile = path.join(await mkdtemp(path.join(tmpdir(), "jj-attribution-child-")), "pid");
       dirs.push(path.dirname(pidFile));
       const env = await withJj(
-        `sleep 30 </dev/null >/dev/null 2>&1 & echo $! > ${JSON.stringify(pidFile)}; printf '/u/a.toml\\n'`
+        `sleep ${CHILD_SLEEP_S} </dev/null >/dev/null 2>&1 & echo $! > ${JSON.stringify(pidFile)}; printf '/u/a.toml\\n'`
       );
       const paths = await userConfigChain(JJ_CONFIG_PATH_TIMEOUT_MS, env);
       const pid = await pidFrom(pidFile);
