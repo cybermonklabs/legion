@@ -3850,7 +3850,7 @@ func TestSyncedEditorWaitsForItsOwnAppend(t *testing.T) {
 			t.Fatal("editor setup returned while its append was held")
 		default:
 		}
-		waiting, err := storetest.LockWaitersFrom(context.Background(), gate, roomAppendsApplication)
+		waiting, err := storetest.LockWaitersFrom(context.Background(), gate, store.RoomAppendsApplicationName)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3864,20 +3864,11 @@ func TestSyncedEditorWaitsForItsOwnAppend(t *testing.T) {
 	if err := gate.Commit(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case editor := <-opened:
-		if got := markdown(editor); got != "before\n" {
-			t.Fatalf("sync marker changed the document to %q", got)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("editor setup did not finish after its append was released")
+	editor := testwait.Receive(t, "the editor's setup to finish once its append was released", opened)
+	if got := markdown(editor); got != "before\n" {
+		t.Fatalf("sync marker changed the document to %q", got)
 	}
 }
-
-// roomAppendsApplication is the application_name every connection of a process's room-appends
-// pool carries (store's roomAppendsApplicationName, Pool.RoomAppends): the pool a document room
-// stores its browser updates on, and nothing else.
-const roomAppendsApplication = "dispatch-room-appends"
 
 // openMarkedEditor is openSyncedEditor and, after it, a metadata marker the tab sends once it
 // holds the document: it returns only once that very update is stored, so every sync frame ahead
