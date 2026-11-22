@@ -11,6 +11,7 @@ import { join, resolve } from "node:path"
 import { natsConnectionOptions } from "@legion/envoy-client/nats-connection"
 import type { Subprocess } from "bun"
 import { resolveModSocketPath } from "../hooks/mod-protocol"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const require = createRequire(import.meta.url)
 const NATS_PROTOCOL = require.resolve("nats/lib/nats-base-client/protocol.js")
@@ -262,11 +263,10 @@ async function startServer(
     {
       cwd: home,
       env: {
-        // Bun keeps its transpiler cache under HOME, and this HOME starts empty: the server writes a
-        // cache file into it for each large module it loads, before its own code runs, and on a
-        // loaded machine its socket then came up to 7.6 s after the spawn rather than under half a
-        // second. "0" turns the cache off; the server transpiles as before and writes nothing there.
-        BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
+        // Bun's transpiler cache off (`./transpiler-cache.ts`): written into this empty HOME, it
+        // brought the server's socket up as much as 7.6 s after the spawn on a loaded machine,
+        // rather than under half a second.
+        ...NO_TRANSPILER_CACHE,
         PATH: process.env["PATH"] ?? "",
         HOME: home,
         CLAUDE_CONFIG_DIR: configDirectory,

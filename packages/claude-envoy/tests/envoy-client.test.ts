@@ -8,6 +8,7 @@ import { EnvoySendUnconfirmedError } from "@legion/envoy-client/transport"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { sendEnvoyMessage } from "../src/envoy-client"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 /** What one send reached the stand-in listener with. */
 interface Sent {
@@ -211,7 +212,12 @@ test("envoy-send sends to the listener and with the bearer its envoy.json names"
     ["bun", resolve(import.meta.dir, "../bin/envoy-send.ts"), "ses_receiver", "file", "send"],
     {
       cwd: scratch,
-      env: { PATH: process.env["PATH"] ?? "", HOME: scratch, ENVOY_CONFIG_FILE: file },
+      env: {
+        PATH: process.env["PATH"] ?? "",
+        HOME: scratch,
+        ENVOY_CONFIG_FILE: file,
+        ...NO_TRANSPILER_CACHE,
+      },
       stdout: "pipe",
       stderr: "pipe",
     },
@@ -257,10 +263,13 @@ async function runEnvoySend(
       : ["bash", "-c", options.command],
     {
       cwd: scratch,
-      env: options.env ?? {
-        PATH: process.env["PATH"] ?? "",
-        HOME: scratch,
-        ENVOY_CONFIG_FILE: file,
+      env: {
+        ...NO_TRANSPILER_CACHE,
+        ...(options.env ?? {
+          PATH: process.env["PATH"] ?? "",
+          HOME: scratch,
+          ENVOY_CONFIG_FILE: file,
+        }),
       },
       stdout: "pipe",
       stderr: "pipe",

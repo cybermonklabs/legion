@@ -4,9 +4,16 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { FakeNatsServer } from "./fake-nats-server"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
+// The row waits for the server's registration and then for its exit, and decides on what the
+// listener was asked; a server that ends before it registers is named with its exit. Its `60_000`
+// is its hang guard, the package test script's own `--timeout` (`bun test --timeout=60000`,
+// package.json), given here so a run of this file alone has it too. A fixed 20 s decided it before:
+// at a load near 1,000 the server, writing Bun's transpiler cache into its empty HOME first
+// (`./transpiler-cache.ts`), had not registered in 20 s.
 test("a hangup from the Claude process group deregisters the session before the server exits", async () => {
   // tmux kill-session (and a closing terminal) hang up the whole process group;
   // the channel server shares it with `claude`, so SIGHUP arrives directly and
@@ -48,6 +55,7 @@ test("a hangup from the Claude process group deregisters the session before the 
       ENVOY_URL: `http://127.0.0.1:${listener.port}`,
       CLAUDE_CODE_SESSION_ID: "ses_hangup",
       CLAUDE_PLUGIN_DATA: stateDirectory,
+      ...NO_TRANSPILER_CACHE,
     },
     stdin: "pipe",
     stdout: "pipe",
@@ -55,7 +63,13 @@ test("a hangup from the Claude process group deregisters the session before the 
   })
 
   try {
-    await registered.promise
+    await Promise.race([
+      registered.promise,
+      server.exited.then(async (code) => {
+        const stderr = await new Response(server.stderr).text()
+        throw new Error(`the channel server exited ${code} before it registered: ${stderr}`)
+      }),
+    ])
     server.kill("SIGHUP")
     const exitCode = await server.exited
 
@@ -67,4 +81,4 @@ test("a hangup from the Claude process group deregisters the session before the 
     await broker.stop()
     await rm(stateDirectory, { recursive: true, force: true })
   }
-}, 20_000)
+}, 60_000)

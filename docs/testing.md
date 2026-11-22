@@ -169,6 +169,14 @@ itself, whose tests import its sources by relative path.
   container (`startNats` in `scripts/e2e/lib/nats-stream.test.ts`). Remove it with `docker rm -f
   -v`, and give it the CPU and memory limits "Containers a test starts" below requires.
 
+- Give a Bun process the test starts under a HOME of its own `BUN_RUNTIME_TRANSPILER_CACHE_PATH=0`,
+  unless the row tests that cache. Bun keeps its transpiler cache under HOME, so a child in an empty
+  HOME writes a file and a rename for each module it loads before its own code runs: 282 for
+  claude-envoy's channel server. Each is a directory-entry operation on the disk the HOME is on, and
+  on a shared disk under load they made such a start take tens of seconds. With "0" the child
+  transpiles as before and writes nothing (`NO_TRANSPILER_CACHE` in
+  `packages/claude-envoy/tests/transpiler-cache.ts`).
+
 - Two caches stay where their tool puts them, under the user's cache directory, and this is the one
   rule here that holds only under a condition. Oh My Pi's native modules, about 123 MiB a pin, are
   hardlinked into each test's fresh HOME from one copy per binary at

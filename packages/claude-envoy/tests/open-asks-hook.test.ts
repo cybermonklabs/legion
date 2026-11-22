@@ -3,16 +3,23 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } fro
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 import { unresolvedNames } from "./unresolved-names"
 
 const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
 /** The Dispatch token the hook is handed, in its environment or in envoy.json. */
 const DISPATCH_TOKEN = fixtureSecret("dsp")
 
-/** Runs the hook as Claude Code does, with `env` as its whole environment and `preload` given to
- * Bun first where set. The session's cwd is the test's scratch HOME unless the input names one:
- * the hook reads `<cwd>/.envoy/envoy.json`, so a shared directory's file would become every test's
- * checkout. */
+// A row waits for its hooks to exit and decides on what they printed and wrote. A row that states
+// a limit states `60_000`, the package test script's own `--timeout` (`bun test --timeout=60000`,
+// package.json), so a run of this file alone has that hang guard too. Fixed limits of 20 s and
+// 30 s decided rows before: each hook first wrote Bun's transpiler cache into its empty HOME
+// (`./transpiler-cache.ts`), and at loads of 790 to 960 a hook did not exit within them.
+
+/** Runs the hook as Claude Code does, with `env` as its whole environment (and Bun's transpiler
+ * cache off, `./transpiler-cache.ts`) and `preload` given to Bun first where set. The session's
+ * cwd is the test's scratch HOME unless the input names one: the hook reads
+ * `<cwd>/.envoy/envoy.json`, so a shared directory's file would become every test's checkout. */
 async function runHook(
   input: Record<string, unknown>,
   env: Record<string, string> & { readonly HOME: string },
@@ -20,7 +27,7 @@ async function runHook(
 ): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }> {
   const preloading = preload === undefined ? [] : ["--preload", preload]
   const run = Bun.spawn(["bun", ...preloading, hookEntry, "open-asks"], {
-    env: { PATH: process.env["PATH"] ?? "", ...env },
+    env: { PATH: process.env["PATH"] ?? "", ...NO_TRANSPILER_CACHE, ...env },
     stdin: new TextEncoder().encode(JSON.stringify({ cwd: env.HOME, ...input })),
     stdout: "pipe",
     stderr: "pipe",
@@ -159,7 +166,7 @@ test("names an unreachable Dispatch whose password holds an '@' by no part of th
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }
-}, 30_000)
+}, 60_000)
 
 test("a SessionStart carrying a session title records it, and one carrying none removes it", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-title-"))
@@ -874,15 +881,18 @@ test("single-quotes the chain, so a shell sourcing the file reads a state direct
 })
 
 // Attribution is worth nothing the session's own start: a jj that never answers costs the pane the
-// export, and neither the two lines the `dispatch` command needs nor the summary.
+// export, and neither the two lines the `dispatch` command needs nor the summary. This jj answers,
+// but only 30 s on, ten times the hook's wait for it (`JJ_BASE_CHAIN_TIMEOUT_MS`): a hook that
+// waited for it would write its chain into the overlay and the env file, and what the files hold
+// decides the row, not how long the hook took.
 test("gives up on a jj that never answers, keeping the other exports and the summary", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-jj-hangs-"))
   const stateDir = join(scratch, "state")
   await mkdir(stateDir)
-  const bin = await jjDirectory(scratch, "exec sleep 30")
+  const late = join(scratch, "jj-user.toml")
+  const bin = await jjDirectory(scratch, `sleep 30; printf '%s\\n' ${JSON.stringify(late)}`)
   const envFile = join(scratch, "session-env.sh")
   const server = openAsksServer()
-  const started = Date.now()
   try {
     const result = await runHook(hookInput, {
       HOME: scratch,
@@ -896,7 +906,6 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
     })
 
     expect(result.exitCode).toBe(0)
-    expect(Date.now() - started).toBeLessThan(15_000)
     expect(result.stdout).toStartWith("Dispatch authored-ask summary:\n")
     expect(await readFile(envFile, "utf8")).toBe(
       [
@@ -910,7 +919,7 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
     server.stop(true)
     await rm(scratch, { recursive: true, force: true })
   }
-})
+}, 60_000)
 
 // `CLAUDE_ENV_FILE` is one file per session id
 // (`<config>/session-env/<session id>/sessionstart-hook-<n>.sh` on the pinned Claude Code
@@ -961,4 +970,4 @@ test("keeps the session's own export when a later run of the same id has no jj t
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }
-}, 20_000)
+}, 60_000)

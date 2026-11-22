@@ -44,6 +44,7 @@ import {
 } from "./channel-session-harness"
 import { FakeNatsServer } from "./fake-nats-server"
 import { isolatePaneEnvironment } from "./pane-environment"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 isolatePaneEnvironment()
 
@@ -824,6 +825,13 @@ test("drops a malformed targeted frame that has no reply address", async () => {
 
 const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
+// The rows below run the channel server as a child process of its own, with Bun's transpiler cache
+// off (`./transpiler-cache.ts`), and wait for what it answers or does; one that ends first is
+// named with its exit. Each row's `60_000` is its hang guard, the package test script's own
+// `--timeout` (`bun test --timeout=60000`, package.json), given here so a run of this file alone has
+// it too. A fixed 20 s decided these rows before: at a load near 1,000 a server that wrote that
+// cache into its empty HOME first had not answered its `initialize` in 20 s.
+
 /**
  * Runs the channel server as Claude Code does, in `env.HOME` with `env` as its whole environment:
  * it initializes over MCP, lists the tools, calls `envoy_whoami`, then each of `calls` (request ids
@@ -839,7 +847,7 @@ async function runChannelServer(
 }> {
   const server = Bun.spawn(["bun", channelEntry], {
     cwd: env.HOME,
-    env: { PATH: process.env["PATH"] ?? "", ...env },
+    env: { PATH: process.env["PATH"] ?? "", ...NO_TRANSPILER_CACHE, ...env },
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
@@ -945,7 +953,7 @@ test("with CLAUDE_CONFIG_DIR holding no envoy.json the server names the unread o
     `envoy-channel: no envoy.json at ${file}: Dispatch and Envoy are off; ${notice}`,
   )
   expect(exitCode).toBe(0)
-}, 20_000)
+}, 60_000)
 
 test("an envoy.json that turns Envoy off opens no NATS connection and calls no listener, whatever the variables name", async () => {
   let stopBroker: (() => Promise<void>) | undefined
@@ -985,7 +993,7 @@ test("an envoy.json that turns Envoy off opens no NATS connection and calls no l
     listener?.stop(true)
     await stopBroker?.()
   }
-}, 20_000)
+}, 60_000)
 
 // The listener's bearer and the NATS seed are resolved once and handed to the client and the
 // connection: a server that dropped either would leave the session unregistered or signed out.
@@ -1046,7 +1054,7 @@ test("the server calls the listener with the file's envoy.token and signs in to 
         },
       }),
     )
-    server = Bun.spawn(["bun", channelEntry], {
+    const running = Bun.spawn(["bun", channelEntry], {
       cwd: home,
       env: {
         PATH: process.env["PATH"] ?? "",
@@ -1054,13 +1062,21 @@ test("the server calls the listener with the file's envoy.token and signs in to 
         CLAUDE_CONFIG_DIR: configDirectory,
         CLAUDE_CODE_SESSION_ID: "ses_credentials",
         CLAUDE_PLUGIN_DATA: home,
+        ...NO_TRANSPILER_CACHE,
       },
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
     })
+    server = running
 
-    await Promise.all([registered.promise, broker.until(() => broker.connects.length > 0)])
+    await Promise.race([
+      Promise.all([registered.promise, broker.until(() => broker.connects.length > 0)]),
+      running.exited.then(async (code) => {
+        const stderr = await new Response(running.stderr).text()
+        throw new Error(`the channel server exited ${code} before it registered: ${stderr}`)
+      }),
+    ])
     expect(broker.connects[0]).toMatchObject({ nkey: user.getPublicKey() })
     expect(new Set(auth)).toEqual(new Set([`Bearer ${listenerToken}`]))
     // The bundle runs from this checkout, outside Claude Code's plugin cache.
@@ -1072,7 +1088,7 @@ test("the server calls the listener with the file's envoy.token and signs in to 
     listener?.stop(true)
     await stopBroker?.()
   }
-}, 20_000)
+}, 60_000)
 
 /** A listener that answers `GET /v1/sessions` with no session and records every call. */
 function recordingListener(calls: string[]) {
@@ -1139,7 +1155,7 @@ test("with Envoy on and no NATS server the server serves its listener tools with
   } finally {
     listener?.stop(true)
   }
-}, 20_000)
+}, 60_000)
 
 test("a tool call the listener refused because its sender is rate limited answers a result with isError that holds the listener's sentence, and no JSON-RPC error", async () => {
   const sentence =
@@ -1201,7 +1217,7 @@ test("a tool call the listener refused because its sender is rate limited answer
   } finally {
     listener?.stop(true)
   }
-}, 20_000)
+}, 60_000)
 
 test("a refused NATS seed leaves the listener tools on, opens no NATS connection, and says why", async () => {
   let listener: Server<undefined> | undefined
@@ -1247,7 +1263,7 @@ test("a refused NATS seed leaves the listener tools on, opens no NATS connection
     listener?.stop(true)
     await stopBroker?.()
   }
-}, 20_000)
+}, 60_000)
 
 test("a Legion pane takes Aside and Send from the start and gains BTW when its mod connects", () => {
   // The pane's messages go through the bridge's inbox, which needs no mod; the side turn a BTW
