@@ -9,9 +9,13 @@
 // - the connection closes for good between a `/clear`'s deregistration of the old id and its
 //   registration of the new one: the credential move must wait for the connection that replaces
 //   it, and the outage is told, naming the close;
+// - a `/clear` written while the connection is closed for good is read by a heartbeat that the
+//   registry chain held as the replacement connected: the heartbeat reaches the new connection
+//   before that connection's own set-up, and the `/clear` must wait for the set-up, then complete
+//   and be reported, rather than move the identity and end with the new id's registration refused;
 // - the relay subscription ends as the session shuts down, with a registration still queued for
 //   it: the leaving session is told no outage, and nothing registers behind the DELETE.
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
 import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
 import type { SubscribeInput } from "@legion/envoy-client/transport"
 import { startChannelSession } from "../src/envoy-channel-server"
@@ -297,6 +301,88 @@ test("a connection closed for good between a /clear's deregistration and its reg
     expect(notices(notifier, "Envoy inbound unavailable")).toHaveLength(1)
     expect(notices(notifier, "Envoy inbound restored")).toHaveLength(1)
   } finally {
+    await session.shutdown()
+  }
+}, 30_000)
+
+// The window a loaded machine opens (dispatch://INFRA-3904, the reopen row "a /clear while the NATS
+// connection is closed for good"): a heartbeat queued in the registry chain while the connection
+// is closed for good runs after the replacement has connected and before the replacement's own step
+// in the chain, which clears the loss. Here a held registry write (an unfollow's DELETE of a topic)
+// keeps the chain busy while a heartbeat queues behind it and the replacement connects; then the
+// write is answered. Before the fix that heartbeat adopted the `/clear` on the new connection,
+// moved the identity and deregistered the old id, had the new id's registration refused for want
+// of a relay, and the `/clear` was never reported: the server's report line never came.
+test("a /clear read by a heartbeat held behind a registry write as the new connection opens waits for that connection's set-up, then completes and is reported", async () => {
+  const SESSION = "ses_clear_window"
+  const NEXT = "ses_clear_window_next"
+  const TOPIC = "notifications.dispatch.issue.DSP-1"
+  const directory = scratchState()
+  const handoff = sessionHandoffFile(directory, 781)
+  await writeSessionHandoff(handoff, SESSION)
+  const first = new FakeNats()
+  const second = new FakeNats()
+  const reopened = Promise.withResolvers<void>()
+  const reopenAsked = Promise.withResolvers<void>()
+  let held: PromiseWithResolvers<void> | undefined
+  const heldAsked = Promise.withResolvers<void>()
+  const registered: string[] = []
+  const written: string[] = []
+  const stderr = spyOn(process.stderr, "write").mockImplementation((chunk) => {
+    written.push(String(chunk))
+    return true
+  })
+  const report = `envoy: session id changed ${SESSION} -> ${NEXT}; re-registered`
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity(SESSION, "/tmp"), directory, {
+      connection: first,
+      notifier: new FakeNotifier(),
+      heartbeatMs: 25,
+      handoffPid: 781,
+      reopen: async () => {
+        reopenAsked.resolve()
+        await reopened.promise
+        return { connection: second }
+      },
+      client: recordingClient([], {
+        subscribe: async (input) => {
+          registered.push(input.sessionID)
+          return noInterest(input.sessionID)
+        },
+        unsubscribe: async () => {
+          if (held === undefined) return
+          heldAsked.resolve()
+          await held.promise
+        },
+      }),
+    }),
+  )
+  try {
+    expect(await session.follow([TOPIC])).toEqual([TOPIC])
+    await first.closeForGood(serverRefusal("AUTHORIZATION_VIOLATION", "'Authorization Violation'"))
+    await reopenAsked.promise
+    await writeSessionHandoff(handoff, NEXT)
+    held = Promise.withResolvers<void>()
+    const unfollowed = session.unfollow([TOPIC])
+    await heldAsked.promise
+    // A heartbeat queues behind the held write: eight 25 ms heartbeats pass, and an absence needs
+    // the time to pass, since nothing outside the chain says that one has queued.
+    await Bun.sleep(200)
+    reopened.resolve()
+    // The replacement connects and queues its own set-up behind that heartbeat.
+    await Bun.sleep(50)
+    expect(registered).not.toContain(NEXT)
+    held.resolve()
+    expect(await unfollowed).toEqual([TOPIC])
+    await waitFor(
+      async () => written.some((line) => line.includes(report)),
+      "the /clear's report",
+      () => JSON.stringify({ registered, stderr: written.join("") }),
+    )
+    expect(registered.at(-1)).toBe(NEXT)
+    expect(second.subscriptions.has(deliverSubject(NEXT))).toBe(true)
+  } finally {
+    stderr.mockRestore()
     await session.shutdown()
   }
 }, 30_000)
