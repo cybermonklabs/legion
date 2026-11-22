@@ -33,7 +33,11 @@
 # the hub that may publish a notification subject mapped to no pin or to one the census of
 # listener pins shut (a3), a hub with no such user, each shape of publish permission that reaches
 # a notification subject and two that reach none, the auth service's entries behind an auth
-# callout, and a ConfigMap, an auth.conf, an auth service or a hub server it cannot read, a
+# callout, an entry of a kind the gate's list does not classify and a list that classifies none,
+# an auth service's Deployment that has not settled on its spec, an auth.conf line that holds more
+# than its value, a user's object of another key or written otherwise than Render writes it,
+# Render's own text, a count of ConfigMaps as BSD wc pads it, and a ConfigMap, an auth.conf, an
+# auth service or a hub server it cannot read, a
 # consumer that has not acknowledged the last old-form message it takes (b), a session's as well
 # as a daemon's, an empty consumer list, a consumer the server could not read, a list shorter than
 # the server's count and one with no daemon's consumer, a read of a family that saw nothing (b and
@@ -398,6 +402,14 @@ jq -n '{metadata: {name: "envoy-nats"},
   spec: {replicas: 3, template: {spec: {volumes: [{name: "config", configMap: {name: "envoy-nats-config"}}, {name: "pid", emptyDir: {}}]}}},
   status: {replicas: 3, currentRevision: "envoy-nats-7d9", updateRevision: "envoy-nats-7d9"}}' >"$base/statefulset.json"
 
+# pyjson is the text Python's json.dumps writes with sort_keys and its default separators, as
+# infra/core's PyJSON writes each user's object of Authorization.Render's auth.conf. It is this
+# test's own, apart from the gate's reader, so the reader's check of a user's text is held against
+# a writer it does not share; the golden row below holds both to Render's own text.
+# shellcheck disable=SC2016 # jq's $-variables, not the shell's
+readonly pyjson='def pyjson: if type == "object" then "{" + (to_entries | sort_by(.key) | map("\(.key | tojson): \(.value | pyjson)") | join(", ")) + "}"
+  elif type == "array" then "[" + (map(pyjson) | join(", ")) + "]" else tojson end;'
+
 # auth_conf [--callout] NAME=PERMISSIONS...: the hub's auth.conf as infra/core's Authorization.Render
 # writes it, a user per NAME with the permissions object PERMISSIONS, the fifth its no_auth_user;
 # --callout adds the auth callout's block and the ping lines it ends the text with.
@@ -410,7 +422,7 @@ auth_conf() {
   printf '# Rendered by envoy-infra. Public keys only.\nauthorization {\n  users: [\n'
   for user in "$@"; do
     n=$((n + 1))
-    printf '    # %s\n    %s\n' "${user%%=*}" "$(jq -cn --arg key "$(printf 'U%055d' "$n")" --argjson p "${user#*=}" '{nkey: $key, permissions: $p}')"
+    printf '    # %s\n    %s\n' "${user%%=*}" "$(jq -rn --arg key "$(printf 'U%055d' "$n")" --argjson p "${user#*=}" "$pyjson"' {nkey: $key, permissions: $p} | pyjson')"
   done
   printf '  ]\n'
   if [ "$callout" = 1 ]; then
@@ -444,10 +456,12 @@ readonly clean_users=(
 )
 hub_configmap "$base" "${clean_users[@]}"
 # The auth service's Deployment: its services, a listener's, Dispatch's, a daemon's, the
-# measurement job's and an edge listener's, which a hub behind its callout admits.
+# measurement job's and an edge listener's, which a hub behind its callout admits, and a status
+# settled on its spec, every replica of this generation and available, none terminating.
 jq -n --arg services "listener/host-a/*=system:serviceaccount:envoy:host-a dispatch/example-dispatch/*=system:serviceaccount:dispatch:dispatch daemon/-/-=system:serviceaccount:legion:daemon measure/-/*=google:measure@example-project.iam.gserviceaccount.com edge-listener/edge-a/PRIV=system:serviceaccount:edge:edge-a" \
-  '{metadata: {name: "envoy-broker"}, spec: {template: {spec: {containers: [{name: "envoy-broker",
-    env: [{name: "BROKER_NATS_URLS", value: "nats://envoy-nats.envoy.svc.cluster.local:4222"}, {name: "BROKER_NATS_SERVICES", value: $services}]}]}}}}' >"$base/broker.json"
+  '{metadata: {name: "envoy-broker", generation: 7}, spec: {replicas: 2, template: {spec: {containers: [{name: "envoy-broker",
+    env: [{name: "BROKER_NATS_URLS", value: "nats://envoy-nats.envoy.svc.cluster.local:4222"}, {name: "BROKER_NATS_SERVICES", value: $services}]}]}}},
+    status: {observedGeneration: 7, replicas: 2, updatedReplicas: 2, readyReplicas: 2, availableReplicas: 2, terminatingReplicas: 0}}' >"$base/broker.json"
 # The census of listener pins: no VM hub, and each pin at or after the commit.
 printf '%s\n' "NO VM HUB: envoy/ at eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee declares no gcp:NatsHub" \
   "PASS: envoy-cluster runs $new_form (identical to $new_form)" "PASS: dispatch runs $newer (ahead of $new_form)" \
@@ -1059,7 +1073,7 @@ offsets=$(awk -F'\t' '$1 == "consumers" {print $2}' "$FAKE/reads.out" | paste -s
 record=$(awk -F'\t' '$1 == "interest" {print $4}' "$FAKE/reads.out" | base64 -d)
 [ "$record" = '{"session_id":"ses_a","topics":["notifications.agent.ses_a"]}' ] || fail "the Job printed the record $record, want its session id and topics alone"
 old=$(awk -F'\t' '$1 == "old_last" {print $2 "|" $4}' "$FAKE/reads.out")
-[ "${old%%|*}" = notifications.agent.ses_old ] && [ "$(wc -l <<<"$old")" = 1 ] ||
+[ "${old%%|*}" = notifications.agent.ses_old ] && [ "$(($(wc -l <<<"$old")))" = 1 ] ||
   fail "the Job read the last message of $old, want of notifications.agent.ses_old alone, the one old-form subject listed"
 message=$(base64 -d <<<"${old#*|}")
 [ "$message" = '{"type":"io.nats.jetstream.api.v1.stream_msg_get_response","error":null,"message":{"subject":"notifications.agent.ses_old","seq":77,"time":"2026-11-20T10:00:00Z"}}' ] ||
@@ -1119,7 +1133,7 @@ set -e
 offsets=$(awk -F'\t' '$1 == "census" {print $2}' "$FAKE/census.out" | paste -sd, -)
 [ "$offsets" = "0,1023" ] || fail "the census asked its pages at offsets $offsets, want 0,1023: each from the last connection of the page before"
 read_cids=$(awk -F'\t' '$1 == "census" {print $4}' "$FAKE/census.out" | while IFS= read -r out; do base64 -d <<<"$out"; echo; done | jq -r 'objects | .data.connections[].cid' | sort -nu | wc -l)
-[ "$read_cids" = 2000 ] || fail "the census read $read_cids distinct connections, want 2000"
+[ "$((read_cids))" = 2000 ] || fail "the census read $((read_cids)) distinct connections, want 2000"
 [ "$(tail -n 1 "$FAKE/census.out" | cut -f1)" = end ] || fail "the census did not reach its end line"
 done_case
 
@@ -1741,7 +1755,8 @@ done
 # Behind an auth callout, each entry of the auth service whose kind's grant publishes a notification
 # subject (lib/legacy-subjects-gate-callout-publishers.json) is a publisher too, by the name the
 # service gives its user: the edge listener's among them, since natsgrant.Edge publishes its
-# projects' agent and role subjects.
+# projects' agent and role subjects. The edge listener's entry is mapped to envoy-cluster, the
+# stack the deployment names the edge listener's replicas under (the scripts README, (a3)).
 new_case "(a3) behind an auth callout, the auth service's dispatch, edge listener and listener entries are publishers, and its daemon's and measurement job's are not"
 hub_configmap "$FAKE" --callout "${clean_users[@]}"
 facts+=(--publisher listener/host-a=envoy-cluster --publisher dispatch/example-dispatch=dispatch-server --publisher edge-listener/edge-a=envoy-cluster)
@@ -1796,6 +1811,74 @@ expect_status 3
 expect_line "UNKNOWN: (a3) the publishers: the hub runs an auth callout, and the services its auth service admits could not be read: the Deployment dispatch/envoy-broker: its BROKER_NATS_SERVICES is no literal value (set through valueFrom)"
 done_case
 
+# The auth service's replicas each admit by the list they read when they started, and all answer
+# the callout in one queue group, so a Deployment that has not settled on its spec may still admit,
+# through an older pod, an entry the spec no longer lists. A rollout whose new pod fails its
+# readiness stalls with the older pods serving: UNKNOWN, and the purge driver refuses that reading.
+new_case "(a3) an auth service's Deployment whose rollout stalled is UNKNOWN, and the purge driver refuses that reading"
+hub_configmap "$FAKE" --callout "${clean_users[@]}"
+facts+=(--publisher listener/host-a=envoy-cluster --publisher dispatch/example-dispatch=dispatch-server --publisher edge-listener/edge-a=envoy-cluster)
+jq '.metadata.generation = 8 | .status = {observedGeneration: 8, replicas: 3, updatedReplicas: 1, readyReplicas: 2, availableReplicas: 2, unavailableReplicas: 1, terminatingReplicas: 0}' \
+  "$FAKE/broker.json" >"$FAKE/broker.tmp" && mv "$FAKE/broker.tmp" "$FAKE/broker.json"
+first_reading_secs 200 reading
+old_stream_rows
+reading --since "$FAKE/earlier.json"
+expect_line "UNKNOWN: (a3) the publishers: the hub runs an auth callout, and the services its auth service admits could not be read: the Deployment dispatch/envoy-broker: it is rolling out, so an older pod may still admit an entry its spec no longer lists: generation 8, observed 8; 2 replica(s) wanted, 3 running, 1 updated, 1 unavailable, 0 terminating"
+[ "$(jq -c '.facts | {a1, a2, a3, b}' "$FAKE/record.json")" = '{"a1":"true","a2":"true","a3":"unknown","b":"true"}' ] ||
+  fail "the record's facts are $(jq -c .facts "$FAKE/record.json")"
+purge_refuses "(a3) the publishers" unknown
+done_case
+
+# Each sign of a Deployment not settled on its spec, alone, from the settled fixture.
+unsettled_brokers=(
+  'its controller has not yet seen its newest spec|.metadata.generation = 8'
+  'a replica of an older spec still runs|.status.updatedReplicas = 1'
+  'more replicas run than it wants|.status.replicas = 3'
+  'a replica is unavailable|.status.unavailableReplicas = 1 | .status.availableReplicas = 1 | .status.readyReplicas = 1'
+  'a pod is still terminating|.status.terminatingReplicas = 1'
+)
+for unsettled in "${unsettled_brokers[@]}"; do
+  new_case "(a3) an auth service's Deployment in which ${unsettled%%|*} is UNKNOWN"
+  hub_configmap "$FAKE" --callout "${clean_users[@]}"
+  facts+=(--publisher listener/host-a=envoy-cluster --publisher dispatch/example-dispatch=dispatch-server --publisher edge-listener/edge-a=envoy-cluster)
+  jq "${unsettled#*|}" "$FAKE/broker.json" >"$FAKE/broker.tmp" && mv "$FAKE/broker.tmp" "$FAKE/broker.json"
+  first_reading_secs 200 reading
+  reading --since "$FAKE/earlier.json"
+  expect_status 3
+  expect_line "UNKNOWN: (a3) the publishers: the hub runs an auth callout, and the services its auth service admits could not be read: the Deployment dispatch/envoy-broker: it is rolling out"
+  done_case
+done
+
+# An entry of a kind the gate's list does not classify, which a broker newer than this checkout
+# can admit, is UNKNOWN: whether its grant publishes a notification subject is not known here.
+new_case "(a3) behind an auth callout, an entry of a kind the gate's list does not classify is UNKNOWN, and the purge driver refuses that reading"
+hub_configmap "$FAKE" --callout "${clean_users[@]}"
+facts+=(--publisher listener/host-a=envoy-cluster --publisher dispatch/example-dispatch=dispatch-server --publisher edge-listener/edge-a=envoy-cluster)
+jq '.spec.template.spec.containers[0].env[1].value += " relay/relay-a/*=system:serviceaccount:relay:relay-a"' \
+  "$FAKE/broker.json" >"$FAKE/broker.tmp" && mv "$FAKE/broker.tmp" "$FAKE/broker.json"
+first_reading_secs 200 reading
+old_stream_rows
+reading --since "$FAKE/earlier.json"
+expect_line "UNKNOWN: (a3) the publishers: the hub runs an auth callout, and its auth service admits entries of the kind(s) relay, which this gate's list (lib/legacy-subjects-gate-callout-publishers.json) does not classify, so whether their grant publishes a notification subject cannot be read"
+[ "$(jq -c '.facts | {a1, a2, a3, b}' "$FAKE/record.json")" = '{"a1":"true","a2":"true","a3":"unknown","b":"true"}' ] ||
+  fail "the record's facts are $(jq -c .facts "$FAKE/record.json")"
+purge_refuses "(a3) the publishers" unknown
+done_case
+
+# A list that names kinds without classifying each, and says nothing of a session, as the list did
+# before it classified every kind, is UNKNOWN behind a callout. The gate's copy of the list is
+# changed for this case alone and put back after its reading.
+new_case "(a3) behind an auth callout, a list of kinds that does not classify each kind and a session is UNKNOWN"
+hub_configmap "$FAKE" --callout "${clean_users[@]}"
+facts+=(--publisher listener/host-a=envoy-cluster --publisher dispatch/example-dispatch=dispatch-server --publisher edge-listener/edge-a=envoy-cluster)
+first_reading_secs 200 reading
+echo '{ "kinds": ["dispatch", "edge-listener", "listener"] }' >"$root/gate/lib/legacy-subjects-gate-callout-publishers.json"
+reading --since "$FAKE/earlier.json"
+cp "$here/lib/legacy-subjects-gate-callout-publishers.json" "$root/gate/lib/"
+expect_status 3
+expect_line "UNKNOWN: (a3) the publishers: the hub runs an auth callout, and this gate's list of the auth service's kinds (lib/legacy-subjects-gate-callout-publishers.json) does not say, kind by kind and for a session, whether its grant publishes a notification subject"
+done_case
+
 new_case "(a3) a ConfigMap of the hub the operator cannot read is UNKNOWN"
 touch "$FAKE/configmap.fail"
 first_reading_secs 200 reading
@@ -1813,6 +1896,91 @@ first_reading_secs 200 reading
 reading --since "$FAKE/earlier.json"
 expect_status 3
 expect_line "UNKNOWN: (a3) the publishers: the ConfigMap envoy-nats-config's auth.conf is not the rendering this gate reads, so a user it holds could be passed over: line 2, accounts {, comes before its authorization block"
+done_case
+
+# A line is read only whole: nats-server ends a value at `;` and reads on, so an accounts block
+# after no_auth_user's value, on its line, holds users this reader would pass over. UNKNOWN, and
+# the purge driver refuses that reading.
+new_case "(a3) an auth.conf line after the block that holds an accounts block after its value is UNKNOWN, and the purge driver refuses that reading"
+jq --arg hidden "$(printf 'U%055d' 9)" '.data["auth.conf"] |= sub("\nno_auth_user: (?<v>\"U[0-9]{55}\")\n"; "\nno_auth_user: \(.v); accounts { HIDDEN: { users: [ {nkey: \"\($hidden)\", permissions: {publish: {allow: [\">\"]}}} ] } }\n")' \
+  "$FAKE/configmaps/envoy-nats-config.json" >"$FAKE/configmap.tmp" && mv "$FAKE/configmap.tmp" "$FAKE/configmaps/envoy-nats-config.json"
+first_reading_secs 200 reading
+old_stream_rows
+reading --since "$FAKE/earlier.json"
+expect_line "UNKNOWN: (a3) the publishers: the ConfigMap envoy-nats-config's auth.conf is not the rendering this gate reads, so a user it holds could be passed over: line 17, no_auth_user: \"$(printf 'U%055d' 5)\"; accounts { HIDDEN:"
+[ "$(jq -c '.facts | {a1, a2, a3, b}' "$FAKE/record.json")" = '{"a1":"true","a2":"true","a3":"unknown","b":"true"}' ] ||
+  fail "the record's facts are $(jq -c .facts "$FAKE/record.json")"
+purge_refuses "(a3) the publishers" unknown
+done_case
+
+new_case "(a3) an auth_callout line that holds more than its value is UNKNOWN"
+hub_configmap "$FAKE" --callout "${clean_users[@]}"
+facts+=(--publisher listener/host-a=envoy-cluster --publisher dispatch/example-dispatch=dispatch-server --publisher edge-listener/edge-a=envoy-cluster)
+jq '.data["auth.conf"] |= sub("\n    xkey: (?<v>\"X[A-Z0-9]{55}\")\n"; "\n    xkey: \(.v), timeout: 1\n")' \
+  "$FAKE/configmaps/envoy-nats-config.json" >"$FAKE/configmap.tmp" && mv "$FAKE/configmap.tmp" "$FAKE/configmaps/envoy-nats-config.json"
+first_reading_secs 200 reading
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "could be passed over: line 18,     xkey: \"XBVCTZK3PV5Y7TBIVYTDZBP3O2YGHUUL7MMENN4DTZIREJCPGLTAF6EL\", timeout: 1, is no line of its auth_callout block"
+done_case
+
+# nats-server reads pub as publish, and of the two keeps the one it reads last; a user's object
+# with any key Render does not write is UNKNOWN, never read by the key this reader knows. Here the
+# user other may publish notifications.> by pub, and publish allows only inboxes. The purge
+# driver refuses that reading.
+new_case "(a3) a user's object that spells publish twice, as pub and as publish, is UNKNOWN, and the purge driver refuses that reading"
+hub_configmap "$FAKE" "${clean_users[@]}" 'other={"pub": {"allow": ["notifications.>"]}, "publish": {"allow": ["_INBOX.>", "agentstream.*.frames"]}, "subscribe": {"allow": ["_INBOX.>"]}}'
+first_reading_secs 200 reading
+old_stream_rows
+reading --since "$FAKE/earlier.json"
+expect_line "UNKNOWN: (a3) the publishers: the ConfigMap envoy-nats-config's auth.conf is not the rendering this gate reads, so a user it holds could be passed over: line 15, "
+expect_line "is no user's JSON object as the rendering writes it: the keys nkey and permissions, publish and subscribe, allow and deny, each once, sorted and unescaped"
+[ "$(jq -c '.facts | {a1, a2, a3, b}' "$FAKE/record.json")" = '{"a1":"true","a2":"true","a3":"unknown","b":"true"}' ] ||
+  fail "the record's facts are $(jq -c .facts "$FAKE/record.json")"
+purge_refuses "(a3) the publishers" unknown
+done_case
+
+# A key written twice: this reader keeps the last, and whichever nats-server keeps, the two could
+# be read apart. The daemon's object here first allows every subject, then its own list.
+new_case "(a3) a user's object that names a key twice is UNKNOWN, whichever of the two a reader keeps"
+jq '.data["auth.conf"] |= sub("\\{\"nkey\": \"(?<k>U0{54}2)\", \"permissions\": \\{\"publish\": "; "{\"nkey\": \"\(.k)\", \"permissions\": {\"publish\": {\"allow\": [\">\"]}, \"publish\": ")' \
+  "$FAKE/configmaps/envoy-nats-config.json" >"$FAKE/configmap.tmp" && mv "$FAKE/configmap.tmp" "$FAKE/configmaps/envoy-nats-config.json"
+first_reading_secs 200 reading
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "could be passed over: line 7, "
+expect_line "is no user's JSON object as the rendering writes it"
+done_case
+
+# Render's own text, infra/core's golden auth.conf with a callout (its non-ASCII subject among it),
+# is read whole: its three users that may publish are read beside the auth service's entries.
+new_case "(a3) Render's golden auth.conf is read whole, its users that may publish beside the auth service's"
+jq -n --rawfile auth "$here/../infra/core/testdata/authorization-callout.golden" \
+  '{metadata: {name: "envoy-nats-config"}, data: {"nats.conf": "include auth.conf\n", "auth.conf": $auth}}' >"$FAKE/configmaps/envoy-nats-config.json"
+facts=(--deployment example/deploy --new-form-commit "$new_form" --hub-statefulset envoy-nats --broker dispatch/envoy-broker
+  --publisher example-hub=envoy-cluster --publisher example-dispatch=dispatch-server --publisher example-sessions=envoy-cluster
+  --publisher listener/host-a=envoy-cluster --publisher dispatch/example-dispatch=dispatch-server --publisher edge-listener/edge-a=envoy-cluster)
+first_reading_secs 200 reading
+reading --since "$FAKE/earlier.json"
+expect_status 0
+expect_last "GATE OPEN"
+expect_line "PASS: (a3) the publishers: each of the 6 user(s) of the hub that may publish a notification subject runs a listener pin the census passed at or after $new_form: dispatch/example-dispatch (dispatch-server); edge-listener/edge-a (envoy-cluster); example-dispatch (dispatch-server); example-hub (envoy-cluster); example-sessions (envoy-cluster); listener/host-a (envoy-cluster)"
+done_case
+
+# BSD's and macOS's wc -l pad the count to eight columns: the one ConfigMap that holds auth.conf
+# is still read as one.
+new_case "(a3) a count of the ConfigMaps that hold auth.conf as BSD wc pads it is read as the number it is"
+mkdir -p "$FAKE/bsdbin"
+cat >"$FAKE/bsdbin/wc" <<'EOF'
+#!/usr/bin/env bash
+command -p wc "$@" | awk '{ $1 = sprintf("%8d", $1); print }'
+EOF
+chmod +x "$FAKE/bsdbin/wc"
+[ "$("$FAKE/bsdbin/wc" -l <<<x)" = "       1" ] || fail "the fake BSD wc counts one line as '$("$FAKE/bsdbin/wc" -l <<<x)', not padded"
+first_reading_secs 200 reading
+PATH="$FAKE/bsdbin:$PATH" reading --since "$FAKE/earlier.json"
+expect_status 0
+expect_line "PASS: (a3) the publishers: each of the 2 user(s) of the hub that may publish a notification subject"
 done_case
 
 new_case "(a3) a hub server outside the StatefulSet, whose users cannot be read, is UNKNOWN"

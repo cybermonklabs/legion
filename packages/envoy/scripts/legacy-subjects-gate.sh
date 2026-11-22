@@ -322,9 +322,10 @@ readonly cutover_inbox=_INBOX_legacy_cutover
 # (a1)'s census of pinned builds, and (a3)'s of listener pins: the release gate beside this script,
 # in its --clients and its --listeners mode.
 readonly release_gate="$here/daemon-release-gate.sh"
-# (a3)'s kinds of auth-service entry whose grant may publish a notification subject, which the
-# natscallout test TestTheGateCountsEveryCalloutKindWhoseGrantPublishesANotificationSubject holds
-# to the grants the auth service answers.
+# (a3)'s list of the auth service's kinds of entry, each with whether its grant may publish a
+# notification subject, and whether a session's grant may, which the natscallout test
+# TestTheGateCountsEveryCalloutKindWhoseGrantPublishesANotificationSubject holds to the kinds config
+# declares and the grants the auth service answers.
 readonly callout_publishers="$here/lib/legacy-subjects-gate-callout-publishers.json"
 # The nats-box image the deployment pins for its own NATS Jobs (envoy-cluster/Pulumi.prod.yaml
 # moveImage), by digest, so the Job runs the nats CLI the reads were measured with.
@@ -637,26 +638,40 @@ if [ -n "$since" ]; then
         fi
       done < <(jq -r '[.spec.template.spec.volumes[]? | (.configMap.name // empty), (.projected.sources[]? | .configMap.name // empty)] | unique[]' "$work/hub.json" 2>/dev/null)
       if [ -z "$auth_error" ]; then
-        case "$(wc -l <"$work/auth-holders")" in
+        # BSD and macOS wc -l pad the count with spaces; $((holders)) reads it as the number alone.
+        holders=$(wc -l <"$work/auth-holders")
+        case "$((holders))" in
           1) auth_configmap=$(cat "$work/auth-holders") ;;
           0) auth_error="no ConfigMap the StatefulSet $job_namespace/$hub_statefulset mounts holds auth.conf" ;;
-          *) auth_error="$(wc -l <"$work/auth-holders") ConfigMaps the StatefulSet $job_namespace/$hub_statefulset mounts hold auth.conf: $(paste -sd' ' "$work/auth-holders")" ;;
+          *) auth_error="$((holders)) ConfigMaps the StatefulSet $job_namespace/$hub_statefulset mounts hold auth.conf: $(paste -sd' ' "$work/auth-holders")" ;;
         esac
       fi
     fi
   fi
   # The auth service's services, which a hub behind an auth callout admits: the one literal
   # BROKER_NATS_SERVICES of the Deployment --broker names. The judge reads it only for a hub whose
-  # auth.conf holds the callout.
+  # auth.conf holds the callout. Each replica admits by the list it read from its environment when
+  # it started (internal/cipher/config, natscallout's decide), and every replica answers the callout
+  # in one queue group, so the spec is what is admitted only once the Deployment has settled on it:
+  # its controller has seen this generation, every replica it runs is of this spec and available,
+  # and none is still terminating where the cluster counts those. A Deployment that is rolling out,
+  # stalled included, may still admit through an older pod an entry its spec no longer lists.
   broker_read='{"given": false}'
   if [ -n "$broker" ]; then
     if kc -n "${broker%%/*}" get deployment "${broker#*/}" -o json >"$work/broker.json" 2>"$work/broker.err"; then
-      broker_read=$(jq -c '[.spec.template.spec.containers[]? | .env[]? | select(.name == "BROKER_NATS_SERVICES")] as $e
+      broker_read=$(jq -c '(.spec.replicas // 1) as $want | (.status // {}) as $s
         | {given: true}
-        + if ($e | length) == 0 then {error: "its containers set no BROKER_NATS_SERVICES in their env (one set through envFrom cannot be read)"}
-          elif ($e | length) > 1 then {error: "its containers set BROKER_NATS_SERVICES \($e | length) times"}
-          elif ($e[0].value | type) != "string" or $e[0].valueFrom != null then {error: "its BROKER_NATS_SERVICES is no literal value (set through valueFrom)"}
-          else {value: $e[0].value} end' "$work/broker.json" 2>/dev/null) ||
+        + if (.metadata.generation | type) != "number" or $s.observedGeneration != .metadata.generation
+            or ($s.replicas // 0) != $want or ($s.updatedReplicas // 0) != $want
+            or ($s.unavailableReplicas // 0) != 0 or ($s.terminatingReplicas // 0) != 0 then
+            {error: "it is rolling out, so an older pod may still admit an entry its spec no longer lists: generation \(.metadata.generation // "none"), observed \($s.observedGeneration // "none"); \($want) replica(s) wanted, \($s.replicas // 0) running, \($s.updatedReplicas // 0) updated, \($s.unavailableReplicas // 0) unavailable, \($s.terminatingReplicas // 0) terminating"}
+          else
+            [.spec.template.spec.containers[]? | .env[]? | select(.name == "BROKER_NATS_SERVICES")] as $e
+            | if ($e | length) == 0 then {error: "its containers set no BROKER_NATS_SERVICES in their env (one set through envFrom cannot be read)"}
+              elif ($e | length) > 1 then {error: "its containers set BROKER_NATS_SERVICES \($e | length) times"}
+              elif ($e[0].value | type) != "string" or $e[0].valueFrom != null then {error: "its BROKER_NATS_SERVICES is no literal value (set through valueFrom)"}
+              else {value: $e[0].value} end
+          end' "$work/broker.json" 2>/dev/null) ||
         broker_read='{"given": true, "error": "its Deployment is no JSON object"}'
       broker_read=$(jq -c --arg broker "$broker" 'if .error then .error = "the Deployment \($broker): \(.error)" else . end' <<<"$broker_read")
     else
@@ -685,7 +700,7 @@ if [ -n "$since" ]; then
      builds: {},
      a3: {missing: ($a3_missing | lines), rc: $a3_rc, error: ($a3_error | nullable), lines: ($a3_out | lines),
        auth: {error: ($auth_error | nullable), configmap: ($auth_configmap | nullable), text: $auth},
-       broker: $broker, callout_kinds: ($kinds[0].kinds // []), outside: ($outside | lines),
+       broker: $broker, callout_kinds: $kinds[0].kinds, callout_session: $kinds[0].session, outside: ($outside | lines),
        map: [$map | lines | .[] | capture("^(?<identity>.+)=(?<key>[^=]+)$")]}}' >"$work/facts.json"
 fi
 
@@ -794,8 +809,9 @@ if [ -n "$census_name" ] && [ -s "$work/census-lines.jsonl" ]; then
     [.[] | select(.leg == "census") | .out | split("\n")[] | select(length > 0) | try fromjson catch empty
       | .data.connections[]? | .name | build_token | strings] | unique[]' "$work/census-lines.jsonl" >"$work/builds" 2>/dev/null || : >"$work/builds"
   : >"$work/build-verdicts.jsonl"
-  if [ "$(wc -l <"$work/builds")" -gt "$max_builds" ]; then
-    jq -cn --arg n "$(wc -l <"$work/builds")" --argjson max "$max_builds" '{verdict: "unknown", detail: "the census names \($n) builds, more than the \($max) this gate asks GitHub about in one reading"}' >"$work/too-many"
+  builds=$(wc -l <"$work/builds")
+  if [ "$((builds))" -gt "$max_builds" ]; then
+    jq -cn --argjson n "$((builds))" --argjson max "$max_builds" '{verdict: "unknown", detail: "the census names \($n) builds, more than the \($max) this gate asks GitHub about in one reading"}' >"$work/too-many"
   fi
   while IFS= read -r build; do
     case "$build" in

@@ -1016,35 +1016,44 @@ printed on lines that name it first, `(a1) the pins`, `(a2) the running clients`
 - **(a3) The publishers**: every user of the hub that may publish a notification subject runs a
   listener pin at or after `--new-form-commit`. The users are read from the hub's `auth.conf`, the
   key of the one ConfigMap the `--hub-statefulset`'s pods mount that holds it, in the shape
-  `infra/core`'s `Authorization.Render` writes (`lib/legacy-subjects-gate-publishers.jq`): each
-  user, by its `# <name>` line, whose publish allow list can match a notification subject
-  (`notifications.>`, `notifications.<x>.>`, `*.>`, `>`) or that has none, which allows every
-  subject, unless one deny entry matches every notification subject. Behind an auth callout, each
-  entry of the auth service's `BROKER_NATS_SERVICES`, read from the Deployment `--broker` names,
-  of a kind `lib/legacy-subjects-gate-callout-publishers.json` lists is one too, by the name the
-  service gives its user (`<kind>/<machine id>`); natscallout's
-  `TestTheGateCountsEveryCalloutKindWhoseGrantPublishesANotificationSubject` holds that list to the
-  grants the service answers (`dispatch`, `edge-listener` and `listener` today). Nothing the gate
-  reads links a user to the stack that runs it, so the operator maps each with
-  `--publisher <identity>=<pin key>`, repeated for a user more than one process runs, to a key of
-  `daemon-release-gate.sh --listeners`, run beside the gate: `envoy` (the VM hub's listener),
+  `infra/core`'s `Authorization.Render` writes, each line read whole
+  (`lib/legacy-subjects-gate-publishers.jq`): each user, by its `# <name>` line, whose publish allow
+  list can match a notification subject (`notifications.>`, `notifications.<x>.>`, `*.>`, `>`) or
+  that has none, which allows every subject, unless one deny entry matches every notification
+  subject. A line that only begins as one of Render's, which nats-server can read on past its
+  value (`no_auth_user: "U…"; accounts { … }`), and a user's object with a key Render does not write
+  (`pub` beside `publish`, say) or written otherwise than Render writes it (a key twice, or
+  escaped) are another shape. Behind an auth callout, each entry of the auth service's
+  `BROKER_NATS_SERVICES`, read from the Deployment `--broker` names once it has settled on its spec
+  (its controller has seen its generation, every replica is of that spec and available, and none
+  is terminating where the cluster counts those), is one too when
+  `lib/legacy-subjects-gate-callout-publishers.json` marks its kind as publishing, by the name the
+  service gives its user (`<kind>/<machine id>`). That list classifies every kind config declares,
+  and a session's token; natscallout's
+  `TestTheGateCountsEveryCalloutKindWhoseGrantPublishesANotificationSubject` holds it to those kinds
+  and to the grants the service answers (`dispatch`, `edge-listener` and `listener` publish
+  today). Nothing the gate reads links a user to the stack that runs it, so the operator maps each
+  with `--publisher <identity>=<pin key>`, repeated for a user more than one process runs, to a key
+  of `daemon-release-gate.sh --listeners`, run beside the gate: `envoy` (the VM hub's listener),
   `envoy-cluster`, `dispatch` (Dispatch's listener) or `dispatch-server`. An edge listener's entry
-  is mapped as any other, to the key of the pin that runs it; none of these keys is named for one.
-  It is true when every such user is mapped and every key it maps to printed `PASS`; a key that
-  printed `GATE SHUT` makes it false; a user no `--publisher` maps, a
-  key with no `PASS`, a `--hub-server` (whose users cannot be read), an `auth.conf` of another
-  shape, a callout with no `--broker` or whose Deployment cannot be read or sets the variable
-  through `valueFrom`, and no such user at all make it unknown. The record keeps each
-  `--publisher` as given, with its key's verdict (`facts.publishers`). The operator's account needs
-  `get` of the ConfigMaps the StatefulSet mounts in `envoy` and, with `--broker`, of that
-  Deployment in its namespace; a read it is refused is `UNKNOWN`, naming kubectl's answer, and the
-  reading exits 3, the gate's `UNKNOWN`, never 2, which stays the usage error that reads nothing
-  and writes no record. A user is judged by the pin it is mapped to, not by the build its
-  connections run: a process outside the pins that holds a mapped user's credential is seen only
-  by (a2), while it is connected. `lib/legacy-subjects-gate-publishers.jq` includes no module and
-  calls builtins alone: jq 1.8.2 fails an assertion (`src/compile.c`, `expand_call_arglist`) when a
-  function of an included module calls one its own module included, so its readers answer what
-  they read as read and the judge writes it out.
+  (`edge-listener/<machine id>`) maps to `envoy-cluster`: the deployment names the edge listener's
+  replicas as that stack's. No edge listener runs yet, so until that stack runs one on a pin
+  `--listeners` reads, the mapping is the operator's claim. It is true when every such user is
+  mapped and every key it maps to printed `PASS`; a key that printed `GATE SHUT` makes it false; a
+  user no `--publisher` maps, a key with no `PASS`, a `--hub-server` (whose users cannot be read),
+  an `auth.conf` of another shape, a callout with no `--broker`, whose Deployment cannot be read,
+  is rolling out or sets the variable through `valueFrom`, or whose auth service admits an entry
+  of a kind the list does not classify, and no such user at all make it unknown, never a pass. The
+  record keeps each `--publisher` as given, with its key's verdict (`facts.publishers`). The
+  operator's account needs `get` of the ConfigMaps the StatefulSet mounts in `envoy` and, with
+  `--broker`, of that Deployment in its namespace; a read it is refused is `UNKNOWN`, naming
+  kubectl's answer, and the reading exits 3, the gate's `UNKNOWN`, never 2, which stays the usage
+  error that reads nothing and writes no record. A user is judged by the pin it is mapped to, not
+  by the build its connections run: a process outside the pins that holds a mapped user's
+  credential is seen only by (a2), while it is connected. `lib/legacy-subjects-gate-publishers.jq`
+  includes no module and calls builtins alone: jq 1.8.2 fails an assertion (`src/compile.c`,
+  `expand_call_arglist`) when a function of an included module calls one its own module included,
+  so its readers answer what they read as read and the judge writes it out.
 - **(b) The consumers**: each consumer of the stream has acknowledged the newest message of the
   old-form subjects its filters match: its ack floor's stream sequence equal to that message's
   holds, since the floor's own message is acknowledged, and one below it shuts. It is unknown for
@@ -1105,6 +1114,16 @@ delete the code that reads both):
   that comes back between the purge and the switch never gets the old-form messages sent to it
   before the producers moved. After the switch its consumer filters the new form alone, so it would
   not get them then either.
+
+(a3) also reads the users the hub and its auth service are given, not the ones their running
+processes hold. A hub server loads `auth.conf` from the ConfigMap only once the kubelet updates the
+mounted file and the chart's config reloader reloads the server. The hub's pod template carries no
+checksum of the ConfigMap (`configChecksumAnnotation: false` in `infra/gcp/clusteredhub_kube.go`),
+so a change to it rolls no pod, and the StatefulSet reads settled while a server still admits a
+user the ConfigMap has dropped. In the same way, on a cluster that does not count terminating pods
+(`status.terminatingReplicas`), an auth service whose old pod is still stopping reads settled,
+and that pod can answer the callout by its old list until it stops. A user dropped in such a span
+that still connects at an older build is seen only by (a2), while it is connected.
 
 **The `legacy-cutover` user.** The census and the purge run as one temporary static NATS user of
 the hub, which the deployment adds for the cutover and removes before any project is private (a

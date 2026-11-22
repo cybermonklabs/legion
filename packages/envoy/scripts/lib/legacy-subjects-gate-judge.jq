@@ -509,8 +509,11 @@ def old_filters:
 # (a3) the publishers: every user of the hub that may publish a notification subject, each static
 # user of its auth.conf and, behind its auth callout, each entry of the auth service whose kind's
 # grant publishes one, runs a listener pin the release gate's census passed, by the operator's map
-# (--publisher <identity>=<pin key>). It is read beside the facts so the record keeps the map it
-# judged: each entry as the operator gave it, with its key's verdict.
+# (--publisher <identity>=<pin key>). Whether a kind's grant publishes one is the gate's list
+# (lib/legacy-subjects-gate-callout-publishers.json, which natscallout's test holds to the grants),
+# and an entry of a kind the list does not classify, which a broker newer than this checkout can
+# admit, is unknown. It is read beside the facts so the record keeps the map it judged: each entry
+# as the operator gave it, with its key's verdict.
 | (if $in.earlier == null then null else
     ($fi.a3 // {}) as $p
     | ([$p.lines // [] | .[] | strings]) as $ll
@@ -527,14 +530,17 @@ def old_filters:
         | if $ac.error then unknown("the ConfigMap \($p.auth.configmap // "?" | printable)'s auth.conf is not the rendering this gate reads, so a user it holds could be passed over: \($ac.error | if .line then "line \(.line), \(.text | .[:120] | printable), \(.why)" elif .names then "\(.why) \(.names | map(printable) | join(", "))" else .why end)")
           else
             ([$ac.users[] | select(.permissions | can_publish_notifications) | .name]) as $static
-            | ($p.callout_kinds // []) as $kinds
+            | $p.callout_kinds as $kinds
+            | $p.callout_session as $session
             | (if ($ac.callout | not) then {ids: []}
                elif ($p.broker.given // false | not) then {unknown: "the hub runs an auth callout, whose services this gate reads from the auth service's Deployment: name it with --broker <namespace>/<deployment>"}
                elif $p.broker.error then {unknown: "the hub runs an auth callout, and the services its auth service admits could not be read: \($p.broker.error | printable)"}
+               elif ($kinds | type) != "object" or ($session | type) != "boolean" then {unknown: "the hub runs an auth callout, and this gate's list of the auth service's kinds (lib/legacy-subjects-gate-callout-publishers.json) does not say, kind by kind and for a session, whether its grant publishes a notification subject"}
                else ($p.broker.value | nats_services) as $s
+                 | ([$s.entries // [] | .[] | .kind | select(($kinds[.] | type) != "boolean")] | unique) as $unlisted
                  | if $s.error then {unknown: "the hub runs an auth callout, and its auth service's BROKER_NATS_SERVICES cannot be read: an entry is no <kind>/<machine id or ->/<scope>=<account>: \($s.error.entry | .[:120] | printable)"}
-                   else {ids: ([$s.entries[] | select(.kind as $k | $kinds | index($k) != null) | .identity]
-                     + (if ($kinds | index("session")) != null then ["session/*"] else [] end))} end
+                   elif ($unlisted | length) > 0 then {unknown: "the hub runs an auth callout, and its auth service admits entries of the kind(s) \($unlisted | map(printable) | join(", ")), which this gate's list (lib/legacy-subjects-gate-callout-publishers.json) does not classify, so whether their grant publishes a notification subject cannot be read"}
+                   else {ids: ([$s.entries[] | select($kinds[.kind]) | .identity] + (if $session then ["session/*"] else [] end))} end
                end) as $callout
             | if $callout.unknown then unknown($callout.unknown)
               else (($static + $callout.ids) | unique) as $ids

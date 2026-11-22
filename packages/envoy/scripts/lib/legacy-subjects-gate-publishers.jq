@@ -22,33 +22,57 @@ def reaches_notifications:
 def covers_notifications: gsub("^\\s+|\\s+$"; "") | . == ">" or . == "*.>" or . == "notifications.>";
 
 # can_publish_notifications says whether a user with these permissions (an auth.conf user's
-# permissions object, null for none) may publish some notification subject. A publish allow list
-# that is missing, empty, or holds an entry that is blank or no string allows every subject:
-# nats-server applies no allow list to that direction (natsgrant.OpenDirection). Otherwise one
-# entry must reach a notification subject. A deny list takes that away only through one entry that
-# matches every notification subject; any other deny list is read as leaving one open, which can
-# only keep the gate shut.
+# permissions object as rendered_user holds it) may publish some notification subject. A publish
+# direction that is missing, or whose allow list is missing, empty or holds a blank entry, allows
+# every subject: nats-server applies no allow list to that direction (natsgrant.OpenDirection).
+# Otherwise one entry must reach a notification subject. A deny list takes that away only through
+# one entry that matches every notification subject; any other deny list is read as leaving one
+# open, which can only keep the gate shut.
 def can_publish_notifications:
-  (if type == "object" then .publish else null end) as $pub
-  | (if ($pub | type) == "object" then $pub.allow
-     elif ($pub | type) == "array" or ($pub | type) == "string" then $pub
-     else null end
-     | if type == "string" then [.] elif type == "array" then . else null end) as $allow
-  | (if ($pub | type) == "object" then ($pub.deny // []) else [] end
-     | if type == "string" then [.] elif type == "array" then . else [] end) as $deny
-  | (($allow == null) or ($allow | length) == 0 or any($allow[]; type != "string" or gsub("\\s"; "") == "")) as $open
-  | ($open or any($allow[]; reaches_notifications)) and (any($deny[]; strings | covers_notifications) | not);
+  (.publish.allow // []) as $allow
+  | (.publish.deny // []) as $deny
+  | (($allow | length) == 0 or any($allow[]; gsub("\\s"; "") == "")) as $open
+  | ($open or any($allow[]; reaches_notifications)) and (any($deny[]; covers_notifications) | not);
 
-# auth_conf reads the hub's auth.conf as infra/core's Authorization.Render writes it, line by line:
-# its comment header, `authorization {`, `  users: [`, each user as a `    # <name>` line and then
-# its one JSON object, `  ]`, the auth callout's block when the hub runs one, `}`, and after it
-# comment lines, no_auth_user and the callout's ping_interval and ping_max. It answers {users:
-# [{name, nkey, permissions}], callout} or {error: {line, text, why}} for a line of any other shape
-# (an accounts block among them) or a user line that is no JSON object with an nkey, and {error:
+# pyjson is the text Python's json.dumps writes for a value with sort_keys and its default
+# separators (", " and ": "), non-ASCII raw: infra/core's PyJSON, as Authorization.Render writes
+# each user's object. A string is tojson's, which is Python's for every string Render's Validate
+# lets into a subject (no control character, no DEL).
+def pyjson:
+  if type == "object" then "{" + (to_entries | sort_by(.key) | map((.key | tojson) + ": " + (.value | pyjson)) | join(", ")) + "}"
+  elif type == "array" then "[" + (map(pyjson) | join(", ")) + "]"
+  else tojson end;
+
+# rendered_user says whether a user's object has the keys Render writes, spelled as it spells them:
+# nkey, a user's key, and permissions, whose keys are publish and subscribe, each an object whose
+# keys are allow and deny, each a list of strings. nats-server reads other spellings as these too
+# (pub for publish, permission for permissions, in any case: v2.15.1 server/opts.go), and keeps
+# whichever of two it reads last, so an object holding any other key could publish what this reader
+# does not see.
+def rendered_user:
+  type == "object" and keys == ["nkey", "permissions"]
+  and (.nkey | type == "string" and test("^U[A-Z0-9]{55}$"))
+  and (.permissions | type == "object" and all(keys[]; . == "publish" or . == "subscribe")
+    and all(.[]; type == "object" and all(keys[]; . == "allow" or . == "deny")
+      and all(.[]; type == "array" and all(.[]; type == "string"))));
+
+# auth_conf reads the hub's auth.conf as infra/core's Authorization.Render writes it, each line
+# whole: its comment header, `authorization {`, `  users: [`, each user as a `    # <name>` line and
+# then its one JSON object, `  ]`, the auth callout's block when the hub runs one (issuer,
+# auth_users and xkey, in that order), `}`, and after it comment lines, no_auth_user and the
+# callout's ping_interval and ping_max. A line is read only as a whole: nats-server ends a value at
+# `;` or `,` and reads on (v2.15.1 conf/lex.go), so a line that only begins as one of these could
+# carry more, an accounts block among it. A user's object must have rendered_user's keys and be
+# the text pyjson writes for what it holds, so a key written twice or escaped, which this reader
+# and nats-server could read apart, is no user's object. It answers {users: [{name, nkey,
+# permissions}], callout} or {error: {line, text, why}} for a line of any other shape, and {error:
 # {why, names}} for two users of one name or a text that ends inside the block, since a user this
 # reader passed over could be a publisher it never saw.
 def auth_conf:
-  split("\n") as $lines
+  "U[A-Z0-9]{55}" as $user_key
+  | ["^    issuer: \"[A-Z0-9]{56}\"$", "^    auth_users: \\[(\"\($user_key)\"(, \"\($user_key)\")*)?\\]$", "^    xkey: \"[A-Z0-9]{56}\"$"] as $callout_lines
+  | "^no_auth_user: \"\($user_key)\"$|^ping_interval: \"[0-9]+[a-z]+\"$|^ping_max: [0-9]+$" as $tail_line
+  | split("\n") as $lines
   | reduce range(0; $lines | length) as $i ({state: "header", users: [], name: null, callout: false, error: null};
       if .error != null then .
       else
@@ -64,23 +88,24 @@ def auth_conf:
             if .name == null and ($l | startswith("    # ")) then .name = ($l | ltrimstr("    # "))
             elif .name != null and ($l | startswith("    {")) then
               ($l | ltrimstr("    ") | try fromjson catch null) as $u
-              | if ($u | type) == "object" and ($u.nkey | type) == "string" then
-                  .users += [{name: .name, nkey: $u.nkey, permissions: ($u.permissions // null)}] | .name = null
-                else .error = $at + {why: "is no user's JSON object with an nkey"} end
+              | if ($u | rendered_user) and "    \($u | pyjson)" == $l then
+                  .users += [{name: .name, nkey: $u.nkey, permissions: $u.permissions}] | .name = null
+                else .error = $at + {why: "is no user's JSON object as the rendering writes it: the keys nkey and permissions, publish and subscribe, allow and deny, each once, sorted and unescaped"} end
             elif .name == null and $l == "  ]" then .state = "users_end"
             else .error = $at + {why: "is no user's name or object of its users list"} end
           elif .state == "users_end" then
-            if $l == "  auth_callout {" then .state = "callout" | .callout = true
+            if $l == "  auth_callout {" then .state = "callout" | .callout = true | .callout_line = 0
             elif $l == "}" then .state = "tail"
             else .error = $at + {why: "follows its users list"} end
           elif .state == "callout" then
-            if $l == "  }" then .state = "callout_end"
-            elif ($l | test("^    (issuer|auth_users|xkey): ")) then .
-            else .error = $at + {why: "is no line of its auth_callout block"} end
+            .callout_line as $n
+            | if $n < ($callout_lines | length) and ($l | test($callout_lines[$n])) then .callout_line += 1
+              elif $n == ($callout_lines | length) and $l == "  }" then .state = "callout_end"
+              else .error = $at + {why: "is no line of its auth_callout block"} end
           elif .state == "callout_end" then
             if $l == "}" then .state = "tail" else .error = $at + {why: "follows its auth_callout block"} end
           else
-            if $l == "" or ($l | startswith("#")) or ($l | test("^(no_auth_user|ping_interval|ping_max): ")) then .
+            if $l == "" or ($l | startswith("#")) or ($l | test($tail_line)) then .
             else .error = $at + {why: "follows its authorization block"} end
           end
       end)
