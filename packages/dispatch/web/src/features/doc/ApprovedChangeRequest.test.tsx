@@ -4,7 +4,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import type { Artifact, ArtifactApproval, ChangeRequestRead, SpecNodeRead } from "../../api/types";
 import { ApprovedChangeRequest } from "./ApprovedChangeRequest";
 import {
@@ -232,6 +232,38 @@ test("a version of the node another approval wrote is no part of this approval's
     );
   } finally {
     view.unmount();
+  }
+});
+
+test("a read of the approved change request that fails says so, rather than showing nothing", async () => {
+  for (const failing of ["change request", "node"] as const) {
+    const getChangeRequest = spyOn(api, "getChangeRequest").mockImplementation(async () => {
+      if (failing === "change request")
+        throw new ApiError(500, { code: "INTERNAL", error: "boom" });
+      return afterApproval();
+    });
+    const getSpecNode = spyOn(api, "getSpecNode").mockImplementation(
+      async (_project, _repo, id) => {
+        if (id === "a-bill-names-its-order")
+          throw new ApiError(500, { code: "INTERNAL", error: "boom" });
+        return NODES[id] as SpecNodeRead;
+      }
+    );
+    const view = renderView(
+      <ApprovedChangeRequest
+        issueKey={ISSUE}
+        spec={spec({ ask_id: "ask-approval", latest_version: 3, state: "approved", version: 3 })}
+      />
+    );
+    try {
+      expect((await screen.findByRole("alert")).textContent, failing).toBe(
+        "Could not read the approved change request."
+      );
+    } finally {
+      view.unmount();
+      getChangeRequest.mockRestore();
+      getSpecNode.mockRestore();
+    }
   }
 });
 
