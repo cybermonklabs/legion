@@ -1310,7 +1310,11 @@ printf 'PASS: SIGTERM to a run whose health check was outstanding at a listener 
 # SIGHUP a terminal sends the group as it closes, here to the run alone, while the stop runs: it
 # is sent once natsd is gone and before either drop, which the row checks, so it lands inside the
 # stop's grace on the issuer, and the stop goes on. Before, HUP kept its default action there and
-# ended the run between the kills and the drops, with 129.
+# ended the run between the kills and the drops, with 129. The stop sends the issuer its SIGTERM
+# the moment natsd is gone (the issuer is the next process it stops), so the issuer's end is timed
+# from the moment this row sees natsd gone: from 1 s, for the polls between natsd's end and that
+# sight, to 6 s, for a loaded runner, around the 2 s grace. A stop that killed at once, or that
+# waited a grace of its own instead of the one it was given, fails here, whatever its log says.
 label='the run whose issuer ignores SIGTERM'
 DEV_STACK_STOP_GRACE_SECONDS=2 DEV_STACK_TEST_IGNORES_TERM=dev-oidc-issuer run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
 assert_instance_ready "$label" "$log1" "$psql_calls1" "$curl_calls1"
@@ -1321,17 +1325,25 @@ for _ in $(seq 1 50); do
   kill -0 "$stopped_natsd" 2>/dev/null || break
   sleep 0.1
 done
+natsd_gone="$EPOCHREALTIME"
 kill -0 "$stopped_natsd" 2>/dev/null && fail "$label had not stopped natsd 5 s after its INT"
 [[ -z "$(dropped_databases "$psql_calls1")" ]] ||
   fail "$label had dropped its databases before the SIGHUP, so the row tested nothing"
 kill -HUP "${instance_pid[1]}"
+for _ in $(seq 1 400); do
+  kill -0 "$stubborn_issuer" 2>/dev/null || break
+  sleep 0.05
+done
+issuer_held_ms=$(((${EPOCHREALTIME//[!0-9]/} - ${natsd_gone//[!0-9]/}) / 1000))
 wait_for_exit 1 20 "$label"
 [[ "$exited_status" -eq 130 ]] || fail "$label exited $exited_status, not the 130 of the INT that began its stop"
 grep -qxF "dev-stack: dev-oidc-issuer (pid ${stubborn_issuer}) did not stop within 2 s of its SIGTERM; killing it" "$log1" ||
   fail "$label did not say it killed the issuer: $(grep 'did not stop' "$log1" || true)"
+((issuer_held_ms >= 1000 && issuer_held_ms <= 6000)) ||
+  fail "$label ended the issuer ${issuer_held_ms} ms after natsd was gone, not when its 2 s grace ran out"
 assert_everything_stopped "$label"
 assert_databases_dropped "$label" "$psql_calls1" "$run_suffix"
-printf "PASS: an issuer that ignores SIGTERM was killed when the stop's grace (2 s here) ran out, which the stop said, went on through a SIGHUP and dropped both databases\n"
+printf "PASS: an issuer that ignores SIGTERM was killed when the stop's grace (2 s here) ran out, %s ms after natsd was gone, which the stop said, went on through a SIGHUP and dropped both databases\n" "$issuer_held_ms"
 
 # (e10) The stop signals only a process this run started that is still running. A process of the
 # stack that exited early (a crash, or the second broker callout-check.sh kills) is reaped, and the
