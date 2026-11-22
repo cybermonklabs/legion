@@ -1283,13 +1283,12 @@ func TestTheReaperSparesEveryManagersGenerationAndReapsTheRest(t *testing.T) {
 	done := make(chan struct{})
 	go func() { reapOrphans(ctx, signals, managers, guard); close(done) }()
 	signals <- syscall.SIGCHLD
-	// A reaped process is gone from the process table; a zombie still takes signal 0.
-	deadline := time.Now().Add(5 * time.Second)
-	for !errors.Is(syscall.Kill(orphan.Process.Pid, 0), syscall.ESRCH) {
-		if time.Now().After(deadline) {
-			t.Fatal("the reaper left the orphan unreaped")
-		}
-		time.Sleep(10 * time.Millisecond)
+	// A reaped process is gone from the process table; a zombie still takes signal 0. The wait is
+	// for that fact under the test's hang guard: when the reaper's pass runs is not the claim.
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
+		return errors.Is(syscall.Kill(orphan.Process.Pid, 0), syscall.ESRCH)
+	}) {
+		t.Fatal("the reaper left the orphan unreaped")
 	}
 	cancel()
 	<-done
