@@ -972,11 +972,16 @@ func TestAPassRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
 // webhookBody is one GitHub webhook body carrying payload as its event, with the repository and
 // the pull request GitHub names for it: the delivery the listener would have had.
 func webhookBody(event string, payload object) string {
+	return webhookFor(event, payload, 7)
+}
+
+// webhookFor is webhookBody for a run of pull request number.
+func webhookFor(event string, payload object, number int64) string {
 	// The webhook attributes the object to its pull request as GitHub's own delivery does; a
 	// listing carries no such field, which is why the pass takes the number from the pull
 	// request it read the head of. It is no part of the observation either body maps to, so the
 	// webhook's and the listing's are still the same observation.
-	attributed := object{"pull_requests": []any{object{"number": 7}}}
+	attributed := object{"pull_requests": []any{object{"number": number}}}
 	for key, value := range payload {
 		attributed[key] = value
 	}

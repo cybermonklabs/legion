@@ -8,8 +8,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -29,7 +31,7 @@ type failingWriter struct {
 	records int
 }
 
-func (w *failingWriter) RecordRuns(ctx context.Context, observations []contracts.CIObservation) (bool, error) {
+func (w *failingWriter) RecordRuns(ctx context.Context, head cistore.Head, readAt time.Time, observations []contracts.CIObservation) (bool, error) {
 	w.mu.Lock()
 	failing := w.records > 0
 	if failing {
@@ -39,7 +41,7 @@ func (w *failingWriter) RecordRuns(ctx context.Context, observations []contracts
 	if failing {
 		return false, errors.New("the CI record store refused the write")
 	}
-	return w.Writer.RecordRuns(ctx, observations)
+	return w.Writer.RecordRuns(ctx, head, readAt, observations)
 }
 
 // failWrites makes the pass bind a writer whose first records writes of check runs fail. Every
@@ -69,11 +71,11 @@ type refusingWriter struct {
 	check string
 }
 
-func (w *refusingWriter) RecordRuns(ctx context.Context, observations []contracts.CIObservation) (bool, error) {
+func (w *refusingWriter) RecordRuns(ctx context.Context, head cistore.Head, readAt time.Time, observations []contracts.CIObservation) (bool, error) {
 	if slices.ContainsFunc(observations, func(observation contracts.CIObservation) bool { return observation.CheckName == w.check }) {
 		return false, fmt.Errorf("record: %w", bus.ErrTooLarge)
 	}
-	return w.Writer.RecordRuns(ctx, observations)
+	return w.Writer.RecordRuns(ctx, head, readAt, observations)
 }
 
 // refuseWrites makes the pass bind a writer that refuses check's writes for the record's

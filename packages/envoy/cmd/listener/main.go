@@ -1299,6 +1299,13 @@ func main() {
 	// route configures none and publishes exactly what the client publishes.
 	publisher := ghrename.Publishing(client, renames, logger)
 	openWebhooks(webhookGate, hooks, publisher, ciStore)
+	if ciStore != nil {
+		// Every GitHub delivery made while this listener was down, or refused while it started,
+		// is lost to it, and no record names the heads they were of: every head waits for a GitHub
+		// read after this moment before it settles, until a reconcile cycle that began after it
+		// has read them all (cistore's intake gaps). The summary loop starts below, after this.
+		ciStore.MarkIntakeGap(time.Now())
+	}
 	logger.Info("envoy-listener webhooks open (NATS connected)")
 
 	// The registry and its cache watcher log through the listener's own handler, so its role-restore

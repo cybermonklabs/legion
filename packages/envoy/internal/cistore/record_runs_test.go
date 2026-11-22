@@ -14,13 +14,15 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 )
 
-// recordRunsHead is the head every test below writes.
+// recordRunsOwner and the three beside it are the head every test below writes, recordRunsHead.
 const (
 	recordRunsOwner  = "example-org"
 	recordRunsRepo   = "example-repo"
 	recordRunsNumber = "42"
 	recordRunsSHA    = "abcdef1234567890abcdef1234567890abcdef12"
 )
+
+var recordRunsHead = Head{Owner: recordRunsOwner, Repo: recordRunsRepo, Number: recordRunsNumber, SHA: recordRunsSHA}
 
 // recordRunsCheck is one check run of recordRunsHead.
 func recordRunsCheck(name string, id uint64, status, conclusion, observedAt string) contracts.CIObservation {
@@ -75,7 +77,8 @@ func TestRecordRunsKeepsEveryRuleOfARunInOneWrite(t *testing.T) {
 		recordRunsCheck("build", 7, "queued", "", "2026-11-22T00:04:00Z"),
 		recordRunsCheck("ci-ok", 5, "queued", "", "2026-11-22T00:01:00Z"),
 	}
-	changed, err := s.recordRuns(ctx, append(stale, recordRunsCheck("lint", 11, "in_progress", "", "2026-11-22T00:06:00Z")))
+	read := time.Date(2026, 11, 22, 0, 6, 30, 0, time.UTC)
+	changed, err := s.recordRuns(ctx, recordRunsHead, read, 0, 0, append(stale, recordRunsCheck("lint", 11, "in_progress", "", "2026-11-22T00:06:00Z")))
 	if err != nil || !changed {
 		t.Fatalf("recordRuns = %v, %v; want the new run to change the record", changed, err)
 	}
@@ -93,7 +96,7 @@ func TestRecordRunsKeepsEveryRuleOfARunInOneWrite(t *testing.T) {
 		t.Errorf("lint is %+v, want run 11 in_progress", got)
 	}
 
-	changed, err = s.recordRuns(ctx, stale)
+	changed, err = s.recordRuns(ctx, recordRunsHead, read, 0, 0, stale)
 	if err != nil || changed {
 		t.Fatalf("recordRuns of runs the record's rules refuse = %v, %v; want no change", changed, err)
 	}
@@ -121,7 +124,7 @@ func TestRecordRunsPastTheRecordBoundWritesNoneOfThem(t *testing.T) {
 		runs = append(runs, recordRunsCheck(name, uint64(1000+i), "completed", "success", "2026-11-22T00:06:00Z"))
 	}
 
-	changed, err := s.recordRuns(ctx, runs)
+	changed, err := s.recordRuns(ctx, recordRunsHead, time.Now(), 0, 0, runs)
 	if !errors.Is(err, bus.ErrTooLarge) || changed {
 		t.Fatalf("recordRuns past the bound = %v, %v; want bus.ErrTooLarge and no change", changed, err)
 	}
@@ -162,7 +165,7 @@ func TestRecordRunsRefusesTheRunsOfTwoHeads(t *testing.T) {
 	other := recordRunsCheck("lint", 2, "completed", "success", "2026-11-22T00:05:00Z")
 	other.SHA = "0123456789abcdef0123456789abcdef01234567"
 
-	changed, err := s.recordRuns(context.Background(), []contracts.CIObservation{
+	changed, err := s.recordRuns(context.Background(), recordRunsHead, time.Now(), 0, 0, []contracts.CIObservation{
 		recordRunsCheck("build", 1, "completed", "success", "2026-11-22T00:05:00Z"),
 		other,
 	})

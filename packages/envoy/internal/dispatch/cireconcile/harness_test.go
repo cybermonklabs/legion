@@ -178,9 +178,9 @@ type holdingWriter struct {
 	hold func(ctx context.Context)
 }
 
-func (w *holdingWriter) RecordRuns(ctx context.Context, observations []contracts.CIObservation) (bool, error) {
+func (w *holdingWriter) RecordRuns(ctx context.Context, head cistore.Head, readAt time.Time, observations []contracts.CIObservation) (bool, error) {
 	w.hold(ctx)
-	return w.Writer.RecordRuns(ctx, observations)
+	return w.Writer.RecordRuns(ctx, head, readAt, observations)
 }
 
 // startListener opens the listener's own store, which makes the bucket and watches it, and its
@@ -438,8 +438,18 @@ func (h *harness) recordAt(repository string, number int64, sha string) (*cistor
 	return &state, entry.Revision()
 }
 
-// post sends the listener's real webhook handler one GitHub event, as GitHub sends it.
+// post sends the listener's real webhook handler one GitHub event, as GitHub sends it, and fails
+// the test unless the handler answers 200.
 func (h *harness) post(event, body, delivery string) {
+	h.t.Helper()
+	if code, answer := h.serve(event, body, delivery); code != http.StatusOK {
+		h.t.Fatalf("the webhook answered %d: %s", code, answer)
+	}
+}
+
+// serve sends the listener's real webhook handler one GitHub event, as GitHub sends it, and
+// answers the status and body the handler answered.
+func (h *harness) serve(event, body, delivery string) (int, string) {
 	h.t.Helper()
 	request := httptest.NewRequest(http.MethodPost, "/webhook/github", strings.NewReader(body))
 	request.Header.Set("X-GitHub-Delivery", delivery)
@@ -449,9 +459,7 @@ func (h *harness) post(event, body, delivery string) {
 	request.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 	recorder := httptest.NewRecorder()
 	h.webhook.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK {
-		h.t.Fatalf("the webhook answered %d: %s", recorder.Code, recorder.Body.String())
-	}
+	return recorder.Code, recorder.Body.String()
 }
 
 // lines is the fields of every line the pass logged under msg, oldest first.

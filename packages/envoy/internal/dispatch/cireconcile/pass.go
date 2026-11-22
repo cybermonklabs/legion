@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -242,6 +244,13 @@ func (r *Reconciler) reconcile(ctx context.Context, writer Writer, c *counts) *s
 	// after it: the REST work the last pass learned there is, spread over the share of this
 	// pass's own bound it may spend waiting.
 	c.pace = r.gap(len(rows))
+	if r.resume == (cursor{}) {
+		// This pass begins a cycle, which reads every open pull request's head from here on.
+		r.cycleBegan = time.Now()
+	}
+	if at := r.readGapHeld(ctx, writer, c); at != nil {
+		return at
+	}
 	// What this pass reaches is added to what the passes of this cycle have reached already
 	// (seenRows and the two beside it), which only the pass that closes the cycle reads: a
 	// cycle takes as many passes as its bound leaves it, and what one of them saw is what the
@@ -264,9 +273,68 @@ func (r *Reconciler) reconcile(ctx context.Context, writer Writer, c *counts) *s
 	// The pass reached the end of the order, so every head of it has been read by this pass or
 	// by one before it in this cycle, and the cycle closes.
 	r.closeCycle(c)
+	if !r.cycleBegan.IsZero() {
+		// Every open pull request's head has been read since the cycle began, so an intake gap
+		// stamped before then holds no head any more (cistore's read cycle).
+		if err := writer.MarkReadCycle(ctx, r.cycleBegan); err != nil {
+			r.Logger.Warn("ci reconcile did not write its read cycle", "began", r.cycleBegan.UTC().Format(time.RFC3339), "error", err)
+		}
+		r.cycleBegan = time.Time{}
+	}
 	// A pass does not wrap round, so the pass after one that reached the end of the order
 	// begins the next cycle at the start of it.
 	r.resume = cursor{}
+	return nil
+}
+
+// readGapHeld reads first the heads the listener holds by an intake gap alone (cistore's
+// gap-held list, oldest due first): each over REST, in full (kept answers nothing for a head a gap
+// holds), its runs written with the time the read began, which is what lets the listener settle it.
+// A head waiting after a gap then waits about one pass, not a whole cycle. Each head is read in the
+// repository GitHub names it under, resolved as the walk resolves a covered one, so a repository
+// no mapping names is read too, where the App is installed. It answers the stop a rate limit ended
+// the pass at. A list that cannot be read costs this pass its early reads alone: the walk reads
+// every open head in its turn.
+func (r *Reconciler) readGapHeld(ctx context.Context, writer Writer, c *counts) *stop {
+	heads, err := writer.GapHeldHeads()
+	if err != nil {
+		r.Logger.Warn("ci reconcile did not read the heads an intake gap holds", "error", err)
+		return nil
+	}
+	repositories := map[string]reconciled{}
+	for _, held := range heads {
+		if r.cutShort(ctx, c) {
+			return nil
+		}
+		number, err := strconv.ParseInt(held.Number, 10, 64)
+		if err != nil {
+			continue
+		}
+		row := strings.ToLower(held.Owner + "/" + held.Repo)
+		repository, resolved := repositories[row]
+		if !resolved {
+			if at := r.limited(ctx, githubapp.AppScope); at != nil {
+				return at
+			}
+			var at *stop
+			// A read map of its own: the walk below still reads this repository's heads.
+			repository, at = r.resolve(ctx, row, false, c, map[int64]struct{}{})
+			if at != nil {
+				return at
+			}
+			repositories[row] = repository
+		}
+		if !repository.reconcile {
+			continue
+		}
+		if at := r.limited(ctx, repository.headScopes...); at != nil {
+			return at
+		}
+		if at := r.readHead(ctx, writer, repository.head(number, held.SHA), c); at != nil {
+			return at
+		}
+		c.gapHeads++
+	}
 	return nil
 }
 
@@ -554,7 +622,7 @@ func (w *walk) visitHead(ctx context.Context, head queryHead) *ending {
 	// The fingerprint is kept only where every write landed, exactly as the ETags of a head
 	// read over REST are (recordHead): a write that did not land must not be hidden behind it,
 	// and the next pass writes this head again.
-	r.recordHead(ctx, w.writer, pull, pagesOf(head.runs), pagesOf(head.suites), pagesOf(head.statuses), kept, headState{fingerprint: head.fingerprint}, c)
+	r.recordHead(ctx, w.writer, pull, head.readAt, pagesOf(head.runs), pagesOf(head.suites), pagesOf(head.statuses), kept, headState{fingerprint: head.fingerprint}, c)
 	c.mark(pull)
 	return nil
 }

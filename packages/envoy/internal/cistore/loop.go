@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -268,6 +269,13 @@ type summarizer struct {
 	// key's entry is dropped when its record settles or leaves the cache, and every entry when the
 	// cache is emptied for a recreated bucket (takeChanges).
 	heldLogged map[string]heldMark
+	// gapHeld holds the records that are due but held by a gap alone (gapHoldsFor), which wait
+	// for a GitHub read and on nothing else: a reconcile write of the head, a gap written into the
+	// record, or a stamp moving (gapEpoch) files them again. gapHeldSaved says the bucket's list
+	// of them (gapHeldKey) is what gapHeld holds.
+	gapHeld      map[string]gapHeldHead
+	gapHeldSaved bool
+	gapEpoch     uint64
 }
 
 // heldMark is what a held line was logged for (logHeldLocked): the record's snapshot (State.Hash)
@@ -285,21 +293,40 @@ func newSummarizer(store *Store, debounce time.Duration) *summarizer {
 		queue:      deadlineQueue{index: map[string]int{}},
 		held:       map[string]struct{}{},
 		heldLogged: map[string]heldMark{},
+		gapHeld:    map[string]gapHeldHead{},
 	}
 }
 
-// pass runs one pass at now (wall-clock milliseconds). It files each record the change feed names
-// by its verdict, takes every queued record due by now, and attempts the due ones in key order,
-// queueing each attempted record at now so the next pass looks at it again. Filing a record it
-// holds past heldAfter logs what holds it, once (logHeldLocked). It returns how many records it
-// holds back (verdictHeld) and, when the queue is not empty, the earliest queued millisecond.
+// pass runs one pass at now (wall-clock milliseconds). It first writes into the bucket the gaps
+// the store holds that the bucket does not (persistGaps). It files each record the change feed
+// names by its verdict, and every record a gap held when a stamp has moved since the last pass,
+// takes every queued record due by now, and attempts the due ones in key order, queueing each
+// attempted record at now so the next pass looks at it again. Filing a record it holds past
+// heldAfter logs what holds it, once (logHeldLocked). It then writes the list of records due but
+// held by a gap alone where that changed (saveGapHeld). It returns how many records it holds back
+// (verdictHeld) and, when the queue is not empty or a gap or the list is not written yet, the
+// earliest millisecond it has to run again.
 func (z *summarizer) pass(pub Publisher, logger *logging.Logger, now int64) (held int, next int64, ok bool) {
+	written, cancel := context.WithTimeout(context.Background(), recordWait)
+	defer cancel()
+	gapsSaved := z.store.persistGaps(written)
 	z.mu.Lock()
 	keys, reset := z.store.takeChanges()
 	if reset {
 		z.queue = deadlineQueue{index: map[string]int{}}
 		z.held = map[string]struct{}{}
 		z.heldLogged = map[string]heldMark{}
+		z.gapHeld = map[string]gapHeldHead{}
+		z.gapHeldSaved = false
+	}
+	if epoch := z.store.gapsMoved(); epoch != z.gapEpoch {
+		z.gapEpoch = epoch
+		for key := range z.gapHeld {
+			if keys == nil {
+				keys = map[string]struct{}{}
+			}
+			keys[key] = struct{}{}
+		}
 	}
 	var batch []string
 	for key := range keys {
@@ -328,9 +355,33 @@ func (z *summarizer) pass(pub Publisher, logger *logging.Logger, now int64) (hel
 	}
 
 	z.mu.Lock()
+	listSaved := z.gapHeldSaved
+	var list map[string]gapHeldHead
+	if !listSaved {
+		list = maps.Clone(z.gapHeld)
+	}
+	z.mu.Unlock()
+	if !listSaved {
+		if err := z.store.saveGapHeld(written, list); err != nil {
+			logger.Warn("checks gap-held list not written yet", slog.String("error", err.Error()))
+		} else {
+			z.mu.Lock()
+			listSaved = maps.Equal(list, z.gapHeld)
+			z.gapHeldSaved = listSaved
+			z.mu.Unlock()
+		}
+	}
+
+	z.mu.Lock()
 	defer z.mu.Unlock()
 	if z.queue.Len() > 0 {
 		next, ok = z.queue.entries[0].at, true
+	}
+	if !gapsSaved || !listSaved {
+		// A gap or the list the bus did not take is written again at the next pass.
+		if !ok || now+1 < next {
+			next, ok = now+1, true
+		}
 	}
 	return len(z.held), next, ok
 }
@@ -345,9 +396,12 @@ func (z *summarizer) pass(pub Publisher, logger *logging.Logger, now int64) (hel
 func (z *summarizer) fileLocked(logger *logging.Logger, key string, now int64) (State, bool) {
 	z.queue.remove(key)
 	delete(z.held, key)
+	gapHeld, wasGapHeld := z.gapHeld[key]
+	delete(z.gapHeld, key)
 	st, cached := z.store.cachedState(key)
 	if !cached {
 		delete(z.heldLogged, key)
+		z.gapHeldSaved = z.gapHeldSaved && !wasGapHeld
 		return State{}, false
 	}
 	switch v, at := schedule(st, now, z.debounce); v {
@@ -365,8 +419,18 @@ func (z *summarizer) fileLocked(logger *logging.Logger, key string, now int64) (
 			z.logHeldLocked(logger, key, st)
 		}
 	case verdictAttempt:
-		return st, true
+		if !z.store.gapHoldsFor(key, st) {
+			z.gapHeldSaved = z.gapHeldSaved && !wasGapHeld
+			return st, true
+		}
+		// Due, but a gap holds it: it waits for a GitHub read, which the reconcile makes first for
+		// the heads the bucket's list names.
+		head := gapHeldHead{head: headOf(st), since: st.LastEventAt + z.debounce.Milliseconds()}
+		z.gapHeld[key] = head
+		z.gapHeldSaved = z.gapHeldSaved && wasGapHeld && gapHeld == head
+		return State{}, false
 	}
+	z.gapHeldSaved = z.gapHeldSaved && !wasGapHeld
 	return State{}, false
 }
 

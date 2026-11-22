@@ -69,7 +69,7 @@ func TestAWriterRecordSettlesThroughTheListenersSummaryLoop(t *testing.T) {
 	cistore.StartSummaryLoop(loopCtx, store, client, 100*time.Millisecond, 20*time.Millisecond,
 		metrics.New().NewGauge("held", ""), logging.New("loop"))
 
-	if _, err := writer.RecordRuns(ctx, []contracts.CIObservation{{
+	if _, err := writer.RecordRuns(ctx, cistore.Head{Owner: owner, Repo: repo, Number: number, SHA: sha}, writtenAt, []contracts.CIObservation{{
 		Owner:      owner,
 		Repo:       repo,
 		Number:     number,
@@ -158,10 +158,10 @@ func TestOpenWriterFailsAndCreatesNothingWithoutTheBucket(t *testing.T) {
 	}
 }
 
-// HasRecord answers from the bucket: false for a head no record is held of, and true for one
-// another store wrote, which this writer's own process never wrote and no cache of its own could
-// answer for.
-func TestHasRecordReadsTheBucketRatherThanACache(t *testing.T) {
+// NeedsRead answers from the bucket: true for a head no record is held of, and false for one
+// another store wrote with no intake gap, which this writer's own process never wrote and no cache
+// of its own could answer for.
+func TestNeedsReadReadsTheBucketRatherThanACache(t *testing.T) {
 	ctx := context.Background()
 	_, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
@@ -182,12 +182,12 @@ func TestHasRecordReadsTheBucketRatherThanACache(t *testing.T) {
 		recorded = "1111111111111111111111111111111111111111"
 		unknown  = "2222222222222222222222222222222222222222"
 	)
-	has, err := writer.HasRecord(owner, repo, number, recorded)
+	needs, err := writer.NeedsRead(owner, repo, number, recorded)
 	if err != nil {
-		t.Fatalf("HasRecord before the record: %v", err)
+		t.Fatalf("NeedsRead before the record: %v", err)
 	}
-	if has {
-		t.Fatal("HasRecord is true for a head the bucket holds no record of")
+	if !needs {
+		t.Fatal("NeedsRead is false for a head the bucket holds no record of")
 	}
 
 	if err := store.Record(ctx, contracts.CIObservation{
@@ -204,19 +204,19 @@ func TestHasRecordReadsTheBucketRatherThanACache(t *testing.T) {
 		t.Fatalf("the second store's check run: %v", err)
 	}
 
-	has, err = writer.HasRecord(owner, repo, number, recorded)
+	needs, err = writer.NeedsRead(owner, repo, number, recorded)
 	if err != nil {
-		t.Fatalf("HasRecord after the record: %v", err)
+		t.Fatalf("NeedsRead after the record: %v", err)
 	}
-	if !has {
-		t.Fatal("HasRecord is false for a head the bucket holds the record of")
+	if needs {
+		t.Fatal("NeedsRead is true for a head the bucket holds the record of, with no gap")
 	}
-	has, err = writer.HasRecord(owner, repo, number, unknown)
+	needs, err = writer.NeedsRead(owner, repo, number, unknown)
 	if err != nil {
-		t.Fatalf("HasRecord for another head: %v", err)
+		t.Fatalf("NeedsRead for another head: %v", err)
 	}
-	if has {
-		t.Fatal("HasRecord is true for a head nothing wrote")
+	if !needs {
+		t.Fatal("NeedsRead is false for a head nothing wrote")
 	}
 }
 
@@ -252,7 +252,7 @@ func TestAWriterReportsWhetherTheObservationChangedTheRecord(t *testing.T) {
 		Conclusion: "success",
 		ObservedAt: "2026-09-07T03:01:00Z",
 	}
-	changed, err := writer.RecordRuns(ctx, []contracts.CIObservation{observation})
+	changed, err := writer.RecordRuns(ctx, headOf(observation), writtenAt, []contracts.CIObservation{observation})
 	if err != nil {
 		t.Fatalf("the first record: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestAWriterReportsWhetherTheObservationChangedTheRecord(t *testing.T) {
 		t.Fatal("the first observation of a head with no record is reported as no change")
 	}
 
-	changed, err = writer.RecordRuns(ctx, []contracts.CIObservation{observation})
+	changed, err = writer.RecordRuns(ctx, headOf(observation), writtenAt, []contracts.CIObservation{observation})
 	if err != nil {
 		t.Fatalf("the same record again: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestAWriterReportsWhetherTheObservationChangedTheRecord(t *testing.T) {
 	older.ObservedAt = "2026-09-07T02:59:00Z"
 	older.Status = "in_progress"
 	older.Conclusion = ""
-	changed, err = writer.RecordRuns(ctx, []contracts.CIObservation{older})
+	changed, err = writer.RecordRuns(ctx, headOf(older), writtenAt, []contracts.CIObservation{older})
 	if err != nil {
 		t.Fatalf("the older record: %v", err)
 	}
@@ -325,7 +325,7 @@ func TestConcurrentCallersOfOneHeadEachReportTheirOwnChange(t *testing.T) {
 		Conclusion: "success",
 		ObservedAt: "2026-09-07T03:01:00Z",
 	}
-	if changed, err := writer.RecordRuns(ctx, []contracts.CIObservation{held}); err != nil || !changed {
+	if changed, err := writer.RecordRuns(ctx, headOf(held), writtenAt, []contracts.CIObservation{held}); err != nil || !changed {
 		t.Fatalf("seed the record with the check the burst finds it already holding: changed = %v, %v", changed, err)
 	}
 	newRun := held
@@ -344,11 +344,16 @@ func TestConcurrentCallersOfOneHeadEachReportTheirOwnChange(t *testing.T) {
 		ObservedAt: "2026-09-07T03:02:05Z",
 	}
 
+	run := func(observation contracts.CIObservation) func() (bool, error) {
+		return func() (bool, error) {
+			return writer.RecordRuns(ctx, headOf(observation), writtenAt, []contracts.CIObservation{observation})
+		}
+	}
 	callers := []func() (bool, error){
-		func() (bool, error) { return writer.RecordRuns(ctx, []contracts.CIObservation{newRun}) },
-		func() (bool, error) { return writer.RecordRuns(ctx, []contracts.CIObservation{newRun}) },
-		func() (bool, error) { return writer.RecordRuns(ctx, []contracts.CIObservation{held}) },
-		func() (bool, error) { return writer.RecordRuns(ctx, []contracts.CIObservation{held}) },
+		run(newRun),
+		run(newRun),
+		run(held),
+		run(held),
 		func() (bool, error) { return writer.RecordSuite(ctx, newSuite) },
 		func() (bool, error) { return writer.RecordSuite(ctx, newSuite) },
 	}
@@ -420,4 +425,13 @@ func TestConcurrentCallersOfOneHeadEachReportTheirOwnChange(t *testing.T) {
 	if _, ok := state.Suites[newSuite.SuiteID]; !ok {
 		t.Fatalf("the record holds no %s suite: %+v", newSuite.SuiteID, state.Suites)
 	}
+}
+
+// writtenAt is the read time every RecordRuns of these tests carries, so a second write of the
+// same runs changes nothing: a later read time would move the record's ReadAt.
+var writtenAt = time.Date(2026, 9, 7, 3, 5, 0, 0, time.UTC)
+
+// headOf is the head an observation is of.
+func headOf(observation contracts.CIObservation) cistore.Head {
+	return cistore.Head{Owner: observation.Owner, Repo: observation.Repo, Number: observation.Number, SHA: observation.SHA}
 }

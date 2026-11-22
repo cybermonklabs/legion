@@ -18,21 +18,21 @@ import (
 // writer it wraps, which is the listener's own bucket. The record calls are what the
 // fingerprint exists to save: each one is a read of the head's record from NATS, an unmarshal
 // of it and a hash of what it holds, and a pass of 833 heads of 39 checks made some 30,000 of
-// them whether or not GitHub had anything new. HasRecord is the one existence read the record
-// guard makes of a head the pass holds something for (Reconciler.kept).
+// them whether or not GitHub had anything new. NeedsRead is the one read the record guard makes
+// of a head the pass holds something for (Reconciler.kept).
 type countingWriter struct {
 	Writer
 
 	mu sync.Mutex
 	// updates is every RecordRuns, RecordSuite and RecordStatus the pass made, and exists every
-	// HasRecord.
+	// NeedsRead.
 	updates int
 	exists  int
 }
 
-func (w *countingWriter) RecordRuns(ctx context.Context, observations []contracts.CIObservation) (bool, error) {
+func (w *countingWriter) RecordRuns(ctx context.Context, head cistore.Head, readAt time.Time, observations []contracts.CIObservation) (bool, error) {
 	w.count(&w.updates)
-	return w.Writer.RecordRuns(ctx, observations)
+	return w.Writer.RecordRuns(ctx, head, readAt, observations)
 }
 
 func (w *countingWriter) RecordSuite(ctx context.Context, observation contracts.CIObservation) (bool, error) {
@@ -45,9 +45,9 @@ func (w *countingWriter) RecordStatus(ctx context.Context, observation contracts
 	return w.Writer.RecordStatus(ctx, observation)
 }
 
-func (w *countingWriter) HasRecord(owner, repo, number, sha string) (bool, error) {
+func (w *countingWriter) NeedsRead(owner, repo, number, sha string) (bool, error) {
 	w.count(&w.exists)
-	return w.Writer.HasRecord(owner, repo, number, sha)
+	return w.Writer.NeedsRead(owner, repo, number, sha)
 }
 
 func (w *countingWriter) count(of *int) {
