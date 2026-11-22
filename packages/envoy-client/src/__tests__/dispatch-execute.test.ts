@@ -15814,6 +15814,92 @@ describe("executeDispatchTool", () => {
       );
     });
 
+    // dispatch://INFRA-1523: a row names a comment or a message, or a block of one, by its address,
+    // and carries its post's marks after it, as a graph row does (`edgeLine`): one its author
+    // deleted says who deleted it and when, and one its author edited says when. A block of a
+    // deleted post carries the post's mark too. Each row's `name` holds the post's former words,
+    // which no line prints.
+    const correctedPost = "eeeeeeee-0000-4000-8000-000000000051";
+    const deletion = {
+      deleted_at: "2026-09-12T08:00:00Z",
+      deleted_by: { kind: "user", id: "alice" },
+    } as const;
+    const correctedRows: [string, "links" | "linked_from", ReferenceLinkRow, string][] = [
+      [
+        "a comment its author deleted, under Referenced by, with the deleted mark",
+        "linked_from",
+        row({ ...nodes.theirs, ...deletion }, "See the parser's plan.", ["mentions"], viaComment),
+        `- mentions comment dispatch://DSP-50/comment/${theirComment} · Deleted by user alice at 2026-09-12T08:00:00Z · to comment ${ownComment}`,
+      ],
+      [
+        "a message its author edited, under References, with the edited mark",
+        "links",
+        row(
+          {
+            kind: "message",
+            id: correctedPost,
+            issue_key: "DSP-50",
+            project: "DSP",
+            ref: `dispatch://DSP-50/message/${correctedPost}`,
+            edited_at: "2026-09-12T07:00:00Z",
+          },
+          "The parser lands on Friday.",
+          ["mentions"],
+          viaComment
+        ),
+        `- mentions message dispatch://DSP-50/message/${correctedPost} · edited 2026-09-12T07:00:00Z · via comment ${ownComment}`,
+      ],
+      [
+        "a block of a message its author deleted, under References, with the deleted mark",
+        "links",
+        row(
+          {
+            kind: "block",
+            id: `message/${correctedPost}#b1`,
+            block_id: "b1",
+            issue_key: "DSP-50",
+            project: "DSP",
+            parent: {
+              kind: "message",
+              id: correctedPost,
+              ref: `dispatch://DSP-50/message/${correctedPost}`,
+            },
+            ref: `dispatch://DSP-50/message/${correctedPost}#b-b1`,
+            ...deletion,
+          },
+          "Ship it once the parser lands.",
+          ["mentions"],
+          viaComment
+        ),
+        `- mentions block dispatch://DSP-50/message/${correctedPost}#b-b1 · Deleted by user alice at 2026-09-12T08:00:00Z · via comment ${ownComment}`,
+      ],
+    ];
+    test.each(correctedRows)("prints %s", async (_case, list, corrected, line) => {
+      const answer: ReferencesAnswer = {
+        members: [],
+        truncated: false,
+        links: list === "links" ? [corrected] : [],
+        linked_from: list === "linked_from" ? [corrected] : [],
+      };
+
+      const { sections } = await readIssue(
+        () => response(answer),
+        [...mentionsIn, ...ownContentIn]
+      );
+
+      expect(sections).toBe(
+        [
+          "References:",
+          list === "links" ? line : "- none",
+          ...between,
+          "Referenced by:",
+          list === "linked_from" ? line : "- none",
+          ...linksSection,
+        ].join("\n")
+      );
+      expect(sections).not.toContain(corrected.name);
+    });
+
     // A Dispatch from before the change answers `members` and `truncated` alone. The read prints
     // what it printed before (spec R3): each member with its depth, the line that says the walk
     // was cut, and every edge of the graph read into the issue node, its own content's among them.

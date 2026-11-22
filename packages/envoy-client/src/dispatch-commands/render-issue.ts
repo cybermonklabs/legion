@@ -312,9 +312,16 @@ const STRUCTURAL_EDGES_IN: readonly GraphEdgeKind[] = ["child_of", "blocked_by"]
 
 /** One row of the references read: the kinds of its links, the node at the far end, and the
  *  issue's node at the near end, which a row of `links` links from (`via`) and a row of
- *  `linked_from` links to (`to`). */
+ *  `linked_from` links to (`to`). A comment or message, or a block of one, carries its post's
+ *  marks after its address, as a graph row does (`edgeLine`): `deletedMark` for a deleted one, and
+ *  `editedMark` for an edited one. */
 function referenceLinkLine({ kinds, node, via }: ReferenceLink, near: "via" | "to"): string {
-  return `- ${(kinds ?? []).join(",")} ${node.kind} ${node.ref ?? node.id} · ${near} ${via.kind} ${via.id}`;
+  const address = node.ref ?? node.id;
+  const target =
+    node.deleted_at == null
+      ? withEditedMark(address, node.edited_at)
+      : `${address} · ${deletedMark(node.deleted_at, node.deleted_by)}`;
+  return `- ${(kinds ?? []).join(",")} ${node.kind} ${target} · ${near} ${via.kind} ${via.id}`;
 }
 
 /** The `References:` lines of an answer from a build before the one-hop read, which answers its
