@@ -14,19 +14,20 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/githubname"
 )
 
-// MintedTokenMargin is how long a token a github-installations secret stores must outlive the
-// grant a release hands on it. A release ends that grant at the earliest of its tokens'
-// expires_at less this margin (Minted.Expires), and refuses a token whose expires_at is not later
-// than now plus the margin, which would leave no grant at all (ErrMintTokenStale).
+// MintedTokenMargin: the 20-minute margin is the stored token's own remaining life, so a caller never gets a token about to expire; it does not bound the grant; GitHub fixes a token's life at one hour, so a token can outlive its grant by up to an hour; no revocation is added.
+//
+// A release refuses a token whose expires_at is not later than now plus the margin
+// (ErrMintTokenStale). It answers the earliest of its tokens' expires_at less the margin as when its
+// value stops being one to hand over (Minted.Expires), which the airlock proxy reads the grant
+// again five minutes before, so the proxy too carries no call on a token about to expire.
 //
 // Twenty minutes, for two reasons. A caller must be able to rely on the token it is handed for
 // that long: the Legion daemon serves a cached installation token until twenty minutes before its
 // expiry (packages/daemon's appauth refreshWindow), so a token handed over with less is one it asks
-// again for at once, and the airlock proxy reads the grant again five minutes before the end this
-// release gives, so the token it carries a call on then still has twenty-five minutes. And a minter
-// that runs every ten minutes, on tokens GitHub gives an hour, leaves a stored token at least fifty
-// minutes of life, so the margin lets three of its runs in a row fail before any release is
-// refused: the token written last is served until forty minutes after it was minted.
+// again for at once. And a minter that runs every ten minutes, on tokens GitHub gives an hour,
+// leaves a stored token at least fifty minutes of life, so the margin lets three of its runs in a
+// row fail before any release is refused: the token written last is served until forty minutes
+// after it was minted.
 const MintedTokenMargin = 20 * time.Minute
 
 // ErrMintStoredWider is the refusal of a stored installation token whose permissions are past
@@ -63,12 +64,22 @@ type GitHubInstallationsValue struct {
 	Installations map[string]StoredInstallation
 }
 
+// RepositoryScopeAllExceptProtected is the one value a stored entry's repository_scope takes: the
+// seed minter's marker of a token it cut to every repository of the installation but the protected
+// ones, stored beside repository_selection "selected" and no repositories list. Only the seed
+// minter writes it, into a secret only the seed's own route may write, so Cipher trusts it for the
+// list the token was cut to and serves the token to a profile that names no repositories
+// (repositoriesMismatch). Cipher does not prove the cut: the deployment's own checks of the admin
+// token do.
+const RepositoryScopeAllExceptProtected = "all-except-protected"
+
 // StoredInstallation is one installation token a minter stored: the account's login as the minter
 // wrote it, the installation, the token, when GitHub lapses it, the permissions GitHub minted it
 // with (each permission and its level), and the repositories it reaches: RepositorySelection "all"
 // for every repository of the installation, or "selected", and then Repositories, where the minter
 // listed them, each "account/name" lowercased, as GitHub compares names, sorted; nil where it
-// listed none.
+// listed none. AllExceptProtected is whether the entry carries the seed minter's marker
+// (RepositoryScopeAllExceptProtected), which stands beside "selected" and no list alone.
 type StoredInstallation struct {
 	Account             string
 	InstallationID      int64
@@ -77,6 +88,7 @@ type StoredInstallation struct {
 	Permissions         map[string]string
 	RepositorySelection string
 	Repositories        []string
+	AllExceptProtected  bool
 }
 
 // githubInstallationsSecret and githubStoredInstallation are a github-installations secret's
@@ -92,6 +104,7 @@ type (
 		Permissions         map[string]string `json:"permissions"`
 		RepositorySelection string            `json:"repository_selection"`
 		Repositories        []string          `json:"repositories"`
+		RepositoryScope     string            `json:"repository_scope"`
 	}
 )
 
@@ -101,8 +114,8 @@ type (
 // (printable ASCII with no space, which no header it is sent in can be broken by), expires_at (an
 // RFC 3339 time), permissions (at least one, each a GitHub App permission's name at a level GitHub
 // gives), repository_selection ("all" or "selected") and, beside "selected" alone, repositories
-// (storedRepositories). No error names a token; an account is named only once it is read as a
-// login.
+// (storedRepositories) or repository_scope (RepositoryScopeAllExceptProtected, beside no list). No
+// error names a token; an account is named only once it is read as a login.
 func parseGitHubInstallations(value string) (GitHubInstallationsValue, error) {
 	refuse := func(why string) (GitHubInstallationsValue, error) {
 		return GitHubInstallationsValue{}, fmt.Errorf("%w: GitHub installation tokens: %s", ErrMintStoredValue, why)
@@ -147,11 +160,15 @@ func parseGitHubInstallations(value string) (GitHubInstallationsValue, error) {
 			}
 		}
 		repositories, why := storedRepositories(account, entry)
+		if why == "" {
+			why = storedScope(entry)
+		}
 		if why != "" {
 			return refuse(account + ": " + why)
 		}
 		read.Installations[account] = StoredInstallation{Account: key, InstallationID: entry.InstallationID, Token: entry.Token,
-			ExpiresAt: entry.ExpiresAt, Permissions: entry.Permissions, RepositorySelection: entry.RepositorySelection, Repositories: repositories}
+			ExpiresAt: entry.ExpiresAt, Permissions: entry.Permissions, RepositorySelection: entry.RepositorySelection, Repositories: repositories,
+			AllExceptProtected: entry.RepositoryScope == RepositoryScopeAllExceptProtected}
 	}
 	return read, nil
 }
@@ -192,6 +209,22 @@ func storedRepositories(account string, entry githubStoredInstallation) ([]strin
 	return repositories, ""
 }
 
+// storedScope says why the entry's repository_scope is refused, "" where it has none or the seed
+// minter's marker in its place: beside repository_selection "selected" and no repositories list,
+// since it says which repositories a selected token reaches in place of a list. Any other value is
+// refused, so a value Cipher does not read is never served as though it were the marker.
+func storedScope(entry githubStoredInstallation) string {
+	switch {
+	case entry.RepositoryScope == "":
+		return ""
+	case entry.RepositoryScope != RepositoryScopeAllExceptProtected:
+		return `repository_scope is no scope Cipher reads; it takes "` + RepositoryScopeAllExceptProtected + `" alone`
+	case entry.RepositorySelection != "selected" || entry.Repositories != nil:
+		return `repository_scope stands beside repository_selection "selected" and no repositories list alone`
+	}
+	return ""
+}
+
 // installationToken reports whether token can be a token: not empty, and printable ASCII with no
 // space.
 func installationToken(token string) bool {
@@ -224,11 +257,12 @@ type GitHubInstallations struct {
 // its log say what the token cannot do. One holding none of the profile's permissions but metadata,
 // of a profile that names more, is refused as GitHubApp.Mint's empty cut is (ErrMintEmptyCut).
 //
-// The release hands a grant on the tokens that ends at the earliest of their expires_at less
-// MintedTokenMargin (Minted.Expires), so every token handed over outlives that grant by the
-// margin; a token whose expires_at is not later than now plus the margin leaves no grant, and is
-// refused (ErrMintTokenStale). The airlock proxy reads the grant again before that end, and so
-// reads the newer token the minter has stored by then.
+// A token is handed over only while more than MintedTokenMargin of its own life is left; one whose
+// expires_at is not later than now plus the margin is refused (ErrMintTokenStale). The margin does
+// not bound the grant (MintedTokenMargin). Minted.Expires is the earliest of the tokens'
+// expires_at less the margin, so the airlock proxy, which reads the grant again five minutes before
+// it, reads the newer token the minter has stored by then rather than carry a call on one about to
+// expire.
 //
 // Each token is held to the profile's repositories too (repositoriesMismatch), since a token cannot
 // be cut to repositories once it is minted: one its minter narrowed to repositories serves only a
@@ -314,8 +348,10 @@ func (m GitHubInstallations) Mint(_ context.Context, req MintRequest) (Minted, e
 // repositoriesMismatch says how the repositories the token stored for account reaches differ from
 // the ones scope names of account, compared as GitHub compares names, without regard to case, and
 // is "" when they are the same: a token of every repository (RepositorySelection "all") of a scope
-// that names no repository, or a token narrowed to repositories its minter listed, of a scope
-// that names those exactly. A narrowed token whose minter listed none is refused whatever the
+// that names no repository; a token the seed minter cut to every repository but the protected ones
+// (AllExceptProtected, whose marker Cipher trusts for the list) of a scope that names no
+// repository; or a token narrowed to repositories its minter listed, of a scope that names those
+// exactly. A narrowed token whose minter listed none and marked nothing is refused whatever the
 // scope names, since nothing says what it reaches.
 func repositoriesMismatch(account string, scope *GitHubScope, stored StoredInstallation) string {
 	var named []string // the scope's account/name entries of account, lowercased; nil for none
@@ -340,6 +376,10 @@ func repositoriesMismatch(account string, scope *GitHubScope, stored StoredInsta
 		return ""
 	case stored.RepositorySelection == "all":
 		return fmt.Sprintf("the token stored for %s reaches every repository of its installation, and the profile names %s", account, words(named))
+	case stored.AllExceptProtected && named == nil:
+		return ""
+	case stored.AllExceptProtected:
+		return fmt.Sprintf("the token stored for %s reaches every repository of its installation but the protected ones, and the profile names %s", account, words(named))
 	case stored.Repositories == nil:
 		return fmt.Sprintf("the token stored for %s reaches repositories its minter selected and did not list", account)
 	case named == nil:

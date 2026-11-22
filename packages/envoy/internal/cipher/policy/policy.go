@@ -59,7 +59,8 @@ const (
 	// profiles on the accounts its TagGitHubOwners lists, and released in the github-app release's
 	// form; the broker mints nothing for it, and a token cannot be cut once it is minted, so a
 	// release serves a profile only the token whose permissions are within the profile's and whose
-	// repositories are the profile's exactly, and a target of it names no repository
+	// repositories are the profile's exactly (none, for a token the seed minter marked
+	// "all-except-protected"), and a target of it names no repository
 	// (secrets.GitHubInstallations).
 	TypeGitHubInstallations = "github-installations"
 	// TypeGoogleLogin exchanges the stored authorized-user refresh token for an access token.

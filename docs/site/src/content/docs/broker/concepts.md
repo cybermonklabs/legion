@@ -1011,19 +1011,28 @@ The broker evaluates every name
   `metadata` is refused. A token narrowed to repositories serves only a profile whose
   `github.repositories` of that account are the same list, compared without regard to case; a
   profile that names none is refused, since it would claim every repository of the installation,
-  and so is a profile that names repositories of a token of every repository. A target of such a
+  and so is a profile that names repositories of a token of every repository. The deployment's
+  seed minter cuts one token to every repository of the installation but the protected ones and
+  marks it `"repository_scope": "all-except-protected"`, beside `"repository_selection":
+  "selected"` and no list. Only that minter writes the marker, into a secret only its own route
+  may write, so the broker trusts it for the list the token was cut to and serves the token to a
+  profile that names no repositories; the proof of the cut is the deployment's own check. Any other
+  value of `repository_scope` refuses the value, and a `selected` token with no list and no marker
+  is refused. A target of such a
   profile names its account alone: a target that names a repository is refused
-  `400 TARGET_REPOSITORIES_REFUSED` before anybody is asked. The grant a release hands on stored
-  tokens ends 20 minutes before the earliest token's `expires_at`, so each token is handed over
-  with more than 20 minutes left: the Legion daemon serves a cached installation token until 20
-  minutes before its expiry, and a minter that stores new tokens every ten minutes, of the hour
-  GitHub gives a token, leaves each at least 50, so three of its runs in a row may fail before a
-  release is refused. A stored token with 20 minutes or less left is refused `502 MINT_FAILED`
-  (`class=upstream`), and the airlock's proxy, which reads the grant again five minutes before
-  its end, answers a call it cannot carry `503` until the minter stores a newer token. The broker
-  gives no such token back to GitHub: it is the stored one, which every other release of the
-  secret hands over too. Where a person must approve a request for such a profile, the broker
-  makes the same checks on the stored token before it asks anybody.
+  `400 TARGET_REPOSITORIES_REFUSED` before anybody is asked. The broker hands a stored token over
+  only while more than 20 minutes of its own life are left, so a caller never gets a token about
+  to expire: the Legion daemon serves a cached installation token until 20 minutes before its
+  expiry, and a minter that stores new tokens every ten minutes, of the hour GitHub gives a token,
+  leaves each at least 50, so three of its runs in a row may fail before a release is refused. The
+  margin does not bound the grant: GitHub fixes a token's life at one hour, so a token can outlive
+  its grant by up to an hour, and the broker adds no revocation. A stored token with 20 minutes or
+  less left is refused `502 MINT_FAILED` (`class=upstream`), and the airlock's proxy, which reads
+  the grant again five minutes before a token comes within the margin, answers a call it cannot
+  carry `503` until the minter stores a newer token. The broker gives no such token back to
+  GitHub: it is the stored one, which every other release of the secret hands over too. Where a
+  person must approve a request for such a profile, the broker makes the same checks on the
+  stored token before it asks anybody.
   The exec form's `--github-token` narrows nothing: the release holds the
   same JSON object of installations, and the flag decides what the exec form puts in the
   command's environment. With it the name holds that one installation's token alone, which is

@@ -19,7 +19,8 @@ var storedNow = time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
 
 // storedEntry is one installation as a minter outside the broker writes it into a
 // github-installations secret. Repositories is set beside repository_selection "selected" alone,
-// where the minter narrowed the token to those repositories.
+// where the minter narrowed the token to those repositories; RepositoryScope is the seed minter's
+// marker of a token cut to every repository but the protected ones, beside "selected" and no list.
 type storedEntry struct {
 	InstallationID      int64             `json:"installation_id"`
 	Token               string            `json:"token"`
@@ -27,6 +28,7 @@ type storedEntry struct {
 	Permissions         map[string]string `json:"permissions"`
 	RepositorySelection string            `json:"repository_selection"`
 	Repositories        []string          `json:"repositories,omitempty"`
+	RepositoryScope     string            `json:"repository_scope,omitempty"`
 }
 
 // stored is the entry of installation id whose token is token, which lapses life after storedNow
@@ -119,18 +121,17 @@ func TestAStoredTokenWiderThanItsProfileIsRefusedACutOneIsServedNamingTheCutAndA
 	}
 }
 
-// TestAStoredTokenIsServedOnlyWhileItOutlivesTheGrantsEndByTheMargin pins the margin at 20
-// minutes. The release of a stored token hands a grant on it that ends at the token's expires_at
-// less the margin (Minted.Expires, which the airlock proxy reads the grant again five minutes
-// before), so every token the broker hands over outlives the grant it hands on it by the margin. A
-// release whose grant would end at or before now is refused: a token whose remaining life is just
-// below 20 minutes, and one of exactly 20, are refused as a stored token its minter has not
-// replaced (ErrMintTokenStale, an ErrMintUpstream), and a token of just above 20 is served, its
-// grant ending one second from now. A release of two accounts is held to the earlier of the two.
+// TestAStoredTokenIsHandedOverOnlyWithMoreThanTheMarginOfItsLifeLeft pins the margin at 20
+// minutes, the stored token's own remaining life: a token whose remaining life is just below 20
+// minutes, and one of exactly 20, are refused as a stored token its minter has not replaced
+// (ErrMintTokenStale, an ErrMintUpstream), and a token of just above 20 is served. The margin
+// bounds no grant; Minted.Expires is the token's expiry less the margin, which the airlock proxy
+// reads the grant again five minutes before. A release of two accounts is held to the earlier of
+// the two.
 //
 // The named revert: drop the expiry check, and the two short rows are served; set the margin to
 // another number, and either the 19m59s row is served or the 20m01s row is refused.
-func TestAStoredTokenIsServedOnlyWhileItOutlivesTheGrantsEndByTheMargin(t *testing.T) {
+func TestAStoredTokenIsHandedOverOnlyWithMoreThanTheMarginOfItsLifeLeft(t *testing.T) {
 	profile := map[string]string{"contents": "read", "metadata": "read"}
 	for _, row := range []struct {
 		name   string
@@ -170,7 +171,7 @@ func TestAStoredTokenIsServedOnlyWhileItOutlivesTheGrantsEndByTheMargin(t *testi
 			t.Fatalf("Mint = %+v, %v; want nothing and ErrMintTokenStale for ada's token", minted, err)
 		}
 	})
-	t.Run("two accounts, the grant ends at the earlier", func(t *testing.T) {
+	t.Run("two accounts, the value expires at the earlier less the margin", func(t *testing.T) {
 		value := storedValue(t, map[string]storedEntry{
 			"acme": stored(41, "ghs_stored_acme", fresh, profile),
 			"ada":  stored(42, "ghs_stored_ada", 30*time.Minute, profile),
@@ -306,6 +307,52 @@ func TestAProfilesRepositoriesMustEqualThoseItsStoredTokenReaches(t *testing.T) 
 	}
 }
 
+// TestAnAllExceptProtectedTokenServesAProfileOfNoRepositoriesAndNoOtherScopeIsRead: the seed
+// minter cuts the admin token to every repository but the protected ones and marks the entry
+// "repository_scope": "all-except-protected", beside repository_selection "selected" and no
+// repositories list. Cipher trusts the marker for the list the token was cut to, and serves it to
+// a profile that names no repositories; the proof of the cut is the minter's deployment's, not
+// Cipher's. A profile naming repositories of such a token is refused, as its list is not the
+// token's. A "selected" entry with no list and no marker is refused, as before; and a
+// repository_scope of any other value refuses the stored value.
+//
+// The named reverts: drop the marker's arm, and the marked token is refused; read any value of
+// repository_scope as the marker, and the unknown value is served.
+func TestAnAllExceptProtectedTokenServesAProfileOfNoRepositoriesAndNoOtherScopeIsRead(t *testing.T) {
+	profile := map[string]string{"administration": "read", "metadata": "read"}
+	selectedNoList := stored(42, "ghs_stored_ada", fresh, profile)
+	selectedNoList.RepositorySelection = "selected"
+	marked := selectedNoList
+	marked.RepositoryScope = "all-except-protected"
+	for _, row := range []struct {
+		name         string
+		entry        storedEntry
+		repositories []string // the profile's; nil for none
+		served       bool
+		refused      error
+	}{
+		{"the marker, of a profile naming no repositories", marked, nil, true, nil},
+		{"the marker, of a profile naming repositories", marked, []string{"ada/proofs"}, false, secrets.ErrMintStoredRepositories},
+		{"selected with no list and no marker", selectedNoList, nil, false, secrets.ErrMintStoredRepositories},
+		{"an unknown repository_scope", func() storedEntry { e := marked; e.RepositoryScope = "all"; return e }(), nil, false, secrets.ErrMintStoredValue},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			scope := scopeOf(githubname.ValueToken, profile, "ada")
+			scope.Repositories = row.repositories
+			minted, err := mintStored(storedValue(t, map[string]storedEntry{"ada": row.entry}), scope)
+			if row.served {
+				if err != nil || minted.Value != "ghs_stored_ada" {
+					t.Fatalf("Mint = %+v, %v; want ada's stored token", minted, err)
+				}
+				return
+			}
+			if !errors.Is(err, row.refused) || minted.Value != "" || strings.Contains(err.Error(), "ghs_stored_ada") {
+				t.Fatalf("Mint = %+v, %v; want nothing and a refusal wrapping %v that holds no token", minted, err, row.refused)
+			}
+		})
+	}
+}
+
 // TestAMalformedStoredValueIsRefusedNamingNoPartOfIt: the stored value is read strictly, by the
 // one decoder the policy's load and the minter share (ParseValue): a JSON object of installations
 // and nothing else, each a GitHub login of an entry of exactly installation_id, token, expires_at,
@@ -362,6 +409,13 @@ func TestAMalformedStoredValueIsRefusedNamingNoPartOfIt(t *testing.T) {
 		{"a repository that is no owner/name", entry(func(e map[string]any) { e["repository_selection"], e["repositories"] = "selected", []string{"proofs"} })},
 		{"one repository twice, in two cases", entry(func(e map[string]any) {
 			e["repository_selection"], e["repositories"] = "selected", []string{"ada/proofs", "Ada/Proofs"}
+		})},
+		{"a repository_scope of another value", entry(func(e map[string]any) {
+			e["repository_selection"], e["repository_scope"] = "selected", "all"
+		})},
+		{"the marker beside a token of every repository", entry(func(e map[string]any) { e["repository_scope"] = "all-except-protected" })},
+		{"the marker beside a repositories list", entry(func(e map[string]any) {
+			e["repository_selection"], e["repositories"], e["repository_scope"] = "selected", []string{"ada/proofs"}, "all-except-protected"
 		})},
 	} {
 		t.Run(row.name, func(t *testing.T) {

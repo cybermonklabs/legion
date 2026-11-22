@@ -12,12 +12,16 @@ body: |-
   past the profile's, none but `metadata`, or other repositories than the profile names (none
   where the token was narrowed, some where it reaches every repository) is refused
   `422 PROFILE_MINT_REFUSED`; a token holding less than the profile is served and the cut is
-  named in `github_left_out`. A target of such a profile names its account alone: one naming a
-  repository is refused with the new code `400 TARGET_REPOSITORIES_REFUSED` (`403` at the proxy).
-  A release hands a grant on the stored tokens that ends 20 minutes before the earliest token's
-  `expires_at`; a token with 20 minutes or less left is refused `502 MINT_FAILED`
-  (`class=upstream`). The check before an approval reads the stored tokens as a release does. Such
-  a token is never given back to GitHub.
+  named in `github_left_out`. A token marked `"repository_scope": "all-except-protected"` (beside
+  `selected` and no list), which the deployment's seed minter alone writes, is trusted for its cut
+  and served to a profile naming no repositories; any other `repository_scope` refuses the value,
+  and a `selected` token with no list and no marker is refused. A target of such a profile names
+  its account alone: one naming a repository is refused with the new code
+  `400 TARGET_REPOSITORIES_REFUSED` (`403` at the proxy). A stored token is handed over only while
+  more than 20 minutes of its own life are left, else `502 MINT_FAILED` (`class=upstream`); the
+  margin does not bound the grant, so a token, whose life GitHub fixes at an hour, can outlive its
+  grant by up to an hour, and no revocation is added. The check before an approval reads the
+  stored tokens as a release does. Such a token is never given back to GitHub.
 time: 2026-11-22T12:02:39Z
 custom:
     Issue: broker-github-installations
