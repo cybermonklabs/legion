@@ -41,7 +41,9 @@ export const proxyRepository = "example-owner/private-repo";
 const deployRepository = "example-owner/example-deploy";
 export const workflowRepository = "example-owner/example-workflows";
 /** The inputs `outside-edge-e2e.yaml` declares under `workflow_dispatch`, in the deployment
- *  repository at 0b57ecd8ba; GitHub refuses a dispatch carrying any other with a 422. */
+ *  repository at 0b57ecd8ba, with the browser gate's two, `routed_controls` and
+ *  `sweep_member_issue`, which that repository's pull requests for the browser gate add; GitHub
+ *  refuses a dispatch carrying any other with a 422. */
 export const workflowInputs = [
   "checks",
   "invite_url",
@@ -50,6 +52,8 @@ export const workflowInputs = [
   "tailnet_user_code",
   "sweep_project",
   "sweep_fills",
+  "routed_controls",
+  "sweep_member_issue",
 ];
 export const inviteUrl = "https://dispatch.edge.example/enroll#example-invite-token";
 /** The ids of the stand-in writer's comments (`c1`, `c2`) and direct messages (`m1`, `m2`), in the
@@ -124,6 +128,37 @@ export interface StandIns {
   readonly t3Kills?: boolean;
   /** The preparation throws once its stand-in Dispatch runs, as a failed step after it would. */
   readonly failAfterDispatch?: boolean;
+  /** The browser gate (OUTSIDE_GATE=browser): the workflow through `gh`, whose run writes the
+   *  browser checks' artifacts and runs its step `The delisting window`, the owner commands, which
+   *  keep the access list in the state, and a `dispatch` that finds the scratch project's issue.
+   *  Each field plants one fault; with none, every row passes. */
+  readonly browser?: BrowserStandIns;
+}
+
+export interface BrowserStandIns {
+  /** What the owner's invite answers: a link for an address on the list and 409
+   *  PERSON_NOT_LISTED for any other (default), or 403 BROWSER_SESSION_REQUIRED for every address,
+   *  as Dispatch answers a token that is no owner's browser session. */
+  readonly invite?: "listed" | "browser-session";
+  /** OUTSIDE_UNLISTED_PERSON names an address the list already holds, so the owner's invite makes
+   *  it a link. */
+  readonly unlistedListed?: boolean;
+  /** The owner's remove command exits 0 and takes nobody off the list. */
+  readonly removeNothing?: boolean;
+  /** The run never runs its step `The delisting window`: the step is skipped. */
+  readonly noWindow?: boolean;
+  /** The seconds after the removal the run stamps the `at=` of T5-cookie and of T5-passkey
+   *  (default 1 and 2). */
+  readonly cookieAfter?: number;
+  readonly passkeyAfter?: number;
+  /** The exit each check records, by its name (default 0 each), and the checks whose `.code` the
+   *  run leaves out of their artifacts. */
+  readonly codes?: Readonly<Record<string, number>>;
+  readonly noCode?: readonly string[];
+  /** The verdicts of the driver's limit rows, in order (default one PASS); empty writes none. */
+  readonly limits?: readonly string[];
+  /** OUTSIDE_PUBLIC_COMMAND set beside the workflow. */
+  readonly publicCommand?: boolean;
 }
 
 export interface StandInRun extends LegRun {
@@ -171,9 +206,14 @@ function checkout(scratch: Scratch): Checkout {
 }
 
 /** A PATH of the text tools, the few more the stand-in run reads with, and the stand-ins of
- *  `agent-secrets`, `agent-secrets-helper` and `gh`, which keep their state in `state`. The `gh`
- *  stand-in runs `publicCommand` as the workflow's run. */
-function standInPath(scratch: Scratch, state: string, publicCommand: string): string {
+ *  `agent-secrets`, `agent-secrets-helper` and `gh`, which keep their state in `state`, and for the
+ *  browser gate of `dispatch`. The `gh` stand-in runs `publicCommand` as the workflow's run. */
+function standInPath(
+  scratch: Scratch,
+  state: string,
+  publicCommand: string,
+  browser: boolean
+): string {
   const bin = textToolPath(scratch, ["git", "base64", "sh", "printenv", "cp", "bun"]);
   // The helper's one duty here is its socket, which the leg waits for; Bun makes it.
   script(
@@ -185,7 +225,11 @@ function standInPath(scratch: Scratch, state: string, publicCommand: string): st
   // state/workflow-args and its stdin in state/workflow-inputs.json, refuses an input the
   // workflow does not declare as GitHub does (422), and otherwise starts the public command as the
   // run, with the code the inputs carry; `gh run view`, `watch` and `download` read that run. `gh
-  // repo view` prints the visibility state/visibility holds, or nothing where there is none.
+  // repo view` prints the visibility state/visibility holds, or nothing where there is none. A
+  // browser gate's run (state/browser) runs its step `The delisting window` at once, kept in
+  // state/window, unless state/no-window says the run skips it; `gh run view --json status,jobs`
+  // prints `<run status> <that step's status>`, as the leg's jq asks, and counts each read in
+  // state/window-reads.
   script(
     join(bin, "gh"),
     `#!/usr/bin/env bash
@@ -214,6 +258,9 @@ case $1 in
     code=\${inputs#*\\"tailnet_user_code\\":\\"}
     code=\${code%%\\"*}
     mkdir -p "$state/run"
+    if [ -f "$state/browser" ]; then
+      if [ -f "$state/no-window" ]; then echo pending >"$state/window"; else echo in_progress >"$state/window"; fi
+    fi
     (
       OUTSIDE_TAILNET_USER_CODE=$code OUTSIDE_PUBLIC_RESULTS="$state/run" bash '${publicCommand}'
       echo "$?" >"$state/run-exit"
@@ -222,6 +269,10 @@ case $1 in
     ;;
   run)
     case "$2 $*" in
+      'view '*'--json status,jobs'*)
+        echo read >>"$state/window-reads"
+        printf '%s %s\\n' "$(if [ -f "$state/run-exit" ]; then echo completed; else echo in_progress; fi)" "$(cat "$state/window" 2>/dev/null || echo absent)"
+        ;;
       'view '*'--json status'*) if [ -f "$state/run-exit" ]; then echo completed; else echo in_progress; fi ;;
       'view '*'--json conclusion'*) if [ "$(cat "$state/run-exit")" = 0 ]; then echo success; else echo failure; fi ;;
       'watch '*) while [ ! -f "$state/run-exit" ]; do sleep 0.2; done ;;
@@ -244,11 +295,13 @@ esac
   // member kind and the canary's session and request with what canary-refusal holds. Each register
   // of T3's session leaves the operator it ran under in state/t3-operator. A machine login
   // completes once the stand-in Dispatch or the public leg marks its code approved, and where the
-  // state holds login-expires it ends as the real one ends a code nobody approved.
+  // state holds login-expires it ends as the real one ends a code nobody approved. Each call's
+  // words go to state/agent-secrets-calls.
   script(
     join(bin, "agent-secrets"),
     `#!/usr/bin/env bash
 state='${state}'
+printf '%s\\n' "$*" >>"$state/agent-secrets-calls"
 operator=''
 [ -z "\${AGENT_SECRETS_OPERATOR_FILE:-}" ] || operator=$(cat "$AGENT_SECRETS_OPERATOR_FILE")
 case $operator in ${fullLogin}) code=FULL-0001 ;; *) code=TEST-0001 ;; esac
@@ -303,6 +356,20 @@ case $1 in
 esac
 `
   );
+  // The browser gate's `dispatch`: the scratch project's issue the issue row finds, by the title
+  // the leg gives it, which names the repository the row reads; any other command fails.
+  if (browser) {
+    script(
+      join(bin, "dispatch"),
+      `#!/usr/bin/env bash
+case $1 in
+  issues) printf 'EXAMPLE-7\\topen\\tOutside acceptance: the repository the edge relays to the project\\n' ;;
+  read) printf 'EXAMPLE-7: Outside acceptance\\nRepository: example-owner/example-repo\\n' ;;
+  *) exit 1 ;;
+esac
+`
+    );
+  }
   return bin;
 }
 
@@ -430,6 +497,136 @@ if (command === "peer") {
 `;
 }
 
+/** The address row unlisted asks a link for where `BrowserStandIns.unlistedListed` puts it on the
+ *  list; otherwise the leg makes its own address, which no list names. */
+export const unlistedPerson = "outside-e2e-unlisted@example.com";
+/** The text every link the stand-in owner's invite makes holds, which no output of the leg may. */
+export const linkToken = "owner-made-token";
+
+/** The browser gate's stand-ins: the owner commands, which keep the access list in state/listed and
+ *  each link they made in state/links, and the workflow's run. The run writes the browser checks'
+ *  artifacts (each `.txt` and `.code`, the driver's outside-edge.tsv and the sweep's two files),
+ *  then, unless state/no-window says it skips its step `The delisting window`, waits up to 30 s for
+ *  the owner's removal (state/removed), writes outside-edge-t5.tsv with T5-cookie's and
+ *  T5-passkey's `at=` the given seconds after it, and ends the step. It exits with the worst exit
+ *  it recorded. Returns the run's script and the leg's environment beside it. */
+function browserStandIn(
+  state: string,
+  inputs: string,
+  standIns: StandIns,
+  browser: BrowserStandIns
+): { readonly run: string; readonly env: Record<string, string> } {
+  writeFileSync(join(state, "browser"), "");
+  if (browser.noWindow === true) writeFileSync(join(state, "no-window"), "");
+  writeFileSync(
+    join(state, "listed"),
+    browser.unlistedListed === true ? `${unlistedPerson}\n` : ""
+  );
+  const add = script(
+    join(inputs, "owner-add.sh"),
+    `#!/usr/bin/env bash
+while IFS= read -r each; do [ "$each" != "$1" ] || exit 0; done <'${state}/listed'
+printf '%s\\n' "$1" >>'${state}/listed'
+`
+  );
+  const list = script(
+    join(inputs, "owner-list.sh"),
+    `#!/usr/bin/env bash\ncat '${state}/listed'\n`
+  );
+  const remove = script(
+    join(inputs, "owner-remove.sh"),
+    `#!/usr/bin/env bash
+${
+  browser.removeNothing === true
+    ? ""
+    : `kept=''
+while IFS= read -r each; do [ "$each" = "$1" ] || kept="$kept$each"$'\\n'; done <'${state}/listed'
+printf '%s' "$kept" >'${state}/listed'`
+}
+: >'${state}/removed'
+`
+  );
+  const invite = script(
+    join(inputs, "owner-invite.sh"),
+    `#!/usr/bin/env bash
+${browser.invite === "browser-session" ? "echo '403 BROWSER_SESSION_REQUIRED'\nexit 1" : ""}
+while IFS= read -r each; do
+  if [ "$each" = "$1" ]; then
+    link="https://dispatch.edge.example/enroll#${linkToken}-$RANDOM$RANDOM"
+    printf '%s\\n' "$link" >>'${state}/links'
+    printf '%s\\n' "$link"
+    exit 0
+  fi
+done <'${state}/listed'
+echo '409 PERSON_NOT_LISTED'
+exit 1
+`
+  );
+  const code = (name: string): string =>
+    browser.noCode?.includes(name) === true ? "none" : String(browser.codes?.[name] ?? 0);
+  const limits = (browser.limits ?? ["PASS"])
+    .map(
+      (verdict, index) =>
+        `printf 'limit-%s-60s\\tat most 10 requests in 60 s\\tpeak 1 in 60 s from dispatch.edge.example\\t%s\\n' ${index + 1} '${verdict}' >>"$out/outside-edge.tsv"`
+    )
+    .join("\n");
+  const run = script(
+    join(inputs, "browser-run.sh"),
+    `#!/usr/bin/env bash
+out=$OUTSIDE_PUBLIC_RESULTS
+worst=0
+# check NAME CODE LINE: the check's output, and its exit unless CODE is none.
+check() {
+  printf 'the check began\\n%s\\n' "$3" >"$out/$1.txt"
+  [ "$2" = none ] || echo "$2" >"$out/$1.code"
+  case $2 in 1) worst=1 ;; 2) [ "$worst" = 1 ] || worst=2 ;; esac
+}
+check outside-edge-refusals ${code("outside-edge-refusals")} 'PASS: every refusal line was refused'
+check outside-path-reach ${code("outside-path-reach")} 'PASS: every target is unreachable from this device'
+check outside-edge ${code("outside-edge")} 'the driver wrote its rows'
+printf 'row\\twant\\tgot\\tverdict\\nsign-in\\tthe sign-in\\tsigned in at https://dispatch.edge.example as the invited person\\tPASS\\nprojects\\tthe projects\\t[EXAMPLE]\\tPASS\\n' >"$out/outside-edge.tsv"
+${limits}
+{ printf 'the workflow note\\nlive window 2026-01-01T00:00:00Z 2026-01-01T00:00:09Z\\n'; cat '${state}/sweep-verdict'; } >"$out/restricted-sweep.log"
+echo ${standIns.sweep?.exit ?? 0} >"$out/restricted-sweep.exit"
+case ${standIns.sweep?.exit ?? 0} in 0) ;; 1) worst=1 ;; *) [ "$worst" = 1 ] || worst=2 ;; esac
+if [ -f '${state}/no-window' ]; then
+  echo completed >'${state}/window'
+  exit "$worst"
+fi
+waited=0
+while [ ! -f '${state}/removed' ] && [ "$waited" -lt 300 ]; do
+  sleep 0.1
+  waited=$((waited + 1))
+done
+now=$(date -u +%s)
+if [ -f '${state}/removed' ]; then
+  printf 'T5-cookie\\tthe cookie\\t401 at=%s\\tPASS\\nT5-passkey\\tthe passkey\\trefused at=%s: 403\\tPASS\\n' "$((now + ${browser.cookieAfter ?? 1}))" "$((now + ${browser.passkeyAfter ?? 2}))" >"$out/outside-edge-t5.tsv"
+  check outside-edge-t5 ${code("outside-edge-t5")} 'the window ended'
+else
+  printf 'T5-cookie\\tthe cookie\\tstill 200 at the deadline\\tUNKNOWN\\nT5-passkey\\tthe passkey\\tnot tried\\tUNKNOWN\\n' >"$out/outside-edge-t5.tsv"
+  check outside-edge-t5 2 'the window ended with no 401'
+fi
+echo completed >'${state}/window'
+exit "$worst"
+`
+  );
+  return {
+    run,
+    env: {
+      OUTSIDE_GATE: "browser",
+      OUTSIDE_WORKFLOW_REPO: workflowRepository,
+      // A link here is left out: the browser gate's link is the owner invite's.
+      OUTSIDE_WORKFLOW_INPUTS: `invite_url=${inviteUrl}`,
+      OUTSIDE_OWNER_ADD_COMMAND: `bash ${add}`,
+      OUTSIDE_OWNER_LIST_COMMAND: `bash ${list}`,
+      OUTSIDE_OWNER_INVITE_COMMAND: `bash ${invite}`,
+      OUTSIDE_OWNER_REMOVE_COMMAND: `bash ${remove}`,
+      ...(browser.unlistedListed === true ? { OUTSIDE_UNLISTED_PERSON: unlistedPerson } : {}),
+      ...(browser.publicCommand === true ? { OUTSIDE_PUBLIC_COMMAND: `bash ${run}` } : {}),
+    },
+  };
+}
+
 export async function prepareStandIn(
   scratch: Scratch,
   standIns: StandIns
@@ -539,15 +736,18 @@ case $SWEEP_MODE in
 esac
 `
   );
-  // The pins at the deployment repository's main (state/deploy), or local files.
+  // The pins at the deployment repository's main (state/deploy), or local files. The browser gate's
+  // edge-listener line names a file the repository lacks: that gate reads no edge listener's pin.
   mkdirSync(join(state, "deploy"), { recursive: true });
   const pinsLocal = standIns.pins === "local";
   const pins: string[] = [];
   for (const name of ["broker", "dispatch", "edge-listener"]) {
-    writeFileSync(
-      join(state, "deploy", `${name}.yaml`),
-      `example:image: registry.example/${name}@sha256:0\n`
-    );
+    if (standIns.browser === undefined || name !== "edge-listener") {
+      writeFileSync(
+        join(state, "deploy", `${name}.yaml`),
+        `example:image: registry.example/${name}@sha256:0\n`
+      );
+    }
     pins.push(
       `${name} ${pinsLocal ? join(state, "deploy", `${name}.yaml`) : `${name}.yaml`} example:image`
     );
@@ -585,6 +785,10 @@ ${standIns.window === undefined ? "" : "sleep 3"}
 exit ${standIns.publicExit ?? 0}
 `
   );
+  const browserRun =
+    standIns.browser === undefined
+      ? undefined
+      : browserStandIn(state, inputs, standIns, standIns.browser);
   const revision = script(join(inputs, "revision.sh"), `#!/bin/sh\necho ${repo.built}\n`);
   writeFileSync(join(inputs, "cookie"), "session=full\n");
   writeFileSync(join(inputs, "token"), "example-token\n");
@@ -597,8 +801,13 @@ exit ${standIns.publicExit ?? 0}
       join(inputs, "remove.sh"),
       `#!/bin/sh\nexec curl -q -sS -X POST '${dispatch.origin}/_remove' -o /dev/null\n`
     );
-    const env = {
-      PATH: standInPath(scratch, state, publicLegCommand),
+    const env: Record<string, string> = {
+      PATH: standInPath(
+        scratch,
+        state,
+        browserRun?.run ?? publicLegCommand,
+        browserRun !== undefined
+      ),
       HOME: scratch("home"),
       ...(process.env.TMPDIR === undefined ? {} : { TMPDIR: process.env.TMPDIR }),
       OUTSIDE_ALLOW_HTTP: "1",
@@ -637,6 +846,17 @@ exit ${standIns.publicExit ?? 0}
             OUTSIDE_OWNER_REMOVE_COMMAND: `sh ${remove}`,
           }),
     };
+    // The browser gate runs with none of the agents' path's inputs, and starts the workflow alone.
+    if (browserRun !== undefined) {
+      for (const name of [
+        "OUTSIDE_TAILNET_BROKER_URL",
+        "OUTSIDE_CANARY",
+        "OUTSIDE_PUBLIC_COMMAND",
+      ]) {
+        delete env[name];
+      }
+      Object.assign(env, browserRun.env);
+    }
     return { leg, env, dispatch, state, repo };
   } catch (error) {
     // A step after the stand-in Dispatch started threw: stop it, so no process outlives the row.

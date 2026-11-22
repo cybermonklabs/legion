@@ -309,6 +309,71 @@ session (its listing and the send to it) are no evidence, since it is then in th
 P6 FAIL of those parts alone reads UNKNOWN. A P6 FAIL whose relay `sub` was granted, or refused with
 another code, stands whatever the foreign session did.
 
+## The browser gate
+
+`OUTSIDE_GATE=browser` runs the browser leg alone: what a person from outside gets in their
+browser, proved while nothing of the agents' path serves (no edge listener, no broker route at the
+edge, no broker project check). It is the same command, `outside-agent-tailnet.sh <project>`;
+`OUTSIDE_GATE=all`, the default, is both legs as above, and any other value reads every row UNKNOWN
+and exits 2.
+
+The project's owner acts through four commands, never a person's browser session. Each is a command
+line, split on blanks, that holds its own owner credential, which the leg never sees:
+
+| Variable | Its last words | It must |
+| --- | --- | --- |
+| `OUTSIDE_OWNER_ADD_COMMAND` | the address, the project | put the address on the project's access list, and exit 0. |
+| `OUTSIDE_OWNER_LIST_COMMAND` | the project | print the addresses on the project's access list, one a line, and exit 0. |
+| `OUTSIDE_OWNER_INVITE_COMMAND` | the address, the project | print the address's invitation link alone and exit 0; or print Dispatch's refusal, `<status> <code>`, on its first line and exit 1; or exit 2 when it could not tell. |
+| `OUTSIDE_OWNER_REMOVE_COMMAND` | the address, the project | take the address off the project's access list, and exit 0. |
+
+The leg quotes no word of what they print but a refusal's `<status> <code>`, since a link is a
+secret, and asks no terminal. In this gate it does these steps:
+
+1. It reads the pins of the broker and Dispatch alone, as row `pins` does above; the pins file's
+   `edge-listener` line is not read. No run starts unless the row passes.
+2. It finds or makes the scratch project's issue (row `issue`).
+3. It starts no scratch helper, no peer, no session outside the project and no full member's
+   helper, so it runs no T1-T4 and needs none of `OUTSIDE_TAILNET_BROKER_URL`,
+   `OUTSIDE_LISTENER_URL`, `OUTSIDE_INTERNAL_LISTENER_URL`, `OUTSIDE_FOREIGN_PROJECT` and
+   `OUTSIDE_CANARY`. It runs the sweep's full-member half, its writer and its proxy control, as
+   step 5 above says. That half is the gate's one input a person makes: `OUTSIDE_FULL_COOKIE_FILE`,
+   a full member's browser session, since Dispatch's GitHub proxy reads as a browser's person and
+   never as a token. Without it the sweep row, and so the gate, reads UNKNOWN, never PASS.
+4. The owner puts the test person on the access list, the list command reads them on it (its
+   control), and the owner's invite makes their link. Then row `unlisted`: the owner's invite for
+   an address on no list, `OUTSIDE_UNLISTED_PERSON` (default
+   `outside-e2e-unlisted-<random>@example.com`).
+5. It starts the workflow as step 6 above says, with `checks=browser`, `project`,
+   `routed_controls=dispatch-healthz`, the link as `invite_url`, the issue's key as
+   `sweep_member_issue` (the issue the person's own comment and issue message go on, the control of
+   the sweep's member feed on the runner), `sweep_project`, `sweep_fills`, and each line of
+   `OUTSIDE_WORKFLOW_INPUTS` but an `invite_url` one, which it leaves out. With no link it starts no
+   run. It refuses `OUTSIDE_PUBLIC_COMMAND`, since only the workflow's step status opens its window.
+6. It reads the run every 10 s (`gh run view --json status,jobs`) until its step
+   `The delisting window` reads `in_progress`; then it reads the person on the access list with the
+   list command (the control) and runs the owner's remove command, its clock read before and after,
+   as T5's removal above does. A step read `completed` before it was read running, a run that ended
+   first, or an hour with no such read is T5's UNKNOWN, and no removal is made.
+7. It waits for the run's end and downloads its artifacts `outside-edge-refusals`,
+   `outside-path-reach`, `outside-edge`, `restricted-sweep` and `outside-edge-t5`.
+
+It prints the rows pins, issue, unlisted, T5, refusals, reach, sign-in, projects, limits, public,
+sweep, pins-end and the gate:
+
+| Row | It passes when |
+| --- | --- |
+| unlisted | The owner's invite for the unlisted address prints `409 PERSON_NOT_LISTED` and exits 1, and the same command made the test person's link, its positive control. A link made reads FAIL, and the row prints no link; any other refusal (a 403, a 404, another code) or exit reads UNKNOWN. |
+| T5 | As the tailnet leg's T5 above, from the rows `T5-cookie` (401 within 30 s of the first clock) and `T5-passkey` (refused within 325 s) of `outside-edge-t5.tsv` alone: on this path the person has no device login and no socket. The owner's list command names the person before the removal and not after the run. |
+| refusals | The run's `outside-edge-refusals.code`, the exit its Verdict step reads, is 0; 1 reads FAIL, and 2, none or another word UNKNOWN. Its `got` is the last line the check printed. |
+| reach | The same, of `outside-path-reach`. |
+| sign-in, projects | The driver's rows of those names in `outside-edge.tsv`, read through `worst_row`. |
+| limits | Every `limit-*` row of `outside-edge.tsv` passes, and there is at least one. One FAIL reads FAIL; the driver's `limits` row of no request counted, or no limit row, reads UNKNOWN. |
+| public | The run's conclusion is `success`. A `failure` reads FAIL where a check's exit is 1, and UNKNOWN otherwise; its `got` names each check's exit. |
+
+Rows pins, issue, sweep and pins-end read as above. A removal ends the person's account, so each
+run's owner add puts them back on the list and its invite makes a new link.
+
 ## The controls, run first and recorded
 
 Run each control on `packages/envoy/scripts/dev-stack.sh`, which runs the real broker, Dispatch
@@ -357,6 +422,22 @@ run and local pin files (`pins-end`); and the workflow gets only the inputs its 
 stdin, `sweep_project` among them, while an undeclared input is refused 422 and makes T1 UNKNOWN
 at once.
 
+It runs the browser gate against stand-ins of the owner commands, `dispatch` and the workflow's run,
+whose step `The delisting window` the stand-in `gh` reports: every row passes and the gate exits 0,
+with a pins file whose `edge-listener` line names a file the deployment repository lacks (the same
+stand-ins under `OUTSIDE_GATE=all` read that pin, its control), with none of the agents' path's
+inputs, no `agent-secrets` call and no full member's helper, and the workflow gets `checks=browser`,
+`routed_controls=dispatch-healthz`, the owner's one link (not the link `OUTSIDE_WORKFLOW_INPUTS`
+held) and `sweep_member_issue`, on stdin, while no output holds the link. Each plant holds its own
+row: an owner's invite refused `403 BROWSER_SESSION_REQUIRED` starts no run; an unlisted address
+already listed gets a link, which fails row unlisted; a remove that takes nobody off holds T5 at
+UNKNOWN; `OUTSIDE_PUBLIC_COMMAND` starts no run; a skipped window step makes no removal; a cookie's
+401 a minute after the removal fails T5; a check's exit 1 fails its row and the public row; a check
+with no `.code` reads UNKNOWN; a limit row's FAIL, or no limit row, holds limits; and with no
+`OUTSIDE_FULL_COOKIE_FILE` the sweep row and the gate read UNKNOWN while the owner's rows pass. With
+no input the browser gate reads each of its rows UNKNOWN, and `OUTSIDE_GATE` of another word every
+row.
+
 ## What the two legs do not prove
 
 - The broker's policy denial behind an enrollment is reached only by its unit test: a refused
@@ -371,3 +452,7 @@ at once.
   their pins': the check cannot see either running another build than the deployment repository's
   configuration names. Dispatch's serving build is read, at the start and at the end, and held to
   its pin.
+- The browser gate proves nothing of the agents' path: the device login, the relay socket, rows
+  P1-P10 and T1-T4, and T5's trade and socket parts are the agents' gate's, `OUTSIDE_GATE=all`. Its
+  row unlisted reads the owner's invite route; that an address taken off the list cannot sign in
+  again is its T5's passkey part.

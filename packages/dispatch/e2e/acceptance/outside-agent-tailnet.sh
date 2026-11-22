@@ -19,10 +19,34 @@
 # outside-agent-peer.sh (the peer of P4 and the session outside the project of P6) and
 # outside-agent-sweep.sh (the read sweep's full-member half and its controls).
 #
+# OUTSIDE_GATE chooses the gate: `all` (the default), both legs as above, or `browser`, the browser
+# leg alone, which runs while nothing of the agents' path serves (no edge listener, no broker route
+# at the edge, no broker project check). The browser gate reads the pins of the broker and Dispatch
+# alone; starts no scratch helper, no peer and no session outside the project, so it runs no T1-T4
+# and needs none of OUTSIDE_TAILNET_BROKER_URL, OUTSIDE_LISTENER_URL,
+# OUTSIDE_INTERNAL_LISTENER_URL, OUTSIDE_FOREIGN_PROJECT and OUTSIDE_CANARY; has the project's
+# owner, through the owner commands below and never a person's browser session, put the test
+# person on the access list and make their invitation link, and asks the owner's invite for an
+# address on no list (row unlisted); starts the workflow with `checks=browser`,
+# `routed_controls=dispatch-healthz`, the link as `invite_url` and the issue row's key as
+# `sweep_member_issue`; removes the test person through the owner's remove command once
+# `gh run view --json jobs` reads the workflow's step `The delisting window` in_progress, and judges
+# T5 from the rows T5-cookie (30 s) and T5-passkey (325 s) of that step's artifact
+# outside-edge-t5; and, in place of P1-P10, prints the rows of the workflow's own checks from their
+# artifacts: refusals and reach (each check's exit, its `.code`), and the driver's sign-in,
+# projects and limits (outside-edge.tsv). Its row public is the run's conclusion. Its sweep still
+# reads with OUTSIDE_FULL_COOKIE_FILE, a full member's browser session (Dispatch's GitHub proxy
+# reads as a browser's person, never as a token), the gate's one input a person makes; without it
+# the sweep row reads UNKNOWN. It refuses OUTSIDE_PUBLIC_COMMAND, since only the workflow's step
+# status opens its window. Its TSV's rows are pins, issue, unlisted, T5, refusals, reach, sign-in,
+# projects, limits, public, sweep, pins-end and the gate. Any other value of OUTSIDE_GATE is
+# refused: every row UNKNOWN, exit 2.
+#
 # Inputs (environment), each named by the row that cannot run without it:
 #   $1                           the scratch project's key.
 #   OUTSIDE_PINS                 the deployed pins, one `name file key` line each for `broker`,
-#                                `dispatch` and `edge-listener`: the configuration file and the
+#                                `dispatch` and `edge-listener` (the browser gate reads the first
+#                                two alone): the configuration file and the
 #                                key whose value is that deployment's image; `#` starts a
 #                                comment. With OUTSIDE_PINS_REPO set, each file is a path in that
 #                                repository, read at its main with `gh api`, at the start and again
@@ -91,6 +115,18 @@
 # OUTSIDE_RESULT_ISSUE, an issue the result is posted to as one comment with `dispatch comment`;
 # OUTSIDE_LEGION_CHECKOUT, the git checkout the pins row reads commits in (default this file's
 # own); OUTSIDE_ALLOW_HTTP=1, which lets http://127.0.0.1 origins through for a local stack.
+# The browser gate's owner commands, each a command line split on blanks that acts as the project's
+# owner with a credential of its own, which this leg never holds; the leg prints no word of what
+# they print but what is named here, since a link is a secret. OUTSIDE_OWNER_ADD_COMMAND puts an
+# address on the project's access list and OUTSIDE_OWNER_REMOVE_COMMAND takes it off, each run
+# with the address and the project as its last two words, exit 0 when done;
+# OUTSIDE_OWNER_INVITE_COMMAND, run likewise, makes the address's invitation link and prints it
+# alone (exit 0), or prints Dispatch's refusal as `<status> <code>` on its first line (exit 1), or
+# exits 2 when it could not tell; OUTSIDE_OWNER_LIST_COMMAND, run with the project as its last word,
+# prints the addresses on the project's access list, one a line (exit 0). The browser gate needs
+# all four and asks no terminal; its `invite_url` is the owner invite's link, and an `invite_url`
+# line in OUTSIDE_WORKFLOW_INPUTS is left out. OUTSIDE_UNLISTED_PERSON is the address row unlisted
+# asks a link for (default outside-e2e-unlisted-<random>@example.com, which no list names).
 #
 # What each service says of the build it serves: Dispatch's /healthz names `commit`, the legion
 # commit its binary was built from, and `fleet_commit`, the commit every live server process
@@ -158,7 +194,9 @@ unknowns=0
 # file lets the gate pass.
 row() {
   emit "$1$tab$(cell "$2")$tab$(cell "$3")$tab$4"
-  printf -v "verdict_$1" '%s' "$4"
+  # A name such as pins-end or sign-in keeps its verdict with each `-` read as `_`, which a bash
+  # name may hold.
+  printf -v "verdict_${1//-/_}" '%s' "$4"
   case $4 in
     PASS) ;;
     FAIL) fails=$((fails + 1)) ;;
@@ -166,7 +204,7 @@ row() {
   esac
 }
 passed() {
-  local name="verdict_$1"
+  local name="verdict_${1//-/_}"
   [ "${!name:-}" = PASS ]
 }
 say() { printf 'outside-agent-tailnet: %s\n' "$1" >&2; }
@@ -195,6 +233,15 @@ commit=${OUTSIDE_ENROLL_REFUSAL_COMMIT:-}
 nonce=$(od -An -N6 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
 [ -n "$nonce" ] || nonce=$$
 peer=${OUTSIDE_PEER_SESSION:-outside-e2e-peer-$nonce}
+# The gate this run holds (the header): `all`, both legs, or `browser`, the browser leg alone, which
+# prints no P row and, in their place, the rows of the workflow's own checks.
+outside_gate=${OUTSIDE_GATE:-all}
+browser_rows='refusals reach sign-in projects limits'
+gate_words='both legs'
+if [ "$outside_gate" = browser ]; then
+  public_rows=''
+  gate_words='the browser leg'
+fi
 
 # --- Scratch directory and cleanup: the full member's helper's machine login revoked, every
 # background child stopped and waited for, then the peer's tmux server, then the directory. ---
@@ -223,6 +270,7 @@ emit "row${tab}want${tab}got${tab}verdict"
 
 # skip_from REASON FROM: every row from FROM on (the names in `rest_rows`) UNKNOWN for REASON.
 rest_rows="pins issue T1 T2 T3 T4 T5 $public_rows public sweep pins-end"
+[ "$outside_gate" != browser ] || rest_rows="pins issue unlisted T5 $browser_rows public sweep pins-end"
 skip_from() {
   local reason=$1 from=$2 name on=''
   for name in $rest_rows; do
@@ -239,7 +287,7 @@ gate() {
   emit "gate${tab}every row PASS${tab}$(cell "$fails FAIL, $unknowns UNKNOWN")${tab}$verdict"
   if [ -n "${OUTSIDE_RESULT_ISSUE:-}" ] && [ -n "$work" ] && command -v dispatch >/dev/null 2>&1; then
     {
-      printf 'The outside acceptance of %s, both legs, %s:\n\n```\n' "$project" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+      printf 'The outside acceptance of %s, %s, %s:\n\n```\n' "$project" "$gate_words" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
       cat "$work/result.tsv"
       printf '```\n'
     } | dispatch comment --issue "$OUTSIDE_RESULT_ISSUE" --body-file - >&2 ||
@@ -251,12 +299,23 @@ gate() {
   esac
   exit 2
 }
+case $outside_gate in
+  all | browser) ;;
+  *)
+    skip_from "OUTSIDE_GATE must be all or browser, not $outside_gate" pins
+    gate
+    ;;
+esac
 
 # --- pins: the deployed images, the commit each was built from, and the build Dispatch serves. The
 # pins are read at the start and again at the end (row pins-end), from the deployment repository's
 # main when OUTSIDE_PINS_REPO names it; the reads are outside-agent-pins.sh's. ---
 
 dispatch_commits=${OUTSIDE_DISPATCH_COMMITS:-}
+# The deployments whose pins are read: the browser gate runs against the broker and Dispatch alone,
+# and reads no edge listener's pin.
+pin_names='broker dispatch edge-listener'
+[ "$outside_gate" != browser ] || pin_names='broker dispatch'
 want_pins="the broker's pin holds ${commit:-<OUTSIDE_ENROLL_REFUSAL_COMMIT>}; Dispatch serves its pin's build on every process (/healthz commit and fleet_commit), and that build holds ${dispatch_commits:-<OUTSIDE_DISPATCH_COMMITS>}; the pins printed"
 problem=$(lacking OUTSIDE_PINS OUTSIDE_ENROLL_REFUSAL_COMMIT OUTSIDE_DISPATCH_COMMITS OUTSIDE_TAILNET_DISPATCH_URL)
 [ -n "$project" ] || problem="${problem:+$problem; }the project key (\$1) is not given"
@@ -387,6 +446,11 @@ EOF
     esac
   fi
 fi
+# The browser gate's workflow writes the person's own comment and issue message on this issue, the
+# control of the sweep's member feed (`sweep_member_issue`), so it sends the key only of an issue
+# the row read.
+issue_key=''
+! passed issue || issue_key=$key
 
 # --- The scratch helper, its machine login and its code. ---
 # helper_env DIR OPERATOR: sets helper_vars, the environment of a scratch agent-secrets-helper that
@@ -445,35 +509,42 @@ start_login() {
     login_problem="agent-secrets machine login printed no code within 60 s: $(text_of "$1/login.log")"
 }
 scratch="$work/scratch"
-helper_env "$scratch" "$person"
-scratch_env=("${helper_vars[@]}")
 code=''
 scratch_login_pid=''
-problem=$(lacking OUTSIDE_TAILNET_BROKER_URL OUTSIDE_PERSON OUTSIDE_CANARY)
-[ -n "$problem" ] || problem=$(tool_problem agent-secrets agent-secrets-helper)
-helper_problem=$problem
-if [ -z "$helper_problem" ]; then
-  say "starting the scratch helper in $scratch"
-  start_login "$scratch"
-  code=$login_code
-  scratch_login_pid=$login_pid
-  helper_problem=$login_problem
+helper_problem=''
+# The browser gate starts no scratch helper: T1-T4 are the agents' path's.
+if [ "$outside_gate" = all ]; then
+  helper_env "$scratch" "$person"
+  scratch_env=("${helper_vars[@]}")
+  problem=$(lacking OUTSIDE_TAILNET_BROKER_URL OUTSIDE_PERSON OUTSIDE_CANARY)
+  [ -n "$problem" ] || problem=$(tool_problem agent-secrets agent-secrets-helper)
+  helper_problem=$problem
+  if [ -z "$helper_problem" ]; then
+    say "starting the scratch helper in $scratch"
+    start_login "$scratch"
+    code=$login_code
+    scratch_login_pid=$login_pid
+    helper_problem=$login_problem
+  fi
 fi
 
 # --- The peer session, and the session outside the project P6 must not list
 # (outside-agent-peer.sh). The probe runs with this box's broker identity alone: its AGENT_SECRETS_*
-# settings, XDG directories, metadata host, HOME and TMPDIR, and no Dispatch or Envoy setting. ---
-probe_env=()
-while IFS= read -r name; do
-  case $name in AGENT_SECRETS_* | XDG_* | GCE_METADATA_HOST | HOME | TMPDIR) ;; *) continue ;; esac
-  probe_env+=("$name=${!name}")
-done <<EOF
+# settings, XDG directories, metadata host, HOME and TMPDIR, and no Dispatch or Envoy setting. The
+# browser gate starts neither: its window opens on the workflow's step status, not to a peer. ---
+if [ "$outside_gate" = all ]; then
+  probe_env=()
+  while IFS= read -r name; do
+    case $name in AGENT_SECRETS_* | XDG_* | GCE_METADATA_HOST | HOME | TMPDIR) ;; *) continue ;; esac
+    probe_env+=("$name=${!name}")
+  done <<EOF
 $(compgen -e)
 EOF
-probe_env+=("PATH=$tools:$PATH")
-peer_setup
-peer_start
-foreign_start
+  probe_env+=("PATH=$tools:$PATH")
+  peer_setup
+  peer_start
+  foreign_start
+fi
 
 # --- The full member's browser session (OUTSIDE_FULL_COOKIE_FILE) at Dispatch's private origin.
 # Dispatch's GitHub proxy reads as the browser's person and never as a token, and no broker token
@@ -522,14 +593,132 @@ sweep_setup
 sweep_prepare
 sweep_proxy_control
 
-# --- The public leg: the workflow on a runner on the public internet, or a local command. ---
+# --- The browser gate's owner acts (the header's owner commands), before the workflow starts: the
+# test person goes on the project's access list, the list names them (the list command's control),
+# and the owner's invite makes their link, which the workflow spends; then row unlisted asks the
+# owner's invite for an address on no list. A command's output is never quoted, since a link is a
+# secret: a row says its exit and, of a refusal, the `<status> <code>` it printed alone. ---
+# owner NAME OUT WORD...: runs the owner command the variable NAME holds, split on blanks, with
+# WORD... as its last words, its stdout in OUT and its stderr in OUT.err; prints its exit status,
+# 127 when NAME holds no command.
+owner() {
+  local name=$1 out=$2
+  local -a command
+  shift 2
+  set -f
+  # shellcheck disable=SC2206 # a command line, split on blanks on purpose
+  command=(${!name:-})
+  set +f
+  if [ "${#command[@]}" -eq 0 ]; then
+    printf 127
+    return
+  fi
+  "${command[@]}" "$@" >"$out" 2>"$out.err" </dev/null
+  printf '%s' "$?"
+}
+# owner_lists ADDRESS: whether the owner's list command names ADDRESS on the project's access list,
+# case ignored: true, false, or what was read.
+owner_lists() {
+  local listed line want found=false
+  listed=$(owner OUTSIDE_OWNER_LIST_COMMAND "$work/owner-list" "$project")
+  if [ "$listed" != 0 ]; then
+    printf 'the owner list command exited %s' "$listed"
+    return
+  fi
+  want=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=$(printf '%s' "${line//[[:space:]]/}" | tr '[:upper:]' '[:lower:]')
+    [ "$line" != "$want" ] || found=true
+  done <"$work/owner-list"
+  printf '%s' "$found"
+}
+# owner_refusal OUT: the `<status> <code>` of a refusal OUT's first line holds, or nothing.
+owner_refusal() {
+  local first=''
+  IFS= read -r first <"$1"
+  first=${first%$'\r'}
+  [[ $first =~ ^[1-5][0-9][0-9]\ [A-Z][A-Z0-9_]*$ ]] && printf '%s' "$first"
+}
+invite_link=''
+link_problem=''
+if [ "$outside_gate" = browser ]; then
+  link_problem=$(lacking OUTSIDE_PERSON OUTSIDE_OWNER_ADD_COMMAND OUTSIDE_OWNER_LIST_COMMAND OUTSIDE_OWNER_INVITE_COMMAND OUTSIDE_OWNER_REMOVE_COMMAND)
+  [ -n "$link_problem" ] || [ -n "$work" ] || link_problem='mktemp -d made no scratch directory'
+  if [ -z "$link_problem" ]; then
+    say "the owner puts $person on $project's access list and makes their link"
+    added=$(owner OUTSIDE_OWNER_ADD_COMMAND "$work/owner-add" "$person" "$project")
+    listed=$(owner_lists "$person")
+    if [ "$listed" != true ]; then
+      link_problem="the owner add command exited $added, and then $person is not read on $project's access list ($listed)"
+    else
+      invited=$(owner OUTSIDE_OWNER_INVITE_COMMAND "$work/owner-invite" "$person" "$project")
+      line=''
+      IFS= read -r line <"$work/owner-invite"
+      line=${line%$'\r'}
+      refused=''
+      [ "$invited" != 1 ] || refused=$(owner_refusal "$work/owner-invite")
+      # The link lives in this variable alone from here: it reaches the workflow on gh's stdin.
+      rm -f "$work/owner-invite" "$work/owner-invite.err"
+      case $invited:$line in
+        0:*[[:space:][:cntrl:]]*) link_problem="the owner invite command printed a first line holding a blank or a control character, which is no link (its output is not quoted)" ;;
+        0:https://?*\#?*) invite_link=$line ;;
+        0:http://127.0.0.1:*\#?* | 0:http://localhost:*\#?*)
+          if [ "$allow_http" = 1 ]; then
+            invite_link=$line
+          else
+            link_problem="the owner invite command printed an http link, which only OUTSIDE_ALLOW_HTTP=1 lets through"
+          fi
+          ;;
+        0:*) link_problem="the owner invite command exited 0 and printed no https://<host>/<path>#<token> link on its first line (its output is not quoted)" ;;
+        1:*) link_problem="the owner invite command was refused ${refused:-with no <status> <code> on its first line}" ;;
+        *) link_problem="the owner invite command exited $invited (its output is not quoted)" ;;
+      esac
+    fi
+  fi
+
+  # --- unlisted: an address no list of the project names cannot get a link. The refusal means
+  # something only where the same command made a link for a listed address: the test person's,
+  # above. ---
+  unlisted=${OUTSIDE_UNLISTED_PERSON:-outside-e2e-unlisted-$nonce@example.com}
+  want_unlisted="the owner's invite for $unlisted, an address on no access list of $project, refused 409 PERSON_NOT_LISTED, beside the owner's invite for ${person:-<OUTSIDE_PERSON>} answered with a link; a link made reads FAIL, any other answer UNKNOWN"
+  problem=$(lacking OUTSIDE_OWNER_INVITE_COMMAND)
+  [ -n "$problem" ] || [ -n "$work" ] || problem='mktemp -d made no scratch directory'
+  if [ -n "$problem" ]; then
+    row unlisted "$want_unlisted" "$problem" UNKNOWN
+  else
+    invited=$(owner OUTSIDE_OWNER_INVITE_COMMAND "$work/owner-unlisted" "$unlisted" "$project")
+    refused=''
+    [ "$invited" != 1 ] || refused=$(owner_refusal "$work/owner-unlisted")
+    rm -f "$work/owner-unlisted" "$work/owner-unlisted.err"
+    case $invited:$refused in
+      0:*) row unlisted "$want_unlisted" "the owner's invite made a link for $unlisted (exit 0; the link is not printed)" FAIL ;;
+      1:'409 PERSON_NOT_LISTED')
+        if [ -n "$invite_link" ]; then
+          row unlisted "$want_unlisted" "refused 409 PERSON_NOT_LISTED, and the owner's invite made ${person}'s link" PASS
+        else
+          row unlisted "$want_unlisted" "refused 409 PERSON_NOT_LISTED, and no positive control: $link_problem" UNKNOWN
+        fi
+        ;;
+      1:?*) row unlisted "$want_unlisted" "refused $refused, which is not the refusal of an address no list names" UNKNOWN ;;
+      1:) row unlisted "$want_unlisted" "the owner invite command exited 1 with no <status> <code> on its first line (its output is not quoted)" UNKNOWN ;;
+      *) row unlisted "$want_unlisted" "the owner invite command exited $invited (its output is not quoted)" UNKNOWN ;;
+    esac
+  fi
+fi
+
+# --- The public leg: the workflow on a runner on the public internet, or a local command. The
+# browser gate starts the workflow alone, and only with the owner's link for the test person. ---
 results="$work/public"
 mkdir -p "$results"
 public_problem=''
 public_end=''
 public_pid=''
 run_id=''
-if [ -n "$helper_problem" ]; then
+if [ "$outside_gate" = browser ] && [ -n "$link_problem" ]; then
+  public_problem="not started: no invitation link for ${person:-<OUTSIDE_PERSON>}: $link_problem"
+elif [ "$outside_gate" = browser ] && [ -n "${OUTSIDE_PUBLIC_COMMAND:-}" ]; then
+  public_problem="not started: OUTSIDE_PUBLIC_COMMAND runs the agents' public leg here, and the browser gate opens its window only on the workflow's step status"
+elif [ -n "$helper_problem" ]; then
   public_problem="not started: the scratch helper has no code: $helper_problem"
 elif [ -n "${OUTSIDE_PUBLIC_COMMAND:-}" ]; then
   say "starting the public leg here: $OUTSIDE_PUBLIC_COMMAND"
@@ -563,11 +752,22 @@ else
   if [ -n "$problem" ]; then
     public_problem="not started: $problem"
   else
-    inputs="{\"checks\":\"all\",\"project\":$(json_string "$project"),\"peer_session\":$(json_string "$peer"),\"tailnet_user_code\":$(json_string "$code")"
+    if [ "$outside_gate" = browser ]; then
+      # The browser checks alone, with Dispatch's route the one routed control, the owner's link,
+      # and the issue the person's own comment and issue message go on.
+      inputs="{\"checks\":\"browser\",\"project\":$(json_string "$project"),\"routed_controls\":\"dispatch-healthz\",\"invite_url\":$(json_string "$invite_link")"
+      [ -z "$issue_key" ] || inputs="$inputs,\"sweep_member_issue\":$(json_string "$issue_key")"
+    else
+      inputs="{\"checks\":\"all\",\"project\":$(json_string "$project"),\"peer_session\":$(json_string "$peer"),\"tailnet_user_code\":$(json_string "$code")"
+    fi
     # The sweep's project goes with its fills: the runner's half of the sweep reads that project.
     [ -z "${OUTSIDE_SWEEP_PROJECT:-}" ] || inputs="$inputs,\"sweep_project\":$(json_string "$OUTSIDE_SWEEP_PROJECT")"
     [ -z "$sweep_fills" ] || inputs="$inputs,\"sweep_fills\":$(json_string "$sweep_fills")"
     while IFS= read -r pair; do
+      if [ "$outside_gate" = browser ] && [ "${pair%%=*}" = invite_url ]; then
+        say "OUTSIDE_WORKFLOW_INPUTS holds invite_url, which the browser gate takes from the owner's invite; it is left out"
+        continue
+      fi
       case $pair in
         '') ;;
         *=*) inputs="$inputs,$(json_string "${pair%%=*}"):$(json_string "${pair#*=}")" ;;
@@ -589,10 +789,13 @@ EOF
   fi
 fi
 
-# --- T1: the scratch helper's machine login completes, approved as the test person. ---
+# --- T1: the scratch helper's machine login completes, approved as the test person. The browser
+# gate runs no T1-T4 and no full member's helper: they are the agents' path's (the header). ---
 want_t1="the scratch helper's machine login completes: its machine file holds a credential, and machine list names ${person:-<OUTSIDE_PERSON>} as its approver"
 credential=''
-if [ -n "$helper_problem" ]; then
+if [ "$outside_gate" = browser ]; then
+  :
+elif [ -n "$helper_problem" ]; then
   row T1 "$want_t1" "$helper_problem" UNKNOWN
 elif [ -n "$public_problem" ]; then
   # Only the public leg's browser approves the code, so with no public leg nothing will.
@@ -657,7 +860,9 @@ read_length() {
 # member kind, so that reads FAIL too. ---
 member_refusal='403 RESTRICTED_MEMBER_ENROLLS_NOTHING'
 want_t2="an enrollment through the scratch helper refused $member_refusal; ${canary:-<OUTSIDE_CANARY>} asked for through it gets no value, its session refused by that code"
-if ! passed T1; then
+if [ "$outside_gate" = browser ]; then
+  :
+elif ! passed T1; then
   row T2 "$want_t2" "not run: T1 did not pass, so the scratch helper holds no login" UNKNOWN
 else
   # Each register runs its own launcher (--exec), so the session it names is that process and not
@@ -718,6 +923,7 @@ fi
 # removed as soon as its id is read. ---
 p7_control=''
 control_helper_problem=$browser_problem
+[ "$outside_gate" = all ] || control_helper_problem='the browser gate makes no full member helper'
 [ -n "$control_helper_problem" ] || control_helper_problem=$(lacking OUTSIDE_TAILNET_BROKER_URL)
 [ -n "$control_helper_problem" ] || control_helper_problem=$(tool_problem agent-secrets agent-secrets-helper)
 control_env=()
@@ -776,7 +982,9 @@ fi
 want_t3="a fresh session enrolled through a full member's scratch helper whose broker is ${OUTSIDE_TAILNET_BROKER_URL:-<OUTSIDE_TAILNET_BROKER_URL>} is granted ${canary:-<OUTSIDE_CANARY>} at once, a value 64 long"
 problem=$(lacking OUTSIDE_CANARY)
 [ -n "$problem" ] || problem=$control_helper_problem
-if [ -n "$problem" ]; then
+if [ "$outside_gate" = browser ]; then
+  :
+elif [ -n "$problem" ]; then
   row T3 "$want_t3" "no full member's helper at the broker: $problem" UNKNOWN
 else
   env -i "${control_env[@]}" agent-secrets register --session-id "outside-e2e-t3-$nonce" \
@@ -813,10 +1021,17 @@ fi
 # owner answers (removal_to): the removal was made between the two. T5 is judged after the run,
 # below. The list is read with the full member's browser session at OUTSIDE_TAILNET_DISPATCH_URL
 # (the route takes the person scope, which a box's broker token need not hold), before (the
-# control: the person is on it) and after (the removal was made). ---
+# control: the person is on it) and after (the removal was made). The browser gate's window is the
+# workflow's step `The delisting window`, read in_progress from `gh run view --json jobs`, and it
+# reads the list and removes the person with the owner's commands alone, never on a terminal. ---
+window_step='The delisting window'
 # listed_now: whether the person is on the project's access list: true, false, or what was read.
 listed_now() {
   local status answer people
+  if [ "$outside_gate" = browser ]; then
+    owner_lists "$person"
+    return
+  fi
   if [ -n "$browser_problem" ]; then
     printf 'the full member'"'"'s browser session was not read: %s' "$browser_problem"
     return
@@ -835,6 +1050,13 @@ listed_now() {
     *) printf 'GET /api/v1/projects/%s/access answered %s: %s' "$project" "$status" "${answer:0:200}" ;;
   esac
 }
+# window_read: the run's status and its step `The delisting window`'s, `<run> <step>` (the step
+# `absent` while the run lists no such step), read in one call.
+window_read() {
+  gh run view "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" --json status,jobs \
+    --jq ".status + \" \" + ([.jobs[].steps[]? | select(.name == \"$window_step\") | .status] | first // \"absent\")" \
+    2>/dev/null </dev/null
+}
 # public_running: the public leg has not ended yet.
 public_running() {
   if [ -n "$run_id" ]; then
@@ -848,32 +1070,69 @@ public_running() {
 removal_from=''
 removal_to=''
 t5_problem=''
-[ -n "$t5_problem" ] || [ -z "$public_problem" ] || t5_problem="the public leg did not start: $public_problem"
-[ -n "$t5_problem" ] || [ -z "$peer_problem" ] || t5_problem="no peer, which the window is opened to: $peer_problem"
-[ -n "$t5_problem" ] || [ -n "${OUTSIDE_OWNER_REMOVE_COMMAND:-}" ] || { : </dev/tty; } 2>/dev/null ||
-  t5_problem="there is no terminal to ask the owner for the removal on, and no OUTSIDE_OWNER_REMOVE_COMMAND"
+if [ "$outside_gate" = browser ]; then
+  [ -z "$public_problem" ] || t5_problem="the workflow did not start: $public_problem"
+else
+  [ -n "$t5_problem" ] || [ -z "$public_problem" ] || t5_problem="the public leg did not start: $public_problem"
+  [ -n "$t5_problem" ] || [ -z "$peer_problem" ] || t5_problem="no peer, which the window is opened to: $peer_problem"
+  [ -n "$t5_problem" ] || [ -n "${OUTSIDE_OWNER_REMOVE_COMMAND:-}" ] || { : </dev/tty; } 2>/dev/null ||
+    t5_problem="there is no terminal to ask the owner for the removal on, and no OUTSIDE_OWNER_REMOVE_COMMAND"
+fi
 if [ -z "$t5_problem" ]; then
-  say "T5: waiting for the public leg to open its window"
   opened=''
-  # The window line is read before whether the public leg still runs: a leg that opened its window
-  # and has since ended still opened it. The public leg opens it after P10, well within an hour.
+  window_problem=''
   window_deadline=$(($(now) + 3600))
-  while [ -z "$opened" ]; do
-    case $(peer_text) in *'outside-e2e t5-open '*) opened=yes && break ;; esac
-    public_running || break
-    [ "$(now)" -lt "$window_deadline" ] || break
-    sleep 5
-  done
-  before=$(listed_now)
-  if [ -z "$opened" ] && public_running; then
-    t5_problem="the public leg had not opened its window within an hour"
-  elif [ -z "$opened" ]; then
-    t5_problem="the public leg ended without opening its window"
+  if [ "$outside_gate" = browser ]; then
+    # The step's status is read every 10 s, and the step gives the driver 1200 s, so the removal
+    # comes early in its window. A step read `completed` (or `skipped`) before it was read running
+    # ended without this leg's removal, as a step does at once when the driver kept no cookie, and
+    # an hour bounds the wait, as the public leg's window is bounded below.
+    say "T5: waiting for run $run_id's step '$window_step' to run"
+    read_status=''
+    while :; do
+      read_status=$(window_read)
+      case $read_status in
+        *' in_progress') opened=yes && break ;;
+        'completed '* | *' completed' | *' skipped') break ;;
+      esac
+      [ "$(now)" -lt "$window_deadline" ] || break
+      sleep 10
+    done
+    case $opened:$read_status in
+      yes:*) ;;
+      :'completed '*) window_problem="run $run_id ended before this leg read its step '$window_step' running (the step read ${read_status#completed })" ;;
+      :*' completed' | :*' skipped') window_problem="run $run_id's step '$window_step' read ${read_status##* } before this leg read it running" ;;
+      *) window_problem="run $run_id's step '$window_step' was not read running within an hour (last read: ${read_status:-nothing})" ;;
+    esac
+  else
+    say "T5: waiting for the public leg to open its window"
+    # The window line is read before whether the public leg still runs: a leg that opened its
+    # window and has since ended still opened it. The public leg opens it after P10, well within an
+    # hour.
+    while [ -z "$opened" ]; do
+      case $(peer_text) in *'outside-e2e t5-open '*) opened=yes && break ;; esac
+      public_running || break
+      [ "$(now)" -lt "$window_deadline" ] || break
+      sleep 5
+    done
+    if [ -z "$opened" ] && public_running; then
+      window_problem="the public leg had not opened its window within an hour"
+    elif [ -z "$opened" ]; then
+      window_problem="the public leg ended without opening its window"
+    fi
+  fi
+  before=''
+  [ -n "$window_problem" ] || before=$(listed_now)
+  if [ -n "$window_problem" ]; then
+    t5_problem=$window_problem
   elif [ "$before" != true ]; then
     t5_problem="before the removal $person is not read on the access list ($before), so a refusal would prove nothing"
   else
     removal_from=$(now)
-    if [ -n "${OUTSIDE_OWNER_REMOVE_COMMAND:-}" ]; then
+    if [ "$outside_gate" = browser ]; then
+      removed=$(owner OUTSIDE_OWNER_REMOVE_COMMAND "$work/t5.remove" "$person" "$project")
+      [ "$removed" = 0 ] || say "T5: the owner remove command exited $removed"
+    elif [ -n "${OUTSIDE_OWNER_REMOVE_COMMAND:-}" ]; then
       set -f
       # shellcheck disable=SC2086 # a command line, split on blanks on purpose
       set -- $OUTSIDE_OWNER_REMOVE_COMMAND
@@ -904,9 +1163,12 @@ if [ -z "$public_problem" ] && [ -n "$run_id" ]; then
   if public_running; then
     public_problem="run $run_id had not ended within two hours, or its watch ended before it did"
   else
-    gh run download "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" -n outside-agent-public -D "$results" >/dev/null 2>&1 </dev/null
-    gh run download "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" -n outside-edge-revocations -D "$results" >/dev/null 2>&1 </dev/null
-    gh run download "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" -n restricted-sweep -D "$results" >/dev/null 2>&1 </dev/null
+    artifacts='outside-agent-public outside-edge-revocations restricted-sweep'
+    [ "$outside_gate" != browser ] ||
+      artifacts='outside-edge-refusals outside-path-reach outside-edge restricted-sweep outside-edge-t5'
+    for artifact in $artifacts; do
+      gh run download "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" -n "$artifact" -D "$results" >/dev/null 2>&1 </dev/null
+    done
     public_end=$(gh run view "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" --json conclusion --jq .conclusion 2>/dev/null </dev/null)
     say "run $run_id: ${public_end:-no conclusion read}"
   fi
@@ -922,21 +1184,26 @@ fi
 # The public leg has ended, so the sweep's writer has nothing more to show it.
 sweep_writer_stop
 public_tsv="$results/outside-agent-public.tsv"
-[ -n "$public_problem" ] || [ -f "$public_tsv" ] || public_problem="the public leg left no outside-agent-public.tsv"
+[ "$outside_gate" = browser ] || [ -n "$public_problem" ] || [ -f "$public_tsv" ] ||
+  public_problem="the public leg left no outside-agent-public.tsv"
 
-# public_part NAME: the public TSV's NAME row (its worst copy, worst_row's) as `verdict<TAB>got`,
-# or nothing.
-public_part() {
+# tsv_part FILE NAME: FILE's NAME row (its worst copy, worst_row's) as `verdict<TAB>got`, or
+# nothing.
+tsv_part() {
   local each rest
-  each=$(worst_row "$public_tsv" "$1")
+  each=$(worst_row "$1" "$2")
   [ -n "$each" ] || return 0
   rest=${each#*"$tab"*"$tab"}
   printf '%s\t%s' "${rest##*"$tab"}" "${rest%"$tab"*}"
 }
+# public_part NAME: the public TSV's NAME row, as tsv_part reads it.
+public_part() { tsv_part "$public_tsv" "$1"; }
 
 # --- T4: the scratch login is revoked on the test person's page, and the helper reads it ended. ---
 want_t4="the public leg's revoke step revokes the scratch login before the T5 window (its revoke row PASS); machine list through the scratch helper is then refused LAUNCHER_INVALID"
-if ! passed T1; then
+if [ "$outside_gate" = browser ]; then
+  :
+elif ! passed T1; then
   row T4 "$want_t4" "not run: T1 did not pass, so there is no scratch login" UNKNOWN
 elif [ ! -f "$results/outside-edge-revocations.tsv" ]; then
   row T4 "$want_t4" "no outside-edge-revocations.tsv from the public leg${public_problem:+: $public_problem}" UNKNOWN
@@ -972,8 +1239,23 @@ fi
 # more than its bound after removal_to fails. One that stopped before removal_from stopped for some
 # other reason, and one between those bounds may or may not be within its bound of the removal:
 # each reads UNKNOWN. The socket part counts only for a socket opened before removal_from, since a
-# socket opened later may never have held a token from before the removal. ---
+# socket opened later may never have held a token from before the removal. The browser gate judges
+# the cookie part (30 s) and the passkey part (325 s) alone, from its window step's artifact
+# outside-edge-t5: no device login and no socket of the person's exist on its path. ---
 want_t5="once the owner removes ${person:-<OUTSIDE_PERSON>} from ${project:-<project>}'s access list: the person's cookie gets 401 within 30 s, their passkey sign-in is refused, a fresh trade of their live device login is refused and no later trade answered, and the relay socket open then, opened before the removal, closes 4401 or 4403, each within 325 s"
+# The bound of a trade's refusal, of the socket's close and of the passkey sign-in (above).
+trade_bound=325
+t5_tsv=$public_tsv
+t5_source='the public TSV'
+t5_parts="T5-agent:refused_at:$trade_bound T5-agent:socket_closed_at:$trade_bound T5-cookie:at:30 T5-passkey:at:$trade_bound"
+t5_readd="Re-adding ${person:-<OUTSIDE_PERSON>} is the owner's own act"
+if [ "$outside_gate" = browser ]; then
+  want_t5="once the owner's remove command takes ${person:-<OUTSIDE_PERSON>} off ${project:-<project>}'s access list while the workflow's step '$window_step' runs: the person's cookie gets 401 within 30 s, and their passkey sign-in is refused within $trade_bound s"
+  t5_tsv="$results/outside-edge-t5.tsv"
+  t5_source='outside-edge-t5.tsv'
+  t5_parts="T5-cookie:at:30 T5-passkey:at:$trade_bound"
+  t5_readd="The next run's owner add puts ${person:-<OUTSIDE_PERSON>} back on the list"
+fi
 if [ -n "$t5_problem" ]; then
   row T5 "$want_t5" "$t5_problem" UNKNOWN
 else
@@ -981,29 +1263,28 @@ else
   lags=''
   wrong=''
   unread=''
-  # The bound of a trade's refusal, of the socket's close and of the passkey sign-in (above).
-  trade_bound=325
   # A trade answered after the removal's bound fails T5 even where no trade was refused: the
   # public leg keeps the time of the last answered trade (last_answered_at), and a removal the list
   # confirms stops every trade within trade_bound s of its second clock at the latest.
-  agent_got=$(public_part T5-agent)
+  agent_got=''
+  [ "$outside_gate" = browser ] || agent_got=$(public_part T5-agent)
   agent_got=${agent_got#*"$tab"}
   last_answered=$(mark last_answered_at "$agent_got")
   if [ -n "$last_answered" ] && [ "$after" = false ] && [ $((last_answered - removal_to)) -gt "$trade_bound" ]; then
     wrong="T5-agent: a trade was answered $((last_answered - removal_to)) s after the removal, past $trade_bound s"
   fi
-  for part in "T5-agent:refused_at:$trade_bound" "T5-agent:socket_closed_at:$trade_bound" T5-cookie:at:30 "T5-passkey:at:$trade_bound"; do
+  for part in $t5_parts; do
     name=${part%%:*}
     rest=${part#*:}
     key=${rest%%:*}
     bound=${rest#*:}
-    read_row=$(public_part "$name")
+    read_row=$(tsv_part "$t5_tsv" "$name")
     verdict=${read_row%%"$tab"*}
     got=${read_row#*"$tab"}
     at=$(mark "$key" "$got")
     opened_at=$(mark socket_opened_at "$got")
     if [ -z "$read_row" ]; then
-      unread="${unread:+$unread; }the public TSV has no $name row"
+      unread="${unread:+$unread; }$t5_source has no $name row"
     elif [ "$verdict" = FAIL ]; then
       wrong="${wrong:+$wrong; }$name: $got"
     elif [ "$verdict" != PASS ] || [ -z "$at" ]; then
@@ -1027,7 +1308,7 @@ else
   elif [ -n "$unread" ]; then
     row T5 "$want_t5" "$unread${lags:+; read: $lags}" UNKNOWN
   else
-    row T5 "$want_t5" "after the removal: $lags. Re-adding $person is the owner's own act" PASS
+    row T5 "$want_t5" "after the removal: $lags. $t5_readd" PASS
   fi
 fi
 
@@ -1119,13 +1400,123 @@ EOF
   fi
 done
 
+# --- The browser gate's rows of the workflow's own checks, in place of P1-P10, from the run's
+# artifacts. refusals and reach are each check's exit, its `.code`, the exit the run's Verdict step
+# reads (0 PASS, 1 FAIL, 2 UNKNOWN; none, or another word, UNKNOWN), beside the last line the check
+# printed; sign-in, projects and limits are the driver's own rows (outside-edge.tsv), each read
+# through worst_row, limits holding every `limit-*` row the driver wrote, at least one. ---
+# check_row ROW NAME WANT: row ROW from check NAME's NAME.code and NAME.txt.
+check_row() {
+  local code last='' line
+  if [ -n "$public_problem" ]; then
+    row "$1" "$3" "$public_problem" UNKNOWN
+    return
+  fi
+  [ ! -f "$results/$2.code" ] || code=$(tr -d ' \r\n' <"$results/$2.code")
+  if [ -f "$results/$2.txt" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      [ -z "$line" ] || last=$line
+    done <"$results/$2.txt"
+  fi
+  case ${code:-} in
+    0) row "$1" "$3" "$2 exited 0: ${last:0:300}" PASS ;;
+    1) row "$1" "$3" "$2 exited 1: ${last:0:300}" FAIL ;;
+    2) row "$1" "$3" "$2 exited 2: ${last:0:300}" UNKNOWN ;;
+    '') row "$1" "$3" "the run left no $2.code, so its exit is not read: ${last:0:300}" UNKNOWN ;;
+    *) row "$1" "$3" "$2.code holds $(cell "${code:0:40}"), which is no exit of 0, 1 or 2: ${last:0:300}" UNKNOWN ;;
+  esac
+}
+# driver_row ROW WANT: the driver's row ROW from outside-edge.tsv.
+driver_row() {
+  local read_row verdict got
+  if [ -n "$public_problem" ]; then
+    row "$1" "$2" "$public_problem" UNKNOWN
+    return
+  fi
+  read_row=$(tsv_part "$results/outside-edge.tsv" "$1")
+  verdict=${read_row%%"$tab"*}
+  got=${read_row#*"$tab"}
+  if [ ! -f "$results/outside-edge.tsv" ]; then
+    row "$1" "$2" "the run left no outside-edge.tsv" UNKNOWN
+  elif [ -z "$read_row" ]; then
+    row "$1" "$2" "outside-edge.tsv holds no $1 row" UNKNOWN
+  else
+    case $verdict in
+      PASS | FAIL | UNKNOWN) row "$1" "$2" "$got" "$verdict" ;;
+      *) row "$1" "$2" "the driver's verdict is $(cell "$verdict"): $got" UNKNOWN ;;
+    esac
+  fi
+}
+# limits_row WANT: the limits row from every `limit-*` row of outside-edge.tsv (and its `limits`
+# row, the one it writes when it counted no request).
+limits_row() {
+  local tsv="$results/outside-edge.tsv" names='' each rest read_row verdict got failed='' unread='' read_ok=''
+  if [ -n "$public_problem" ]; then
+    row limits "$1" "$public_problem" UNKNOWN
+    return
+  fi
+  if [ ! -f "$tsv" ]; then
+    row limits "$1" "the run left no outside-edge.tsv" UNKNOWN
+    return
+  fi
+  while IFS="$tab" read -r each rest || [ -n "$each" ]; do
+    case $each in
+      limit-* | limits) case " $names " in *" $each "*) ;; *) names="$names $each" ;; esac ;;
+    esac
+  done <"$tsv"
+  for each in $names; do
+    read_row=$(tsv_part "$tsv" "$each")
+    verdict=${read_row%%"$tab"*}
+    got=${read_row#*"$tab"}
+    case $verdict in
+      PASS) read_ok="${read_ok:+$read_ok; }$each: $got" ;;
+      FAIL) failed="${failed:+$failed; }$each: $got" ;;
+      *) unread="${unread:+$unread; }$each $(cell "$verdict"): $got" ;;
+    esac
+  done
+  if [ -n "$failed" ]; then
+    row limits "$1" "$failed${unread:+; $unread}" FAIL
+  elif [ -n "$unread" ]; then
+    row limits "$1" "$unread${read_ok:+; read: $read_ok}" UNKNOWN
+  elif [ -z "$read_ok" ]; then
+    row limits "$1" "outside-edge.tsv holds no limit row" UNKNOWN
+  else
+    row limits "$1" "$read_ok" PASS
+  fi
+}
+if [ "$outside_gate" = browser ]; then
+  check_row refusals outside-edge-refusals "the workflow's HTTPS refusal check (outside-edge-refusals.sh), with dispatch-healthz its one routed control, exits 0: that control shows its marker, and every refusal line is answered the edge's own 404"
+  check_row reach outside-path-reach "the workflow's TCP reach check (outside-path-reach.sh) exits 0: no internal address, and no port of the edge address but 443, answers the runner"
+  driver_row sign-in "the driver's row sign-in PASS: the owner's link enrolls one passkey and signs ${person:-<OUTSIDE_PERSON>} in at the edge's Dispatch origin, and GET /auth/whoami names them"
+  driver_row projects "the driver's row projects PASS: GET /api/v1/projects lists exactly [$project]"
+  limits_row "every limit row of the driver PASS, at least one: the run's peak stays under half of each rule of the edge's Dispatch origin"
+fi
+
 # --- public: the public leg's own last word. Each public row is held above to what this leg saw
 # beside it; the public leg's verdict row, its revocations row and its end hold the gate too, so a
 # public leg that failed, or left no verdict, never lets the gate pass. A run concludes `failure`
 # for an exit 1 and an exit 2 alike, so its verdict row says which. ---
 want_public="the public leg's verdict row PASS, its revocations row PASS, and its end: exit 0, or the run's conclusion success"
+[ "$outside_gate" != browser ] ||
+  want_public="the workflow run's conclusion success: its Verdict step read every check it ran PASS, and no output naming the runner or holding the link"
 if [ -n "$public_problem" ]; then
   row public "$want_public" "$public_problem" UNKNOWN
+elif [ "$outside_gate" = browser ]; then
+  # A run concludes `failure` for a check's FAIL and its UNKNOWN alike, so the exits say which.
+  exits=''
+  failed=''
+  for each in outside-edge-refusals.code outside-path-reach.code outside-edge.code restricted-sweep.exit outside-edge-t5.code; do
+    read_exit=none
+    [ ! -f "$results/$each" ] || read_exit=$(tr -d ' \r\n' <"$results/$each")
+    exits="${exits:+$exits, }${each%.*} $(cell "${read_exit:0:40}")"
+    [ "$read_exit" != 1 ] || failed=yes
+  done
+  read_public="conclusion ${public_end:-not read}; exits: $exits"
+  case $public_end:$failed in
+    success:*) row public "$want_public" "$read_public" PASS ;;
+    failure:yes) row public "$want_public" "$read_public" FAIL ;;
+    *) row public "$want_public" "$read_public" UNKNOWN ;;
+  esac
 else
   verdict_read=$(public_part verdict)
   revoke_read=$(public_part revocations)

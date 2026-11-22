@@ -47,6 +47,7 @@ import {
 import {
   fullLogin,
   inviteUrl,
+  linkToken,
   liveStandInDispatches,
   type PreparedStandIn,
   passingControls,
@@ -55,6 +56,7 @@ import {
   type StandInRun,
   type StandIns,
   unknownsCounted,
+  unlistedPerson,
   workflowInputs,
   workflowRepository,
   writeIds,
@@ -1302,6 +1304,254 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
       },
       // The two runs at once, each a bounded child under the short bound.
       rowLimit({ atOnce: ["short", "short"] })
+    );
+  }
+);
+
+/* The browser gate (OUTSIDE_GATE=browser): the browser leg alone, run while nothing of the agents'
+ * path serves. Against the stand-ins' owner commands, `dispatch` and workflow run (whose step `The
+ * delisting window` the stand-in `gh` reports), every row passes and the agents' path is never
+ * asked; each plant then makes the one row it aims at, and only that row's kin, not PASS. */
+const browserRows = [
+  "pins",
+  "issue",
+  "unlisted",
+  "T5",
+  "refusals",
+  "reach",
+  "sign-in",
+  "projects",
+  "limits",
+  "public",
+  "sweep",
+  "pins-end",
+  "gate",
+];
+
+/** The browser gate's run against stand-ins with `browser`'s plants. */
+function browserRun(browser: StandIns["browser"]): StandIns {
+  return { ...passingControls, browser };
+}
+
+describe.skipIf(withoutTools)("the browser gate's refusals with no input", () => {
+  test(
+    "the browser gate reads each of its rows UNKNOWN with no input, OUTSIDE_GATE of another word reads every row UNKNOWN, and the check fails on a copy that defaults to PASS",
+    async () => {
+      const browser = await runLeg(tailnetLeg, [], { ...noInput(), OUTSIDE_GATE: "browser" });
+      expect(unknownProblems(browser, browserRows)).toEqual([]);
+      const other = await runLeg(tailnetLeg, ["EXAMPLE"], {
+        ...(await tailnetInputs()),
+        OUTSIDE_GATE: "agents",
+      });
+      expect(unknownProblems(other, tailnetRows)).toEqual([]);
+      expect(rowsOf(other.stdout).get("pins")?.got).toContain(
+        "OUTSIDE_GATE must be all or browser, not agents"
+      );
+      // The control: the same check on a copy of the leg in which every UNKNOWN reads PASS.
+      const passing = await runLeg(passingCopy(tailnetLeg), [], {
+        ...noInput(),
+        OUTSIDE_GATE: "browser",
+      });
+      const problems = unknownProblems(passing, browserRows);
+      expect(problems).toContain("exit 0, want 2");
+      expect(problems.some((problem) => problem.endsWith("reads PASS, want UNKNOWN"))).toBe(true);
+    },
+    // The three legs, one after another, each a bounded child under the short bound.
+    rowLimit("short", "short", "short")
+  );
+});
+
+describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
+  "the browser gate against stand-ins",
+  () => {
+    test(
+      "every row passes on the owner commands, the workflow's checks and its window step, with no edge listener pin, no agents' input and no owner's browser session; the same stand-ins under OUTSIDE_GATE=all read the edge listener's pin",
+      async () => {
+        const [run] = await runStandIns(browserRun({}));
+        if (run === undefined) throw new Error("one run, want one");
+        const prepared = await prepareStandIn(scratch, browserRun({}));
+        const control = await runStandIn({
+          ...prepared,
+          env: { ...prepared.env, OUTSIDE_GATE: "all" },
+        });
+        const rows = rowsOf(run.stdout);
+        // Every row PASS, in the gate's order, and the gate's exit 0.
+        expect({ verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
+          verdicts: Object.fromEntries(browserRows.map((name) => [name, "PASS"])),
+        });
+        expect([...rows.keys()]).toEqual(browserRows);
+        expect(run.code).toBe(0);
+        // The pins of the broker and Dispatch alone, though the pins file names an edge listener
+        // whose file the deployment repository lacks.
+        expect(rows.get("pins")?.got).not.toContain("edge-listener");
+        expect(rows.get("unlisted")?.got).toContain("refused 409 PERSON_NOT_LISTED");
+        expect(rows.get("T5")?.got).toContain("T5-cookie at at most");
+        expect(rows.get("T5")?.got).toContain("T5-passkey at at most");
+        // The workflow got the browser checks, Dispatch's routed control, the owner's one link
+        // (not the link OUTSIDE_WORKFLOW_INPUTS held) and the issue row's key, on stdin alone.
+        const links = readFileSync(join(run.state, "links"), "utf8").trim().split("\n");
+        expect(links).toHaveLength(1);
+        const inputs = JSON.parse(
+          readFileSync(join(run.state, "workflow-inputs.json"), "utf8")
+        ) as Record<string, string>;
+        expect(inputs).toEqual({
+          checks: "browser",
+          project: "EXAMPLE",
+          routed_controls: "dispatch-healthz",
+          invite_url: links[0],
+          sweep_member_issue: "EXAMPLE-7",
+          sweep_project: "PRIV",
+          sweep_fills: expect.any(String),
+        });
+        expect(readFileSync(join(run.state, "workflow-args"), "utf8")).not.toContain(linkToken);
+        expect(`${run.stdout}${run.stderr}`).not.toContain(linkToken);
+        // The window was read from the step's status; the owner's remove took the person off.
+        expect(existsSync(join(run.state, "window-reads"))).toBe(true);
+        expect(readFileSync(join(run.state, "listed"), "utf8")).not.toContain(
+          "outside-e2e@example.com"
+        );
+        // No agents' path: no agent-secrets call, no full member's helper, and the access list
+        // read by the owner's command, never the full member's browser.
+        expect(existsSync(join(run.state, "agent-secrets-calls"))).toBe(false);
+        expect(run.seen).not.toContain("POST /api/v1/me/agent-tokens");
+        expect(run.seen).not.toContain("GET /api/v1/projects/EXAMPLE/access");
+        // The control: under OUTSIDE_GATE=all the edge listener's pin is read, and holds the gate.
+        expect(rowsOf(control.stdout).get("pins")).toMatchObject({ verdict: "UNKNOWN" });
+        expect(rowsOf(control.stdout).get("pins")?.got).toContain("edge-listener");
+      },
+      // Two preparations, then the control run and the browser run one after another, each a
+      // bounded child under the short bound.
+      rowLimit("short", "short")
+    );
+
+    test(
+      "the owner rows: a token refused 403 BROWSER_SESSION_REQUIRED starts no run, an address already listed gets a link and fails unlisted, a remove that removes nobody holds T5, OUTSIDE_PUBLIC_COMMAND is refused, and no full member's cookie holds the gate at the sweep",
+      async () => {
+        const [session, listed, kept, local, noCookie] = await runStandIns(
+          browserRun({ invite: "browser-session" }),
+          browserRun({ unlistedListed: true }),
+          browserRun({ removeNothing: true }),
+          browserRun({ publicCommand: true }),
+          { ...browserRun({}), cookie: "absent" }
+        );
+        if (
+          session === undefined ||
+          listed === undefined ||
+          kept === undefined ||
+          local === undefined ||
+          noCookie === undefined
+        ) {
+          throw new Error("five runs, want five");
+        }
+        // Today's Dispatch answers an owner's token on the invite route 403
+        // BROWSER_SESSION_REQUIRED: no link, so no run, and nothing reads PASS from it.
+        expect({ verdicts: verdictsOf(session.stdout), stdout: session.stdout }).toMatchObject({
+          verdicts: {
+            unlisted: "UNKNOWN",
+            T5: "UNKNOWN",
+            refusals: "UNKNOWN",
+            "sign-in": "UNKNOWN",
+            public: "UNKNOWN",
+            sweep: "UNKNOWN",
+          },
+        });
+        expect(rowsOf(session.stdout).get("unlisted")?.got).toContain(
+          "refused 403 BROWSER_SESSION_REQUIRED"
+        );
+        expect(rowsOf(session.stdout).get("public")?.got).toContain("no invitation link");
+        expect(existsSync(join(session.state, "workflow-args"))).toBe(false);
+        expect(session.code).toBe(2);
+        // An address on the list gets its link: unlisted FAILs, and prints no link.
+        expect({ verdicts: verdictsOf(listed.stdout), stdout: listed.stdout }).toMatchObject({
+          verdicts: { unlisted: "FAIL", T5: "PASS", public: "PASS" },
+        });
+        expect(rowsOf(listed.stdout).get("unlisted")?.got).toContain(
+          `made a link for ${unlistedPerson}`
+        );
+        expect(readFileSync(join(listed.state, "links"), "utf8").trim().split("\n")).toHaveLength(
+          2
+        );
+        expect(`${listed.stdout}${listed.stderr}`).not.toContain(linkToken);
+        expect(listed.code).toBe(1);
+        // The run's own T5 rows pass, yet the list still names the person: no removal was made.
+        expect({ verdicts: verdictsOf(kept.stdout), stdout: kept.stdout }).toMatchObject({
+          verdicts: { T5: "UNKNOWN", unlisted: "PASS", public: "PASS" },
+        });
+        expect(rowsOf(kept.stdout).get("T5")?.got).toContain("the access list reads true");
+        expect(kept.code).toBe(2);
+        // A local public command cannot open the browser gate's window: no run starts.
+        expect({ verdicts: verdictsOf(local.stdout), stdout: local.stdout }).toMatchObject({
+          verdicts: { T5: "UNKNOWN", public: "UNKNOWN", refusals: "UNKNOWN" },
+        });
+        expect(rowsOf(local.stdout).get("public")?.got).toContain("OUTSIDE_PUBLIC_COMMAND");
+        expect(existsSync(join(local.state, "workflow-args"))).toBe(false);
+        // The sweep's one input that is a person's: a full member's browser session, which
+        // Dispatch's GitHub proxy reads as and no token. Without it the sweep row, and so the
+        // gate, reads UNKNOWN, never PASS, while the owner's rows still pass on their commands.
+        expect({ verdicts: verdictsOf(noCookie.stdout), stdout: noCookie.stdout }).toMatchObject({
+          verdicts: { sweep: "UNKNOWN", unlisted: "PASS", T5: "PASS", gate: "UNKNOWN" },
+        });
+        expect(rowsOf(noCookie.stdout).get("sweep")?.got).toContain("OUTSIDE_FULL_COOKIE_FILE");
+        expect(noCookie.code).toBe(2);
+      },
+      // The five runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short", "short", "short"] })
+    );
+
+    test(
+      "the workflow rows: a skipped window step, a late cookie, a check's FAIL, a check's missing exit and the driver's limits each hold their own row",
+      async () => {
+        const [skipped, late, failed, uncoded, overLimit, noLimit] = await runStandIns(
+          browserRun({ noWindow: true }),
+          browserRun({ cookieAfter: 60 }),
+          browserRun({ codes: { "outside-edge-refusals": 1 } }),
+          browserRun({ noCode: ["outside-path-reach"] }),
+          browserRun({ limits: ["PASS", "FAIL"] }),
+          browserRun({ limits: [] })
+        );
+        if (
+          skipped === undefined ||
+          late === undefined ||
+          failed === undefined ||
+          uncoded === undefined ||
+          overLimit === undefined ||
+          noLimit === undefined
+        ) {
+          throw new Error("six runs, want six");
+        }
+        // A step that never ran: no removal, and T5 UNKNOWN.
+        expect({ verdicts: verdictsOf(skipped.stdout), stdout: skipped.stdout }).toMatchObject({
+          verdicts: { T5: "UNKNOWN", refusals: "PASS" },
+        });
+        expect(rowsOf(skipped.stdout).get("T5")?.got).toContain("before this leg read");
+        expect(existsSync(join(skipped.state, "removed"))).toBe(false);
+        // The cookie's 401 a minute after the removal is past its 30 s.
+        expect({ verdicts: verdictsOf(late.stdout), stdout: late.stdout }).toMatchObject({
+          verdicts: { T5: "FAIL" },
+        });
+        expect(rowsOf(late.stdout).get("T5")?.got).toContain("past 30 s");
+        expect(late.code).toBe(1);
+        // A check's exit 1 is its row's FAIL, and the run's failure is the public row's FAIL.
+        expect({ verdicts: verdictsOf(failed.stdout), stdout: failed.stdout }).toMatchObject({
+          verdicts: { refusals: "FAIL", reach: "PASS", public: "FAIL" },
+        });
+        expect(rowsOf(failed.stdout).get("public")?.got).toContain("outside-edge-refusals 1");
+        // A check whose exit the run did not keep is no PASS, whatever else it printed.
+        expect({ verdicts: verdictsOf(uncoded.stdout), stdout: uncoded.stdout }).toMatchObject({
+          verdicts: { reach: "UNKNOWN", refusals: "PASS" },
+        });
+        expect(rowsOf(uncoded.stdout).get("reach")?.got).toContain(
+          "the run left no outside-path-reach.code"
+        );
+        expect(uncoded.code).toBe(2);
+        // One limit row's FAIL fails limits; no limit row at all is no PASS.
+        expect(verdictsOf(overLimit.stdout)).toMatchObject({ limits: "FAIL", "sign-in": "PASS" });
+        expect(rowsOf(overLimit.stdout).get("limits")?.got).toContain("limit-2-60s");
+        expect(verdictsOf(noLimit.stdout)).toMatchObject({ limits: "UNKNOWN" });
+        expect(rowsOf(noLimit.stdout).get("limits")?.got).toContain("holds no limit row");
+      },
+      // The six runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short", "short", "short", "short"] })
     );
   }
 );
