@@ -93,6 +93,24 @@ type SessionEntry struct {
 	// held it, while another instance's live session keeps its role however it is named. Empty
 	// for a client that predates the field.
 	ClientInstanceID string `json:"client_instance_id,omitempty"`
+	// Projects is the projects the token that wrote this registration lists: the broker
+	// token's own list, sorted, each once, and [] for a registration that presented none or
+	// whose token lists none. Every listener that verifies broker tokens writes it at each
+	// registration (cmd/listener's sessionEntryFromSubscribe), and an entry an earlier build
+	// wrote decodes it as nil, which every reader takes as none. The edge listener reads it to
+	// hold a send and a read to the target's projects (cmd/listener's project_scope.go). It is
+	// the registry's own record: no answer of the listener's API carries it.
+	Projects []string `json:"projects"`
+	// RepositoryGap is the gap mark the session is owed, "" for none: an edge listener withheld a
+	// GitHub event of the session while no fresh repository answer stood, and no frame carrying
+	// the mark has been sent since (cmd/listener's sessionRelays). It lives on the entry so the
+	// next listener to relay the session, after a move or a restart, sends the mark. Its value is
+	// the id the relay that set it gave it. Only SetRepositoryGap and ClearRepositoryGap write it:
+	// the relay that withholds such an event sets it before it acknowledges the event, and the
+	// relay that sends the mark clears it. Every other write of the entry carries over the mark of
+	// the entry it replaces (PutWithin). It is the registry's own record: no answer of the
+	// listener's API carries it.
+	RepositoryGap string `json:"repository_gap,omitempty"`
 }
 
 // TmuxPlace is a session's pane and the window and tmux session holding it, as the listener's
@@ -765,35 +783,230 @@ func (r *SessionRegistry) Put(sessionID string, entry SessionEntry) error {
 	return r.PutWithin(context.Background(), sessionID, entry)
 }
 
-// PutWithin writes sessionID's entry, its bucket write waiting no longer than ctx (bus.Bounded): an
+// PutWithin writes sessionID's entry, each bucket call waiting no longer than ctx (bus.Bounded): an
 // HTTP route passes its request's own context. A write ctx abandoned may still land after this
 // answer. That is safe: it writes the entry the caller's retry writes again, it rides the
-// connection ahead of any write this listener sends on it later, so it cannot undo one, and
-// against another listener's write it is last-writer-wins, as every Put already is. The write
-// reaches the cache through the handle's epoch (kvwatch.Copy.Put), so a write made through a
-// handle on a bucket since recreated is dropped rather than fencing out the new bucket's rows.
+// connection ahead of any write this listener sends on it later, so it cannot undo one, and it is
+// conditional on the revision it replaces.
+//
+// The entry written carries the gap mark of the entry it replaces (RepositoryGap), whatever
+// entry's own field says: the mark is SetRepositoryGap's and ClearRepositoryGap's alone to write,
+// and a registration or a renewal written over an entry never clears a mark no frame has carried,
+// nor raises one no withheld event owes. So the write is conditional on the revision of the entry
+// it replaces (writeEntryAt): the copy's own entry and revision first, with no bucket call, and
+// when the copy holds none, or another write landed since (another listener's mark among them),
+// the bucket's entry read again (readEntry), from the bucket stream's leader after a lost write,
+// and entry written over it with that entry's mark, until the write lands, ctx ends or
+// entryWriteLosses writes are lost (writeEntryAt's stop rule). Every other field is entry's, so
+// against another listener's write it is last-writer-wins, as it always was.
 func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry SessionEntry) error {
 	// Several live processes can hold the same session (shared on-disk state) - a harness can
 	// keep a session's state on shared disk - and each heartbeats a claim of its own. The route
 	// follows whichever wrote last, and this write stamps the entry with the moment it was made,
 	// so a reader weighing the route's freshness (ClaimStaleAfter) reads the latest heartbeat.
 	entry.UpdatedAt = r.now().UnixMilli()
+	// The copy's entry is at the fence's revision whenever the copy holds one, since the copy
+	// stores an entry only at or past its fence and moves the fence with it
+	// (kvwatch.Copy.FenceFor). A fence of another epoch reads 0, and a key the copy holds no
+	// entry of is no entry to carry a mark from, so either is read from the bucket first.
+	r.mu.RLock()
+	kv, epoch := r.watcher.Handle()
+	replaced, cached := r.cache.Get(sessionID)
+	revision := r.cache.FenceFor(epoch, sessionID)
+	known := cached && revision > 0
+	if known {
+		entry.RepositoryGap = replaced.entry.RepositoryGap
+	}
+	r.mu.RUnlock()
+	fromLeader := false
+	for range entryWriteLosses {
+		if !known {
+			stored, at, err := readEntry(ctx, kv, sessionID, fromLeader)
+			switch {
+			case errors.Is(err, errUndecodableEntry):
+				// A value no read decodes owes no mark anyone could read, and is written over.
+				revision, entry.RepositoryGap = at, ""
+			case err != nil:
+				return fmt.Errorf("read session %s from the bucket before writing it: %w", sessionID, err)
+			default:
+				revision, entry.RepositoryGap = at, stored.RepositoryGap
+			}
+		}
+		lost, err := r.writeEntryAt(ctx, kv, epoch, sessionID, entry, revision)
+		if err != nil {
+			return fmt.Errorf("write session %s to the bucket: %w", sessionID, err)
+		}
+		if !lost {
+			return nil
+		}
+		known, fromLeader = false, true
+	}
+	return fmt.Errorf("write session %s to the bucket: %w", sessionID, errEntryWritesLost)
+}
+
+// entryWriteLosses bounds the writes one write of an entry may lose (writeEntryAt's stop rule):
+// far more than the writers of one session's entry at once - its processes registering and
+// heartbeating, a relay marking the entry, an outage renewal - each of which lands in turn, so a
+// write that reaches it is one a run of other writers kept from landing, and it ends rather than
+// holding a registration, or a relay and the session's frames behind it, at the bucket's round
+// trip for as long as the caller's context lasts. A copy of the bucket that answers a write behind
+// spends one of them at most: a write reads the leader after it lost one (readEntry).
+const entryWriteLosses = 32
+
+// errEntryWritesLost is the error of a write of an entry that lost entryWriteLosses writes.
+var errEntryWritesLost = fmt.Errorf("%d conditional writes lost to other writers", entryWriteLosses)
+
+// errUndecodableEntry is readEntry's answer for a stored value no read decodes as an entry.
+var errUndecodableEntry = errors.New("the stored value is no session entry")
+
+// readEntry reads sessionID's entry from the bucket through kv, waiting no longer than ctx, with
+// the revision it was read at: revision 0 and no error for a key the bucket holds no entry under,
+// a delete or purge marker among them, and the revision with errUndecodableEntry for a value no
+// read decodes. Any other error is the read's. fromLeader reads it from the bucket stream's leader
+// (bus.KeyValue.GetFromLeader), which holds every write the bucket took, rather than by a direct
+// get (bus.Bounded), which any copy near enough to current answers (Refresh): a write that lost to
+// another reads so, since a copy that keeps answering a write behind would hand it the revision
+// it just lost on, and would spend the write's bound of lost writes (entryWriteLosses).
+func readEntry(ctx context.Context, kv bus.KeyValue, sessionID string, fromLeader bool) (SessionEntry, uint64, error) {
+	var got nats.KeyValueEntry
+	var err error
+	if fromLeader {
+		got, err = kv.GetFromLeader(ctx, sessionID)
+	} else {
+		got, _, err = bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+	}
+	if errors.Is(err, nats.ErrKeyNotFound) {
+		return SessionEntry{}, 0, nil
+	}
+	if err != nil {
+		return SessionEntry{}, 0, err
+	}
+	var entry SessionEntry
+	if err := json.Unmarshal(got.Value(), &entry); err != nil {
+		return SessionEntry{}, got.Revision(), fmt.Errorf("%w: %w", errUndecodableEntry, err)
+	}
+	return entry, got.Revision(), nil
+}
+
+// writeEntryAt is the one write of sessionID's entry every write of it sends (PutWithin,
+// rewriteStoredEntry): entry, created where revision is 0 and updated at revision otherwise,
+// waiting no longer than ctx (bus.Bounded), and put in the copy through epoch once it lands
+// (kvwatch.Copy.Put), so a write made through a handle on a bucket since recreated is dropped
+// rather than fencing out the new bucket's rows. lost reports a write another writer landed first,
+// as bus.IsCASConflict reads it (it reads a replicated bucket's answer too): the entry is left as
+// that writer wrote it, and the error is nil.
+//
+// The stop rule of every caller: a conditional write loses to a write that landed, which is
+// another writer's progress, or to a read that a copy of a replicated bucket answered a write
+// behind (a direct get is answered by any copy near enough to current, Refresh), which only the
+// first read can be, since every read after a lost write is the leader's (readEntry). The caller
+// reads the entry again and writes again until its write lands, ctx ends, or it has lost
+// entryWriteLosses writes, when it ends with errEntryWritesLost. Several processes of one session
+// claiming and heartbeating at once, and a relay marking the session's entry beside them, each
+// land in turn well inside that bound.
+func (r *SessionRegistry) writeEntryAt(ctx context.Context, kv bus.KeyValue, epoch uint64, sessionID string, entry SessionEntry, revision uint64) (lost bool, err error) {
 	buf, err := json.Marshal(entry)
 	if err != nil {
-		return err
+		return false, err
 	}
-	kv, epoch := r.watcher.Handle()
-	revision, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.Put(sessionID, buf) })
-	if !answered {
-		return fmt.Errorf("write session %s to the bucket: %w", sessionID, err)
-	}
+	written, _, err := bus.Bounded(ctx, func() (uint64, error) {
+		if revision == 0 {
+			return kv.Create(sessionID, buf)
+		}
+		return kv.Update(sessionID, buf, revision)
+	})
 	if err != nil {
-		return err
+		if bus.IsCASConflict(err) {
+			return true, nil
+		}
+		return false, err
 	}
 	r.mu.Lock()
-	r.cache.Put(r.watcher, epoch, sessionID, &cachedSession{entry: entry, expiresAt: r.expiryFor(time.Time{}, entry.UpdatedAt)}, revision)
+	r.cache.Put(r.watcher, epoch, sessionID, &cachedSession{entry: entry, expiresAt: r.expiryFor(time.Time{}, entry.UpdatedAt)}, written)
 	r.unlockAndNotify()
-	return nil
+	return false, nil
+}
+
+// rewriteStoredEntry is the change of sessionID's entry as the bucket holds it that
+// SetRepositoryGap, ClearRepositoryGap and RenewWithin share: the entry is read from the bucket
+// (readEntry), handed to change, and written back at the revision read when change reports it
+// changed (writeEntryAt), an update and never a create, so a registration or another write that
+// lands between the read and the write is never overwritten: the entry is read again, from the
+// bucket stream's leader, and change asked again, by writeEntryAt's stop rule. A key the bucket
+// holds no entry under is missing, the caller's error or nil, and a value no read decodes is an
+// error. what names the change in each error.
+func (r *SessionRegistry) rewriteStoredEntry(ctx context.Context, sessionID, what string, missing error, change func(*SessionEntry) bool) error {
+	kv, epoch := r.watcher.Handle()
+	fromLeader := false
+	for range entryWriteLosses {
+		entry, revision, err := readEntry(ctx, kv, sessionID, fromLeader)
+		if err != nil {
+			return fmt.Errorf("read session %s to %s: %w", sessionID, what, err)
+		}
+		if revision == 0 {
+			return missing
+		}
+		if !change(&entry) {
+			return nil
+		}
+		lost, err := r.writeEntryAt(ctx, kv, epoch, sessionID, entry, revision)
+		if err != nil {
+			return fmt.Errorf("write session %s to %s: %w", sessionID, what, err)
+		}
+		if !lost {
+			return nil
+		}
+		fromLeader = true
+	}
+	return fmt.Errorf("write session %s to %s: %w", sessionID, what, errEntryWritesLost)
+}
+
+// SetRepositoryGap writes mark as sessionID's RepositoryGap and nothing else, over any mark the
+// entry holds (rewriteStoredEntry). UpdatedAt is kept as read: the mark says nothing of whether
+// the session answers. An entry that already carries mark is left as it is. An entry the bucket
+// does not hold is the error, matching nats.ErrKeyNotFound: no mark is then stored where a move
+// or a restart finds it, so its caller does not take the mark as kept (cmd/listener's
+// noteRepositoryGap gives its event back).
+func (r *SessionRegistry) SetRepositoryGap(ctx context.Context, sessionID, mark string) error {
+	missing := fmt.Errorf("mark session %s's repository gap: the bucket holds no entry of it: %w", sessionID, nats.ErrKeyNotFound)
+	return r.rewriteStoredEntry(ctx, sessionID, "mark its repository gap", missing, func(entry *SessionEntry) bool {
+		if entry.RepositoryGap == mark {
+			return false
+		}
+		entry.RepositoryGap = mark
+		return true
+	})
+}
+
+// ClearRepositoryGap clears sessionID's RepositoryGap while it is mark, the mark a frame carried,
+// as SetRepositoryGap writes it. Any other mark is left as it is: a relay of the session set it
+// since, for an event withheld later (each withheld event's mark is a new id), and a later frame
+// clears it. An entry the bucket does not hold carries no mark to clear, and is no error.
+func (r *SessionRegistry) ClearRepositoryGap(ctx context.Context, sessionID, mark string) error {
+	return r.rewriteStoredEntry(ctx, sessionID, "clear its repository gap", nil, func(entry *SessionEntry) bool {
+		if entry.RepositoryGap != mark {
+			return false
+		}
+		entry.RepositoryGap = ""
+		return true
+	})
+}
+
+// RenewWithin writes sessionID's entry back as the bucket holds it, stamped now, while owns says
+// the stored entry is the caller's to renew (rewriteStoredEntry): a registration another listener
+// wrote between the read and the write is never overwritten with what was read, and owns is asked
+// again of the entry read again. Every other field is kept as read, the gap mark among them. An
+// entry the bucket does not hold, and one owns refuses, are left as they are, and neither is an
+// error. cmd/listener's edge listener renews a session so through a repository outage that
+// refuses its heartbeats.
+func (r *SessionRegistry) RenewWithin(ctx context.Context, sessionID string, owns func(SessionEntry) bool) error {
+	return r.rewriteStoredEntry(ctx, sessionID, "renew it", nil, func(entry *SessionEntry) bool {
+		if !owns(*entry) {
+			return false
+		}
+		entry.UpdatedAt = r.now().UnixMilli()
+		return true
+	})
 }
 
 // Get returns the entry sessionID's cached record carries, or nats.ErrKeyNotFound when the cache

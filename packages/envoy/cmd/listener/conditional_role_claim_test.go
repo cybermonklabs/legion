@@ -68,7 +68,7 @@ func newConditionalClaimRig(t *testing.T, sessionIDs ...string) *conditionalClai
 		sessions: sessions,
 		roleKV:   roleKV,
 		set:      roleSetHandler(deps, "test-machine", logging.New("test")),
-		get:      roleGetHandler(deps),
+		get:      roleGetHandler(deps, logging.New("test")),
 	}
 }
 
