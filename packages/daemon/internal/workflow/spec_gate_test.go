@@ -636,3 +636,32 @@ func TestARegistrationOrResetThatLeavesTheGateExemptQueuesTheEndingReads(t *test
 		})
 	}
 }
+
+// A reopen of a merging member's pull request at another head than the recorded one moves the
+// head, as a synchronize does (classify.Reopen), so it queues the read of the ending condition at
+// the new head (D10): the running merger is told the gate closed when that head waits. A reopen at
+// the recorded head moves nothing and queues no read.
+func TestAReopenAtANewHeadInMergingQueuesTheEndingRead(t *testing.T) {
+	const first, second = "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"
+	for _, tc := range []struct {
+		name string
+		head string
+		want []record.SpecEndingRead
+	}{
+		{name: "a reopen at another head", head: second, want: []record.SpecEndingRead{{Head: second, Cause: record.SpecEndingCauseHead}}},
+		{name: "a reopen at the recorded head", head: first, want: []record.SpecEndingRead{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			apply := applyFacts(t, pool, specGateEngine())
+			mergingExemptRoot(t, pool, first)
+			seedPR(t, pool, record.PullRequest{Issue: gatedRoot, Repo: "sjawhar/legion", Number: 42, Branch: "legion/" + gatedRoot, Base: "main",
+				HeadSHA: first, HeadUpdatedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC), State: record.PullRequestClosed, Generation: 1})
+			apply("reopen", intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/" + gatedRoot, Base: "main",
+				HeadSHA: tc.head, UpdatedAt: time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC), Reopened: true})
+			if got := endingReads(t, pool, gatedRoot); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("ending reads after the reopen = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
