@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -295,15 +296,11 @@ func TestAFreedAgentTakesTheStepThatWaitedLongest(t *testing.T) {
 	assertNothingStarted(t, pool, root.Key, "r", atStep(1))
 }
 
-// A step that waits is no running step, so no reader that gives work reaches it: task m does its
-// step of agent k, x, a tester's, passes, and a, `implementer:k`, which needs x and comes before m
-// in task id order, waits for k. The issue's running steps hold m's and not a's; the boot's resume
-// reaches the claim of k once, at m's phase; and a failed claim of k holds m and leaves a waiting.
-//
-// The fault it catches is a reader that gives a step that never started the work of its agent (its
-// control: the issue's read of its running steps without the filter of the wait, so a's step is
-// read as k's and the failed claim holds a, whose step never started).
-func TestAStepThatWaitsIsNoRunningStep(t *testing.T) {
+// aWaitsWhileMWorks is the issue TestAStepThatWaitsIsNoRunningStep reads: task m does its step of
+// agent k, x, a tester's, has passed, and a, `implementer:k`, which needs x and comes before m in
+// task id order, waits for k. z, a reviewer's, needs a and m.
+func aWaitsWhileMWorks(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue) {
+	t.Helper()
 	pool := migratedPool(t)
 	engine, _ := tickingEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -319,37 +316,69 @@ func TestAStepThatWaitsIsNoRunningStep(t *testing.T) {
 	tasks := tasksOf(t, pool, engine, root.Key)
 	assertWaits(t, tasks, "a", atStep(1), record.StepWaitAgent)
 	assertWaits(t, tasks, "m", atStep(1), record.StepWaitNone)
-	issue := issueOf(t, pool, engine, root.Key)
-	if step, ok := issue.StepOfAgent("k"); !ok || step.Task != "m" || len(issue.Running) != 1 {
-		t.Fatalf("the running steps of %s = %+v, want m's alone, of agent k: a's step waits", root.Key, issue.Running)
-	}
+	return pool, engine, root
+}
 
-	project, err := claim.ProjectToken("LEGION")
-	if err != nil {
-		t.Fatal(err)
-	}
-	k := agentClaim(t, root.Key, "k")
-	if _, err := pool.Exec(t.Context(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
-		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, suspended_by)
-		values ($1, $2, $3, $3, 'implementer', 1, 'ses', '/sessions/ses.jsonl', 'suspended', 0, 0, 0, 0, 'daemon')`,
-		string(k), project, root.Key); err != nil {
-		t.Fatalf("seed the suspended claim of k: %v", err)
-	}
-	var owners phaseOwners
-	if err := pgx.BeginFunc(t.Context(), pool, func(tx pgx.Tx) error {
-		var err error
-		owners, err = engine.suspendedPhaseOwners(t.Context(), tx)
-		return err
-	}); err != nil {
-		t.Fatalf("read the boot's owners: %v", err)
-	}
-	if len(owners.suspended) != 1 || owners.suspended[0].token != k || owners.suspended[0].issue.Phase != phase.Implementing {
-		t.Fatalf("the boot's owners of %s = %+v, want the claim of k once, at m's implementing", root.Key, owners.suspended)
-	}
+// A step that waits is no running step, so no reader that gives work reaches it: task m does its
+// step of agent k, x, a tester's, passes, and a, `implementer:k`, which needs x and comes before m
+// in task id order, waits for k. The issue's running steps hold m's and not a's; the boot's resume
+// reaches the claim of k once, at m's phase; and a failed claim of k holds m and leaves a waiting.
+// A completion of k that names no task, which the engine reads as the task of the step k runs, is
+// m's: m is done, its pull request recorded open, and a is not.
+//
+// The fault it catches is a reader that gives a step that never started the work of its agent (its
+// control: the issue's read of its running steps without the filter of the wait, so a's step is
+// read as k's: the failed claim holds a, whose step never started, and k's completion makes a
+// done and leaves m at work).
+func TestAStepThatWaitsIsNoRunningStep(t *testing.T) {
+	t.Run("its reads, the boot's resume and a failed claim of k", func(t *testing.T) {
+		pool, engine, root := aWaitsWhileMWorks(t)
+		issue := issueOf(t, pool, engine, root.Key)
+		if step, ok := issue.StepOfAgent("k"); !ok || step.Task != "m" || len(issue.Running) != 1 {
+			t.Fatalf("the running steps of %s = %+v, want m's alone, of agent k: a's step waits", root.Key, issue.Running)
+		}
 
-	failed := failedClaimOf(t, root.Key, claim.RoleImplementer, "k")
-	mustSpend(t, "the failure of k", applyFacts(t, pool, engine)("k-failed", failed))
-	tasks = tasksOf(t, pool, engine, root.Key)
-	assertHeld(t, tasks, "m", atStep(1), "")
-	assertWaits(t, tasks, "a", atStep(1), record.StepWaitAgent)
+		project, err := claim.ProjectToken("LEGION")
+		if err != nil {
+			t.Fatal(err)
+		}
+		k := agentClaim(t, root.Key, "k")
+		if _, err := pool.Exec(t.Context(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+			state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, suspended_by)
+			values ($1, $2, $3, $3, 'implementer', 1, 'ses', '/sessions/ses.jsonl', 'suspended', 0, 0, 0, 0, 'daemon')`,
+			string(k), project, root.Key); err != nil {
+			t.Fatalf("seed the suspended claim of k: %v", err)
+		}
+		var owners phaseOwners
+		if err := pgx.BeginFunc(t.Context(), pool, func(tx pgx.Tx) error {
+			var err error
+			owners, err = engine.suspendedPhaseOwners(t.Context(), tx)
+			return err
+		}); err != nil {
+			t.Fatalf("read the boot's owners: %v", err)
+		}
+		if len(owners.suspended) != 1 || owners.suspended[0].token != k || owners.suspended[0].issue.Phase != phase.Implementing {
+			t.Fatalf("the boot's owners of %s = %+v, want the claim of k once, at m's implementing", root.Key, owners.suspended)
+		}
+
+		failed := failedClaimOf(t, root.Key, claim.RoleImplementer, "k")
+		mustSpend(t, "the failure of k", applyFacts(t, pool, engine)("k-failed", failed))
+		tasks := tasksOf(t, pool, engine, root.Key)
+		assertHeld(t, tasks, "m", atStep(1), "")
+		assertWaits(t, tasks, "a", atStep(1), record.StepWaitAgent)
+	})
+
+	t.Run("k's completion moves m", func(t *testing.T) {
+		pool, engine, root := aWaitsWhileMWorks(t)
+		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root.Key, Task: "m", Repo: "sjawhar/legion", Number: 44,
+			Branch: "legion/" + root.Key + ".m", HeadSHA: "head-m", Failing: []string{}})
+		completed := intake.HandoffComplete{Generation: root.Generation, Issue: root.Key, Role: claim.RoleImplementer,
+			Claim: agentClaim(t, root.Key, "k"), Summary: "done", Commit: "head-m", HandoffRecord: "k-m", HandoffVersion: 1}
+
+		mustSpend(t, "k's completion", applyFacts(t, pool, engine)("k-implemented", completed))
+
+		tasks := tasksOf(t, pool, engine, root.Key)
+		assertTask(t, tasks, "m", record.TaskDone, atStep(1))
+		assertTask(t, tasks, "a", record.TaskRunning, atStep(1))
+	})
 }
