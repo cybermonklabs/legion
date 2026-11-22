@@ -32,9 +32,10 @@
 # census with no connection, a consumer that has not acknowledged the last old-form message it
 # takes (b), a session's as well as a daemon's, an empty consumer list, and an old-form message
 # still on the stream (c); new pins with one older client still connected keep the gate shut, and
-# the purge driver refuses that reading. Every case runs from the same clean fixture with one thing
-# changed, so each fails for its own reason. The old-form rule itself is held row by row. The
-# summary counts cases.
+# the purge driver refuses that reading; and a required-mode listener's connection, its build
+# before its trailing privacy suffix, is judged by that build. Every case runs from the same clean
+# fixture with one thing changed, so each fails for its own reason. The old-form rule itself is
+# held row by row. The summary counts cases.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -1238,10 +1239,12 @@ done_case
 new_case "a listener whose counter line is no later than the one the first reading read shuts the gate"
 first_reading_secs 200 reading
 # The listener stopped logging after the first reading read its line: its newest line now is that
-# same line, though it is younger than three minutes.
-jq '.listeners |= map(if .uid == "envoy-uid-1" then .read_at = (now | floor) - 30 else . end)' "$FAKE/earlier.json" >"$FAKE/earlier.tmp"
+# same line, though it is younger than three minutes. One clock read gives both readings that line's
+# time, so a second boundary between two reads cannot make the lines differ.
+line_at=$(($(date -u +%s) - 30))
+jq --argjson line_at "$line_at" '.listeners |= map(if .uid == "envoy-uid-1" then .read_at = $line_at else . end)' "$FAKE/earlier.json" >"$FAKE/earlier.tmp"
 mv "$FAKE/earlier.tmp" "$FAKE/earlier.json"
-echo "$(($(date -u +%s) - 30))" >"$FAKE/log_at"
+echo "$line_at" >"$FAKE/log_at"
 reading --since "$FAKE/earlier.json"
 expect_status 1
 expect_line "GATE SHUT: listener pod envoy/envoy-listener-7f9c container envoy-listener's counter line at this reading was logged at"
@@ -1319,6 +1322,18 @@ replace_row census 0 "$(line census 0 0 "$(clean_census | sed '3d'; census_reply
 reading --since "$FAKE/earlier.json"
 expect_status 3
 expect_line "UNKNOWN: (a2) the running clients: 1 connection(s) name no build: omp-ses_custom (server envoy-nats-2, cid 33, user UCUSTOM)"
+done_case
+
+# A listener in required privacy mode keeps natsgrant.PrivacyRequiredSuffix last, its build before
+# it (internal/bus's connectionName), and (a2) reads that build from the word before the suffix.
+new_case "(a2) a required-mode listener's connection is judged by the build before its privacy suffix"
+first_reading_secs 200 reading
+replace_row census 0 "$(line census 0 0 "$(census_reply envoy-nats-0 "$(conn 11 "envoy-listener legion@$new_form privacy-required")" "$(conn 12 "omp-ses_a @sjawhar/pi-envoy@21.0.0")" "$(conn 13 "@CENSUS_NAME@" UCENSUS)"; clean_census | sed '1d')" "")"
+reading --since "$FAKE/earlier.json"
+expect_status 0
+expect_last "GATE OPEN"
+expect_line "PASS: (a2) the running clients: every one of the 5 connection(s) on the 3 hub server(s) (envoy-nats-0, envoy-nats-1, envoy-nats-2) names a build at or after $new_form, 4 build(s): @sjawhar/claude-envoy@6.0.0, @sjawhar/pi-envoy@21.0.0, legion@$new_form, legion@$newer"
+expect_no_line "name no build"
 done_case
 
 new_case "(a2) a hub server that does not answer the census is UNKNOWN"

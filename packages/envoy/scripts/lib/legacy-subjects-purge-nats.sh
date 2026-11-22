@@ -17,7 +17,9 @@
 #      found: one published since was published after (a1), (a2) and (b) were read, by a client
 #      the reading did not see, and a consumer may not have it yet;
 #   4. purges each old-form subject by itself, $JS.API.STREAM.PURGE.ENVOY_NOTIFICATIONS with the
-#      subject as the filter, a literal subject and never a wildcard, so no new-form message goes;
+#      subject as the filter, a literal subject and never a wildcard, so no new-form message goes,
+#      and LAST_OLD_SEQ + 1 as its sequence, so it takes the messages up to LAST_OLD_SEQ alone: one
+#      published after step 3 read the subject is one a consumer may not have yet, and it stays;
 #   5. lists the stream's subjects again, for the driver to read back that no old-form one is left.
 #
 # Each call is printed as one line of five tab-separated fields, as legacy-subjects-gate-nats.sh
@@ -113,8 +115,14 @@ while IFS= read -r subject; do
   esac
 done <"$work/old-subjects"
 
+# The purge's seq keeps every message from that sequence on. With no LAST_OLD_SEQ, step 3 found no
+# old-form subject holding a message, so nothing is the reading's to purge.
+case "${LAST_OLD_SEQ:-}" in
+  '' | *[!0-9]*) : >"$work/old-subjects" ;;
+  *) keep_from=$((LAST_OLD_SEQ + 1)) ;;
+esac
 while IFS= read -r subject; do
-  request purge "$subject" "\$JS.API.STREAM.PURGE.$stream" "$(jq -cn --arg s "$subject" '{filter: $s}')"
+  request purge "$subject" "\$JS.API.STREAM.PURGE.$stream" "$(jq -cn --arg s "$subject" --argjson keep "$keep_from" '{filter: $s, seq: $keep}')"
 done <"$work/old-subjects"
 
 subjects after || :

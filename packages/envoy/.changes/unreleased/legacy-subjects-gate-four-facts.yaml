@@ -11,9 +11,10 @@ body: |-
   of the stream has acknowledged the last old-form message it takes; (c) the stream holds no
   old-form message. New `scripts/legacy-subjects-purge.sh --context <ctx> --reading <record>`
   makes (c) true once (a1), (a2) and (b) read true: it refuses any other reading, purges each
-  old-form subject by itself as the `legacy-cutover` user, and reads back that none is left. Every
-  Envoy NATS connection now names its build after its name (`legion@<commit>` for an image build;
-  the envoy image stamps its binaries with its commit), which (a2) reads.
+  old-form subject by itself, up to the newest old-form message the reading found, as the
+  `legacy-cutover` user, and reads back that none is left. Every Envoy NATS connection now names its
+  build after its name (`legion@<commit>` for an image build; the envoy image stamps its binaries
+  with its commit), before a trailing ` privacy-required`, which stays last; (a2) reads it there.
 time: 2026-11-22T02:59:25Z
 custom:
     Issue: legacy-subjects-gate

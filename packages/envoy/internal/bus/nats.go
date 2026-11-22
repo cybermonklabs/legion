@@ -86,15 +86,27 @@ func parseConnectOptions[O ConnectOption](options []O) connectOpts {
 // this package replaces it.
 var connectionBuild = buildversion.ConnectionBuild
 
+// PrivacyRequiredSuffix is natsgrant.PrivacyRequiredSuffix, spelled here because natsgrant imports
+// this package and this one cannot import it back; natsgrant's tests hold the two equal. The auth
+// service admits a listener on a hub with private projects only when its client name ends with
+// it, so connectionName keeps it last.
+const PrivacyRequiredSuffix = " privacy-required"
+
 // connectionName is the name a connection presents: the client's name, then a space and this
-// binary's build when it has one. legacy-subjects-gate.sh reads each connection's build from the
-// end of its name in the hub's census of connections ($SYS.REQ.SERVER.PING.CONNZ), and a connection
-// that names none keeps the gate from opening.
+// binary's build when it has one, before PrivacyRequiredSuffix when the client's name ends with it
+// (`<name> legion@<commit> privacy-required`). legacy-subjects-gate.sh reads each connection's
+// build from the end of its name in the hub's census of connections ($SYS.REQ.SERVER.PING.CONNZ),
+// the last word or the one before a trailing privacy-required, and a connection that names none
+// keeps the gate from opening.
 func connectionName(name string) string {
-	if build := connectionBuild(); build != "" {
-		return name + " " + build
+	build := connectionBuild()
+	if build == "" {
+		return name
 	}
-	return name
+	if client, required := strings.CutSuffix(name, PrivacyRequiredSuffix); required {
+		return client + " " + build + PrivacyRequiredSuffix
+	}
+	return name + " " + build
 }
 
 // streamConfig is the stream ConnectOwningStream ensures: streamCfg at the deployment's replica
@@ -180,12 +192,12 @@ func WithEnvironment(lookup func(string) (string, bool)) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.environment = lookup })
 }
 
-// WithName names the client, in place of "envoy": the name, with this binary's build after it
-// (connectionName), that the NATS server's connection listings (its /connz endpoint, `nats server
-// report connections`, $SYS.REQ.SERVER.PING.CONNZ) show for the connection the client dials first
-// and for each one it dials to replace a closed one, and the name field of the client's lifecycle
-// log lines (`envoy nats disconnected`, `envoy nats recovery attempt` and the rest). Dial takes its
-// name as a parameter, and not this option.
+// WithName names the client, in place of "envoy": the name, with this binary's build after it or
+// before its trailing PrivacyRequiredSuffix (connectionName), that the NATS server's connection
+// listings (its /connz endpoint, `nats server report connections`, $SYS.REQ.SERVER.PING.CONNZ)
+// show for the connection the client dials first and for each one it dials to replace a closed
+// one, and the name field of the client's lifecycle log lines (`envoy nats disconnected`, `envoy
+// nats recovery attempt` and the rest). Dial takes its name as a parameter, and not this option.
 func WithName(name string) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.name = name })
 }

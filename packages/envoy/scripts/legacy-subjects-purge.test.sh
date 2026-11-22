@@ -5,14 +5,16 @@
 # directory and records every call. The Job the driver creates is run here: the fake kubectl's log of
 # it is the output of the Job's own script (lib/legacy-subjects-purge-nats.sh), run under sh with
 # the Job's environment behind a fake nats that keeps the stream's messages in $FAKE/stream (one
-# "<subject> <sequence>" line each) and purges from that file what each purge's filter names. So
-# each case reads what the stream holds after the driver ran, not what the driver says of it.
+# "<subject> <sequence>" line each) and purges from that file what each purge's filter and sequence
+# name, as the server does. So each case reads what the stream holds after the driver ran, not what
+# the driver says of it.
 #
 # The cases: the driver purges every old-form subject and leaves every new-form message; it
 # refuses, calling nothing, a reading whose (a1), (a2) or (b) did not read true, a first reading,
 # and another cluster's; it purges nothing when an old-form message was published after the
-# reading, or when the stream is not the reading's; and it prints UNKNOWN when its read-back still
-# finds an old-form message.
+# reading, or when the stream is not the reading's; it keeps an old-form message published after
+# the Job's check and before its purge; and it prints UNKNOWN when its read-back still finds an
+# old-form message.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -85,12 +87,18 @@ case "$subject" in
     else jq -cn --arg s "$want" --argjson q "$seq" '{type: "io.nats.jetstream.api.v1.stream_msg_get_response", message: {subject: $s, seq: $q, time: "2026-11-20T10:00:00Z", data: "eyJtZXNzYWdlIjoiYSBwcml2YXRlIG1lc3NhZ2UifQ=="}}'
     fi ;;
   '$JS.API.STREAM.PURGE.ENVOY_NOTIFICATIONS')
+    # A message published after the Job read the subjects' last messages and before its first
+    # purge: the case's $FAKE/late line joins the stream then.
+    if [ -e "$FAKE/late" ]; then
+      cat "$FAKE/late" >>"$FAKE/stream"
+      rm "$FAKE/late"
+    fi
     filter=$(jq -r '.filter // ""' <<<"$body")
+    # The server's purge with a seq takes only the messages below it; without one, every message.
+    keep_from=$(jq -r '.seq // 0' <<<"$body")
     before=$(wc -l <"$FAKE/stream")
     if [ ! -e "$FAKE/purge.keeps" ]; then
-      if [ -z "$filter" ]; then : >"$FAKE/stream.new"
-      else awk -v s="$filter" '$1 != s' "$FAKE/stream" >"$FAKE/stream.new"
-      fi
+      awk -v s="$filter" -v k="$keep_from" '!((s == "" || $1 == s) && (k == 0 || $2 < k))' "$FAKE/stream" >"$FAKE/stream.new"
       mv "$FAKE/stream.new" "$FAKE/stream"
     fi
     jq -cn --argjson n "$((before - $(wc -l <"$FAKE/stream")))" '{type: "io.nats.jetstream.api.v1.stream_purge_response", success: true, purged: $n}' ;;
@@ -227,6 +235,18 @@ expect_status 1
 expect_line "REFUSED: $old_agent holds a message at stream sequence 812, after 805, the newest old-form message the reading found"
 ! grep -q 'STREAM.PURGE' "$FAKE/nats.calls" || fail "the Job purged: $(grep 'STREAM.PURGE' "$FAKE/nats.calls")"
 stream_holds "$old_issue" "$old_agent" "$new_issue" "$new_agent"
+done_case
+
+new_case "the driver keeps an old-form message published after the Job's check, and prints UNKNOWN"
+echo "$old_agent 812" >"$FAKE/late"
+purge
+expect_status 3
+expect_line "PURGED: $old_issue, 2 message(s)"
+expect_line "PURGED: $old_agent, 1 message(s)"
+expect_line "UNKNOWN: the stream still holds 1 old-form subject(s) after the purge: $old_agent"
+expect_last "UNKNOWN"
+[ "$(sort "$FAKE/stream")" = "$(printf '%s\n' "$new_agent 811" "$old_agent 812" "$new_issue 810" | sort)" ] ||
+  fail "the stream holds $(paste -sd' ' "$FAKE/stream"), want the new-form messages and $old_agent at 812, the one published after the check"
 done_case
 
 new_case "the driver purges nothing on a stream that is not the reading's"

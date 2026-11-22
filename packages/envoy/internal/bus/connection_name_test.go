@@ -76,6 +76,38 @@ func TestTheConnectionNameTheServerSeesEndsWithTheBuild(t *testing.T) {
 	}
 }
 
+// TestARequiredModeListenersNameEndsWithTheSuffixAndNamesItsBuild: a client whose name ends with
+// PrivacyRequiredSuffix, as a listener in required privacy mode names its connections, keeps the
+// suffix last, since the auth service admits a listener on a hub with private projects only when
+// its name ends with it, and still names its build, in the word before the suffix, where
+// legacy-subjects-gate.sh reads it.
+func TestARequiredModeListenersNameEndsWithTheSuffixAndNamesItsBuild(t *testing.T) {
+	const build = "legion@0123456789abcdef0123456789abcdef01234567"
+	previous := connectionBuild
+	connectionBuild = func() string { return build }
+	t.Cleanup(func() { connectionBuild = previous })
+
+	srv, uri := testnats.Start(t)
+	client, err := Connect([]string{uri}, WithName("envoy-listener-test"+PrivacyRequiredSuffix))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+
+	want := "envoy-listener-test " + build + PrivacyRequiredSuffix
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		names := serverConnectionNames(t, srv)
+		if slices.Contains(names, want) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the server lists the connections %q, and none named %q", names, want)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // TestAConnectionOfABuildThatHoldsNoCommitNamesNoBuild holds a binary with no build to name (a test
 // binary, a build from a changed checkout) to its name alone, never a made-up build.
 func TestAConnectionOfABuildThatHoldsNoCommitNamesNoBuild(t *testing.T) {

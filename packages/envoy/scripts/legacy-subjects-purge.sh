@@ -20,8 +20,9 @@
 # purges nothing when the stream is not the one the reading read (its envoy_stream_id), when its
 # subjects cannot be read whole, or when an old-form subject holds a message after the newest
 # old-form message the reading found; otherwise it purges each old-form subject by itself, with
-# that literal subject as the purge's filter, so no new-form message goes, and lists the stream's
-# subjects again. It calls $JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS,
+# that literal subject as the purge's filter, so no new-form message goes, and the sequence after
+# that newest one as its bound, so an old-form message published after the Job's check stays, and
+# lists the stream's subjects again. It calls $JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS,
 # $JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS and $JS.API.STREAM.PURGE.ENVOY_NOTIFICATIONS alone; no
 # service grant of this repository holds the purge.
 #

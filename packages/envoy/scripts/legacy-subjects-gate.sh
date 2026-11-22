@@ -30,13 +30,14 @@
 #        for the account that user sits in, the clients' own. Each server --hub-statefulset (its
 #        pods, <name>-<ordinal>, as the servers name themselves) and --hub-server name must answer
 #        every page, and no other may. Each connection but the census's own must end its name with
-#        its build (lib/legacy-subjects-gate-forms.jq, build_token): legion@<commit>, judged by
-#        GitHub's compare of --new-form-commit with that commit, or @sjawhar/<plugin>@<version>,
-#        judged by the commit of its release tag (pi-envoy-v<version>, claude-envoy-v<version> for
-#        claude-envoy and codex-envoy), as daemon-release-gate.sh judges a pin. A build behind or
-#        beside the commit makes it false; a connection that names no build, a server that does not
-#        answer, a census that moved between its pages and one that enumerates no connection make
-#        it unknown.
+#        its build, or with its build and then privacy-required, which a listener in required
+#        privacy mode keeps last (lib/legacy-subjects-gate-forms.jq, build_token): legion@<commit>,
+#        judged by GitHub's compare of --new-form-commit with that commit, or
+#        @sjawhar/<plugin>@<version>, judged by the commit of its release tag (pi-envoy-v<version>,
+#        claude-envoy-v<version> for claude-envoy and codex-envoy), as daemon-release-gate.sh judges
+#        a pin. A build behind or beside the commit makes it false; a connection that names no
+#        build, a server that does not answer, a census that moved between its pages and one that
+#        enumerates no connection make it unknown.
 #   (b)  The consumers: each consumer of the stream has acknowledged (its ack floor's stream
 #        sequence) the newest message of the old-form subjects its filters match: a floor equal to
 #        that message's sequence holds, since the floor's own message is acknowledged, and a floor

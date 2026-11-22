@@ -454,9 +454,10 @@ answer `natsprobe` exits 4 for; the hub lists the listener's connection authoriz
 admitted within 2 s, the first counted from the kill. A session opened before the hub has
 read the killed broker's close can be routed to the dead replica and refused at the hub's
 authorization timeout, so the check opens the first session once the hub lists one
-`envoy-broker-callout` connection fewer (both brokers' connections carry that name), and says
-how long the drop took. The last line is `all 6 assertions passed` (exit 0) or `<k> of 6
-assertions failed` (exit 1); a probe that reports nothing reads `UNKNOWN` and fails.
+`envoy-broker-callout` connection fewer (both brokers' connections carry that name, with the
+broker's build after it when the binary names one), and says how long the drop took. The last
+line is `all 6 assertions passed` (exit 0) or `<k> of 6 assertions failed` (exit 1); a probe that
+reports nothing reads `UNKNOWN` and fails.
 
 ```bash
 LEGION_TEST_PG_DSN=postgres://... bash scripts/callout-check.sh   # starts and stops its own stack
@@ -995,7 +996,8 @@ printed on lines that name it first, `(a1) the pins`, `(a2) the running clients`
   reading draws and leaves out. Each server answers for the account that user sits in, the
   clients' own (`$G` on a hub with no private project). Every server `--hub-statefulset` names
   (its pods, `<name>-<ordinal>`, as each server names itself) and every `--hub-server` must answer
-  every page, and no other server may. Each connection must end its name with its build:
+  every page, and no other server may. Each connection must end its name with its build, or with
+  its build and then `privacy-required`, which a listener in required privacy mode keeps last:
   `legion@<commit>`, judged by GitHub's compare of `--new-form-commit` with that commit, or
   `@sjawhar/<plugin>@<version>`, judged by its release tag (`pi-envoy-v<version>`;
   `claude-envoy-v<version>` for claude-envoy and codex-envoy). A build behind or beside the commit
@@ -1033,12 +1035,14 @@ Job as the `legacy-cutover` user (`lib/legacy-subjects-purge-nats.sh`) that purg
 stream is not the reading's (its `envoy_stream_id`), when its subjects cannot be read whole, or when
 an old-form subject holds a message after the newest one the reading found; otherwise it purges
 each old-form subject by itself (`$JS.API.STREAM.PURGE.ENVOY_NOTIFICATIONS` with that literal
-subject as the filter, so no new-form message goes) and reads the subjects back. It prints a
-`PURGED` line per subject and `PURGED` (exit 0) when the read-back holds no old-form subject, or
-`UNKNOWN` (exit 3). Its Job is created, deleted and read back as the gate's are, labelled
-`created-by: legacy-subjects-purge`. `legacy-subjects-purge.test.sh` proves each verdict against
-a fake `nats` that keeps the stream's messages, so each case reads what the stream holds after the
-driver ran; CI runs it beside the gate's test.
+subject as the filter, so no new-form message goes, and the sequence after the newest old-form
+message the reading found as its `seq`, so an old-form message published after the Job's check
+stays) and reads the subjects back. It prints a `PURGED` line per subject and `PURGED` (exit 0)
+when the read-back holds no old-form subject, or `UNKNOWN` (exit 3). Its Job is created, deleted
+and read back as the gate's are, labelled `created-by: legacy-subjects-purge`.
+`legacy-subjects-purge.test.sh` proves each verdict against a fake `nats` that keeps the stream's
+messages, so each case reads what the stream holds after the driver ran; CI runs it beside the
+gate's test.
 
 ### What the gate reads
 
