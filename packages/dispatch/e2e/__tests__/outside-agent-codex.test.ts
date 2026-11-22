@@ -876,9 +876,11 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
   );
 
   test(
-    "C3 fails where the comment's author is another session, not proven, another person, or names no project (a broker that does not name a restricted member's trade)",
+    "C3 fails where the comment's author is of another kind, another session, not proven, another person, or names no project (a broker that does not name a restricted member's trade)",
     async () => {
-      const [otherSession, unproven, otherOwner, noProject] = await Promise.all([
+      const [asUser, asAgent, otherSession, unproven, otherOwner, noProject] = await Promise.all([
+        codexStandInRun({ commentAuthor: { kind: "user" } }),
+        codexStandInRun({ commentAuthor: { kind: "agent" } }),
         codexStandInRun({ commentAuthor: { id: "codex-thread-other" } }),
         codexStandInRun({ commentAuthor: { proven: null } }),
         codexStandInRun({ commentAuthor: { owner: "someone@example.com" } }),
@@ -889,13 +891,17 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
         expect(rowOf(run, "C3").row?.got).toContain(words);
         expect(run.code).toBe(1);
       };
+      // Dispatch records a broker token's write as kind `session`; any other kind is not the
+      // Codex session's own write, whatever its id, owner and project.
+      failed(asUser, "author kind user");
+      failed(asAgent, "author kind agent");
       failed(otherSession, "session codex-thread-other, not codex-thread-main");
       failed(unproven, "not proven by its credential");
       failed(otherOwner, "owner someone@example.com");
       failed(noProject, "project null (a token naming no project");
     },
-    // The four runs at once, each a bounded child under the Codex run's bound.
-    rowLimit({ atOnce: ["codexRun", "codexRun", "codexRun", "codexRun"] })
+    // The six runs at once, each a bounded child under the Codex run's bound.
+    rowLimit({ atOnce: ["codexRun", "codexRun", "codexRun", "codexRun", "codexRun", "codexRun"] })
   );
 
   test(
