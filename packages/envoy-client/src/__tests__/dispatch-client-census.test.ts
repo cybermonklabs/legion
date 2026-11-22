@@ -64,6 +64,15 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   putSpecSource: (client) => client.putSpecSource("DSP", "acme/app", "main", actor),
   deleteSpecSource: (client) => client.deleteSpecSource("DSP", "acme/app", actor),
   importSpecLevel: (client) => client.importSpecLevel("<KEY>", "notes.md", actor),
+  recordOutcomes: (client) =>
+    client.recordOutcomes(
+      "<KEY>",
+      { pull_request: "acme/app#12", head: "a".repeat(40), list: "author", outcomes: [] },
+      actor
+    ),
+  listOutcomes: (client) => client.listOutcomes("<KEY>"),
+  changeRequest: (client) => client.changeRequest("<KEY>"),
+  changeRequestEnding: (client) => client.changeRequestEnding("<KEY>", "a".repeat(40)),
   resolveAsk: (client) => client.resolveAsk("ask-1", { answer: "This one.", actor } as never),
   requestApproval: (client) => client.requestApproval("artifact-1", { actor, summary: "Spec" }),
   planApprove: (client) => client.planApprove("artifact-1", { actor, version: 2 }),

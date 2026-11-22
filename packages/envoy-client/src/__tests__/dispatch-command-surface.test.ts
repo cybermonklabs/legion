@@ -255,6 +255,43 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
       return response(premortemReportBody());
     }
     if (rest === "steps") return response(stepsBody());
+    // A list of outcomes, as Dispatch answers a record and lists the records it holds.
+    if (rest === "outcomes") {
+      const record = {
+        id: 7,
+        issue: segments[3],
+        pull_request: "acme/app#12",
+        head: "0123456789abcdef0123456789abcdef01234567",
+        list: "final",
+        outcomes: [
+          { text: "A second payment of one order is refused again.", restored: true },
+          { text: "The refusal names the order.", statement: "a-bill-names-its-order" },
+        ],
+        actor,
+        recorded_at: AT,
+      };
+      return method === "POST" ? response(record, 201) : response([record]);
+    }
+    // The ending of a change request that waits for one reason.
+    if (rest === "change-request/ending") {
+      return response({
+        issue: segments[3],
+        head: "0123456789abcdef0123456789abcdef01234567",
+        version: 3,
+        state: "waiting",
+        reasons: [
+          {
+            code: "no_conclusion",
+            detail:
+              "Version 3 of the spec holds no conclusion block. Write the conclusion in the spec.",
+          },
+        ],
+        judgment: "none",
+        judgment_reasons: [],
+        approved: false,
+        final_list: null,
+      });
+    }
   }
   if (segments[2] === "artifacts" && segments.length >= 4) {
     if (rest === "" && method === "GET") return response(artifactBody("spec.md"));

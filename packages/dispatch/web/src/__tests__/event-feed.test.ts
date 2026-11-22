@@ -1795,6 +1795,14 @@ const eventsByType: Record<EventType, DispatchEvent> = {
     { issue_key: null }
   ),
   "settings.repo_project.updated": event("settings.repo_project.updated", {}, { issue_key: null }),
+  "spec.outcomes_recorded": event("spec.outcomes_recorded", {
+    issue: issue().key,
+    record: 7,
+    pull_request: "acme/app#12",
+    head: "0123456789abcdef0123456789abcdef01234567",
+    list: "final",
+    outcomes: 2,
+  }),
   "spec.request_stale": event("spec.request_stale", { issue: issue().key, statements: [] }),
   "subscription.remove_requested": event("subscription.remove_requested", { session_id: "s1" }),
   "subscription.removed": event("subscription.removed", { session_id: "s1" }),

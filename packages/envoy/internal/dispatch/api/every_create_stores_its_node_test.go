@@ -327,6 +327,13 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/issues/{key}/results/dry-run":  noObject,
 	"POST /api/v1/issues/{key}/handoffs/{phase}": noObject,
 	"POST /api/v1/results/{id}/retract":          noObject,
+	// A list of outcomes is a row of spec_outcome_records, which is no project-owned kind with a
+	// node: it is written under its issue and read through it.
+	"POST /api/v1/issues/{key}/outcomes": noObject,
+	// The import of an approved level writes nodes of the approved spec alone (specstore.Import)
+	// and no row of a project-owned table; the fixture's issue holds no approved level, so it is
+	// called with the empty body and refused.
+	"POST /api/v1/issues/{key}/spec-import-level": noObject,
 	// The reasoning nodes, a node's state and the pre-mortem conversion:
 	// each writes nodes and tuples of the store alone and no row of a project-owned table, and the
 	// fixture's paths name no node of the issue under {id} and no pre-mortem under {slug}, so each

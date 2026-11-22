@@ -449,6 +449,44 @@ test("a plan's requirement row reads requirement with no statement mark, and a s
   });
 });
 
+// A component is a node of The Spec beside the statements that are about it, so its row takes the
+// statements' colour; a conclusion is what a change found, which the person may answer, so its row
+// takes the decisions' colour.
+test("a component row takes a statement's colour and a conclusion row a decision's", () => {
+  const drawn = (type: NodeType) => {
+    const view = renderRow(
+      node({ id: `spec#b-${type}`, text: "Billing takes each payment.", type })
+    );
+    try {
+      const tag = view.container.querySelector("[data-node-margin] [data-node-tag]");
+      const dot = view.container.querySelector("[data-node-bullet] i");
+      return {
+        decision: tag?.classList.contains(pageKindTag.decision) ?? null,
+        decisionBullet: dot?.classList.contains(pageKindBullet.decision) ?? null,
+        statement: tag?.classList.contains(pageKindTag.statement) ?? null,
+        statementBullet: dot?.classList.contains(pageKindBullet.statement) ?? null,
+        tag: tag?.textContent ?? null,
+      };
+    } finally {
+      view.unmount();
+    }
+  };
+  expect(drawn("component")).toEqual({
+    decision: false,
+    decisionBullet: false,
+    statement: true,
+    statementBullet: true,
+    tag: NODE_TYPE_NAMES.component,
+  });
+  expect(drawn("conclusion")).toEqual({
+    decision: true,
+    decisionBullet: true,
+    statement: false,
+    statementBullet: false,
+    tag: NODE_TYPE_NAMES.conclusion,
+  });
+});
+
 // R34, R9: a reading is a typed node - an agent's reading of a person's answer, inside the ask or
 // the decision it reads - so its row draws its kind as one tag, its word and a shape no other
 // kind draws; and it is always an agent's words, so its bullet and its tag take an agent's quiet

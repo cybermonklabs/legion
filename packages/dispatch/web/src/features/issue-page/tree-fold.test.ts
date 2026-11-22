@@ -227,6 +227,18 @@ test("a plan task is not open, and the check beside it is what opens their branc
   expect(idsOf(open)).toEqual(["CORE-1", "spec#b-r1", "plan-md#b-t1", "v#b-c1", "spec#b-r2"]);
 });
 
+// A component states nothing of its own to answer, and a conclusion needs no person's approval
+// (R23): the person may answer it, and nothing waits on that answer. Neither opens a path.
+test("a component and a conclusion are not open", () => {
+  const root = node("CORE-1", "issue", [
+    node("spec", "document", [
+      node("spec#b-billing", "component"),
+      node("spec#b-c1", "conclusion"),
+    ]),
+  ]);
+  expect([...frontier(root)]).toEqual([]);
+});
+
 test("a requirement no check serves is open, and one outside the coverage read is not", () => {
   const rows = treeRows(
     node("CORE-1", "issue", [

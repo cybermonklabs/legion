@@ -86,6 +86,11 @@ var goingMutatingRoutesWithNoTool = []string{
 	// rule for both (spec requirement r-proposed), so goingToolRoutes gives it no row for
 	// the reason it gives the settle none. Keep it here; never give it a row.
 	"POST /api/v1/issues/{key}/nodes/{id}/state",
+	// A list of outcomes is the author's or the reviewer's own record of a pull request's head
+	// (R27): the reviewer's final list is the one record its author cannot write, and the ending
+	// of a change request is judged by it, so the loop that proposes operations on the graph must
+	// never write one for them, and goingToolRoutes gives it no row. Keep it here.
+	"POST /api/v1/issues/{key}/outcomes",
 	// A result's dry run, which writes nothing: dispatch_result's record row is the write.
 	"POST /api/v1/issues/{key}/results/dry-run",
 	// The import of an approved level writes the approved spec under a person's approval, which
