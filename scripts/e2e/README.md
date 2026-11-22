@@ -52,7 +52,7 @@ a smaller cap on the node lets the kernel kill pod processes below their own lim
 
 Every `legion.yaml` a proof writes for a Go daemon sets `worker_wakes_per_minute: 0`, which turns the daemon's wake pacing off (INFRA-976).
 A proof starts roles and waits on bounded times, and at the default of 8 wakes a minute every wake after the first would spend those waits queueing for its turn.
-The three kind proofs write no such file: the Go live tests they drive write theirs, and each launches through the Sandbox runtime itself, where no wake is paced.
+The three Sandbox kind proofs write no such file: the Go live tests they drive write theirs, and each launches through the Sandbox runtime itself, where no wake is paced.
 
 Every stage proof marks each process it starts with `LEGION_E2E_RUN=$work` once its transcript runs, and its teardown and its checks that no process remains take only the processes that carry the mark ([`lib/process-tree.sh`](#libprocess-treesh)'s `marked_processes`):
 a person's shell or `tail -f` working under the run's directory is never signalled or waited on.
@@ -214,6 +214,11 @@ Each item below names a script, then what it proves.
   on a throwaway kind cluster with Agent Sandbox v1.0.3 and gVisor, an issue pod Legion's own loader, `sandboxOptions` and Sandbox runtime build from a `legion.yaml` whose `runtime.kubernetes.pod` mounts an existing NFS share twice
   — through a PersistentVolumeClaim (read-only by default) and as an `nfs` export with `read_only: false` — reads the server's seed file through the claim, is refused a write there, and writes a file through the export that the server then holds;
   `legion config check` refuses a volume naming two sources, and `legion probe-boot` mounts both shares and refuses a missing claim, a missing export and a server that never answers, each naming the volume and its share, and an image digest the registry does not have, naming the image
+
+- `cutover-proof-kind.sh`
+
+  on a throwaway kind cluster, the envoy-listener Deployment's replacement under a writer hold, as the consumer-names cutover's step 3 and its rollback make it: under the hold (the cluster's NATS server refusing the listener's user), a RollingUpdate to `ENVOY_CONSUMER_NAMES=fresh` leaves the old pod Ready and the mode check stops, while Recreate leaves no pod of a previous ReplicaSet and the new pod's start line names `fresh` before any convert;
+  the rollback to `fixed` holds the same under a second hold, and RollingUpdate put back after the release keeps the old pod Ready until the new one is Ready
 
 - `dispatch-claimant-delivery.sh`
 
@@ -3962,6 +3967,28 @@ the agents are sleep stubs, the store answers for an issue's first launch, the r
 The loader, the runtime, the image probe, Agent Sandbox's pod, gVisor, the node's NFS client and the NFS server are the real ones.
 `share_volumes_kind_test.go`, untagged, builds all four files through the loader and each runtime through `sandboxOptions` and `sandbox.New` on every `go test`.
 `SHARE_VOLUMES_EVIDENCE_DIR` (default a fresh `/tmp` directory, kept and printed) keeps the transcript, the four `legion.yaml` files and the missing-image copy of the `shares` one, the issue pod's manifest and each `probe-boot`'s output.
+
+## cutover-proof-kind.sh
+
+```sh
+bash scripts/e2e/cutover-proof-kind.sh     # → "cutover proof kind e2e: PASS in <n>s", exit 0
+```
+
+Runs on a Linux host with docker, go, kubectl, jq and kind (`LEGION_E2E_KIND` names the binary when it is not on `PATH`).
+It builds this tree's envoy-listener and the nats-server `packages/envoy/go.mod` pins, statically, into one image on busybox, and loads it into the cluster; fixturebuckets, which it also builds, runs from the host through a port-forward.
+Every kubectl call names the run's kubeconfig and context, so the caller's is never read, and the cluster is deleted on any exit.
+The hold is the cluster's NATS server refusing the listener's user: its configuration is swapped for one that lists the operator's user alone and reloaded, as the auth service refuses every client but the operator while the hold row reads held.
+
+| check | what it holds |
+| :--- | :--- |
+| `rolling-update-control` | under the hold, the Deployment set to `ENVOY_CONSUMER_NAMES=fresh` with RollingUpdate: the new pod's `/v1` never opens, so the old pod stays, Ready, and the mode check reads it and stops |
+| `recreate-fresh` | the same template with strategy Recreate: no pod of a previous ReplicaSet is left, and the new pod's start line names `fresh` under the hold, before any convert; the mode check passes |
+| `rollback-control` | after a release and under a second (rollback) hold, the Deployment set to `fixed` with RollingUpdate: the `fresh` pod stays, and the mode check reads `fresh` and stops |
+| `recreate-fixed` | the rollback with Recreate: no pod of a previous ReplicaSet is left, and the pod's spec and start line read `fixed`; the mode check passes |
+| `rolling-update-restored` | after the release, RollingUpdate put back: a later replacement keeps the old pod Ready until the new one is Ready |
+
+The mode check is the script's own (`mode_check`): no pod of a previous ReplicaSet, and the wanted mode from each pod's spec and its start line; a pod that logged no such line is UNKNOWN.
+`CUTOVER_PROOF_EVIDENCE_DIR` (default a fresh `/tmp` directory, kept and printed) keeps the transcript and, on a failure, the cluster's pods, events and logs.
 
 ## dispatch-claimant-delivery.sh
 

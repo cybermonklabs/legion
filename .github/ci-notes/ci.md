@@ -668,8 +668,9 @@ to nothing of the browser half, which the dispatch_two_builds filter names.
 
 ## dispatch_two_builds: The two-build job: its Go step's reads, named again
 
-The two-build job: its Go step's reads, the dispatch_two_builds_go filter's, named again so the job runs for the
-change that starts the step, and the browser half,
+The two-build job: the reads of its two Go steps, the dispatch_two_builds_go and
+consumer_names_mixed_build filters', named again so the job runs for a change that starts either
+step, and the browser half,
 `bun run e2e:multiprocess -- cross-build.multiprocess` in packages/dispatch: the
 harness and spec under e2e/, the two SPA builds (web/, the editor package and the
 patches it takes, the notices script the build runs), the Dispatch server
@@ -1341,9 +1342,9 @@ term, only the dispatched one, `github.event_name == 'workflow_dispatch' && 'tru
 
 ## The two-build job builds the previous release and runs both halves against
 
-The two-build job builds the previous release and runs both halves against it (the Go
-suite and the cross-build browser spec), which is the longest run of them all, so it is
-gated like the other slow suites.
+The two-build job builds the previous release and runs its three parts against it (the Dispatch
+Go suite, the consumer-names mixed-build rows and the cross-build browser spec), which is the
+longest run of them all, so it is gated like the other slow suites.
 
 ## The two-build job's Go step alone, behind a gate of its own
 
@@ -1902,7 +1903,10 @@ which needs the whole history and the tags (fetch-depth 0), and builds it from `
 The first-rollout row runs the first-rollout build instead, the newest release before the first
 that registers its schema numbers: the job pins it by its commit (FIRST_ROLLOUT_COMMIT), the
 resolve step fails when its tag, legion-envoy-v30.20.2, names another commit, and the job builds
-it the same way.
+it the same way. Between the Go suite and the browser half, a step of its own runs envoy-infra's
+consumer-names mixed-build rows (infra/consumernames, only what the `twobuild` tag adds) against
+the previous build's envoy-listener, behind its own gate (consumer_names_mixed_build), and fails
+on a row that skipped.
 Each build is cached by its commit and the script that built it, so a pull request builds each
 release once; its src/ is left out of the cache, since the test reads only the parts the script
 copies out of it. Each row's NATS runs in its own test process (internal/testnats), so the job

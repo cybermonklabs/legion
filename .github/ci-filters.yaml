@@ -1650,12 +1650,6 @@ envoy_infra_go:
   - 'packages/envoy/consumernames/*'
   - *go_workspace
   - 'packages/envoy/infra/**'
-  # The writer hold's stack (writerhold/holdtest) runs the NATS auth service and the broker's hold
-  # routes, and the consumer-names commands read the hold records and the declared streams.
-  - 'packages/envoy/internal/bus/signedrecord/*'
-  - 'packages/envoy/internal/cipher/**'
-  - 'packages/envoy/internal/holdrecord/**'
-  - 'packages/envoy/internal/streamset/*'
   # The two-build job's consumer-names step (consumer_names_mixed_build) runs only what its tag
   # adds there, so this job runs whenever that step does: the step's own workflow and the build
   # script whose previous build it runs.
@@ -1684,9 +1678,10 @@ envoy_infra_go:
   - 'packages/envoy/internal/streamset/*'
   - '.github/actions/pull-test-images/**'
   - '.github/scripts/go-tagged-tests.sh'
-  # The writer hold's tests (writerhold/holdtest) run the broker's hold routes and the NATS auth
-  # service in process: internal/holdrecord/holdrecordtest, the cipher API and its store, and the
-  # bus's signed records.
+  # The writer hold's tests (writerhold/holdtest) and the consumer-names commands run the broker's
+  # hold routes and the NATS auth service in process, and read the hold records and the declared
+  # streams: internal/holdrecord/holdrecordtest, the cipher API and its store, and the bus's signed
+  # records.
   - 'packages/envoy/internal/cipher/**'
   - 'packages/envoy/internal/holdrecord/**'
   - 'packages/envoy/internal/bus/**'
@@ -2537,10 +2532,6 @@ envoy_e2e_local:
   - 'packages/envoy/scripts/e2e-local.sh'
   - 'packages/envoy/scripts/e2e-local.test.sh'
   - 'packages/envoy/scripts/fixtures/github/**'
-  # natsd's closure (go list -deps ./internal/testnats/cmd/natsd) now holds internal/streamset,
-  # with what it imports.
-  - 'packages/envoy/internal/streamset/*'
-  - 'packages/envoy/natsgrant/*'
   - 'packages/envoy-client/src/**'
   # why: .github/ci-notes/ci.md#envoy_e2e_local-and-legioncipher-client-with-it-the-tsc-program-of
   - 'packages/cipher-client/**'
