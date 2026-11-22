@@ -102,8 +102,9 @@ var goingMutatingRoutesWithNoTool = []string{
 }
 
 // withThrowawayToolRoutes gives one tool a set of rows for the length of a test, so a build is
-// shown failing on a row that is no write of the table without touching the map the server
-// mounts.
+// shown failing on a row that is no write of the table. It writes those rows into goingToolRoutes,
+// the package's own map that every server reads at Register, and takes them out at the test's
+// end, so a test that calls it does not run in parallel.
 func withThrowawayToolRoutes(t *testing.T, tool string, rows ...goingToolRoute) {
 	t.Helper()
 	if _, held := goingToolRoutes[tool]; held {
@@ -117,7 +118,8 @@ func withThrowawayToolRoutes(t *testing.T, tool string, rows ...goingToolRoute) 
 // nothing else — each entry carries that spec's own description and its own argument schema,
 // unchanged — and every row an entry names is a write of the table the server mounts.
 func TestTheCatalogueIsTheDispatchToolsThatWrite(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it adds a tool's rows to goingToolRoutes (withThrowawayToolRoutes), the table every
+	// server of the package reads at Register.
 	routes := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
 	catalogue, err := buildGoingCatalogue(routes)
 	if err != nil {
@@ -381,7 +383,8 @@ func TestAGoingActionTheCatalogueDoesNotHoldIsRefusedWithNoRequestMade(t *testin
 // (model.GraphEdgeKinds) and the `block[]` attributes of the typed blocks (pmdoc.LinkKinds) — is
 // refused, so no entry can promise an edge the graph has no kind for.
 func TestAGoingRelationOutsideBothEdgeFamiliesFails(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it adds a tool's rows to goingToolRoutes (withThrowawayToolRoutes), the table every
+	// server of the package reads at Register.
 	families := edgeFamilies()
 	for _, relation := range append(slices.Clone(model.GraphEdgeKinds), pmdoc.LinkKinds()...) {
 		if !slices.Contains(families, relation) {

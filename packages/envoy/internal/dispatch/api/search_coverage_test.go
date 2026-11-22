@@ -224,7 +224,8 @@ func TestSearchCoverageAuthentication(t *testing.T) {
 // a backend's state can lag the answer by a moment, so it is read again for a while before it
 // fails.
 func TestSearchCoverageRefusesAtItsBound(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it shortens embedqueue's coverage statement timeout for the whole process
+	// (embedqueue.ShortenCoverageBoundForTest).
 	handler, database, _ := newTestServer(t, testServerOptions{embedder: &fakeEmbedder{}})
 	ctx := context.Background()
 	const bound = time.Second

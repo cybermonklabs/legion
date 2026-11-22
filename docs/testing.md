@@ -415,9 +415,9 @@ process shares: the default logger (`logtest.SetDefault`, `slog.SetDefault`), th
 counts, or pmdoc's schema manifest, display tree version or block ID generator
 (`pmdoc.UseManifestForTest`, `pmdoc.UseStagedBlockForTest`, `pmdoctest.UseBlockSchema`,
 `pmdoc.SetDisplayTreeVersionForTest`, `pmdoc.SetBlockIDGenerator`). go test runs every serial
-test before it starts the parallel ones, so such a test runs alone. One serial test says on its
-first line why it is serial; the rest need no word, since the call that makes them serial is in
-their own body or a helper's.
+test before it starts the parallel ones, so such a test runs alone. A serial test whose reason is
+not a call in its own body or a helper of the package's says why on its first line: a wall-clock
+bound that missed under parallel load, or a write through another package's test hook.
 
 A test that reads `pg_locks` or `pg_stat_activity` names its own database in the predicate
 (`database = (select oid from pg_database where datname = current_database())`, or

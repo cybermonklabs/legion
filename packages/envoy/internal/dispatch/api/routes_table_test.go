@@ -274,7 +274,8 @@ func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
 // nothing and says why not at once, and one that resolves an id without naming that 404, fails
 // on each.
 func TestEveryIDRouteIsNamed(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it adds a row to idRoutes (withIDRoute), the table every server of the package
+	// reads.
 	routes := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
 	if undecided := undecidedIDRoutes(routes); len(undecided) > 0 {
 		t.Fatalf("%d route(s) whose id the prefix layer cannot decide:\n%s", len(undecided), strings.Join(undecided, "\n"))
