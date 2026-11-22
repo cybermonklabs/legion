@@ -2722,16 +2722,23 @@ func TestLegionGhForwardsATerminatingSignalToGh(t *testing.T) {
 // default action, so gh would start with the hangup set to kill and die of the first one, which
 // is the whole of what nohup was asked to prevent.
 //
-// The run is under a shell that ignores the signal, as nohup does. What decides the row is each
-// process's own disposition of SIGHUP, which the kernel reports in /proc/<pid>/status, and no
-// clock. A process that ignores a signal has it discarded as it is sent, so a hangup sent to such
-// a `legion gh` can never end it, or reach gh, later; one with a handler for it (a signal.Notify)
-// takes the hangup, and may end on it or forward it to gh at any later moment, which no wait of
-// this row could outlast. So the row reads that gh was started ignoring SIGHUP, and that `legion
-// gh` ignores it and has no handler for it, before the hangup and after it; then it releases gh
-// and reads that gh ended on its own and `legion gh` came back with gh's status. The stand-in gh
-// sets a trap of its own, which a shell started ignoring the signal cannot set, so a gh that
-// records catching the hangup is one whose hangup the arming un-ignored.
+// The run is under a shell that ignores the signal, as nohup does, and no clock decides the row.
+// gh's own disposition is read by behaviour, which every kernel shows: before it traps the hangup,
+// the stand-in gh starts a child shell, which inherits gh's disposition of SIGHUP, and the child
+// sends itself the hangup; it survives only if gh was started ignoring it, and dies of it
+// otherwise (requireGhStartedIgnoringHangup). `legion gh`'s own disposition is read from
+// /proc/<pid>/status, the only place a kernel reports another process's: a process that ignores a
+// signal has it discarded as it is sent, so a hangup sent to such a `legion gh` can never end it,
+// or reach gh, later; one with a handler for it (a signal.Notify) takes the hangup, and may end on
+// it or forward it to gh at any later moment, which no wait of this row could outlast. So the row
+// reads that gh was started ignoring SIGHUP, and that `legion gh` ignores it and has no handler
+// for it, before the hangup and after it; then it releases gh and reads that gh ended on its own
+// and `legion gh` came back with gh's status. A gVisor may report no signal masks in
+// /proc/<pid>/status (release-20260803.0 reports none, release-20261116.0 does), and its
+// /proc/<pid>/stat gives 0 for them even for a signal ignored, so there `legion gh`'s two reads
+// have no source (requireHangupIgnored). The stand-in gh sets a trap of its own, which a shell
+// started ignoring the signal cannot set, so a gh that records catching the hangup is one whose
+// hangup the arming un-ignored.
 func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
@@ -2740,16 +2747,18 @@ func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 	}
 	records := t.TempDir()
 	ghRecord, running := filepath.Join(records, "gh"), filepath.Join(records, "running")
-	ghIgnored, release := filepath.Join(records, "ignored"), filepath.Join(records, "release")
+	ghProbe, release := filepath.Join(records, "probe"), filepath.Join(records, "release")
 	ghPid := filepath.Join(records, "pid")
-	// The stand-in writes its pid, whole, and the signals it was started ignoring (its own
-	// status's SigIgn), traps the hangup, says it is running, and then waits for the test's
-	// release, or for this test binary to be gone, in ticks short enough that a trap runs within
-	// one of them: a shell runs no trap while a foreground command of its own is still going.
+	// The stand-in writes its pid, whole, and the status of its probe of its own disposition of
+	// SIGHUP: a child shell, which inherits that disposition, sends itself the hangup and exits 0
+	// if it survived it, and its status is 129 if it died of it. Then the stand-in traps the
+	// hangup, says it is running, and waits for the test's release, or for this test binary to be
+	// gone, in ticks short enough that a trap runs within one of them: a shell runs no trap while
+	// a foreground command of its own is still going.
 	stub := filepath.Join(t.TempDir(), "gh")
 	script := ghStandInPrefix(help) +
 		"echo $$ >\"$GH_STANDIN_PID.new\" && mv \"$GH_STANDIN_PID.new\" \"$GH_STANDIN_PID\"\n" +
-		"sed -n 's/^SigIgn:[[:space:]]*//p' /proc/$$/status >\"$GH_STANDIN_IGNORED\"\n" +
+		"sh -c 'kill -HUP $$; exit 0'; echo $? >\"$GH_STANDIN_PROBE\"\n" +
 		"trap 'printf \"gh caught the hangup\\n\" >>\"$GH_STANDIN_RECORD\"; exit 44' HUP\n" +
 		": >\"$GH_STANDIN_RUNNING\"\n" +
 		"while [ ! -f \"$GH_STANDIN_RELEASE\" ] && kill -0 \"$GH_STANDIN_TEST_PID\" 2>/dev/null; do sleep 0.05; done\n" +
@@ -2761,7 +2770,7 @@ func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 		"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
 		"GH_STANDIN_RECORD": ghRecord, "GH_STANDIN_RUNNING": running, "GH_STANDIN_RELEASE": release,
-		"GH_STANDIN_IGNORED": ghIgnored, "GH_STANDIN_PID": ghPid, "GH_STANDIN_TEST_PID": strconv.Itoa(os.Getpid()),
+		"GH_STANDIN_PROBE": ghProbe, "GH_STANDIN_PID": ghPid, "GH_STANDIN_TEST_PID": strconv.Itoa(os.Getpid()),
 	}, "pr", "list")
 	// `sh -c 'trap "" HUP; exec …'` is what nohup does to the command it runs, and the exec is
 	// the wrapper's: `legion gh` starts here with the hangup ignored and no handler of its own,
@@ -2813,17 +2822,21 @@ func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 		_, err := os.Stat(running)
 		return err == nil
 	})
-	if ignored := readSignalMask(t, ghIgnored); ignored&hangupBit == 0 {
-		t.Fatalf("gh was started with SIGHUP not ignored (its SigIgn %#x): `legion gh` handed a nohuped gh a hangup that ends it", ignored)
-	}
+	t.Run("gh starts with the hangup ignored", func(t *testing.T) {
+		requireGhStartedIgnoringHangup(t, ghProbe)
+	})
 	legion := command.Process.Pid
-	requireHangupIgnored(t, legion, "before the hangup")
+	t.Run("legion gh ignores the hangup and holds no handler for it before the hangup", func(t *testing.T) {
+		requireHangupIgnored(t, legion, "before the hangup")
+	})
 	// The hangup goes to this one pid, never to the group: gh shares this test binary's own
 	// group, and a group signal would end the test run with it.
 	if err := command.Process.Signal(syscall.SIGHUP); err != nil {
 		t.Fatal(err)
 	}
-	requireHangupIgnored(t, legion, "after the hangup")
+	t.Run("legion gh ignores the hangup and holds no handler for it after the hangup", func(t *testing.T) {
+		requireHangupIgnored(t, legion, "after the hangup")
+	})
 	if err := os.WriteFile(release, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -2845,20 +2858,56 @@ func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 	}
 }
 
+// requireGhStartedIgnoringHangup fails the row unless the stand-in gh's probe, whose status it
+// wrote at path, survived the hangup it sent itself: the probe is a child of gh, so it inherits
+// gh's disposition of SIGHUP, which every kernel acts on, and it survives the signal only if gh
+// was started ignoring it. A probe that wrote no status fails the row too: the row then has no
+// answer, not a clean one.
+func requireGhStartedIgnoringHangup(t *testing.T, path string) {
+	t.Helper()
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the status the stand-in gh's probe wrote: %v", err)
+	}
+	switch status := strings.TrimSpace(string(written)); status {
+	case "0":
+	case "":
+		t.Fatal("the stand-in gh's probe wrote no status")
+	default:
+		t.Fatalf("gh was started with SIGHUP not ignored: a child of gh, which inherits its disposition, ended with status %s when it sent itself the hangup (129 is a death by it): `legion gh` handed a nohuped gh a hangup that ends it", status)
+	}
+}
+
 // hangupBit is SIGHUP's bit in a /proc status's signal masks.
 const hangupBit = uint64(1) << (syscall.SIGHUP - 1)
 
 // requireHangupIgnored fails the row unless process pid ignores SIGHUP and has no handler for it,
-// as /proc/<pid>/status reports; when names the moment. A process whose masks cannot be read fails
-// the row too: the row then has no answer, not a clean one.
+// as /proc/<pid>/status reports; when names the moment. A process whose status cannot be read, or
+// whose masks do not parse, fails the row too: the row then has no answer, not a clean one.
+//
+// A kernel that reports neither mask line has no source of the answer: gVisor's
+// release-20260803.0 is one, whose /proc/<pid>/stat also gives 0 for the masks of a process that
+// ignores a signal, and no other interface reports another process's disposition. There the row
+// follows the daemon's rule for a test this machine cannot run (internal/launcher's
+// skipOutsideCI): under GITHUB_ACTIONS it fails, since CI's runners report the masks and a runner
+// that reports none is broken; anywhere else it skips, naming why.
 func requireHangupIgnored(t *testing.T, pid int, when string) {
 	t.Helper()
 	status, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "status"))
 	if err != nil {
 		t.Fatalf("read the signal masks of `legion gh` (pid %d) %s: %v", pid, when, err)
 	}
-	ignored, caught := statusSignalMask(t, status, "SigIgn"), statusSignalMask(t, status, "SigCgt")
+	ignored, ignoredOK := statusSignalMask(t, status, "SigIgn")
+	caught, caughtOK := statusSignalMask(t, status, "SigCgt")
 	switch {
+	case !ignoredOK && !caughtOK:
+		reason := "this kernel's /proc/<pid>/status reports no signal masks (gVisor's release-20260803.0 is one), so nothing reports whether `legion gh` ignores SIGHUP or holds a handler for it"
+		if os.Getenv("GITHUB_ACTIONS") == "true" {
+			t.Fatalf("%s: CI's runners report them, so this runner is broken", reason)
+		}
+		t.Skip(reason)
+	case !ignoredOK || !caughtOK:
+		t.Fatalf("the status of `legion gh` (pid %d) %s holds one of SigIgn and SigCgt and not the other:\n%s", pid, when, status)
 	case caught&hangupBit != 0:
 		t.Fatalf("`legion gh` has a handler for SIGHUP %s (SigCgt %#x): the handler takes the hangup, and may end `legion gh` or forward it to gh at any later moment", when, caught)
 	case ignored&hangupBit == 0:
@@ -2866,9 +2915,9 @@ func requireHangupIgnored(t *testing.T, pid int, when string) {
 	}
 }
 
-// statusSignalMask is the mask a /proc status's line name holds, failing the row where it holds
-// no such line or one that does not parse.
-func statusSignalMask(t *testing.T, status []byte, name string) uint64 {
+// statusSignalMask is the mask a /proc status's line name holds, and whether the status holds
+// that line; it fails the row where the line does not parse.
+func statusSignalMask(t *testing.T, status []byte, name string) (uint64, bool) {
 	t.Helper()
 	for line := range strings.SplitSeq(string(status), "\n") {
 		if value, ok := strings.CutPrefix(line, name+":"); ok {
@@ -2876,25 +2925,10 @@ func statusSignalMask(t *testing.T, status []byte, name string) uint64 {
 			if err != nil {
 				t.Fatalf("parse the %s mask %q: %v", name, value, err)
 			}
-			return mask
+			return mask, true
 		}
 	}
-	t.Fatalf("the process status holds no %s line:\n%s", name, status)
-	return 0
-}
-
-// readSignalMask is the mask a stand-in wrote into path as hex, failing the row where it wrote none.
-func readSignalMask(t *testing.T, path string) uint64 {
-	t.Helper()
-	written, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read the mask the stand-in gh wrote: %v", err)
-	}
-	mask, err := strconv.ParseUint(strings.TrimSpace(string(written)), 16, 64)
-	if err != nil {
-		t.Fatalf("parse the mask the stand-in gh wrote, %q: %v", written, err)
-	}
-	return mask
+	return 0, false
 }
 
 // A signal that reaches `legion gh` before it has armed its own forwarding ends the command
