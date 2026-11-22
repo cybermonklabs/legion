@@ -227,9 +227,10 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 // R4; dispatch://INFRA-945 R3 item 2 wakes on a settlement the daemon records for the head of the
 // issue's pull request).
 //
-// Only the workers of the pod's open steps are woken (OpenStepsOf): the settlement is their
-// business and no one else's, and an architect reads it from its own notices. Each such worker is
-// the claim of the agent that works its step (Engine.workerClaim), and it is woken only where it
+// Only the workers of the open steps of the pull request's task are woken (openStepsOfView): the
+// settlement is their business and no one else's, and an architect reads it from its own notices.
+// Each such worker is the claim of the agent that works its step (Engine.workerClaim), and it is
+// woken only where it
 // stands released: another released claim of the same role, an earlier version's agent, does not
 // work the step. A head that settles again as each of its checks finishes wakes the pod no second
 // time, because the role's resume is still open. It answers each role it woke, in the steps'
@@ -246,7 +247,7 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 		settled.CheckedHead != fact.HeadSHA || settled.HeadSHA != fact.HeadSHA {
 		return nil, nil
 	}
-	issue, err := e.store.Issue(ctx, tx, pr.Issue)
+	issue, err := e.issueOfPullRequest(ctx, tx, *pr)
 	if err != nil || issue == nil {
 		return nil, err
 	}
@@ -258,7 +259,7 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 		fact.Statuses = keptStatuses(*pr, fact.HeadSHA)
 	}
 	var woke []claim.Role
-	for _, step := range OpenStepsOf(*issue) {
+	for _, step := range openStepsOfView(*issue) {
 		worker, err := e.workerClaim(ctx, tx, *issue, step.Role)
 		if err != nil {
 			return nil, err

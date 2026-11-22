@@ -3252,21 +3252,26 @@ func (e *Engine) workerClaim(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	return record.WorkerClaim(project, issue.Key, role, rows)
 }
 
-// issueForBranch is the issue whose branch (claim.IssueBranch) branch is, when it is recorded on
-// repo, as its record keeps GitHub's spelling (record.Issue.GitHubRepo), compared as
-// sameRepository compares two names — without case, as GitHub compares names, and a configured
-// rename's two names as one repository: a pull request on legion/<KEY> in another repository is
-// never <KEY>'s.
-func (e *Engine) issueForBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*record.Issue, error) {
+// issueForBranch is the issue whose branch (claim.IssueBranch) or whose task's branch
+// (claim.BranchIssue) branch is, when it is recorded on repo, as its record keeps GitHub's
+// spelling (record.Issue.GitHubRepo), compared as sameRepository compares two names — without
+// case, as GitHub compares names, and a configured rename's two names as one repository: a pull
+// request on legion/<KEY> in another repository is never <KEY>'s. With it, the task of the
+// issue's plan whose branch branch is (taskOfBranch), the task a pull request on branch is of.
+func (e *Engine) issueForBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*record.Issue, string, error) {
 	key, ok := claim.BranchIssue(branch)
 	if !ok {
-		return nil, nil
+		return nil, "", nil
 	}
 	issue, err := e.store.Issue(ctx, tx, key)
 	if err != nil || issue == nil || !e.sameRepository(issue.GitHubRepo, repo) {
-		return nil, err
+		return nil, "", err
 	}
-	return issue, nil
+	task, err := e.taskOfBranch(ctx, tx, *issue, branch)
+	if err != nil {
+		return nil, "", err
+	}
+	return issue, task, nil
 }
 
 // pullRequest is the recorded pull request number of repo, when its issue is recorded on repo.

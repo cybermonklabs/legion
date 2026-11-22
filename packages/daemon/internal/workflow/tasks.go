@@ -87,6 +87,48 @@ func (e *Engine) pullRequestOf(ctx context.Context, tx pgx.Tx, issue record.Issu
 	return e.store.PullRequest(ctx, tx, issue.Key)
 }
 
+// viewOfPullRequest is the copy of issue read for the task whose pull request pr is
+// (record.PullRequest.Task), and the walk of that task: the one reading of a fact of a pull
+// request that reaches its task, so a fact of one task's pull request moves that task and no
+// other, and one of a done task's moves none, its copy standing in done. An issue whose plan holds
+// one task, or none, is its own view, whatever task the row names. ok is false where its plan
+// holds several tasks and none of them is the row's: a pull request recorded for no task of the
+// plan, whose facts move nothing.
+func (e *Engine) viewOfPullRequest(ctx context.Context, tx pgx.Tx, issue record.Issue, pr record.PullRequest) (record.Issue, Walk, bool, error) {
+	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil {
+		return record.Issue{}, Walk{}, false, err
+	}
+	return viewOn(issue, stored, pr.Task)
+}
+
+// issueOfPullRequest is the issue pr is recorded for, read for pr's task (viewOfPullRequest): the
+// issue each handler of a fact of the pull request acts on. It is nil where the record holds no
+// such issue, and where the issue's plan holds several tasks and none is pr's, so the fact records
+// the pull request and moves nothing.
+func (e *Engine) issueOfPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRequest) (*record.Issue, error) {
+	issue, err := e.store.Issue(ctx, tx, pr.Issue)
+	if err != nil || issue == nil {
+		return nil, err
+	}
+	view, _, ok, err := e.viewOfPullRequest(ctx, tx, *issue, pr)
+	if err != nil || !ok {
+		return nil, err
+	}
+	return &view, nil
+}
+
+// openStepsOfView is the steps of issue that take work (OpenStepsOf), of its task alone where
+// issue is a copy read for one task (view): the steps a fact of that task's pull request is the
+// business of.
+func openStepsOfView(issue record.Issue) []record.RunningStep {
+	open := OpenStepsOf(issue)
+	if issue.ViewTask == "" {
+		return open
+	}
+	return slices.DeleteFunc(open, func(step record.RunningStep) bool { return step.Task != issue.ViewTask })
+}
+
 // viewOfAgent is the copy of issue read for the task whose running step agent runs
 // (record.Issue.StepOfAgent, a held step among them), and the walk of that task: the one reading
 // of a fact of a step that reaches its task by the agent of the claim it names. An issue whose

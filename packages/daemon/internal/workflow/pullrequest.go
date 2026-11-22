@@ -170,20 +170,21 @@ func pullRequestNews(before, after record.PullRequest) bool {
 // its recorded merge (awaitsMerge) keeps that merge: GitHub never sends the merge again, so a pull
 // request opened from its branch is not recorded, while an issue set back to todo reruns and its
 // branch's new pull request replaces the merged one. The pull request is recorded for the task
-// whose branch it is on (taskOfBranch), and the row it replaces is that task's
+// whose branch it is on (issueForBranch), and the row it replaces is that task's
 // (replacedPullRequest), so the pull request of one task of an issue never takes the place of
-// another's.
+// another's. The fact is that task's (viewOfPullRequest): the merge it waits on is the task's,
+// and it moves the task where its implementer's completion waits for it.
 func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.PullRequestOpened) (intake.Result, error) {
-	issue, err := e.issueForBranch(ctx, tx, fact.Repo, fact.Branch)
+	issue, task, err := e.issueForBranch(ctx, tx, fact.Repo, fact.Branch)
 	if err != nil || issue == nil {
-		return intake.Result{}, err
-	}
-	task, err := e.taskOfBranch(ctx, tx, *issue, fact.Branch)
-	if err != nil {
 		return intake.Result{}, err
 	}
 	pr := record.PullRequest{Issue: issue.Key, Task: task, Repo: fact.Repo, Number: fact.Number, Branch: fact.Branch, Base: fact.Base, HeadSHA: fact.HeadSHA,
 		HeadUpdatedAt: fact.UpdatedAt, Failing: []string{}, State: record.PullRequestOpen}
+	view, _, ok, err := e.viewOfPullRequest(ctx, tx, *issue, pr)
+	if err != nil {
+		return intake.Result{}, err
+	}
 	recorded, err := e.replacedPullRequest(ctx, tx, issue.Key, task, fact.Branch)
 	if err != nil {
 		return intake.Result{}, err
@@ -197,7 +198,7 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 	if recorded != nil && classify.LateLifecycle(fact.UpdatedAt, recorded.HeadUpdatedAt) {
 		return intake.Result{}, nil
 	}
-	if recorded != nil && recorded.State == record.PullRequestMerged && recorded.Number != fact.Number && awaitsMerge(*issue) {
+	if recorded != nil && recorded.State == record.PullRequestMerged && recorded.Number != fact.Number && awaitsMerge(view) {
 		e.logOnCommit(ctx, "workflow: a pull request opened from a branch whose issue waits to close on its merge is not recorded",
 			"issue", issue.Key, "merged", recorded.Number, "opened", fact.Number)
 		return intake.Result{}, nil
@@ -234,7 +235,7 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 	if err := e.putPullRequest(ctx, tx, pr); err != nil {
 		return intake.Result{}, err
 	}
-	if issue.Phase != phase.Implementing {
+	if !ok || view.Phase != phase.Implementing {
 		// A reopen lands under whatever phase the issue stands in, a reviewing round with an
 		// approval standing among them, and GitHub recomputes the merge state of a pull request
 		// it reopens; the read for it is asked for once, after this handler (Apply's
@@ -245,7 +246,7 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 	if err != nil || !row.Completed() {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.implementationReady(ctx, tx, *issue, row, &pr)
+	return intake.Result{}, e.implementationReady(ctx, tx, view, row, &pr)
 }
 
 // pullRequestSynchronized records the pull request's new head and what the move leaves standing
@@ -304,7 +305,7 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 		return intake.Result{}, err
 	}
-	issue, err := e.store.Issue(ctx, tx, pr.Issue)
+	issue, err := e.issueOfPullRequest(ctx, tx, *pr)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
@@ -380,7 +381,7 @@ func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.
 	// arrived (checks, dispatch://INFRA-714/spec R1). In reviewing the push can be what shows the
 	// head the reviewer approved is about to be replaced, so the round is settled again; the
 	// round's re-ask is reviewing's alone.
-	issue, err := e.store.Issue(ctx, tx, pr.Issue)
+	issue, err := e.issueOfPullRequest(ctx, tx, *pr)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
@@ -445,7 +446,7 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 		return intake.Result{}, err
 	}
-	issue, err := e.store.Issue(ctx, tx, pr.Issue)
+	issue, err := e.issueOfPullRequest(ctx, tx, *pr)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
@@ -598,7 +599,7 @@ func (e *Engine) closed(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	if err := e.putPullRequest(ctx, tx, *pr); err != nil || repeated {
 		return intake.Result{}, err
 	}
-	issue, err := e.store.Issue(ctx, tx, pr.Issue)
+	issue, err := e.issueOfPullRequest(ctx, tx, *pr)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
@@ -673,10 +674,11 @@ func (e *Engine) mergeQueueReadDone(ctx context.Context, tx pgx.Tx, fact intake.
 }
 
 // MergingAt reads in tx what the merging rule judges issue key by: the issue, whether its tree
-// lingers (record.TreeLingers) and the pull request the record holds for it. It returns the issue
-// and that pull request, with why the workflow no longer works the issue's merging phase at head
-// of pull request number (leftMergingAt), "" while it does. An issue the record does not hold is a
-// nil issue, no pull request and no reason. The facts that write the read and the merger's
+// lingers (record.TreeLingers) and the pull request of its work's merge, the one of the task that
+// merges (record.Store.MergePullRequest), which no other task's pull request is. It returns the
+// issue and that pull request, with why the workflow no longer works the issue's merging phase at
+// head of pull request number (leftMergingAt), "" while it does. An issue the record does not hold
+// is a nil issue, no pull request and no reason. The facts that write the read and the merger's
 // message (dequeued, mergeQueueReadDone) and the daemon's outbox rows that read the pull request
 // and deliver the message read the issue through this one read, so all four judge it from the
 // same records. It is exported for those outbox rows (the daemon's mergingAt).
@@ -689,7 +691,7 @@ func MergingAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, n
 	if err != nil {
 		return nil, nil, "", err
 	}
-	pr, err := store.PullRequest(ctx, tx, key)
+	pr, err := store.MergePullRequest(ctx, tx, key)
 	if err != nil {
 		return nil, nil, "", err
 	}
@@ -734,17 +736,29 @@ func leftMergingAt(issue record.Issue, lingers bool, pr *record.PullRequest, num
 // issue, the repository, the branch and the handoff commit, and says what to do. It tells nothing
 // when the issue has left implementing, its implementer's handoff is another commit, or an open or
 // merged pull request is recorded: the read asked GitHub before the record changed, or the merge
-// told the architect (merged) and a completion moves the issue on it.
+// told the architect (merged) and a completion moves the issue on it. The fact is of the task whose
+// branch it names (taskOfBranch), read for that task (viewOfPullRequest), whose own pull request is
+// the one that lets it move (pullRequestOf).
 func (e *Engine) pullRequestMissing(ctx context.Context, tx pgx.Tx, fact intake.PullRequestMissing) (intake.Result, error) {
-	issue, err := e.store.Issue(ctx, tx, fact.Issue)
-	if err != nil || issue == nil || issue.Phase != phase.Implementing {
+	recorded, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil || recorded == nil {
+		return intake.Result{}, err
+	}
+	task, err := e.taskOfBranch(ctx, tx, *recorded, fact.Branch)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	// The pull request the fact says is missing is the task's, on the branch the fact names.
+	missing := record.PullRequest{Issue: recorded.Key, Task: task, Repo: fact.Repo, Branch: fact.Branch}
+	issue, _, ok, err := e.viewOfPullRequest(ctx, tx, *recorded, missing)
+	if err != nil || !ok || issue.Phase != phase.Implementing {
 		return intake.Result{}, err
 	}
 	row, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleImplementer)
 	if err != nil || row.HandoffCommit != fact.HandoffCommit {
 		return intake.Result{}, err
 	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	pr, err := e.pullRequestOf(ctx, tx, issue)
 	if err != nil || record.LetsImplementationMove(pr) {
 		return intake.Result{}, err
 	}
