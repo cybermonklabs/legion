@@ -144,6 +144,7 @@ on:
       - 'packages/envoy/internal/cipher/dispatchread/**'
       - 'packages/envoy/internal/cipher/enroll/**'
       - 'packages/envoy/internal/cipher/exchange/**'
+      - 'packages/envoy/internal/cipher/githubname/**'
       - 'packages/envoy/internal/cipher/groups/*'
       - 'packages/envoy/internal/cipher/helper/**'
       - 'packages/envoy/internal/cipher/judge/**'

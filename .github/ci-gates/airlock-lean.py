@@ -1,7 +1,7 @@
 # The airlock_lean filter's gate: what job airlock-lean reads.
 GATE = gate("airlock_lean", AIRLOCK_JOB, exact=[
     pinned_step(AIRLOCK_JOB, AIRLOCK_SEED_STEP, ENVOY, AIRLOCK_SEED_SCRIPT, [
-        (ENVOY, AIRLOCK_PKGS, "the proxyrules package's model comparisons: FuzzAirlock over the committed seed corpus, TestModelAgreesOnHostShapes and TestTheModelReadsAHostlessEntryWithGuidance", {}),
+        (ENVOY, AIRLOCK_PKGS, "the proxyrules package's model comparisons: FuzzAirlock over the committed seed corpus, TestModelAgreesOnHostShapes and TestTheModelRefusesAHostlessEntry", {}),
     ]),
     pinned_step(AIRLOCK_JOB, AIRLOCK_FUZZ_STEP, ENVOY, AIRLOCK_FUZZ_SCRIPT, [
         (ENVOY, AIRLOCK_PKGS, "the same tests, fuzzed against the model for 120 seconds", {}),

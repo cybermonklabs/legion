@@ -180,6 +180,10 @@ on:
         description: "ci.yaml's needs.changes.outputs.go_tagged_tests_test: go-tagged-tests.test.sh and what it tests."
         type: string
         required: true
+      ci_router_outputs_test:
+        description: "ci.yaml's needs.changes.outputs.ci_router_outputs_test: ci-router-outputs.test.sh and what it tests."
+        type: string
+        required: true
       ci_ok_test:
         description: "ci.yaml's needs.changes.outputs.ci_ok_test: ci-ok.test.sh and what it tests."
         type: string
@@ -463,6 +467,12 @@ jobs:
       - name: Test the build-tag test lister
         if: inputs.changes-result != 'success' || inputs.go_tagged_tests_test == 'true'
         run: .github/scripts/go-tagged-tests.test.sh
+
+      # The label terms of ci.yaml's changes outputs, evaluated from ci.yaml itself: full-ci, the
+      # lane labels and a label that names nothing.
+      - name: Test the router outputs' label terms
+        if: inputs.changes-result != 'success' || inputs.ci_router_outputs_test == 'true'
+        run: .github/scripts/ci-router-outputs.test.sh
 
       - name: Test ci-ok's verdict
         if: inputs.changes-result != 'success' || inputs.ci_ok_test == 'true'

@@ -3,6 +3,7 @@ package testbin
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -65,4 +66,33 @@ func envValue(t *testing.T, env []string, name string) string {
 	}
 	t.Fatalf("the probe's environment names no %s", name)
 	return ""
+}
+
+// The pinned Oh My Pi leaves a lock sidecar beside each session file it writes under file
+// storage, and SessionFiles counts the session files alone: one folder holding a session, its
+// sidecar and a second session reads as the two sessions, so a second session file still shows,
+// and a sidecar alone is no session.
+func TestSessionFilesAreTheTranscriptsAndNotTheirLockSidecars(t *testing.T) {
+	sessions := t.TempDir()
+	folder := filepath.Join(sessions, "--work--")
+	if err := os.MkdirAll(folder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	first := filepath.Join(folder, "2026-11-22T10-35-36-957Z_01a202d3-607d-77fd-a2b6-53060a25fbc8.jsonl")
+	second := filepath.Join(folder, "2026-11-22T10-36-01-002Z_01a202d4-0000-7000-8000-000000000000.jsonl")
+	sidecar := filepath.Join(folder, ".2026-11-22T10-35-36-957Z_01a202d3-607d-77fd-a2b6-53060a25fbc8.jsonl.lock.os")
+	for _, file := range []string{first, sidecar} {
+		if err := os.WriteFile(file, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, want := SessionFiles(t, sessions), []string{first}; !slices.Equal(got, want) {
+		t.Errorf("SessionFiles = %q with one session and its sidecar, want %q", got, want)
+	}
+	if err := os.WriteFile(second, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := SessionFiles(t, sessions), []string{first, second}; !slices.Equal(got, want) {
+		t.Errorf("SessionFiles = %q with two sessions and a sidecar, want %q", got, want)
+	}
 }
