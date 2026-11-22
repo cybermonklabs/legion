@@ -576,6 +576,12 @@ pods: the packages `go list -deps ./cmd/cipherd ./cmd/dev-oidc-issuer
 ./internal/cipher/ciphertest/requestseed` lists in packages/envoy beyond the
 Dispatch server's, which e2e/run-broker.sh builds in one `go build`.
 
+## envoy_go: Its natslive step runs cmd/listener's natslive tests
+
+Its natslive step runs cmd/listener's natslive tests, so its test build reads the
+fixtures cmd/listener's untagged tests read (api_test.go), which this job must then
+run as well (check-ci-filters.sh's rule 15).
+
 ## envoy_go: internal/dispatch/text/whitespace_fixture_test.go holds unicode.IsSpace to this
 
 internal/dispatch/text/whitespace_fixture_test.go holds unicode.IsSpace to this
