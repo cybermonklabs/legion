@@ -141,7 +141,7 @@ jobs:
           NODE_OPTIONS: --require ${{ github.workspace }}/.github/scripts/api-request-ledger.cjs
         with:
           sarif_file: ../results/go.sarif
-          category: /language:go
+          category: /language:go-control-mismatch
           matrix: ${{ toJSON(fromJSON('{"language":"go","build-mode":"autobuild"}')) }}
           wait-for-processing: false
       - name: Upload the javascript-typescript results
