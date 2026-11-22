@@ -105,12 +105,18 @@ func adminExec(t testing.TB, adminURL, host, statement string) {
 // execOn runs statement over a connection of its own to adminURL. host is that server's host,
 // printed in place of adminURL, which carries a credential.
 func execOn(adminURL, host, statement string) error {
-	ctx := context.Background()
+	return execOnContext(context.Background(), adminURL, host, statement)
+}
+
+// execOnContext is execOn bounded by ctx: once ctx ends, pgx asks the server to cancel the
+// statement and then closes the connection, which a statement that ignores the cancel, as a drop
+// waiting on a ProcSignalBarrier does, outlives on the server.
+func execOnContext(ctx context.Context, adminURL, host, statement string) error {
 	conn, err := pgx.Connect(ctx, adminURL)
 	if err != nil {
 		return fmt.Errorf("connect to the Postgres server at %s: %w", host, err)
 	}
-	defer conn.Close(ctx)
+	defer conn.Close(context.Background())
 	if _, err := conn.Exec(ctx, statement); err != nil {
 		return fmt.Errorf("%s on %s: %w", statement, host, err)
 	}
