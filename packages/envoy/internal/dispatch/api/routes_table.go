@@ -418,10 +418,6 @@ var idRoutes = map[string]idRoute{
 	"PUT /api/v1/issues/{key}/steps/{id}/rating":    {Reason: "a step record id: the uuid the Legion daemon derives for the run of a retro"},
 	"PUT /api/v1/issues/{key}/plans/{id}":           {Reason: "a plan id: the uuid the Legion daemon derives for the plan of one run of an issue"},
 
-	// An id of The Spec (R1): a statement, check, component or interface id of the approved spec of
-	// one repository, a slug of its own and no uuid at all, which no prefix shortens.
-	"GET /api/v1/projects/{key}/spec/{owner}/{repo}/nodes/{id}": {Reason: "an id of The Spec in the approved spec of a repository, a slug of its own and no uuid at all"},
-
 	// A node's routes under an issue, whose {id} is the node's store address (`lens/<uuid>`, a
 	// block's node id, or its whole `dispatch://` address), one percent-encoded path segment that
 	// FindNodeUnderIssue decodes and no prefix shortens: the route answers NOT_FOUND wherever it
@@ -430,6 +426,11 @@ var idRoutes = map[string]idRoute{
 	"POST /api/v1/issues/{key}/nodes/{id}/pointers": {Reason: "a node's store address under the issue, which FindNodeUnderIssue decodes and no prefix shortens"},
 	"POST /api/v1/issues/{key}/nodes/{id}/state":    {Reason: "a node's store address under the issue, which FindNodeUnderIssue decodes and no prefix shortens"},
 	"POST /api/v1/issues/{key}/nodes/{id}/settle":   {Reason: "a node's store address under the issue, which FindNodeUnderIssue decodes and no prefix shortens"},
+
+	// A node of a repository's approved spec, whose {id} is the node's own id in that repository:
+	// a statement's, check's, component's or interface's slug, which no prefix shortens. The route
+	// answers SPEC_NODE_NOT_FOUND wherever the approved spec holds no node of that id.
+	"GET /api/v1/projects/{key}/spec/{owner}/{repo}/nodes/{id}": {Reason: "a node id of the repository's approved spec, a slug of its own and no uuid at all"},
 
 	// The document test hooks, which address the live room this process holds under the
 	// document's own id and read no row of the artifacts table, so they answer no 404 of a

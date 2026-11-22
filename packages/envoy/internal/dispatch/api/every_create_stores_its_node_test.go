@@ -27,7 +27,8 @@ import (
 //
 // A POST row needs a request the route takes. postCalls holds one for every row. A route that can
 // create an issue, a document, an ask or a message gets a body that makes one, which the test
-// holds to a 2xx: a create gets the body that makes its object, and a write of a document's text -
+// holds to a 2xx: a create gets the body that makes its object, the import of an approved level
+// opens the repair issue of the statement it holds, and a write of a document's text -
 // a document edit, a suggestion's accept, the rebuild of a document whose stored history does not
 // load - writes a new ask block, whose ask the document's settlement opens (docs'
 // createAskBlock). The rig settles a document an hour on, so the test settles every document the
@@ -74,6 +75,15 @@ func TestEveryCreateStoresItsNode(t *testing.T) {
 		}
 	}
 	asks := settledAskBlocks(t, rig, blocks)
+	// The import's create is the repair issue it opens: one that answered 2xx and opened none would
+	// leave the census nothing of it to read.
+	var repairs int
+	if err := rig.database.Pool.QueryRow(ctx, `select count(*) from issues where parent_key = $1`, fixture.level).Scan(&repairs); err != nil {
+		t.Fatalf("read the children of the level %s: %v", fixture.level, err)
+	}
+	if repairs != 1 {
+		t.Errorf("the import of the level %s left %d child issues, want the one repair issue of its held statement", fixture.level, repairs)
+	}
 
 	incomplete, err := graphcensus.ProjectComplete(ctx, rig.database.Pool)
 	if err != nil {
@@ -87,12 +97,13 @@ func TestEveryCreateStoresItsNode(t *testing.T) {
 
 // everyKindFixture is the object of each kind the routes address: the rig's issue and project
 // document, an ask on the issue, a comment a session's mention answered, a suggestion on the
-// issue's spec whose replacement is a new ask block, a direct message a session was sent, and a
-// document of the issue whose stored history does not load, the one document a rebuild takes.
+// issue's spec whose replacement is a new ask block, a direct message a session was sent, a
+// document of the issue whose stored history does not load, the one document a rebuild takes, and
+// a level issue a person approved, of a spec source of the project, the one issue an import takes.
 type everyKindFixture struct {
 	issue, project, document, documentSlug string
 	ask, comment, suggestion, message      string
-	unloadable                             string
+	unloadable, level                      string
 }
 
 // acceptedAskBlock is the ask block the fixture's suggestion puts into the issue's spec once it is
@@ -101,6 +112,15 @@ const acceptedAskBlock = "every-create-accepted"
 
 // rebuiltAskBlock is the ask block the rebuild of the fixture's unloadable document writes.
 const rebuiltAskBlock = "every-create-rebuilt"
+
+// everyCreateLevelRepo is the repository of the fixture's level issue, a spec source of its
+// project, and everyCreateLevel its spec: one statement and one component, in the form of a level.
+const everyCreateLevelRepo = "acme/levels"
+
+const everyCreateLevel = "# A level to import\n\n## Statements\n\n" +
+	":::requirement{#an-imported-level-opens-its-repair}\nAn imported level opens the repair issue of each statement it holds.\n:::\n\n" +
+	"## Components\n\n| Id | Kind | Name | Purpose | Parent or joins |\n| --- | --- | --- | --- | --- |\n" +
+	"| levels | component | Levels | It holds the imported levels. | none |\n"
 
 // seedEveryKind writes the objects postCalls' paths name, through the API.
 func seedEveryKind(t *testing.T, rig *storeWriterRig) everyKindFixture {
@@ -143,6 +163,21 @@ func seedEveryKind(t *testing.T, rig *storeWriterRig) everyKindFixture {
 	if corrupted == 0 {
 		t.Fatal("the unloadable document holds no stored update to corrupt")
 	}
+	// The import takes a level issue of a spec source of its project whose spec a person approved,
+	// and its notes document, as spec_import_test.go's levelRig seeds one. Nobody approved the
+	// notes, so the import holds the level's statement for the kind it lacks and opens the repair
+	// issue of that hold: a create, whose node the census reads.
+	level := requireCreatedIssue(t, dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "LOCK", "title": "A level to import", "repo": everyCreateLevelRepo, "spec": everyCreateLevel, "force": true,
+	}, "alice"))
+	uploadDocument(t, rig.handler, "/api/v1/issues/"+level.Key, "notes.md", "# Notes of the level\n")
+	approver := &specRig{handler: rig.handler, database: rig.database}
+	approver.approve(t, approver.request(t, level, false))
+	if source := dispatchRequest(t, rig.handler, http.MethodPut, "/api/v1/projects/LOCK/spec-sources/"+everyCreateLevelRepo,
+		map[string]any{"branch": "main"}, "alice"); source.Code != http.StatusOK {
+		t.Fatalf("name %s a spec source of LOCK: status=%d body=%s", everyCreateLevelRepo, source.Code, source.Body.String())
+	}
+	fixture.level = level.Key
 	return fixture
 }
 
@@ -150,10 +185,10 @@ func seedEveryKind(t *testing.T, rig *storeWriterRig) everyKindFixture {
 var pathParameter = regexp.MustCompile(`\{([a-z_]+)\}`)
 
 // path fills a route pattern's parameters from the fixture: a key is the project's under
-// /projects/ and the issue's elsewhere, an id is the object of the collection it follows - the
-// suggestion's for an accept, which only a suggestion takes, and the unloadable document's for a
-// rebuild, which only such a document takes - and a parameter no object answers takes a value
-// that addresses nothing.
+// /projects/, the level issue's for an import, which only a level takes, and the issue's
+// elsewhere, an id is the object of the collection it follows - the suggestion's for an accept,
+// which only a suggestion takes, and the unloadable document's for a rebuild, which only such a
+// document takes - and a parameter no object answers takes a value that addresses nothing.
 func (f everyKindFixture) path(pattern string) string {
 	return pathParameter.ReplaceAllStringFunc(pattern, func(match string) string {
 		at := strings.Index(pattern, match)
@@ -162,6 +197,9 @@ func (f everyKindFixture) path(pattern string) string {
 		case "{key}":
 			if strings.HasSuffix(before, "/projects/") {
 				return f.project
+			}
+			if strings.HasSuffix(pattern, "/spec-import-level") {
+				return f.level
 			}
 			return f.issue
 		case "{slug}":
@@ -311,6 +349,8 @@ var postCalls = map[string]postCall{
 		"actor": map[string]any{"kind": "session", "id": "s1"}, "attempt": 1, "body": "All green."}},
 	"POST /api/v1/artifacts/{id}/approval-requests": {succeeds: true, session: true, body: map[string]any{"actor": map[string]any{"kind": "session", "id": "s1"}}},
 	"POST /api/v1/agents/{session_id}/artifacts":    {succeeds: true, upload: true},
+	"POST /api/v1/issues/{key}/spec-import-level": {succeeds: true, session: true, body: map[string]any{
+		"actor": map[string]any{"kind": "session", "id": "s1"}, "notes": "notes.md"}},
 
 	"POST /api/v1/artifacts/{id}/edits":                  askBlockEdit("every-create-document-edit", "Does an edited document's ask name its project?"),
 	"POST /api/v1/issues/{key}/artifacts/{slug}/edits":   askBlockEdit("every-create-spec-edit", "Does an edited spec's ask name its project?"),
@@ -330,10 +370,6 @@ var postCalls = map[string]postCall{
 	// A list of outcomes is a row of spec_outcome_records, which is no project-owned kind with a
 	// node: it is written under its issue and read through it.
 	"POST /api/v1/issues/{key}/outcomes": noObject,
-	// The import of an approved level writes nodes of the approved spec alone (specstore.Import)
-	// and no row of a project-owned table; the fixture's issue holds no approved level, so it is
-	// called with the empty body and refused.
-	"POST /api/v1/issues/{key}/spec-import-level": noObject,
 	// The reasoning nodes, a node's state and the pre-mortem conversion:
 	// each writes nodes and tuples of the store alone and no row of a project-owned table, and the
 	// fixture's paths name no node of the issue under {id} and no pre-mortem under {slug}, so each

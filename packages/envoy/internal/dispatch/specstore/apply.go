@@ -100,8 +100,8 @@ func RunNow(ctx context.Context, tx pgx.Tx) Queue {
 // parent and a loop, in that order, writing nothing. Otherwise it queues, after whatever the caller
 // queued before, one write of every node the request adds, changes or removes, each with in's
 // provenance and one time, and of each check a statement's earlier text brings back (R25); a node
-// the request holds as context writes nothing. A node it writes whose statement an import held
-// clears that hold.
+// the request holds as context is no write of the request's, and does not stop that bring-back. A
+// node it writes whose statement an import held clears that hold.
 func Apply(ctx context.Context, tx pgx.Tx, in Input, queue Queue) (Applied, error) {
 	if err := Lock(ctx, tx, in.Project, in.Repo); err != nil {
 		return Applied{}, err
@@ -188,13 +188,16 @@ type planned struct {
 // an earlier text of theirs (R25: "A change request that brings back an earlier approved text of a
 // statement also brings back the checks of that text"): the checks that served the statement while
 // that text stood, each at the text it held then, and the removal of each check that serves it now
-// and did not then. A check the request itself writes or holds is left as the request has it.
+// and did not then. A check the request itself adds, changes or removes is left as the request has
+// it. A check the request holds as context, unchanged at its current version, is no write of the
+// request's: it is brought back or removed like a check the request does not hold, with the
+// statement's provenance.
 func planChanges(state State, changes []specchange.Change) []planned {
 	var plan []planned
-	touched := map[string]bool{}
+	written := map[string]bool{}
 	for _, change := range changes {
-		touched[change.ID] = true
 		if change.Writes() {
+			written[change.ID] = true
 			plan = append(plan, planned{id: change.ID, node: withoutPosition(change.Node), remove: change.What == specchange.Removed})
 		}
 	}
@@ -226,7 +229,7 @@ func planChanges(state State, changes []specchange.Change) []planned {
 			}
 		}
 		for _, id := range state.sortedIDs() {
-			if touched[id] {
+			if written[id] {
 				continue
 			}
 			current := state.Nodes[id].Current()
@@ -234,11 +237,11 @@ func planChanges(state State, changes []specchange.Change) []planned {
 			switch {
 			case served && (current == nil || !sameNode(current, earlierCheck)):
 				plan = append(plan, planned{id: id, node: earlierCheck, broughtBackWith: change.ID})
-				touched[id] = true
+				written[id] = true
 			case !served && current != nil && current.Kind == specchange.KindCheck:
 				if node, err := DecodeNode(current.Kind, current.Node); err == nil && node.(specgraph.Check).Serves == change.ID {
 					plan = append(plan, planned{id: id, remove: true, broughtBackWith: change.ID})
-					touched[id] = true
+					written[id] = true
 				}
 			}
 		}

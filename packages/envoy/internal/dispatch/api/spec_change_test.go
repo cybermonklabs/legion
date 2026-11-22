@@ -43,9 +43,14 @@ const seedSpec = ":::requirement{#an-order-is-paid-once kind=\"behavior\" about=
 // paidOnceCheck is the check of an-order-is-paid-once at base, or a new one where base is "". A
 // document keeps no soft line break, so each field of a check is a paragraph of its own.
 func paidOnceCheck(base string) string {
+	return paidOnceCheckClaiming("A second payment of one order is refused.", base)
+}
+
+// paidOnceCheckClaiming is paidOnceCheck with the claim claim.
+func paidOnceCheckClaiming(claim, base string) string {
 	return ":::check{#a-second-payment-is-refused statement=\"an-order-is-paid-once\" subject=\"code\" procedure=\"program\" " +
 		"runner=\"go\" selector=\"example.com/billing TestASecondPaymentIsRefused\" job=\"go-test\"" + baseAttribute(base) + "}\n" +
-		"Claim: A second payment of one order is refused.\n\n" +
+		"Claim: " + claim + "\n\n" +
 		"Procedure: The test pays one order two times.\n\n" +
 		"Failing example: A build that takes the second payment.\n:::\n"
 }
@@ -94,14 +99,16 @@ type specNodeRead struct {
 }
 
 // specProvenance is the provenance an approved version names. Notes names the ask and review of the
-// person's own approval of the notes where an import read them from it.
+// person's own approval of the notes where an import read them from it, and BroughtBackWith the
+// statement whose restored text brought a check back.
 type specProvenance struct {
-	Act    string       `json:"act"`
-	Issue  string       `json:"issue"`
-	Ask    *string      `json:"ask"`
-	Review *string      `json:"review"`
-	Person *model.Actor `json:"person"`
-	Spec   *struct {
+	Act             string       `json:"act"`
+	Issue           string       `json:"issue"`
+	Ask             *string      `json:"ask"`
+	Review          *string      `json:"review"`
+	Person          *model.Actor `json:"person"`
+	BroughtBackWith string       `json:"brought_back_with"`
+	Spec            *struct {
 		ArtifactID string `json:"artifact_id"`
 		Version    int    `json:"version"`
 		Digest     string `json:"digest"`
@@ -331,6 +338,54 @@ func TestApprovalWritesTheChangeRequest(t *testing.T) {
 	}
 	if changed.Repo != specRepo || changed.Project != "CORE" || changed.Kind != "statement" || check.Kind != "check" {
 		t.Errorf("the node reads %s/%s %s and %s, want CORE/%s statement and check", changed.Project, changed.Repo, changed.Kind, check.Kind, specRepo)
+	}
+}
+
+// TestRestoringAnEarlierTextBringsBackItsCheckBesideTheVerificationDocument: an approval that
+// restores the first text of a statement brings back the check that text held (R25), whatever the
+// issue's Verification document shows of the check: no such document, the document named by the
+// approval request, or the document's latest version, which the approval reads where its request
+// leaves the document out. Each document holds the check unchanged at its current version, which
+// the request holds as context and does not write.
+func TestRestoringAnEarlierTextBringsBackItsCheckBesideTheVerificationDocument(t *testing.T) {
+	const (
+		firstText  = "An order is paid once."
+		secondText = "An order is paid once, and a second payment is refused."
+		firstClaim = "Claim: A second payment of one order is refused."
+		loggedText = "A second payment of one order is refused and logged."
+	)
+	paidOnce := func(text, base string) string {
+		return ":::requirement{#an-order-is-paid-once kind=\"behavior\" about=\"billing\"" + baseAttribute(base) + "}\n" + text + "\n:::\n"
+	}
+	for _, arm := range []struct {
+		name  string
+		named bool
+		// checks is the issue's Verification document, or "" for none.
+		checks string
+	}{
+		{name: "no Verification document"},
+		{name: "the Verification document named, holding the current check", named: true, checks: paidOnceCheckClaiming(loggedText, "2")},
+		{name: "the Verification document left out, its latest version holding the current check", checks: paidOnceCheckClaiming(loggedText, "2")},
+	} {
+		t.Run(arm.name, func(t *testing.T) {
+			rig := newSpecRig(t)
+			rig.seed(t)
+			second := rig.issue(t, "Refuse and log a second payment", specRepo, paidOnce(secondText, "1"), paidOnceCheckClaiming(loggedText, "1"))
+			rig.approve(t, rig.request(t, second, true))
+			rig.requireVersions(t, specRepo, "a-second-payment-is-refused", firstClaim, "Claim: "+loggedText)
+
+			restore := rig.issue(t, "The first text again", specRepo, paidOnce(firstText, "2"), arm.checks)
+			ask := rig.request(t, restore, arm.named)
+			rig.approve(t, ask)
+			rig.requireVersions(t, specRepo, "an-order-is-paid-once", firstText, secondText, firstText)
+			check := rig.requireVersions(t, specRepo, "a-second-payment-is-refused", firstClaim, "Claim: "+loggedText, firstClaim)
+			provenance := check.Versions[2].Provenance
+			if provenance.Act != "brought_back" || provenance.BroughtBackWith != "an-order-is-paid-once" ||
+				provenance.Issue != restore.Key || provenance.Ask == nil || *provenance.Ask != ask {
+				t.Errorf("version 3 of a-second-payment-is-refused names %+v, want it brought back with an-order-is-paid-once by the approval of %s through %s",
+					provenance, restore.Key, ask)
+			}
+		})
 	}
 }
 

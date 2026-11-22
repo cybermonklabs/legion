@@ -204,6 +204,55 @@ func TestRestoringAnEarlierTextBringsBackARemovedCheck(t *testing.T) {
 	}
 }
 
+// A request that restores an earlier text of a statement brings back the checks of that text (R25)
+// whether or not it shows the statement's current checks unchanged beside it: a check the request
+// holds as context, at the current version its base names, is no write of the request's, so it
+// neither keeps its current text nor keeps a check the earlier text did not have. Only a check the
+// request itself changes is left as the request has it.
+func TestARestoredTextBringsBackItsChecksBesideTheirCurrentContext(t *testing.T) {
+	for _, arm := range []struct {
+		name   string
+		checks []string
+		// claim is the claim a-sent-bill-reads-sent must hold after the restore, and act the act
+		// that must have written it.
+		claim, act string
+	}{
+		{name: "no check block in the request", claim: "A sent bill reads sent.", act: ActBroughtBack},
+		{name: "the current checks as context", claim: "A sent bill reads sent.", act: ActBroughtBack, checks: []string{
+			check("a-sent-bill-reads-sent", "a-bill-is-sent", "A mailed bill reads sent.", ` base="2"`),
+			check("a-mailed-bill-has-a-stamp", "a-bill-is-sent", "A mailed bill has a stamp.", ` base="1"`),
+		}},
+		{name: "a check the request changes", claim: "A sent bill reads sent at once.", act: ActApproval, checks: []string{
+			check("a-sent-bill-reads-sent", "a-bill-is-sent", "A sent bill reads sent at once.", ` base="2"`),
+		}},
+	} {
+		t.Run(arm.name, func(t *testing.T) {
+			database := storetest.Open(t)
+			mustApply(t, database, issue(1),
+				statement("a-bill-is-sent", "A bill is sent.", ""),
+				check("a-sent-bill-reads-sent", "a-bill-is-sent", "A sent bill reads sent.", ""))
+			mustApply(t, database, issue(2),
+				statement("a-bill-is-sent", "A bill is sent by mail.", ` base="1"`),
+				check("a-sent-bill-reads-sent", "a-bill-is-sent", "A mailed bill reads sent.", ` base="1"`),
+				check("a-mailed-bill-has-a-stamp", "a-bill-is-sent", "A mailed bill has a stamp.", ""))
+			restored := mustApply(t, database, issue(3), append([]string{statement("a-bill-is-sent", "A bill is sent.", ` base="2"`)}, arm.checks...)...)
+			texts := current(t, database)
+			if got := texts["a-sent-bill-reads-sent"]; !strings.Contains(got, "Claim: "+arm.claim) {
+				t.Errorf("a-sent-bill-reads-sent reads %q after the restore, want the claim %q", got, arm.claim)
+			}
+			if !writes(restored, "a-sent-bill-reads-sent", arm.act, false) {
+				t.Errorf("the restore wrote %+v, want a-sent-bill-reads-sent written by the act %s", restored.Written, arm.act)
+			}
+			if text, held := texts["a-mailed-bill-has-a-stamp"]; held {
+				t.Errorf("a-mailed-bill-has-a-stamp reads %q after the restore, want it removed: it did not serve the first text", text)
+			}
+			if !writes(restored, "a-mailed-bill-has-a-stamp", ActBroughtBack, true) {
+				t.Errorf("the restore wrote %+v, want the removal of a-mailed-bill-has-a-stamp brought back with the statement", restored.Written)
+			}
+		})
+	}
+}
+
 // writes is whether the act applied wrote id by act, as a removal where removed.
 func writes(applied Applied, id, act string, removed bool) bool {
 	for _, written := range applied.Written {

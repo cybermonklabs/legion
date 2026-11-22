@@ -637,6 +637,12 @@ func threeBadRequests(t *testing.T) {
 		t.Errorf("GET /api/v1/projects/TEST/architecture-sources lists %q after the probe, without the source %s it sent under OTH",
 			sourceStrings(sources), owned.architectureSource)
 	}
+	// The same for the spec source: its removal under another project's key must leave it listed.
+	if sources := decodeBody[[]model.SpecSource](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/TEST/spec-sources", nil, "alice")); !slices.ContainsFunc(sources, func(source model.SpecSource) bool {
+		return source.Repo == owned.specSource
+	}) {
+		t.Errorf("GET /api/v1/projects/TEST/spec-sources lists %+v after the probe, without the source %s it sent under OTH", sources, owned.specSource)
+	}
 	if len(probed) < 5 {
 		t.Fatalf("only %d route(s) were probed with another project's identifier, which is too few to prove anything", len(probed))
 	}
@@ -823,6 +829,7 @@ func eventLogBound(answered []byte) (string, bool) {
 func seededProbePath(pattern string, owned crossProject) string {
 	path := pattern
 	for _, replacement := range []struct{ from, to string }{
+		{"/spec/{owner}/{repo}/nodes/{id}", "/spec/" + owned.specSource + "/nodes/" + owned.specNode},
 		{"/issues/{key}/artifacts/{slug}", "/issues/" + owned.issue + "/artifacts/" + owned.slug},
 		{"/projects/{key}/artifacts/{slug}", "/projects/TEST/artifacts/" + owned.documentSlug},
 		{"/projects/{key}", "/projects/TEST"},
@@ -906,6 +913,11 @@ type crossProject struct {
 	// {owner}/{repo} the cross-project probe sends the source's removal and its sync
 	// (crossProjectPath).
 	architectureSource string
+	// specSource is the repository, owner/repo, of the project's spec source, and specNode the id
+	// of one node of that repository's approved spec: what the cross-project probe sends the
+	// source's removal and the node's read, which address them by the key and the repository
+	// together (crossProjectPath), and what the traversal probe reads the node at.
+	specSource, specNode string
 	// nearCopyCheck is the id of the near-copy gate's record of one of the project's creates.
 	nearCopyCheck string
 	// The nodes of the reasoning kinds under the project's issue, each by its
@@ -925,13 +937,15 @@ func (node lensOrConstraint) storeAddress() string {
 // seedTwoProjects writes one project with an issue, a document of the issue (design.md), a
 // comment, an ask, a message, a run of a step of the issue and a run of its retro, a project
 // document and a block of each document, a lens of each of two kinds and a constraint, an
-// architecture source, and the Legion daemon it names with a read of it; a second project with an
-// issue, which the cross-project probe addresses them under; and one priority, which belongs to
-// neither project and is read at its own id. Under the second project's key the probe sends each
-// route the object of the first its path names (crossProjectPath): design.md to a route of an
-// issue document, the project document to a route of a project document, the message to the
-// message read, the run of a step to the step write, the retro's run to the rating write and the
-// architecture source's repository to the source's removal and its sync.
+// architecture source, a spec source with one node of its approved spec, and the Legion daemon it
+// names with a read of it; a second project with an issue, which the cross-project probe
+// addresses them under; and one priority, which belongs to neither project and is read at its own
+// id. Under the second project's key the probe sends each route the object of the first its path
+// names (crossProjectPath): design.md to a route of an issue document, the project document to a
+// route of a project document, the message to the message read, the run of a step to the step
+// write, the retro's run to the rating write, the architecture source's repository to the source's
+// removal and its sync, and the spec source's repository and its node to the source's removal and
+// the node's read.
 func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) crossProject {
 	t.Helper()
 	createDuplicateTestProject(t, handler, "OTH")
@@ -994,6 +1008,25 @@ func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) 
 		insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
 		values ('TEST', $1, 'main', 1, '{"kind":"system","id":"test"}')`, owned.architectureSource); err != nil {
 		t.Fatalf("seed an architecture source: %v", err)
+	}
+	// A spec source, and one node of its repository's approved spec written as a person writes
+	// one (spec_change_test.go): the source names the repository, an issue of that repository
+	// proposes one statement, and the person's approval of the issue's spec, through the approval
+	// request an agent opened, writes the statement into the approved spec.
+	owned.specSource, owned.specNode = "acme/spec", "a-node-of-this-project"
+	if source := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/TEST/spec-sources/"+owned.specSource,
+		map[string]any{"branch": "main"}, "alice"); source.Code != http.StatusOK {
+		t.Fatalf("seed a spec source: status=%d body=%s", source.Code, source.Body.String())
+	}
+	proposal := requireCreatedIssue(t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "TEST", "title": "A statement of this project's approved spec", "repo": owned.specSource, "force": true,
+		"spec": ":::requirement{#" + owned.specNode + " kind=\"behavior\"}\nA statement of this project holds.\n:::\n",
+	}, "alice"))
+	approver := &specRig{handler: handler, database: database}
+	approver.approve(t, approver.request(t, proposal, false))
+	if read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/TEST/spec/"+owned.specSource+"/nodes/"+owned.specNode, nil, "alice"); read.Code != http.StatusOK {
+		t.Fatalf("the approval of %s wrote no node %s into the approved spec of %s: status=%d body=%s",
+			proposal.Key, owned.specNode, owned.specSource, read.Code, read.Body.String())
 	}
 	// A priority is written through its own route, as a person writes one, because its history
 	// answers a row only for a priority the store holds: at a placeholder id it answers 404, and
@@ -1077,7 +1110,14 @@ func firstBlockOf(t *testing.T, handler http.Handler, artifactID string) string 
 //     the project's architecture source, which the source's removal and its sync address by the
 //     key and the repository together. The source write (PUT) takes none and answers false: its
 //     {owner}/{repo} names the repository it adds as a source of the key's own project, an
-//     upsert on the key and the repository, and no object of another project.
+//     upsert on the key and the repository, and no object of another project;
+//   - {owner}/{repo} of /projects/{key}/spec-sources/{owner}/{repo}: the repository of the
+//     project's spec source, which the source's removal addresses by the key and the repository
+//     together. Its write (PUT) answers false, as the architecture source's does: an upsert of a
+//     source of the key's own project;
+//   - {owner}/{repo} and {id} of /projects/{key}/spec/{owner}/{repo}/nodes/{id}: the repository
+//     of the project's spec source and one node of its approved spec, which the node's read
+//     addresses by the key and the repository together.
 //
 // A route under a key whose {slug}, {id} or {owner}/{repo} is of a kind no line above names fails
 // the test: an identifier of another kind is refused under every key alike, and would prove
@@ -1097,10 +1137,12 @@ func crossProjectPath(t *testing.T, route apiRoute, owned crossProject) (string,
 	if !strings.Contains(pattern, "{key}") || !addressesObject(pattern) {
 		return "", false
 	}
-	// The source write's {owner}/{repo} is the repository it adds as a source of the key's own
-	// project (putArchitectureSource, an upsert on the key and the repository), so under another
-	// project's key it writes a source of that project and addresses no object of this one.
-	if route.Method+" "+route.Pattern == "PUT /api/v1/projects/{key}/architecture-sources/{owner}/{repo}" {
+	// A source write's {owner}/{repo} is the repository it adds as a source of the key's own
+	// project (putArchitectureSource and putSpecSource, each an upsert on the key and the
+	// repository), so under another project's key it writes a source of that project and
+	// addresses no object of this one.
+	switch route.Method + " " + route.Pattern {
+	case "PUT /api/v1/projects/{key}/architecture-sources/{owner}/{repo}", "PUT /api/v1/projects/{key}/spec-sources/{owner}/{repo}":
 		return "", false
 	}
 	for _, place := range []struct{ named, wildcard, object string }{
@@ -1115,6 +1157,9 @@ func crossProjectPath(t *testing.T, route apiRoute, owned crossProject) (string,
 		{"/issues/{key}/plans/{id}", "{id}", owned.plan},
 		// The source's removal and its sync, whose path holds the removal's.
 		{"/projects/{key}/architecture-sources/{owner}/{repo}", "{owner}/{repo}", owned.architectureSource},
+		{"/projects/{key}/spec-sources/{owner}/{repo}", "{owner}/{repo}", owned.specSource},
+		{"/projects/{key}/spec/{owner}/{repo}/nodes/{id}", "{owner}/{repo}", owned.specSource},
+		{"/projects/{key}/spec/{owner}/{repo}/nodes/{id}", "{id}", owned.specNode},
 	} {
 		if strings.Contains(route.Pattern, place.named) {
 			pattern = strings.ReplaceAll(pattern, place.wildcard, place.object)
