@@ -320,10 +320,6 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("useDialog | - | form | (open) ? …", { reason: REASONS[12] }),
   ...answers("useDialog | - | form | if (!open) return …", { reason: REASONS[12] }),
   ...answers(
-    "useDialog | - | form | if (!open || container === null || container.contains(active)) return …",
-    { reason: REASONS[12] }
-  ),
-  ...answers(
     "useMarginSheet | - | form | if (ownerId !== undefined && window.matchMedia(COMPACT_VIEWPORT_QUERY).matches)",
     { reason: REASONS[9] }
   ),

@@ -35,6 +35,7 @@ import {
   headerLabels,
   headerParts,
   holdClipboard,
+  holdFrames,
   holdLabelsAtTheirChips,
   holdReviewReads,
   IPHONE_13,
@@ -3174,42 +3175,6 @@ test("a change request sent from the header leaves the focus in the header", asy
     }
   });
 });
-
-/** Holds every animation frame the page asks for until `release`, which hands them to the
- *  browser's next frame: a loaded machine draws its next frame late, and keys it takes in the
- *  meantime are handled before that frame. Cancelling a held frame drops it. */
-async function holdFrames(page: Page): Promise<{ release: () => Promise<void> }> {
-  await page.evaluate(() => {
-    const frame = window.requestAnimationFrame.bind(window);
-    const cancel = window.cancelAnimationFrame.bind(window);
-    const held = new Map<number, FrameRequestCallback>();
-    let next = 1_000_000_000;
-    window.requestAnimationFrame = (callback) => {
-      next += 1;
-      held.set(next, callback);
-      return next;
-    };
-    window.cancelAnimationFrame = (id) => {
-      if (!held.delete(id)) cancel(id);
-    };
-    Object.assign(window, {
-      releaseHeldFrames: () => {
-        window.requestAnimationFrame = frame;
-        window.cancelAnimationFrame = cancel;
-        for (const callback of held.values()) frame(callback);
-        held.clear();
-      },
-    });
-  });
-  return {
-    release: () =>
-      page.evaluate(() => {
-        const release: unknown = Reflect.get(window, "releaseHeldFrames");
-        if (typeof release !== "function") throw new Error("the page holds no frames to let go");
-        release();
-      }),
-  };
-}
 
 // Request changes gives its Reason the focus a frame after it opens, and a loaded machine draws
 // that frame late. A key typed into the dialog before that frame presses nothing behind it: the
