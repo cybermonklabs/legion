@@ -1572,7 +1572,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The change request of the issue at a version of its spec (?version=, the latest by default): {issue, version, spec_source, repo, verification_version, proposes, changes_checks, proposals, changed_checks, problems, conclusion, judgment, judgment_reasons, final_list}. An issue whose repository is an enabled spec source of its project proposes each statement, component and interface of its spec that it adds, changes, removes or wrote against a version that is no longer the approved one (stale), against that repository's approved spec, and changes each such check of its Verification document's latest settled version (verification_version, 0 where it holds none); each is {id, kind, what, base, current, block}, and a fault of a block is a problem {block, rule, detail}. A fault that loses its block's node counts as a proposal of its document's kind; a fault of form that keeps the node, such as a claim of two sentences, is listed and counts as none. Any other issue proposes nothing and changes no check. The spec's conclusion block {block, statement, difference, no_statement, evidence, outcomes, answers}, answers being each comment anchored to its block, oldest first, is judged none, incomplete, uncovered or complete, with each reason, against the newest final list of outcomes recorded for the issue or an issue under it, at ?head= where given (final_list, null where none). Refused 404 ISSUE_NOT_FOUND, 400 INVALID_VERSION, 404 VERSION_NOT_FOUND, 400 INVALID_HEAD, and 409 CHANGE_REQUEST_UNREADABLE for a version whose text Dispatch cannot read: never an empty answer. */
+    /** @description The change request of the issue at a version of its spec (?version=, the latest by default): {issue, version, spec_source, repo, verification_version, digest, verification_digest, proposes, changes_checks, proposals, changed_checks, problems, conclusion, judgment, judgment_reasons, final_list}. digest is the digest a person's approval of that version of the spec pins, and verification_digest that of verification_version ("" where it is 0), each the one the approval's review records (content_sha256). An issue whose repository is an enabled spec source of its project proposes each statement, component and interface of its spec that it adds, changes, removes or wrote against a version that is no longer the approved one (stale), against that repository's approved spec, and changes each such check of its Verification document's latest settled version (verification_version, 0 where it holds none); each is {id, kind, what, base, current, block, text, approved_text}, text being the block as that version holds it and approved_text the approved spec's current version of the node as The Spec's files print it ("" where it holds none or removed it), and a fault of a block is a problem {block, rule, detail}. A fault that loses its block's node counts as a proposal of its document's kind; a fault of form that keeps the node, such as a claim of two sentences, is listed and counts as none. Any other issue proposes nothing and changes no check. The spec's conclusion block {block, statement, difference, no_statement, evidence, outcomes, answers}, answers being each comment anchored to its block, oldest first, is judged none, incomplete, uncovered or complete, with each reason, against the newest final list of outcomes recorded for the issue or an issue under it, at ?head= where given (final_list, null where none). Refused 404 ISSUE_NOT_FOUND, 400 INVALID_VERSION, 404 VERSION_NOT_FOUND, 400 INVALID_HEAD, and 409 CHANGE_REQUEST_UNREADABLE for a version whose text Dispatch cannot read: never an empty answer. */
     get: operations["getApiV1IssuesByKeyChangeRequest"];
     put?: never;
     post?: never;
@@ -4394,12 +4394,14 @@ export interface components {
       outcome?: string;
     };
     ChangeRequestNode: {
+      approved_text: string;
       base: number;
       block: string;
       current: number;
       id: string;
       /** @enum {string} */
       kind: "statement" | "component" | "interface" | "check";
+      text: string;
       /** @enum {string} */
       what: "added" | "changed" | "removed" | "stale";
     };
@@ -4412,6 +4414,7 @@ export interface components {
       changed_checks: components["schemas"]["ChangeRequestNode"][] | null;
       changes_checks: boolean;
       conclusion: components["schemas"]["ChangeRequestConclusion"] | null;
+      digest: string;
       final_list: components["schemas"]["SpecFinalList"] | null;
       issue: string;
       /** @enum {string} */
@@ -4422,6 +4425,7 @@ export interface components {
       proposes: boolean;
       repo: string;
       spec_source: boolean;
+      verification_digest: string;
       verification_version: number;
       version: number;
     };

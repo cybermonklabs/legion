@@ -176,7 +176,11 @@ export class DispatchServiceError extends Error {
     /** The texts a `409 SPEC_FORM` refuses, each with its rule, at most 500 of them. */
     readonly findings?: SpecFormFinding[],
     /** On a person's refused approval, the reason a Request changes sends to the author. */
-    readonly changesReason?: string
+    readonly changesReason?: string,
+    /** The stale nodes a `409 SPEC_REQUEST_STALE` refuses a person's approval for. */
+    readonly statements?: DispatchServiceErrorShape["statements"],
+    /** The faults another refusal of the approved spec names, each node with its rule. */
+    readonly problems?: DispatchServiceErrorShape["problems"]
   ) {
     super(message);
   }
@@ -2929,7 +2933,9 @@ export class DispatchClient {
           error.current,
           error.mismatches,
           error.findings ?? undefined,
-          error.changes_reason
+          error.changes_reason,
+          error.statements,
+          error.problems
         );
       }
       throw this.#gatewayError(method, url, response, text, "Dispatch's error JSON");

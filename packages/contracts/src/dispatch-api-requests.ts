@@ -11,6 +11,7 @@ import type {
   WriteAdvice,
 } from "./dispatch-api.generated";
 import type { DispatchEvent } from "./dispatch-api-events";
+import type { SpecRequestStaleEventPayload } from "./dispatch-api-issues";
 
 /**
  * What a caller sends and what Dispatch answers: the write bodies of every route, the advice a
@@ -110,6 +111,19 @@ export interface IDCandidate {
   readonly first_line?: string;
 }
 
+/** One node a refusal of the approved spec names as stale (`409 SPEC_REQUEST_STALE`): the version
+ *  the request read (`base`, 0 for none) and the approved spec's current one (`current`, 0 where
+ *  it holds none or removed it, which `removed` says). It is the node `spec.request_stale` names. */
+export type SpecRequestStaleNode = SpecRequestStaleEventPayload["statements"][number];
+
+/** One fault a refusal of the approved spec names (`409 SPEC_NODE_INVALID`, `SPEC_PARENT_MISSING`,
+ *  `SPEC_LOOP`): the node, the rule it breaks and Dispatch's words. */
+export interface SpecChangeProblem {
+  readonly node: string;
+  readonly rule: string;
+  readonly detail: string;
+}
+
 export interface DispatchServiceErrorShape {
   readonly error?: string;
   readonly code?: string;
@@ -120,6 +134,10 @@ export interface DispatchServiceErrorShape {
   readonly findings?: SpecFormFinding[] | null;
   /** On a person's refused approval, the reason a Request changes sends to the author. */
   readonly changes_reason?: string;
+  /** The stale nodes a `409 SPEC_REQUEST_STALE` refuses the approval for. */
+  readonly statements?: SpecRequestStaleNode[];
+  /** The faults another refusal of the approved spec names. */
+  readonly problems?: SpecChangeProblem[];
 }
 
 /** How the message of a Dispatch process's `404 NOT_FOUND` starts when the process has no route for

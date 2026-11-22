@@ -1,6 +1,7 @@
 import type { ArtifactReview } from "@legion/contracts";
 import { actorText } from "../actor-text";
 import { commandLine } from "../dispatch-command";
+import { DispatchServiceError } from "../dispatch-http";
 import {
   type CommandContext,
   type DispatchToolResult,
@@ -10,6 +11,24 @@ import {
   stringArg,
 } from "./context";
 import { refusalWithCode } from "./failures";
+
+/**
+ * What a refusal of the approved spec names, as a clause of the refusal line: each stale node with
+ * the version the request read and the approved spec's current one (`statements`), then each node
+ * with the rule it breaks (`problems`), so an agent reads which node to write again. "" for a
+ * refusal that names none, and for an error that is no refusal.
+ */
+function refusedNodes(error: unknown): string {
+  if (!(error instanceof DispatchServiceError)) return "";
+  const named = [
+    ...(error.statements ?? []).map(
+      (node) =>
+        `${node.id} (base ${node.base}, current ${node.current}${node.removed === true ? ", removed" : ""})`
+    ),
+    ...(error.problems ?? []).map((problem) => `${problem.node} (${problem.rule})`),
+  ];
+  return named.length === 0 ? "" : `the refusal names ${named.join(", ")}`;
+}
 
 /**
  * `dispatch review`: approve one version of an issue's document, or request changes on it, in the
@@ -37,8 +56,9 @@ export async function reviewCommand(context: CommandContext): Promise<DispatchTo
     });
   } catch (error) {
     // The description names REVIEW_VERSION_MOVED, OAUTH_SCOPE_REQUIRED and SIGN_IN_REQUIRED, and
-    // a build without the route refuses NOT_FOUND, so the code reaches the caller.
-    throw refusalWithCode(error);
+    // a build without the route refuses NOT_FOUND, so the code reaches the caller. A refusal of
+    // the approved spec names its nodes after Dispatch's words.
+    throw refusalWithCode(error, refusedNodes(error));
   }
   const issue = resolved.issue?.key;
   const answered =
