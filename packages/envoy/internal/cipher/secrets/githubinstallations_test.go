@@ -560,9 +560,9 @@ var mintedShapes = map[string]struct {
 	"installation-all.json": {"f4e0a5a429f6cd9b70db330dd20acb07e79b959f738ce38f596d5afc9770338b", true, false},
 	// A token the minter asked for with no repositories, of an installation on selected
 	// repositories: its own list and the installation's, equal.
-	"installation-list.json": {"3fcbe6dc6fdc123bffa0498e045c0d40764b7c41bdbd0d5ef54d8e1a938c511d", true, true},
+	"installation-list.json": {"a458a3a14d8d42f2cdd329d01013f3dd922a35bd721c0f27f9f78f87bc9374fb", true, true},
 	// A token the minter cut to a profile's list: its own list alone.
-	"profile-list.json": {"0bddb333312c39d5e3a0f49851aa4074d876bd28f8b531dd6f2f01025af1798b", false, true},
+	"profile-list.json": {"438c881d54f387aed9c4c79597bc03d6dccba3befc15bb16ff6bb3bec6dac089", false, true},
 	// The seed minter's admin token, cut to every repository but the protected ones: the marker,
 	// and no list.
 	"all-except-protected.json": {"640b033e22a6d0fa42fb49e0cea0611629392b894b147670f32fa28e7cde3fb0", true, false},
