@@ -1017,8 +1017,11 @@ where a check run posted with POST /repos/.../check-runs joins the Actions App's
 at that commit, which is another workflow's as often as not (.github/scripts/post-check-run.sh's
 header holds the measurement). Every job but `changes` and those CI_OK_EXEMPT names still
 ends with the ci-ok-report step (.github/actions/ci-ok-report), which posts a failing ci-ok
-at once when that job's own result decides a merge-group run, so the queue drops a doomed
-group at the first failure rather than at the end of the run; the ci-ok job's last step then
+at once when that job's own result decides a merge-group run of the queue's front group, so
+the queue drops a doomed group at the first failure rather than at the end of the run; a group
+behind the front posts nothing early, since the queue cannot drop it before the groups in front
+of it end (.github/scripts/ci-ok-report.sh's header says what that costs); the ci-ok job's last
+step then
 sets every ci-ok check run on the head that is not its own to its own conclusion, so one
 verdict stands at the end of every attempt. pr-title, the other check that ruleset requires, is
 the `pr-title` job at the end of this file, in the same shape and for the same reason: it runs

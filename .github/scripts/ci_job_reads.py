@@ -2505,7 +2505,7 @@ SCRIPT_TEST_GATES = [
     harness("ci_ok_report_test", "Test ci-ok's report and the check-run post (a stand-in gh)",
             f"{SCRIPTS}/ci-ok-report.test.sh", [
         (f"{SCRIPTS}/ci-ok-report.sh", "the script under test"),
-        (f"{SCRIPTS}/post-check-run.sh", "ci-ok-report.sh:287 posts with it, and ci-ok-report.test.sh:418,434 runs it on its own"),
+        (f"{SCRIPTS}/post-check-run.sh", "ci-ok-report.sh:287 posts with it, and ci-ok-report.test.sh:437,453 runs it on its own"),
         (f"{SCRIPTS}/gh-read.sh", "ci-ok-report.sh:116 sources it for its bounded gh reads"),
         (f"{SCRIPTS}/runner-shutdown.sh",
          "ci-ok-report.sh:118 sources it, and no early ci-ok is posted for a failure it reads as "

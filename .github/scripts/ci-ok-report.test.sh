@@ -37,6 +37,8 @@ case "\$*" in
   *"repos/o/r/git/ref/heads/main"*)
     if [ ! -e "$work/tip" ]; then echo "HTTP 502" >&2; exit 1; fi
     cat "$work/tip" ;;
+  *"repos/o/r/git/ref/heads/release"*)
+    cat "$work/tip-release" ;;
   *"/actions/runs/41/jobs?per_page=100"*)
     if [ ! -e "$work/jobs" ]; then echo "HTTP 502" >&2; exit 1; fi
     cat "$work/jobs" ;;
@@ -127,13 +129,14 @@ annotations() {
 }
 
 # run_report <changes> <event> <job status> [<workflow>]: sets out and status. The group's base is
-# base123 on the queue's main, unless the case sets base_sha.
+# base123 on the queue's main, unless the case sets base_sha or base_ref.
 run_report() {
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
     GITHUB_SERVER_URL=https://github.com GH_RETRY_SECONDS=0 JOB=typecheck CHANGES=$1 \
-    EVENT=$2 JOB_STATUS=$3 HEAD_SHA=abc123 BASE_SHA=${base_sha-base123} BASE_REF=refs/heads/main \
-    CI_OK_WORKFLOW=${4:-$work/ci.yaml} "$script_dir/ci-ok-report.sh" 2>&1)
+    EVENT=$2 JOB_STATUS=$3 HEAD_SHA=abc123 BASE_SHA=${base_sha-base123} \
+    BASE_REF=${base_ref-refs/heads/main} CI_OK_WORKFLOW=${4:-$work/ci.yaml} \
+    "$script_dir/ci-ok-report.sh" 2>&1)
   status=$?
   set -e
 }
@@ -261,6 +264,22 @@ check "failing" "$(is "$(field .conclusion)" failure)"
 check "tried the tip three times" "$(is "$(calls 'repos/o/r/git/ref/heads/main')" 3)"
 check "warns why it posted" \
   "$(contains "$out" '::warning::GitHub refused the tip of refs/heads/main three times')"
+
+echo "case: a group of a queue on another branch reads that branch's tip, not main's"
+# Main's tip is the group's base here, so a read of main would call the group the front. The
+# queue's own branch is elsewhere, so a group stands in front of it and nothing goes up.
+jobs typecheck=in_progress lint=in_progress envoy-client=queued
+echo other789 > "$work/tip-release"
+base_ref=refs/heads/release run_report "$selects" merge_group failure
+check "posts nothing" "$(is "$(posted)" 0)"
+check "reads the release branch's tip" "$(is "$(calls 'repos/o/r/git/ref/heads/release')" 1)"
+check "and not main's" "$(is "$(calls 'repos/o/r/git/ref/heads/main')" 0)"
+check "names that branch" "$(contains "$out" 'is not other789, the tip of refs/heads/release')"
+# Control: with the release branch at the group's base, the group is that queue's front.
+jobs typecheck=in_progress lint=in_progress envoy-client=queued
+echo base123 > "$work/tip-release"
+base_ref=refs/heads/release run_report "$selects" merge_group failure
+check "posts at once when that branch is at the group's base (control)" "$(is "$(posted)" 1)"
 
 echo "case: a merge_group run without its group's base"
 jobs typecheck=in_progress
