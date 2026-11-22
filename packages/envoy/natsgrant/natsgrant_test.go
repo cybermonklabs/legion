@@ -152,27 +152,61 @@ func TestMeasureSubscribesItsInboxUnderBothRoots(t *testing.T) {
 	})
 }
 
-// Every reply prefix the auth service grants sits under one token, ReplyRoot, which a render that
-// puts JetStream in an account of its own exports to the clients' account as ReplyRoot+".>": a
-// push or ordered consumer's deliveries and a stream's republish reach a client only through a
-// subject that account exports. Each row is one kind's inbox prefix and its grant: the prefix is
-// under the root, the root's export reaches a reply under it, the grant subscribes it, and every
-// subscribe of the grant is under the root but the transitional entries the row names.
+// Every reply inbox a grant of this package subscribes sits under one token, ReplyRoot, which a
+// render that puts JetStream in an account of its own exports to the clients' account as
+// ReplyRoot+".>": a push or ordered consumer's deliveries and a stream's republish reach a client
+// only through a subject that account exports. A reply inbox is a subscribe whose first token
+// begins _INBOX, as nats.go's and nats.js's default prefix and every prefix this package names do
+// (outsideTheRoot). Each row is one kind's grant, its inbox prefix under the root once its client
+// moved, and the inboxes it still subscribes outside the root while its client moves
+// (transitional), each named: nats.go's _INBOX.> for the listener's kinds, Dispatch and the daemon,
+// the edge listener's own machine's prefix (#4807), and the measurement job's prefix before its
+// move. For each row, every reply inbox of the grant is under the root or one the row names; each
+// one the row names is one the grant subscribes and one the root's export does not reach; and a
+// prefix under the root is reached by the root's export and admitted by the grant. So a kind that
+// subscribes any other inbox outside the root fails, naming it. The control is the edge row's grant
+// checked without its listing, which names the edge's prefix.
 func TestEveryReplyPrefixIsUnderTheReplyRoot(t *testing.T) {
 	require.Equal(t, "_INBOX_envoy", natsgrant.ReplyRoot)
 	export := natsgrant.ReplyRoot + ".>"
+	session, err := natsgrant.Session("ses_a")
+	require.NoError(t, err)
 	rows := []struct {
-		name, prefix string
-		grant        natsgrant.Permissions
-		// transitional are the subscribes a kind keeps outside the root while its client moves.
+		name  string
+		grant natsgrant.Permissions
+		// prefix is the kind's inbox prefix under the root, empty while its client has not moved.
+		prefix string
+		// transitional are the inboxes a kind subscribes outside the root while its client moves.
 		transitional []string
 	}{
+		{"listener", natsgrant.Listener("m"), "", []string{"_INBOX.>"}},
+		{"listener host", natsgrant.ListenerHost("m"), "", []string{"_INBOX.>"}},
+		{"dispatch", natsgrant.Dispatch("m"), "", []string{"_INBOX.>"}},
+		{"host", natsgrant.Host("m"), "", []string{"_INBOX.>"}},
+		{"daemon", natsgrant.Daemon(), "", []string{"_INBOX.>"}},
+		{"session pattern", natsgrant.SessionPattern(), "", nil},
+		{"session", session, "", nil},
 		// The measurement job's prefix before its move shares the root's characters but not its
 		// token, so the root's export does not reach it; it goes when no job sets it.
-		{"measure", natsgrant.MeasureInbox, natsgrant.Measure(), []string{"_INBOX_envoy_measure.>"}},
+		{"measure", natsgrant.Measure(), natsgrant.MeasureInbox, []string{"_INBOX_envoy_measure.>"}},
+		// The edge listener's own machine's prefix shares the root's characters but not its token,
+		// so a render with JetStream in an account of its own exports it once per edge machine
+		// until the edge listener moves under the root.
+		{"edge", edge(t, "m", "PRIV"), "", []string{"_INBOX_envoy_edge_m.>"}},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
+			require.Empty(t, outsideTheRoot(row.grant, row.transitional),
+				"%s subscribes these reply inboxes outside the reply root %q", row.name, natsgrant.ReplyRoot)
+			for _, entry := range row.transitional {
+				require.Contains(t, row.grant.Subscribe, entry,
+					"%s's row names %q, which its grant does not subscribe; drop it from the row", row.name, entry)
+				require.False(t, natsserver.SubjectMatchesFilter(entry, export),
+					"%s's transitional subscribe %q is under the root; drop it from the row", row.name, entry)
+			}
+			if row.prefix == "" {
+				return
+			}
 			subscription, reply := row.prefix+".Fq3kZ.*", row.prefix+".Fq3kZ.7"
 			require.True(t, strings.HasPrefix(row.prefix, natsgrant.ReplyRoot+"."),
 				"%s's prefix %q is not under the reply root %q", row.name, row.prefix, natsgrant.ReplyRoot)
@@ -180,17 +214,23 @@ func TestEveryReplyPrefixIsUnderTheReplyRoot(t *testing.T) {
 				"the reply root's export %s does not reach %s's reply %q", export, row.name, reply)
 			require.True(t, subscribes(t, row.grant, subscription),
 				"%s's grant does not admit its own inbox's subscription %q", row.name, subscription)
-			for _, entry := range row.grant.Subscribe {
-				if slices.Contains(row.transitional, entry) {
-					require.False(t, natsserver.SubjectMatchesFilter(entry, export),
-						"%s's transitional subscribe %q is under the root; drop it from the row", row.name, entry)
-					continue
-				}
-				require.True(t, strings.HasPrefix(entry, natsgrant.ReplyRoot+"."),
-					"%s subscribes %q, outside the reply root %q", row.name, entry, natsgrant.ReplyRoot)
-			}
 		})
 	}
+	t.Run("control: the edge's grant without its listing names the edge's prefix", func(t *testing.T) {
+		require.Equal(t, []string{"_INBOX_envoy_edge_m.>"}, outsideTheRoot(edge(t, "m", "PRIV"), nil))
+	})
+}
+
+// outsideTheRoot returns each reply inbox grant subscribes, a subscribe whose first token begins
+// _INBOX, that is not under ReplyRoot and that transitional does not name.
+func outsideTheRoot(grant natsgrant.Permissions, transitional []string) []string {
+	var outside []string
+	for _, entry := range grant.Subscribe {
+		if strings.HasPrefix(entry, "_INBOX") && !strings.HasPrefix(entry, natsgrant.ReplyRoot+".") && !slices.Contains(transitional, entry) {
+			outside = append(outside, entry)
+		}
+	}
+	return outside
 }
 
 // edgeGolden is testdata/edge.golden.json: the edge listener's grant for the machine id and the

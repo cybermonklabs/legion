@@ -582,8 +582,14 @@ func Measure() Permissions {
 // a prefix for each client: a push or ordered consumer's deliveries and a stream's republish are
 // published inside JetStream's account and reach a client only through a subject that account
 // exports. A request's reply needs no export, since it comes back through the service import's
-// response mapping. The listener and Dispatch still use nats.go's _INBOX.; until each moves, such a
-// render exports that prefix as well.
+// response mapping. The listener, Dispatch and the Legion daemon still use nats.go's _INBOX.
+// (Listener, ListenerHost, Host, Dispatch and Daemon subscribe _INBOX.>), and the edge listener its
+// own machine's prefix, _INBOX_envoy_edge_<machine id> (EdgeInboxPrefix, #4807); until each moves
+// under the root, such a render exports those prefixes as well: _INBOX.> once, and
+// _INBOX_envoy_edge_<machine id>.> once per edge machine, since that prefix shares the root's
+// characters but not its token, so the root's export does not reach it, and a wildcard matches
+// whole tokens, so no one export reaches every edge machine's prefix. The measurement job's prefix
+// before its move (legacyMeasureInbox) is outside the root too, and goes once no job sets it.
 const ReplyRoot = "_INBOX_envoy"
 
 // MeasureInbox is the measurement job's inbox prefix (nats.js's inboxPrefix) under ReplyRoot.
