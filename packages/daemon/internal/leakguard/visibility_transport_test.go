@@ -571,7 +571,7 @@ func TestTransportPathLeavesTheCallersStopAnError(t *testing.T) {
 			ctx := tc.caller(t, started)
 			began := time.Now()
 			visibility, err := rig.guard.Visibility(ctx, theRepo)
-			answeredWithin10s(t, began)
+			answeredBefore(t, began, standInSleeps)
 			if err == nil {
 				t.Fatalf("read %q, want the call refused", visibility)
 			}
@@ -657,7 +657,7 @@ func TestTransportBoundRefusesAGhThatHeardGitHub(t *testing.T) {
 	rig := newTransportRig(t, "printf 'HTTP/2.0 200 OK\\r\\n'\nsleep 30\n", noGraphQL, curlAnswers("private"), answersTheRefs)
 	began := time.Now()
 	visibility, err := rig.guard.Visibility(bound(t), theRepo)
-	answeredWithin10s(t, began)
+	answeredBefore(t, began, standInSleeps)
 	if err == nil {
 		t.Fatalf("read %q, want the call refused", visibility)
 	}

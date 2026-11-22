@@ -194,7 +194,7 @@ func TestLsRemoteThatHangsEndsAtItsOwnBound(t *testing.T) {
 			return "", &rateLimitError{reset: reset}
 		},
 	}).Visibility(bound(t), theRepo)
-	answeredWithin10s(t, started)
+	answeredBefore(t, started, standInSleeps)
 	if err == nil {
 		t.Fatal("the visibility read passed while git never answered")
 	}
@@ -276,7 +276,7 @@ func TestLsRemoteStopsWithTheCallersContext(t *testing.T) {
 			ctx := tc.caller(t, started)
 			began := time.Now()
 			_, err := guard.Visibility(ctx, theRepo)
-			answeredWithin10s(t, began)
+			answeredBefore(t, began, standInSleeps)
 			if err == nil {
 				t.Fatal("the visibility read passed while git never answered")
 			}

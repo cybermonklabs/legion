@@ -72,7 +72,7 @@ func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 		defer cancel()
 		started := time.Now()
 		asked, _, err := call(t, ctx, "cat >/dev/null 2>&1\nsleep 30\n", theProgram, true)
-		answeredWithin10s(t, started)
+		answeredBefore(t, started, standInSleeps)
 		// The stop is the caller's own deadline, not a bound of the guard's shorter than it: a
 		// bound the guard set itself would end the check, and the call, while ctx is still alive,
 		// and stoppedByItsBound would read its shorter seconds as a late start.
@@ -107,33 +107,38 @@ func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 }
 
 // theStop is the sentence a setup failure says of a shared check its bound stopped
-// (stoppedError.said): the whole seconds the check ran, then the bound it was given.
-var theStop = regexp.MustCompile(`^the shared public leak check ran (\d+) s and was stopped by its bound of (\d+) s$`)
+// (stoppedError.said): how long the check ran, then the bound it was given, each in whole seconds
+// or, below a second, whole milliseconds (spoken).
+var theStop = regexp.MustCompile(`^the shared public leak check ran (\d+) (s|ms) and was stopped by its bound of (\d+) (s|ms)$`)
 
 // stoppedByItsBound fails t unless failed is the shared check stopped by its bound, said with the
-// seconds the guard counted: a bound no longer than ceiling, the caller's own, and a run no shorter
+// times the guard counted: a bound no longer than ceiling, the caller's own, and a run no shorter
 // than that bound, since the check is stopped at its deadline and never before. The bound is what
 // was left of the caller's deadline when the check started (Guard.run), so on a loaded machine,
 // where the guard's own work before the check takes longer, it is less than the caller's whole
 // bound: it is read against the ceiling, as stopBound reads a child's, and never for its exact
-// seconds.
+// value. Each time is compared as it was said: spoken rounds a longer time to no less than a
+// shorter one, so the order of the two holds in what the sentence says.
 func stoppedByItsBound(t *testing.T, failed *SetupFailure, ceiling time.Duration) {
 	t.Helper()
 	said := theStop.FindStringSubmatch(failed.Why)
 	if said == nil {
 		t.Fatalf("the setup failure says %q, want the shared check stopped by its bound", failed.Error())
 	}
-	ran, err := strconv.ParseInt(said[1], 10, 64)
-	if err != nil {
-		t.Fatal(err)
+	heard := func(count, unit string) time.Duration {
+		n, err := strconv.ParseInt(count, 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if unit == "ms" {
+			return time.Duration(n) * time.Millisecond
+		}
+		return time.Duration(n) * time.Second
 	}
-	bound, err := strconv.ParseInt(said[2], 10, 64)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bound > wholeSeconds(ceiling) || ran < bound {
-		t.Fatalf("the setup failure says %q: a bound of %d s and a run of %d s, want a bound no longer than the caller's %d s and a run no shorter than its bound",
-			failed.Error(), bound, ran, wholeSeconds(ceiling))
+	ran, bound := heard(said[1], said[2]), heard(said[3], said[4])
+	if bound > time.Duration(wholeSeconds(ceiling))*time.Second || ran < bound {
+		t.Fatalf("the setup failure says %q: a bound of %s and a run of %s, want a bound no longer than the caller's %s and a run no shorter than its bound",
+			failed.Error(), bound, ran, ceiling)
 	}
 }
 

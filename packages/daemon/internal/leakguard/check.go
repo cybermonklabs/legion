@@ -492,15 +492,25 @@ func (s *stoppedError) Error() string {
 	return s.said(s.program)
 }
 
-// said is the stop as one sentence about name, in whole seconds: what ran, for how long, and the
-// bound or the cancel that stopped it. It is the one place the wording lives, so the error of a
-// child and the setup failure of the shared check say the same thing. A context with no deadline
-// can end only by a cancel, so it is said as one.
+// said is the stop as one sentence about name: what ran, for how long, and the bound or the
+// cancel that stopped it, each time as spoken says it. It is the one place the wording lives, so
+// the error of a child and the setup failure of the shared check say the same thing. A context
+// with no deadline can end only by a cancel, so it is said as one.
 func (s *stoppedError) said(name string) string {
 	if s.cancelled || s.bound == 0 {
-		return fmt.Sprintf("%s ran %d s and was stopped by a cancel", name, wholeSeconds(s.ran))
+		return fmt.Sprintf("%s ran %s and was stopped by a cancel", name, spoken(s.ran))
 	}
-	return fmt.Sprintf("%s ran %d s and was stopped by its bound of %d s", name, wholeSeconds(s.ran), wholeSeconds(s.bound))
+	return fmt.Sprintf("%s ran %s and was stopped by its bound of %s", name, spoken(s.ran), spoken(s.bound))
+}
+
+// spoken is d as a stop's sentence says it: in whole seconds from one second up, and in whole
+// milliseconds below a second. A bound of 364 ms said in whole seconds is "0 s", which a reader
+// cannot tell from no bound at all.
+func spoken(d time.Duration) string {
+	if ms := d.Round(time.Millisecond); ms < time.Second {
+		return fmt.Sprintf("%d ms", ms/time.Millisecond)
+	}
+	return fmt.Sprintf("%d s", wholeSeconds(d))
 }
 
 // wholeSeconds is d rounded to the nearest second, as a count of seconds.

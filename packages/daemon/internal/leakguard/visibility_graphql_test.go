@@ -659,7 +659,7 @@ func TestVisibilityRefusesAGraphQLReadTheCallersBoundStops(t *testing.T) {
 			return "", &rateLimitError{reset: reset}
 		},
 	}).Visibility(ctx, theRepo)
-	answeredWithin10s(t, began)
+	answeredBefore(t, began, standInSleeps)
 	if err == nil {
 		t.Fatal("the visibility read passed while gh never answered")
 	}
