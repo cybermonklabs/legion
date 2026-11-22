@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -291,13 +292,20 @@ func TestACopiedRoleMessageCarriesEveryFieldAmongManyKeys(t *testing.T) {
 	}
 }
 
-// keyNames reads a key with its escapes as encoding/json reads it, with no allocation, for each
-// of the keys the relay's first read keeps.
+// The relay's first read takes a key with escapes where encoding/json takes it
+// (jsonStringTextValid), and reads it, with no allocation, as encoding/json reads it, for each of
+// the keys it keeps (keyNames).
 func TestAKeyWithEscapesNamesAFieldAsEncodingJSONReadsIt(t *testing.T) {
 	tokens := []string{
 		`"topic"`, `"top\u0069c"`, `"\u0074\u006f\u0070\u0069\u0063"`, `"\u0074OPIC"`, `"top\u0049c"`, `"topi\u0063 "`,
-		`"topic\u0000"`, `"top\u0130c"`, `"\ud835\udcc9opic"`, `"t\/opic"`, `"ro\u006ce"`, `"r\u006Fle"`, `"role\n"`,
-		`"event\u005fid"`, `"event_\u0069d"`, `"event\\_id"`, `"\"role\""`, `"top\u0069c\u0069"`, `""`,
+		`"topic\u0000"`, `"top\u0130c"`, `"\u0174opic"`, `"\ud835\udcc9opic"`, `"t\/opic"`, `"ro\u006ce"`, `"r\u006Fle"`,
+		`"role\n"`, `"event\u005fid"`, `"event_\u0069d"`, `"event\\_id"`, `"\"role\""`, `"top\u0069c\u0069"`, `""`,
+	}
+	refused := []string{`"top\qic"`, `"top\u00g9c"`, `"top\u006"`, `"top\U0069c"`, "\"top\\u0069c\x01\"", "\"\x1f\\n\""}
+	for _, token := range append(slices.Clone(tokens), refused...) {
+		if got, want := jsonStringTextValid([]byte(token[1:len(token)-1])), json.Valid([]byte(token)); got != want {
+			t.Errorf("jsonStringTextValid takes the key %q: %t; encoding/json takes it: %t", token, got, want)
+		}
 	}
 	for _, token := range tokens {
 		var decoded string

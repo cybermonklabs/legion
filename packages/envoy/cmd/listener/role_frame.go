@@ -153,10 +153,10 @@ func eachTopLevelField(data []byte, visit func(key, value []byte)) error {
 }
 
 // jsonStringTextValid reports whether text, the text between a JSON string's quotes, is what
-// encoding/json's scanner takes there when the text holds an escape: each backslash before one of
+// encoding/json's scanner takes there, for text that holds an escape: each backslash before one of
 // " \ / b f n r t, or before u and four hex digits, and no control character. Text with no escape
-// is taken whole, as the reader took a key with none before it checked escapes, so a key reads as
-// encoding/json and JSON.parse read it wherever they take it.
+// is taken whole, as the reader has always taken a key with none. A key that passes is one
+// encoding/json decodes (jsonKey), and keyNames reads its escapes alike.
 func jsonStringTextValid(text []byte) bool {
 	if bytes.IndexByte(text, '\\') < 0 {
 		return true
@@ -363,8 +363,8 @@ func fieldText(name string, raw json.RawMessage) (string, error) {
 	return value, nil
 }
 
-// jsonType names the JSON type of raw, a value eachTopLevelField kept as its raw text, which reads
-// its first byte alone for an object, an array or a string, and so holds no limit on depth.
+// jsonType names the JSON type of raw, a value eachTopLevelField kept as its raw text. It reads
+// only the first byte of an object, an array or a string, so it names one nested at any depth.
 func jsonType(raw json.RawMessage) string {
 	switch raw[0] {
 	case '{':
