@@ -60,7 +60,14 @@ func newRelayRigReceipt(t *testing.T, first, max, receipt time.Duration) *relayR
 // this way rather than by timing.
 func newRelayRigUnowned(t *testing.T, first, max time.Duration) *relayRig {
 	t.Helper()
-	url := testnats.URL(t)
+	return newRelayRigUnownedOn(t, testnats.URL(t), first, max)
+}
+
+// newRelayRigUnownedOn is newRelayRigUnowned on the server at url, which the test started itself:
+// the hub's image behind the auth service, say, whose user the listener's connections take from
+// the process environment (bus.NkeySeedEnvVar).
+func newRelayRigUnownedOn(t *testing.T, url string, first, max time.Duration) *relayRig {
+	t.Helper()
 	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect the listener: %v", err)
