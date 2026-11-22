@@ -40,9 +40,6 @@ const (
 	// copiesWatchBound bounds every wait of a row for a delivery: long enough for a claim's
 	// handover on a loaded box, and at main, where no copy is made, the whole wait of a case row.
 	copiesWatchBound = 30 * time.Second
-	// copiesSettle is how long a watch goes on once the role's handover has ended, so a frame that
-	// handover sent after the ones a row waits for is counted too.
-	copiesSettle = 2 * time.Second
 	// copiesSignalBound bounds a row's wait for a seam it set to be reached.
 	copiesSignalBound = 15 * time.Second
 )
@@ -336,21 +333,6 @@ func (r copiesReceived) takeOne(standIn *sessionStandIn, until time.Time) bool {
 	}
 }
 
-// tallyFor counts every frame standIn receives for d.
-func tallyFor(standIn *sessionStandIn, d time.Duration) copiesReceived {
-	received := copiesReceived{}
-	for until := time.Now().Add(d); received.takeOne(standIn, until); {
-	}
-	return received
-}
-
-// add counts more's frames into r.
-func (r copiesReceived) add(more copiesReceived) {
-	for eventID, n := range more {
-		r[eventID] += n
-	}
-}
-
 // handoverIdle reports whether no handover of role runs on this listener: none holds the role's
 // guard (roleKeepGuards), which every handover - the claim route's, a keep's, a registration's,
 // the sweep's - holds while it runs.
@@ -362,27 +344,45 @@ func (rig *relayRig) handoverIdle(role string) bool {
 	return held
 }
 
-// watch counts by event id every frame standIn receives: until each of want has arrived, then
-// until no handover of role runs on this listener, then for copiesSettle more, all within
-// copiesWatchBound. It is a watch that outlasts the handover, so a frame that handover sends after
-// the ones a row waits for is counted too. At main, where nothing arrives, it watches the whole
-// bound.
-func (rig *copiesRig) watch(t *testing.T, standIn *sessionStandIn, role string, want ...string) copiesReceived {
+// watch counts by event id every frame standIn, sessionID's process, receives: until each of want
+// has arrived, then through the role's handover (throughHandover), all within copiesWatchBound. A
+// row's want are the last messages it stored on the previous holder's subject, which a takeover
+// pass copies in stream order and the walk forwards in the lane's order, so a copy of an earlier
+// message the row forbids arrives before them; and the watch outlasts the handover, so a frame
+// that handover sends after the ones a row waits for is counted too. At main, where nothing
+// arrives, it watches the whole bound.
+func (rig *copiesRig) watch(t *testing.T, standIn *sessionStandIn, sessionID, role string, want ...string) copiesReceived {
 	t.Helper()
 	received := copiesReceived{}
 	deadline := time.Now().Add(copiesWatchBound)
 	for len(received.missing(want)) > 0 && received.takeOne(standIn, deadline) {
 	}
-	for !rig.handoverIdle(role) && time.Now().Before(deadline) {
-		next := time.Now().Add(50 * time.Millisecond)
-		if next.After(deadline) {
-			next = deadline
-		}
-		received.takeOne(standIn, next)
-	}
-	received.add(tallyFor(standIn, copiesSettle))
+	rig.throughHandover(t, standIn, sessionID, role, received)
 	t.Logf("%s received, by event id: %v", role, received)
 	return received
+}
+
+// throughHandover counts into received every frame standIn, sessionID's process, receives until no
+// handover of role runs on this listener, and then until a message stored on sessionID's own
+// subject after that has arrived, which it does not count, each within copiesWatchBound; it fails
+// the row when that message has not arrived. Every copy a handover forwards to sessionID is stored
+// on that subject before the handover ends, and sessionID's relay sends the subject in stream
+// order, so what a row counts after it holds every frame any handover so far sent sessionID, with
+// no fixed wait.
+func (rig *copiesRig) throughHandover(t *testing.T, standIn *sessionStandIn, sessionID, role string, received copiesReceived) {
+	t.Helper()
+	deadline := time.Now().Add(copiesWatchBound)
+	for !rig.handoverIdle(role) && time.Now().Before(deadline) {
+		received.takeOne(standIn, time.Now().Add(50*time.Millisecond))
+	}
+	after := rig.sendToSession(t, sessionID)
+	deadline = time.Now().Add(copiesWatchBound)
+	for received[after] == 0 && received.takeOne(standIn, deadline) {
+	}
+	if received[after] == 0 {
+		t.Fatalf("%s did not receive the message %s to itself, stored once no handover of role %s ran, within %s: it received %v", sessionID, after, role, copiesWatchBound, received)
+	}
+	delete(received, after)
 }
 
 // awaitHandoverIdle waits for no handover of role to run on this listener, failing the row when
@@ -569,12 +569,16 @@ func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing
 		}) {
 			t.Fatalf("the stream holds no forward of %s on %s after %s", late.EventID, agent, copiesWatchBound)
 		}
-		if before := tallyFor(taker, copiesSettle); before[late.EventID] != 0 {
+		// The new holder has received everything the claim's handover sent it once a message to
+		// itself, stored after that handover ended, has arrived (throughHandover).
+		before := copiesReceived{}
+		rig.throughHandover(t, taker, copiesTaker, copiesRole, before)
+		if before[late.EventID] != 0 {
 			t.Fatalf("%s received %s before the sweep's next pass ran, %v: the row's order did not hold", copiesTaker, late.EventID, before)
 		}
 
 		rig.sweepPass()
-		received := rig.watch(t, taker, copiesRole, late.EventID)
+		received := rig.watch(t, taker, copiesTaker, copiesRole, late.EventID)
 
 		t.Run("case: it reaches the new holder by the sweep's next pass", func(t *testing.T) {
 			if !passRan {
@@ -602,7 +606,7 @@ func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing
 
 		taker := rig.startTaker(t, copiesTaker)
 		rig.claim(t, copiesTaker, copiesRole, false)
-		received := rig.watch(t, taker, copiesRole, behind...)
+		received := rig.watch(t, taker, copiesTaker, copiesRole, behind...)
 
 		t.Run("case: each role message reaches the new holder", func(t *testing.T) {
 			copiesRequireEach(t, received, copiesTaker, behind...)
@@ -646,11 +650,11 @@ func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing
 		rig.listenerClock.pin(takeoverAt)
 		rig.claim(t, copiesTaker, copiesRole, false)
 		rig.listenerClock.unpin()
-		received := rig.watch(t, taker, copiesRole, fresh)
+		received := rig.watch(t, taker, copiesTaker, copiesRole, fresh)
 		// A walk that drops a copy past its hour sends its dead letter; the sweep's pass is one
 		// more walk of the lane, and one more pass of the takeover record.
 		rig.sweepPass()
-		received.add(tallyFor(taker, copiesSettle))
+		rig.throughHandover(t, taker, copiesTaker, copiesRole, received)
 
 		t.Run("case: the role message stored inside the hour before the takeover reaches the new holder", func(t *testing.T) {
 			copiesRequireEach(t, received, copiesTaker, fresh)
@@ -694,7 +698,7 @@ func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing
 
 		taker := rig.startTaker(t, copiesTaker)
 		rig.claim(t, copiesTaker, copiesRole, false)
-		received := rig.watch(t, taker, copiesRole, unread...)
+		received := rig.watch(t, taker, copiesTaker, copiesRole, unread...)
 
 		t.Run("case: the new holder receives each role message the previous holder did not acknowledge", func(t *testing.T) {
 			copiesRequireEach(t, received, copiesTaker, unread...)
@@ -746,7 +750,7 @@ func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing
 		}
 		rig.sweepPass()
 		all := append([]string{read}, unread...)
-		received := rig.watch(t, taker, copiesRole, all...)
+		received := rig.watch(t, taker, copiesTaker, copiesRole, all...)
 
 		t.Run("case: every role message of the last hour reaches the new holder, the one the previous holder read included", func(t *testing.T) {
 			copiesRequireEach(t, received, copiesTaker, all...)
@@ -783,7 +787,8 @@ func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing
 		if refusedRead {
 			rig.awaitHandoverIdle(t, copiesRole)
 		}
-		first := tallyFor(taker, copiesSettle)
+		first := copiesReceived{}
+		rig.throughHandover(t, taker, copiesTaker, copiesRole, first)
 
 		t.Run("control: the claim's pass, its read refused, copies nothing", func(t *testing.T) {
 			copiesRequireNone(t, first, copiesTaker, unread...)
@@ -796,7 +801,7 @@ func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing
 
 		refusing.Store(false)
 		rig.sweepPass()
-		received := rig.watch(t, taker, copiesRole, unread...)
+		received := rig.watch(t, taker, copiesTaker, copiesRole, unread...)
 
 		t.Run("case: the sweep's next pass, with the read allowed, copies them and the new holder receives each", func(t *testing.T) {
 			if !refusedRead {
@@ -898,7 +903,7 @@ func copiesUnreadRoleMessagesRow(t *testing.T, soft bool) {
 	}
 	taker := rig.startTaker(t, copiesTaker)
 	rig.claim(t, copiesTaker, copiesRole, soft)
-	received := rig.watch(t, taker, copiesRole, unread...)
+	received := rig.watch(t, taker, copiesTaker, copiesRole, unread...)
 
 	t.Run("case: the new holder receives each of the three unread role messages at least once", func(t *testing.T) {
 		copiesRequireEach(t, received, copiesTaker, unread...)
