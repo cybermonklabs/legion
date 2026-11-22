@@ -28,6 +28,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
+import { ignoredAtStart } from "../../envoy-client/src/signal-ignores";
 import {
   pgBinVariable,
   pgImageVariable,
@@ -84,12 +85,12 @@ const stopping = new AbortController();
  *  never rejects; the copy kept here swallows what `startStacks` hands its caller. */
 let starting: Promise<unknown> | undefined;
 
-/** Set by the SIGTERM listener, so a second signal ends this process rather than starting a
- *  second stop over the top of the first. */
+/** Set by the listener of the signals nobody else handles (`terminatingSignals`), so a second
+ *  SIGTERM ends this process rather than starting a second stop over the top of the first. */
 let terminating = false;
 
-/** How long SIGTERM waits for a start in flight to put down what it is holding, after which it
- *  stops what is up and ends this process anyway.
+/** How long a signal nobody else handles waits for a start in flight to put down what it is
+ *  holding, after which it stops what is up and ends this process anyway.
  *
  *  A start that has read the abort unwinds in about a second, since every wait in it takes that
  *  signal; what it cannot cut short is an `execFile` already running - a `pg_ctl -w start` or
@@ -105,7 +106,8 @@ const terminateGraceMs = 15_000;
  *  this process's signal handling as the pool found it, so a second `startStacks` in one
  *  process - Playwright's UI mode, and this package's own unit tests - adds no second copy.
  *
- *  THE TWO SIGNALS GET DIFFERENT ANSWERS, which is the whole of why there are two of them here.
+ *  SIGINT AND THE OTHERS GET DIFFERENT ANSWERS, which is the whole of why there are two
+ *  listeners here.
  *
  *  SIGINT is Playwright's. Its runner catches the Ctrl-C and runs `globalTeardown`, which is
  *  `stopStacks`, so an interrupted run stops every server and every database and keeps its logs
@@ -113,20 +115,32 @@ const terminateGraceMs = 15_000;
  *  BEFORE there is a run to tear down, while the stacks are still starting; `startStacks` takes
  *  it off again once they are up, leaving the runner the one handler of that signal.
  *
- *  SIGTERM is nobody's. Playwright's runner does not handle it, so `kill <pid>`, a `timeout` and
- *  a pod's grace period reach this process alone - and a listener that only set a flag would be
- *  worse than none, since registering one removes Node's own default exit and the run would
- *  carry on to its end with every server up. So this listener does the work: it cancels the
- *  start, WAITS for it (`starting`, bounded by `terminateGraceMs`), stops the stacks, and then
- *  ends the process with the signal's OWN disposition rather than an exit status this file
- *  invented, which it can do because `stopStacks` has by then removed the listener and the
- *  second SIGTERM meets Node's default. */
+ *  SIGTERM, SIGHUP and SIGQUIT are nobody's (`terminatingSignals`). Playwright's runner handles
+ *  none of them (it listens for SIGINT alone), so `kill <pid>`, a `timeout`, a pod's grace
+ *  period, a terminal that closes and its quit key reach this process alone, and each would end
+ *  it by its default action with every stack serving on, since each stack's processes are started
+ *  detached, in a session of their own (`e2e/local-instance-support.ts`). A listener that only
+ *  set a flag would be worse than none, since registering one removes Node's own default exit and
+ *  the run would carry on to its end with every server up. So this listener does the work: it
+ *  cancels the start, WAITS for it (`starting`, bounded by `terminateGraceMs`), stops the stacks,
+ *  and then ends the process with the signal's OWN disposition rather than an exit status this
+ *  file invented, which it can do because `stopStacks` has by then removed the listener and the
+ *  signal sent again meets Node's default.
+ *
+ *  Neither listener is armed for a signal this process was started with ignored, as `nohup`
+ *  ignores SIGHUP (`ignoredAtStart`): a listener would end the run on the signal it was started to
+ *  outlive, since taking one off brings back the default action, not the ignore. */
 let onInterrupt: (() => void) | undefined;
-let onTerminate: (() => void) | undefined;
+let onTerminate: ((signal: TerminatingSignal) => void) | undefined;
 
-/** What SIGTERM does, in order: cancel the start, wait for it to unwind, stop what is up, and
- *  end this process with the signal's own disposition. */
-async function terminate(): Promise<void> {
+/** The signals nobody else handles, which the pool answers by stopping what is up and ending this
+ *  process with the signal (`terminate`). */
+const terminatingSignals = ["SIGTERM", "SIGHUP", "SIGQUIT"] as const;
+type TerminatingSignal = (typeof terminatingSignals)[number];
+
+/** What a signal nobody else handles does, in order: cancel the start, wait for it to unwind,
+ *  stop what is up, and end this process with the signal's own disposition. */
+async function terminate(signal: TerminatingSignal): Promise<void> {
   stopping.abort();
   // The start in flight is awaited BEFORE anything is stopped, because dying here is what left
   // a Postgres serving a loopback port and a data directory behind it: the stack is not in
@@ -138,37 +152,43 @@ async function terminate(): Promise<void> {
   // as e2e/harness-up.ts's, has none, and `clearRunDir` removes its directory either way). No
   // container's log is printed for them: a SIGTERM is how e2e/visual-run.sh ends harness-up after
   // every run, passed or failed, and printing there would put a whole Postgres log in every visual
-  // job's output. A SIGTERM that lands while stacks are still starting ends that start: the log of
+  // job's output. A signal that lands while stacks are still starting ends that start: the log of
   // each stack's container that had come up is printed as the start stops it, and a container
   // still waiting to answer is removed unread; a start that has not settled within
   // `terminateGraceMs` is left, and the stacks that are up are stopped here, printing nothing.
   await stopStacks(true, false);
-  process.kill(process.pid, "SIGTERM");
+  process.kill(process.pid, signal);
 }
 
 function watchSignals(): void {
   if (onInterrupt === undefined) {
     onInterrupt = (): void => stopping.abort();
-    process.on("SIGINT", onInterrupt);
+    if (!ignoredAtStart("SIGINT")) process.on("SIGINT", onInterrupt);
   }
   if (onTerminate === undefined) {
-    onTerminate = (): void => {
+    onTerminate = (signal): void => {
       // The logs are kept: a run this signal ended reported no verdict on anything, and what
       // its servers were doing when it stopped is the only account there is
       // (`e2e/run-outcome.ts` keeps the same rule).
       //
-      // A second SIGTERM, while the first is still waiting on the start, is whoever sent it
-      // saying they will not wait: the listener comes off and the signal is sent on to Node's
-      // default, which ends the process now.
+      // A second SIGTERM, while the first stop is still under way, is whoever sent it saying
+      // they will not wait: the listener comes off and the signal is sent on to Node's default,
+      // which ends the process now. A SIGHUP or a SIGQUIT then changes nothing, and the stop
+      // goes on: a terminal that closes can send SIGHUP twice, once itself and once from the
+      // shell, which sends it again to its jobs as it exits (bash(1), SIGNALS), and no sender of
+      // either says by it that it will not wait.
       if (terminating) {
+        if (signal !== "SIGTERM") return;
         unwatchSignals();
         process.kill(process.pid, "SIGTERM");
         return;
       }
       terminating = true;
-      void terminate();
+      void terminate(signal);
     };
-    process.on("SIGTERM", onTerminate);
+    for (const signal of terminatingSignals) {
+      if (!ignoredAtStart(signal)) process.on(signal, onTerminate);
+    }
   }
 }
 
@@ -182,7 +202,7 @@ function unwatchInterrupt(): void {
 function unwatchSignals(): void {
   unwatchInterrupt();
   if (onTerminate === undefined) return;
-  process.off("SIGTERM", onTerminate);
+  for (const signal of terminatingSignals) process.off(signal, onTerminate);
   onTerminate = undefined;
 }
 
@@ -342,15 +362,33 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
   }
 }
 
+/** The stop under way, which a second call of `stopStacks` waits for. */
+let stoppingStacks: Promise<void> | undefined;
+
 /** Stops every harness and every database, clears the run's directory and takes the pool's
  *  signal listeners off again. `keepLogs` is the one decision this cannot make for itself: the
  *  logs are what a failed run is read from, and this module never learns whether the run passed
  *  (`e2e/run-outcome.ts`). `printContainerLogs`, which follows it unless said otherwise, is
- *  whether each stack's Postgres container prints its log before it goes (`StackDatabase.stop`). */
-export async function stopStacks(
+ *  whether each stack's Postgres container prints its log before it goes (`StackDatabase.stop`).
+ *
+ *  A call while a stop is under way waits for that stop, whatever it is given, and stops nothing
+ *  a second time. Two callers can answer one signal: `e2e/harness-up.ts` stops its stack on a
+ *  SIGHUP or a SIGQUIT itself, and the pool's own listener (`terminate`) answers the same signal.
+ *  Two stops of one stack at once would each take the other's work: the second finds the
+ *  Supervisor's children already taken and goes on to `pg_ctl -m immediate stop` and to clear the
+ *  run directory under a server that is still shutting down, which the server reports as a
+ *  failed deregistration. */
+export function stopStacks(
   keepLogs: boolean,
   printContainerLogs: boolean = keepLogs
 ): Promise<void> {
+  stoppingStacks ??= stopEveryStack(keepLogs, printContainerLogs).finally(() => {
+    stoppingStacks = undefined;
+  });
+  return stoppingStacks;
+}
+
+async function stopEveryStack(keepLogs: boolean, printContainerLogs: boolean): Promise<void> {
   stopped = true;
   await Promise.allSettled(stacks.map((stack) => stack.harness.stop()));
   await Promise.allSettled(stacks.map((stack) => stack.database?.stop(printContainerLogs)));
