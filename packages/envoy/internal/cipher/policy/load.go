@@ -211,9 +211,10 @@ const (
 	// none of that name is under the prefix (a profile is never the source of another), or the one
 	// there is refused or waits for its value. Its detail names the source and that reason.
 	ReasonProfileSourceMissing = "profile-source-missing"
-	// ReasonProfileNameTaken: a profile's name is a stored secret's other than its source. The
-	// profile is refused, and so is that stored secret, by its own id, until one of the two goes:
-	// a name a profile holds is never released as a stored value.
+	// ReasonProfileNameTaken: a profile's name is a stored secret's other than its source, and that
+	// stored secret is not superseded by the profile's source (TagSupersededBy). The profile is
+	// refused, and so is that stored secret, by its own id, until one of the two goes: a name a
+	// profile holds is never released as a stored value.
 	ReasonProfileNameTaken = "profile-name-taken"
 	// ReasonProfileBlockMismatch: a profile's github or google block does not fit its source's
 	// type and tags: a github block on a source that is no github-app or github-installations
@@ -231,12 +232,16 @@ const (
 	// an azure-login source, whose credential a profile cannot narrow at a mint, so only the
 	// proxy's hosts, methods and paths scope it.
 	ReasonProfileNeedsProxy = "profile-needs-proxy"
-	// ReasonGitHubAppNoProfile: a github-app or github-installations secret no profile names, as
-	// its own name or as its source. Every GitHub token the broker hands over is a profile's, held
-	// to that profile's accounts and permissions, so such a secret is refused by its name rather
-	// than released with every permission its installations hold. Such a secret profiles of other
-	// names use is no refusal: it is served through them (ErrServedOnlyAsProfiles).
+	// ReasonGitHubAppNoProfile: a github-app secret no profile names, as its own name or as its
+	// source. Every GitHub token the broker hands over is a profile's, held to that profile's
+	// accounts and permissions, so such a secret is refused by its name rather than released with
+	// every permission its installations hold. Such a secret profiles of other names use is no
+	// refusal: it is served through them (ErrServedOnlyAsProfiles).
 	ReasonGitHubAppNoProfile = "github-app-no-profile"
+	// ReasonGitHubInstallationsNoProfile: a github-installations secret no profile names, as its
+	// own name or as its source, refused by its name for the reason ReasonGitHubAppNoProfile gives:
+	// every GitHub token the broker hands over is a profile's.
+	ReasonGitHubInstallationsNoProfile = "github-installations-no-profile"
 )
 
 // slugPattern is a secret's name under the prefix: the lowercase form of an environment-variable
@@ -585,6 +590,9 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now
 		}
 		s.ProjectChannels = raw
 	}
+	// Read as written: only a profile's claim on this secret's name reads it (supersededBy), and a
+	// value that is no profile's source matches none, so the name stays the stored secret's.
+	s.SupersededBy = ls.Tags[TagSupersededBy]
 	if !ls.HasCurrentValue {
 		// A secret `agent-secrets secret create` made before its value (Unfilled: the create label,
 		// no version) is a create waiting for that value for PendingValueWindow (pendingAt), whose

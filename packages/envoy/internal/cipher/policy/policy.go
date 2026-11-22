@@ -147,6 +147,12 @@ const (
 	// ReasonProjectChannelsMalformed: a value the broker cannot read names no limit it could
 	// apply, and such a secret goes to nobody rather than out unlimited.
 	ProjectChannelsSlack = "slack"
+	// TagSupersededBy names the profile source that replaces a stored secret under the stored
+	// secret's own name: a profile of that name whose source is exactly this value is served by the
+	// name, and the stored secret is not (supersededBy). Any other value, and a stored secret with
+	// no such tag, leaves a profile of its name refused profile-name-taken. A broker before this tag
+	// reads no such tag and refuses that profile as before, so a deployment can add the tag first.
+	TagSupersededBy = "superseded-by"
 	// typeSourcePrefix opens the Source of a type secret (TypeSource). The type and store source
 	// are frozen into a request, so changing or clearing the type ends every live grant.
 	typeSourcePrefix = "mint:"
@@ -627,7 +633,11 @@ type Secret struct {
 	// SessionDefault is true when the secret's default-grant tag is "session": a request naming
 	// no lifetime gets a grant that lasts until its session ends instead of DefaultGrantLifetime.
 	SessionDefault bool
-	ownership      ownerKind
+	// SupersededBy is the stored secret's superseded-by tag (TagSupersededBy) as written, "" for a
+	// secret carrying none. No rule reads it but a profile's claim on the secret's name, which is
+	// why it is not in Version: what it changes, the profile served or refused, is.
+	SupersededBy string
+	ownership    ownerKind
 }
 
 // Type is the type the secret is served as, read back from its Source (TypeSource), or "" for a

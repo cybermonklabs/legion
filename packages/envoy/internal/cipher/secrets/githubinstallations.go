@@ -64,6 +64,13 @@ type GitHubInstallationsValue struct {
 	Installations map[string]StoredInstallation
 }
 
+// GitHubInstallationsShapeVersions are the values of a stored value's shapeVersion this broker
+// reads. A minter writes the version of the shape it writes, and a value of any other version, or
+// of none, is refused whole (parseGitHubInstallations), so a shape this broker does not know is
+// never read as one it does: a sha256 pin of the shapes' fixtures (testdata/minted-shapes/) fails
+// only on the side that changed them, and this is the check that runs where both meet.
+var GitHubInstallationsShapeVersions = []int{1}
+
 // RepositoryScopeAllExceptProtected is the one value a stored entry's repository_scope takes: the
 // seed minter's marker of a token it cut to every repository of the installation but the protected
 // ones, stored beside repository_selection "selected" and no repositories list. Only the seed
@@ -75,47 +82,65 @@ const RepositoryScopeAllExceptProtected = "all-except-protected"
 
 // StoredInstallation is one installation token a minter stored: the account's login as the minter
 // wrote it, the installation, the token, when GitHub lapses it, the permissions GitHub minted it
-// with (each permission and its level), and the repositories it reaches: RepositorySelection "all"
-// for every repository of the installation, or "selected", and then Repositories, where the minter
-// listed them, each "account/name" lowercased, as GitHub compares names, sorted; nil where it
-// listed none. AllExceptProtected is whether the entry carries the seed minter's marker
-// (RepositoryScopeAllExceptProtected), which stands beside "selected" and no list alone.
+// with (each permission and its level), and the repositories it reaches. RepositorySelection is
+// "all" for every repository of the installation, or "selected", and then one of three: the seed
+// minter's marker (AllExceptProtected); the token's own list (Repositories) with the installation's
+// own selection beside it (InstallationRepositories), for a token the minter asked for with no
+// repositories and listed with that token; or the token's own list alone, for a token the minter
+// cut to a profile's repositories. Each list is "account/name" lowercased, as GitHub compares
+// names, and sorted; nil where the minter wrote none.
 type StoredInstallation struct {
-	Account             string
-	InstallationID      int64
-	Token               string
-	ExpiresAt           time.Time
-	Permissions         map[string]string
-	RepositorySelection string
-	Repositories        []string
-	AllExceptProtected  bool
+	Account                  string
+	InstallationID           int64
+	Token                    string
+	ExpiresAt                time.Time
+	Permissions              map[string]string
+	RepositorySelection      string
+	Repositories             []string
+	InstallationRepositories []string
+	AllExceptProtected       bool
 }
 
 // githubInstallationsSecret and githubStoredInstallation are a github-installations secret's
-// value as it is stored, which parseGitHubInstallations decodes strictly.
+// value as it is stored, which parseGitHubInstallations decodes strictly. ShapeVersion is held raw,
+// so a version of any JSON form is named in the refusal of it.
 type (
 	githubInstallationsSecret struct {
+		ShapeVersion  json.RawMessage                     `json:"shapeVersion"`
 		Installations map[string]githubStoredInstallation `json:"installations"`
 	}
 	githubStoredInstallation struct {
-		InstallationID      int64             `json:"installation_id"`
-		Token               string            `json:"token"`
-		ExpiresAt           time.Time         `json:"expires_at"`
-		Permissions         map[string]string `json:"permissions"`
-		RepositorySelection string            `json:"repository_selection"`
-		Repositories        []string          `json:"repositories"`
-		RepositoryScope     string            `json:"repository_scope"`
+		InstallationID           int64             `json:"installation_id"`
+		Token                    string            `json:"token"`
+		ExpiresAt                time.Time         `json:"expires_at"`
+		Permissions              map[string]string `json:"permissions"`
+		RepositorySelection      string            `json:"repository_selection"`
+		Repositories             []string          `json:"repositories"`
+		InstallationRepositories []string          `json:"installation_repositories"`
+		RepositoryScope          string            `json:"repository_scope"`
 	}
 )
 
+// The field names each object of a stored value may hold, exactly as written: encoding/json
+// matches a field without regard to case and keeps the last of two keys, so exactKeys holds the
+// value to these first.
+var (
+	installationsSecretKeys = []string{"shapeVersion", "installations"}
+	storedInstallationKeys  = []string{"installation_id", "token", "expires_at", "permissions", "repository_selection", "repositories", "installation_repositories", "repository_scope"}
+)
+
 // parseGitHubInstallations is ParseValue for a github-installations value: one JSON object and
-// nothing after it, holding installations and no other field, at least one; each keyed by a GitHub
+// nothing after it, holding shapeVersion and installations and no other field, no key twice in any
+// object and each field name exactly as written (exactKeys). shapeVersion is one of
+// GitHubInstallationsShapeVersions; any other, or none, refuses the value whole, naming the version
+// read and the versions known. installations holds at least one entry, each keyed by a GitHub
 // login, no login twice whatever its case, and each of exactly installation_id (positive), token
 // (printable ASCII with no space, which no header it is sent in can be broken by), expires_at (an
 // RFC 3339 time), permissions (at least one, each a GitHub App permission's name at a level GitHub
 // gives), repository_selection ("all" or "selected") and, beside "selected" alone, repositories
-// (storedRepositories) or repository_scope (RepositoryScopeAllExceptProtected, beside no list). No
-// error names a token; an account is named only once it is read as a login.
+// with or without installation_repositories (storedRepositories), or repository_scope
+// (RepositoryScopeAllExceptProtected, beside no list). No error names a token; an account is named
+// only once it is read as a login.
 func parseGitHubInstallations(value string) (GitHubInstallationsValue, error) {
 	refuse := func(why string) (GitHubInstallationsValue, error) {
 		return GitHubInstallationsValue{}, fmt.Errorf("%w: GitHub installation tokens: %s", ErrMintStoredValue, why)
@@ -124,10 +149,16 @@ func parseGitHubInstallations(value string) (GitHubInstallationsValue, error) {
 	decoder.DisallowUnknownFields()
 	var secret githubInstallationsSecret
 	if decoder.Decode(&secret) != nil {
-		return refuse("not a JSON object of installations, each of installation_id, token, expires_at, permissions and repository_selection, and of no other field")
+		return refuse("not a JSON object of shapeVersion and installations, each installation of installation_id, token, expires_at, permissions and repository_selection, and of no other field")
 	}
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
 		return refuse("something follows the one JSON object")
+	}
+	if why := exactKeys(value); why != "" {
+		return refuse(why)
+	}
+	if why := shapeVersion(secret.ShapeVersion); why != "" {
+		return refuse(why)
 	}
 	if len(secret.Installations) == 0 {
 		return refuse("it names no installation")
@@ -159,7 +190,7 @@ func parseGitHubInstallations(value string) (GitHubInstallationsValue, error) {
 				return refuse(account + ": permissions holds an entry that is no GitHub App permission at a level GitHub gives")
 			}
 		}
-		repositories, why := storedRepositories(account, entry)
+		repositories, installationRepositories, why := storedRepositories(account, entry)
 		if why == "" {
 			why = storedScope(entry)
 		}
@@ -167,60 +198,180 @@ func parseGitHubInstallations(value string) (GitHubInstallationsValue, error) {
 			return refuse(account + ": " + why)
 		}
 		read.Installations[account] = StoredInstallation{Account: key, InstallationID: entry.InstallationID, Token: entry.Token,
-			ExpiresAt: entry.ExpiresAt, Permissions: entry.Permissions, RepositorySelection: entry.RepositorySelection, Repositories: repositories,
+			ExpiresAt: entry.ExpiresAt, Permissions: entry.Permissions, RepositorySelection: entry.RepositorySelection,
+			Repositories: repositories, InstallationRepositories: installationRepositories,
 			AllExceptProtected: entry.RepositoryScope == RepositoryScopeAllExceptProtected}
 	}
 	return read, nil
 }
 
-// storedRepositories reads the repositories of the stored token of account, a lowercase login: nil
-// where the entry lists none, and otherwise its full names lowercased and sorted, or why the
-// list is refused. A list stands beside repository_selection "selected" alone, since a token of
-// every repository names none; it names at least one repository and at most
-// githubname.MaxNarrowedRepositories, each account/name of account itself, since one installation
-// reaches its own account's repositories alone, a name GitHub can hold, and each once, as GitHub
-// compares names, without regard to case.
-func storedRepositories(account string, entry githubStoredInstallation) ([]string, string) {
+// shapeVersion says why a stored value's shapeVersion, as written (raw, nil where the value names
+// none), is refused, "" where it is one of GitHubInstallationsShapeVersions. The refusal names the
+// version read: "none" for none or null, the number for a whole number, and "that is no number"
+// for anything else, whose text is never repeated, since a minter that wrote the wrong field there
+// may have written a token.
+func shapeVersion(raw json.RawMessage) string {
+	known := fmt.Sprint(GitHubInstallationsShapeVersions)
+	var version int
 	switch {
-	case entry.Repositories == nil:
-		return nil, ""
-	case entry.RepositorySelection != "selected":
-		return nil, `repositories stands beside repository_selection "all", a token of every repository`
-	case len(entry.Repositories) == 0:
-		return nil, "repositories is empty"
-	case len(entry.Repositories) > githubname.MaxNarrowedRepositories:
-		return nil, fmt.Sprintf("repositories names %d repositories, past the %d a token takes", len(entry.Repositories), githubname.MaxNarrowedRepositories)
+	case raw == nil || string(raw) == "null":
+		return "shapeVersion none, and this broker reads shapeVersion " + known + " alone"
+	case json.Unmarshal(raw, &version) != nil:
+		return "a shapeVersion that is no number, and this broker reads shapeVersion " + known + " alone"
+	case !slices.Contains(GitHubInstallationsShapeVersions, version):
+		return fmt.Sprintf("shapeVersion %d, and this broker reads shapeVersion %s alone", version, known)
 	}
-	repositories := make([]string, 0, len(entry.Repositories))
-	for _, full := range entry.Repositories {
+	return ""
+}
+
+// exactKeys says why value, a JSON object encoding/json has decoded, is refused for its keys, ""
+// where it is not: an object that holds one key twice, at any depth, or a field name that is not
+// one of the shape's exactly as written (installationsSecretKeys at the top,
+// storedInstallationKeys in each installation). encoding/json reads "Token" as token and keeps the
+// last of two "token" keys, so without this a value could be read as other than it says. No refusal
+// names the key, which a malformed value could make a token.
+func exactKeys(value string) string {
+	return walkKeys(json.NewDecoder(strings.NewReader(value)), installationsSecretRule)
+}
+
+// keyRule is what walkKeys holds one JSON value to where it is an object: the keys it may hold
+// (nil for any), and the rule of the value under each key (child; nil, or a nil child, for a value
+// checked for keys held twice alone).
+type keyRule struct {
+	keys  []string
+	child func(key string) *keyRule
+}
+
+// The rules of a stored value's objects: the value itself, its installations, and each
+// installation.
+var (
+	installationsSecretRule = &keyRule{keys: installationsSecretKeys, child: func(key string) *keyRule {
+		if key == "installations" {
+			return installationsRule
+		}
+		return nil
+	}}
+	installationsRule      = &keyRule{child: func(string) *keyRule { return storedInstallationRule }}
+	storedInstallationRule = &keyRule{keys: storedInstallationKeys}
+)
+
+// walkKeys reads the next JSON value from decoder and says why its keys are refused, "" where they
+// are not: an object, at any depth, holding one key twice, or, where rule names its keys, a key it
+// does not name.
+func walkKeys(decoder *json.Decoder, rule *keyRule) string {
+	const notJSON = "not one JSON object"
+	token, err := decoder.Token()
+	if err != nil {
+		return notJSON
+	}
+	delim, opens := token.(json.Delim)
+	if !opens {
+		return ""
+	}
+	if delim == '[' {
+		for decoder.More() {
+			if why := walkKeys(decoder, nil); why != "" {
+				return why
+			}
+		}
+	} else {
+		seen := map[string]bool{}
+		for decoder.More() {
+			token, err := decoder.Token()
+			key, isKey := token.(string)
+			switch {
+			case err != nil || !isKey:
+				return notJSON
+			case seen[key]:
+				return "an object holds one key twice"
+			case rule != nil && rule.keys != nil && !slices.Contains(rule.keys, key):
+				return "an object holds a field the shape does not, or one of its fields in another case"
+			}
+			seen[key] = true
+			var child *keyRule
+			if rule != nil && rule.child != nil {
+				child = rule.child(key)
+			}
+			if why := walkKeys(decoder, child); why != "" {
+				return why
+			}
+		}
+	}
+	if _, err := decoder.Token(); err != nil {
+		return notJSON
+	}
+	return ""
+}
+
+// storedRepositories reads the two repository lists of the stored token of account, a lowercase
+// login: the token's own (repositories) and the installation's own selection
+// (installation_repositories), each nil where the entry holds none, and otherwise its full names
+// lowercased and sorted; or why they are refused. Both stand beside repository_selection "selected"
+// alone, since a token of every repository names none, and installation_repositories beside
+// repositories alone, since the minter lists the installation's selection with the token it asked
+// for with no repositories, which reaches that selection. Each names at least one repository, each
+// account/name of account itself, since one installation reaches its own account's repositories
+// alone, a name GitHub can hold, and each once, as GitHub compares names, without regard to case.
+func storedRepositories(account string, entry githubStoredInstallation) (repositories, installationRepositories []string, why string) {
+	switch {
+	case entry.Repositories == nil && entry.InstallationRepositories == nil:
+		return nil, nil, ""
+	case entry.RepositorySelection != "selected":
+		return nil, nil, `a repository list stands beside repository_selection "all", a token of every repository`
+	case entry.Repositories == nil:
+		return nil, nil, "installation_repositories stands beside no repositories list"
+	}
+	if repositories, why = repositoryList(account, "repositories", entry.Repositories); why != "" {
+		return nil, nil, why
+	}
+	if entry.InstallationRepositories != nil {
+		if installationRepositories, why = repositoryList(account, "installation_repositories", entry.InstallationRepositories); why != "" {
+			return nil, nil, why
+		}
+	}
+	return repositories, installationRepositories, ""
+}
+
+// repositoryList reads list, the stored list of account named field: its full names lowercased and
+// sorted, or why it is refused (storedRepositories).
+func repositoryList(account, field string, list []string) ([]string, string) {
+	if len(list) == 0 {
+		return nil, field + " is empty"
+	}
+	read := make([]string, 0, len(list))
+	for _, full := range list {
 		owner, name, ok := githubname.SplitEntry(full)
 		if !ok || !githubname.ValidRepositoryName(name) {
-			return nil, "repositories holds an entry that is no account/name GitHub can hold"
+			return nil, field + " holds an entry that is no account/name GitHub can hold"
 		}
 		if strings.ToLower(owner) != account {
-			return nil, "repositories names a repository of another account, which its installation does not reach"
+			return nil, field + " names a repository of another account, which its installation does not reach"
 		}
-		repositories = append(repositories, strings.ToLower(full))
+		read = append(read, strings.ToLower(full))
 	}
-	slices.Sort(repositories)
-	if len(slices.Compact(slices.Clone(repositories))) != len(repositories) {
-		return nil, "repositories names one repository twice: GitHub compares names without regard to case"
+	slices.Sort(read)
+	if len(slices.Compact(slices.Clone(read))) != len(read) {
+		return nil, field + " names one repository twice: GitHub compares names without regard to case"
 	}
-	return repositories, ""
+	return read, ""
 }
 
 // storedScope says why the entry's repository_scope is refused, "" where it has none or the seed
-// minter's marker in its place: beside repository_selection "selected" and no repositories list,
+// minter's marker in its place: beside repository_selection "selected" and no repository list,
 // since it says which repositories a selected token reaches in place of a list. Any other value is
-// refused, so a value Cipher does not read is never served as though it were the marker.
+// refused, so a value Cipher does not read is never served as though it were the marker; and a
+// selected entry with neither a list nor the marker is refused, since nothing says what its token
+// reaches.
 func storedScope(entry githubStoredInstallation) string {
 	switch {
+	case entry.RepositoryScope == "" && entry.RepositorySelection == "selected" && entry.Repositories == nil:
+		return `repository_selection "selected" names neither a repositories list nor a repository_scope, so nothing says what the token reaches`
 	case entry.RepositoryScope == "":
 		return ""
 	case entry.RepositoryScope != RepositoryScopeAllExceptProtected:
 		return `repository_scope is no scope Cipher reads; it takes "` + RepositoryScopeAllExceptProtected + `" alone`
-	case entry.RepositorySelection != "selected" || entry.Repositories != nil:
-		return `repository_scope stands beside repository_selection "selected" and no repositories list alone`
+	case entry.RepositorySelection != "selected" || entry.Repositories != nil || entry.InstallationRepositories != nil:
+		return `repository_scope stands beside repository_selection "selected" and no repository list alone`
 	}
 	return ""
 }
@@ -265,14 +416,21 @@ type GitHubInstallations struct {
 // expire.
 //
 // Each token is held to the profile's repositories too (repositoriesMismatch), since a token cannot
-// be cut to repositories once it is minted: one its minter narrowed to repositories serves only a
-// profile that names exactly those, and one of every repository only a profile that names none;
-// any other is refused (ErrMintStoredRepositories). requests' gitHubScope refuses a target that
-// names repositories of such a profile, so the scope here names the profile's own repositories of
-// each account in effect, or none. A request with no scope is a programming error in the broker,
-// refused as GitHubApp.Mint refuses it. With req.Check it answers the release's verdict and hands
-// over nothing. Every error wraps ErrMintStoredValue, ErrMintRefused, ErrMintNarrowingRefused or
-// ErrMintUpstream, and none holds a token.
+// be cut to repositories once it is minted: a profile that names repositories is served only a
+// token whose own list is exactly those, and a profile that names none only a token of every
+// repository, the seed minter's marked admin token, or a token whose own list equals the
+// installation's own selection; any other is refused (ErrMintStoredRepositories). requests'
+// gitHubScope refuses a target that names repositories of such a profile, so the scope here names
+// the profile's own repositories of each account in effect, or none. A request with no scope is a
+// programming error in the broker, refused as GitHubApp.Mint refuses it. With req.Check it answers
+// the release's verdict and hands over nothing. Every error wraps ErrMintStoredValue,
+// ErrMintRefused, ErrMintNarrowingRefused or ErrMintUpstream, names the secret (req.named), and
+// holds no token.
+//
+// What it holds a token to is what the minter declared beside it: the permissions, the
+// repositories and the marker. Cipher cannot tell that the token under an account is that
+// account's, or that it holds what its entry says; the minter, which alone may write the secret,
+// and the deployment's checks of its output stand behind that.
 func (m GitHubInstallations) Mint(_ context.Context, req MintRequest) (Minted, error) {
 	scope := req.GitHub
 	if scope == nil {
@@ -280,7 +438,7 @@ func (m GitHubInstallations) Mint(_ context.Context, req MintRequest) (Minted, e
 	}
 	parsed, err := ParseValue(typeGitHubInstallations, req.Value)
 	if err != nil {
-		return Minted{}, err
+		return Minted{}, fmt.Errorf("github installations %s: %w", req.named(), err)
 	}
 	now := time.Now
 	if m.Now != nil {
@@ -347,12 +505,15 @@ func (m GitHubInstallations) Mint(_ context.Context, req MintRequest) (Minted, e
 
 // repositoriesMismatch says how the repositories the token stored for account reaches differ from
 // the ones scope names of account, compared as GitHub compares names, without regard to case, and
-// is "" when they are the same: a token of every repository (RepositorySelection "all") of a scope
-// that names no repository; a token the seed minter cut to every repository but the protected ones
-// (AllExceptProtected, whose marker Cipher trusts for the list) of a scope that names no
-// repository; or a token narrowed to repositories its minter listed, of a scope that names those
-// exactly. A narrowed token whose minter listed none and marked nothing is refused whatever the
-// scope names, since nothing says what it reaches.
+// is "" when they are the same. A scope that names repositories fits only a token whose own list
+// (Repositories) is exactly those. A scope that names none claims every repository the installation
+// reaches, so it fits a token of every repository (RepositorySelection "all"), a token the seed
+// minter cut to every repository but the protected ones (AllExceptProtected, whose marker Cipher
+// trusts for the list), and a token whose own list equals the installation's own selection
+// (InstallationRepositories), which the minter writes for a token it asked for with no
+// repositories; it does not fit a token the minter cut to a profile's list (no
+// InstallationRepositories), or one whose two lists differ. A selected entry that lists nothing
+// and carries no marker never gets here: the read refuses it (storedScope).
 func repositoriesMismatch(account string, scope *GitHubScope, stored StoredInstallation) string {
 	var named []string // the scope's account/name entries of account, lowercased; nil for none
 	if scope.Repositories != nil {
@@ -380,12 +541,14 @@ func repositoriesMismatch(account string, scope *GitHubScope, stored StoredInsta
 		return ""
 	case stored.AllExceptProtected:
 		return fmt.Sprintf("the token stored for %s reaches every repository of its installation but the protected ones, and the profile names %s", account, words(named))
-	case stored.Repositories == nil:
-		return fmt.Sprintf("the token stored for %s reaches repositories its minter selected and did not list", account)
-	case named == nil:
-		return fmt.Sprintf("the token stored for %s reaches %s alone, and the profile names no repositories, so it would claim every repository of the installation", account, words(stored.Repositories))
-	case !slices.Equal(named, stored.Repositories):
+	case named != nil && !slices.Equal(named, stored.Repositories):
 		return fmt.Sprintf("the token stored for %s reaches %s, and the profile names %s", account, words(stored.Repositories), words(named))
+	case named != nil:
+		return ""
+	case stored.InstallationRepositories == nil:
+		return fmt.Sprintf("the token stored for %s reaches %s alone, which its minter cut it to, and the profile names no repositories, so it would claim every repository of the installation", account, words(stored.Repositories))
+	case !slices.Equal(stored.InstallationRepositories, stored.Repositories):
+		return fmt.Sprintf("the token stored for %s reaches %s, and its installation selects %s, and the profile names no repositories, so it would claim the installation's selection", account, words(stored.Repositories), words(stored.InstallationRepositories))
 	}
 	return ""
 }

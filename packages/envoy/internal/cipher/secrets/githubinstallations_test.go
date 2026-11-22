@@ -2,10 +2,15 @@ package secrets_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"maps"
+	"os"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -18,17 +23,21 @@ import (
 var storedNow = time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
 
 // storedEntry is one installation as a minter outside the broker writes it into a
-// github-installations secret. Repositories is set beside repository_selection "selected" alone,
-// where the minter narrowed the token to those repositories; RepositoryScope is the seed minter's
-// marker of a token cut to every repository but the protected ones, beside "selected" and no list.
+// github-installations secret. Beside repository_selection "selected" alone: Repositories, the
+// token's own list; InstallationRepositories, the installation's own selection, which the minter
+// writes for a token it asked for with no repositories (listed with that token, it equals the
+// token's list) and leaves out for a token it cut to a profile's repositories; or RepositoryScope,
+// the seed minter's marker of a token cut to every repository but the protected ones, beside no
+// list.
 type storedEntry struct {
-	InstallationID      int64             `json:"installation_id"`
-	Token               string            `json:"token"`
-	ExpiresAt           string            `json:"expires_at"`
-	Permissions         map[string]string `json:"permissions"`
-	RepositorySelection string            `json:"repository_selection"`
-	Repositories        []string          `json:"repositories,omitempty"`
-	RepositoryScope     string            `json:"repository_scope,omitempty"`
+	InstallationID           int64             `json:"installation_id"`
+	Token                    string            `json:"token"`
+	ExpiresAt                string            `json:"expires_at"`
+	Permissions              map[string]string `json:"permissions"`
+	RepositorySelection      string            `json:"repository_selection"`
+	Repositories             []string          `json:"repositories,omitempty"`
+	InstallationRepositories []string          `json:"installation_repositories,omitempty"`
+	RepositoryScope          string            `json:"repository_scope,omitempty"`
 }
 
 // stored is the entry of installation id whose token is token, which lapses life after storedNow
@@ -37,14 +46,60 @@ func stored(id int64, token string, life time.Duration, permissions map[string]s
 	return storedEntry{InstallationID: id, Token: token, ExpiresAt: storedNow.Add(life).Format(time.RFC3339), Permissions: permissions, RepositorySelection: "all"}
 }
 
-// storedValue is the secret's value holding entries, by the account login as GitHub writes it.
+// storedValue is the secret's value holding entries, by the account login as GitHub writes it, at
+// shapeVersion 1.
 func storedValue(t *testing.T, entries map[string]storedEntry) string {
 	t.Helper()
-	value, err := json.Marshal(map[string]any{"installations": entries})
+	value, err := json.Marshal(map[string]any{"shapeVersion": 1, "installations": entries})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return string(value)
+}
+
+// TestAStoredValueOfAShapeVersionOtherThanOneIsRefusedNamingIt: the value names its shape,
+// "shapeVersion": 1, the one this broker reads; a value that names another, or none, is refused
+// ErrMintStoredValue, closed rather than read as a shape it may not be, and nothing of the secret
+// is served. The refusal names the secret (the profile and its source), the version it read
+// ("none" for none) and the versions it knows ([1]). A value of version 1 is served.
+//
+// The named revert: read the value without its version, and the version 2 and missing rows are
+// served.
+func TestAStoredValueOfAShapeVersionOtherThanOneIsRefusedNamingIt(t *testing.T) {
+	profile := map[string]string{"contents": "read", "metadata": "read"}
+	entries, err := json.Marshal(map[string]storedEntry{"ada": stored(42, "ghs_stored_ada", fresh, profile)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct {
+		name, value string
+		read        string // the version the refusal names; "" for a value served
+	}{
+		{"version 1", `{"shapeVersion": 1, "installations": ` + string(entries) + `}`, ""},
+		{"version 2", `{"shapeVersion": 2, "installations": ` + string(entries) + `}`, "shapeVersion 2"},
+		{"no version", `{"installations": ` + string(entries) + `}`, "shapeVersion none"},
+		{"a null version", `{"shapeVersion": null, "installations": ` + string(entries) + `}`, "shapeVersion none"},
+		{"a version that is a string", `{"shapeVersion": "1", "installations": ` + string(entries) + `}`, "shapeVersion that is no number"},
+		{"a version that is no whole number", `{"shapeVersion": 1.5, "installations": ` + string(entries) + `}`, "shapeVersion that is no number"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			minted, err := mintStored(row.value, scopeOf(githubname.ValueToken, profile, "ada"))
+			if row.read == "" {
+				if err != nil || minted.Value != "ghs_stored_ada" {
+					t.Fatalf("Mint = %+v, %v; want ada's stored token", minted, err)
+				}
+				return
+			}
+			if !errors.Is(err, secrets.ErrMintStoredValue) || minted.Value != "" || strings.Contains(err.Error(), "ghs_stored_ada") {
+				t.Fatalf("Mint = %+v, %v; want nothing and ErrMintStoredValue, holding no token", minted, err)
+			}
+			for _, word := range []string{"GITHUB_READ, a profile of APP_TOKENS", row.read, "[1]"} {
+				if !strings.Contains(err.Error(), word) {
+					t.Errorf("the refusal %q does not name %q", err, word)
+				}
+			}
+		})
+	}
 }
 
 // scopeOf is a profile's scope as requests' gitHubScope builds it: accounts (lowercase logins),
@@ -248,28 +303,45 @@ func TestAnAccountTheStoredValueHoldsNoTokenForIsLeftOutAndNoneIsRefused(t *test
 	}
 }
 
-// narrowed is stored's entry narrowed to repositories, full names, as GitHub answers a token
-// request that names them: repository_selection "selected" and the list.
+// narrowed is stored's entry as the minter writes a token it cut to a profile's repositories, full
+// names, as GitHub's answer confirms them: repository_selection "selected" and the token's list,
+// with no installation_repositories.
 func narrowed(entry storedEntry, repositories ...string) storedEntry {
 	entry.RepositorySelection, entry.Repositories = "selected", repositories
 	return entry
 }
 
-// TestAProfilesRepositoriesMustEqualThoseItsStoredTokenReaches: a minter may narrow a token to
-// repositories, and then stores repository_selection "selected" and their full names. A token
-// cannot be cut further once it is minted, so a profile of such a token names exactly those
-// repositories, compared as GitHub compares names, without regard to case: the same list is
-// served; a list that differs by one repository more or one less is refused naming both lists;
-// a profile that names none is refused, since it would claim every repository of the
-// installation; and a profile that names repositories of a token of every repository is refused,
-// since the token reaches more than the profile says.
+// selectedBy is stored's entry as the minter writes a token it asked for with no repositories, of
+// an installation on selected repositories: repository_selection "selected", the token's list
+// (tokenList) and the installation's own selection (installationList), which the minter lists with
+// that token, so the two are the same unless something changed between the listings.
+func selectedBy(entry storedEntry, tokenList, installationList []string) storedEntry {
+	entry.RepositorySelection, entry.Repositories, entry.InstallationRepositories = "selected", tokenList, installationList
+	return entry
+}
+
+// TestAProfilesRepositoriesMustEqualThoseItsStoredTokenReaches: for a token of selected
+// repositories the minter stores repository_selection "selected" and the token's own list
+// (repositories), and, for a token it asked for with no repositories, the installation's own
+// selection beside it (installation_repositories). A token cannot be cut further once it is
+// minted, so a profile that names repositories names exactly the token's list, compared as GitHub
+// compares names, without regard to case: the same list is served, one more, one fewer or one
+// other is refused naming both lists. A profile that names none is served a token of every
+// repository, and a token whose list equals the installation's own selection as a set, the order
+// ignored; it is refused a token with no installation_repositories (the minter cut it to a
+// profile's list) and a token whose two lists differ by one repository, since either way it would
+// claim the whole installation and the token reaches something else. A profile that names
+// repositories of a token of every repository is refused, since the token reaches more than the
+// profile says.
 //
 // The named reverts: drop the comparison, and the profile of one repository is served the token of
-// two; read a profile with no repositories as matching any token, and the selected token is served
-// as the whole installation's.
+// two; read a profile with no repositories as matching any token, and the cut token and the token
+// whose lists differ are served as the whole installation's.
 func TestAProfilesRepositoriesMustEqualThoseItsStoredTokenReaches(t *testing.T) {
 	profile := map[string]string{"contents": "read", "metadata": "read"}
 	selected := narrowed(stored(42, "ghs_stored_ada", fresh, profile), "ada/lean", "Ada/Proofs")
+	own := selectedBy(stored(42, "ghs_stored_ada", fresh, profile), []string{"ada/lean", "ada/proofs"}, []string{"ada/proofs", "Ada/Lean"})
+	drifted := selectedBy(stored(42, "ghs_stored_ada", fresh, profile), []string{"ada/lean", "ada/proofs"}, []string{"ada/lean", "ada/proofs", "ada/site"})
 	for _, row := range []struct {
 		name         string
 		entry        storedEntry
@@ -281,9 +353,13 @@ func TestAProfilesRepositoriesMustEqualThoseItsStoredTokenReaches(t *testing.T) 
 		{"one repository fewer", selected, []string{"ada/proofs"}, false, []string{"ada/lean, ada/proofs", "ada/proofs"}},
 		{"one repository more", selected, []string{"ada/lean", "ada/proofs", "ada/site"}, false, []string{"ada/lean, ada/proofs", "ada/lean, ada/proofs, ada/site"}},
 		{"one repository other", selected, []string{"ada/lean", "ada/site"}, false, []string{"ada/lean, ada/proofs", "ada/lean, ada/site"}},
-		{"no repositories, of a narrowed token", selected, nil, false, []string{"ada/lean, ada/proofs", "every repository"}},
+		{"no repositories, of a token cut to a profile's list", selected, nil, false, []string{"ada/lean, ada/proofs", "every repository"}},
 		{"repositories, of a token of every repository", stored(42, "ghs_stored_ada", fresh, profile), []string{"ada/proofs"}, false, []string{"every repository", "ada/proofs"}},
 		{"no repositories, of a token of every repository", stored(42, "ghs_stored_ada", fresh, profile), nil, true, nil},
+		{"no repositories, of a token whose list equals the installation's", own, nil, true, nil},
+		{"no repositories, of a token whose list differs from the installation's by one", drifted, nil, false, []string{"ada/lean, ada/proofs", "ada/lean, ada/proofs, ada/site"}},
+		{"the installation's own list, named by the profile", own, []string{"ada/lean", "ada/proofs"}, true, nil},
+		{"one fewer than the installation's own list", own, []string{"ada/proofs"}, false, []string{"ada/lean, ada/proofs", "ada/proofs"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			scope := scopeOf(githubname.ValueToken, profile, "ada")
@@ -313,8 +389,8 @@ func TestAProfilesRepositoriesMustEqualThoseItsStoredTokenReaches(t *testing.T) 
 // repositories list. Cipher trusts the marker for the list the token was cut to, and serves it to
 // a profile that names no repositories; the proof of the cut is the minter's deployment's, not
 // Cipher's. A profile naming repositories of such a token is refused, as its list is not the
-// token's. A "selected" entry with no list and no marker is refused, as before; and a
-// repository_scope of any other value refuses the stored value.
+// token's. A "selected" entry with no list and no marker refuses the stored value, since nothing
+// says what its token reaches; and so does a repository_scope of any other value.
 //
 // The named reverts: drop the marker's arm, and the marked token is refused; read any value of
 // repository_scope as the marker, and the unknown value is served.
@@ -333,7 +409,7 @@ func TestAnAllExceptProtectedTokenServesAProfileOfNoRepositoriesAndNoOtherScopeI
 	}{
 		{"the marker, of a profile naming no repositories", marked, nil, true, nil},
 		{"the marker, of a profile naming repositories", marked, []string{"ada/proofs"}, false, secrets.ErrMintStoredRepositories},
-		{"selected with no list and no marker", selectedNoList, nil, false, secrets.ErrMintStoredRepositories},
+		{"selected with no list and no marker", selectedNoList, nil, false, secrets.ErrMintStoredValue},
 		{"an unknown repository_scope", func() storedEntry { e := marked; e.RepositoryScope = "all"; return e }(), nil, false, secrets.ErrMintStoredValue},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -354,11 +430,13 @@ func TestAnAllExceptProtectedTokenServesAProfileOfNoRepositoriesAndNoOtherScopeI
 }
 
 // TestAMalformedStoredValueIsRefusedNamingNoPartOfIt: the stored value is read strictly, by the
-// one decoder the policy's load and the minter share (ParseValue): a JSON object of installations
-// and nothing else, each a GitHub login of an entry of exactly installation_id, token, expires_at,
-// permissions, repository_selection and, beside "selected" alone, repositories, the account's own
-// full names, each once. Each malformed value is refused ErrMintStoredValue, by ParseValue and by
-// the minter alike, and no refusal holds the token it carries.
+// one decoder the policy's load and the minter share (ParseValue): a JSON object of shapeVersion
+// and installations and nothing else, each a GitHub login of an entry of exactly installation_id,
+// token, expires_at, permissions, repository_selection and, beside "selected" alone, repositories
+// (the account's own full names, each once) with or without installation_repositories (the same
+// form), or repository_scope; no key twice in any object, and no field name in another case. Each
+// malformed value is refused ErrMintStoredValue, by ParseValue and by the minter alike, and no
+// refusal holds the token it carries.
 func TestAMalformedStoredValueIsRefusedNamingNoPartOfIt(t *testing.T) {
 	const canary = "ghs_canary_never_quoted"
 	// entries is the value holding one well-formed entry under each of keys, each as edit leaves
@@ -371,7 +449,7 @@ func TestAMalformedStoredValueIsRefusedNamingNoPartOfIt(t *testing.T) {
 			edit(one)
 			installations[key] = one
 		}
-		value, err := json.Marshal(map[string]any{"installations": installations})
+		value, err := json.Marshal(map[string]any{"shapeVersion": 1, "installations": installations})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -380,12 +458,30 @@ func TestAMalformedStoredValueIsRefusedNamingNoPartOfIt(t *testing.T) {
 	entry := func(edit func(map[string]any)) string { return entries(edit, "ada") }
 	unedited := func(map[string]any) {}
 	good := entry(unedited)
+	// entryJSON is good's one entry as it was written, which the rows below write twice.
+	entryJSON := strings.TrimSuffix(strings.TrimPrefix(good, `{"installations":{"ada":`), `},"shapeVersion":1}`)
+	selectedList := func(repositories ...string) func(map[string]any) {
+		return func(e map[string]any) {
+			e["repository_selection"], e["repositories"] = "selected", append([]string{}, repositories...)
+		}
+	}
+	ownList := func(repositories ...string) func(map[string]any) {
+		return func(e map[string]any) {
+			selectedList("ada/proofs")(e)
+			e["installation_repositories"] = append([]string{}, repositories...)
+		}
+	}
 	for _, row := range []struct{ name, value string }{
 		{"not JSON", "ghs_canary_never_quoted"},
 		{"a JSON string", `"` + canary + `"`},
 		{"null", "null"},
-		{"no installations", `{}`},
-		{"no installation", `{"installations": {}}`},
+		{"no installations", `{"shapeVersion": 1}`},
+		{"no installation", `{"shapeVersion": 1, "installations": {}}`},
+		{"shapeVersion twice", `{"shapeVersion":1,` + good[1:]},
+		{"installations in another case", strings.Replace(good, `"installations"`, `"Installations"`, 1)},
+		{"one account twice, exactly", `{"installations":{"ada":` + entryJSON + `,"ada":` + entryJSON + `},"shapeVersion":1}`},
+		{"an entry field in another case", strings.Replace(good, `"token":`, `"Token":`, 1)},
+		{"one entry field twice", strings.Replace(good, `"token":"`+canary+`"`, `"token":"`+canary+`","token":"`+canary+`"`, 1)},
 		{"a field beside installations", strings.Replace(good, `{"installations"`, `{"app_id":"1","installations"`, 1)},
 		{"a second object after it", good + ` {"token": "` + canary + `"}`},
 		{"a key that is no GitHub login", entries(unedited, "ada smith")},
@@ -401,21 +497,33 @@ func TestAMalformedStoredValueIsRefusedNamingNoPartOfIt(t *testing.T) {
 		{"a level GitHub does not give", entry(func(e map[string]any) { e["permissions"] = map[string]string{"contents": "own"} })},
 		{"no repository selection", entry(func(e map[string]any) { delete(e, "repository_selection") })},
 		{"a repository selection that is neither all nor selected", entry(func(e map[string]any) { e["repository_selection"] = "some" })},
+		{"selected with no list and no marker", entry(func(e map[string]any) { e["repository_selection"] = "selected" })},
 		{"repositories of a token of every repository", entry(func(e map[string]any) { e["repositories"] = []string{"ada/proofs"} })},
-		{"an empty repositories list", entry(func(e map[string]any) { e["repository_selection"], e["repositories"] = "selected", []string{} })},
-		{"a repository of another account", entry(func(e map[string]any) {
-			e["repository_selection"], e["repositories"] = "selected", []string{"acme/site"}
+		{"an empty repositories list", entry(selectedList())},
+		{"a repository of another account", entry(selectedList("acme/site"))},
+		{"a repository that is no owner/name", entry(selectedList("proofs"))},
+		{"one repository twice, in two cases", entry(selectedList("ada/proofs", "Ada/Proofs"))},
+		{"an empty installation_repositories list", entry(ownList())},
+		{"installation_repositories of another account", entry(ownList("acme/site"))},
+		{"installation_repositories that is no owner/name", entry(ownList("proofs"))},
+		{"installation_repositories naming one twice, in two cases", entry(ownList("ada/proofs", "Ada/Proofs"))},
+		{"installation_repositories without a repositories list", entry(func(e map[string]any) {
+			e["repository_selection"], e["installation_repositories"] = "selected", []string{"ada/proofs"}
 		})},
-		{"a repository that is no owner/name", entry(func(e map[string]any) { e["repository_selection"], e["repositories"] = "selected", []string{"proofs"} })},
-		{"one repository twice, in two cases", entry(func(e map[string]any) {
-			e["repository_selection"], e["repositories"] = "selected", []string{"ada/proofs", "Ada/Proofs"}
+		{"installation_repositories beside a token of every repository", entry(func(e map[string]any) {
+			ownList("ada/proofs")(e)
+			e["repository_selection"] = "all"
 		})},
+		{"an entry field that was dropped from the shape", entry(func(e map[string]any) { selectedList("ada/proofs")(e); e["narrowed"] = false })},
 		{"a repository_scope of another value", entry(func(e map[string]any) {
 			e["repository_selection"], e["repository_scope"] = "selected", "all"
 		})},
 		{"the marker beside a token of every repository", entry(func(e map[string]any) { e["repository_scope"] = "all-except-protected" })},
 		{"the marker beside a repositories list", entry(func(e map[string]any) {
 			e["repository_selection"], e["repositories"], e["repository_scope"] = "selected", []string{"ada/proofs"}, "all-except-protected"
+		})},
+		{"the marker beside installation_repositories", entry(func(e map[string]any) {
+			e["repository_selection"], e["installation_repositories"], e["repository_scope"] = "selected", []string{"ada/proofs"}, "all-except-protected"
 		})},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -430,5 +538,175 @@ func TestAMalformedStoredValueIsRefusedNamingNoPartOfIt(t *testing.T) {
 	}
 	if _, err := secrets.ParseValue("github-installations", good); err != nil {
 		t.Fatalf("ParseValue of the well-formed value the rows edit = %v; want it read", err)
+	}
+}
+
+// mintedShapes pins each file of testdata/minted-shapes/, this repository's own fixtures of the
+// shapes a minter outside the broker writes into a github-installations secret, one shape a file,
+// each at shapeVersion 1, with placeholder accounts, repositories, installations and tokens, by its
+// sha256, and says how its one entry is served: to a profile naming no repositories (servesNone),
+// and to one naming the entry's own repositories, or one repository of its account where it lists
+// none (servesList). The deployment's minter tests copy these files byte for byte from a commit of
+// this repository's main branch, pin the same sha256s, and hold each minter's output to the shape
+// of the file of its name (its keys, their types and its shapeVersion), so a change of a shape on
+// either side fails before it merges, and the parser's shapeVersion check catches at run time what
+// a pin cannot. A change to a file changes its pin here, and the deployment's pin with it.
+var mintedShapes = map[string]struct {
+	sha256                 string
+	servesNone, servesList bool
+}{
+	// A token the minter asked for with no repositories, of an installation on selected
+	// repositories: its own list and the installation's, equal.
+	"installation-list.json": {"3fcbe6dc6fdc123bffa0498e045c0d40764b7c41bdbd0d5ef54d8e1a938c511d", true, true},
+	// A token the minter cut to a profile's list: its own list alone.
+	"profile-list.json": {"0bddb333312c39d5e3a0f49851aa4074d876bd28f8b531dd6f2f01025af1798b", false, true},
+	// The seed minter's admin token, cut to every repository but the protected ones: the marker,
+	// and no list.
+	"all-except-protected.json": {"640b033e22a6d0fa42fb49e0cea0611629392b894b147670f32fa28e7cde3fb0", true, false},
+}
+
+// readMintedShape is testdata/minted-shapes/name, held to its pin (mintedShapes).
+func readMintedShape(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", "minted-shapes", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum := sha256.Sum256(data); hex.EncodeToString(sum[:]) != mintedShapes[name].sha256 {
+		t.Fatalf("testdata/minted-shapes/%s has sha256 %x; the pin is %s: a changed fixture changes its pin, and the deployment's pin of it", name, sum, mintedShapes[name].sha256)
+	}
+	return string(data)
+}
+
+// mintFixture is the release of value under a value-token profile of account at permissions,
+// naming repositories (nil for none), at a time the fixtures' tokens outlive.
+func mintFixture(value, account string, permissions map[string]string, repositories []string) (secrets.Minted, error) {
+	scope := scopeOf(githubname.ValueToken, permissions, account)
+	scope.Repositories = repositories
+	return secrets.GitHubInstallations{Now: func() time.Time { return time.Date(2026, 11, 22, 14, 0, 0, 0, time.UTC) }}.Mint(context.Background(),
+		secrets.MintRequest{Name: "GITHUB_READ", Source: "APP_TOKENS", Type: "github-installations", Value: value, GitHub: scope})
+}
+
+// fixtureEntry is the one entry of a fixture: its account and its fields as the tests read them.
+type fixtureEntry struct {
+	account      string
+	Token        string            `json:"token"`
+	Permissions  map[string]string `json:"permissions"`
+	Repositories []string          `json:"repositories"`
+}
+
+// oneEntry is value's one installation.
+func oneEntry(t *testing.T, value string) fixtureEntry {
+	t.Helper()
+	var stored struct {
+		Installations map[string]fixtureEntry `json:"installations"`
+	}
+	if err := json.Unmarshal([]byte(value), &stored); err != nil || len(stored.Installations) != 1 {
+		t.Fatalf("the fixture holds %d installations (%v); want one", len(stored.Installations), err)
+	}
+	for account, entry := range stored.Installations {
+		entry.account = account
+		return entry
+	}
+	panic("unreachable")
+}
+
+// TestTheFixturesOfTheMintersShapesAreReadAndServedAsEachShapeSays reads each file of
+// testdata/minted-shapes/, held to its sha256 pin, and serves it as its shape says: the
+// installation's own list to a profile naming no repositories and to one naming that list; a
+// profile's own list to a profile naming it, and not to one naming none; the all-except-protected
+// token to a profile naming no repositories, and not to one naming some. The directory must hold
+// exactly the files this test names, so a shape added to it fails here until the test says how it
+// is served. Each profile asks for the entry's own permissions, so permissions decide nothing here.
+func TestTheFixturesOfTheMintersShapesAreReadAndServedAsEachShapeSays(t *testing.T) {
+	files, err := os.ReadDir(filepath.Join("testdata", "minted-shapes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, file := range files {
+		got = append(got, file.Name())
+	}
+	if want := slices.Sorted(maps.Keys(mintedShapes)); !slices.Equal(got, want) {
+		t.Fatalf("testdata/minted-shapes/ holds %v; this test says how %v are served", got, want)
+	}
+	for _, name := range slices.Sorted(maps.Keys(mintedShapes)) {
+		value := readMintedShape(t, name)
+		entry := oneEntry(t, value)
+		list := entry.Repositories
+		if list == nil {
+			list = []string{entry.account + "/example-one"}
+		}
+		for _, row := range []struct {
+			repositories []string
+			served       bool
+		}{{nil, mintedShapes[name].servesNone}, {list, mintedShapes[name].servesList}} {
+			t.Run(name+"/repositories "+strings.Join(row.repositories, ","), func(t *testing.T) {
+				minted, err := mintFixture(value, entry.account, entry.Permissions, row.repositories)
+				switch {
+				case row.served && (err != nil || minted.Value != entry.Token):
+					t.Fatalf("Mint = %v; want the fixture's token served", err)
+				case !row.served && (!errors.Is(err, secrets.ErrMintStoredRepositories) || minted.Value != ""):
+					t.Fatalf("Mint = %v, a value of %d bytes; want nothing and ErrMintStoredRepositories", err, len(minted.Value))
+				}
+			})
+		}
+	}
+}
+
+// TestTheInstallationListFixtureIsServedToAProfileOfNoRepositoriesOnlyWhileItsTwoListsAreEqual:
+// testdata/minted-shapes/installation-list.json is served to a profile naming no repositories,
+// since the token's list and the installation's are equal; the same value with one repository
+// added to installation_repositories, the two lists then differing by one, is refused
+// ErrMintStoredRepositories naming both lists.
+//
+// The named revert: drop the comparison of the two lists, and the second row is served.
+func TestTheInstallationListFixtureIsServedToAProfileOfNoRepositoriesOnlyWhileItsTwoListsAreEqual(t *testing.T) {
+	value := readMintedShape(t, "installation-list.json")
+	entry := oneEntry(t, value)
+	if minted, err := mintFixture(value, entry.account, entry.Permissions, nil); err != nil || minted.Value != entry.Token {
+		t.Fatalf("Mint of the fixture = %v; want its token served", err)
+	}
+	var stored map[string]any
+	if err := json.Unmarshal([]byte(value), &stored); err != nil {
+		t.Fatal(err)
+	}
+	installation := stored["installations"].(map[string]any)[entry.account].(map[string]any)
+	installation["installation_repositories"] = append(installation["installation_repositories"].([]any), entry.account+"/example-three")
+	drifted, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	minted, err := mintFixture(string(drifted), entry.account, entry.Permissions, nil)
+	if !errors.Is(err, secrets.ErrMintStoredRepositories) || minted.Value != "" || !strings.Contains(err.Error(), entry.account+"/example-three") {
+		t.Fatalf("Mint of the fixture with one more installation repository = %v; want nothing and ErrMintStoredRepositories naming both lists", err)
+	}
+}
+
+// TestAFixtureOfAnUnknownShapeVersionIsRefusedNamingTheSecretTheVersionAndTheOnesKnown: each
+// fixture with its shapeVersion set to 2 is refused ErrMintStoredValue, and nothing of it served;
+// the refusal names the secret (the profile and its source), the version read and the versions
+// known, [1].
+//
+// The named revert: read the value without its version, and each is served.
+func TestAFixtureOfAnUnknownShapeVersionIsRefusedNamingTheSecretTheVersionAndTheOnesKnown(t *testing.T) {
+	for _, name := range slices.Sorted(maps.Keys(mintedShapes)) {
+		t.Run(name, func(t *testing.T) {
+			value := readMintedShape(t, name)
+			entry := oneEntry(t, value)
+			unknown := strings.Replace(value, `"shapeVersion": 1`, `"shapeVersion": 2`, 1)
+			if unknown == value {
+				t.Fatalf("testdata/minted-shapes/%s names no shapeVersion 1 to replace", name)
+			}
+			minted, err := mintFixture(unknown, entry.account, entry.Permissions, nil)
+			if !errors.Is(err, secrets.ErrMintStoredValue) || minted.Value != "" {
+				t.Fatalf("Mint = %v; want nothing and ErrMintStoredValue", err)
+			}
+			for _, word := range []string{"GITHUB_READ, a profile of APP_TOKENS", "shapeVersion 2", "[1]"} {
+				if !strings.Contains(err.Error(), word) {
+					t.Errorf("the refusal %q does not name %q", err, word)
+				}
+			}
+		})
 	}
 }

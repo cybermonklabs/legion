@@ -58,7 +58,7 @@ func mintAhead(t *testing.T, minting *proxyrulestest.Service) (value, adaToken s
 		stored[account] = map[string]any{"installation_id": one.InstallationID, "token": one.Token, "expires_at": one.ExpiresAt,
 			"permissions": permissions, "repository_selection": "all"}
 	}
-	encoded, err := json.Marshal(map[string]any{"installations": stored})
+	encoded, err := json.Marshal(map[string]any{"shapeVersion": 1, "installations": stored})
 	if err != nil {
 		t.Fatal(err)
 	}

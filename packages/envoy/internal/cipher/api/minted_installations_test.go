@@ -29,7 +29,7 @@ func mintedTokensValue(t *testing.T, life time.Duration) string {
 			"permissions": map[string]string{"contents": "read", "metadata": "read"}, "repository_selection": "all",
 		}
 	}
-	value, err := json.Marshal(map[string]any{"installations": installations})
+	value, err := json.Marshal(map[string]any{"shapeVersion": 1, "installations": installations})
 	if err != nil {
 		t.Fatal(err)
 	}

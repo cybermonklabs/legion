@@ -34,7 +34,7 @@ func storedTokens(t *testing.T, permissions map[string]string, accounts ...strin
 			"permissions": permissions, "repository_selection": "all",
 		}
 	}
-	value, err := json.Marshal(map[string]any{"installations": installations})
+	value, err := json.Marshal(map[string]any{"shapeVersion": 1, "installations": installations})
 	if err != nil {
 		t.Fatal(err)
 	}

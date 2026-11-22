@@ -659,14 +659,18 @@ reread: each profile that fits its source is served by its name, as its source's
 type with the profile's own scope, and each that does not is refused alone, logged and counted as
 `profile:<NAME>`: `profile-source-missing` (its source is no secret the broker serves, or is
 another profile), `profile-name-taken` (a stored secret other than its source holds its name,
-which is refused by that name too), `profile-block-mismatch` (a `github` or `google` block that
+which is refused by that name too, unless that stored secret carries the tag `superseded-by`
+whose value is exactly the profile's source: then the profile is served by the name and the stored
+secret is not, which is how a deployment moves a name from a key the broker held to the minted
+tokens that replace it; any other value, and no tag, leaves the profile refused),
+`profile-block-mismatch` (a `github` or `google` block that
 does not fit the source's type, `github-owners` or `scopes`), `profile-looser` (looser than the
 source in tier, `requesters` or `maxGrant`), `profile-needs-proxy` (no `proxy` block on a stored
 value, `google-login` or `azure-login` source), or a tag rule its own tags over its source's break,
 such as `admin-tier` for an agent-tier profile of an `admin` source. A source a profile of another
-name uses is served only through its profiles, and a `github-app` or `github-installations` secret
-no profile names is refused by its own name (`github-app-no-profile`), so every GitHub token the
-broker hands over is a profile's.
+name uses is served only through its profiles, and a `github-app` secret no profile names is
+refused by its own name (`github-app-no-profile`), as is a `github-installations` one
+(`github-installations-no-profile`), so every GitHub token the broker hands over is a profile's.
 A profile's `requesters` may name a Google group as a `requesters` tag does, and a full load reads
 every group a profile names as it reads the stored secrets' groups. Against a source's list, a
 group entry is matched by that same group alone: a profile that names a person in the source's
@@ -994,24 +998,38 @@ The broker evaluates every name
   place of the placeholder only in the requests the block allows.
   A `github-installations` value holds installation tokens that a minter outside the broker
   minted before any request and stores again every few minutes, so the broker holds no App key
-  for them: `{"installations": {"<account login>": {"installation_id": 42, "token": "…",
-  "expires_at": "<RFC 3339 time>", "permissions": {"contents": "read", "metadata": "read"},
-  "repository_selection": "all"}}}`, and, for a token the minter narrowed to repositories,
-  `"repository_selection": "selected"` with `"repositories": ["<account>/<name>", …]`. The broker
-  reads it strictly: a field it does not know, a key that is no GitHub login, one account twice,
-  or a token, expiry, permission, level or repository list it cannot read refuses the whole value
-  (`value-malformed`). It is served as a `github-app` secret is, only through profiles on the
+  for them: `{"shapeVersion": 1, "installations": {"<account login>": {"installation_id": 42,
+  "token": "…", "expires_at": "<RFC 3339 time>", "permissions": {"contents": "read",
+  "metadata": "read"}, "repository_selection": "all"}}}`. For an installation on selected
+  repositories, `"repository_selection": "selected"` comes with one of three: the token's own list
+  `"repositories": ["<account>/<name>", …]` with the installation's own selection
+  `"installation_repositories"` beside it, for a token the minter asked for with no repositories
+  and listed with that token; the token's own list alone, for a token the minter cut to a
+  profile's repositories; or the seed minter's marker, below. The broker reads `shapeVersion` 1
+  alone: a value of another version, or of none, refuses the whole value and serves nothing of the
+  secret, and the refusal names the secret, the version read and the versions the broker knows.
+  It reads the rest strictly too: a field it does not know or one in another case, a key twice in
+  any object, a key that is no GitHub login, one account twice, or a token, expiry, permission,
+  level or repository list it cannot read refuses the whole value (`value-malformed`). It is
+  served as a `github-app` secret is, only through profiles on the
   accounts its `github-owners` tag lists, and its release has the same form: the installations
   object, or the one account's bare token for `value: token`. The broker mints nothing for it, and
   a token cannot be cut once it is minted, so the broker holds each stored token to the profile
-  before it hands it over. A token that holds a permission the profile does not name, or a level
+  before it hands it over. What it holds the token to is what the minter declared beside it: the
+  permissions, the repository lists and the marker. The broker cannot tell that the token under an
+  account is that account's, or that it holds what its entry says; the minter, which alone may
+  write the secret, and the deployment's checks of its output stand behind that. A token that
+  holds a permission the profile does not name, or a level
   above the profile's, is refused `422 PROFILE_MINT_REFUSED`. A token that holds less than the
   profile is served, and the values answer names each permission it lacks (`github_left_out`), as
   the cut of a `github-app` profile does; a token that holds none of the profile's permissions but
-  `metadata` is refused. A token narrowed to repositories serves only a profile whose
-  `github.repositories` of that account are the same list, compared without regard to case; a
-  profile that names none is refused, since it would claim every repository of the installation,
-  and so is a profile that names repositories of a token of every repository. The deployment's
+  `metadata` is refused. A profile that names `github.repositories` of an account is served only a
+  token whose own list is the same, compared without regard to case. A profile that names none
+  claims every repository the installation reaches, so it is served a token of every repository,
+  the seed minter's marked token, or a token whose own list equals the installation's own
+  selection, the order ignored; it is refused a token with no `installation_repositories` and one
+  whose two lists differ by a repository, and a profile that names repositories of a token of
+  every repository is refused too. The deployment's
   seed minter cuts one token to every repository of the installation but the protected ones and
   marks it `"repository_scope": "all-except-protected"`, beside `"repository_selection":
   "selected"` and no list. Only that minter writes the marker, into a secret only its own route

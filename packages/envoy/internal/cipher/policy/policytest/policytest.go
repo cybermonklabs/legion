@@ -110,11 +110,11 @@ func TypeValue(secretType string) string {
 }
 
 // GitHubInstallationsValue is a github-installations value as a minter outside the broker writes
-// one: for each account FixtureGitHubOwners names, acme and ada, its installation (41, 42), a token
-// that is no credential ("fixture-token-<account>"), which lapses fifty minutes from now (the
-// least a minter that runs every ten minutes leaves on a token GitHub gives an hour, well past
-// secrets.MintedTokenMargin), contents and metadata at read, and every repository of the
-// installation.
+// one, at shapeVersion 1: for each account FixtureGitHubOwners names, acme and ada, its
+// installation (41, 42), a token that is no credential ("fixture-token-<account>"), which lapses
+// fifty minutes from now (the least a minter that runs every ten minutes leaves on a token GitHub
+// gives an hour, well past secrets.MintedTokenMargin), contents and metadata at read, and every
+// repository of the installation.
 func GitHubInstallationsValue() string {
 	installations := map[string]any{}
 	for i, account := range strings.Fields(FixtureGitHubOwners) {
@@ -124,7 +124,7 @@ func GitHubInstallationsValue() string {
 			"permissions": map[string]string{"contents": "read", "metadata": "read"}, "repository_selection": "all",
 		}
 	}
-	value, err := json.Marshal(map[string]any{"installations": installations})
+	value, err := json.Marshal(map[string]any{"shapeVersion": 1, "installations": installations})
 	if err != nil {
 		panic(err)
 	}

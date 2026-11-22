@@ -55,17 +55,18 @@ const (
 	DefaultNarrowingCheckMint   = 5 * time.Second
 )
 
-// DefaultNarrowingChecks bounds, per enrollment, the checks that reach GitHub: five at once,
+// DefaultNarrowingChecks bounds, per enrollment, the checks made before an approval: five at once,
 // refilled one every twelve seconds. A refused request writes no row, so the guards inside
 // Create's transaction (lockPendingNames, pendingRequests) never see it, and a caller in a loop
 // could otherwise drive the App into a rate limit at GitHub, which would turn the check off for
-// everybody. Past it the GitHub part is skipped and the request goes to its approver, which is
-// what it did before this check existed. The budget is per process, as DefaultMissRereads' is,
-// and for the same reason: it bounds load rather than authority.
+// everybody; a check of a github-installations profile reads the secret store alone, and is
+// counted alike so one bound holds every check. Past it the check is skipped and the request goes
+// to its approver, which is what it did before this check existed. The budget is per process, as
+// DefaultMissRereads' is, and for the same reason: it bounds load rather than authority.
 var DefaultNarrowingChecks = ratelimit.Limit{Every: 12 * time.Second, Burst: 5}
 
 // narrowingCheckLimiter is the per-enrollment buckets NarrowingChecks names, built on the first
-// check that reaches GitHub.
+// check.
 func (m *Machine) narrowingCheckLimiter() *ratelimit.Keyed {
 	m.narrowingChecksOnce.Do(func() {
 		m.narrowingChecks = ratelimit.NewKeyed(limitOr(m.NarrowingChecks, DefaultNarrowingChecks))
@@ -136,7 +137,7 @@ func (m *Machine) checkProfiles(ctx context.Context, enr enrollmentRow, names []
 		return nil
 	}
 	if !m.narrowingCheckLimiter().Allow(enr.ID) {
-		skippedNarrowingCheck(enr.ID, "", "this enrollment has reached GitHub for more checks than its bound allows", nil)
+		skippedNarrowingCheck(enr.ID, "", "this enrollment has made more checks than its bound allows", nil)
 		return nil
 	}
 	budget, cancel := context.WithTimeout(ctx, m.narrowingCheckBudget())

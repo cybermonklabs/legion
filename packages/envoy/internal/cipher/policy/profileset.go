@@ -26,12 +26,14 @@ func profileKey(name string) string { return profileKeyPrefix + name }
 //     profileKey, and serves nothing by its name, so a name a profile holds is never released as a
 //     stored value;
 //   - a stored secret a profile of another source names is refused too
-//     (ReasonProfileNameTaken), by its own id;
+//     (ReasonProfileNameTaken), by its own id, unless it is superseded by that profile's source
+//     (supersededBy): then the profile is served by the name and the stored secret is not;
 //   - a source profiles of other names use (Set.ProfilesOf) is served by its own name only where
 //     a profile holds that name, and otherwise only through them;
 //   - a secret released as GitHub installation tokens (ServesGitHubTokens: github-app or
 //     github-installations) that no profile names is refused by its own id
-//     (ReasonGitHubAppNoProfile), so every GitHub token the broker hands over is a profile's.
+//     (ReasonGitHubAppNoProfile, ReasonGitHubInstallationsNoProfile), so every GitHub token the
+//     broker hands over is a profile's.
 //
 // Each profile is checked against set's stored secrets alone, never against another profile, so
 // a profile is never the source of another. prefix is the namespace, from which a stored secret's
@@ -76,7 +78,11 @@ func (p Profiles) apply(set *Set, prefix string) *Set {
 		}
 		delete(served, name)
 		delete(versions, name)
-		refusal := Refusal{Reason: ReasonGitHubAppNoProfile, Owner: secret.Owner, Detail: "no profile names it, and every GitHub App token is a profile's"}
+		reason := ReasonGitHubAppNoProfile
+		if secret.Type() == TypeGitHubInstallations {
+			reason = ReasonGitHubInstallationsNoProfile
+		}
+		refusal := Refusal{Reason: reason, Owner: secret.Owner, Detail: "no profile names it, and every GitHub token the broker hands over is a profile's"}
 		refused[prefix+slugOf(name)] = refusal
 		byName[name] = refusal
 	}
@@ -111,7 +117,7 @@ func (p Profiles) serve(i int, set *Set, prefix string) (Secret, Refusal) {
 	refuse := func(reason, detail string) (Secret, Refusal) {
 		return Secret{}, Refusal{Reason: reason, Owner: source.Owner, Detail: detail}
 	}
-	if profile.Name != profile.Source && storeHolds(set, profile.Name, prefix) {
+	if profile.Name != profile.Source && storeHolds(set, profile.Name, prefix) && !supersededBy(set, profile) {
 		return refuse(ReasonProfileNameTaken, "the stored secret "+profile.Name+" holds this name")
 	}
 	if detail := blockMismatch(profile, source); detail != "" {
@@ -206,6 +212,18 @@ func storeHolds(set *Set, name, prefix string) bool {
 	_, refused := set.Refused[id]
 	_, waits := set.Pending[id]
 	return refused || waits
+}
+
+// supersededBy reports whether the stored secret of profile's name is superseded by profile's
+// source: it is served, and its superseded-by tag (Secret.SupersededBy) is exactly the source's
+// name. Such a secret gives its name up to the profile, which is how a deployment moves a name
+// from a key the broker held to the minted tokens that replace it without a gap: a profile of the
+// name is refused while the stored secret holds it (ReasonProfileNameTaken), and the stored secret
+// is not served by its name once the profile is. A stored secret the policy refuses or holds
+// pending keeps the name, since its tags are not read.
+func supersededBy(set *Set, profile *Profile) bool {
+	stored, served := set.Secrets[profile.Name]
+	return served && stored.SupersededBy == profile.Source
 }
 
 // blockMismatch says how profile's github or google block does not fit source, and is "" when
