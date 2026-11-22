@@ -249,10 +249,13 @@ if private_out=$(unshare --user --map-root-user --mount --pid --fork --mount-pro
   # or three passes have followed the write, and the close waits for the namespace to end. Each
   # wait out here has one bound, a hang guard of 300 s by the clock ($SECONDS), that only a hung
   # mount, start or sampler reaches, and reaching it fails the case by name. The pipe is read from
-  # the shell's first line by a `cat` of its own, and both the wait for the first series line and
-  # the shell's last step end when that `cat` ends. So once the pipe closes, the shell ends when
-  # the step it is in returns, or after the write if the first series line is there by then; a
-  # step that blocks, such as a held start, is not cut short.
+  # the shell's first line by a `cat` of its own, which ends when the pipe closes, and the shell
+  # looks at that `cat` in two places only: the wait for the first series line and its last step.
+  # So a closed pipe cuts no step short, a held mount or start included. The shell runs on to that
+  # wait, which ends it with status 94 (93 if the sampler is gone first); or, if the first series
+  # line is there by then, it passes the wait, writes, records status 0 and ends at its last step,
+  # which returns at once. A mount, start or write that fails still ends it with that step's
+  # status (90, 91, 92).
   exec {private_hold}> >(exec unshare --user --map-root-user --mount --pid --fork --mount-proc sh -c '
     exec >"$7" 2>&1 3<&0
     cat <&3 >/dev/null &
