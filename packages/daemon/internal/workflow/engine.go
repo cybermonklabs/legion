@@ -1837,8 +1837,7 @@ func (e *Engine) controllerMemoryGuardKill(ctx context.Context, tx pgx.Tx, fact 
 // The ends of the controller's notes of a process stopped for memory, which it reads in place of
 // a role's (memoryKillGoesOn, memoryKillHeavyWork). The controller has no worker's tools
 // reference, and its skill has no section for this notice, so each note gives its own brief
-// advice and points to no skill: the skills take no change for this notice
-// (dispatch://INFRA-3368/ask/aa99c6ba-8a58-4830-998c-7f8102f65dd0).
+// advice and points to no skill (dispatch://INFRA-3368/ask/aa99c6ba-8a58-4830-998c-7f8102f65dd0).
 // controllerMemoryKillGoesOn says what goes on after a command of the controller's is stopped, in
 // the guard's note and the kernel's note of a command; it is not true of a process that runs the
 // controller's session, whose note says what happens instead (controllerKernelProtectedKillEnd).
@@ -1863,8 +1862,8 @@ const (
 // budgets after a wait (the daemon's controllerKeeper). Either way the same session starts again,
 // which is all the note says of it. A helper of the agent's may end alone, which is why the note
 // says what follows only of the agent. It never says the session goes on, which the end of the
-// agent's own process makes false, and it ends with the advice the notes of a command end with,
-// in its own words: bound the output of what runs next, and send heavy work elsewhere.
+// agent's own process makes false, and it does not say "do not run the same program again", since
+// the process was not one the controller ran.
 const controllerKernelProtectedKillEnd = "It was one of the processes that run your session, not a command you ran. " +
 	"If it was your agent, your turn ended with it, and so did every command it was running. " +
 	"The daemon then starts the same session again, as it does after any exit of your session's process. " +

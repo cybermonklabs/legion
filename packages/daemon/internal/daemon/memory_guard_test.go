@@ -197,9 +197,6 @@ func TestMemoryGuardAControllerKillReportedTwiceIsOneNoticeOnTheControllerTopic(
 	if notice.Reason != reason {
 		t.Fatalf("the notice's reason is %q, want %q", notice.Reason, reason)
 	}
-	if strings.Contains(notice.Reason, "skill://legion-controller") {
-		t.Fatalf("the notice's reason %q points to the controller's skill, which has no section for this notice", notice.Reason)
-	}
 }
 
 // A holder the boot never bound refuses a kill of the controller's pod as it refuses an issue

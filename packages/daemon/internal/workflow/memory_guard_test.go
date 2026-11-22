@@ -164,19 +164,6 @@ func applyControllerKill(t *testing.T, pool *pgxpool.Pool, engine *Engine, token
 	}
 }
 
-// noControllerSkillPointer fails the test when a controller notice among rows points to the
-// controller's skill. That skill has no section for a memory-guard-kill notice, so the notice's
-// own reason is all the controller reads of a kill
-// (dispatch://INFRA-3368/ask/aa99c6ba-8a58-4830-998c-7f8102f65dd0).
-func noControllerSkillPointer(t *testing.T, rows []record.OutboxPayload) {
-	t.Helper()
-	for _, row := range rows {
-		if notice, ok := row.(record.ControllerNotice); ok && strings.Contains(notice.Reason, "skill://legion-controller") {
-			t.Fatalf("the notice's reason %q points to the controller's skill, which has no section for this notice", notice.Reason)
-		}
-	}
-}
-
 // A kill of one of the controller's own processes is told to the project's controller as one
 // controller notice of kind memory-guard-kill, filed under the project key as a tick is. Its
 // reason names the process by its executable alone, with none of its arguments, its pid, its size,
@@ -210,15 +197,11 @@ func TestMemoryGuardAControllerKillIsOneControllerNoticeUnderTheProjectKey(t *te
 	second.Sequence, second.PID, second.Executable = 4, 5151, "node"
 	applyControllerKill(t, pool, engine, token, second)
 	got := noticeRows(t, pool)
-	if len(got) != 2 || !reflect.DeepEqual(got[0], record.OutboxPayload(told)) {
-		t.Fatalf("notice rows after the second kill = %+v, want the first notice and a second one", got)
+	nextTold := told
+	nextTold.Reason = strings.Replace(reason, "`python3` (pid 4242)", "`node` (pid 5151)", 1)
+	if !reflect.DeepEqual(got, []record.OutboxPayload{told, nextTold}) {
+		t.Fatalf("notice rows after the second kill = %+v, want the first notice and a second one naming `node` (pid 5151): %+v", got, nextTold)
 	}
-	next, ok := got[1].(record.ControllerNotice)
-	if !ok || next.Kind != record.MemoryGuardKillNotice || next.Role != claim.RoleController ||
-		!strings.Contains(next.Reason, "`node` (pid 5151)") {
-		t.Fatalf("the second notice = %+v, want a memory-guard-kill controller notice naming `node` (pid 5151)", got[1])
-	}
-	noControllerSkillPointer(t, got)
 	if rows := outboxRowsOf(t, pool, "LEGION"); rows != 2 {
 		t.Fatalf("the outbox holds %d rows under the project key after two kills, want two", rows)
 	}
@@ -303,7 +286,6 @@ func TestAKernelKillInTheControllersPodTellsTheControllerTheKernelStoppedIt(t *t
 		if got := noticeRows(t, pool); !reflect.DeepEqual(got, told) {
 			t.Fatalf("notice rows after the kill of cause %q = %+v\nwant %+v", tc.cause, got, told)
 		}
-		noControllerSkillPointer(t, noticeRows(t, pool))
 		if text := logs.String(); !strings.Contains(text, tc.logged) {
 			t.Fatalf("log = %q, want a line holding %q", text, tc.logged)
 		}
