@@ -138,7 +138,11 @@ fi
 without_helper=1
 status=0
 control=$(cd "$away" && probe_git GIT_CEILING_DIRECTORIES="$ceiling" timeout 60 git ls-remote "$1" HEAD 2>&1 >/dev/null) || status=$?
-` + liveSetupControlClass + `printf 'setup:%s:%s/%s cwd=%s uid=%s ppid=%s git_from=%s helper=%s helper_count=%s helper_effective=%s helper_lines=%s git=%s git_without_helper=%s git_without_helper_error=%s\n' "$LEGION_ROLE" "$POD_UID" "$LEGION_GENERATION" "$cwd" "$uid" "$PPID" "$away" "$helper_class" "$helper_count" "$helper_effective" "$helper_lines" "$git" "$git_without_helper" "$git_without_helper_error" >>"$LEGION_E2E_MARKER"
+` + liveSetupControlClass + `# Each path field is its length in bytes, a ':', and the path, so a path holding a space, or text
+# that looks like a field, is read whole and no further (setupMarkerFields).
+cwd_bytes=$(printf %s "$cwd" | wc -c | tr -d ' ')
+away_bytes=$(printf %s "$away" | wc -c | tr -d ' ')
+printf 'setup:%s:%s/%s cwd=%s:%s uid=%s ppid=%s git_from=%s:%s helper=%s helper_count=%s helper_effective=%s helper_lines=%s git=%s git_without_helper=%s git_without_helper_error=%s\n' "$LEGION_ROLE" "$POD_UID" "$LEGION_GENERATION" "$cwd_bytes" "$cwd" "$uid" "$PPID" "$away_bytes" "$away" "$helper_class" "$helper_count" "$helper_effective" "$helper_lines" "$git" "$git_without_helper" "$git_without_helper_error" >>"$LEGION_E2E_MARKER"
 `
 
 // liveSetupControlClass reads how the negative control's ls-remote ended, from its exit status
@@ -189,25 +193,29 @@ func liveSetup(repo ghrepo.Repository) []string {
 // parseSetupMarker parses the one setup line a role appends to the marker the stub agent later
 // appends its role:incarnation line to. It holds no credential or helper text. Its one piece of
 // command output, a failed control's first stderr line, is redacted (liveSetupControlClass) and
-// is its last field, git_without_helper_error, which runs to the end of the line.
+// is its last field, git_without_helper_error, which runs to the end of the line. Every other
+// field is one the setup script writes, once; any other is refused.
 func parseSetupMarker(line string) (setupMarker, error) {
 	head, controlError, found := strings.Cut(line, " git_without_helper_error=")
 	if !found {
 		return setupMarker{}, fmt.Errorf("setup marker %q has no git_without_helper_error", line)
 	}
-	fields := strings.Fields(head)
-	if len(fields) != 11 || !strings.HasPrefix(fields[0], "setup:") {
+	record, fields, err := setupMarkerFields(head)
+	if err != nil {
+		return setupMarker{}, fmt.Errorf("setup marker %q: %w", line, err)
+	}
+	if len(fields) != 10 || !strings.HasPrefix(record, "setup:") {
 		return setupMarker{}, fmt.Errorf("setup marker %q is not one setup record", line)
 	}
-	role, incarnation, found := strings.Cut(strings.TrimPrefix(fields[0], "setup:"), ":")
+	role, incarnation, found := strings.Cut(strings.TrimPrefix(record, "setup:"), ":")
 	if !found || role == "" || incarnation == "" {
 		return setupMarker{}, fmt.Errorf("setup marker %q has no role and incarnation", line)
 	}
 	marker := setupMarker{role: role, incarnation: incarnation, gitWithoutHelperError: controlError}
-	for _, field := range fields[1:] {
-		name, value, found := strings.Cut(field, "=")
-		if !found || value == "" {
-			return setupMarker{}, fmt.Errorf("setup marker %q has malformed field %q", line, field)
+	for _, field := range fields {
+		name, value := field[0], field[1]
+		if value == "" {
+			return setupMarker{}, fmt.Errorf("setup marker %q has malformed field %q", line, name)
 		}
 		switch name {
 		case "cwd":
@@ -287,6 +295,51 @@ func parseSetupMarker(line string) (setupMarker, error) {
 		}
 	}
 	return marker, nil
+}
+
+// setupMarkerPathFields are the fields whose value is a path, which the setup script writes as the
+// path's length in bytes, a ':', and the path itself: a path may hold a space, and text after the
+// space that looks like a field of its own.
+var setupMarkerPathFields = map[string]bool{"cwd": true, "git_from": true}
+
+// setupMarkerFields splits a setup marker's head into its record, which ends at the first space,
+// and its name=value fields, one space apart. A path field's value is read by its length
+// (setupMarkerPathFields), so it holds any byte and ends exactly where the script said; every
+// other value ends at the next space. So a field after a path, known or not, is a field of its
+// own, which parseSetupMarker refuses when it does not know the name, and a path field the script
+// did not write by its length is refused here.
+func setupMarkerFields(head string) (record string, fields [][2]string, err error) {
+	record, rest, found := strings.Cut(head, " ")
+	if !found {
+		return head, nil, nil
+	}
+	for {
+		name, after, found := strings.Cut(rest, "=")
+		if !found || name == "" || strings.Contains(name, " ") {
+			return "", nil, fmt.Errorf("malformed field %q", rest)
+		}
+		var value string
+		if setupMarkerPathFields[name] {
+			digits, path, found := strings.Cut(after, ":")
+			bytes, err := strconv.Atoi(digits)
+			if !found || digits == "" || strings.Trim(digits, "0123456789") != "" || err != nil || bytes > len(path) {
+				return "", nil, fmt.Errorf("path field %s is not its length in bytes, a ':' and the path: %q", name, after)
+			}
+			value, rest = path[:bytes], path[bytes:]
+		} else if end := strings.IndexByte(after, ' '); end >= 0 {
+			value, rest = after[:end], after[end:]
+		} else {
+			value, rest = after, ""
+		}
+		fields = append(fields, [2]string{name, value})
+		if rest == "" {
+			return record, fields, nil
+		}
+		if rest[0] != ' ' || len(rest) == 1 {
+			return "", nil, fmt.Errorf("field %s runs on past its value: %q", name, rest)
+		}
+		rest = rest[1:]
+	}
 }
 
 func setupHelperProblem(marker setupMarker) error {

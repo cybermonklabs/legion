@@ -4,6 +4,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -28,7 +30,9 @@ case "$1" in
     [ "$2" = "--out" ] || exit 64
     umask 077; printf 'fake key\n' >"$3/key.pem"; printf '%s\n' "` + fakeThumbprint + `"; exit 0 ;;
   renew)
-    shift; printf 'renew %s %s\n' "$$" "$*" >>"$AGENT_SECRETS_KEY_DIR/renew.log"
+    # One record per run: its pid, then each argument NUL-terminated, so a path with a space
+    # reads back as one argument.
+    shift; { printf 'renew %s\n' "$$"; printf '%s\0' "$@"; } >>"$AGENT_SECRETS_KEY_DIR/renew.log"
     if [ "$AGENT_SECRETS_TEST_RENEW_EXIT" = 76 ]; then
       printf 'agent-secrets renew: enrollment %s permanently refused by broker: HTTP 403 POD_TOKEN_REQUIRED: fake refusal\n' "$(cat "$AGENT_SECRETS_KEY_DIR/enrollment")" >&2
     fi
@@ -129,7 +133,9 @@ func TestTheEnrollmentFrameIsWrittenBesideTheKeyAndStartsTheRenewer(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fields := strings.Fields(string(raw)); len(fields) != 4 || fields[2] != "--pod-token-file" || fields[3] != tokenFile {
+	pid, args, _ := strings.Cut(string(raw), "\n")
+	if _, err := strconv.Atoi(strings.TrimPrefix(pid, "renew ")); err != nil || !strings.HasPrefix(pid, "renew ") ||
+		!slices.Equal(strings.Split(strings.TrimSuffix(args, "\x00"), "\x00"), []string{"--pod-token-file", tokenFile}) {
 		t.Fatalf("renewer started as %q, want `renew --pod-token-file %s`", raw, tokenFile)
 	}
 	peer.send(t, shimwire.AgentSecretsEnrollment{ID: "req-2", EnrollmentID: "enr-1"})

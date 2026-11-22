@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // A help read that outlives its timeout stops everything gh started, not gh alone. The gh here
@@ -30,7 +31,7 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 	pidFile := filepath.Join(dir, "helper")
 	const helperSeconds = "299"
 	gh := filepath.Join(dir, "gh")
-	script := "#!/bin/sh\nsleep " + helperSeconds + " </dev/null >/dev/null 2>&1 &\necho $! >'" + pidFile + "'\nexec sleep 300\n"
+	script := "#!/bin/sh\nsleep " + helperSeconds + " </dev/null >/dev/null 2>&1 &\necho $! >" + shellprefix.Literal(pidFile) + "\nexec sleep 300\n"
 	if err := os.WriteFile(gh, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +110,7 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 		{
 			name: "the help read", seconds: "297", check: passes, keepsNothing: true,
 			gh: func(pidFile, seconds string) string {
-				return "#!/bin/sh\nfor last; do :; done\nif [ \"$last\" = --help ]; then\n  cat '" + filepath.Join(help, "gh.txt") + "'\n" +
+				return "#!/bin/sh\nfor last; do :; done\nif [ \"$last\" = --help ]; then\n  cat " + shellprefix.Literal(filepath.Join(help, "gh.txt")) + "\n" +
 					holdsStandIn(pidFile, seconds) + "fi\nexit 0\n"
 			},
 		},

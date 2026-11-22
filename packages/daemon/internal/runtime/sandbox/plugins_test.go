@@ -171,14 +171,14 @@ func bunInstallArgs(t *testing.T, plugins *runtime.PluginInstall) []string {
 	dir := t.TempDir()
 	recorded := filepath.Join(dir, "bun-args")
 	stub := filepath.Join(dir, "bun")
-	if err := os.WriteFile(stub, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > "+recorded+"\nexit 1\n"), 0o700); err != nil {
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > "+shellQuote(recorded)+"\nexit 1\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	script := startScript(filepath.Join(dir, "state"), 3, plugins, "", installLockWait(2*time.Second, 3))
 	if !strings.Contains(script, "/usr/local/bin/bun") {
 		t.Fatalf("the install script does not call bun by the image path:\n%s", script)
 	}
-	script = strings.Replace(script, "/usr/local/bin/bun", stub, 1)
+	script = strings.Replace(script, "/usr/local/bin/bun", shellQuote(stub), 1)
 	cmd := exec.Command("sh", "-c", script, startName, "0", "true")
 	cmd.Env = append(os.Environ(), "BUN_INSTALL_CACHE_DIR="+filepath.Join(dir, "cache"))
 	out, err := cmd.CombinedOutput()
@@ -393,8 +393,10 @@ func runClaudeStart(t *testing.T, npmBody string, seedCache ...func(t *testing.T
 	if !strings.Contains(script, "/usr/local/bin/npm ") || !strings.Contains(script, claudeCodePin+"/") {
 		t.Fatalf("the start script does not call npm by the image path or install from the image's pin:\n%s", script)
 	}
-	script = strings.Replace(script, "/usr/local/bin/npm ", npm+" ", 1)
-	script = strings.ReplaceAll(script, claudeCodePin+"/", pin+"/")
+	script = strings.Replace(script, "/usr/local/bin/npm ", shellQuote(npm)+" ", 1)
+	// The pin's paths sit inside the script's single-quoted words, so each `'` of pin is closed,
+	// escaped and reopened there.
+	script = strings.ReplaceAll(script, claudeCodePin+"/", strings.ReplaceAll(pin, "'", `'\''`)+"/")
 	for _, seed := range seedCache {
 		seed(t, run.cache)
 	}
@@ -590,7 +592,7 @@ func installLockProbe(t *testing.T, unlock bool) []string {
 	var wg sync.WaitGroup
 	for _, id := range []string{"a", "b"} {
 		script := startScript(filepath.Join(dir, "state-"+id), 3, testPlugins(), "", installLockWait(2*time.Second, 3))
-		script = strings.Replace(script, "/usr/local/bin/bun", stub, 1)
+		script = strings.Replace(script, "/usr/local/bin/bun", shellQuote(stub), 1)
 		if unlock {
 			// Everything from flock's own path through the locked directory goes, so the control
 			// strips the lock however its wait is spelled rather than only the wait rendered today.
@@ -852,7 +854,7 @@ func runStart(t *testing.T, start, bin, bun, cache string, plugins *runtime.Plug
 	}
 	argv := startArgv(filepath.Join(dir, "state"), 3, plugins, "", setup, agent, installLockWait(2*time.Second, 3))
 	if bun != "" {
-		argv[2] = strings.Replace(argv[2], "/usr/local/bin/bun", bun, 1)
+		argv[2] = strings.Replace(argv[2], "/usr/local/bin/bun", shellQuote(bun), 1)
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = start

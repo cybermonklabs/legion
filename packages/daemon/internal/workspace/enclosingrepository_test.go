@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // Provisioning leaves the repository it happens to stand inside alone, on both ways to the
@@ -233,7 +234,7 @@ func TestTheRunnerRefusesACommandWithNoAbsoluteWorkingDirectory(t *testing.T) {
 			// than a child that ran and failed.
 			marker := filepath.Join(dir, "ran")
 			stub := filepath.Join(dir, "git")
-			writeExecutable(t, stub, "#!/bin/sh\n: > '"+marker+"'\n")
+			writeExecutable(t, stub, "#!/bin/sh\n: > "+shellprefix.Literal(marker)+"\n")
 			command := Command{Argv: []string{"git", "status", "--porcelain"}, Dir: tc.dir, Timeout: testTimeout}
 			if tc.own {
 				command.Dir = dir

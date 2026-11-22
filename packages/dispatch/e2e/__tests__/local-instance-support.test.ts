@@ -226,7 +226,7 @@ describe("Supervisor.stop", () => {
         // the run is killed. It opens the FIFO for reading and writing, so its open waits for no
         // writer, and the row's write finds a reader as long as the held leader runs. It writes
         // its pid once it ignores SIGTERM.
-        const hold = `mkfifo ${release}; exec 3<> ${release}; trap '' TERM; echo $$ > ${heldPidFile}; read -t ${outlastsRow} _ <&3`;
+        const hold = `mkfifo ${shellQuote(release)}; exec 3<> ${shellQuote(release)}; trap '' TERM; echo $$ > ${shellQuote(heldPidFile)}; read -t ${outlastsRow} _ <&3`;
         const made = supervisor();
         const leaderRunning = made.start(
           "leader",
@@ -235,8 +235,8 @@ describe("Supervisor.stop", () => {
             "-c",
             held === "leader"
               ? // The sleep starts ahead of the trap, so it does not ignore SIGTERM too.
-                `sleep ${outlastsRow} & echo $! > ${pidFile}; ${hold}`
-              : `sleep ${outlastsRow} & echo $! > ${pidFile}; wait`,
+                `sleep ${outlastsRow} & echo $! > ${shellQuote(pidFile)}; ${hold}`
+              : `sleep ${outlastsRow} & echo $! > ${shellQuote(pidFile)}; wait`,
           ],
           "/"
         );
@@ -351,7 +351,10 @@ describe("Supervisor.stop", () => {
     async () => {
       const pidFile = join(makeDirectory(), "step.pid");
       const made = supervisor();
-      const step = made.run(["bash", "-c", `echo $$ > ${pidFile}; exec sleep ${outlastsRow}`], "/");
+      const step = made.run(
+        ["bash", "-c", `echo $$ > ${shellQuote(pidFile)}; exec sleep ${outlastsRow}`],
+        "/"
+      );
       let pid: number | undefined;
       try {
         pid = await pidFrom(pidFile);

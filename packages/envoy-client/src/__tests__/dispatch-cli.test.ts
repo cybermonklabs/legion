@@ -19,6 +19,10 @@ const makeDirectory = temporaryDirectories("dispatch-cli");
 
 /** The Dispatch bearer each command is handed. */
 const TOKEN = fixtureSecret("dsp");
+/** `value` as one single-quoted shell word, each `'` in it closed, escaped and reopened. */
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
 
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
 const requests: Recorded[] = [];
@@ -1413,8 +1417,9 @@ describe("the dispatch CLI", () => {
     expect(claude.stdout.length).toBeLessThanOrEqual(limit + 1);
     const pictureLine = /\n(- picture: [^\n]*)/.exec(claude.stdout)?.[1];
     expect(pictureLine).toBeDefined();
-    // The file holds the whole result, its picture lines included.
-    const marker = /\(the full result, (\d+) characters: (\S+)\)/.exec(claude.stdout);
+    // The file holds the whole result, its picture lines included. Its path is under the test's
+    // temporary directory, which may hold a space, so it runs to the line's closing parenthesis.
+    const marker = /\(the full result, (\d+) characters: (.+)\)$/m.exec(claude.stdout);
     const written = `${text}\n${pictureLine}`;
     expect(marker?.[1]).toBe(String(written.length));
     expect(readFileSync(marker?.[2] ?? "", "utf-8")).toBe(written);
@@ -2046,7 +2051,7 @@ describe("the dispatch CLI's envoy.json", () => {
         dispatch: {
           enabled: true,
           serverUrl: `http://127.0.0.1:${server.port}`,
-          token: `!touch ${marker}; echo old-token`,
+          token: `!touch ${shellQuote(marker)}; echo old-token`,
         },
       })
     );
@@ -2092,7 +2097,7 @@ describe("the dispatch CLI's envoy.json", () => {
         dispatch: {
           enabled: true,
           serverUrl: `http://127.0.0.1:${server.port}`,
-          token: `!touch ${marker}; echo old-token`,
+          token: `!touch ${shellQuote(marker)}; echo old-token`,
         },
       })
     );

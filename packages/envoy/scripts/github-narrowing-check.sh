@@ -96,6 +96,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=packages/envoy/scripts/lib/rig-banner.sh
+source "$SCRIPT_DIR/lib/rig-banner.sh"
 # psql is given a database URL without its password, and the password in PGPASSWORD.
 # shellcheck source-path=SCRIPTDIR source=lib/pg-url.sh
 . "$SCRIPT_DIR/lib/pg-url.sh"
@@ -289,10 +291,12 @@ STACK_STARTED=$SECONDS
 # script's.
 await "the stack's build" 1800 "$STACK_LOG" '^dev-broker: built ' "$STACK_PID"
 echo "github-narrowing-check: the stack's binaries were built $((SECONDS - STACK_STARTED)) seconds after it was started; waiting for it to start them..." >&2
-await "the stack, once built," 120 "$STACK_LOG" '^dev-broker: ready\.$' "$STACK_PID"
+await "the stack, once built," 120 "$STACK_LOG" "^${DEV_BROKER_BANNER[1]//./\\.}\$" "$STACK_PID"
 # Everything the banner exports, which is where this check's addresses, secret names and the pod
-# and service it enrols come from.
-eval "$(sed -n 's/^  \(export [A-Z][A-Z_0-9]*=.*\)$/\1/p' "$STACK_LOG")"
+# and service it enrols come from: from the banner's own block of the log alone (lib/rig-banner.sh),
+# since the log holds the stack's processes' output too, and a line there that looks like an
+# export runs nothing.
+rig_banner_export "$STACK_LOG" "${DEV_BROKER_BANNER[@]}"
 AGENT_SECRETS_BIN="$DEV_BROKER_DIR/bin/agent-secrets"
 STANDS_BIN="$DEV_BROKER_DIR/bin/dev-airlock-stands"
 # The database dev-broker.sh made for this run, which the one property about what the broker

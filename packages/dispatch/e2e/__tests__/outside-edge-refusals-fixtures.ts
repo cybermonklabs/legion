@@ -25,6 +25,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { shellQuote } from "../local-instance-support";
 import { type BoundName, runBounded } from "./bounded-subprocess";
 import type { Edge, Route, Seen } from "./outside-edge-refusals-edge";
 import { bash, curl, fakeHost, type Run } from "./outside-path-reach-fixtures";
@@ -369,7 +370,7 @@ function httpsCurl(directory: string, answers: HttpsAnswers): { path: string; lo
     [
       `#!${bash}`,
       `case " $* " in *" --version "*) exec ${curl} "$@" ;; esac`,
-      `{ printf '%s\\n' "$@"; printf '%s\\n' --end--; } >>${log}`,
+      `{ printf '%s\\n' "$@"; printf '%s\\n' --end--; } >>${shellQuote(log)}`,
       "headers='' body='' host='' url='' previous=''",
       'for word in "$@"; do',
       // biome-ignore lint/suspicious/noTemplateCurlyInString: bash's own expansion, the Host's value.

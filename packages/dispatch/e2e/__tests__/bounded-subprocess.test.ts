@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
 import { randomInt } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Subprocess } from "bun";
 import {
   bounds,
+  bunLoadableDirectory,
   execPause,
   type Listed,
   listedOf,
@@ -79,7 +79,7 @@ test.skipIf(commandLines() === undefined)(
       `test("waits for a bounded child that never ends by itself", async () => {\n` +
       `  await runBounded({ argv: ["bash", "-c", "sleep ${seconds} & wait"], bound: "short", from: import.meta.url });\n` +
       `}, rowLimit("short"));\n`;
-    const directory = mkdtempSync(join(tmpdir(), "bounded-subprocess-"));
+    const directory = bunLoadableDirectory("bounded-subprocess-");
     const log = join(directory, "runner.log");
     let runner: Subprocess | undefined;
     try {

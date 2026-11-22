@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { scriptFunctions } from "./script-functions";
+import { scriptFunctions, shellQuote } from "./script-functions";
 
 // wait_for_run_processes, the cleanup-is-complete checkpoint's wait for every process of the run to
 // end (parked-decision-devbox.sh). Each case takes the function from the script by name and runs it
@@ -68,7 +68,7 @@ describe("wait_for_run_processes", () => {
     const logged = join(bin, "calls");
     writeFileSync(logged, "");
     for (const name of ["ps", "pgrep", "pkill"]) {
-      writeFileSync(join(bin, name), `#!/bin/sh\necho "$0 $*" >>'${logged}'\nexit 1\n`, {
+      writeFileSync(join(bin, name), `#!/bin/sh\necho "$0 $*" >>${shellQuote(logged)}\nexit 1\n`, {
         mode: 0o755,
       });
     }

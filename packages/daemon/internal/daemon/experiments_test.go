@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // twoExperiments are two experiments declared under the `experiments` key, each with one arm that
@@ -54,7 +55,7 @@ func TestTheTmuxBootGateReadsOneValuePerRolePerDeclaredArm(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	image := capabilities.Image{Launch: omp, Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: dir}
+	image := capabilities.Image{Launch: shellprefix.Word(omp), Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: dir}
 	cfg := config.Config{
 		Project: "test",
 		Runtime: config.Runtime{Name: "tmux"},

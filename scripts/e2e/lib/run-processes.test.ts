@@ -6,6 +6,7 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { argMaxForceHolds } from "./arg-max-force";
 import { ownGroup, untilRunning } from "./own-group";
 import { procRootOf } from "./proc-root";
+import { shellQuote } from "./script-functions";
 
 // run_processes (lib/rig.sh) names the processes of a run still alive, and stop_marked_processes
 // (lib/process-tree.sh) ends them: each that carries the run's mark, LEGION_E2E_RUN=$work, which the
@@ -420,7 +421,7 @@ test.skipIf(skip)(
       ownGroup([
         "bash",
         "-c",
-        `trap 'sleep 0.3; touch ${JSON.stringify(graceful)}; exit 0' TERM; echo ready; while :; do sleep 0.1; done`,
+        `trap ${shellQuote(`sleep 0.3; touch ${JSON.stringify(graceful)}; exit 0`)} TERM; echo ready; while :; do sleep 0.1; done`,
       ]),
       { env, stdout: "pipe" }
     );

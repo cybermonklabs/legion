@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { scriptFunctions } from "./script-functions";
+import { scriptFunctions, shellQuote } from "./script-functions";
 
 // Stage 4b's `kill` end of one role: role_kill_sh signals the worker-shim of one role-init, and
 // role_generation_ended watches the kill land on that role alone. role_kill_sh runs here on real
@@ -458,7 +458,7 @@ describe("as_role_probe", () => {
     const { bin, log } = fakeNsenter("probe");
     writeFileSync(
       join(bin, "kubectl"),
-      `#!/bin/sh\nwhile [ "$1" != -- ]; do shift; done\nshift\nproc_root=${root} exec "$@"\n`,
+      `#!/bin/sh\nwhile [ "$1" != -- ]; do shift; done\nshift\nproc_root=${shellQuote(root)} exec "$@"\n`,
       { mode: 0o755 }
     );
     writeFileSync(join(bin, "python3"), '#!/bin/sh\necho "$*"\ncat\n', { mode: 0o755 });

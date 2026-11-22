@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
-import { lstat, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises"
+import { cp, lstat, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { bunModuleDirectory } from "./channel-session-harness"
 
 const packageRoot = resolve(import.meta.dir, "..")
 const buildScript = join(packageRoot, "scripts", "build.ts")
@@ -42,13 +43,23 @@ test("--out copies the skills as files, not links, and generates the Legion plug
 test("--out keeps bin/dispatch executable, and it runs the built CLI", async () => {
   const shim = join(out, "bin", "dispatch")
   expect((await stat(shim)).mode & 0o111).toBe(0o111)
-  const run = Bun.spawn([shim, "--help"], {
-    cwd: scratch,
-    env: { PATH: process.env["PATH"] ?? "", HOME: scratch },
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-  expect(await run.exited).toBe(0)
+  // Bun runs the CLI the shim names, and `--out` refuses a directory inside the repository, where
+  // `bunModuleDirectory` may make one: the shim runs from a copy of the build's bin/ and dist/.
+  const copy = await bunModuleDirectory("claude-envoy-build-out-run-")
+  try {
+    for (const part of ["bin", "dist"]) {
+      await cp(join(out, part), join(copy, part), { recursive: true })
+    }
+    const run = Bun.spawn([join(copy, "bin", "dispatch"), "--help"], {
+      cwd: scratch,
+      env: { PATH: process.env["PATH"] ?? "", HOME: scratch },
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    expect(await run.exited).toBe(0)
+  } finally {
+    await rm(copy, { recursive: true, force: true })
+  }
 }, 30_000)
 
 test("--out refuses a directory inside the repository and creates nothing", async () => {
