@@ -321,6 +321,7 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 // no git identity and neither App login: it works Dispatch, never a checkout or GitHub, and
 // commits nothing.
 func TestTheControllersLaunchIsItsHeadlessPromptAndNoCheckout(t *testing.T) {
+	// Not parallel: it unsets environment variables of the whole process (Unset).
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -707,6 +708,7 @@ func TestSpawnSpecPluginsCoversTheDaemonsControllerToo(t *testing.T) {
 // (controllerSpawnSpec). Both runtimes forward Env verbatim, so this is where they reach a pane
 // and a pod alike.
 func TestSpawnSpecCarriesThePassthroughVariablesTheDaemonHolds(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it unsets environment variables of the whole process (Unset).
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)

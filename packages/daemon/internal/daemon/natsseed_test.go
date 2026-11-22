@@ -33,6 +33,7 @@ func lookup(values map[string]string) func(string) (string, bool) {
 // nats_nkey_seed_file — the seed every pane receives — so a daemon boots against a server whose one
 // user is that seed's nkey, and without it the same server refuses the daemon's boot.
 func TestTheWorkflowConnectsAsTheNatsSeedTheDaemonResolved(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	seed, public := testnkeys.User(t)
 	url := testnats.StartNkeyAuthorized(t, public)
@@ -76,6 +77,7 @@ func TestTheWorkflowConnectsAsTheNatsSeedTheDaemonResolved(t *testing.T) {
 // a server whose one user is the daemon seed's admits a daemon configured with both seeds, and
 // refuses one configured with the pane seed alone, which it then connects as.
 func TestTheWorkflowConnectsAsTheDaemonSeedOverThePaneSeed(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	daemonSeed, daemonUser := testnkeys.User(t)
 	paneSeed, paneUser := testnkeys.User(t)

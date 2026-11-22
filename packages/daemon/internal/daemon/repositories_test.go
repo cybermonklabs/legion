@@ -219,6 +219,7 @@ func (d *repositoryDispatch) detailReads(key string) int {
 // installReadAttempt is a read that did not answer, kept as the repository's read error for the
 // refresher to read again.
 func TestEachInstallationReadIsBoundedOnItsOwn(t *testing.T) {
+	// Not parallel: it writes the package variable installReadAttempt.
 	read := installReadAttempt
 	t.Cleanup(func() { installReadAttempt = read })
 	var repos []ghrepo.Repository
@@ -262,6 +263,7 @@ func TestEachInstallationReadIsBoundedOnItsOwn(t *testing.T) {
 // tree, which takes the repository out of the cache set. Control: with prepareName's read made on
 // the caller's context, the first job never returns and zeta/tools keeps no answer.
 func TestADefaultBranchReadGitHubNeverAnswersHoldsUpNoJobOfTheRefresher(t *testing.T) {
+	// Not parallel: it writes the package variable installReadAttempt.
 	attempt := installReadAttempt
 	installReadAttempt = 300 * time.Millisecond
 	t.Cleanup(func() { installReadAttempt = attempt })
@@ -305,6 +307,7 @@ func TestADefaultBranchReadGitHubNeverAnswersHoldsUpNoJobOfTheRefresher(t *testi
 // allowed. Control: with prepareName's read made on the caller's context, the preparation waits
 // until the test's own deadline and names that.
 func TestAnAdmissionsReadOfANameGitHubNeverAnswersIsBounded(t *testing.T) {
+	// Not parallel: it writes the package variable installReadAttempt.
 	attempt := installReadAttempt
 	installReadAttempt = 300 * time.Millisecond
 	t.Cleanup(func() { installReadAttempt = attempt })
@@ -526,6 +529,7 @@ func notInstalledWebhookApp(repo string) string {
 // Control: with the webhook App checked whatever the role Apps answered, Dispatch is asked of
 // zeta/tools.
 func TestARepositoryWithoutTheWebhookAppIsWorkedAndNamed(t *testing.T) {
+	// Not parallel: it writes the package variable installReadRetry (quickInstallReads).
 	quickInstallReads(t)
 	standIn := newWebhookDispatch(t, true, map[string]bool{"acme/widgets": false, "zeta/tools": false})
 	w, _, _, _ := repositoryRigWith(t, &installations{missing: map[string]bool{"review zeta/tools": true}}, standIn.serve)
@@ -553,6 +557,7 @@ func TestARepositoryWithoutTheWebhookAppIsWorkedAndNamed(t *testing.T) {
 // so the refresher checks again while it stands (rereadBadAnswers, INFRA-4401 D6), and the state
 // names nothing once Dispatch answers.
 func TestAFailedWebhookAppCheckIsNamedAndCheckedAgainWhileTheRepositoryIsWorked(t *testing.T) {
+	// Not parallel: it writes the package variable installReadRetry (quickInstallReads).
 	quickInstallReads(t)
 	standIn := newWebhookDispatch(t, true, map[string]bool{"zeta/tools": true, "acme/widgets": true})
 	message := "read the GitHub App's installation on acme/widgets: GET https://api.github.com/repos/acme/widgets/installation: status 500: Server Error"
@@ -603,6 +608,7 @@ func withoutWebhookAppFor(w *workflowRuntime) {
 // which takes an App installed since. The repository is worked throughout and the issue recorded
 // on it: a missing Dispatch App refuses no work.
 func TestARepositoryOnlyARecordNamesWithoutTheWebhookAppIsWorkedAndNamed(t *testing.T) {
+	// Not parallel: it writes the package variable installReadRetry (quickInstallReads).
 	quickInstallReads(t)
 	const key = "LEGION-951"
 	w, client, _, _ := preparationRig(t, &installations{}, withoutWebhookAppFor)
@@ -669,6 +675,7 @@ func (d *hangingWebhookDispatch) WebhookAppInstalled(ctx context.Context, repo s
 // round of repositoryReads are each named with the check's deadline, and a repository a
 // preparation already checked is asked nothing again.
 func TestTheCheckOfTheRepositoriesTheLiveRecordsAddIsBoundedPerCheck(t *testing.T) {
+	// Not parallel: it writes the package variable installReadAttempt.
 	read := installReadAttempt
 	t.Cleanup(func() { installReadAttempt = read })
 	installReadAttempt = 50 * time.Millisecond

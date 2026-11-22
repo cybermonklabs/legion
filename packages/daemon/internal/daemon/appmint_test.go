@@ -240,6 +240,7 @@ func bootsOrExitsOn(t *testing.T, cfg config.Config, tokens appauth.Source, gith
 // context deadline exceeded", #1347). Control: with appAttempt classing its own deadline as a
 // refusal, the boot exits on the first attempt's "context deadline exceeded".
 func TestABootRunsItsKeyProofAgainAfterAGitHubRequestOutlastsAnAttempt(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	held := appMintAttempt + appMintAttempt/2
 	tokens, standIn := appTokens(t, func(w http.ResponseWriter, r *http.Request, app string, n int) {
@@ -271,6 +272,7 @@ func TestABootRunsItsKeyProofAgainAfterAGitHubRequestOutlastsAnAttempt(t *testin
 // A definitive answer (the App's key refused) is refused at once, naming the App whose key GitHub
 // refused and GitHub's answer: no retry changes it.
 func TestABootRefusesADefinitiveGitHubAnswerAtOnce(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	tokens, standIn := appTokens(t, func(w http.ResponseWriter, r *http.Request, _ string, _ int) {
 		http.Error(w, `{"message":"A JSON web token could not be decoded"}`, http.StatusUnauthorized)
@@ -290,6 +292,7 @@ func TestABootRefusesADefinitiveGitHubAnswerAtOnce(t *testing.T) {
 // spent before the review App's installations are asked for more than once. With a budget per App
 // the boot would wait both out, twice as long, which is what outlasted Stage 3's wait for /healthz.
 func TestABootGivesBothAppsKeyProofsOneRetryBudget(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	tokens, standIn := appTokens(t, func(w http.ResponseWriter, r *http.Request, app string, n int) {
 		if app == "1" && n > 2 {
@@ -375,6 +378,7 @@ func linesBeforeServing(logged, msg string) []string {
 // check a-go, item 8): proveAppKeys asking the token source for each role's token on acme. That
 // mint is refused and the boot stops.
 func TestTheBootProvesEachAppKeyWithItsInstallations(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	t.Run("each App's key is proved and nothing is minted", func(t *testing.T) {
 		quickAppMints(t)
 		manager, standIn := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
@@ -545,6 +549,7 @@ func commandTokensWith(t *testing.T, answer func(w http.ResponseWriter, r *http.
 // 5996655281, each attempt the bound ends is transient, and the boot refuses once the three are
 // spent, naming the key proof's context deadline exceeded.
 func TestABootWaitsForATokenCommandThatOutlastsEveryAttemptOfTheKeyProof(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	hold := 2 * time.Duration(appMintRetry.Attempts) * appMintAttempt
 	dir := t.TempDir()
@@ -589,6 +594,7 @@ func TestABootWaitsForATokenCommandThatOutlastsEveryAttemptOfTheKeyProof(t *test
 // the three quick attempts, which the wait does not spend: before, the start exited once they were
 // spent, before the reset.
 func TestABootWaitsOutARateLimitOnTheAppKeyProofAndServesAfterTheReset(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	var reset atomic.Int64
 	tokens, _ := appTokensWith(t, discoveredOnAcme, spentUntil(3*time.Second, &reset, keyProofRead))
@@ -614,6 +620,7 @@ func TestABootWaitsOutARateLimitOnTheAppKeyProofAndServesAfterTheReset(t *testin
 // names no time, so the start waits a minute, says so, and serves after it. Before, the start read
 // it as GitHub's answer about the App and exited at the first attempt.
 func TestABootWaitsOutARateLimitNamedOnlyByItsMessageOnTheAppKeyProof(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	var refusals atomic.Int64
 	tokens, _ := appTokensWith(t, discoveredOnAcme, func(w http.ResponseWriter, r *http.Request) bool {
@@ -646,6 +653,7 @@ func TestABootWaitsOutARateLimitNamedOnlyByItsMessageOnTheAppKeyProof(t *testing
 // and serves after it (c-boot-mint-rate-limit case 3). Before, the start exited once the three quick
 // attempts were spent, before the reset.
 func TestABootWaitsOutARateLimitOnTheAppLoginsRead(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	var reset atomic.Int64
 	tokens, _ := appTokensWith(t, discoveredOnAcme, spentUntil(3*time.Second, &reset, func(r *http.Request) bool { return r.URL.Path == "/app" }))
@@ -668,6 +676,7 @@ func TestABootWaitsOutARateLimitOnTheAppLoginsRead(t *testing.T) {
 // (c-boot-mint-rate-limit case 4, on the logins read). The limit refuses the implement App's token
 // so released. Before, the start exited once the three quick attempts were spent, before the reset.
 func TestABootWaitsOutARateLimitOnATokenCommandsAppRead(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	var reset atomic.Int64
 	tokens := commandTokens(t, spentUntil(3*time.Second, &reset, func(r *http.Request) bool {
@@ -747,6 +756,7 @@ func bootStoppedWhen(t *testing.T, cfg config.Config, tokens appauth.Source, log
 // wait, the bound on a wait that runs past its until. An earlier version held the wait left to
 // equal the wait decided; with a 1 s delay injected before the line, it failed.
 func TestABootWaitsAsLongAsGitHubAsksAtMostTheMaximum(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	withStartRateLimits(t, func(policy *rateLimitPolicy) { policy.Max = 2 * time.Second })
 	for _, tc := range []struct {
@@ -821,6 +831,7 @@ func TestABootWaitsAsLongAsGitHubAsksAtMostTheMaximum(t *testing.T) {
 // the first, and each wait left to within 1 s of the wait decided; with a 1 s delay injected before
 // each line, both failed.
 func TestABootWaitsOneMinuteThenTwoForRefusalsOfOneCallThatNameNoTime(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	tokens, _ := appTokensWith(t, discoveredOnAcme, func(w http.ResponseWriter, r *http.Request) bool {
 		if !keyProofRead(r) {
@@ -870,6 +881,7 @@ func TestABootWaitsOneMinuteThenTwoForRefusalsOfOneCallThatNameNoTime(t *testing
 // after it ends the start, naming the call, GitHub's last answer with its headers and message, the
 // 3 s waited and the App whose key the read proves.
 func TestABootEndsWhenItsRateLimitWaitsReachTheirBound(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	withStartRateLimits(t, func(policy *rateLimitPolicy) { policy.Bound = 3 * time.Second })
 	tokens, _ := appTokensWith(t, discoveredOnAcme, func(w http.ResponseWriter, r *http.Request) bool {
@@ -906,6 +918,7 @@ func TestABootEndsWhenItsRateLimitWaitsReachTheirBound(t *testing.T) {
 // cleanly (c-boot-mint-rate-limit case 9, on the key proof): the App's installations are refused
 // until a reset a minute ahead, and run returns nil within a second of the stop.
 func TestABootStoppedWhileItWaitsOutARateLimitEndsAtOnce(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	var reset atomic.Int64
 	tokens, _ := appTokensWith(t, discoveredOnAcme, spentUntil(time.Minute, &reset, keyProofRead))

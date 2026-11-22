@@ -82,6 +82,7 @@ func TestTheTmuxBootGateRefusesARoleOverlayOhMyPiCannotParse(t *testing.T) {
 // The gate boot builds for a tmux daemon (prepare) refuses a role file Oh My Pi cannot parse,
 // before the plugin gate's load probes run, naming the role and the file.
 func TestTheTmuxBootRefusesARoleOverlayOhMyPiCannotParse(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	t.Setenv("LEGION_TEST_PG_DSN", "postgres://legion:legion@127.0.0.1:1/legion?sslmode=disable&connect_timeout=1")
 	dir := t.TempDir()
 	omp := filepath.Join(dir, "omp")

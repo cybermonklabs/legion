@@ -269,6 +269,7 @@ func TestTheImageProbeRequiresTheRolePromptsReferences(t *testing.T) {
 // A relative plugin root is the one the caller's working directory names: the probe hands Oh My Pi
 // each directory, absolute, and holds what it loaded to those directories' manifests.
 func TestTheImageProbeResolvesARelativePluginRoot(t *testing.T) {
+	// Not parallel: it changes the whole process's working directory.
 	f := newImageOmp(t, []string{"available"}, []string{"yes"}, []string{"refuses"})
 	home := imageHome(t, contractCurrent)
 	t.Chdir(home)

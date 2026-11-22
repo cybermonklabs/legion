@@ -496,6 +496,7 @@ func TestTheGateRefusesAManifestItCannotRead(t *testing.T) {
 // prefix, under the pane's environment and nothing of the daemon's own. A pass is logged in the
 // words the e2e stages grep for, naming the Envoy plugin's interface and where it loaded from.
 func TestTheLoadProbeRunsWhatAPaneRunsAndPassesOnTheLoadedMarker(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	f := newFakeOmp(t, "yes")
 	gate, logged := gateUnder(t, f, contractCurrent)
 	t.Setenv("LEGION_DAEMON_ONLY_SECRET", "the daemon's own")
@@ -915,6 +916,7 @@ func TestTheLoadProbeStopsWithTheDaemon(t *testing.T) {
 // stops cleanly, having served nothing. The plugin is held to this daemon's own number, so the
 // contract below it — the one the previous release pins — is refused like any other.
 func TestRunGatesThePluginUnderThePaneEnvironmentBeforeItBoots(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	// The daemon holds the plugin to its own DaemonAPIVersion.
 	thisDaemons := `{"daemonApiVersion":` + strconv.Itoa(api.DaemonAPIVersion) + `}`
 	previous := strconv.Itoa(api.DaemonAPIVersion - 1)
@@ -965,6 +967,7 @@ func TestRunGatesThePluginUnderThePaneEnvironmentBeforeItBoots(t *testing.T) {
 // The tmux gate asks the load probe for the skills and task agents the daemon's role prompts name,
 // beside the plugin's own: legion-controller is loaded by roles/controller-root.md alone.
 func TestTheTmuxGateAsksForWhatTheRolePromptsName(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	cfg := testConfig(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -1000,6 +1003,7 @@ func TestTheTmuxGateAsksForWhatTheRolePromptsName(t *testing.T) {
 // resolves under the gate as it will in a pane. The daemon's own value of the variable, which no
 // pane carries, never reaches the probe.
 func TestTheGateProbesWithTheProviderKeysAPaneGets(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	cfg := testConfig(t)
 	cfg.ProviderKeys = []config.ProviderKey{{Env: "GEMINI_API_KEY", Secret: "GEMINI_API_KEY_TESTS"}}
 	stub := t.TempDir()

@@ -150,6 +150,7 @@ func TestTwoIssuesOnOneRecordedRepositoryMakeOneSetOfReads(t *testing.T) {
 // repository again of its own until GitHub answers, then recovers the issue from Dispatch's
 // listing and admits it on it — with nobody moving the issue and no restart.
 func TestAnIssueWaitsWhileGitHubHasNotAnsweredForItsRepositoryAndIsAdmittedWhenItDoes(t *testing.T) {
+	// Not parallel: it writes the package variable installReadRetry (quickInstallReads).
 	ctx := context.Background()
 	quickInstallReads(t)
 	installs := &installations{}
@@ -249,6 +250,7 @@ func TestAnIssueLeftUnreadIsAdmittedWhenAnotherIssuesPreparationGetsGitHubsAnswe
 // that GitHub had answered for it again and dropped the wait, and the recovery that followed
 // GitHub's answer told nothing.
 func TestARecoveryGitHubFailsAgainTellsNoArchitectAndKeepsItsReleaseWaits(t *testing.T) {
+	// Not parallel: it writes the package variable installReadRetry (quickInstallReads).
 	quickInstallReads(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement "+strangerRepo)
@@ -299,6 +301,7 @@ func TestARecoveryGitHubFailsAgainTellsNoArchitectAndKeepsItsReleaseWaits(t *tes
 // says then. The marker stood for ever before, and the refresher listed the whole project on its
 // backoff for as long as the daemon ran.
 func TestARepositoryLeftUnreadIsLetGoOnceNoTodoIssueIsLeftOnIt(t *testing.T) {
+	// Not parallel: it writes the package variable installReadRetry (quickInstallReads).
 	quickInstallReads(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement "+strangerRepo)
@@ -344,6 +347,7 @@ func TestARepositoryLeftUnreadIsLetGoOnceNoTodoIssueIsLeftOnIt(t *testing.T) {
 // architect, whose release_children had answered that the child was released, heard nothing at
 // all.
 func TestLettingARepositoryGoTellsTheArchitectOfTheChildrenNothingWillRecord(t *testing.T) {
+	// Not parallel: it writes the package variable installReadRetry (quickInstallReads).
 	quickInstallReads(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement "+strangerRepo)

@@ -2084,6 +2084,7 @@ func TestRunStopsWithTheErrorWhenItsIntakeEnds(t *testing.T) {
 // the outage, not just the adapter TestReadinessAttempt (readiness_test.go) already covers in
 // isolation.
 func TestRunWaitsThroughADispatch503BeforeServing(t *testing.T) {
+	// Not parallel: it writes the package variable readinessRetry (fastReadiness).
 	fastReadiness(t, bootprobe.Retry{Initial: time.Millisecond, Max: 4 * time.Millisecond})
 	natsURL := workflowNATS(t)
 	var requests atomic.Int64

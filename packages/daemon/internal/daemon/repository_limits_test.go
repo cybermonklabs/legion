@@ -795,6 +795,7 @@ func TestARateLimitedDefaultBranchReadDeliversTheEventAgainAfterGitHubsWait(t *t
 // maximum (c-boot-mint-rate-limit case 10, the maximum shortened to 5 s): an event's preparation
 // whose read a 429 refuses, asking for 17 s, is delivered again after 17 s, not 5 s.
 func TestAnEventsDefaultBranchReadAfterTheStartStillWaitsTheRetryAfterGitHubNames(t *testing.T) {
+	// Not parallel: it writes the package variable startRateLimits (withStartRateLimits).
 	withStartRateLimits(t, func(policy *rateLimitPolicy) { policy.Max = 5 * time.Second })
 	github := newLimitedGitHub(t, limitedBoth, func(w http.ResponseWriter, _ string, _ int) bool {
 		w.Header().Set("Retry-After", "17")

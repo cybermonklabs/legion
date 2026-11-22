@@ -211,6 +211,7 @@ func TestResolveToolsRefusesAJJOlderThanTheLayoutProvisioningReliesOn(t *testing
 // The jj --version boot runs starts without either raw NATS seed the daemon holds, as every
 // command the daemon starts does (runtime.WithoutNATSSeeds).
 func TestTheJJVersionCheckGetsNoNATSSeed(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	// Unique values, so that only a variable a seed reached can hold one (envlisting).
 	paneSeed, daemonSeed := envlisting.Unique("pane-seed-"), envlisting.Unique("daemon-seed-")
 	t.Setenv("NATS_NKEY_SEED", paneSeed)
