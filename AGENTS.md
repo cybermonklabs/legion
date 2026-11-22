@@ -73,6 +73,7 @@ Each directory below that is marked "guide" has an `AGENTS.md` of its own.
   `main` takes squash merges through GitHub's merge queue, and the title becomes the commit's subject.
 
 - Add the label `full-ci` (the slow suites, on the pull request) only before the approval of a change to `packages/envoy/internal/dispatch/store/migrations/**` or `packages/envoy/internal/pgmigrate/**`, to check a fix for a slow-suite failure that took the pull request out of the queue, while a `ci_check` of the issue names a held-back job, or when a person asks; `ci.yaml` says when to take it off.
+  Where one slow suite is all the work needs, add its `lane:<output>` label instead, such as `lane:envoy_go_race_api`, which turns on that one `changes` output (`.github/ci-notes/ci.md`, "A lane label turns on one slow suite on a pull request").
 
 - A change worth a changelog line adds a changie fragment to each package it changes that `.github/changelog-packages` lists, and never edits a `CHANGELOG.md`:
   a release renders the fragments into its notes.

@@ -837,6 +837,13 @@ go_tagged_tests_test: &go_tagged_tests_test
   - '.github/scripts/go-tagged-tests.test.sh'
   - '.github/scripts/go-tagged-tests.sh'
   - 'packages/envoy/cmd/listener/*_test.go'
+ci_router_outputs_test: &ci_router_outputs_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/ci-router-outputs.test.sh'
+  - '.github/scripts/ci_router_outputs.py'
 ci_ok_test: &ci_ok_test
   - *ci_router
   - *ci_filters_data
@@ -1022,6 +1029,7 @@ test:
   - *repo_paths_test
   - *select_e2e_proofs_test
   - *go_tagged_tests_test
+  - *ci_router_outputs_test
   - *ci_ok_test
   - *ci_ok_report_test
   - *ci_ok_reconcile_test
