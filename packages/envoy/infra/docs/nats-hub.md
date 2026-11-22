@@ -1282,10 +1282,10 @@ rule below holds; 1 when one shows the password may be read; and 2 when it could
 needs, when the log carries no time of the container runtime's, when authorization is not yet in
 force, left no line of the reload that loaded it, or loaded within 10 s of a pod's start, when the
 mesh is not whole or the servers do not hold one password, when a pod's `/routez` still lists a
-route it has closed, with no address, after the check's reads, when a route connection from another
-address named no server or was still open when the log was read, when the log holds no hangup
-that began the reload that loaded authorization, when the log holds a line the server did not
-write, or when a pod changed during the check. It refuses, exit 2, a record whose namespace,
+closing route, with no address, to another hub server after the check's reads, when a route
+connection from another address named no server or was still open when the log was read, when the
+log holds no hangup that began the reload that loaded authorization, when the log holds a line the
+server did not write, or when a pod changed during the check. It refuses, exit 2, a record whose namespace,
 StatefulSet or pod name is not a DNS label, whose pod uid is not a UUID, or whose CA entry is not a
 64-hex SHA-256, naming the field and not its value, since a record file can be edited and the
 check prints those fields unquoted. It prints no password,
@@ -1365,14 +1365,17 @@ reads with `--timestamps`.
   this check looks for can join as `<n>-1` and pass a check of names. Nor is the route's `port`
   6222: `/routez` gives the TCP peer's port, and a route a peer opened comes from an ephemeral
   one, so one server's four routes to another showed four ports. A route with no `ip` is one the
-  server has closed and not yet removed: `/routez` gives the address from the route's socket as it
-  is read (`server/monitor.go:916-921`), and the close drops the socket
-  (`server/client.go:6153-6165`) before the server removes the route (`server/client.go:6333-6335`,
-  `server/server.go:3795-3796`). Such a route is no route from an address outside the hub, so the
-  check reads that `/routez` again, up to six reads in 620 ms, and judges the last; a route with no
-  `ip` still in it is exit 2. A peer that held the closed route since `authorization` is in the log
-  (below). Run 45052294482 of cybermonklabs/legion#4049 read one such route from an impostor whose
-  routes the hub kept closing, and named it a route "from an address that is no pod of the hub: ip ".
+  server is closing: `/routez` gives the address from the route's socket as it is read
+  (`server/monitor.go:916-921`), and closing a route clears its socket
+  (`server/client.go:6153-6165`) while the server goes on to remove the route
+  (`server/client.go:6335`, `server/server.go:3795-3796`). Such a route had passed the route
+  login, since `/routez` lists a route only after `addRoute` (`server/route.go:894`), so the check
+  judges its `remote_id` in each read that lists it: one that is none of the hub's other servers'
+  is exit 1. One that is another hub server's needs its address, so the check reads that
+  `/routez` again, up to six reads with waits of 20 to 320 ms between them, and judges the last; a
+  route with no `ip` still in it is exit 2. Run 45052294482 of cybermonklabs/legion#4049 read
+  envoy-nats-1's own route to an impostor, which the impostor was refusing for its duplicate name,
+  and named it a route "from an address that is no pod of the hub: ip ".
 - **No peer that left had the password.** `/routez` shows only who still holds a route, so a
   process that read the password and then left passes it. The log keeps it: every
   `Route connection created` line (`server/route.go:2104`) names the connection's peer. The rule's
