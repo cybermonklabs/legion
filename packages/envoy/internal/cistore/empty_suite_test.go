@@ -1,15 +1,15 @@
 package cistore
 
 import (
-	"context"
+	"bytes"
 	"encoding/json"
+	"slices"
 	"testing"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
-	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // emptySuiteApps are the Apps of the queued suites with no run one production head carried at
@@ -82,28 +82,28 @@ func TestAQueuedSuiteHoldsAHeadOnlyIfItIsActionsOrOfNoApp(t *testing.T) {
 
 // A record a listener before the change left held by another App's queued suite publishes one
 // settlement at the first summary pass that finds it in the store's copy, with no Record call: a
-// fresh store reads the bucket, and the loop started on it settles the record.
+// fresh store reads the bucket, and the first pass of the summarizer attached to it, as a listener
+// start attaches one (StartSummaryLoop), settles the record. A pass a minute later publishes
+// nothing more.
 func TestARecordHeldByAnEmptySuiteSettlesAtTheFirstPassThatFindsIt(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	h := head{"example-org", "example-repo", "63", "e3b7000000000000000000000000000000000063"}
 	putRecord(t, openStore(t, conn), h, heldBeforeTheChange)
 
-	_, pub := startedListener(t, conn)
-	waitCount(t, pub, 1, "the record held by an empty suite")
-	time.Sleep(20 * startedTick)
-	if got := pub.count(); got != 1 {
-		t.Fatalf("the passes after the start published %d settlements, want 1", got)
-	}
-	if got := pub.last(); got.Topic != checksTopic(h) {
-		t.Fatalf("the first pass published on %s, want %s", got.Topic, checksTopic(h))
-	}
+	r := startedRig(t, conn)
+	first := time.Now().UnixMilli()
+	r.pass(first)
+	wantTopics(t, r.pub, "the first pass", checksTopic(h))
+	r.pass(first + time.Minute.Milliseconds())
+	wantTopics(t, r.pub, "the first pass and a pass a minute later", checksTopic(h))
 }
 
 // The passes after a start publish nothing for a record already settled for its state
-// (settled_emitted), while they settle a held record beside it, which shows they looked at both.
-// A run recorded later re-arms the settled head, and it settles again, once, as a settlement that
-// supersedes the earlier one (superseded_settlement).
+// (settled_emitted), while the first settles a held record beside it, which shows it looked at
+// both. A run recorded later re-arms the settled head, and the next pass settles it again, once,
+// as a settlement that supersedes the earlier one (superseded_settlement); a pass a minute after
+// that publishes nothing.
 func TestASettledHeadIsNotPublishedAgainUntilALaterRun(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
@@ -116,29 +116,27 @@ func TestASettledHeadIsNotPublishedAgainUntilALaterRun(t *testing.T) {
 		st.SettledEmitted, st.EmittedCount = true, 1
 	})
 
-	store, pub := startedListener(t, conn)
-	waitCount(t, pub, 1, "the held head")
-	time.Sleep(20 * startedTick)
-	if got := pub.count(); got != 1 || pub.last().Topic != checksTopic(held) {
-		t.Fatalf("the passes after the start published %d settlements, the last on %s; want only the held head's, on %s", got, pub.last().Topic, checksTopic(held))
-	}
+	r := startedRig(t, conn)
+	first := time.Now().UnixMilli()
+	r.pass(first)
+	wantTopics(t, r.pub, "the first pass", checksTopic(held))
+	second := first + time.Minute.Milliseconds()
+	r.pass(second)
+	wantTopics(t, r.pub, "the first pass and a pass a minute later", checksTopic(held))
 
-	if err := record(store, settled.check("deploy", 804, "completed", "success", "2026-11-22T04:00:00Z")); err != nil {
-		t.Fatalf("record the later run: %v", err)
-	}
-	waitCount(t, pub, 2, "the settled head after a later run")
-	time.Sleep(20 * startedTick)
-	if got := pub.count(); got != 2 {
-		t.Fatalf("the passes after the later run published %d settlements in all, want 2", got)
-	}
-	again := pub.last()
+	r.record(settled.check("deploy", 804, "completed", "success", "2026-11-22T04:00:00Z"))
+	third := max(second, cachedAsStored(t, r.store, settled).LastEventAt) + time.Minute.Milliseconds()
+	r.pass(third)
+	wantTopics(t, r.pub, "the passes up to the first after the later run", checksTopic(held), checksTopic(settled))
 	var sum Summary
-	if err := json.Unmarshal([]byte(again.Payload), &sum); err != nil {
+	if err := json.Unmarshal([]byte(r.pub.last().Payload), &sum); err != nil {
 		t.Fatalf("decode the settlement: %v", err)
 	}
-	if again.Topic != checksTopic(settled) || sum.SupersededSettlement != "true" {
-		t.Fatalf("the later run's settlement is on %s with superseded_settlement %q, want %s and \"true\"", again.Topic, sum.SupersededSettlement, checksTopic(settled))
+	if sum.SupersededSettlement != "true" {
+		t.Fatalf("the later run's settlement has superseded_settlement %q, want \"true\"", sum.SupersededSettlement)
 	}
+	r.pass(third + time.Minute.Milliseconds())
+	wantTopics(t, r.pub, "the passes up to a minute after the later run's settlement", checksTopic(held), checksTopic(settled))
 }
 
 // A head that settled and then was re-armed by a rerequested delivery before the change, which
@@ -229,30 +227,33 @@ func putRecord(t *testing.T, s *Store, h head, edit func(st *State)) {
 	})
 }
 
-// startedTick is the summary loop's tick in the start tests.
-const startedTick = 20 * time.Millisecond
-
-// startedListener starts a listener's CI store and summary loop on conn's bucket, as a listener
-// start does: the store reads the bucket whole, then the loop starts, and the loop ends with the
-// test. It answers the store and what the loop publishes.
-func startedListener(t *testing.T, conn *natsgo.Conn) (*Store, *recPub) {
+// startedRig opens a fresh store on conn's bucket and attaches a summarizer to it, as a listener
+// start does (StartSummaryLoop): the store reads the bucket whole, then the attach counts every
+// record the store read as changed (attachSummary). The test runs each pass itself (heldRig.pass)
+// at the time it gives, so it counts what each pass published once that pass has returned.
+func startedRig(t *testing.T, conn *natsgo.Conn) *heldRig {
 	t.Helper()
 	store := openStore(t, conn)
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	pub := &recPub{}
-	StartSummaryLoop(ctx, store, pub, heldDebounce, startedTick, metrics.New().NewGauge("held", ""), logging.New("test"))
-	return store, pub
+	logs := &bytes.Buffer{}
+	return &heldRig{
+		t:      t,
+		store:  store,
+		z:      testSummarizer(store, heldDebounce),
+		pub:    &recPub{},
+		logs:   logs,
+		logger: logging.NewWithWriter("test", logs),
+	}
 }
 
-// waitCount waits up to five seconds for pub to have published n settlements.
-func waitCount(t *testing.T, pub *recPub, n int, what string) {
+// wantTopics fails unless pub has published one settlement on each of topics, in that order, and
+// no other; what names the passes run so far.
+func wantTopics(t *testing.T, pub *recPub, what string, topics ...string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for pub.count() < n {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: %d settlements published within 5 s, want %d", what, pub.count(), n)
-		}
-		time.Sleep(startedTick)
+	got := make([]string, 0, len(topics))
+	for _, published := range pub.all() {
+		got = append(got, published.Topic)
+	}
+	if !slices.Equal(got, topics) {
+		t.Fatalf("%s: settlements published on %q, want %q", what, got, topics)
 	}
 }
