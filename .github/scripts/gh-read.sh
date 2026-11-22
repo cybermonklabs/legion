@@ -138,7 +138,7 @@ gh_wait_reset() {
       pause=$((wake > now ? wake - now : 0))
       if [ "$pause" -gt 0 ]; then
         echo "::warning::$until; waiting $pause s for it, within this $why's limit at $(_gh_read_utc "$deadline"), then calling once more" >&2
-        sleep "$pause"
+        sleep "$pause" & # CONTROL: the helper does not wait for its sleep
       fi
       status=0
       _gh_read_run "$dir" "$@" || status=$?
