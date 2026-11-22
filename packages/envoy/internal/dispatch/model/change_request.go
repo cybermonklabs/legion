@@ -45,15 +45,19 @@ type SpecOutcomesRecordedEventPayload struct {
 
 // ChangeRequestNode is one node a change request proposes, or one check it changes: its id, its
 // kind, how it stands to the approved spec, the approved version its writer read (0 for none), the
-// approved spec's current version of it (0 where it holds none), and the block it is read from,
-// `<document>#<block>`.
+// approved spec's current version of it (0 where it holds none), the block it is read from,
+// `<document>#<block>`, that block's text as the version holds it, and the approved spec's current
+// version of the node as The Spec's files print it ("" where it holds none or removed it): what an
+// approval of the request replaces or removes.
 type ChangeRequestNode struct {
-	ID      string `json:"id"`
-	Kind    string `json:"kind" enum:"statement,component,interface,check"`
-	What    string `json:"what" enum:"added,changed,removed,stale"`
-	Base    int    `json:"base"`
-	Current int    `json:"current"`
-	Block   string `json:"block"`
+	ID           string `json:"id"`
+	Kind         string `json:"kind" enum:"statement,component,interface,check"`
+	What         string `json:"what" enum:"added,changed,removed,stale"`
+	Base         int    `json:"base"`
+	Current      int    `json:"current"`
+	Block        string `json:"block"`
+	Text         string `json:"text"`
+	ApprovedText string `json:"approved_text"`
 }
 
 // ChangeRequestProblem is one fault of a block of a change request: the block, the rule it breaks
@@ -107,14 +111,17 @@ type SpecFinalList struct {
 // ChangeRequestRead is the change request of an issue at a version of its spec: whether its
 // repository is a spec source of its project, what it proposes against that repository's approved
 // spec (statements, components and interfaces) and which approved checks its Verification
-// document changes, each fault of its blocks, its conclusion, and the judgment of that conclusion
-// against the final list it read.
+// document changes, each fault of its blocks, its conclusion, the judgment of that conclusion
+// against the final list it read, and the digest a person's approval of the spec version and of the
+// Verification version pins (artifact_version_text_sha256; "" for no Verification version).
 type ChangeRequestRead struct {
 	Issue               string                        `json:"issue"`
 	Version             int                           `json:"version"`
 	SpecSource          bool                          `json:"spec_source"`
 	Repo                string                        `json:"repo"`
 	VerificationVersion int                           `json:"verification_version"`
+	Digest              string                        `json:"digest"`
+	VerificationDigest  string                        `json:"verification_digest"`
 	Proposes            bool                          `json:"proposes"`
 	ChangesChecks       bool                          `json:"changes_checks"`
 	Proposals           []ChangeRequestNode           `json:"proposals"`

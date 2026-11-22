@@ -53,7 +53,8 @@ type Block struct {
 
 // Proposal is one node of The Spec a request holds: its id, its kind, the node as specgraph holds
 // it (a specgraph.Statement, specgraph.Check or specgraph.Component), the approved version its
-// writer read (0 for none), whether it asks for the node's removal, and the block it was read from.
+// writer read (0 for none), whether it asks for the node's removal, the block it was read from,
+// and that block's text as its document holds it, which a person reads before approving it.
 type Proposal struct {
 	ID      string
 	Kind    string
@@ -61,6 +62,7 @@ type Proposal struct {
 	Base    int
 	Removes bool
 	Block   string
+	Text    string
 }
 
 // Request is an issue's change request: each node it holds, in the order of its blocks, and each
@@ -168,7 +170,7 @@ func fromBlock(block Block) (Proposal, []specgraph.Problem, bool) {
 		return Proposal{}, nil, false
 	}
 	id := attrText(attrs, pmdoc.BlockIDAttr)
-	proposal := Proposal{ID: id, Block: block.Address, Removes: attrText(attrs, "removes") == "true"}
+	proposal := Proposal{ID: id, Block: block.Address, Text: block.Text, Removes: attrText(attrs, "removes") == "true"}
 	if base := attrText(attrs, "base"); base != "" {
 		number, err := strconv.Atoi(base)
 		if err != nil || number < 1 {

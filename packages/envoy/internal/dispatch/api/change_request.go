@@ -460,6 +460,11 @@ func (s *server) readChangeRequest(ctx context.Context, q queryer, key string, v
 		Proposals: []model.ChangeRequestNode{}, ChangedChecks: []model.ChangeRequestNode{}, Problems: []model.ChangeRequestProblem{},
 		JudgmentReasons: []model.ChangeRequestJudgmentReason{},
 	}
+	// The digest a person's approval of this version pins, read from the function the review
+	// trigger pins it with, so the page restates no digest the approval does not pin (R22).
+	if read.Digest, err = versionDigest(ctx, q, spec.ID, version); err != nil {
+		return changeRequestState{}, err
+	}
 	verification, verified, err := s.verificationDocument(ctx, q, issue.Key, "")
 	if err != nil {
 		return changeRequestState{}, err
@@ -467,6 +472,11 @@ func (s *server) readChangeRequest(ctx context.Context, q queryer, key string, v
 	if verified {
 		if read.VerificationVersion, err = settledVersionNumber(ctx, q, verification.ID); err != nil {
 			return changeRequestState{}, err
+		}
+		if read.VerificationVersion > 0 {
+			if read.VerificationDigest, err = versionDigest(ctx, q, verification.ID, read.VerificationVersion); err != nil {
+				return changeRequestState{}, err
+			}
 		}
 	}
 	approved := func(string) bool { return false }
@@ -557,17 +567,32 @@ func proposalsOf(read *model.ChangeRequestRead, request specchange.Request, appr
 		}
 		return 0
 	}
-	add := func(kind string, node model.ChangeRequestNode) {
+	add := func(kind string, node model.ChangeRequestNode) error {
+		// What an approval replaces or removes: the approved spec's current version as The
+		// Spec's files print it, "" where it holds none or removed the node.
+		if history := state.Nodes[node.ID]; history != nil {
+			if version := history.Current(); version != nil {
+				block, err := version.Block()
+				if err != nil {
+					return err
+				}
+				node.ApprovedText = block
+			}
+		}
 		if kind == specchange.KindCheck {
 			read.ChangedChecks = append(read.ChangedChecks, node)
-			return
+			return nil
 		}
 		read.Proposals = append(read.Proposals, node)
+		return nil
 	}
 	for _, proposal := range request.Proposals {
 		if node, isStale := staleOf[proposal.ID]; isStale {
 			delete(staleOf, proposal.ID)
-			add(proposal.Kind, model.ChangeRequestNode{ID: proposal.ID, Kind: proposal.Kind, What: "stale", Base: node.Base, Current: node.Current, Block: proposal.Block})
+			if err := add(proposal.Kind, model.ChangeRequestNode{ID: proposal.ID, Kind: proposal.Kind, What: "stale", Base: node.Base, Current: node.Current,
+				Block: proposal.Block, Text: proposal.Text}); err != nil {
+				return err
+			}
 			continue
 		}
 		change, held := changed[proposal.ID]
@@ -575,7 +600,10 @@ func proposalsOf(read *model.ChangeRequestRead, request specchange.Request, appr
 			continue
 		}
 		delete(changed, proposal.ID)
-		add(change.Kind, model.ChangeRequestNode{ID: change.ID, Kind: change.Kind, What: change.What, Base: change.Base, Current: current(change.ID), Block: change.Block})
+		if err := add(change.Kind, model.ChangeRequestNode{ID: change.ID, Kind: change.Kind, What: change.What, Base: change.Base, Current: current(change.ID),
+			Block: change.Block, Text: change.Text}); err != nil {
+			return err
+		}
 	}
 	for _, problem := range append(slices.Clone(request.Problems), problems...) {
 		read.Problems = append(read.Problems, model.ChangeRequestProblem{Block: problem.Pos.File, Rule: problem.Rule, Detail: problem.Detail})
