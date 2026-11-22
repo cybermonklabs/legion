@@ -31,11 +31,12 @@ const (
 )
 
 // specDispatch is Dispatch's change-request routes as a case sets them: the change request of
-// each issue it answers (none for a route an older Dispatch lacks), the ending it answers, or
-// endingErr in its place, with each read counted.
+// each issue it answers (none for a route an older Dispatch lacks), or changeErr in its place, the
+// ending it answers, or endingErr in its place, with each read counted.
 type specDispatch struct {
 	outboxDispatch
 	changeRequests map[string]dispatch.ChangeRequest
+	changeErr      error
 	changeReads    []string
 	ending         *dispatch.SpecEnding
 	endingErr      error
@@ -44,6 +45,9 @@ type specDispatch struct {
 
 func (d *specDispatch) ChangeRequest(ctx context.Context, key string, version int) (dispatch.ChangeRequest, error) {
 	d.changeReads = append(d.changeReads, fmt.Sprintf("%s@%d", key, version))
+	if d.changeErr != nil {
+		return dispatch.ChangeRequest{}, d.changeErr
+	}
 	answer, ok := d.changeRequests[key]
 	if !ok {
 		return d.outboxDispatch.ChangeRequest(ctx, key, version)
@@ -221,6 +225,42 @@ type failingChangeRequest struct{ *specDispatch }
 
 func (failingChangeRequest) ChangeRequest(context.Context, string, int) (dispatch.ChangeRequest, error) {
 	return dispatch.ChangeRequest{}, &dispatch.Error{Status: 502, Message: "bad gateway"}
+}
+
+// A read of the change request Dispatch refuses for good — a version whose text does not parse
+// (409 CHANGE_REQUEST_UNREADABLE), or a version it does not hold (404 VERSION_NOT_FOUND) — is a
+// version no read will ever show as proposing nothing. The gate seed applies it unread, so an
+// exempt gate closes as it does on a version an older Dispatch could not read, and the live
+// event's preparation carries no read and fails nothing, so the event is not delivered again for
+// ever.
+func TestAVersionWhoseChangeRequestDispatchRefusesForGoodClosesTheGate(t *testing.T) {
+	for _, refusal := range []*dispatch.Error{
+		{Status: 409, Code: "CHANGE_REQUEST_UNREADABLE", Message: "version 4 of the spec does not parse"},
+		{Status: 404, Code: "VERSION_NOT_FOUND", Message: "the spec holds no version 4"},
+	} {
+		t.Run(refusal.Code, func(t *testing.T) {
+			r := newExemptGateRig(t, phase.Planning, record.GateRuleChangeRequest)
+			r.client.approval = dispatch.Approval{State: "none", LatestVersion: 4}
+			r.client.changeErr = refusal
+			if err := r.runner.execute(context.Background(), mustOutboxRow(t, specGateRoot,
+				record.GateSeed{ArtifactID: "the-roots-spec", Step: record.DesignStepSpec, Version: 3, Generation: 1}, time.Now())); err != nil {
+				t.Fatalf("the gate seed under a refused read = %v, want the version applied unread", err)
+			}
+			if gate := r.gate(); gate.LatestVersion != 4 || record.GateOpen(gate) {
+				t.Fatalf("the gate after the seed = %+v, want version 4 closed", gate)
+			}
+
+			w := &workflowRuntime{pool: r.pool, records: r.records, dispatch: r.client, log: quietLogger()}
+			version := intake.DispatchArtifact{Key: specGateRoot, ArtifactID: "the-roots-spec", Kind: intake.DispatchArtifactVersion, Version: 4}
+			got, err := w.prepareArtifact(context.Background(), version)
+			if err != nil || got.ChangeRequest != nil {
+				t.Fatalf("prepareArtifact under a refused read = %+v, %v; want no read carried and no failure", got.ChangeRequest, err)
+			}
+			if len(r.client.changeReads) != 2 {
+				t.Fatalf("change request reads = %q, want one by the seed and one by the preparation", r.client.changeReads)
+			}
+		})
+	}
 }
 
 // The outbox's read of the ending condition applies what Dispatch answered for the head it names
