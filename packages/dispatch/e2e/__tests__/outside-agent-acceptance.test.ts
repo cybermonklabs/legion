@@ -421,6 +421,17 @@ async function runStandIns(...standIns: StandIns[]): Promise<StandInRun[]> {
   return Promise.all(prepared.map(runStandIn));
 }
 
+/** The squatter's pid, the first line `squat`'s shell prints: a whole number above 0, or a throw
+ *  that names what was printed. Never 0 or below, which `process.kill` reads as this process's
+ *  whole group or as every process it may signal, so no kill is sent on a pid this cannot read. */
+function squatterPid(printed: string): number {
+  const first = printed.trim().split("\n")[0] ?? "";
+  const pid = /^[0-9]+$/.test(first) ? Number(first) : 0;
+  if (pid <= 0)
+    throw new Error(`the squatter's pid could not be read from ${JSON.stringify(first)}`);
+  return pid;
+}
+
 /** Starts a process that binds `port` and answers there as another run's stand-in Dispatch does
  *  (`/_ready` "ready", /healthz commit `another-run`), and waits until it answers there; returns
  *  the squatter's pid, or stops it and throws. The squatter tries the port for at most 10 s by the
@@ -438,7 +449,7 @@ function squat(port: number): number {
     squatter,
     String(port),
   ]);
-  const pid = Number(started.stdout.toString().trim().split("\n")[0]);
+  const pid = squatterPid(started.stdout.toString());
   if (!started.success) {
     try {
       process.kill(pid, "SIGKILL");
@@ -506,6 +517,46 @@ describe.skipIf(skipWithout("bash", "curl", "git", "bun"))(
         timeout: 20_000,
       }
     );
+
+    test("squat throws on a squatter pid it cannot read, before any kill: an empty line, 0 and -1 are refused, and a whole number above 0 is read", () => {
+      // squat's shell stands in printing each line as its pid and failing, which is the path that
+      // kills the squatter; process.kill records every signal it is asked to send and sends none.
+      const spawnSync = Bun.spawnSync;
+      const kill = process.kill;
+      const sent: unknown[] = [];
+      const read: unknown[] = [];
+      process.kill = ((pid: number, signal?: string | number) => {
+        sent.push([pid, signal]);
+        return true;
+      }) as typeof process.kill;
+      try {
+        for (const printed of ["", "\n", "0\n", "-1\n"]) {
+          Bun.spawnSync = (() => ({
+            stdout: Buffer.from(printed),
+            success: false,
+          })) as unknown as typeof Bun.spawnSync;
+          try {
+            read.push(squat(1));
+          } catch (error) {
+            read.push(String(error));
+          }
+        }
+        read.push(squatterPid("4242\n"));
+      } finally {
+        Bun.spawnSync = spawnSync;
+        process.kill = kill;
+      }
+      expect({ read, sent }).toEqual({
+        read: [
+          `Error: the squatter's pid could not be read from ""`,
+          `Error: the squatter's pid could not be read from ""`,
+          `Error: the squatter's pid could not be read from "0"`,
+          `Error: the squatter's pid could not be read from "-1"`,
+          4242,
+        ],
+        sent: [],
+      });
+    });
 
     test(
       "the squat's wait is held by the clock: on a port that takes connections and never answers, it gives up within 15 s",
