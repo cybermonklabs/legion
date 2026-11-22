@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test"
+import { beforeEach, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { createServer, type Socket } from "node:net"
 import { tmpdir } from "node:os"
@@ -13,11 +13,13 @@ import { PHASE_HOOK_TOOL_NAME } from "../src/legion-phase-hook"
 import { waitFor } from "./channel-session-harness"
 import { FakeNatsServer } from "./fake-nats-server"
 import { connectedToServer } from "./mcp-connect"
-import { PROCESS_WAIT_MS, ROW_TIMEOUT_MS } from "./reopen-server"
+import { rowStarted, untilTheGuard } from "./row-deadline"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 const SESSION = "6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
+
+beforeEach(rowStarted)
 
 async function daemonFixture(name: string): Promise<Record<string, unknown>> {
   const file = resolve(import.meta.dir, "../../contracts/fixtures/daemon-api", name)
@@ -29,252 +31,249 @@ async function daemonFixture(name: string): Promise<Record<string, unknown>> {
 // environment. It registers once the transcript exists, claims the claim token's role, says
 // ready, offers the `legion` tool beside the Envoy tools, advertises the Send (steer) the bridge
 // serves, and hands an Envoy delivery to the inbox. The server runs with Bun's transpiler cache off
-// (`./transpiler-cache.ts`), and each wait on it has `PROCESS_WAIT_MS` as its last resort inside the
-// row's `ROW_TIMEOUT_MS`, where a fixed 20 s and 5 s waits stood before: the start that writes that
+// (`./transpiler-cache.ts`), and each wait on it gives up, by name, 5 s inside the row's 60 s hang
+// guard (`untilTheGuard`, `./row-deadline.ts`), where a fixed 20 s and 5 s waits stood before: the
+// start that writes that
 // cache into an empty HOME first is what failed the other server rows (`envoy-channel-mcp.test.ts`).
-test(
-  "a Legion pane's server registers on its transcript, claims its role, serves the legion tool and delivers through the inbox",
-  async () => {
-    const root = await mkdtemp(join(tmpdir(), "claude-envoy-legion-pane-"))
-    const configDir = join(root, "claude")
-    const registered = await daemonFixture("register.json")
-    const claimToken = String(registered["claimToken"])
-    const daemonCalls: { path: string; body: unknown }[] = []
-    const daemon = Bun.serve({
-      port: 0,
-      fetch: async (request) => {
-        const path = new URL(request.url).pathname
-        daemonCalls.push({
-          path,
-          body: request.method === "GET" ? undefined : await request.json(),
+test("a Legion pane's server registers on its transcript, claims its role, serves the legion tool and delivers through the inbox", async () => {
+  const root = await mkdtemp(join(tmpdir(), "claude-envoy-legion-pane-"))
+  const configDir = join(root, "claude")
+  const registered = await daemonFixture("register.json")
+  const claimToken = String(registered["claimToken"])
+  const daemonCalls: { path: string; body: unknown }[] = []
+  const daemon = Bun.serve({
+    port: 0,
+    fetch: async (request) => {
+      const path = new URL(request.url).pathname
+      daemonCalls.push({
+        path,
+        body: request.method === "GET" ? undefined : await request.json(),
+      })
+      if (path === "/legion/v1/claims/register") return Response.json(registered)
+      if (path === "/legion/v1/claims/ready") return new Response(null, { status: 204 })
+      if (path === "/legion/v1/state") return Response.json(await daemonFixture("state.json"))
+      // `read_record` and the reminder's record check read one issue's record
+      // (dispatch://INFRA-2694).
+      if (path === "/legion/v1/issues/LEGION-208/record") {
+        const state = (await daemonFixture("state.json")) as { issues: Record<string, unknown> }
+        return Response.json(state.issues["LEGION-208"])
+      }
+      return Response.json({ error: "unexpected" }, { status: 500 })
+    },
+  })
+  const roles: unknown[] = []
+  const advertised: unknown[] = []
+  /** The client instance each registration carried: the process the pane's claim must name. */
+  const instances: Array<string | undefined> = []
+  const holders = new Map<string, string>()
+  const listener = Bun.serve({
+    port: 0,
+    fetch: async (request) => {
+      const url = new URL(request.url)
+      const interest = { session_id: SESSION, machine_id: "test", dir: root, topics: [] }
+      if (request.method === "POST" && url.pathname === "/v1/interests/subscribe") {
+        const registration = (await request.json()) as {
+          readonly capabilities?: unknown
+          readonly client_instance_id?: string
+        }
+        advertised.push(registration.capabilities)
+        instances.push(registration.client_instance_id)
+        // Every accepted registration is answered with the session's own consumer.
+        return Response.json({
+          ...interest,
+          delivery: consumerDelivery(SESSION),
         })
-        if (path === "/legion/v1/claims/register") return Response.json(registered)
-        if (path === "/legion/v1/claims/ready") return new Response(null, { status: 204 })
-        if (path === "/legion/v1/state") return Response.json(await daemonFixture("state.json"))
-        // `read_record` and the reminder's record check read one issue's record
-        // (dispatch://INFRA-2694).
-        if (path === "/legion/v1/issues/LEGION-208/record") {
-          const state = (await daemonFixture("state.json")) as { issues: Record<string, unknown> }
-          return Response.json(state.issues["LEGION-208"])
-        }
-        return Response.json({ error: "unexpected" }, { status: 500 })
-      },
+      }
+      if (request.method === "POST" && url.pathname === "/v1/roles/set") {
+        const claim = (await request.json()) as { session_id: string; role: string }
+        roles.push(claim)
+        holders.set(claim.role, claim.session_id)
+        return Response.json(interest)
+      }
+      const role = /^\/v1\/roles\/(.+)$/.exec(url.pathname)?.[1]
+      const holder = role === undefined ? undefined : holders.get(decodeURIComponent(role))
+      if (request.method === "GET" && role !== undefined && holder !== undefined) {
+        return Response.json({ role: decodeURIComponent(role), holder, last_seen: 1 })
+      }
+      if (request.method === "DELETE") return new Response(null, { status: 200 })
+      return Response.json({ error: "not found" }, { status: 404 })
+    },
+  })
+  const broker = new FakeNatsServer()
+  const inboxLines: { id: string; content: string }[] = []
+  const inboxPath = join(root, "inbox.sock")
+  const inbox = createServer((socket: Socket) => {
+    let buffered = ""
+    socket.setEncoding("utf8")
+    socket.on("data", (chunk: string) => {
+      buffered += chunk
+      for (let end = buffered.indexOf("\n"); end >= 0; end = buffered.indexOf("\n")) {
+        const line = JSON.parse(buffered.slice(0, end)) as { id: string; content: string }
+        buffered = buffered.slice(end + 1)
+        inboxLines.push(line)
+        socket.write(`${JSON.stringify({ id: line.id, ok: true })}\n`)
+      }
     })
-    const roles: unknown[] = []
-    const advertised: unknown[] = []
-    /** The client instance each registration carried: the process the pane's claim must name. */
-    const instances: Array<string | undefined> = []
-    const holders = new Map<string, string>()
-    const listener = Bun.serve({
-      port: 0,
-      fetch: async (request) => {
-        const url = new URL(request.url)
-        const interest = { session_id: SESSION, machine_id: "test", dir: root, topics: [] }
-        if (request.method === "POST" && url.pathname === "/v1/interests/subscribe") {
-          const registration = (await request.json()) as {
-            readonly capabilities?: unknown
-            readonly client_instance_id?: string
-          }
-          advertised.push(registration.capabilities)
-          instances.push(registration.client_instance_id)
-          // Every accepted registration is answered with the session's own consumer.
-          return Response.json({
-            ...interest,
-            delivery: consumerDelivery(SESSION),
-          })
-        }
-        if (request.method === "POST" && url.pathname === "/v1/roles/set") {
-          const claim = (await request.json()) as { session_id: string; role: string }
-          roles.push(claim)
-          holders.set(claim.role, claim.session_id)
-          return Response.json(interest)
-        }
-        const role = /^\/v1\/roles\/(.+)$/.exec(url.pathname)?.[1]
-        const holder = role === undefined ? undefined : holders.get(decodeURIComponent(role))
-        if (request.method === "GET" && role !== undefined && holder !== undefined) {
-          return Response.json({ role: decodeURIComponent(role), holder, last_seen: 1 })
-        }
-        if (request.method === "DELETE") return new Response(null, { status: 200 })
-        return Response.json({ error: "not found" }, { status: 404 })
-      },
-    })
-    const broker = new FakeNatsServer()
-    const inboxLines: { id: string; content: string }[] = []
-    const inboxPath = join(root, "inbox.sock")
-    const inbox = createServer((socket: Socket) => {
-      let buffered = ""
-      socket.setEncoding("utf8")
-      socket.on("data", (chunk: string) => {
-        buffered += chunk
-        for (let end = buffered.indexOf("\n"); end >= 0; end = buffered.indexOf("\n")) {
-          const line = JSON.parse(buffered.slice(0, end)) as { id: string; content: string }
-          buffered = buffered.slice(end + 1)
-          inboxLines.push(line)
-          socket.write(`${JSON.stringify({ id: line.id, ok: true })}\n`)
-        }
-      })
-    })
-    await new Promise<void>((listening) => inbox.listen(inboxPath, listening))
-    await mkdir(configDir, { recursive: true })
-    const tokenFile = join(root, "boot-token")
-    const bootToken = fixtureSecret("boot")
-    await writeFile(tokenFile, `${bootToken}\n`)
+  })
+  await new Promise<void>((listening) => inbox.listen(inboxPath, listening))
+  await mkdir(configDir, { recursive: true })
+  const tokenFile = join(root, "boot-token")
+  const bootToken = fixtureSecret("boot")
+  await writeFile(tokenFile, `${bootToken}\n`)
 
-    const client = new Client({ name: "test", version: "0" })
-    const transport = new StdioClientTransport({
-      command: "bun",
-      args: [entry],
-      cwd: root,
-      env: {
-        PATH: process.env["PATH"] ?? "",
-        HOME: root,
-        ENVOY_NATS_URL: broker.url,
-        ENVOY_URL: `http://127.0.0.1:${listener.port}`,
-        CLAUDE_CODE_SESSION_ID: SESSION,
-        CLAUDE_CONFIG_DIR: configDir,
-        CLAUDE_PLUGIN_DATA: join(root, "plugin-data"),
-        LEGION_BOOT_TOKEN_FILE: tokenFile,
-        LEGION_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
-        LEGION_CLAUDE_INBOX: inboxPath,
-        // Ten minutes, so the role below can only have been claimed by the turn this case
-        // submits and never by the claim's own bound (INFRA-1573).
-        LEGION_CLAIM_FIRST_TURN_BOUND_MS: "600000",
-        ...NO_TRANSPILER_CACHE,
-      },
-      stderr: "pipe",
-    })
-    let stderr = ""
-    transport.stderr?.on("data", (chunk: Buffer | string) => {
-      stderr += String(chunk)
-    })
+  const client = new Client({ name: "test", version: "0" })
+  const transport = new StdioClientTransport({
+    command: "bun",
+    args: [entry],
+    cwd: root,
+    env: {
+      PATH: process.env["PATH"] ?? "",
+      HOME: root,
+      ENVOY_NATS_URL: broker.url,
+      ENVOY_URL: `http://127.0.0.1:${listener.port}`,
+      CLAUDE_CODE_SESSION_ID: SESSION,
+      CLAUDE_CONFIG_DIR: configDir,
+      CLAUDE_PLUGIN_DATA: join(root, "plugin-data"),
+      LEGION_BOOT_TOKEN_FILE: tokenFile,
+      LEGION_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
+      LEGION_CLAUDE_INBOX: inboxPath,
+      // Ten minutes, so the role below can only have been claimed by the turn this case
+      // submits and never by the claim's own bound (INFRA-1573).
+      LEGION_CLAIM_FIRST_TURN_BOUND_MS: "600000",
+      ...NO_TRANSPILER_CACHE,
+    },
+    stderr: "pipe",
+  })
+  let stderr = ""
+  transport.stderr?.on("data", (chunk: Buffer | string) => {
+    stderr += String(chunk)
+  })
 
-    try {
-      await connectedToServer(client, transport, () => stderr)
-      const { tools } = await client.listTools()
-      expect(tools.map(({ name }) => name)).toEqual([
-        ...envoyToolSpecs.map(({ name }) => name),
-        "legion",
-        "legion_phase_hook",
-      ])
-      await expect(
-        client.callTool({ name: "legion", arguments: { op: "read_record", issue: "LEGION-208" } }),
-      ).rejects.toThrow("this session has no Legion claim yet")
+  try {
+    await connectedToServer(client, transport, () => stderr)
+    const { tools } = await client.listTools()
+    expect(tools.map(({ name }) => name)).toEqual([
+      ...envoyToolSpecs.map(({ name }) => name),
+      "legion",
+      "legion_phase_hook",
+    ])
+    await expect(
+      client.callTool({ name: "legion", arguments: { op: "read_record", issue: "LEGION-208" } }),
+    ).rejects.toThrow("this session has no Legion claim yet")
 
-      // The bridge's /rename seed, as a fresh pane's Claude Code submits it: a prompt before any
-      // claim exists, since the seed is what writes the transcript the pane registers with. It
-      // says a turn started, and the server has no step to run for it yet (INFRA-1573).
-      const seed = await client.callTool({
-        name: PHASE_HOOK_TOOL_NAME,
-        arguments: { event: "UserPromptSubmit", prompt: "/rename legion" },
-      })
-      expect(seed.content).toEqual([{ type: "text", text: "{}" }])
-      const transcript = join(configDir, "projects", "-work", `${SESSION}.jsonl`)
-      await mkdir(join(configDir, "projects", "-work"), { recursive: true })
-      await writeFile(transcript, "{}\n")
-      await waitFor(
-        async () => daemonCalls.some(({ path }) => path === "/legion/v1/claims/ready"),
-        "the pane to say it is ready",
-        () => stderr,
-        PROCESS_WAIT_MS,
-      )
-      expect(daemonCalls).toEqual([
-        {
-          path: "/legion/v1/claims/register",
-          body: {
-            bootToken,
-            sessionId: SESSION,
-            ompSessionFile: transcript,
-            agentId: SESSION,
-            pluginContract: legion.daemonApiVersion,
-          },
+    // The bridge's /rename seed, as a fresh pane's Claude Code submits it: a prompt before any
+    // claim exists, since the seed is what writes the transcript the pane registers with. It
+    // says a turn started, and the server has no step to run for it yet (INFRA-1573).
+    const seed = await client.callTool({
+      name: PHASE_HOOK_TOOL_NAME,
+      arguments: { event: "UserPromptSubmit", prompt: "/rename legion" },
+    })
+    expect(seed.content).toEqual([{ type: "text", text: "{}" }])
+    const transcript = join(configDir, "projects", "-work", `${SESSION}.jsonl`)
+    await mkdir(join(configDir, "projects", "-work"), { recursive: true })
+    await writeFile(transcript, "{}\n")
+    await waitFor(
+      async () => daemonCalls.some(({ path }) => path === "/legion/v1/claims/ready"),
+      "the pane to say it is ready",
+      () => stderr,
+      untilTheGuard(),
+    )
+    expect(daemonCalls).toEqual([
+      {
+        path: "/legion/v1/claims/register",
+        body: {
+          bootToken,
+          sessionId: SESSION,
+          ompSessionFile: transcript,
+          agentId: SESSION,
+          pluginContract: legion.daemonApiVersion,
         },
-        {
-          path: "/legion/v1/claims/ready",
-          body: {
-            claimToken,
-            sessionId: SESSION,
-            secret: registered["secret"],
-            generation: registered["generation"],
-          },
+      },
+      {
+        path: "/legion/v1/claims/ready",
+        body: {
+          claimToken,
+          sessionId: SESSION,
+          secret: registered["secret"],
+          generation: registered["generation"],
         },
-      ])
-      // The seed is behind the pane and it holds no name: the registration and its ready have
-      // run, and only a turn after them takes the Envoy name, so a message the listener kept for
-      // the role is handed over inside a running turn rather than ahead of the daemon's task
-      // (INFRA-1573).
-      expect(roles).toEqual([])
-      const turn = await client.callTool({
-        name: PHASE_HOOK_TOOL_NAME,
-        arguments: { event: "UserPromptSubmit", prompt: "Start implementing" },
-      })
-      expect(turn.content).toEqual([{ type: "text", text: "{}" }])
-      await waitFor(
-        async () => roles.length > 0,
-        "the pane to claim its role at its first turn",
-        () => stderr,
-        PROCESS_WAIT_MS,
-      )
-      // The claim names the process that made it — the one id this server minted and registers
-      // with — so the listener holds the role for this `claude` alone (dispatch://INFRA-783).
-      const instance = instances[0]
-      expect(instance).toMatch(/^[0-9a-f]{32}$/)
-      expect([...new Set(instances)]).toEqual([instance])
-      expect(roles).toEqual([
-        { session_id: SESSION, role: claimToken, soft: true, client_instance_id: instance },
-      ])
-      // Dispatch refuses a mode the session does not advertise, and sends a Send by default: every
-      // registration of the session carries both modes the bridge serves.
-      expect(advertised.length).toBeGreaterThan(0)
-      for (const modes of advertised) expect(modes).toEqual(["aside", "steer"])
+      },
+    ])
+    // The seed is behind the pane and it holds no name: the registration and its ready have
+    // run, and only a turn after them takes the Envoy name, so a message the listener kept for
+    // the role is handed over inside a running turn rather than ahead of the daemon's task
+    // (INFRA-1573).
+    expect(roles).toEqual([])
+    const turn = await client.callTool({
+      name: PHASE_HOOK_TOOL_NAME,
+      arguments: { event: "UserPromptSubmit", prompt: "Start implementing" },
+    })
+    expect(turn.content).toEqual([{ type: "text", text: "{}" }])
+    await waitFor(
+      async () => roles.length > 0,
+      "the pane to claim its role at its first turn",
+      () => stderr,
+      untilTheGuard(),
+    )
+    // The claim names the process that made it — the one id this server minted and registers
+    // with — so the listener holds the role for this `claude` alone (dispatch://INFRA-783).
+    const instance = instances[0]
+    expect(instance).toMatch(/^[0-9a-f]{32}$/)
+    expect([...new Set(instances)]).toEqual([instance])
+    expect(roles).toEqual([
+      { session_id: SESSION, role: claimToken, soft: true, client_instance_id: instance },
+    ])
+    // Dispatch refuses a mode the session does not advertise, and sends a Send by default: every
+    // registration of the session carries both modes the bridge serves.
+    expect(advertised.length).toBeGreaterThan(0)
+    for (const modes of advertised) expect(modes).toEqual(["aside", "steer"])
 
-      const record = await client.callTool({
-        name: "legion",
-        arguments: { op: "read_record", issue: "LEGION-208" },
-      })
-      const state = (await daemonFixture("state.json")) as { issues: Record<string, unknown> }
-      expect(record.content).toEqual([
-        { type: "text", text: JSON.stringify({ record: state.issues["LEGION-208"] }) },
-      ])
-      // A read that leaves `issue` out answers the claim's own issue, LEGION-208 here.
-      const own = await client.callTool({ name: "legion", arguments: { op: "read_record" } })
-      expect(own.content).toEqual(record.content)
+    const record = await client.callTool({
+      name: "legion",
+      arguments: { op: "read_record", issue: "LEGION-208" },
+    })
+    const state = (await daemonFixture("state.json")) as { issues: Record<string, unknown> }
+    expect(record.content).toEqual([
+      { type: "text", text: JSON.stringify({ record: state.issues["LEGION-208"] }) },
+    ])
+    // A read that leaves `issue` out answers the claim's own issue, LEGION-208 here.
+    const own = await client.callTool({ name: "legion", arguments: { op: "read_record" } })
+    expect(own.content).toEqual(record.content)
 
-      // Nothing this pane's server asks the daemon is the whole project body: `read_record` and
-      // the phase reminder's own check both read one issue's record (dispatch://INFRA-2694).
-      expect(daemonCalls.map(({ path }) => path)).toContain("/legion/v1/issues/LEGION-208/record")
-      expect(daemonCalls.map(({ path }) => path)).not.toContain("/legion/v1/state")
+    // Nothing this pane's server asks the daemon is the whole project body: `read_record` and
+    // the phase reminder's own check both read one issue's record (dispatch://INFRA-2694).
+    expect(daemonCalls.map(({ path }) => path)).toContain("/legion/v1/issues/LEGION-208/record")
+    expect(daemonCalls.map(({ path }) => path)).not.toContain("/legion/v1/state")
 
-      // The session receives only what its own consumer holds, which the listener relays to it.
-      broker.deliverRelay(SESSION, {
-        subject: `notifications.agent.${SESSION}`,
-        seq: 1,
-        reply: "_INBOX.legion-1",
-        payload: JSON.stringify({
-          event_id: "evt-legion-1",
-          dedupe_key: "legion-1",
-          source: "agent",
-          source_session: "ses_architect",
-          topic: `notifications.agent.${SESSION}`,
-          issued_at: 1_760_000_000_000,
-          payload_summary: "Start implementing",
-        }),
-      })
-      await waitFor(
-        async () => inboxLines.length > 0,
-        "the delivery to reach the inbox",
-        () => stderr,
-        PROCESS_WAIT_MS,
-      )
-      expect(inboxLines[0]?.id).toBe("evt-legion-1")
-      expect(inboxLines[0]?.content).toContain("Start implementing")
-    } finally {
-      await client.close().catch(() => undefined)
-      inbox.close()
-      daemon.stop(true)
-      listener.stop(true)
-      await broker.stop()
-      await rm(root, { recursive: true, force: true })
-    }
-  },
-  ROW_TIMEOUT_MS,
-)
+    // The session receives only what its own consumer holds, which the listener relays to it.
+    broker.deliverRelay(SESSION, {
+      subject: `notifications.agent.${SESSION}`,
+      seq: 1,
+      reply: "_INBOX.legion-1",
+      payload: JSON.stringify({
+        event_id: "evt-legion-1",
+        dedupe_key: "legion-1",
+        source: "agent",
+        source_session: "ses_architect",
+        topic: `notifications.agent.${SESSION}`,
+        issued_at: 1_760_000_000_000,
+        payload_summary: "Start implementing",
+      }),
+    })
+    await waitFor(
+      async () => inboxLines.length > 0,
+      "the delivery to reach the inbox",
+      () => stderr,
+      untilTheGuard(),
+    )
+    expect(inboxLines[0]?.id).toBe("evt-legion-1")
+    expect(inboxLines[0]?.content).toContain("Start implementing")
+  } finally {
+    await client.close().catch(() => undefined)
+    inbox.close()
+    daemon.stop(true)
+    listener.stop(true)
+    await broker.stop()
+    await rm(root, { recursive: true, force: true })
+  }
+}, 60_000)

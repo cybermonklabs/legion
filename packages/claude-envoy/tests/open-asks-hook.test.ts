@@ -1,10 +1,12 @@
 import { beforeEach, expect, test } from "bun:test"
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { join, relative, resolve } from "node:path"
 import { COMMAND_TIMEOUT_MS } from "@legion/envoy-client/envoy-config"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { JJ_BASE_CHAIN_TIMEOUT_MS, OPEN_ASKS_TIMEOUT_MS } from "../hooks/open-asks-bounds"
+import type { TimedWait } from "./hook-timed-waits"
+import { reachedModules, waitSites } from "./hook-wait-sites"
 import { collected, exitBeforeTheGuard, rowStarted } from "./row-deadline"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 import { unresolvedNames } from "./unresolved-names"
@@ -22,15 +24,15 @@ const DISPATCH_TOKEN = fixtureSecret("dsp")
 beforeEach(rowStarted)
 
 /** Runs the hook as Claude Code does, with `env` as its whole environment (and Bun's transpiler
- * cache off, `./transpiler-cache.ts`) and `preload` given to Bun first where set. The session's
- * cwd is the test's scratch HOME unless the input names one: the hook reads
+ * cache off, `./transpiler-cache.ts`) and `options.preload` given to Bun first where set. The
+ * session's cwd is the test's scratch HOME unless the input names one: the hook reads
  * `<cwd>/.envoy/envoy.json`, so a shared directory's file would become every test's checkout. */
 async function runHook(
   input: Record<string, unknown>,
   env: Record<string, string> & { readonly HOME: string },
-  preload?: string,
+  options: { readonly preload?: string } = {},
 ): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }> {
-  const preloading = preload === undefined ? [] : ["--preload", preload]
+  const preloading = options.preload === undefined ? [] : ["--preload", options.preload]
   const run = Bun.spawn(["bun", ...preloading, hookEntry, "open-asks"], {
     env: { PATH: process.env["PATH"] ?? "", ...NO_TRANSPILER_CACHE, ...env },
     stdin: new TextEncoder().encode(JSON.stringify({ cwd: env.HOME, ...input })),
@@ -159,7 +161,7 @@ test("names an unreachable Dispatch whose password holds an '@' by no part of th
         DISPATCH_URL: `https://user-7f2a:p@ssword${tail}.invalid`,
         DISPATCH_TOKEN,
       },
-      names.preload,
+      { preload: names.preload },
     )
 
     // The hook's error named the password's tail, so the checks below can fail.
@@ -891,9 +893,11 @@ test("single-quotes the chain, so a shell sourcing the file reads a state direct
 // Attribution is worth nothing the session's own start: a jj that never answers costs the pane the
 // export, and neither the two lines the `dispatch` command needs nor the summary. This jj answers,
 // but only at four times the hook's wait for it (`JJ_BASE_CHAIN_TIMEOUT_MS`, 12 s), inside the
-// row's guard: a hook that waits on jj past its bound, by any path, writes its chain into the
-// overlay and the env file, and what the files hold decides the row, not how long the hook took.
-// How long that bound may be is the row below's.
+// row's guard: a hook that waits on jj until it answers writes its chain into the overlay and the
+// env file, and what the files hold decides the row, not how long the hook took. So this row holds
+// only that the hook does not wait for jj to answer: a hook that waits past its bound but gives up
+// before four times it passes here, and fails the census rows after the budget row below, which
+// hold the hook's jj wait to exactly its bound.
 test("gives up on a jj that never answers, keeping the other exports and the summary", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-jj-hangs-"))
   const stateDir = join(scratch, "state")
@@ -996,7 +1000,7 @@ const HOOK_START_ALLOWANCE_MS = 2_000
 // other: jj's config chain, the resolution of Dispatch (a `!` dispatch.token command runs for up
 // to `COMMAND_TIMEOUT_MS`), and the Dispatch read. Their bounds and the start-up must end inside
 // that timeout together: a fact of the constants and the file, which no clock of this machine's
-// could show. The jj rows above hold only that the hook gives up; this row holds when.
+// could show. The rows below hold that the hook's own waits are these and run to these bounds.
 test("the hook's start-up and its jj, token command and Dispatch bounds end inside the timeout hooks.json gives open-asks", async () => {
   const config = JSON.parse(
     await readFile(resolve(import.meta.dir, "..", "hooks", "hooks.json"), "utf8"),
@@ -1015,4 +1019,274 @@ test("the hook's start-up and its jj, token command and Dispatch bounds end insi
   }
   const total = Object.values(spent).reduce((sum, ms) => sum + ms, 0)
   expect(total, JSON.stringify(spent)).toBeLessThan((timeouts[0] ?? 0) * 1000)
+})
+
+/** The census of the hook's timed waits, preloaded into its process. */
+const timedWaitsPreload = resolve(import.meta.dir, "hook-timed-waits.ts")
+/** The repository's root, which the census's and the scan's file names are given against. */
+const repositoryRoot = resolve(import.meta.dir, "..", "..", "..")
+
+/** A timed wait that ran to its bound: the file that armed it, its kind and its bound. */
+interface RanToBound {
+  readonly file: string
+  readonly kind: string
+  readonly ms: number
+}
+
+/** `wait`'s file, from the stack frame that armed it, against the repository's root. */
+function armedIn(wait: TimedWait): string {
+  const path = /\(?(\/[^():]+):\d+:\d+\)?$/.exec(wait.at)?.[1]
+  return path === undefined ? wait.at : relative(repositoryRoot, path)
+}
+
+/**
+ * Runs the hook in `scratch` with `env` and the timed-wait census preloaded (`hook-timed-waits.ts`),
+ * and fails unless the waits that ran to their bound are exactly `expected`, by file, kind and
+ * bound: one more of any length, or one with another bound, fails it, and so does a census that is
+ * missing. A wait that ran inside the declared span of another (a signal derived from the read's own
+ * deadline) adds no time of its own and is left out, as is a zero-length timer, a turn of the event
+ * loop. Returns what the hook printed, for the row to check that it met each wait.
+ */
+async function runToItsTimedWaits(
+  scratch: string,
+  env: Record<string, string> & { readonly HOME: string },
+  expected: readonly RanToBound[],
+): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }> {
+  const record = join(scratch, "timed-waits.json")
+  const result = await runHook(
+    hookInput,
+    { ...env, HOOK_TIMED_WAITS: record },
+    { preload: timedWaitsPreload },
+  )
+  const recorded = await readFile(record, "utf8").catch((error: unknown) => {
+    throw new Error(
+      `the hook, exit ${result.exitCode}, wrote no census of its timed waits, so nothing says what ` +
+        `it waited on (${String(error)}): ${result.stderr}`,
+    )
+  })
+  const waits = JSON.parse(recorded) as TimedWait[]
+  const unboundable = waits.filter(
+    (wait) => wait.outcome === "repeating" || (wait.kind === "Bun.spawnSync" && wait.ms < 0),
+  )
+  expect(
+    unboundable.map((wait) => `${wait.kind} at ${wait.at}`),
+    "waits the census can give no bound",
+  ).toEqual([])
+  const fired = waits.filter((wait) => wait.outcome === "fired" && wait.ms > 0)
+  const inside = (wait: TimedWait, other: TimedWait): boolean =>
+    other !== wait &&
+    other.armedAt <= wait.armedAt &&
+    wait.armedAt + wait.ms <= other.armedAt + other.ms &&
+    (other.armedAt < wait.armedAt ||
+      other.ms > wait.ms ||
+      fired.indexOf(other) < fired.indexOf(wait))
+  const outer = fired.filter((wait) => !fired.some((other) => inside(wait, other)))
+  const order = (a: RanToBound, b: RanToBound) =>
+    `${a.file} ${a.kind} ${a.ms}`.localeCompare(`${b.file} ${b.kind} ${b.ms}`)
+  expect(
+    outer.map((wait) => ({ file: armedIn(wait), kind: wait.kind, ms: wait.ms })).sort(order),
+    `the hook's waits that ran to their bound: ${outer.map((wait) => `${wait.kind} ${wait.ms} ms at ${wait.at}`).join("; ")}`,
+  ).toEqual([...expected].sort(order))
+  return result
+}
+
+/** The jj wait, which every row below makes the hook run to its bound. */
+const JJ_WAIT: RanToBound = {
+  file: "packages/pi-shared/src/jj-attribution.ts",
+  kind: "setTimeout",
+  ms: JJ_BASE_CHAIN_TIMEOUT_MS,
+}
+
+// The open-asks hook's waits at their bounds, by the census of the timed waits it made: each wait
+// ends on the hook's own clock (jj answers only at four times its bound, the token command would
+// print only at twice `COMMAND_TIMEOUT_MS`, and in the next row Dispatch takes the read and never
+// answers it), and the waits that ran to their bound must be exactly those, with those bounds. So
+// a wait the hook makes past its bound, or one more of any length, fails the row, and no clock of
+// this machine's, loaded or not, enters it. A token command that fails leaves Dispatch off, so no
+// one run meets all three waits: each row meets two. The hook's CPU work between its waits is not
+// measured here (the start-up allowance of the row above stands for it). A wait the census cannot
+// see, one with no timer, is the next rows' scan's.
+test("a hook whose jj and token command each run out their time waits on exactly those two, each to its bound", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-waits-command-"))
+  const stateDir = join(scratch, "state")
+  await mkdir(stateDir)
+  const bin = await jjDirectory(
+    scratch,
+    `sleep ${(4 * JJ_BASE_CHAIN_TIMEOUT_MS) / 1000}; printf '%s\\n' ${JSON.stringify(join(scratch, "jj-user.toml"))}`,
+  )
+  const requests: string[] = []
+  const dispatch = Bun.serve({
+    port: 0,
+    fetch: (request) => {
+      requests.push(new URL(request.url).pathname)
+      return Response.json({ error: "no read belongs here" }, { status: 500 })
+    },
+  })
+  await mkdir(join(scratch, ".config", "legion"), { recursive: true })
+  await writeFile(
+    join(scratch, ".config", "legion", "envoy.json"),
+    JSON.stringify({
+      dispatch: {
+        enabled: true,
+        serverUrl: `http://127.0.0.1:${dispatch.port}`,
+        token: `!sleep ${(2 * COMMAND_TIMEOUT_MS) / 1000}; printf ${DISPATCH_TOKEN}`,
+      },
+    }),
+  )
+  const envFile = join(scratch, "session-env.sh")
+  try {
+    const result = await runToItsTimedWaits(
+      scratch,
+      {
+        HOME: scratch,
+        TMPDIR: scratch,
+        PATH: `${bin}:${process.env["PATH"] ?? ""}`,
+        CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
+        CLAUDE_ENV_FILE: envFile,
+        LEGION_STATE_DIR: stateDir,
+        LEGION_ISSUE_TRAILER: "ACME-7",
+      },
+      [
+        JJ_WAIT,
+        {
+          file: "packages/envoy-client/src/envoy-config.ts",
+          kind: "Bun.spawnSync",
+          ms: COMMAND_TIMEOUT_MS,
+        },
+      ],
+    )
+
+    // It met both waits: it gave up on jj, and its token command ran out its time.
+    expect(result.exitCode).toBe(0)
+    expect(await readFile(envFile, "utf8")).not.toContain("export JJ_CONFIG=")
+    expect(result.stdout).toContain(`did not finish within ${COMMAND_TIMEOUT_MS / 1000} s`)
+    expect(requests).toEqual([])
+  } finally {
+    dispatch.stop(true)
+    await rm(scratch, { recursive: true, force: true })
+  }
+}, 60_000)
+
+test("a hook whose jj and Dispatch read each run out their time waits on exactly those two, each to its bound", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-waits-read-"))
+  const stateDir = join(scratch, "state")
+  await mkdir(stateDir)
+  const bin = await jjDirectory(
+    scratch,
+    `sleep ${(4 * JJ_BASE_CHAIN_TIMEOUT_MS) / 1000}; printf '%s\\n' ${JSON.stringify(join(scratch, "jj-user.toml"))}`,
+  )
+  // A Dispatch that takes the read and never answers it.
+  const reads: string[] = []
+  const dispatch = Bun.serve({
+    port: 0,
+    fetch: (request) => {
+      reads.push(request.headers.get("authorization") ?? "")
+      return new Promise<Response>(() => {})
+    },
+  })
+  const envFile = join(scratch, "session-env.sh")
+  try {
+    const result = await runToItsTimedWaits(
+      scratch,
+      {
+        HOME: scratch,
+        TMPDIR: scratch,
+        PATH: `${bin}:${process.env["PATH"] ?? ""}`,
+        CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
+        CLAUDE_ENV_FILE: envFile,
+        LEGION_STATE_DIR: stateDir,
+        LEGION_ISSUE_TRAILER: "ACME-7",
+        DISPATCH_URL: `http://127.0.0.1:${dispatch.port}`,
+        DISPATCH_TOKEN,
+      },
+      [
+        JJ_WAIT,
+        {
+          file: "packages/envoy-client/src/dispatch-http.ts",
+          kind: "AbortSignal.timeout",
+          ms: OPEN_ASKS_TIMEOUT_MS,
+        },
+      ],
+    )
+
+    // It met both waits: it gave up on jj, and its read reached Dispatch and was never answered.
+    expect(result.exitCode).toBe(0)
+    expect(await readFile(envFile, "utf8")).not.toContain("export JJ_CONFIG=")
+    expect(reads.length).toBeGreaterThan(0)
+    expect(reads.filter((authorization) => authorization !== `Bearer ${DISPATCH_TOKEN}`)).toEqual(
+      [],
+    )
+    expect(result.stdout).toStartWith("Dispatch authored-ask summary unavailable: ")
+  } finally {
+    dispatch.stop(true)
+    await rm(scratch, { recursive: true, force: true })
+  }
+}, 60_000)
+
+/** The wait sites of the hook's code whose call carries no bound the census sees, each with what
+ *  bounds it: an entry names its file and a text of the site's first line. */
+const REVIEWED_WAIT_SITES: readonly { file: string; text: string; bound: string }[] = [
+  {
+    file: "packages/claude-envoy/hooks/session-hook.ts",
+    text: 'Bun.spawn([process.execPath, Bun.main, "answers-refresh"',
+    bound: "the answers hook's refresher, started detached and unref'd: no hook waits on it",
+  },
+  {
+    file: "packages/claude-envoy/hooks/session-hook.ts",
+    text: "Bun.stdin.text()",
+    bound:
+      "Claude Code's input, which it writes and closes as it starts the hook; nothing of the " +
+      "hook's bounds it, and a hook whose input never closes is ended by Claude Code's own timeout",
+  },
+  ...[
+    'Bun.spawn(["jj", "config", "path", "--user"]',
+    "new Response(child.stdout)",
+    "new Response(child.stderr)",
+  ].map((text) => ({
+    file: "packages/pi-shared/src/jj-attribution.ts",
+    text,
+    bound:
+      "raced with userConfigChain's setTimeout(timeoutMs), which kills jj's process group: the " +
+      "jj wait the census sees",
+  })),
+  {
+    file: "packages/envoy-client/src/nats-credential.ts",
+    text: "for await (const status of statuses)",
+    bound:
+      "a loop over a NATS connection's statuses that no caller awaits (`void (async () => …)()`); " +
+      "the open-asks hook opens no NATS connection",
+  },
+]
+
+// The census sees only waits made through a timer. So every place the hook's own code (every module
+// of this repository its entry reaches, `hook-wait-sites.ts`) can start a process, fetch, open a
+// socket or read a stream must carry a bound the census sees, a `timeout` or a `signal`, or be one
+// of the reviewed sites above, each with what bounds it. A new site of either kind fails here by
+// file and line; a reviewed entry that names no site any more fails too.
+test("every place the open-asks hook's code can wait on a process, a fetch, a socket or a stream carries a bound the census sees, or a reviewed one", () => {
+  const modules = reachedModules(hookEntry, repositoryRoot)
+  const sites = modules.flatMap((module) => waitSites(module, repositoryRoot))
+  // The scan read the hook's code: the token command's timed spawn and the read's fetch are in it.
+  expect(
+    sites.filter((site) => site.boundedBy !== undefined).map((site) => `${site.file} ${site.kind}`),
+  ).toEqual(
+    expect.arrayContaining([
+      "packages/envoy-client/src/envoy-config.ts Bun.spawnSync",
+      "packages/envoy-client/src/dispatch-http.ts fetch",
+    ]),
+  )
+  const reviewed = (site: { file: string; text: string }) =>
+    REVIEWED_WAIT_SITES.some((entry) => entry.file === site.file && site.text.includes(entry.text))
+  expect(
+    sites
+      .filter((site) => site.boundedBy === undefined && !reviewed(site))
+      .map((site) => `${site.file}:${site.line} ${site.kind}: ${site.text}`),
+    `wait sites with no bound the census sees, of ${sites.length} in ${modules.length} modules`,
+  ).toEqual([])
+  expect(
+    REVIEWED_WAIT_SITES.filter(
+      (entry) => !sites.some((site) => site.file === entry.file && site.text.includes(entry.text)),
+    ).map((entry) => `${entry.file}: ${entry.text}`),
+    "reviewed entries that name no wait site",
+  ).toEqual([])
 })

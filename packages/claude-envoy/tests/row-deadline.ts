@@ -42,6 +42,13 @@ export function collected(stream: ReadableStream<Uint8Array>): {
   return { text: () => text, ended }
 }
 
+/** The milliseconds left until a wait here gives up, `NAMED_BEFORE_GUARD_MS` before the row's
+ *  guard: the deadline to hand a wait that names itself when it gives up (`waitFor`, an MCP
+ *  `connect`'s `timeout`), so it fails by its own name where Bun's line would name nothing. */
+export function untilTheGuard(): number {
+  return Math.max(0, rowStartedAt + ROW_GUARD_MS - NAMED_BEFORE_GUARD_MS - performance.now())
+}
+
 /**
  * `promise`, or a failure naming `what` and what `state` reports once the row's time up to
  * `NAMED_BEFORE_GUARD_MS` before its guard has passed; `onLate` runs first, to end the child the
@@ -53,9 +60,9 @@ export async function beforeTheGuard<T>(
   state: () => string,
   onLate?: () => void,
 ): Promise<T> {
-  const left = rowStartedAt + ROW_GUARD_MS - NAMED_BEFORE_GUARD_MS - performance.now()
+  const left = untilTheGuard()
   const late = Promise.withResolvers<{ readonly late: true }>()
-  const timer = setTimeout(() => late.resolve({ late: true }), Math.max(0, left))
+  const timer = setTimeout(() => late.resolve({ late: true }), left)
   try {
     const first = await Promise.race([promise.then((value) => ({ value })), late.promise])
     if ("value" in first) return first.value
