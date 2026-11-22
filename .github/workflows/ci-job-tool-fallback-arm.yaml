@@ -218,13 +218,9 @@ jobs:
       - name: Mark the fault's log before the faulted jj install
         run: .github/scripts/ci-tools-proof.sh probe github.com
 
-      # mise's own install of jj goes, so the faulted install must reach the release host and
-      # read the copy, as in the tool-fallback job.
-      - name: Take mise's install away, so the faulted install must read the copy
-        run: rm -rf "$HOME/.local/share/mise"
-
       # Two rows meet the fault here: the mise-aarch64 archive the action's first step fetches,
-      # and the jj-aarch64 binary mise cannot fetch, which the second step reads from its copy.
+      # and the jj-aarch64 tarball its second step fetches; the fault holds both release assets,
+      # so each reads its copy.
       - timeout-minutes: 11
         uses: ./.github/actions/install-jj
 

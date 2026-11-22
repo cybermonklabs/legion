@@ -33,7 +33,7 @@
 #       .github/scripts/ci-tools.sh itself, into $RUNNER_TEMP/ci-tools-proof/payload/, under
 #       every name the origin serves that row under: a row's own bytes reach one name as they
 #       are, an npm tarball and a PyPI wheel are packed around them, and for a row whose own
-#       `digest` is of a member — uv's is — the name the row's primary URL serves is staged
+#       `digest` is of a member — uv's and jj's are — the name the row's primary URL serves is staged
 #       with ci_tools_fetch_primary and the member is taken out of that one staged archive,
 #       because the primary serves the archive and not that member.
 #       It runs before the fault starts, while the network is whole, because these are the bytes
@@ -46,9 +46,8 @@
 #       on this job's PATH through $GITHUB_PATH, so every step after it runs that one rather
 #       than the runner's.
 #       The `tool-fallback` job calls it with the fault about to come up, and not before its
-#       own honest fetches: `stage` and that job's jj-primary case each fetch a host the job
-#       faults, and each must succeed on the pinned ladder, so the stand-in goes on PATH
-#       after them and in front of the fault.
+#       own honest fetches: `stage` fetches every host the job faults, and must succeed on the
+#       pinned ladder, so the stand-in goes on PATH after it and in front of the fault.
 #       The stand-in runs the real curl with the arguments it was handed, and appends
 #       `--retry-max-time 1` to them where the request is one this job arranged to fail: a host
 #       FAULT_HOSTS holds, the dead address DEAD_ADDRESS below, or a dead proxy. curl reads the
@@ -157,34 +156,6 @@
 #   flip-last-byte <file>
 #       Changes the last byte of that file and prints its sha256 afterwards, for the cases whose
 #       corrupted payload is a binary on the runner rather than something the origin serves.
-#
-#   payload-path <row>
-#       The file `stage` wrote this row's own pinned bytes to, which is the name the origin
-#       serves them under on its ghcr route.
-#       A case that must put those bytes on the runner copies them from there, so this rig's own
-#       directory layout is named here and in no step of the job.
-#       Only a row whose second source is the ghcr copy has such a file: an npm row's payload is
-#       the tarball that registry serves and a pypi row's is the wheel it serves, and the pinned
-#       bytes are a member inside it.
-#
-#   seed-mise-jj <file>
-#       Writes that file as the jj binary inside mise's own install directory for the tool
-#       packages/daemon/docker/worker.Dockerfile pins, which is where
-#       .github/actions/install-jj reads an installed jj from, and prints the path and the
-#       file's sha256. That directory is derived from the `ARG JJ_TOOL` spec rather than
-#       written here, so an ARG that moves to another fork moves the seed with it.
-#       Measured in this issue's pod: with
-#       `$MISE_DATA_DIR/installs/<the spec's own directory>/<version>/jj` in place as a file of
-#       mode 0755 and nothing else there, `mise install github:sjawhar/jj@<version>` exits 0
-#       having downloaded nothing — "installed but not activated" is its whole output — and
-#       `mise x github:sjawhar/jj@<version> -- sh -c 'command -v jj'` prints that path.
-#       It is no offline install: measured in CI at run 42507815176, that `mise install`
-#       resolves the tool's version list over api.github.com even when the directory already
-#       holds the tool, so the case that seeds it runs before the fault rather than inside it.
-#       The jj-primary case uses it because a live `mise install` inside the fault is the thing
-#       that made this job red during an outage: jj's release asset is on the host the fault
-#       holds, so a case about the bytes mise installed would spend the outage downloading
-#       through a 504, and the job that proves the outage survivable would fail in it.
 #
 #   install-bound
 #       The seconds no timed install may reach, printed and nothing else.
@@ -831,8 +802,8 @@ stage() {
       # the row's `primary_digest`, and the row's own pinned bytes taken out of that staged
       # archive: one download for the two files, and a case whose primary meets the origin
       # reads exactly these bytes. Fetching the row's bytes with ci_tools_fetch and then the
-      # archive with ci_tools_fetch_primary downloaded uv's 16682639-byte archive twice, and
-      # uv is the one row that names a `primary_member`.
+      # archive with ci_tools_fetch_primary downloaded uv's 16682639-byte archive twice; uv and
+      # jj are the rows that name a `primary_member`.
       # Both digests are still read: ci_tools_fetch_primary holds the archive to
       # `primary_digest` before it places it, and stage_member holds the member to the row's
       # own `digest`.
@@ -1461,65 +1432,6 @@ PY
   sha256sum "$1"
 }
 
-# ---------------------------------------------------------------- payload-path
-
-# payload_path <row>: the file `stage` wrote this row's own pinned bytes to, which is the name
-# the origin serves them under on its ghcr route (payload_names above writes both names).
-# A case that must put those bytes on the runner copies them from there, so this rig's own
-# directory layout is named here and in no step of .github/workflows/ci.yaml.
-payload_path() {
-  [ "$#" -eq 1 ] || die "payload-path takes a row, and this call gave $#"
-  local row=$1 second
-  second=$(ci_tools_field "$row" second_source)
-  [ "$second" = ghcr-mirror ] ||
-    die "payload-path: no payload holds the pinned bytes of '$row' on their own; its second source is '${second:-nothing}', whose payload is the archive that service serves"
-  printf '%s/sha256:%s\n' "$payload" "$(ci_tools_digest "$row")"
-}
-
-# ---------------------------------------------------------------- seed-mise-jj
-
-# seed_mise_jj <file>: that file as the jj binary inside mise's own install directory for the
-# tool packages/daemon/docker/worker.Dockerfile pins, which is where .github/actions/install-jj
-# reads an installed jj from.
-# Measured in this issue's pod: with that one file in place as mode 0755 and nothing else in the
-# directory, `mise install github:sjawhar/jj@<version>` exits 0 having downloaded nothing —
-# "installed but not activated" is its whole output — and
-# `mise x github:sjawhar/jj@<version> -- sh -c 'command -v jj'` prints that path.
-# It is no offline install: measured in CI at run 42507815176, that `mise install` resolves the
-# tool's version list over api.github.com even when the directory already holds the tool, which
-# is why the case that seeds it runs before the fault rather than inside it.
-# The jj-primary case is about the bytes mise installed and not about mise's fetch, and a live
-# `mise install` inside the fault is what made this job red during an outage: jj's release asset
-# is on the host the fault holds, so that install would spend the outage downloading through a
-# 504 and the job that exists to prove the outage survivable would fail in it.
-# Seeding the directory takes the download out of the case and leaves the reading it is about
-# where it was.
-seed_mise_jj() {
-  [ "$#" -eq 1 ] || die "seed-mise-jj takes the file to seed mise's install with, and this call gave $#"
-  local file=$1 dockerfile="$root/packages/daemon/docker/worker.Dockerfile" jj_tool spec version dir
-  [ -f "$file" ] || die "seed-mise-jj: there is no file at '$file' to seed mise's install with"
-  jj_tool=$(sed -n 's/^ARG JJ_TOOL=//p' "$dockerfile")
-  [ -n "$jj_tool" ] || die "seed-mise-jj: $dockerfile names no ARG JJ_TOOL"
-  version=${jj_tool##*@}
-  [ "$version" != "$jj_tool" ] ||
-    die "seed-mise-jj: the ARG JJ_TOOL '$jj_tool' names no version after an @, so this rig cannot name mise's install directory for it"
-  # mise's own directory for a tool is that tool's spec with its `:` and its `/` written as `-`,
-  # and it is derived here rather than written out: an ARG that moved to another fork would
-  # otherwise leave this rig seeding a directory mise never reads, and the case would download
-  # the real jj and fail as "did not refuse", naming the wrong cause.
-  spec=${jj_tool%@*}
-  spec=${spec//:/-}
-  spec=${spec//\//-}
-  dir="${MISE_DATA_DIR:-$HOME/.local/share/mise}/installs/$spec/$version"
-  # The directory holds this one file and nothing else, which is what the measurement above was
-  # taken on: a half-written install an earlier `mise install` left behind is not that reading.
-  rm -rf "$dir"
-  mkdir -p "$dir"
-  install -m 0755 -- "$file" "$dir/jj"
-  note "mise's install of $jj_tool is now $dir/jj"
-  sha256sum -- "$dir/jj"
-}
-
 # ---------------------------------------------------------------- install-bound
 
 # install_bound: the bound above, printed and nothing else, for the one reader outside this
@@ -1774,7 +1686,7 @@ ladder_report() {
 
 verb=${1:-}
 [ "$#" -ge 1 ] ||
-  die "usage: $(basename "$0") <origin-start|stage|shorten-ladder|start-fault|stop-fault|probe|version-answers|refusals|installed-bun|installed-bunx|corrupt|flip-last-byte|payload-path|seed-mise-jj|install-bound|report|ladder-report> [argument…]"
+  die "usage: $(basename "$0") <origin-start|stage|shorten-ladder|start-fault|stop-fault|probe|version-answers|refusals|installed-bun|installed-bunx|corrupt|flip-last-byte|install-bound|report|ladder-report> [argument…]"
 shift
 case $verb in
   origin-start) origin_start "$@" ;;
@@ -1789,10 +1701,8 @@ case $verb in
   installed-bunx) installed_bunx "$@" ;;
   corrupt) corrupt "$@" ;;
   flip-last-byte) flip_last_byte "$@" ;;
-  payload-path) payload_path "$@" ;;
-  seed-mise-jj) seed_mise_jj "$@" ;;
   install-bound) install_bound "$@" ;;
   report) report "$@" ;;
   ladder-report) ladder_report "$@" ;;
-  *) die "'$verb' is no verb of this rig (origin-start, stage, shorten-ladder, start-fault, stop-fault, probe, version-answers, refusals, installed-bun, installed-bunx, corrupt, flip-last-byte, payload-path, seed-mise-jj, install-bound, report, ladder-report)" ;;
+  *) die "'$verb' is no verb of this rig (origin-start, stage, shorten-ladder, start-fault, stop-fault, probe, version-answers, refusals, installed-bun, installed-bunx, corrupt, flip-last-byte, install-bound, report, ladder-report)" ;;
 esac

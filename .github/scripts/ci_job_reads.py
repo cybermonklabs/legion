@@ -348,13 +348,12 @@ def biome(where):
 def install_jj(job):
     return reads(
         (".github/actions/install-jj/**", at(job, "./.github/actions/install-jj")),
-        (f"{DAEMON}/docker/worker.Dockerfile", ".github/actions/install-jj/action.yml:65 reads ARG JJ_TOOL, the tool spec mise installs"),
-        (".github/ci-tools.yaml", ".github/actions/install-jj/action.yml:47-48 installs the archive of the mise row, or of "
-                                  "mise-aarch64 on an arm64 runner, and :84,93 hold the jj binary to the digest of the jj "
-                                  "row or of jj-aarch64, whichever source served it"),
-        (".github/scripts/ci-tools.sh", ".github/actions/install-jj/action.yml:44,63 source it: ci_tools_fetch installs "
-                                        "mise, ci_tools_fetch_fallback reads the jj row's second source and "
-                                        "ci_tools_verify checks the binary"),
+        (f"{DAEMON}/docker/worker.Dockerfile", ".github/actions/install-jj/action.yml:66 reads ARG JJ_TOOL, the release the jj row pins"),
+        (".github/ci-tools.yaml", ".github/actions/install-jj/action.yml:50-51 installs the archive of the mise row, or of "
+                                  "mise-aarch64 on an arm64 runner, and :80 installs the jj row's binary, or "
+                                  "jj-aarch64's, held to its digest whichever source served it"),
+        (".github/scripts/ci-tools.sh", ".github/actions/install-jj/action.yml:47,64 source it: ci_tools_fetch installs "
+                                        "mise and jj, reading each row's second source only after its primary failed"),
     )
 
 
@@ -2286,7 +2285,6 @@ TOOL_VERSIONS_STEP = "Check every tool is the version its row pins"
 TOOL_FINAL_STEP = "Print what every tool answers now"
 TOOL_STAGE_STEP = "Stage the correct bytes of every row a case serves, before the fault"
 TOOL_FAULT_STEP = "Start the fault in front of GitHub's release assets"
-TOOL_JJ_SEED_STEP = "Seed mise's install of jj with the staged binary, one byte changed"
 TOOL_BUN_BYTE_STEP = "Change the last byte of the installed Bun"
 TOOL_WATCH_STEP = "Start the machine watch over every faulted install"
 # Both jobs name their report step alike, so one constant cites it in both gates.
@@ -3894,11 +3892,10 @@ GATES = [
         (".github/actions/install-pulumi/**", at("tool-fallback", "./.github/actions/install-pulumi")),
         (".github/actions/install-docker-plugin/**",
          at("tool-fallback", "./.github/actions/install-docker-plugin")),
-        (f"{DAEMON}/docker/worker.Dockerfile", f"{at('tool-fallback', TOOL_JJ_SEED_STEP)}: the rig reads ARG JJ_TOOL "
-                                               "to name mise's own install directory for that tool, and "
-                                               ".github/actions/install-jj reads that same ARG, while the mise row "
-                                               "that action installs mise from is pinned to this file's "
-                                               "ARG MISE_VERSION and ARG MISE_SHA256 by .github/scripts/check-ci-tools.sh"),
+        (f"{DAEMON}/docker/worker.Dockerfile", f"{at('tool-fallback', './.github/actions/install-jj')}: the action "
+                                               "reads ARG JJ_TOOL, and the mise and jj rows it installs from are "
+                                               "pinned to this file's ARG MISE_VERSION, ARG MISE_SHA256, ARG JJ_TOOL "
+                                               "and ARG JJ_SHA256 by .github/scripts/check-ci-tools.sh"),
         (".bun-version", f"{at('tool-fallback', TOOL_BUN_BYTE_STEP)} reads the pinned version out of it, and "
                          ".github/actions/setup-bun installs the Bun it pins"),
         (".github/scripts/disk_watch.py", f"{at('tool-fallback', TOOL_WATCH_STEP)} runs it, and "

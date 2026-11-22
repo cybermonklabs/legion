@@ -37,7 +37,7 @@ tool-fallback-arm job of .github/workflows/ci-job-tool-fallback-arm.yaml adds up
 the job's set-up, the two checkouts and the runner's download of the actions (1), the two
 steps that read the package and the manifest, and `stage`, which fetches about 303 MB over
 the real sources while the network is whole and so keeps the pinned ladder (2), the
-jj-primary case, which runs before the fault (1), the fault and its probe, whose two
+jj-primary case, which reads the local origin before the fault (1), the fault and its probe, whose two
 requests are bounded at 15 s each (1), the one case that keeps the ladder, the head's own
 `install-crane`, which measured 64 s and which `--retry-max-time 60` bounds at a minute in
 which a new attempt may start plus one last attempt of the row's `max_time` of 60 s (2),
@@ -144,33 +144,22 @@ It starts before the fault, so the two tools `start` asks to name a directory ar
 routed through a proxy that refuses them. The report prints and never fails the job:
 this is the measurement, not a new gate.
 
-## Case 5 of 16, and why it runs before the fault
+## Case 5 of 16, jj's primary through the origin
 
-Case 5 of 16 of the corrupted payloads, and the one that runs here rather than with the
-other seven: the jj binary in mise's install directory is one byte changed.
-That directory is where .github/actions/install-jj reads an installed jj from, so a
-changed binary there is the primary path's own mismatch: `mise install` finds the tool
-installed, the action holds the binary mise points at to the jj row, and refuses it.
-It runs before the fault because `mise install` resolves the tool's version list over
-api.github.com even when the install directory already holds it, and the fault that the `Start the fault in front of GitHub's release assets` step starts
-holds every host under github.com. Under the fault that resolve fails, the action takes
-its second source instead, and this case would read the fallback rather than the
-primary — which is what happened at 1725f7ce before this step moved.
-Here it needs no release asset either: the rig seeds mise's directory from the payload
-it staged, so a release-asset outage, which is what this whole job is about, leaves this
-case exactly as it is. api.github.com is not a release-asset host and does not go down
-with one.
-
-## Why mise's install directory is taken away again
-
-What that case seeded goes, so nothing of it reaches the later installs of this job: the head's own
-install-jj meets an empty mise directory, as a fresh runner would.
-It is not what decides that install. Measured in CI at run 42507815176, `mise install`
-resolves the tool's version list over api.github.com even when its install directory
-already holds the tool, so under the fault that the `Start the fault in front of GitHub's release assets` step starts, that install fails whether this
-directory is here or not, and the action reads the copy either way. What a directory
-left here would leave behind is the one-byte-changed jj this case seeded, on a runner
-whose later steps run what this job installed.
+Case 5 of 16: jj's primary, the release tarball, serves one byte changed, and the copy must
+stay untried. .github/actions/install-jj reads both rows it installs through
+.github/scripts/ci-tools.sh, so the case hands it the origin through the
+CI_TOOLS_GITHUB_BASE and CI_TOOLS_GHCR_BASE seams, as uv's primary case does: the mise
+archive the action's first step fetches comes whole from the origin, and the jj tarball
+comes with one byte changed. What the changed byte trips is the row's `primary_digest`,
+the sha256 of the tarball, before the binary is taken out of it, and a mismatch is never a
+reason to read the copy.
+Until 2026-11-21 install-jj installed jj with `mise install`, which reads the release
+through api.github.com, and this case seeded a changed binary into mise's install
+directory before the fault came up; a run whose API budget was spent failed that install
+and read the copy instead. The action no longer reads the API, so the case meets the
+origin like every other primary case, and it stays at this position only because nothing
+requires it to move.
 
 ## The stand-in curl, what it shortens, and why it is installed at this position
 
@@ -199,14 +188,15 @@ fetches about 303 MB from the real sources while the network is whole and must k
 the pinned ladder for them, and because $GITHUB_PATH reaches the steps after the step
 that writes it and not that step itself.
 It cannot stay straight after `stage` either, which is where it ran before: the
-jj-primary case runs in that window, and its install-jj makes a real fetch of
-github.com through mise which succeeds. github.com is one of the hosts this rig
-faults, so a stand-in installed before that case shortened a fetch this job means to
+jj-primary case then ran in that window, and its install-jj made a real fetch of
+github.com through mise which succeeded. github.com is one of the hosts this rig
+faults, so a stand-in installed before that case shortened a fetch this job meant to
 succeed and took the pinned ladder off it, while the fault that makes the shortening
 true was not up yet. In job 129841257239 that fetch is the first one the ladder-report
 step printed, `github.com: shortened, curl exit 0, 0s`: 2 attempts over 1 s where the
 pinned ladder gives 7 over 63 s, so one short failure of github.com would redden this
-required job where the pinned ladder rode it out.
+required job where the pinned ladder rode it out. That case now reads the local origin,
+but the reason the position holds is the next paragraph's, not that case.
 The step after this one starts the fault, so every fetch made from here goes through
 it and no fetch this job did not arrange to fail is ever shortened. The ladder-report
 step refuses the job for exactly that reading — a fetch that was shortened and then
@@ -332,10 +322,9 @@ The head's own installs, under the same fault and with no continue-on-error: eac
 succeed, and the seven whose primary the fault holds do it through the second source
 their row names, with no seam of any kind. The Pulumi CLI, whose primary this fault does
 not hold, is read by the case at the end of this list instead.
-install-jj meets an empty mise data directory here, since nothing warmed one before the
-fault: its `mise install` must reach the release asset mise fetches jj from, which the
-fault holds, so that install fails and the action reads the copy. This step is therefore
-the proof of jj's second source itself, rather than a warm directory answering for it.
+install-jj's two primaries, the mise archive and the jj tarball, are release assets this
+fault holds, so each of its two fetches fails at the primary and reads the copy its row
+names. This step is therefore the proof of jj's second source itself.
 
 ## Why the faulted elan install must read the copy
 
@@ -377,16 +366,13 @@ own env: names, and the report after it is what passes or fails this job.
 Case 1 of 16: crane's primary serves one byte changed, and the second source must stay
 untried — a digest mismatch is a supply-chain signal, never a reason to read elsewhere.
 
-## Case 6 of 16, and what the case before it left
+## Case 6 of 16, jj's copy after the faulted primary
 
-Case 6 of 16: the copy of the jj binary serves one byte changed, with mise unable to
-install the tool at all.
-Its data directory goes, so `mise install` must reach the faulted host and fails, which
-is what sends the action to the second source. Only jj is corrupted, so the action's own
-mise fetch still serves from the origin.
-Case 5, which ran before the fault, left ~/.local/bin/jj as it found it: install-jj
-verifies the binary where mise put it and copies only after that passes, so a refused
-jj never reaches that path.
+Case 6 of 16: the copy of the jj binary serves one byte changed, after the primary — the
+real host, which the fault holds — did not serve the tarball at all. Only jj is corrupted,
+so the action's own mise fetch still serves from the origin.
+Case 5 left ~/.local/bin/jj as it found it: install-jj writes that path only after the
+helper held the bytes to the row, so a refused jj never reaches it.
 
 ## Case 7 of 16, and the branch setup-bun takes for it
 
@@ -467,9 +453,9 @@ origin stands in for the release asset, as it does in the install that must succ
 What this runner holds after the sixteen refusals, said plainly: no corrupted byte was
 installed, and what the installs themselves left is what this step reads.
 .github/scripts/ci-tools.sh verifies the bytes before it puts them at their destination,
-so every refused fetch of the sixteen cases left nothing behind, and the two installs that meet a
-binary a third party put there refuse it without leaving it either. install-jj verifies
-the binary where mise left it and copies to ~/.local/bin/jj only after that passes, so
+so every refused fetch of the sixteen cases left nothing behind, and the one install that
+meets a binary a third party put there, setup-bun's, refuses it without leaving it either.
+install-jj writes ~/.local/bin/jj only after the helper held the binary to its row, so
 the jj here is the pinned one the head's own install under the fault wrote and neither
 jj case moved it. setup-bun removes the bun and the bunx it refused from ~/.bun/bin,
 which is on this job's PATH, so the bun-primary case took away the Bun it refused; the

@@ -1438,8 +1438,8 @@ Every install that must succeed reads a source the fault does not hold — the g
 PyPI or get.pulumi.com — or, for the Pulumi CLI, whose primary is get.pulumi.com and whose
 second source is the release asset, the origin serving that release's own staged bytes; the
 bytes the corrupted cases serve were staged before the fault; and the one case about a
-binary a third party installed seeds mise's install directory from that staged payload
-rather than downloading one inside the fault.
+binary a third party installed, setup-bun's, changes that binary on the runner rather than
+downloading one inside the fault.
 That is what keeps ci-ok green during the very outage this job proves survivable: this job
 is in ci-ok's `needs:`, and its filter selects ci.yaml, .bun-version, the worker image's
 Dockerfile, the manifest and the helper beside it, and the eight actions, so

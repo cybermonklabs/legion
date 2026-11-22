@@ -40,6 +40,7 @@ source "$script_dir/test-lib.sh"
 TOOL=0a1b2c3d4e5f60710a1b2c3d4e5f60710a1b2c3d4e5f60710a1b2c3d4e5f6071
 MISE=1b2c3d4e5f6071821b2c3d4e5f6071821b2c3d4e5f6071821b2c3d4e5f607182
 JJ=2c3d4e5f607182932c3d4e5f607182932c3d4e5f607182932c3d4e5f60718293
+JJ_ARCHIVE=8293a4b5c6d7e8f98293a4b5c6d7e8f98293a4b5c6d7e8f98293a4b5c6d7e8f9
 BUN=3d4e5f60718293a43d4e5f60718293a43d4e5f60718293a43d4e5f60718293a4
 SOLO=5f60718293a4b5c65f60718293a4b5c65f60718293a4b5c65f60718293a4b5c6
 UV=4e5f60718293a4b54e5f60718293a4b54e5f60718293a4b54e5f60718293a4b5
@@ -57,19 +58,20 @@ PLUGIN_URL=https://github.com/example/pulumi-docker/releases/download/v4.4.4/pul
 PLUGIN_VENDOR=https://get.pulumi.com/releases/plugins/pulumi-resource-docker-v4.4.4-linux-amd64.tar.gz
 
 # pins <root> [bun version] [mise version] [mise sha256] [jj tool] [uv version] [uv sha256]
-# [docker plugin version]: the three files rule 2 holds the rows to. Each value defaults to the
-# one the green rows agree with, so the fixture names none of them and a red case names only
-# the values up to the one it changes.
+# [docker plugin version] [jj sha256]: the three files rule 2 holds the rows to. Each value
+# defaults to the one the green rows agree with, so the fixture names none of them and a red case
+# names only the values up to the one it changes.
 pins() {
   local root=$1 bun=${2:-9.9.9} mise_version=${3:-v7.7.7} mise_sha256=${4:-$MISE} \
     jj_tool=${5:-github:example/jj@5.5.5} uv_version=${6:-6.6.6} uv_sha256=${7:-$UV_ARCHIVE} \
-    docker_plugin=${8:-4.4.4}
+    docker_plugin=${8:-4.4.4} jj_sha256=${9:-$JJ_ARCHIVE}
   printf '%s\n' "$bun" > "$root/.bun-version"
   cat > "$root/packages/daemon/docker/worker.Dockerfile" <<DOCKERFILE
 # syntax=docker/dockerfile:1
 ARG MISE_VERSION=$mise_version
 ARG MISE_SHA256=$mise_sha256
 ARG JJ_TOOL=$jj_tool
+ARG JJ_SHA256=$jj_sha256
 ARG UV_VERSION=$uv_version
 ARG UV_SHA256=$uv_sha256
 FROM scratch
@@ -139,10 +141,10 @@ tools:
     digest: $JJ
     digest_of: the binary inside the release tarball
     primary_source: github-release
-    primary: ""
-    primary_digest: ""
-    primary_digest_of: ""
-    primary_member: ""
+    primary: $JJ_URL
+    primary_digest: $JJ_ARCHIVE
+    primary_digest_of: the release tarball, whole
+    primary_member: ./jj
     second_source: ghcr-mirror
     max_time: 60
     mirror_from: $JJ_URL
@@ -397,6 +399,16 @@ run_gate "$root"
 check "fails" "$(is "$status" 1)"
 check "names both values and both files" \
   "$(contains "$out" "the jj row's version is 5.5.5 and packages/daemon/docker/worker.Dockerfile pins ARG JJ_TOOL=github:example/jj@6.6.6, whose version is 6.6.6")"
+
+echo "case: rule 2 — the jj row's primary_digest and ARG JJ_SHA256 disagree"
+root=$(fixture pin-jj-archive)
+pins "$root" 9.9.9 v7.7.7 "$MISE" github:example/jj@5.5.5 6.6.6 "$UV_ARCHIVE" 4.4.4 "$TOOL"
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names both digests and both files" \
+  "$(contains "$out" "the jj row's primary_digest is $JJ_ARCHIVE and packages/daemon/docker/worker.Dockerfile pins ARG JJ_SHA256=$TOOL")"
+check "and says one admits what the other refuses" \
+  "$(contains "$out" 'one of the two admits bytes the other refuses')"
 
 # arm64_row <root> <name> <version>: appends the arm64 build of a tool at that version, in the
 # shape the manifest's -aarch64 rows take, with URLs that hold the version so rule 1 reads nothing

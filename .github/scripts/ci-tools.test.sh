@@ -1062,8 +1062,10 @@ check "and no write error of this run was claimed" \
 check "and no temporary file is left" "$(is "$(temporary_files)" "")"
 
 echo "case: ghcr-mirror — a row whose primary bytes a third party fetches"
-# jj's shape: mise fetches the primary bytes, so there is no primary here to try. Either entry
-# goes straight to the copy, and neither reads a release asset.
+# A row whose primary bytes a third party fetches and whose copy is the ghcr one: the shape the
+# jj rows had while mise fetched jj's primary, before 2026-11-21, and the shape the bun rows have
+# with npm in the copy's place. There is no primary here to try, so either entry goes straight to
+# the copy, and neither reads a release asset.
 origin third-party-primary
 dest="$work/dest/third-party-primary"
 run ci_tools_fetch_fallback jjlike "$dest"

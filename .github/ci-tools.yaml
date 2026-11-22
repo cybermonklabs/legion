@@ -12,7 +12,8 @@
 # install-changie, install-elan and install-pulumi hold no version of their own and install the
 # version this row names,
 # `ARG MISE_VERSION` of packages/daemon/docker/worker.Dockerfile for mise,
-# `ARG JJ_TOOL` of that same file for jj,
+# `ARG JJ_TOOL` of that same file for jj, whose `primary_digest` is that file's `ARG JJ_SHA256`,
+# because the image's own tools stage installs jj from those two,
 # `ARG UV_VERSION` of that same file for uv, whose `primary_digest` is that file's
 # `ARG UV_SHA256`, because the image's own toolchain stage builds uv from those two,
 # `const DockerPluginVersion` of packages/envoy/infra/internal/pulumitest/pulumitest.go for the
@@ -80,9 +81,11 @@
 # decide.
 #
 # WHY THE BUN AND jj ROWS PIN THE INSTALLED BINARY AND NOT AN ARCHIVE.
-# `oven-sh/setup-bun` at the commit .github/actions/setup-bun pins verifies no checksum at all,
-# and .github/actions/install-jj verifies the mise archive and nothing of the jj binary mise then
-# builds or downloads.
+# `oven-sh/setup-bun` at the commit .github/actions/setup-bun pins verifies no checksum at all, so
+# the bun rows hold the binary that action leaves. The jj rows' copy holds the binary alone, taken
+# out of the release tarball the primary serves, so the binary is the one literal both of jj's
+# sources can be held to; the tarball the primary serves is held to the row's `primary_digest`
+# before the binary is taken out of it, as uv's is.
 # A GitHub zip and an npm tarball are different archives of the same program, so the only literal
 # both can be held to is the digest of the binary that ends up installed.
 # That is what those rows pin, and the check runs on the primary path too: an install that got its
@@ -141,7 +144,7 @@ tools:
     primary: https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz
     # The sha256 of the bytes the primary URL serves, for a row whose own `digest` is of
     # something inside them, and "" where the primary serves exactly the bytes this row pins,
-    # which is every row but uv.
+    # which is every row but uv, jj and jj-aarch64.
     primary_digest: ""
     # The prose saying what `primary_digest` is of, which a refusal of a mismatch on it names.
     # "" where unused.
@@ -250,40 +253,43 @@ tools:
   # jj, the fork the worker image ships, pinned by `ARG JJ_TOOL`. The version is the part of it in
   # packages/daemon/docker/worker.Dockerfile after the `@`, and the release tag carries a leading
   # `v` that tool spec does not.
-  # `primary` is empty because mise fetches the primary bytes: .github/actions/install-jj runs
-  # `mise x github:sjawhar/jj@<version>`, and no CI job of this repository reaches that asset
-  # itself. (The worker image's tools stage fetches the same archive and holds it to its own
-  # `ARG JJ_SHA256`, a digest of the archive and not of the binary this row pins.)
-  # The digest is of the binary mise installs, so the second source and the primary path are held
-  # to one literal; `mirror_from` is the asset mise reads, and `mirror_member` is the binary inside
-  # it, which is what the copy holds.
+  # Like uv's, this row's `digest` is of a member: the jj binary is the one literal the release
+  # tarball and the copy, which holds the binary alone, can both be held to. `primary` is the
+  # tarball, `primary_digest` the tarball whole — the `ARG JJ_SHA256` the worker image's tools
+  # stage checks the same tarball against, which .github/scripts/check-ci-tools.sh holds equal to
+  # it — and `primary_member` the binary inside it. .github/actions/install-jj reads the primary
+  # through .github/scripts/ci-tools.sh, as every other row is read: no mise and no GitHub API
+  # call, since on 2026-11-21 mise's API reads of this release failed every job in the hour the
+  # run token's budget was spent. `mirror_from` is the same tarball and `mirror_member` the binary
+  # the copy holds.
   - name: jj
     version: 0.45.1-sami.20260910-043938
     digest: fe32ffcd64432000027c87030af074eb48e55181ca389e09d3ab4b44200aba7a
     digest_of: the jj binary itself, the 24424232-byte `./jj` member of the release tarball
     primary_source: github-release
-    primary: ""
-    primary_digest: ""
-    primary_digest_of: ""
-    primary_member: ""
+    primary: https://github.com/sjawhar/jj/releases/download/v0.45.1-sami.20260910-043938/jj-v0.45.1-sami.20260910-043938-x86_64-unknown-linux-musl.tar.gz
+    primary_digest: 19f6ffdecb4b3eb9e15bdeb3248f891c9e2f26fffe816c2771171243f96e01db
+    primary_digest_of: the release tarball jj-v0.45.1-sami.20260910-043938-x86_64-unknown-linux-musl.tar.gz, whole
+    primary_member: ./jj
     second_source: ghcr-mirror
     max_time: 60
     mirror_from: https://github.com/sjawhar/jj/releases/download/v0.45.1-sami.20260910-043938/jj-v0.45.1-sami.20260910-043938-x86_64-unknown-linux-musl.tar.gz
     mirror_member: ./jj
 
-  # jj for an arm64 runner: the same fork release, the aarch64 musl build mise installs there. As
-  # on the row above, `primary` is empty because mise fetches the primary bytes, and the digest is
-  # of the binary mise installs; the release's own asset digest answers for the tarball
-  # `mirror_from` names, and this one was read out of it.
+  # jj for an arm64 runner: the same fork release, its aarch64 musl build, read the way the row
+  # above is. `primary_digest` is the digest GitHub gives that tarball as a release asset, which
+  # equals the sha256 of the tarball downloaded on 2026-11-21, and the binary read out of it is
+  # this row's `digest`; no ARG of the Dockerfile pins it, since the image builds for linux/amd64
+  # alone.
   - name: jj-aarch64
     version: 0.45.1-sami.20260910-043938
     digest: 0bbd6fd2a342def6b376afcb07594e41451f8b19178a15779f08a454690da339
     digest_of: the jj binary itself, the 20982448-byte `./jj` member of the release tarball
     primary_source: github-release
-    primary: ""
-    primary_digest: ""
-    primary_digest_of: ""
-    primary_member: ""
+    primary: https://github.com/sjawhar/jj/releases/download/v0.45.1-sami.20260910-043938/jj-v0.45.1-sami.20260910-043938-aarch64-unknown-linux-musl.tar.gz
+    primary_digest: d209ff31b66ab900e6f4548dfe6631c21168877024a38d2af1dbf76fd51ccb83
+    primary_digest_of: the release tarball jj-v0.45.1-sami.20260910-043938-aarch64-unknown-linux-musl.tar.gz, whole
+    primary_member: ./jj
     second_source: ghcr-mirror
     max_time: 60
     mirror_from: https://github.com/sjawhar/jj/releases/download/v0.45.1-sami.20260910-043938/jj-v0.45.1-sami.20260910-043938-aarch64-unknown-linux-musl.tar.gz
@@ -382,7 +388,7 @@ tools:
   # uv, which .github/actions/install-uv installs: the uv the worker image ships, pinned by
   # `ARG UV_VERSION` and `ARG UV_SHA256` of packages/daemon/docker/worker.Dockerfile, which the
   # image's own toolchain stage builds uv from.
-  # This is the one row whose `digest` is of a member. PyPI's wheel and GitHub's tarball are two
+  # Its `digest` is of a member, as the jj rows' are. PyPI's wheel and GitHub's tarball are two
   # archives of one binary, so the binary is the only literal both sources can be held to:
   # `digest` is of it, `primary_member` is where it sits in the tarball, and `primary_digest` is
   # the tarball itself, which is the `ARG UV_SHA256` the image checks.

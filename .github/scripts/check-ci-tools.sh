@@ -42,10 +42,11 @@
 #      version while the row and its URLs move names a path the new archive does not hold, so
 #      that install fetches the right bytes and then fails to find the tool inside them. Where
 #      that is found depends on the side the member is written on. A stale `primary_member`
-#      breaks the install that reads the primary, which for the one row that names one, uv, is
-#      .github/actions/install-uv in the `daemon-go` job (.github/workflows/ci-job-daemon-go.yaml),
-#      on every pull request that selects it; a stale member on the second side is read only
-#      where that source is, which is the `tool-fallback` job
+#      breaks the install that reads the primary, which for the rows that name one is
+#      .github/actions/install-uv in the `daemon-go` job (.github/workflows/ci-job-daemon-go.yaml)
+#      for uv and .github/actions/install-jj for jj and jj-aarch64 (daemon-go, pi-shared, pi-legion
+#      and the tool-fallback jobs), on every pull request that selects them; a stale member on the
+#      second side is read only where that source is, which is the `tool-fallback` job
 #      (.github/workflows/ci-job-tool-fallback.yaml), a job of about five minutes (129885098900
 #      ran 14:15:38Z to 14:20:22Z, 284 s). This gate says it in lint, in a second.
 #      A version-shaped token is a dotted run of digits — 1.2, 0.13.5, 2026.8.12 — so a member
@@ -67,7 +68,9 @@
 #      packages/daemon/docker/worker.Dockerfile without its leading `v`, and its `digest` is that
 #      file's `ARG MISE_SHA256`, so the copy this repository fills and the mise the worker image
 #      builds with are one set of bytes.
-#      The `jj` row's `version` is the part of that file's `ARG JJ_TOOL` after the `@`.
+#      The `jj` row's `version` is the part of that file's `ARG JJ_TOOL` after the `@`, and its
+#      `primary_digest` is that file's `ARG JJ_SHA256`, for uv's reason: the image's own tools
+#      stage installs jj from that tarball and checks it against that ARG.
 #      The `uv` row's `version` is that file's `ARG UV_VERSION` and its `primary_digest` is that
 #      file's `ARG UV_SHA256`, the same pair the mise row answers to and for the same reason:
 #      the image's own toolchain stage builds uv from those two ARGs, so the row and the image
@@ -397,6 +400,7 @@ ARG_MISE_SHA256 = re.compile(r"^ARG\s+MISE_SHA256=(\S+)\s*$")
 ARG_JJ_TOOL = re.compile(r"^ARG\s+JJ_TOOL=(\S+)\s*$")
 ARG_UV_VERSION = re.compile(r"^ARG\s+UV_VERSION=(\S+)\s*$")
 ARG_UV_SHA256 = re.compile(r"^ARG\s+UV_SHA256=(\S+)\s*$")
+ARG_JJ_SHA256 = re.compile(r"^ARG\s+JJ_SHA256=(\S+)\s*$")
 # Any `ARG <name>=<value>` line, for the line of a Dockerfile that holds a declined URL's digest.
 ARG_LINE = re.compile(r"^ARG\s+(\w+)=(\S+)\s*$")
 # The Go constant the live programs pin the docker provider plugin at, read as the Dockerfile's
@@ -799,17 +803,19 @@ def is_dockerfile(path: Path) -> bool:
     return name == "Dockerfile" or name.startswith("Dockerfile.") or name.endswith(".Dockerfile")
 
 
-mise_version = mise_sha256 = jj_tool = uv_version = uv_sha256 = ""
+mise_version = mise_sha256 = jj_tool = jj_sha256 = uv_version = uv_sha256 = ""
 if worker_text is not None:
     mise_version = last_arg(ARG_MISE_VERSION, worker_text)
     mise_sha256 = last_arg(ARG_MISE_SHA256, worker_text)
     jj_tool = last_arg(ARG_JJ_TOOL, worker_text)
+    jj_sha256 = last_arg(ARG_JJ_SHA256, worker_text)
     uv_version = last_arg(ARG_UV_VERSION, worker_text)
     uv_sha256 = last_arg(ARG_UV_SHA256, worker_text)
     for declared, name in (
         (mise_version, "ARG MISE_VERSION"),
         (mise_sha256, "ARG MISE_SHA256"),
         (jj_tool, "ARG JJ_TOOL"),
+        (jj_sha256, "ARG JJ_SHA256"),
         (uv_version, "ARG UV_VERSION"),
         (uv_sha256, "ARG UV_SHA256"),
     ):
@@ -872,8 +878,18 @@ for row in readable:
             problems.append(
                 f"{CI_TOOLS}:{key_line(row, 'version')}: the jj row's version is {version} and "
                 f"{WORKER_DOCKERFILE} pins ARG JJ_TOOL={jj_tool}, whose version is {wanted}. "
-                f".github/actions/install-jj installs the tool spec that ARG names and checks it "
-                f"against this row."
+                f"The worker image installs the release that ARG names and "
+                f".github/actions/install-jj installs this row, so CI would test another jj."
+            )
+    if name == "jj" and jj_sha256:
+        primary_digest = str(row.get("primary_digest") or "").strip()
+        if primary_digest != jj_sha256:
+            problems.append(
+                f"{CI_TOOLS}:{key_line(row, 'primary_digest')}: the jj row's primary_digest is "
+                f"{one_line(primary_digest) or 'empty'} and {WORKER_DOCKERFILE} pins "
+                f"ARG JJ_SHA256={jj_sha256}. Both are the digest of the tarball that release "
+                f"serves, so one of the two admits bytes the other refuses: move this row's "
+                f"primary_digest to the ARG's value, or the ARG to the row's."
             )
     if name == "uv" and uv_version and version != uv_version:
         problems.append(

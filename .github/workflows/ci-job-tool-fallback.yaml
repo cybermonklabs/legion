@@ -49,33 +49,20 @@ jobs:
       - name: Start the machine watch over every faulted install
         run: .github/scripts/disk_watch.py start --path "$RUNNER_TEMP" --state "$RUNNER_TEMP/disk-watch.json"
 
-      # why: .github/ci-notes/ci-job-tool-fallback.md#case-5-of-16-and-why-it-runs-before-the-fault
-      - name: Corrupt nothing at the origin for the jj-primary case
-        run: .github/scripts/ci-tools-proof.sh corrupt
-
-      - name: Seed mise's install of jj with the staged binary, one byte changed
-        run: |
-          set -euo pipefail
-          proof=.github/scripts/ci-tools-proof.sh
-          corrupted="$RUNNER_TEMP/jj-one-byte-changed"
-          cp -- "$("$proof" payload-path jj)" "$corrupted"
-          "$proof" flip-last-byte "$corrupted"
-          "$proof" seed-mise-jj "$corrupted"
-          rm -f "$corrupted"
+      # why: .github/ci-notes/ci-job-tool-fallback.md#case-5-of-16-jjs-primary-through-the-origin
+      - name: Corrupt jj for its primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt jj
 
       - id: jj-primary
         continue-on-error: true
         timeout-minutes: 11
         uses: ./.github/actions/install-jj
         env:
+          CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
       - name: Read the jj-primary case
-        run: .github/scripts/ci-tools-proof.sh report jj-primary --outcome ${{ steps.jj-primary.outcome }} --row jj --expect-source github-release
-
-      # why: .github/ci-notes/ci-job-tool-fallback.md#why-mises-install-directory-is-taken-away-again
-      - name: Take mise's install away again, so the faulted install must read the copy
-        run: rm -rf "$HOME/.local/share/mise"
+        run: .github/scripts/ci-tools-proof.sh report jj-primary --outcome ${{ steps.jj-primary.outcome }} --row jj --expect-source github-release --expect-untried ghcr-mirror
 
       # why: .github/ci-notes/ci-job-tool-fallback.md#the-stand-in-curl-what-it-shortens-and-why-it-is-installed-at-this-position
       - name: Shorten the ladder of every fetch this job arranges to fail
@@ -316,15 +303,9 @@ jobs:
       - name: Read the changie-second-source case
         run: .github/scripts/ci-tools-proof.sh report changie-second-source --outcome ${{ steps.changie-second-source.outcome }} --row changie --expect-source ghcr-mirror
 
-      # why: .github/ci-notes/ci-job-tool-fallback.md#case-6-of-16-and-what-the-case-before-it-left
+      # why: .github/ci-notes/ci-job-tool-fallback.md#case-6-of-16-jjs-copy-after-the-faulted-primary
       - name: Corrupt the jj copy for its second-source case
         run: .github/scripts/ci-tools-proof.sh corrupt jj
-
-      - name: Remove mise's data directory, so its install must reach the faulted host
-        run: |
-          set -euo pipefail
-          rm -rf "$HOME/.local/share/mise"
-          echo "$HOME/.local/share/mise is gone, so mise must install jj rather than find it installed"
 
       - id: jj-second-source
         continue-on-error: true
