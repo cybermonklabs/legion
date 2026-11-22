@@ -1,10 +1,13 @@
 package consumernames
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"net"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -432,4 +435,75 @@ func TestAReplaceWhoseDoneEntryIsLostStops(t *testing.T) {
 	h.requireALostDoneStops(id, replaceCommand, func() (int, string, string) {
 		return h.run(actionReplace, "--hold", id, "--listener", "replace-lost")
 	})
+}
+
+// replaceTapDialer dials the operator's connection of one replace run. Once the run has published
+// to key (its write of the durable's record), it rewrites every later STREAM.INFO of the selection
+// bucket to a subject no grant holds, so the bucket barrier's reading of the stream's leader after
+// its read is never answered (writerhold.ReadBucket) and the barrier ends UNKNOWN after the write.
+type replaceTapDialer struct {
+	key     []byte
+	written atomic.Bool
+}
+
+func (d *replaceTapDialer) Dial(network, address string) (net.Conn, error) {
+	conn, err := (&net.Dialer{Timeout: 10 * time.Second}).Dial(network, address)
+	if err != nil {
+		return nil, err
+	}
+	return &replaceTapConn{Conn: conn, d: d}, nil
+}
+
+// replaceTapConn is a pointer, as nats.go compares the connections it holds.
+type replaceTapConn struct {
+	net.Conn
+	d *replaceTapDialer
+}
+
+func (c *replaceTapConn) Write(p []byte) (int, error) {
+	if bytes.Contains(p, c.d.key) {
+		c.d.written.Store(true)
+	}
+	out := p
+	if c.d.written.Load() {
+		out = bytes.ReplaceAll(p, []byte("STREAM.INFO."+selectionStreamName), []byte("STREAM.INFX."+selectionStreamName))
+	}
+	if _, err := c.Conn.Write(out); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+// A replace whose Step 0 settled the durable record's open operation behind the bucket barrier,
+// and whose barrier then failed before it read the stream's leader again (writerhold.ReadBucket
+// reads it after the read, and reads again when it moved), names Step 0's write in what its stop
+// left: the record was written, though the barrier never confirmed the read. Here the run's
+// STREAM.INFO of the bucket after its record write is refused, so the run ends UNKNOWN in its stop.
+// Control: the red run, this row against the replace that judged Step 0's write only after the
+// barrier returned, whose stop recorded that the run wrote no record.
+func TestAReplaceStopAfterAFailedBarrierNamesStepZerosWrite(t *testing.T) {
+	h := newStack(t)
+	ctx := t.Context()
+	h.replaceNotificationStream()
+	id := h.heldHold(holdrecord.WorkflowConsumerCleanup)
+	nc, store := h.replaceOp()
+	_, err := selection.CreateSessionBucket(ctx, nc, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
+	require.NoError(t, err)
+	durable := bus.ListenerDurable("replace-settle")
+	current := selection.FreshName(durable)
+	makeConsumer(t, nc, replaceBadConfig(current, durable, nats.NewInbox(), 1))
+	open := &selection.Op{Kind: selection.OpReplace, Old: current, Candidate: selection.FreshName(durable), ReservedAt: time.Now().Add(-time.Minute)}
+	_, err = store.Write(ctx, selection.DurableKey(durable), selection.Record{Current: current, Start: 1, Op: open}, 0)
+	require.NoError(t, err)
+
+	dialer := &replaceTapDialer{key: []byte("PUB " + selectionKeyPrefix + selection.DurableKey(durable) + " ")}
+	code, _, stderr := h.runDialed(ctx, dialer, actionReplace, "--hold", id, "--listener", "replace-settle")
+	require.Equal(t, 2, code, "replace whose barrier fails after its Step 0 write: %s", stderr)
+	require.True(t, dialer.written.Load(), "the run wrote no record of %s", durable)
+	_, store = h.replaceOp()
+	record, _ := replaceRecord(t, store, durable)
+	require.Nil(t, record.Op, "Step 0 left the open operation: %+v", record)
+	stop := h.lastEntry(id, replaceCommand)
+	require.Equal(t, "stop", stop.State, "replace's UNKNOWN ends in its stop")
+	require.Contains(t, stop.Outputs[stopLeftKey], "this run's Step 0 may have settled the open operation", "the stop names no Step 0 write")
 }

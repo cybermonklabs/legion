@@ -94,23 +94,28 @@ func (r *run) replaceListener(ctx context.Context) error {
 	var selected, read error
 	var before selection.Record
 	var revision uint64
+	// Step 0 writes the record only when it holds an open operation: settled is whether any of this
+	// run's Selects may have written it, a record it could not read first counting as one it may.
+	// ReadBucket runs the read again when the stream's leader moved, and a Step 0 that settled the
+	// operation in an earlier read leaves the later read none to settle, so each read adds to
+	// settled, which the stop of a barrier that failed after a read records too.
+	settled := false
 	a.barrier = true
-	if err := behindBarrier(ctx, nc, r.o.holdID, func(ctx context.Context) error {
+	berr := behindBarrier(ctx, nc, r.o.holdID, func(ctx context.Context) error {
 		before, revision, read = store.Read(ctx, m.Logical)
 		sel, selected = names.Select(ctx, m.Logical, nil)
+		settled = settled || (read != nil && !errors.Is(read, selection.ErrNoRecord) && !errors.Is(read, selection.ErrRecordDeleted)) ||
+			(read == nil && before.Op != nil && (selected != nil || sel.Revision != revision))
 		return nil
-	}); err != nil {
-		return a.stopped(ctx, err, true, nothing)
-	}
-	r.read(fmt.Sprintf("%s's record %s behind the bucket barrier", durable, m.Logical))
-	// Step 0 writes the record only when it holds an open operation: settled is whether this
-	// run's Select may have written it, a record it could not read first counting as one it may.
-	settled := (read != nil && !errors.Is(read, selection.ErrNoRecord) && !errors.Is(read, selection.ErrRecordDeleted)) ||
-		(read == nil && before.Op != nil && (selected != nil || sel.Revision != revision))
+	})
 	account := nothing
 	if settled {
 		account = fmt.Sprintf("this run's Step 0 may have settled the open operation of %s's record %s", durable, m.Logical)
 	}
+	if berr != nil {
+		return a.stopped(ctx, berr, !settled, account)
+	}
+	r.read(fmt.Sprintf("%s's record %s behind the bucket barrier", durable, m.Logical))
 	switch {
 	case errors.Is(selected, selection.ErrCutoverNotRun):
 		return a.stopped(ctx, fmt.Errorf("%s: the selection bucket's sentinel does not read cutover done, so the listener's durable is its fixed name, which replace does not take: %w", durable, selected), !settled, account)
