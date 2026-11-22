@@ -465,7 +465,8 @@ func TestAColdWritesVersionIsNotRacedByTheOtherProcessesAppend(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	taskA, _ := newTestServiceInstance(t, database)
-	taskB, _ := newTestServiceInstance(t, storetest.SecondProcess(t, database))
+	recorder := &roundTripRecorder{}
+	taskB, _ := newTestServiceInstance(t, storetest.TracedStore(t, database, recorder))
 	seedServiceText(t, taskA, artifactID, lostEditDocument)
 	if err := taskB.warmLiveDocument(context.Background(), artifactID); err != nil {
 		t.Fatalf("load task B's room: %v", err)
@@ -477,14 +478,16 @@ func TestAColdWritesVersionIsNotRacedByTheOtherProcessesAppend(t *testing.T) {
 
 	edit := startEditInFlight(t, taskA, artifactID, model.EditOp{Op: "replace", Find: "Alpha paragraph.", With: "Alpha paragraph, by the agent."})
 	// Bob types on task B while the write is open: his room takes the edit at once, and its
-	// append queues on the document's lock the write holds.
+	// append queues on the document's lock the write holds. The wait is for the append's own
+	// backend, the connection its batch's opening pipeline took the lock on, behind the write's
+	// transaction, so another session queued on the lock does not pass for it.
+	recorder.reset()
 	taskB.addConnection(artifactID, 1, model.Actor{Kind: "user", ID: "bob"})
 	if err := browserStyleWrite(taskB, artifactID, replaceRun("Bravo paragraph.", "Bravo paragraph, by bob."), make(chan struct{})); err != nil {
 		t.Fatalf("bob's edit on task B: %v", err)
 	}
-	waitFor(t, roomWait(t), "bob's append to queue on the document's advisory lock", func() bool {
-		return waitingAdvisoryLocks(t, database) > 0
-	})
+	bobsAppend := recorder.connOf(t, artifactID, "pg_advisory_lock(hashtext", true).PgConn().PID()
+	storetest.WaitForQueuedBehindBackend[struct{}](t, database, edit.tx.Conn().PgConn().PID(), bobsAppend, nil)
 	if stored := storedMarkdown(t, database, artifactID); strings.Contains(stored, "by bob") {
 		t.Fatalf("bob's edit was stored while the write held the document's lock: %q", stored)
 	}

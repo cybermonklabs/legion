@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // pendingAuthorRows is the document's durable pending authors (doc_pending_authors): every author
@@ -174,21 +175,33 @@ func waitForLandedAppends(t *testing.T, service *Service, artifactID string) {
 	}
 }
 
-// awaitAppendLandedOrQueued returns once the room's latest update has either landed or is waiting
-// for the document's advisory lock (withRoomLock's pg_advisory_lock), whichever the code under test
-// makes it do.
-func awaitAppendLandedOrQueued(t *testing.T, service *Service, artifactID string) {
+// awaitAppendLandedOrQueued returns once the room's latest update has either landed or its append
+// is waiting for the document's advisory lock (withRoomLock's pg_advisory_lock), whichever the
+// code under test makes it do. The append is named by its own backend: the connection the room's
+// latest append took the lock on in its opening pipeline, which recorder saw go out
+// (roundTripRecorder.latestConnOf), so another session waiting on the document's lock - a
+// compaction, another room's append - does not pass for it. The lock's holder is the write under
+// test, whose backend the caller cannot name, so the wait reads the append's own lock wait
+// (storetest.WaitsOnLock). Its one bound is the test binary's deadline less testwait's margin.
+func awaitAppendLandedOrQueued(t *testing.T, service *Service, recorder *roundTripRecorder, artifactID string) {
 	t.Helper()
-	ctx := context.Background()
-	deadline := time.Now().Add(roomWait(t))
-	for time.Now().Before(deadline) {
-		if !service.hasPendingUpdates(artifactID) &&
-			(!service.hasDurableAppend(artifactID) || lockWaits(t, ctx, service.store, "%pg_advisory_lock(hashtext%") > 0) {
-			return
+	testwait.UntilPolling(t, 2*time.Millisecond, "the room's update to land or its append to wait for the document's lock", func() (struct{}, bool) {
+		if service.hasPendingUpdates(artifactID) {
+			return struct{}{}, false
 		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	t.Fatal("the room's update neither landed nor waited for the document lock")
+		if !service.hasDurableAppend(artifactID) {
+			return struct{}{}, true
+		}
+		opening, ok := recorder.latestConnOf(artifactID, "pg_advisory_lock(hashtext", true)
+		if !ok {
+			return struct{}{}, false
+		}
+		waiting, err := storetest.WaitsOnLock(context.Background(), service.store, opening.PgConn().PID(), "%pg_advisory_lock(hashtext%")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return struct{}{}, waiting
+	})
 }
 
 // countVersionAuthor is how many non-fixture versions list actor. The test artifact's initial
@@ -518,7 +531,7 @@ func TestALoadNeverWaitsForTheDocumentLock(t *testing.T) {
 // alice's, which a browser made once the fork had read the room. The next version lists alice and
 // not bob, and nothing owes bob.
 func TestAnUploadClearsOnlyTheEditsItsForkHeld(t *testing.T) {
-	service, artifactID := newTestService(t)
+	_, service, artifactID, recorder := tracedTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
@@ -535,7 +548,7 @@ func TestAnUploadClearsOnlyTheEditsItsForkHeld(t *testing.T) {
 		}
 		edited = true
 		editAsConnectedPeer(t, service, artifactID, 2, alice, appendBlocks(t, "Alice's paragraph.\n"))
-		awaitAppendLandedOrQueued(t, service, artifactID)
+		awaitAppendLandedOrQueued(t, service, recorder, artifactID)
 	}
 	ctx := context.Background()
 	tx, err := service.store.Pool.Begin(ctx)
@@ -1016,7 +1029,7 @@ func TestAPlainUploadsSettlementAddsNothingVisible(t *testing.T) {
 // before the version read the room and appended after, lands owed and is listed once, on the next
 // committed version.
 func TestADiscardedNamedVersionMarksNothing(t *testing.T) {
-	service, artifactID := newTestService(t)
+	_, service, artifactID, recorder := tracedTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
@@ -1029,7 +1042,7 @@ func TestADiscardedNamedVersionMarksNothing(t *testing.T) {
 		}
 		edited = true
 		editAsConnectedPeer(t, service, artifactID, 1, alice, appendBlocks(t, "Alice's paragraph.\n"))
-		awaitAppendLandedOrQueued(t, service, artifactID)
+		awaitAppendLandedOrQueued(t, service, recorder, artifactID)
 	}
 	ctx := context.Background()
 	tx, err := service.store.Pool.Begin(ctx)
@@ -1069,7 +1082,7 @@ func TestADiscardedNamedVersionMarksNothing(t *testing.T) {
 // nothing it listed: alice, whose edit was in flight when the version read the room, is listed on
 // that version alone, and nothing owes her once her append lands.
 func TestAnEvictionDuringAVersionsCommitListsItsAuthorOnce(t *testing.T) {
-	service, artifactID := newTestService(t)
+	_, service, artifactID, recorder := tracedTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
@@ -1082,7 +1095,7 @@ func TestAnEvictionDuringAVersionsCommitListsItsAuthorOnce(t *testing.T) {
 		}
 		edited = true
 		editAsConnectedPeer(t, service, artifactID, 1, alice, appendBlocks(t, "Alice's paragraph.\n"))
-		awaitAppendLandedOrQueued(t, service, artifactID)
+		awaitAppendLandedOrQueued(t, service, recorder, artifactID)
 	}
 	ctx := context.Background()
 	tx, err := service.store.Pool.Begin(ctx)

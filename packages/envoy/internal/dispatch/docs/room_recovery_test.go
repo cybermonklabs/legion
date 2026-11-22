@@ -615,8 +615,13 @@ func TestAWriterWaitingForTheSlotFinishesWhenTheRoomFails(t *testing.T) {
 		returned <- err
 	}()
 	// The second write waits on the document owner's lock while the first transaction is open;
-	// once that commits, it takes the lock and goes on to wait for the first write's slot.
-	waitForLockWait(t, ctx, database, "%as owner_lock%", returned)
+	// once that commits, it takes the lock and goes on to wait for the first write's slot. The
+	// wait is for the second transaction's own backend behind the first: another session queued
+	// on the owner's lock would let the first commit before the second write queued, and the
+	// second would then find no slot to wait for.
+	if err, early := storetest.WaitForQueuedBehind(t, first, second.Conn().PgConn().PID(), returned); early {
+		t.Fatalf("the second write returned (%v) before it queued behind the first transaction's owner lock", err)
+	}
 	if err := firstLedger.commit(ctx); err != nil {
 		t.Fatalf("commit first transaction: %v", err)
 	}

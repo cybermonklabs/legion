@@ -5385,7 +5385,7 @@ func TestAdversarialSettlementDoesNotMissAppendAfterClassConsume(t *testing.T) {
 }
 
 func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
-	service, artifactID := newTestService(t)
+	_, service, artifactID, recorder := tracedTestService(t)
 	service.settle = 5 * time.Millisecond
 	seedServiceText(t, service, artifactID, "before")
 
@@ -5397,26 +5397,14 @@ func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
 	if _, _, err := lockArtifactOwner(context.Background(), blocker, artifactID); err != nil {
 		t.Fatalf("lock document issue: %v", err)
 	}
+	// The settlement this edit arms opens with the read of the document's owner, on the
+	// connection whose transaction then waits for the owner's lock the blocker holds, so the wait
+	// is for that one backend: any other session queued on the lock would let the shutdown below
+	// start before the settlement was blocked.
+	recorder.reset()
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
-	locked := false
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		var waiting int
-		if err := service.store.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'
-		`).Scan(&waiting); err != nil {
-			t.Fatalf("inspect database locks: %v", err)
-		}
-		if waiting > 0 {
-			locked = true
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if !locked {
-		t.Fatal("settlement did not wait on the document lock")
-	}
+	settlement := recorder.connOf(t, artifactID, ownerReadStatement, false)
+	storetest.WaitForEachQueuedBehind(t, blocker, settlement.PgConn().PID())
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	result := make(chan error, 1)
@@ -5566,7 +5554,7 @@ func TestCancelledTextLoadDoesNotQuarantineRoom(t *testing.T) {
 }
 
 func TestSettleCapturesAuthorsAtSnapshotTime(t *testing.T) {
-	service, artifactID := newTestService(t)
+	_, service, artifactID, recorder := tracedTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
 	first := model.Actor{Kind: "user", ID: "alice"}
@@ -5585,12 +5573,19 @@ func TestSettleCapturesAuthorsAtSnapshotTime(t *testing.T) {
 	if _, _, err := lockArtifactOwner(context.Background(), blocker, artifactID); err != nil {
 		t.Fatalf("lock document issue: %v", err)
 	}
+	// The settlement's read of the document's owner names the connection its transaction runs
+	// on, so the wait is for that one backend behind the blocker, not for any session queued on
+	// the owner's lock.
+	recorder.reset()
 	settled := make(chan struct{})
 	go func() {
 		service.settleRoom(artifactID, generation)
 		close(settled)
 	}()
-	waitForDatabaseLock(t, service.store)
+	settlement := recorder.connOf(t, artifactID, ownerReadStatement, false)
+	if _, early := storetest.WaitForQueuedBehind(t, blocker, settlement.PgConn().PID(), settled); early {
+		t.Fatal("the settlement returned before it queued behind the blocker's owner lock")
+	}
 	service.recordActor(t, artifactID, second)
 	if err := blocker.Commit(context.Background()); err != nil {
 		t.Fatalf("release document lock: %v", err)
@@ -5604,25 +5599,6 @@ func TestSettleCapturesAuthorsAtSnapshotTime(t *testing.T) {
 	if len(version.Authors) != 2 || version.Authors[0] != first || version.Authors[1] != second {
 		t.Fatalf("settled version authors = %#v, want %v and %v", version.Authors, first, second)
 	}
-}
-
-func waitForDatabaseLock(t *testing.T, database *store.Store) {
-	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		var waiting int
-		if err := database.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'
-		`).Scan(&waiting); err != nil {
-			t.Fatalf("inspect database locks: %v", err)
-		}
-		if waiting > 0 {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("settlement did not wait on the document lock")
 }
 
 // failingOnceVersionedStore fails the first load of the stored document, of either kind: a room's
@@ -5843,8 +5819,15 @@ func seedServiceText(t *testing.T, service *Service, artifactID, markdown string
 // tests assert on, or the transaction's, and never fails the test itself, so a goroutine may call
 // it.
 func joinedWrite(service *Service, write func(ctx context.Context) error) error {
+	return joinedWriteOn(service, service.store.Pool, write)
+}
+
+// joinedWriteOn is joinedWrite with the write's transaction opened on pool: a pool of one
+// connection (storetest.OneConnection) runs the write on the one backend a test then waits on,
+// so no other session queued behind the same lock is taken for it.
+func joinedWriteOn(service *Service, pool *store.Pool, write func(ctx context.Context) error) error {
 	ctx := context.Background()
-	tx, err := service.store.Pool.Begin(ctx)
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin the write's transaction: %w", err)
 	}

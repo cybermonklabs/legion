@@ -1039,10 +1039,15 @@ func sharesOneAsk(t *testing.T, service *Service, copies []string, opener string
 const copyLockWait = "%" + projectCopiesLock + "%"
 
 // settlementBarrier is a settlement hook (afterSettleLock, afterSettleReconcile) that holds each
-// settlement calling it until all n have called it or wait on their project's copy lock
-// (lockProjectCopies). It runs on settlement's goroutine, so a failed read is reported with
-// t.Errorf and lets the settlement go on.
-func settlementBarrier(t *testing.T, service *Service, n int) func(string) {
+// settlement calling it until all of the copies' settlements have called it or wait on their
+// project's copy lock (lockProjectCopies). Each settlement is named by its own backend, the
+// connection its read of its copy's owner went out on (lockArtifactOwner, which recorder saw), and
+// counted as waiting when that backend waits at the copy lock's statement: the lock's holder is
+// another of the settlements, whose backend a reader of one cannot pick, so the wait reads the
+// settlement's own lock wait (storetest.WaitsOnLock), and no other session waiting on the copy lock
+// is counted. It runs on settlement's goroutine, so a failed read is reported with t.Errorf and
+// lets the settlement go on.
+func settlementBarrier(t *testing.T, service *Service, recorder *roundTripRecorder, copies []string) func(string) {
 	t.Helper()
 	var mu sync.Mutex
 	arrived := 0
@@ -1052,15 +1057,25 @@ func settlementBarrier(t *testing.T, service *Service, n int) func(string) {
 		mu.Unlock()
 		deadline := time.Now().Add(10 * time.Second)
 		for time.Now().Before(deadline) {
-			waiting, err := storetest.CountLockWaits(context.Background(), service.store, copyLockWait)
-			if err != nil {
-				t.Errorf("count the settlements waiting on the copy lock: %v", err)
-				return
+			waiting := 0
+			for _, document := range copies {
+				settlement, ok := recorder.firstConnOf(document, ownerReadStatement, false)
+				if !ok {
+					continue
+				}
+				queued, err := storetest.WaitsOnLock(context.Background(), service.store, settlement.PgConn().PID(), copyLockWait)
+				if err != nil {
+					t.Errorf("read whether a settlement waits on the copy lock: %v", err)
+					return
+				}
+				if queued {
+					waiting++
+				}
 			}
 			mu.Lock()
 			reached := arrived
 			mu.Unlock()
-			if reached+waiting >= n {
+			if reached+waiting >= len(copies) {
 				return
 			}
 			time.Sleep(2 * time.Millisecond)
@@ -1094,7 +1109,7 @@ func roomGeneration(t *testing.T, service *Service, document string) uint64 {
 // reconciled too or wait on the copy lock: without the lock all three would read their copy sources
 // before any committed, and each would open an ask.
 func TestThreeProjectCopiesOfARetractedAskSettlingAtOnceShareOneAsk(t *testing.T) {
-	service, _ := newTestService(t)
+	_, service, _, recorder := tracedTestService(t)
 	service.settle = time.Hour
 	shared := ":::ask{#shared urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
 	original := createProjectDocument(t, service.store, "# Original")
@@ -1124,8 +1139,11 @@ func TestThreeProjectCopiesOfARetractedAskSettlingAtOnceShareOneAsk(t *testing.T
 	for index, copy := range copies {
 		generations[index] = roomGeneration(t, service, copy)
 	}
-	service.afterSettleLock = settlementBarrier(t, service, len(copies))
-	service.afterSettleReconcile = settlementBarrier(t, service, len(copies))
+	// Every settlement's trips from here on are its own, so its first read of its copy's owner
+	// names its backend (settlementBarrier).
+	recorder.reset()
+	service.afterSettleLock = settlementBarrier(t, service, recorder, copies)
+	service.afterSettleReconcile = settlementBarrier(t, service, recorder, copies)
 	var settling sync.WaitGroup
 	for index, copy := range copies {
 		settling.Go(func() { service.settleRoom(copy, generations[index]) })
@@ -1158,7 +1176,7 @@ func TestThreeProjectCopiesOfARetractedAskSettlingAtOnceShareOneAsk(t *testing.T
 // them would wait for the answer too; what fails this test is a lock the two come to share in
 // opposite orders.
 func TestACopySettlingWhileItsSourceIsAnsweredWaitsForTheAnswerAndNeitherFails(t *testing.T) {
-	service, _ := newTestService(t)
+	database, service, _, recorder := tracedTestService(t)
 	service.settle = time.Hour
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -1179,13 +1197,21 @@ func TestACopySettlingWhileItsSourceIsAnsweredWaitsForTheAnswerAndNeitherFails(t
 	})
 	generation := roomGeneration(t, service, copied)
 
+	// The settlement's read of the copy's owner names its backend, and the wait is for that
+	// backend to queue behind the gate the answer's write phase waits on - behind the answer, which
+	// holds the copy's pending row - so another session queued on either lock does not pass for it.
 	settled := make(chan error, 1)
-	if err := answerSource(ctx, service, original, source, func() {
+	if err := answerSource(ctx, service, original, source, func(gate uint32) {
+		recorder.reset()
 		go func() {
 			service.settleRoom(copied, generation)
 			settled <- nil
 		}()
-		waitForLockWait(t, ctx, service.store, "%delete from doc_settlements_pending%", settled)
+		settlement := recorder.connOf(t, copied, ownerReadStatement, false).PgConn().PID()
+		if err, early := storetest.WaitForQueuedBehindBackend(t, database, gate, settlement, settled); early {
+			t.Errorf("the copy's settlement returned (%v) before it queued behind the answer", err)
+			settled <- err
+		}
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1213,8 +1239,9 @@ func TestACopySettlingWhileItsSourceIsAnsweredWaitsForTheAnswerAndNeitherFails(t
 }
 
 // answerSource answers source, the ask of the block shared on the project document original, as
-// closeSource does, with eu-west-1. between runs right after SettleCopiesOf.
-func answerSource(ctx context.Context, service *Service, original string, source model.Ask, between func()) error {
+// closeSource does, with eu-west-1. between runs right after SettleCopiesOf, handed the gate's
+// backend.
+func answerSource(ctx context.Context, service *Service, original string, source model.Ask, between func(gate uint32)) error {
 	region := "eu-west-1"
 	answer := model.AskAnswer{User: "alice", Selected: []string{}, Text: &region, At: time.Date(2026, 10, 9, 9, 0, 0, 0, time.UTC)}
 	return closeSource(ctx, service, original, "shared", source, &answer, between)
@@ -1229,14 +1256,18 @@ func answerSource(ctx context.Context, service *Service, original string, source
 // between, when set, runs while the write phase stands right after those rows, holding the copy
 // lock and the copies' pending rows: the batch waits there on a gate lock this helper holds
 // (closeSourceGate) until between has returned, so the statements after the rows run only then.
+// between is handed the backend holding the gate, so a call it starts that waits on what the
+// write phase holds is read queued behind that backend (storetest.QueuedBehindBackend), and the
+// write phase itself is read waiting behind it on its own transaction's backend.
 // It returns its error rather than failing the test, so it can run off the test's goroutine.
-func closeSource(ctx context.Context, service *Service, original, blockID string, source model.Ask, answer *model.AskAnswer, between func()) error {
+func closeSource(ctx context.Context, service *Service, original, blockID string, source model.Ask, answer *model.AskAnswer, between func(gate uint32)) error {
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	tx, err := service.store.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin closing the source: %w", err)
 	}
 	defer tx.Rollback(context.Background())
+	closingBackend := tx.Conn().PgConn().PID()
 	closing, ledger := service.Join(ctx, tx)
 	defer ledger.Discard()
 	owner, _, err := lockArtifactOwner(ctx, tx, original)
@@ -1251,6 +1282,7 @@ func closeSource(ctx context.Context, service *Service, original, blockID string
 		return fmt.Errorf("mark the copies owed: %w", err)
 	}
 	var gate *pgxpool.Conn
+	var gateBackend uint32
 	openGate := func() error { return nil }
 	if between != nil {
 		if gate, err = service.store.Pool.Acquire(ctx); err != nil {
@@ -1260,6 +1292,7 @@ func closeSource(ctx context.Context, service *Service, original, blockID string
 		if _, err := gate.Exec(ctx, `select pg_advisory_lock($1)`, closeSourceGate); err != nil {
 			return fmt.Errorf("hold the gate: %w", err)
 		}
+		gateBackend = gate.Conn().PgConn().PID()
 		opened := false
 		openGate = func() error {
 			if opened {
@@ -1320,11 +1353,11 @@ func closeSource(ctx context.Context, service *Service, original, blockID string
 	go func() { committed <- ledger.Commit(ctx) }()
 	reached := func() error {
 		for {
-			waiting, err := storetest.CountLockWaits(ctx, service.store, "%close_source_gate%")
+			queued, err := storetest.QueuedBehindBackend(ctx, service.store, gateBackend, closingBackend)
 			if err != nil {
 				return err
 			}
-			if waiting > 0 {
+			if queued {
 				return nil
 			}
 			select {
@@ -1341,7 +1374,7 @@ func closeSource(ctx context.Context, service *Service, original, blockID string
 	// rolls the transaction back under the commit.
 	reachErr := reached()
 	if reachErr == nil {
-		between()
+		between(gateBackend)
 	}
 	openErr := openGate()
 	commitErr := <-committed
@@ -1369,7 +1402,7 @@ const closeSourceGate int64 = 0x434C4F5345474154
 func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *testing.T) {
 	for _, order := range []string{"answer first", "settlement first"} {
 		t.Run(order, func(t *testing.T) {
-			service, _ := newTestService(t)
+			database, service, _, recorder := tracedTestService(t)
 			service.settle = time.Hour
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
@@ -1392,13 +1425,22 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 				service.settleRoom(copied, generation)
 				settled <- nil
 			}
+			// Each call is named by its own backend, the connection its read of its document's owner
+			// went out on (lockArtifactOwner), so the waits below are for that call and not for any
+			// session queued on the copy lock.
 			switch order {
 			case "answer first":
 				// The answer holds the copy lock and the copy's pending row while the copy's settlement
-				// waits on the lock, then appends its event and commits.
-				if err := answerSource(ctx, service, original, source, func() {
+				// waits on the lock - behind the answer, which waits on the gate - then appends its
+				// event and commits.
+				if err := answerSource(ctx, service, original, source, func(gate uint32) {
+					recorder.reset()
 					go settle()
-					waitForLockWait(t, ctx, service.store, copyLockWait, settled)
+					settlement := recorder.connOf(t, copied, ownerReadStatement, false).PgConn().PID()
+					if err, early := storetest.WaitForQueuedBehindBackend(t, database, gate, settlement, settled); early {
+						t.Errorf("the copy's settlement returned (%v) before it queued behind the answer's copy lock", err)
+						settled <- err
+					}
 				}); err != nil {
 					t.Fatal(err)
 				}
@@ -1412,15 +1454,22 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 						<-proceed
 					}
 				}
+				recorder.reset()
 				go settle()
 				select {
 				case <-reconciled:
 				case <-ctx.Done():
 					t.Fatal("the copy's settlement never reconciled")
 				}
+				settlement := recorder.connOf(t, copied, ownerReadStatement, false).PgConn().PID()
+				recorder.reset()
 				answered := make(chan error, 1)
 				go func() { answered <- answerSource(ctx, service, original, source, nil) }()
-				waitForLockWait(t, ctx, service.store, copyLockWait, answered)
+				answer := recorder.connOf(t, original, ownerReadStatement, false).PgConn().PID()
+				if err, early := storetest.WaitForQueuedBehindBackend(t, database, settlement, answer, answered); early {
+					t.Errorf("the answer returned (%v) before it queued behind the settlement's copy lock", err)
+					answered <- err
+				}
 				close(proceed)
 				awaitDone(t, ctx, "the copy's settlement", settled)
 				service.afterSettleReconcile = nil

@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A browser's keystrokes reach the store through the room's persistence, one call per update
@@ -39,11 +40,13 @@ import (
 // copy of that configuration (store.Pool.separate), so it sees the shared pool's connections and
 // those of the rooms pool and of any pool of the rooms' own alike.
 //
-// A test asks it two things. How many round trips a browser append makes holding its document's
+// A test asks it three things. How many round trips a browser append makes holding its document's
 // lock (lockedAppends): the span, on one connection, from the session pg_advisory_lock of the
 // document to its pg_advisory_unlock, both included, for each span that wrote a row of doc_updates
-// - one span per append transaction, which is how the store takes a room's updates. And how many
+// - one span per append transaction, which is how the store takes a room's updates. How many
 // statements of some text the store sent for one document (statements), such as a lock statement.
+// And which backend a room append that takes the document's lock runs on (lockingBackend), so a
+// wait for that append's queue watches it alone.
 //
 // What it does not count is a statement's preparation. pgx describes a statement it has not seen
 // on a connection before in a round trip of its own, once per connection and statement text, so
@@ -58,6 +61,7 @@ type statementTracer struct {
 type tracedTrip struct {
 	conn       *pgx.Conn
 	statements []tracedStatement
+	pipeline   bool
 }
 
 type tracedStatement struct {
@@ -71,14 +75,14 @@ func (statement tracedStatement) names(room string) bool {
 	return len(statement.args) > 0 && fmt.Sprint(statement.args[0]) == room
 }
 
-func (t *statementTracer) record(conn *pgx.Conn, statements []tracedStatement) {
+func (t *statementTracer) record(conn *pgx.Conn, statements []tracedStatement, pipeline bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.trips = append(t.trips, tracedTrip{conn: conn, statements: statements})
+	t.trips = append(t.trips, tracedTrip{conn: conn, statements: statements, pipeline: pipeline})
 }
 
 func (t *statementTracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	t.record(conn, []tracedStatement{{sql: data.SQL, args: data.Args}})
+	t.record(conn, []tracedStatement{{sql: data.SQL, args: data.Args}}, false)
 	return ctx
 }
 
@@ -89,7 +93,7 @@ func (t *statementTracer) TraceBatchStart(ctx context.Context, conn *pgx.Conn, d
 	for _, queued := range data.Batch.QueuedQueries {
 		statements = append(statements, tracedStatement{sql: queued.SQL, args: queued.Arguments})
 	}
-	t.record(conn, statements)
+	t.record(conn, statements, true)
 	return ctx
 }
 
@@ -166,6 +170,24 @@ func (t *statementTracer) statements(room, text string, since int) int {
 	return count
 }
 
+// lockingBackend waits for the first pipeline since mark whose first statement takes room's
+// session lock - a room append's opening (appendRoomTx), where a compaction's lockRoom sends that
+// statement on its own - and answers the backend of the connection it went on, whose wait for that
+// lock a test then watches. Its one bound is the test binary's deadline less testwait's margin.
+func (t *statementTracer) lockingBackend(tb *testing.T, room string, since int) uint32 {
+	tb.Helper()
+	return testwait.UntilPolling(tb, 2*time.Millisecond, fmt.Sprintf("a room append taking document %s's session lock", room), func() (uint32, bool) {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		for _, trip := range t.trips[since:] {
+			if first := trip.statements[0]; trip.pipeline && strings.Contains(first.sql, "pg_advisory_lock(hashtext(") && first.names(room) {
+				return trip.conn.PgConn().PID(), true
+			}
+		}
+		return 0, false
+	})
+}
+
 // storedVersionsAfter is every version of artifactID's stored updates past after, in order.
 func storedVersionsAfter(t *testing.T, database *store.Store, artifactID string, after int64) []int64 {
 	t.Helper()
@@ -222,15 +244,15 @@ func TestQueuedBrowserUpdatesOfOneRoomCommitInOneTransactionOffTheSharedPool(t *
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	before := storedHead(t, observer, artifactID)
 
-	unlock := holdDocumentLock(t, observer, artifactID)
+	unlock, holder := holdDocumentLockBackend(t, observer, artifactID)
 	since := tracer.mark()
 	sharedBefore := traced.Pool.Stat().AcquireCount()
 	for keystroke := range queued {
 		typeInRoom(t, service, artifactID, 1, alice, appendBlocks(t, fmt.Sprintf("Keystroke %d.\n", keystroke)))
 	}
-	waitFor(t, roomWait(t), "the room's first append to wait for the document's lock", func() bool {
-		return waitingAdvisoryLocks(t, observer) > 0
-	})
+	// The wait is for the room's first append's own backend behind the holder's, so no other
+	// session queued on the document's lock passes for it. The append answers on no channel.
+	storetest.WaitForQueuedBehindBackend[struct{}](t, observer, holder, tracer.lockingBackend(t, artifactID, since), nil)
 	unlock()
 	waitFor(t, roomWait(t), "every queued update to be stored", func() bool {
 		return storedHead(t, observer, artifactID) >= before+queued
@@ -281,7 +303,7 @@ type creditedStep struct {
 // connection until all of them are in the room, so the store takes them as one queue; otherwise
 // each is stored before the next is made. A consumed step's credit is marked consumed while its
 // append waits for that lock, as a version that listed it and committed first would leave it.
-func storeCreditedUpdates(t *testing.T, service *Service, observer *store.Store, artifactID string, steps []creditedStep, together bool) int64 {
+func storeCreditedUpdates(t *testing.T, service *Service, tracer *statementTracer, observer *store.Store, artifactID string, steps []creditedStep, together bool) int64 {
 	t.Helper()
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
 		t.Fatalf("load the document's room: %v", err)
@@ -289,8 +311,10 @@ func storeCreditedUpdates(t *testing.T, service *Service, observer *store.Store,
 	waitForLandedAppends(t, service, artifactID)
 	base := storedHead(t, observer, artifactID)
 	var unlock func()
+	var holder uint32
+	since := tracer.mark()
 	if together {
-		unlock = holdDocumentLock(t, observer, artifactID)
+		unlock, holder = holdDocumentLockBackend(t, observer, artifactID)
 	}
 	for index, step := range steps {
 		if !together {
@@ -325,9 +349,10 @@ func storeCreditedUpdates(t *testing.T, service *Service, observer *store.Store,
 		}
 	}
 	if together {
-		waitFor(t, roomWait(t), "the room's first append to wait for the document's lock", func() bool {
-			return waitingAdvisoryLocks(t, observer) > 0
-		})
+		// The wait is for the room's first append's own backend, the connection that sent the
+		// document's session lock (statementTracer.lockingBackend), behind the holder's, so no
+		// other session queued on the document's lock passes for it.
+		storetest.WaitForQueuedBehindBackend[struct{}](t, observer, holder, tracer.lockingBackend(t, artifactID, since), nil)
 		unlock()
 		waitForLandedAppends(t, service, artifactID)
 	}
@@ -411,7 +436,8 @@ func TestABatchLeavesThePendingAuthorRowsOneAtATimeAppendsLeave(t *testing.T) {
 	}
 	database := storetest.Open(t)
 	observer := storetest.SecondProcess(t, database)
-	service, _ := newTestServiceInstance(t, database)
+	tracer := &statementTracer{}
+	service, _ := newTestServiceInstance(t, storetest.TracedStore(t, database, tracer))
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
 			queuedDoc := createDocument(t, database, "# First")
@@ -420,8 +446,8 @@ func TestABatchLeavesThePendingAuthorRowsOneAtATimeAppendsLeave(t *testing.T) {
 				seedServiceText(t, service, artifactID, "First.\n")
 				settleCurrentGeneration(t, service, artifactID)
 			}
-			queuedBase := storeCreditedUpdates(t, service, observer, queuedDoc, test.steps, true)
-			oneByOneBase := storeCreditedUpdates(t, service, observer, oneByOneDoc, test.steps, false)
+			queuedBase := storeCreditedUpdates(t, service, tracer, observer, queuedDoc, test.steps, true)
+			oneByOneBase := storeCreditedUpdates(t, service, tracer, observer, oneByOneDoc, test.steps, false)
 			queued := creditRowsSince(t, observer, queuedDoc, queuedBase)
 			oneByOne := creditRowsSince(t, observer, oneByOneDoc, oneByOneBase)
 			if !slices.Equal(queued.authors, oneByOne.authors) || queued.owed != oneByOne.owed || queued.lastActor != oneByOne.lastActor {

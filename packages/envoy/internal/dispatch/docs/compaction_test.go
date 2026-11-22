@@ -128,7 +128,7 @@ func TestARoomCloseCompactionLeavesABusyDocumentForALaterCompaction(t *testing.T
 // the room recovers: the rows older than the tail fold, the young row stays as written, and the
 // recovered room reads the document as it was.
 func TestAFailedRoomsEvictionCompactionWaitsForTheLockAndFoldsOnlyOldRows(t *testing.T) {
-	service, artifactID := newTestService(t)
+	database, service, artifactID, recorder := tracedTestService(t)
 	service.settle = time.Hour
 	foldPoint := writeRoomRows(t, service, artifactID)
 	ageUpdatesThrough(t, service.store, artifactID, foldPoint, time.Hour)
@@ -136,11 +136,15 @@ func TestAFailedRoomsEvictionCompactionWaitsForTheLockAndFoldsOnlyOldRows(t *tes
 	reading := storedReading(t, NewPgVersioned(service.store), artifactID)
 
 	ctx := context.Background()
-	unlock := holdDocumentLock(t, service.store, artifactID)
+	unlock, holder := holdDocumentLockBackend(t, database, artifactID)
+	// The eviction's compaction waits for the lock on a connection of the compaction pool, which
+	// its lockRoom statement names; the wait is for that backend behind the holder's, so another
+	// session queued on the document's lock does not pass for it. The eviction answers on no
+	// channel, so the wait has none to watch.
+	recorder.reset()
 	service.failRoom(artifactID, errors.New("test: fail the room"))
-	waitFor(t, 10*time.Second, "the failed room's compaction to wait for the document's lock", func() bool {
-		return lockWaits(t, ctx, service.store, "select pg_advisory_lock(%") > 0
-	})
+	compaction := recorder.connOf(t, artifactID, "pg_advisory_lock(hashtext", false).PgConn().PID()
+	storetest.WaitForQueuedBehindBackend[struct{}](t, database, holder, compaction, nil)
 	requireRowsAsStored(t, service.store, artifactID, before)
 	unlock()
 	recoveryCtx, cancel := context.WithTimeout(ctx, recoveryBound)
@@ -601,22 +605,18 @@ func TestACompactionThatDoesNotWaitHoldsNoRoomLockWhileItWaitsForAConnection(t *
 // holding the document's lock whether or not the compaction read anything. It returns once the
 // holder of that lock lets go, with the read's error.
 func TestAWaitingCompactionWhoseReadFailedStillWaitsForTheRoomsLock(t *testing.T) {
-	database, versioned, artifactID := newHeldCompactionDocument(t)
-	unlock := holdDocumentLock(t, database, artifactID)
+	database, _, artifactID := newHeldCompactionDocument(t)
+	unlock, holder := holdDocumentLockBackend(t, database, artifactID)
 	renameDocUpdatesAway(t, database)
 
-	run := compactAside(versioned, artifactID, true)
-	// The compaction's is the one advisory lock of this test's database waited for: nothing else
-	// here takes one, and the lock the test holds is granted.
-	deadline := time.Now().Add(roomWait(t))
-	for waitingAdvisoryLocks(t, database) == 0 {
-		if run.returned() {
-			t.Fatalf("the compaction whose read failed returned (%+v, %v) without waiting for the document's lock", run.result, run.err)
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the compaction whose read failed never waited for the document's lock within roomWait")
-		}
-		time.Sleep(2 * time.Millisecond)
+	// The compaction runs on a store whose round trips are recorded, so its wait for the lock
+	// names its backend (lockRoom's statement), and the wait is for that backend behind the
+	// holder's.
+	recorder := &roundTripRecorder{}
+	run := compactAside(NewPgVersioned(storetest.TracedStore(t, database, recorder)), artifactID, true)
+	compaction := recorder.connOf(t, artifactID, "pg_advisory_lock(hashtext", false).PgConn().PID()
+	if _, early := storetest.WaitForQueuedBehindBackend(t, database, holder, compaction, run.done); early {
+		t.Fatalf("the compaction whose read failed returned (%+v, %v) without waiting for the document's lock", run.result, run.err)
 	}
 
 	unlock()
@@ -910,6 +910,14 @@ func setSettlementCursor(t *testing.T, database *store.Store, artifactID string,
 // (evictRoomLoadRoom).
 func holdDocumentLock(t testing.TB, database *store.Store, artifactID string) (unlock func()) {
 	t.Helper()
+	unlock, _ = holdDocumentLockBackend(t, database, artifactID)
+	return unlock
+}
+
+// holdDocumentLockBackend is holdDocumentLock that also answers the backend holding the lock, for
+// a test that waits for a call to queue behind that backend (storetest.QueuedBehindBackend).
+func holdDocumentLockBackend(t testing.TB, database *store.Store, artifactID string) (unlock func(), holder uint32) {
+	t.Helper()
 	ctx := context.Background()
 	conn, err := database.Pool.Acquire(ctx)
 	if err != nil {
@@ -926,5 +934,5 @@ func holdDocumentLock(t testing.TB, database *store.Store, artifactID string) (u
 		}
 	})
 	t.Cleanup(unlock)
-	return unlock
+	return unlock, conn.Conn().PgConn().PID()
 }

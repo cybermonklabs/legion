@@ -11,7 +11,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func lockOrderServiceFor(t *testing.T, database *store.Store) *Service {
@@ -30,33 +29,6 @@ func lockOrderService(t *testing.T) (*store.Store, *Service, string) {
 	database := storetest.Open(t)
 	id := createDocument(t, database, "")
 	return database, lockOrderServiceFor(t, database), id
-}
-
-// waitForLockWait returns once a statement matching like waits on a lock, and fails at once with
-// the waiting operation's result if it returns first.
-func waitForLockWait(t *testing.T, ctx context.Context, database *store.Store, like string, returned <-chan error) {
-	t.Helper()
-	if !testwait.Holds(10*time.Second, 2*time.Millisecond, func() bool {
-		select {
-		case err := <-returned:
-			t.Fatalf("the operation returned (%v) before any statement matching %s waited on a lock", err, like)
-		default:
-		}
-		return lockWaits(t, ctx, database, like) > 0
-	}) {
-		t.Fatalf("no statement waiting on a lock matching %s", like)
-	}
-}
-
-// lockWaits counts the sessions of the test's database waiting on a lock whose statement matches
-// like (storetest.CountLockWaits), failing the test when it cannot read them.
-func lockWaits(t *testing.T, ctx context.Context, database *store.Store, like string) int {
-	t.Helper()
-	waiting, err := storetest.CountLockWaits(ctx, database, like)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return waiting
 }
 
 func TestConditionalEditDoesNotInvertTheRoomLockOrder(t *testing.T) {
@@ -90,6 +62,7 @@ func TestConditionalEditDoesNotInvertTheRoomLockOrder(t *testing.T) {
 		t.Fatalf("begin second transaction: %v", err)
 	}
 	defer txTwo.Rollback(context.Background())
+	secondBackend := txTwo.Conn().PgConn().PID()
 	secondDone := make(chan error, 1)
 	go func() {
 		joinedTwo, ledgerTwo := service.Join(ctx, txTwo)
@@ -100,8 +73,13 @@ func TestConditionalEditDoesNotInvertTheRoomLockOrder(t *testing.T) {
 		secondDone <- err
 	}()
 	// The second edit takes the document owner's lock first (see liveWrite), so it waits there,
-	// in the database, holding nothing of the document.
-	waitForLockWait(t, ctx, database, "%as owner_lock%", secondDone)
+	// in the database, holding nothing of the document. The wait is for its own transaction's
+	// backend behind the first transaction: any other session queued on the owner's lock, a
+	// settlement of the server's own among them, would let the snapshot below start before the
+	// second edit waits, and the inversion it checks for would not be in place.
+	if err, early := storetest.WaitForQueuedBehind(t, txOne, secondBackend, secondDone); early {
+		t.Fatalf("the second edit returned (%v) before it queued behind the first transaction's owner lock", err)
+	}
 
 	snapshotDone := make(chan error, 1)
 	go func() {

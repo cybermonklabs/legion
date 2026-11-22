@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 func TestBackfillAnchorBlocksPinsResolvableLegacyRowsOnce(t *testing.T) {
@@ -72,7 +72,7 @@ func TestBackfillAnchorBlocksPinsResolvableLegacyRowsOnce(t *testing.T) {
 // the row carries both at the end.
 func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
 	const holdKey = int64(4815162342)
-	service, artifactID := newTestService(t)
+	database, service, artifactID, recorder := tracedTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "Introduction.\n\nTarget passage.\n\nOther passage.\n")
 	askID := insertAnchoredAsk(t, service, artifactID, "Other passage")
@@ -146,27 +146,39 @@ func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
 		t.Fatalf("hold the anchor refresh: %v", err)
 	}
 
+	// The settlement reads the document's owner first in the transaction that then refreshes the
+	// anchors, so that read names its backend, and the wait is for that backend behind the hold:
+	// another session waiting on the hold's key does not pass for the settlement.
+	recorder.reset()
 	settled := make(chan struct{})
 	go func() {
 		defer close(settled)
 		service.settleRoom(artifactID, generation)
 	}()
-	waitForHeldAnchorRefresh(t, service, holdKey)
+	settlement := recorder.connOf(t, artifactID, ownerReadStatement, false).PgConn().PID()
+	if _, early := storetest.WaitForQueuedBehind(t, hold, settlement, settled); early {
+		t.Fatal("the settlement returned before it reached its anchor refresh")
+	}
 
 	// The backfill runs beside the held settlement, in a goroutine, because it no longer runs
 	// past it: it takes the comment's owner lock, which the settlement's version write holds
 	// (lockArtifactOwner, refs.LockItemOwner), so it parks there until the settlement commits.
-	// Its own wait is the proof, read off pg_locks rather than off a clock.
+	// Its own wait is the proof: its backend, named by its read of the comment's owner
+	// (refs.LockItemOwner's first statement), queued behind the settlement's.
 	type backfillResult struct {
 		report AnchorBlockBackfill
 		err    error
 	}
+	recorder.reset()
 	backfilled := make(chan backfillResult, 1)
 	go func() {
 		report, err := service.BackfillAnchorBlocks(context.Background())
 		backfilled <- backfillResult{report: report, err: err}
 	}()
-	waitForHeldOwnerLock(t, service, store.IssueOwner("DOC-1"))
+	backfiller := recorder.connOf(t, commentID, "select issue_key, artifact_id::text from comments", false).PgConn().PID()
+	if result, early := storetest.WaitForQueuedBehindBackend(t, database, settlement, backfiller, backfilled); early {
+		t.Fatalf("the backfill returned (%#v, %v) before it queued behind the settlement's owner lock", result.report, result.err)
+	}
 
 	if err := hold.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the anchor refresh: %v", err)
@@ -201,55 +213,6 @@ func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
 	if anchor.Orphaned {
 		t.Fatalf("comment anchor stayed orphaned, so the settlement never refreshed it")
 	}
-}
-
-// waitForHeldAnchorRefresh returns once the settlement is inside its anchor refresh, waiting on
-// the advisory lock the test holds. The lock's own wait queue is the settlement's observable
-// position; nothing here assumes how long a step takes.
-func waitForHeldAnchorRefresh(t *testing.T, service *Service, key int64) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		var waiting int
-		if err := service.store.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_locks
-			where locktype = 'advisory' and not granted
-				and ((classid::bigint << 32) | objid::bigint) = $1
-		`, key).Scan(&waiting); err != nil {
-			t.Fatalf("read the anchor refresh hold: %v", err)
-		}
-		if waiting > 0 {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("the settlement never reached its anchor refresh")
-}
-
-// waitForHeldOwnerLock returns once a transaction is waiting on owner's lock, which is where a
-// writer that takes it parks while another transaction holds it (store.LockOwner). The lock's own
-// wait queue is that writer's observable position, read as waitForHeldAnchorRefresh reads the
-// test's own key, so nothing here waits a fixed length for a step to happen; the deadline bounds
-// the wait and the failure names the lock it waited for.
-func waitForHeldOwnerLock(t *testing.T, service *Service, owner store.Owner) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		var waiting int
-		if err := service.store.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_locks
-			where locktype = 'advisory' and not granted and objsubid = 2
-				and classid = ($2::bigint & 4294967295)::oid
-				and objid = (hashtext($1)::bigint & 4294967295)::oid
-		`, owner.LockKey(), int64(store.OwnerLockNamespace)).Scan(&waiting); err != nil {
-			t.Fatalf("read the waiters on %s %s's owner lock: %v", owner.Kind, owner.Key, err)
-		}
-		if waiting > 0 {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("no transaction waited on %s %s's owner lock", owner.Kind, owner.Key)
 }
 
 func TestBlockForQuoteLeavesTopLevelCrossBlockAnchorsUnpinned(t *testing.T) {
