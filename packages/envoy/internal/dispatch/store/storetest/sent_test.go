@@ -580,6 +580,20 @@ func TestSentStatementsForgetACopyTheServerRefuses(t *testing.T) {
 				return ready
 			})
 		}},
+		{name: "an extended copy into a missing table, sent in one write with its data, CopyDone and a second Sync", copy: func(t *testing.T, conn *pgx.Conn) {
+			frontend := conn.PgConn().Frontend()
+			for _, message := range []pgproto3.FrontendMessage{&pgproto3.Parse{Query: "copy no_such_table from stdin"}, &pgproto3.Bind{}, &pgproto3.Execute{},
+				&pgproto3.Sync{}, &pgproto3.CopyData{Data: []byte("1\n")}, &pgproto3.CopyDone{}, &pgproto3.Sync{}} {
+				frontend.Send(message)
+			}
+			if err := frontend.Flush(); err != nil {
+				t.Fatalf("send: %v", err)
+			}
+			if !drain(t, frontend, true) {
+				t.Fatal("control: the server took a copy into a table that does not exist")
+			}
+			drain(t, frontend, false)
+		}},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			sent := &SentStatements{}
@@ -603,46 +617,70 @@ func TestSentStatementsForgetACopyTheServerRefuses(t *testing.T) {
 	}
 }
 
-// A CopyDone the client sends once no copy can start leaves no mark. pgx's CopyFrom sends its
-// CopyDone after it reads the server's refusal of the COPY, and whether the refusal's
-// ReadyForQuery reached the recorder before that CopyDone is timing. Each order is fed here to a
-// recorder on no network connection: a simple COPY refused, its refusal and ReadyForQuery read
-// together and the CopyDone sent between them, and an extended COPY whose Parse is refused, with
-// the CopyDone sent between the refusal and the ReadyForQuery of the Sync. The select after it must
-// be recorded as run, and the simple COPY as refused once, with nothing the recorder could not read.
+// A CopyDone marks where a copy will end only while a copy may still start, and a refusal takes
+// away every mark of the copy it ends. Each order of writes and reads is fed here to a recorder on
+// no network connection, then a select:
+//   - pgx's CopyFrom sends its CopyDone after it reads the server's refusal of the COPY, and
+//     whether the refusal's ReadyForQuery reached the recorder first is timing: a simple COPY
+//     refused with each order, and an extended COPY whose Parse is refused with the CopyDone sent
+//     between the refusal and the ReadyForQuery;
+//   - an extended COPY sent in one write with its data, its CopyDone and a second Sync, refused at
+//     its Execute and at its Parse: the server discards up to the first Sync, the COPY's Execute
+//     among them, and answers each Sync;
+//   - and the control that a mark stays where a copy may start: a simple COPY the server runs,
+//     its CopyDone sent before the CopyInResponse.
+//
+// The select after it must be recorded as run, the COPY as the server answered it, and nothing the
+// recorder could not read.
 func TestSentStatementsLeaveNoCopyEndAfterTheRefusal(t *testing.T) {
 	const copying, after = "copy no_such_table from stdin", "select 1"
-	refusal := &pgproto3.ErrorResponse{Severity: "ERROR", SeverityUnlocalized: "ERROR", Code: "42P01", Message: `relation "no_such_table" does not exist`}
+	type step struct {
+		front []pgproto3.FrontendMessage
+		back  []pgproto3.BackendMessage
+	}
+	write := func(messages ...pgproto3.FrontendMessage) step { return step{front: messages} }
+	read := func(messages ...pgproto3.BackendMessage) step { return step{back: messages} }
+	missing := &pgproto3.ErrorResponse{Severity: "ERROR", SeverityUnlocalized: "ERROR", Code: "42P01", Message: `relation "no_such_table" does not exist`}
+	syntax := &pgproto3.ErrorResponse{Severity: "ERROR", SeverityUnlocalized: "ERROR", Code: "42601", Message: `syntax error at or near "copy"`}
 	ready := &pgproto3.ReadyForQuery{TxStatus: 'I'}
-	ending := []pgproto3.FrontendMessage{&pgproto3.CopyData{Data: []byte("1\n")}, &pgproto3.CopyDone{}}
+	simple := &pgproto3.Query{String: copying}
+	extended := []pgproto3.FrontendMessage{&pgproto3.Parse{Query: copying}, &pgproto3.Bind{}, &pgproto3.Execute{}, &pgproto3.Sync{}}
+	data, done := &pgproto3.CopyData{Data: []byte("1\n")}, &pgproto3.CopyDone{}
 	for _, scenario := range []struct {
-		name    string
-		start   []pgproto3.FrontendMessage
-		between bool
-		refused int
+		name         string
+		steps        []step
+		ran, refused int
 	}{
-		{name: "a simple COPY, its refusal and ReadyForQuery read before the CopyDone", start: []pgproto3.FrontendMessage{&pgproto3.Query{String: copying}}, refused: 1},
-		{name: "a simple COPY, the CopyDone sent between its refusal and ReadyForQuery", start: []pgproto3.FrontendMessage{&pgproto3.Query{String: copying}}, between: true, refused: 1},
-		{name: "an extended COPY, the CopyDone sent between its refusal and ReadyForQuery", start: []pgproto3.FrontendMessage{&pgproto3.Parse{Query: copying}, &pgproto3.Bind{}, &pgproto3.Execute{}, &pgproto3.Sync{}}, between: true},
+		{name: "a simple COPY refused, its refusal and ReadyForQuery read before the CopyDone",
+			steps: []step{write(simple), read(missing, ready), write(data, done)}, refused: 1},
+		{name: "a simple COPY refused, the CopyDone sent between its refusal and ReadyForQuery",
+			steps: []step{write(simple), read(missing), write(data, done), read(ready)}, refused: 1},
+		{name: "an extended COPY whose Parse is refused, the CopyDone sent between the refusal and the ReadyForQuery",
+			steps: []step{write(extended...), read(missing), write(data, done), read(ready)}},
+		{name: "an extended COPY sent in one write with its data, CopyDone and a second Sync, refused at its Execute",
+			steps: []step{write(append(extended, data, done, &pgproto3.Sync{})...), read(&pgproto3.ParseComplete{}, &pgproto3.BindComplete{}, missing, ready, ready)}, refused: 1},
+		{name: "an extended COPY sent in one write with its data, CopyDone and a second Sync, refused at its Parse",
+			steps: []step{write(append(extended, data, done, &pgproto3.Sync{})...), read(syntax, ready, ready)}},
+		{name: "a simple COPY the server runs, its CopyDone sent before the CopyInResponse",
+			steps: []step{write(simple, data, done), read(&pgproto3.CopyInResponse{ColumnFormatCodes: []uint16{0}}, &pgproto3.CommandComplete{CommandTag: []byte("COPY 1")}, ready)}, ran: 1},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			sent, conn := fed(startup(), encoded[pgproto3.BackendMessage](t, ready), 1)
-			conn.readWritten(encoded(t, scenario.start...))
-			if scenario.between {
-				conn.readAnswered(encoded[pgproto3.BackendMessage](t, refusal))
-				conn.readWritten(encoded(t, ending...))
-				conn.readAnswered(encoded[pgproto3.BackendMessage](t, ready))
-			} else {
-				conn.readAnswered(encoded[pgproto3.BackendMessage](t, refusal, ready))
-				conn.readWritten(encoded(t, ending...))
+			for _, step := range scenario.steps {
+				if step.front != nil {
+					conn.readWritten(encoded(t, step.front...))
+				} else {
+					conn.readAnswered(encoded(t, step.back...))
+				}
 			}
 			conn.readWritten(encoded[pgproto3.FrontendMessage](t, &pgproto3.Parse{Query: after}, &pgproto3.Bind{}, &pgproto3.Execute{}, &pgproto3.Sync{}))
 			conn.readAnswered(encoded[pgproto3.BackendMessage](t, &pgproto3.ParseComplete{}, &pgproto3.BindComplete{},
 				&pgproto3.DataRow{Values: [][]byte{[]byte("1")}}, &pgproto3.CommandComplete{CommandTag: []byte("SELECT 1")}, ready))
-			ran, refused := counted(sent, 0, after)
-			if ran != 1 || refused != scenario.refused || len(sent.Blind()) != 0 {
-				t.Fatalf("recorded the select after the copy %d run and %d statements refused, blind %v; want 1, %d and nothing it could not read",
-					ran, refused, sent.Blind(), scenario.refused)
+			ranCopy, refused := counted(sent, 0, copying)
+			ranAfter, _ := counted(sent, 0, after)
+			if ranCopy != scenario.ran || refused != scenario.refused || ranAfter != 1 || len(sent.Blind()) != 0 {
+				t.Fatalf("recorded the copy %d run and %d statements refused, the select after it %d run, blind %v; want %d, %d, 1 and nothing it could not read",
+					ranCopy, refused, ranAfter, sent.Blind(), scenario.ran, scenario.refused)
 			}
 		})
 	}

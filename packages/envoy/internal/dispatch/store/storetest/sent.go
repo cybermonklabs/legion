@@ -531,7 +531,10 @@ func (c *sendingConn) copyIn() {
 // waiting for an answer that it refuses is recorded as Failed, once: a simple query or a function
 // call it refused waits for its ReadyForQuery, and an error after the refusal records it no second
 // time. A refusal ends any copy-in, and with it the marks of a CopyDone or CopyFail sent before a
-// CopyInResponse that will not come now (copyEnd), up to the next Sync.
+// CopyInResponse that will not come now (copyEnd): every mark up to the first message the server
+// will still run that may start a copy (an Execute or a simple query). In an extended query that is
+// past the next Sync, since the server discards everything before it, the Execute of the COPY
+// among them, though a client may send the copy's data and end after that Sync, all in one write.
 //
 // A FATAL or PANIC error ends the connection: the server closes it and answers nothing more, so
 // nothing after it is read and nothing still waiting ran. It ends a statement the server was
@@ -560,10 +563,24 @@ func (c *sendingConn) refused(body []byte) {
 		return
 	}
 	c.copying = false
-	for index := 1; index < len(c.waiting) && c.waiting[index].kind != 'S'; {
-		if c.waiting[index].kind == copyEnd {
+	pastSync := true
+	if !ends && len(c.waiting) > 0 {
+		switch c.waiting[0].kind {
+		case 'Q', 'F', 'S':
+		default:
+			pastSync = false
+		}
+	}
+	for index := 1; index < len(c.waiting); {
+		kind := c.waiting[index].kind
+		if kind == copyEnd {
 			c.waiting = append(c.waiting[:index], c.waiting[index+1:]...)
 			continue
+		}
+		if kind == 'S' {
+			pastSync = true
+		} else if pastSync && (kind == 'E' || kind == 'Q') {
+			break
 		}
 		index++
 	}
