@@ -25,17 +25,57 @@ const (
 
 // newPlaceholderFixture is newAirlockFixture with the airlock actually in force: the Machine
 // holds rules, the proxy's URL and its certificate, so a release of a name the rules name takes
-// the placeholder path. Each named secret's recorded fingerprint is that entry's own, as a real
-// broker's is; the digests map is returned so a test can move one entry under a live grant.
-func newPlaceholderFixture(t *testing.T, rules proxyrules.Rules) (m *Machine, enrollmentID string, key *ecdsa.PrivateKey, digests map[string]string) {
+// the placeholder path. Each rule is the proxy block of a profile of its own name
+// (rulesProfiles), as a real broker's rules are its profiles' proxy blocks, so each name's
+// recorded fingerprint is its profile's; apps are the github-app secrets the test stores, each
+// served by a profile of its own name. The profiles file is returned so a test can roll one entry
+// under a live grant (rollProfiles).
+func newPlaceholderFixture(t *testing.T, rules proxyrules.Rules, apps ...string) (m *Machine, enrollmentID string, key *ecdsa.PrivateKey, file string) {
 	t.Helper()
-	digests = map[string]string{}
-	for _, secret := range rules.Secrets {
-		digests[secret.Name] = rules.Digest(secret.Name)
-	}
-	m, enrollmentID, key = newAirlockFixture(t, digests)
+	file = rulesProfiles(t, rules, apps...)
+	m, enrollmentID, key = newAirlockFixture(t, file)
 	m.Airlock, m.AirlockProxyURL, m.AirlockCACertificate = rules, testProxyURL, testCACertificate
-	return m, enrollmentID, key, digests
+	return m, enrollmentID, key, file
+}
+
+// rulesProfiles is the profiles file of rules and apps: for each rule, a profile of the rule's own
+// name whose proxy block is that rule, and for each of apps a github block on
+// policytest.AppProfile's accounts, beside the rule's proxy block where a rule names it.
+func rulesProfiles(t *testing.T, rules proxyrules.Rules, apps ...string) string {
+	t.Helper()
+	const github = `"github": {"accounts": ["acme", "ada"], "permissions": {"metadata": "read"}}`
+	var entries []string
+	named := map[string]bool{}
+	for _, rule := range rules.Secrets {
+		proxy, err := json.Marshal(policy.ProxyBlock{Hosts: rule.Hosts, Headers: rule.Headers, Allow: rule.Allow, Kind: rule.Kind, Judge: rule.Judge, Guidance: rule.Guidance})
+		if err != nil {
+			t.Fatal(err)
+		}
+		entry := `{"name": "` + rule.Name + `", "proxy": ` + string(proxy)
+		if slices.Contains(apps, rule.Name) {
+			entry += ", " + github
+		}
+		entries = append(entries, entry+"}")
+		named[rule.Name] = true
+	}
+	for _, app := range apps {
+		if !named[app] {
+			entries = append(entries, policytest.AppProfile(app))
+		}
+	}
+	return policytest.ProfilesFile(entries...)
+}
+
+// appNames is the name of each of stored that is a github-app secret, which newPlaceholderFixture
+// serves through a profile.
+func appNames(stored ...secrets.LocalSecret) []string {
+	var apps []string
+	for _, secret := range stored {
+		if secret.Tags[policy.TagType] == policy.TypeGitHubApp {
+			apps = append(apps, policy.SlugToName(strings.TrimPrefix(secret.Name, policytest.Prefix)))
+		}
+	}
+	return apps
 }
 
 // rule is one entry of a test's rules file: the name, the hosts it is bound to, and its kind.
@@ -109,7 +149,7 @@ func holdsNothingOf(t *testing.T, release Release, secret string) {
 // policy granted it at once.
 func grantOf(t *testing.T, m *Machine, enrollmentID string, key *ecdsa.PrivateKey, reason string, names ...string) (requestID, grantID string) {
 	t.Helper()
-	request, err := m.Create(t.Context(), enrollmentID, signRequest(t, m, key, reason, names...), "", nil)
+	request, err := m.Create(t.Context(), enrollmentID, signRequest(t, m, key, reason, names...), "")
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create(%v) = %+v, %v; want a grant at once", names, request, err)
 	}
@@ -125,7 +165,7 @@ func TestAReleaseHoldsBackTheAirlocksNameAndHandsOverTheRest(t *testing.T) {
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
 	requestID, grantID := grantOf(t, m, enr, key, "read both", "AUTO_TOKEN", "SECOND_TOKEN")
 
-	release, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
+	release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
 	if err != nil {
 		t.Fatalf("Values: %v", err)
 	}
@@ -159,29 +199,6 @@ func TestAReleaseHoldsBackTheAirlocksNameAndHandsOverTheRest(t *testing.T) {
 	}
 }
 
-// TestAHostlessEntryReleasesItsValue: an entry with no host says who decides a request for its key
-// and binds the value nowhere, so a grant of it releases the value itself, as a name with no entry
-// does, and nothing of it goes to the airlock.
-func TestAHostlessEntryReleasesItsValue(t *testing.T) {
-	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{
-		{Name: "AUTO_TOKEN", Judge: new(uint32(600)), Guidance: "grant for the release job"},
-	}})
-	requestID, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
-	release, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
-	if err != nil {
-		t.Fatalf("Values: %v", err)
-	}
-	if got := release.Values["AUTO_TOKEN"]; got != "auto-v1" {
-		t.Fatalf("values = %v; want AUTO_TOKEN's own value: a host-less entry holds nothing back", release.Values)
-	}
-	if release.Airlock != nil {
-		t.Errorf("the release carries an airlock %+v; want none for a key the airlock binds nowhere", release.Airlock)
-	}
-	if got := deliveries(t, m, requestID); got["AUTO_TOKEN"] != "inject" {
-		t.Errorf("delivery = %v; want AUTO_TOKEN inject", got)
-	}
-}
-
 // TestASecondReleaseHandsBackTheSamePlaceholders: the placeholders a grant was given are its own
 // for as long as it lives, so a session that releases twice — a retry, or a second process —
 // finds the strings already in its environment still working, and the table grows no row.
@@ -189,12 +206,12 @@ func TestASecondReleaseHandsBackTheSamePlaceholders(t *testing.T) {
 	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
 
-	first, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
+	first, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
 	if err != nil {
 		t.Fatalf("first Values: %v", err)
 	}
 	rows := placeholderRows(t, m, grantID)
-	second, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
+	second, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
 	if err != nil {
 		t.Fatalf("second Values: %v", err)
 	}
@@ -312,7 +329,7 @@ func TestTheReleasedShapeOfEachKind(t *testing.T) {
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("SHAPE_KEY", c.entryKind)}})
+			m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("SHAPE_KEY", c.entryKind)}}, appNames(c.secret)...)
 			retag(t, m, c.secret)
 			if c.minted != "" {
 				m.Minters = map[string]Minter{c.secret.Tags[policy.TagType]: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
@@ -320,7 +337,7 @@ func TestTheReleasedShapeOfEachKind(t *testing.T) {
 				}}
 			}
 			_, grantID := grantOf(t, m, enr, key, "read the secret", "SHAPE_KEY")
-			release, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
+			release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
 			if err != nil {
 				t.Fatalf("Values: %v", err)
 			}
@@ -350,7 +367,7 @@ func TestTheReleasedShapeOfAnAzureLogin(t *testing.T) {
 	m.Minters = map[string]Minter{policy.TypeAzureLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 		return secrets.Minted{Value: azureMint}, nil
 	}}
-	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "sign in to Azure", "AZURE_LOGIN"), "", nil)
+	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "sign in to Azure", "AZURE_LOGIN"), "")
 	if err != nil || request.RecordID == nil {
 		t.Fatalf("Create = %+v, %v; want a pending request", request, err)
 	}
@@ -359,7 +376,7 @@ func TestTheReleasedShapeOfAnAzureLogin(t *testing.T) {
 		t.Fatalf("ApplyDecision = %+v, %v; want a grant", decision, err)
 	}
 
-	release, err := m.Values(t.Context(), decision.GrantID, enr, nil, ReleaseCall{})
+	release, err := m.Values(t.Context(), decision.GrantID, enr, ReleaseCall{})
 	if err != nil {
 		t.Fatalf("Values: %v", err)
 	}
@@ -439,7 +456,7 @@ func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("SHAPE_KEY", c.entryKind)}})
+			m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("SHAPE_KEY", c.entryKind)}}, appNames(c.secret)...)
 			retag(t, m, c.secret)
 			wantExpires := time.Time{}
 			if c.mint != "" {
@@ -450,7 +467,7 @@ func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 			}
 			var grantID string
 			if c.approve {
-				request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "sign in", "SHAPE_KEY"), "", nil)
+				request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "sign in", "SHAPE_KEY"), "")
 				if err != nil || request.RecordID == nil {
 					t.Fatalf("Create = %+v, %v; want a pending request", request, err)
 				}
@@ -485,7 +502,7 @@ func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 			}
 			// The slots the proxy holds values for are exactly the slots the release mints
 			// placeholders for, which is what one walk of the value rather than two buys.
-			release, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
+			release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
 			if err != nil {
 				t.Fatalf("Values: %v", err)
 			}
@@ -508,7 +525,7 @@ func TestTheProxyPasswordIsTheFirstPairInSortedOrder(t *testing.T) {
 	)
 	_, grantID := grantOf(t, m, enr, key, "read both", "AWS_KEY", "ZULU_TOKEN")
 
-	release, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
+	release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
 	if err != nil {
 		t.Fatalf("Values: %v", err)
 	}

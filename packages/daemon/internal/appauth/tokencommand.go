@@ -110,15 +110,28 @@ func tokenCommandField(role AppRole) string {
 }
 
 // runTokenCommand returns the release of app's token_command for the request's owner ("" for
-// every installation) and read, keyed by lowercased account login, from a run that outlives ctx
-// (commandRun): ctx ending first returns ErrCommandPending in a TransientError, which wraps ctx's
-// error too, so a caller that tells its own context's end by that error reads it as such. A
-// release of every installation records its accounts as the role's installations
-// (recordOwners), the set a narrowed run that fails is read against.
+// every installation) and read, keyed by lowercased account login. A release of every
+// installation records its accounts as the role's installations (recordOwners), the set a
+// narrowed run that fails is read against. Every read of a token_command goes through it
+// (mintFromCommand, anyInstallation, readInstalledOwners), and these are the rules of its run.
 //
-// The run is keyed by the request's own scope (leaseScope), the key its lease is cached under:
-// a read-only run must never answer a caller that asked for a write token, and one encoding of
-// a scope serves both.
+// The run belongs to no caller: it runs on the Manager's own context, bounded by
+// tokenCommandLimit, and every caller of the same scope joins it while it runs, so a caller that
+// leaves ends neither the run nor the wait of a caller that joined it. The run is keyed by the
+// request's own scope (leaseScope), the key its lease is cached under: a read-only run must never
+// answer a caller that asked for a write token, and one encoding of a scope serves both.
+//
+// A caller whose ctx ends before the run does is answered ErrCommandPending in a TransientError,
+// which wraps ctx's error too, while the command goes on, so a caller that tells its own
+// context's end by that error reads it as such. The error names the owner, or every installation
+// where the owner is "". The boot's key proof reads that answer as pending and spends no attempt
+// on it (internal/daemon's appAttempt), so a grant that waits on a person's approval holds the
+// boot without ending it.
+//
+// A run that finishes with no caller waiting is kept for finishedRunKeep, so a caller's next
+// attempt gets the release of the run its earlier attempt started, and a grant a person approved
+// is not asked for again. A caller that gets a finished run's result forgets the run (forgetRun),
+// so the next caller of the scope joins another run in flight or runs the command again.
 func (m *Manager) runTokenCommand(ctx context.Context, app config.GitHubApp, request mintRequest) (map[string]releasedInstallation, error) {
 	role, owner := request.role, request.owner
 	key := request.scope()
@@ -155,7 +168,11 @@ func (m *Manager) runTokenCommand(ctx context.Context, app config.GitHubApp, req
 		m.forgetRun(key, run)
 		return run.installations, run.err
 	case <-ctx.Done():
-		return nil, &TransientError{Err: fmt.Errorf("%s for %q is still running after %w (a grant may wait on a person's approval): %w", tokenCommandField(role), owner, ctx.Err(), ErrCommandPending)}
+		release := "every installation"
+		if owner != "" {
+			release = strconv.Quote(owner)
+		}
+		return nil, &TransientError{Err: fmt.Errorf("%s for %s is still running after %w (a grant may wait on a person's approval): %w", tokenCommandField(role), release, ctx.Err(), ErrCommandPending)}
 	}
 }
 

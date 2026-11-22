@@ -11,8 +11,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
+
+// ghGitReadBound is the longest `legion gh` waits for one of the git reads it makes of the
+// repository before gh runs: the configuration read (ghRepoGitConfigRefusal) and the remotes and
+// their markers (gitLines). Each reads a few files of the repository and answers in milliseconds.
+// A git that has not answered in 30 s waits on something it will not get, a configuration on a
+// mount that hangs or a git wrapper that waits, and the person running `legion gh` gets the read's
+// refusal, which sends nothing, rather than a call that never returns; 30 s is room for a loaded
+// machine. It is a variable so that this package's tests can give it their own deadline
+// (programbound).
+var ghGitReadBound = 30 * time.Second
 
 // ghRepoGitConfigRefusal refuses the call when the configuration of the repository the git gh runs
 // works in (the current directory's, as gh's own git finds it, with env, the environment gh gets)
@@ -57,7 +68,7 @@ import (
 // Its limit is ghConfigShape's: it reads the configuration before gh's git does, so a pane that
 // writes it between the two wins that race, and that pane can already read the token itself.
 func ghRepoGitConfigRefusal(env []string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), programbound.Of(&ghGitReadBound))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "config", "--show-origin", "--null", "--get-regexp", `^(http|credential)\.|^include\.path$|^includeif\..*\.path$|^extensions\.worktreeconfig$`)
 	cmd.Env = append(slices.Clone(env), "LC_ALL=C")

@@ -15,7 +15,6 @@ import { sql } from "./psql";
 // boot, and GET /api/v1/dashboard/builds reads the builds the live ones serve from it.
 const tables = [
   "agent_tokens",
-  "repo_projects",
   "architecture_sources",
   "legion_current",
   "legion_observations",

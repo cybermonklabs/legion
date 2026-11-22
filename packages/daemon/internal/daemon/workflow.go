@@ -358,13 +358,12 @@ func appTransient(err error) bool {
 // runTokenCommand shares: an attempt whose bound ends while the command runs is pending
 // (ErrCommandPending), the next attempt joins the run still going, and a run that finishes
 // between two attempts is kept for the next one (appauth's finishedRunKeep), so the command does
-// not run again for it. The logins read takes and forgets every run it is answered with, so the
-// key proof that follows it never takes a release the logins read was answered with (appauth's
-// anyInstallation); it keeps the installation it took until it has read the App's login under
-// it (appauth's loginRelease), and an attempt of it reads only the Apps whose login no attempt
-// before it read (appLoginsAtBoot): each App's command runs again for the logins read only after
-// a run of it failed, or once the release it took has come within appauth's refreshWindow of its
-// expiry.
+// not run again for it. The logins read shares those runs; appauth's anyInstallation says why the
+// key proof never takes a release the logins read was answered with. The logins read keeps the
+// installation it took until it has read the App's login under it (appauth's loginRelease), and
+// an attempt of it reads only the Apps whose login no attempt before it read (appLoginsAtBoot):
+// each App's command runs again for the logins read only after a run of it failed, or once the
+// release it took has come within appauth's refreshWindow of its expiry.
 func appAttempt(waits *startWaits, call string, attempt func(context.Context) error) func(context.Context) bootprobe.Outcome {
 	return func(ctx context.Context) bootprobe.Outcome {
 		bounded, cancel := context.WithTimeout(ctx, appMintAttempt)

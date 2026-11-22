@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -40,7 +41,7 @@ func TestBuildSignerSelectsMode(t *testing.T) {
 	isolateChain(t)
 	t.Setenv("AGENT_SECRETS_KEY_DIR", "")
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
-	if _, _, err := buildSigner(); err == nil ||
+	if _, _, err := buildSigner(io.Discard); err == nil ||
 		!strings.Contains(err.Error(), "no broker identity for this process") ||
 		!strings.Contains(err.Error(), "AGENT_SECRETS_KEY_DIR") ||
 		!strings.Contains(err.Error(), "AGENT_SECRETS_HELPER_SOCK") {
@@ -51,7 +52,7 @@ func TestBuildSignerSelectsMode(t *testing.T) {
 	sock, _ := fakeHelper(t, helper.Response{OK: true, Proof: "eyJ.fake.proof"})
 	t.Setenv("AGENT_SECRETS_KEY_DIR", emptyDir)
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
-	_, signer, err := buildSigner()
+	_, signer, err := buildSigner(io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,13 +61,13 @@ func TestBuildSignerSelectsMode(t *testing.T) {
 	}
 
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "/x/h.sock")
-	if _, _, err := buildSigner(); err == nil || !strings.Contains(err.Error(), "agent-secrets-helper at /x/h.sock") ||
+	if _, _, err := buildSigner(io.Discard); err == nil || !strings.Contains(err.Error(), "agent-secrets-helper at /x/h.sock") ||
 		strings.Contains(err.Error(), "no broker identity for this process") {
 		t.Fatalf("a named socket that is not there is a stopped helper, which stops the chain: %v", err)
 	}
 
 	t.Setenv("AGENT_SECRETS_KEY_DIR", newKeyDir(t))
-	id, signer, err := buildSigner()
+	id, signer, err := buildSigner(io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,14 +107,14 @@ func TestBuildSignerNamesTheEnrollmentErrorDiagnostic(t *testing.T) {
 	t.Setenv("AGENT_SECRETS_KEY_DIR", dir)
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
 
-	if _, _, err := buildSigner(); err == nil || strings.Contains(err.Error(), "enrollment.error") {
+	if _, _, err := buildSigner(io.Discard); err == nil || strings.Contains(err.Error(), "enrollment.error") {
 		t.Fatalf("no enrollment.error file must not be mentioned: %v", err)
 	}
 
 	if err := os.WriteFile(filepath.Join(dir, "enrollment.error"), []byte("broker 503 DATABASE: postgres unreachable\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := buildSigner()
+	_, _, err := buildSigner(io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "enrollment.error") || !strings.Contains(err.Error(), "postgres unreachable") {
 		t.Fatalf("a missing enrollment names the error file and its content: %v", err)
 	}
@@ -131,12 +132,12 @@ func TestBuildSignerFallsBackToTheRuntimeDirDefaults(t *testing.T) {
 
 	runtime := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", runtime)
-	if _, _, err := buildSigner(); err == nil || !strings.Contains(err.Error(), "no broker identity for this process") {
+	if _, _, err := buildSigner(io.Discard); err == nil || !strings.Contains(err.Error(), "no broker identity for this process") {
 		t.Fatalf("an empty runtime dir is no identity: %v", err)
 	}
 
 	copyKeyDir(t, newKeyDir(t), filepath.Join(runtime, "agent-secrets"))
-	id, signer, err := buildSigner()
+	id, signer, err := buildSigner(io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +149,7 @@ func TestBuildSignerFallsBackToTheRuntimeDirDefaults(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", hostRuntime)
 	sock := filepath.Join(hostRuntime, "agent-secrets", "helper.sock")
 	fakeHelperAt(t, sock, helper.Response{OK: true, Proof: "eyJ.fake.proof"})
-	_, signer, err = buildSigner()
+	_, signer, err = buildSigner(io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -105,7 +105,7 @@ func TestAReleaseLogsTheGrantsReasonAndItsCommand(t *testing.T) {
 	const reason = "publish the docs site"
 	requestID, grantID := grantOf(t, m, enr, key, reason, "AUTO_TOKEN", "SECOND_TOKEN")
 
-	if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{Command: []string{"sh", "-c", "true"}}); err != nil {
+	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{Command: []string{"sh", "-c", "true"}}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
 	if _, _, err := m.AirlockValues(t.Context(), grantID); err != nil {
@@ -157,7 +157,7 @@ func TestAReleaseLogsTheReasonItsOwnCallGave(t *testing.T) {
 		{"a reason no request could sign", ReleaseCall{Reason: "fix\u202eit" + strings.Repeat("é", 500)}, "fixit" + strings.Repeat("é", 395), []string{}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			if _, err := m.Values(t.Context(), grantID, enr, nil, row.call); err != nil {
+			if _, err := m.Values(t.Context(), grantID, enr, row.call); err != nil {
 				t.Fatalf("Values: %v", err)
 			}
 			wantDetail := map[string]any{"names": []any{"AUTO_TOKEN"}, "reason": reason, "command": asJSON(row.command)}
@@ -210,7 +210,7 @@ func TestAReleaseCommandHoldingAValueIsRedacted(t *testing.T) {
 		retag(t, m, policytest.Secret("STORED_KEY", fixtureOperator, policy.TierAgent, storedValue))
 		_, grantID := grantOf(t, m, enr, key, "call the API", "STORED_KEY")
 		command := []string{"curl", "-H", "Authorization: Bearer " + storedValue, "https://api.example.com/v1"}
-		if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{Command: command}); err != nil {
+		if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{Command: command}); err != nil {
 			t.Fatalf("Values: %v", err)
 		}
 		want := []string{"curl", "-H", "Authorization: Bearer [redacted]", "https://api.example.com/v1"}
@@ -225,7 +225,7 @@ func TestAReleaseCommandHoldingAValueIsRedacted(t *testing.T) {
 
 	t.Run("a-token-in-a-minted-document", func(t *testing.T) {
 		capture := captureRecords(t)
-		m, enr, key, _ := newFixture(t)
+		m, enr, key, _ := newAppFixture(t, "APP_KEY")
 		retag(t, m, requestTypeSecret("APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 		m.Minters = map[string]Minter{
 			policy.TypeGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
@@ -234,7 +234,7 @@ func TestAReleaseCommandHoldingAValueIsRedacted(t *testing.T) {
 		}
 		_, grantID := grantOf(t, m, enr, key, "open a pull request", "APP_KEY")
 		command := []string{"gh", "api", "-H", "Authorization: token " + mintedToken, "-f", "permission=write", "repos/ada/widgets"}
-		if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{Command: command}); err != nil {
+		if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{Command: command}); err != nil {
 			t.Fatalf("Values: %v", err)
 		}
 		// The token is the document's secret; the document's other strings, such as the
@@ -250,14 +250,14 @@ func TestAReleaseCommandHoldingAValueIsRedacted(t *testing.T) {
 		capture := captureRecords(t)
 		m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
 		_, grantID := grantOf(t, m, enr, key, "call the API", "AUTO_TOKEN")
-		first, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
+		first, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
 		if err != nil || first.Airlock == nil {
 			t.Fatalf("Values = %+v, %v; want the airlock's placeholder", first, err)
 		}
 		placeholder := first.Airlock.Names["AUTO_TOKEN"].Value
 		// A second release of the grant hands out the same placeholder, which a command written
 		// after the first can hold.
-		if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{Command: []string{"curl", "-u", "x:" + placeholder}}); err != nil {
+		if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{Command: []string{"curl", "-u", "x:" + placeholder}}); err != nil {
 			t.Fatalf("Values: %v", err)
 		}
 		if got, want := loggedCommandOf(t, m, grantID), []string{"curl", "-u", "x:[redacted]"}; !reflect.DeepEqual(got, want) {
@@ -273,7 +273,7 @@ func TestAReleaseCommandHoldingAValueIsRedacted(t *testing.T) {
 		_, grantID := grantOf(t, m, enr, key, "call the API", "STORED_KEY")
 		// The value starts eight bytes before the 256th: clipping first would keep those eight.
 		argument := strings.Repeat("a", 248) + storedValue
-		if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{Command: []string{"echo", argument}}); err != nil {
+		if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{Command: []string{"echo", argument}}); err != nil {
 			t.Fatalf("Values: %v", err)
 		}
 		got := loggedCommandOf(t, m, grantID)
@@ -314,7 +314,7 @@ func TestAReleaseCommandIsClipped(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			m, enr, key, _ := newFixture(t)
 			_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
-			if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{Command: row.command}); err != nil {
+			if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{Command: row.command}); err != nil {
 				t.Fatalf("Values: %v", err)
 			}
 			got := loggedCommandOf(t, m, grantID)

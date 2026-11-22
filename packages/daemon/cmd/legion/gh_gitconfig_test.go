@@ -270,7 +270,9 @@ func TestGhRepoGitConfigRefusalNamesWhatHandsTheTokenOn(t *testing.T) {
 // on the same PATH, so it runs none, and no configuration of one can send anything. With a git
 // older than 2.26, which knows no --show-scope, it reads as with any other: a repository that
 // sets sslVerify off is still refused, and a clean one passes. The old git here is the real one
-// behind a script that answers --show-scope as git 2.25 does.
+// behind a script that answers --show-scope as git 2.25 does. The read's bound, ghGitReadBound, is
+// this binary's deadline here (boundByTheDeadline): at a box load of about 1,100 that script and
+// the git it runs took past the product's 30 s, which the rows read as a refusal.
 func TestGhRepoGitConfigRefusalWithNoGitOrAnOldGit(t *testing.T) {
 	git, err := exec.LookPath("git")
 	if err != nil {
