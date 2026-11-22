@@ -3480,14 +3480,10 @@ workflows, so its done entry completes the record that `hold release` needs.
   kept only when a selection record names it: under a hold no creator runs, so an unrecorded one
   is a crashed create's orphan, and the census removes it and names it. The census writes, so it
   runs only while the row is `held`; `check` is the read-only word. It reads each daemon store
-  (`--daemon-database PROJECT-KEY=F`) only at the address one source names: the daemon's Deployment
-  in namespace `legion`, by its annotations `envoy-infra.consumer-names/project`,
-  `envoy-infra.consumer-names/store-database` and `envoy-infra.consumer-names/store-instance`, or,
-  for a project retired after the cutover, which runs no Deployment, its entry of the ConfigMap
-  `envoy-operator/envoy-operator-retired-stores`, the data keys `PROJECT-KEY.database` and
-  `PROJECT-KEY.instance`. A project both name, or neither, is unreconciled, naming the project and
-  each source. The URL on the file's first line must name that database, and its second line, the
-  Cloud SQL instance the operator's proxy reaches, that instance. A store whose database the server
+  (`--daemon-database PROJECT-KEY=F`) only at the address one source names, the daemon's Deployment
+  in namespace `legion` or, for a project retired after the cutover, its entry of the ConfigMap
+  `envoy-operator/envoy-operator-retired-stores`, by the rule in [The daemon stores'
+  addresses](consumernames/README.md#the-daemon-stores-addresses). A store whose database the server
   answers does not exist there (SQLSTATE 3D000) is gone: the census removes none of that daemon's
   consumers and prints each `LEFT`, prints `GONE daemon/<P>: ...` and records `gone.daemon/<P>` in
   its done entry. A store it cannot match, reach or read, and a read of that ConfigMap Kubernetes

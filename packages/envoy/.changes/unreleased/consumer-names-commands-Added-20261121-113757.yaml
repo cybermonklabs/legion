@@ -15,12 +15,14 @@ body: |-
   `sentinel-repair` workflow. In the new `consumer-cleanup` workflow, and only there, `cleanup`
   deletes recorded retired names, `cleanup --gone` removes the consumers of a Legion daemon whose
   store is gone, and `replace` gives one listener's durable a fresh name at one past its ack floor;
-  each runs again as needed, and a run with `--final` completes the hold. Each command writes its
-  intent and its done or stop entry in the hold's journal, and a stop records what its runs left.
-  `envoy-infra streams census` reads the session consumers and the fresh names the records hold,
-  and brings each daemon store's stream identity to the stream's, through this command's readers.
-  A daemon's store is read only at the address its Deployment names: an address two Deployments
-  name is refused, and only SQLSTATE 3D000 there makes a store gone.
+  each runs again as needed, and a run with `--final` completes the hold. Each command run inside a
+  hold writes its intent and its done or stop entry in the hold's journal, and a stop records what
+  its runs left. `envoy-infra streams census` reads the session consumers and the fresh names the
+  records hold, and brings each daemon store's stream identity to the stream's, through this
+  command's readers. A daemon's store is read only at the address one source names, its Deployment
+  or, for a project retired after the cutover, its entry of the ConfigMap
+  envoy-operator/envoy-operator-retired-stores: an address two sources name is refused, and only
+  SQLSTATE 3D000 there makes a store gone.
 time: 2026-11-21T11:37:57Z
 custom:
     Issue: consumer-names-commands

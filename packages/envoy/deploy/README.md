@@ -289,10 +289,10 @@ nats consumer add ENVOY_NOTIFICATIONS --config "$d.recreate.json"
 
 That procedure is for the fixed names (`ENVOY_CONSUMER_NAMES` unset or `fixed`), before a cutover
 or after a rollback. Once the cutover has run, the listener's durable is a fresh name its record in
-`envoy_session_consumers` selects, and no operator creates or deletes it by hand: inside a `consumer-cleanup` hold,
-`envoy-infra consumer-names replace --hold <id> --listener <machine id>` gives the durable a fresh
-name at one past its ack floor and retires the old one (see `packages/envoy/infra/README.md`,
-`envoy-infra consumer-names`).
+`envoy_session_consumers` selects, and no operator creates or deletes it by hand: inside a
+`consumer-cleanup` hold, `envoy-infra consumer-names replace --hold <id> --listener <machine id>`
+gives the durable a fresh name at one past its ack floor and retires the old one (see
+`packages/envoy/infra/consumernames/README.md`, `replace` and A consumer cleanup).
 
 ## Dispatch configuration
 
