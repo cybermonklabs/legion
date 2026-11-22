@@ -1,8 +1,9 @@
-import { afterAll, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { beforeAll, expect, test } from "bun:test";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { skipWithoutIgnoreMasks } from "@legion/test-fixtures/held-process";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 import { rowLimit, runBounded } from "./bounded-subprocess";
 
@@ -24,15 +25,22 @@ import { rowLimit, runBounded } from "./bounded-subprocess";
 // Where a row names a signal the script is started ignoring, the shell ignores it first, as `nohup`
 // ignores SIGHUP, and the stand-in's stop says whether the script still ignores it by then: a
 // listener for it would have cleared the ignore and ended the script on the signal it was started
-// to outlive.
+// to outlive. Where the mask that says what a process ignores cannot be read (gVisor, a machine
+// with no /proc), the script arms no SIGHUP or SIGQUIT listener (e2e/signal-ignores.ts), so the
+// rows that send those, and the rows that read the mask, are skipped there by name. The last row
+// has the script read no mask at all (a preload points its read at a file that does not exist)
+// and requires the SIGHUP it was started ignoring to stay ignored.
+const withoutMasks = skipWithoutIgnoreMasks("packages/dispatch/e2e/__tests__/harness-up.test.ts");
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
-const stubs = mkdtempSync(join(tmpdir(), "harness-up-"));
-afterAll(() => rmSync(stubs, { force: true, recursive: true }));
+const stubs = temporaryDirectory("harness-up-");
 
 const pool = join(stubs, "harness-pool.ts");
-writeFileSync(
-  pool,
-  `import { ignoresSignal } from ${JSON.stringify(fileURLToPath(import.meta.resolve("@legion/test-fixtures/held-process")))};
+const preload = join(stubs, "preload.ts");
+const unreadable = join(stubs, "unreadable.ts");
+beforeAll(() => {
+  writeFileSync(
+    pool,
+    `import { ignoresSignal } from ${JSON.stringify(fileURLToPath(import.meta.resolve("@legion/test-fixtures/held-process")))};
 
 export async function startStacks(count: number) {
   const onInterrupt = (): void => {};
@@ -58,11 +66,10 @@ export async function stopStacks(keepLogs: boolean) {
   console.log(\`stand-in: stopped, keepLogs=\${keepLogs}\`);
 }
 `
-);
-const preload = join(stubs, "preload.ts");
-writeFileSync(
-  preload,
-  `import { plugin } from "bun";
+  );
+  writeFileSync(
+    preload,
+    `import { plugin } from "bun";
 import { readFileSync } from "node:fs";
 
 plugin({
@@ -75,18 +82,53 @@ plugin({
   },
 });
 `
-);
+  );
+  writeFileSync(
+    unreadable,
+    `import { plugin } from "bun";
+import { readFileSync } from "node:fs";
+
+plugin({
+  name: "an unreadable /proc/self/status",
+  setup(build) {
+    build.onLoad({ filter: /\\/e2e\\/signal-ignores\\.ts$/ }, ({ path }) => {
+      const source = readFileSync(path, "utf8");
+      if (!source.includes('"/proc/self/status"')) throw new Error("no /proc/self/status read in " + path);
+      return { contents: source.replace('"/proc/self/status"', '"/nonexistent/proc/self/status"'), loader: "ts" };
+    });
+  },
+});
+`
+  );
+});
 
 for (const row of [
   { name: "a Ctrl-C the moment the stack is up", up: "SIGINT" },
-  { name: "a SIGHUP the moment the stack is up", up: "SIGHUP" },
-  { name: "a SIGQUIT the moment the stack is up", up: "SIGQUIT" },
+  { name: "a SIGHUP the moment the stack is up", up: "SIGHUP", masks: true },
+  { name: "a SIGQUIT the moment the stack is up", up: "SIGQUIT", masks: true },
   { name: "a second Ctrl-C while the stack stops", up: "SIGINT", stop: "SIGINT" },
-  { name: "a SIGHUP while the stack stops on a Ctrl-C", up: "SIGINT", stop: "SIGHUP" },
-  { name: "a SIGQUIT while the stack stops on a Ctrl-C", up: "SIGINT", stop: "SIGQUIT" },
-  { name: "a Ctrl-C to a script started ignoring SIGHUP", up: "SIGINT", ignored: "HUP" },
+  { name: "a SIGHUP while the stack stops on a Ctrl-C", up: "SIGINT", stop: "SIGHUP", masks: true },
+  {
+    name: "a SIGQUIT while the stack stops on a Ctrl-C",
+    up: "SIGINT",
+    stop: "SIGQUIT",
+    masks: true,
+  },
+  {
+    name: "a Ctrl-C to a script started ignoring SIGHUP",
+    up: "SIGINT",
+    ignored: "HUP",
+    masks: true,
+  },
+  {
+    name: "a Ctrl-C to a script started ignoring SIGHUP that cannot read what it ignores",
+    up: "SIGINT",
+    ignored: "HUP",
+    masks: true,
+    unknown: true,
+  },
 ]) {
-  test(
+  test.skipIf(withoutMasks && row.masks === true)(
     `${row.name} stops the stack once, not the script alone`,
     async () => {
       const run = await runBounded({
@@ -100,6 +142,7 @@ for (const row of [
           process.execPath,
           "--preload",
           preload,
+          ...(row.unknown ? ["--preload", unreadable] : []),
           "e2e/harness-up.ts",
         ],
         bound: "short",

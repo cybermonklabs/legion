@@ -27,8 +27,6 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-
-import { ignoredAtStart } from "../../envoy-client/src/signal-ignores";
 import {
   pgBinVariable,
   pgImageVariable,
@@ -37,6 +35,7 @@ import {
 } from "./harness-postgres";
 import { type Harness, startHarness } from "./harness-start";
 import { Interrupted } from "./local-instance-support";
+import { armsStopListener } from "./signal-ignores";
 
 /** What this module's own lines are prefixed with, as every starter in `e2e/` names itself. */
 const named = "e2e/harness-pool.ts";
@@ -128,8 +127,9 @@ const terminateGraceMs = 15_000;
  *  signal sent again meets Node's default.
  *
  *  Neither listener is armed for a signal this process was started with ignored, as `nohup`
- *  ignores SIGHUP (`ignoredAtStart`): a listener would end the run on the signal it was started to
- *  outlive, since taking one off brings back the default action, not the ignore. */
+ *  ignores SIGHUP: a listener would end the run on the signal it was started to outlive, since
+ *  taking one off brings back the default action, not the ignore. Where that cannot be read, no
+ *  SIGHUP or SIGQUIT listener is armed either (`armsStopListener`, e2e/signal-ignores.ts). */
 let onInterrupt: (() => void) | undefined;
 let onTerminate: ((signal: TerminatingSignal) => void) | undefined;
 
@@ -163,7 +163,7 @@ async function terminate(signal: TerminatingSignal): Promise<void> {
 function watchSignals(): void {
   if (onInterrupt === undefined) {
     onInterrupt = (): void => stopping.abort();
-    if (!ignoredAtStart("SIGINT")) process.on("SIGINT", onInterrupt);
+    if (armsStopListener("SIGINT")) process.on("SIGINT", onInterrupt);
   }
   if (onTerminate === undefined) {
     onTerminate = (signal): void => {
@@ -187,7 +187,7 @@ function watchSignals(): void {
       void terminate(signal);
     };
     for (const signal of terminatingSignals) {
-      if (!ignoredAtStart(signal)) process.on(signal, onTerminate);
+      if (armsStopListener(signal)) process.on(signal, onTerminate);
     }
   }
 }

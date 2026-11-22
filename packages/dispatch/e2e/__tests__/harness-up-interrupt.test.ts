@@ -2,6 +2,7 @@ import { beforeAll, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ignoresSignal, skipWithoutIgnoreMasks } from "@legion/test-fixtures/held-process";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 import { rowLimit, watch, whether } from "./bounded-subprocess";
@@ -17,11 +18,24 @@ import { rowLimit, watch, whether } from "./bounded-subprocess";
 // The pool runs for real, under Bun, with a stand-in for e2e/harness-start.ts loaded in that
 // module's place by a preload, and on a DATABASE_URL it is given, so no Postgres starts. The
 // stand-in harness's stop prints a line as it begins, waits until this process has had SIGUSR2,
-// and prints a line as it ends. The row sends SIGINT, SIGTERM and SIGUSR2 one after another once
-// the stack is up: a process handles the signals it is sent in the order they come, so every stop
-// the first two start has begun before the third lets any of them end. The stand-in harness puts
-// this process's pid among the stack's variables, which harness-up prints, so each signal goes to
-// harness-up itself. Each run is under a shell that sets the core size to 0.
+// and prints a line as it ends. The rows send SIGINT, SIGTERM and SIGUSR2 one after another once
+// the stack is up. Linux hands a process the standard signals that are pending together lowest
+// number first, SIGINT, SIGUSR2, SIGTERM, so the SIGTERM can be handled after the SIGUSR2; the
+// stand-in therefore releases its stops one turn of the event loop after the SIGUSR2
+// (`setImmediate`), which comes after every signal handled in that turn, so every stop the first
+// two signals start has begun before any ends. Without that turn the stop the SIGINT began could
+// end before the SIGTERM's began, and a harness that stops twice would show one stop. The
+// stand-in harness puts this process's pid among the stack's variables, which harness-up prints,
+// so each signal goes to harness-up itself. Each run is under a shell that sets the core size to
+// 0.
+//
+// The last row is the background job's own: started as visual-run.sh starts it, harness-up must
+// keep the SIGINT its shell started it ignoring, so a Ctrl-C alone stops nothing. It reads that
+// from the kernel's mask of what the process ignores, which a listener for SIGINT clears, and is
+// skipped by name where the mask cannot be read.
+const withoutMasks = skipWithoutIgnoreMasks(
+  "packages/dispatch/e2e/__tests__/harness-up-interrupt.test.ts"
+);
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const stubs = temporaryDirectory("harness-up-interrupt-");
 const start = join(stubs, "harness-start.ts");
@@ -68,19 +82,29 @@ for (const row of [
   {
     // e2e/visual-run.sh and e2e/acceptance/with-harness.sh start harness-up as a background job
     // of a non-interactive shell, which starts it with SIGINT and SIGQUIT ignored.
-    name: "started as visual-run.sh starts it, a shell's background job",
+    name: "a Ctrl-C and then a SIGTERM to e2e/harness-up.ts started as visual-run.sh starts it, a shell's background job, stop its stack once",
     shell: 'ulimit -c 0; "$@" & wait $!',
     ended: ["SIGTERM"],
+    keepsSigint: false,
   },
   {
     // A person who runs it in a terminal's foreground starts it with SIGINT at its default.
-    name: "started with SIGINT at its default",
+    name: "a Ctrl-C and then a SIGTERM to e2e/harness-up.ts started with SIGINT at its default stop its stack once",
     shell: 'ulimit -c 0 && exec "$@"',
     ended: ["SIGTERM", 0],
+    keepsSigint: false,
+  },
+  {
+    // The SIGINT the shell started it ignoring is still ignored once its stack is up, so the
+    // kernel drops a Ctrl-C to it at once and no stop can start from one.
+    name: "a Ctrl-C to e2e/harness-up.ts started as a shell's background job finds SIGINT still ignored, and a SIGTERM stops its stack once",
+    shell: 'ulimit -c 0; "$@" & wait $!',
+    ended: ["SIGTERM"],
+    keepsSigint: true,
   },
 ]) {
-  test(
-    `a Ctrl-C and then a SIGTERM to e2e/harness-up.ts ${row.name} stop its stack once`,
+  test.skipIf(withoutMasks && row.keepsSigint)(
+    row.name,
     async () => {
       const run = Bun.spawn(
         [
@@ -127,6 +151,12 @@ for (const row of [
         ).toBe(true);
         pid = Number(/^export STAND_IN_PID=(\d+)$/m.exec(stdout)?.[1]);
         expect(Number.isInteger(pid) && pid > 0, `no pid in:\n${stdout}`).toBe(true);
+        if (row.keepsSigint) {
+          expect(
+            ignoresSignal(pid, "SIGINT"),
+            "harness-up, started with SIGINT ignored, armed a listener for it, which undid the ignore"
+          ).toBe(true);
+        }
         process.kill(pid, "SIGINT");
         process.kill(pid, "SIGTERM");
         process.kill(pid, "SIGUSR2");

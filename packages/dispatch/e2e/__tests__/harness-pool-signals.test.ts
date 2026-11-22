@@ -1,8 +1,10 @@
-import { afterAll, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { constants, tmpdir } from "node:os";
+import { beforeAll, expect, test } from "bun:test";
+import { writeFileSync } from "node:fs";
+import { constants } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { skipWithoutIgnoreMasks } from "@legion/test-fixtures/held-process";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 import { rowLimit, runBounded, watch, whether } from "./bounded-subprocess";
 
@@ -19,15 +21,22 @@ import { rowLimit, runBounded, watch, whether } from "./bounded-subprocess";
 // writes no core into the tree. Where a row names a signal it ignores, the shell ignores that one
 // first, as `nohup` ignores SIGHUP for the command it runs; it stays ignored once the stack is up,
 // where a listener for it would have cleared the ignore and ended the run on the signal it was
-// started to outlive.
+// started to outlive. Where the mask that says what a process ignores cannot be read (gVisor, a
+// machine with no /proc), the pool arms no SIGHUP or SIGQUIT listener (e2e/signal-ignores.ts), so
+// the rows that send those, and the row that reads the mask, are skipped there by name.
+const withoutMasks = skipWithoutIgnoreMasks(
+  "packages/dispatch/e2e/__tests__/harness-pool-signals.test.ts"
+);
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
-const stubs = mkdtempSync(join(tmpdir(), "harness-pool-signals-"));
-afterAll(() => rmSync(stubs, { force: true, recursive: true }));
+const stubs = temporaryDirectory("harness-pool-signals-");
 
 const start = join(stubs, "harness-start.ts");
-writeFileSync(
-  start,
-  `export async function startHarness() {
+const preload = join(stubs, "preload.ts");
+const script = join(stubs, "pool.ts");
+beforeAll(() => {
+  writeFileSync(
+    start,
+    `export async function startHarness() {
   return {
     env: { STAND_IN_PORT: "5433" },
     processes: [],
@@ -45,11 +54,10 @@ writeFileSync(
   };
 }
 `
-);
-const preload = join(stubs, "preload.ts");
-writeFileSync(
-  preload,
-  `import { plugin } from "bun";
+  );
+  writeFileSync(
+    preload,
+    `import { plugin } from "bun";
 import { readFileSync } from "node:fs";
 
 plugin({
@@ -62,11 +70,10 @@ plugin({
   },
 });
 `
-);
-const script = join(stubs, "pool.ts");
-writeFileSync(
-  script,
-  `import { ignoresSignal } from ${JSON.stringify(fileURLToPath(import.meta.resolve("@legion/test-fixtures/held-process")))};
+  );
+  writeFileSync(
+    script,
+    `import { ignoresSignal } from ${JSON.stringify(fileURLToPath(import.meta.resolve("@legion/test-fixtures/held-process")))};
 import { startStacks } from ${JSON.stringify(join(dispatchPackage, "e2e/harness-pool.ts"))};
 await startStacks(1, { env: { DATABASE_URL: "postgres://stand-in.invalid/none" } });
 console.log("stand-in: stack up");
@@ -74,7 +81,8 @@ console.log(\`stand-in: ignores SIGHUP \${ignoresSignal(process.pid, "SIGHUP")}\
 process.kill(process.pid, process.env.UP_SIGNAL as NodeJS.Signals);
 await new Promise(() => {});
 `
-);
+  );
+});
 
 for (const row of [
   { up: "SIGTERM" },
@@ -86,7 +94,9 @@ for (const row of [
   { up: "SIGTERM", ignored: "HUP" },
 ] as const) {
   const ignored = "ignored" in row ? row.ignored : undefined;
-  test(
+  // Every row but a SIGTERM alone sends a SIGHUP or a SIGQUIT, or reads the mask.
+  const masks = row.up !== "SIGTERM" || "stop" in row || ignored !== undefined;
+  test.skipIf(withoutMasks && masks)(
     `a ${row.up}${"stop" in row ? ` and a ${row.stop} while the stack stops` : ""}${ignored === undefined ? "" : ` to a run started ignoring SIG${ignored}`} stops the pool's stack once and ends the process by the ${row.up}`,
     async () => {
       const run = await runBounded({
@@ -139,7 +149,7 @@ for (const row of [
 // so it starts the script itself rather than through `runBounded`, which hands the output over
 // only at the end, and kills it at the short bound should it never end.
 for (const signal of ["SIGHUP", "SIGQUIT"] as const) {
-  test(
+  test.skipIf(withoutMasks)(
     `a ${signal} to e2e/harness-up.ts over the pool stops its stack once`,
     async () => {
       const run = Bun.spawn(

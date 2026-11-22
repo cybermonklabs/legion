@@ -38,9 +38,9 @@
  *
  *  Every value is shell-quoted, since a `DATABASE_URL` carries characters a reader would
  *  otherwise have to think about (`e2e/local-instance-support.ts`). */
-import { ignoredAtStart } from "../../envoy-client/src/signal-ignores";
 import { startStacks, stopStacks } from "./harness-pool";
 import { shellQuote } from "./local-instance-support";
+import { armsStopListener } from "./signal-ignores";
 
 // SIGINT, SIGHUP and SIGQUIT are this script's own once the stack is up: the pool hands SIGINT
 // back then (`e2e/harness-pool.ts`, `unwatchInterrupt`), a closing terminal sends SIGHUP and its
@@ -58,13 +58,15 @@ import { shellQuote } from "./local-instance-support";
 // shell send - finds a listener that does nothing more, rather than the default action half-way
 // through the stop, and no second stop starts. A signal during the start is the pool's as well:
 // it cancels the start, which stops what it began, and `startStacks` rejects. A signal this script
-// was started with ignored, as `nohup bun e2e/harness-up.ts &` ignores SIGHUP, gets no listener
-// here (`ignoredAtStart`) and none from the pool: a listener would end the script on the signal it
-// was started to outlive, since taking one off brings back the default action, not the ignore.
+// was started with ignored, as `nohup bun e2e/harness-up.ts &` ignores SIGHUP and a shell's `&` job
+// ignores SIGINT, gets no listener here and none from the pool: a listener would end the script on
+// the signal it was started to outlive, since taking one off brings back the default action, not
+// the ignore. Where that cannot be read, no SIGHUP or SIGQUIT listener is armed either
+// (`armsStopListener`, e2e/signal-ignores.ts).
 const stopSignals = ["SIGINT", "SIGHUP", "SIGQUIT"] as const;
 const interrupted = Promise.withResolvers<void>();
 for (const signal of stopSignals) {
-  if (!ignoredAtStart(signal)) process.on(signal, () => interrupted.resolve());
+  if (armsStopListener(signal)) process.on(signal, () => interrupted.resolve());
 }
 const [stack] = await startStacks(1);
 for (const [variable, value] of Object.entries(stack.env)) {
