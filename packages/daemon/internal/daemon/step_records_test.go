@@ -105,10 +105,14 @@ func TestTheReadOfAnIssueListsEachStepThatRan(t *testing.T) {
 // Dispatch does not answer while step records are due, and no phase waits for it.
 // The handoff records of planning, implementing and testing are Dispatch's own, which the daemon
 // reads at each of those completions, so Dispatch stops once the issue is in reviewing, with the
-// record of every step from there on still to be written; the review, the acceptance, the retro
-// and the merge then walk the issue to done, and once Dispatch is back on the same database the
-// issue's seven records reach it, each ended. The control holds the outage real: while Dispatch is
-// stopped, the outbox holds the issue's step records unfinished and the read finds no server.
+// record of every step from there on still to be written; the review walks the issue to accepting.
+// The architect's sign-off is the one act of the walk that writes Dispatch before it records
+// (retro, the acceptance every other project's daemon reads there), so while Dispatch is stopped it
+// is refused with a coded 502 and records nothing, and it is taken once Dispatch is back; Dispatch
+// then stops again, and the retro and the merge walk the issue to done. Once Dispatch is back on the
+// same database the issue's seven records reach it, each ended. The control holds the second
+// outage real: while Dispatch is stopped, the outbox holds the issue's step records unfinished and
+// the read finds no server.
 func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
 	r := newStepRecordsRig(t, 1)
 	r.plan()
@@ -116,7 +120,18 @@ func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
 	r.test()
 	r.dispatch.stop()
 	r.review("APPROVED", phase.Accepting)
+	architect := r.worker(claim.RoleArchitect)
+	architect.ownTurn()
+	status, body := r.d.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(), "issue": r.key}, false)
+	if status != http.StatusBadGateway || !strings.Contains(string(body), `"DISPATCH_FAILED"`) {
+		t.Fatalf("the architect's sign-off of %s while Dispatch is stopped = %d %s, want 502 DISPATCH_FAILED", r.key, status, body)
+	}
+	if got := recordOf(t, r.st.Pool(), record.NewStore(), r.key).Phase; got != phase.Accepting {
+		t.Fatalf("%s after the refused sign-off stands at %s, want accepting: nothing is recorded", r.key, got)
+	}
+	r.dispatch.start()
 	r.accept()
+	r.dispatch.stop()
 	r.retro()
 	r.merge()
 
