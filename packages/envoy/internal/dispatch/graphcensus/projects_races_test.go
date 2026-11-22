@@ -5,11 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -39,61 +36,6 @@ func TestTheObjectBatchDistinguishesReplacedRowsWithTheSameCreationTime(t *testi
 	}
 	if node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindArtifact, "IDEN-1/notes-md"); err != nil || held {
 		t.Errorf("the stale batch left node %+v (held %t, %v), want no node describing the removed row", node, held, err)
-	}
-}
-
-func TestAStaleCommentBatchDoesNotRestoreAnErasedComment(t *testing.T) {
-	database := storetest.Open(t)
-	ctx := context.Background()
-	at := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
-	seedIdentityIssue(t, database, at, model.Actor{Kind: "user", ID: "alice"})
-	const id = "11111111-1111-4111-8111-111111111111"
-	if _, err := database.Pool.Exec(ctx, `
-		insert into comments (id, issue_key, author, body, created_at)
-		values ($1, 'IDEN-1', '{}', 'A remark.', $2)
-	`, id, at); err != nil {
-		t.Fatal(err)
-	}
-	batch, err := readCommentRows(ctx, database, zeroUUID)
-	if err != nil || len(batch) != 1 {
-		t.Fatalf("read the unmarked comment: %d row(s), %v; want 1", len(batch), err)
-	}
-	first, _, _, err := writeCommentBatch(ctx, database, batch)
-	if err != nil {
-		t.Fatalf("write the first run's batch: %v", err)
-	}
-	if first != 1 {
-		t.Fatalf("the first run's batch counts %d row(s) written, want 1: the comment stood unmarked", first)
-	}
-	// The erase takes the issue's owner lock, deletes the stamped row, then erases its node and
-	// tuples.
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		if err := store.LockOwners(ctx, tx, store.IssueOwner("IDEN-1")); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `select 1 from graph_nodes where kind = 'comment' and id = $1 for update`, id); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `delete from comments where id = $1`, id); err != nil {
-			return err
-		}
-		var seqs []int64
-		if err := tx.QueryRow(ctx, `select array_agg(seq) from graph_tuples where from_kind = 'comment' and from_id = $1`, id).Scan(&seqs); err != nil {
-			return err
-		}
-		return graphstore.EraseNode(ctx, tx, graphstore.KindComment, id, seqs)
-	}); err != nil {
-		t.Fatalf("erase the first run's comment: %v", err)
-	}
-	written, _, _, err := writeCommentBatch(ctx, database, batch)
-	if err != nil {
-		t.Fatalf("write the second run's cached batch: %v", err)
-	}
-	if written != 0 {
-		t.Errorf("the stale batch counts %d row(s) written, want 0: the comment it read was erased before it wrote", written)
-	}
-	if node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindComment, id); err != nil || held {
-		t.Errorf("the stale batch restored node %+v (held %t, %v) without its erased comment row; want no node", node, held, err)
 	}
 }
 
@@ -136,10 +78,9 @@ func TestTheCommentBatchLeavesTheCallersBatch(t *testing.T) {
 }
 
 // ObjectRowStands answers whether an issue's, a document's, an ask's or a message's row stands at
-// an id, which the erase reads under the node's lock. An ask's and a message's row is keyed by a
-// uuid, so an id that is no uuid names no row and answers false with no error, rather than abort
-// the erase's transaction on the cast; a uuid names its row when one stands there, and none when
-// none does.
+// an id. An ask's and a message's row is keyed by a uuid, so an id that is no uuid names no row and
+// answers false with no error, rather than abort the caller's transaction on the cast; a uuid names
+// its row when one stands there, and none when none does.
 //
 // Its control is the uuid test taken out: the id that is no uuid then fails the read.
 func TestObjectRowStandsReadsTheRowsOfAnAskAndAMessage(t *testing.T) {

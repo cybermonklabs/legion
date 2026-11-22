@@ -11,9 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -22,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 )
 
@@ -34,8 +33,10 @@ import (
 //     (docs' writeObjectNodesAnotherBuildWrote, the backfill's object pass), so the roll needs no
 //     second envoy-dispatch backfill-graph-store.
 //   - This build makes a document, writing its node, and the previous build removes it: the node
-//     stands live behind no row. The census names it orphaned, with the command that removes it,
-//     the backfill leaves it as it is, and that command, run as the census printed it, removes it.
+//     stands live behind no row. The census names it orphaned, with this build's block-index tick
+//     as its cure, the backfill leaves it as it is, and the tick states it gone under the previous
+//     build's own removal event (docs' writeObjectNodesAnotherBuildWrote, graphcensus's
+//     StateOrphanedGone).
 //   - The previous build removes this build's document and this build makes it again: the create
 //     finds the orphaned node at the free address and states it gone, then live, under its own
 //     event, and the census names nothing.
@@ -46,22 +47,24 @@ import (
 //
 // The tick runs under the block-index lease, which both builds' processes compete for each period,
 // and a period the previous build serves is one this build's tick waits out: while both serve, the
-// tick cures the first and fourth orders' rows only in a period this build happens to win. So the
-// test reads their cure once the previous build has stopped, as the end of a roll stops it: this
-// build's next tick then serves the period, finds the fleet alone after another build or joins its
-// build's cursor, and runs the object pass. The second order runs first, since the backfill it
-// runs would cure those two rows too, and every census read before the end reads only the lines
-// that name its own row. The cure is read three ways: each row's node is live, the census names
-// no row at all, and this build's ticks wrote at least the two rows' nodes (their object_nodes=).
+// tick cures the first, second and fourth orders' rows only in a period this build happens to win.
+// So the test reads their cure once the previous build has stopped, as the end of a roll stops it:
+// this build's next tick then serves the period, finds the fleet alone after another build or
+// joins its build's cursor, and runs the object pass. The second order holds the lease itself from
+// the removal to its last census, so no tick of either build states the orphan gone before the
+// census has named it. The second order runs first, since the backfill it runs would cure the
+// first and fourth orders' rows too, and every census read before the end reads only the lines
+// that name its own row. The cure is read three ways: each row's node is live, or gone for the
+// second order's, the census names no row at all, and this build's ticks wrote at least the two
+// rows' nodes (their object_nodes=) and stated at least the one orphan gone (orphans_gone=).
 //
 // After the last cure the census names no project row or node at all. Each order has its control.
 // The first and fourth orders' is the tick's object pass taken out of docs' ReconcileBlockIndex:
 // the census then names both rows gone for as long as the test waits after the previous build
-// stopped. The second's is this file run in the tree at the branch's head before these classes and
-// their cures, where this build's removal states nothing gone and the census prints no orphaned
-// field, so it fails at its first census. The third's is the gone step taken out of this build's
-// create (api's storeArtifact): the node then keeps the removed row's live statement, and the
-// census names the new row gone.
+// stopped. The second's is the sweep taken out of docs' writeObjectNodesAnotherBuildWrote: the
+// census then names the node orphaned for as long as the test waits. The third's is the gone step
+// taken out of this build's create (api's storeArtifact): the node then keeps the removed row's
+// live statement, and the census names the new row gone.
 func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T) {
 	builds := newTwoBuilds(t)
 	builds.startPrevious(t, nil)
@@ -71,34 +74,27 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 	project := uniqueProjectKey(t, "NODE")
 	current.createProject(t, project, "Two builds' document nodes")
 	issue, _ := createDocument(t, current, project, "Documents two builds remove and make", "The spec.\n")
-	// The rows this build's tick cures, read once the previous build has stopped.
-	var forTheTick []string
+	// The rows this build's tick cures, read once the previous build has stopped: the live nodes
+	// it writes, and the orphaned ones it states gone.
+	var forTheTick, orphansForTheTick []string
 
 	t.Run("this build makes a document and the previous build removes it", func(t *testing.T) {
 		document := makeUntouchedDocument(t, current, issue, "Removed by the previous build.md")
 		requireDocumentNodeState(t, builds, document.ref, graphstore.StateLive)
+		defer holdTwoBuildBlockIndex(t, builds)()
 		removeUntouchedDocument(t, previous, document)
-		erase := "envoy-dispatch erase --node artifact:" + document.ref
+		orphaned := "artifact " + document.ref + ": orphaned; this build's block-index tick states it gone"
 		census := runTwoBuildStoreCensus(t, builds)
 		requireProjectLine(t, census, "artifact", "orphaned=1")
-		if !requireIncompleteLinesNaming(t, census, document.ref, "artifact "+document.ref+": orphaned; remove it with: "+erase) {
+		if !requireIncompleteLinesNaming(t, census, document.ref, orphaned) {
 			t.FailNow()
 		}
 		runCurrentCommand(t, builds, []int{0}, "backfill-graph-store")
 		requireDocumentNodeState(t, builds, document.ref, graphstore.StateLive)
-		census = runTwoBuildStoreCensus(t, builds)
-		if !requireIncompleteLinesNaming(t, census, document.ref, "artifact "+document.ref+": orphaned; remove it with: "+erase) {
+		if !requireIncompleteLinesNaming(t, runTwoBuildStoreCensus(t, builds), document.ref, orphaned) {
 			t.FailNow()
 		}
-		printed := strings.TrimPrefix(incompleteLinesNaming(census, document.ref)[0], "artifact "+document.ref+": orphaned; remove it with: ")
-		listing := runPrinted(t, builds, 1, printed)
-		digest := regexp.MustCompile(`(?m)^  listing digest: ([0-9a-f]{64})$`).FindStringSubmatch(listing)
-		if digest == nil {
-			t.Fatalf("the printed command %q listed no digest:\n%s", printed, listing)
-		}
-		runPrinted(t, builds, 0, printed+" --confirm "+digest[1])
-		requireDocumentNodeState(t, builds, document.ref, noDocumentNode)
-		requireIncompleteLinesNaming(t, runTwoBuildStoreCensus(t, builds), document.ref)
+		orphansForTheTick = append(orphansForTheTick, document.ref)
 	})
 
 	t.Run("this build removes a document and the previous build makes it again", func(t *testing.T) {
@@ -136,8 +132,9 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 	})
 
 	t.Run("the previous build stops and this build's tick cures what it left", func(t *testing.T) {
-		if len(forTheTick) != 2 {
-			t.Fatalf("the orders left %d row(s) for the tick, want the first and fourth orders' two", len(forTheTick))
+		if len(forTheTick) != 2 || len(orphansForTheTick) != 1 {
+			t.Fatalf("the orders left %d row(s) and %d orphan(s) for the tick, want the first and fourth orders' two rows and the second's orphan",
+				len(forTheTick), len(orphansForTheTick))
 		}
 		t.Logf("before the previous build stops, the census names %q", incompleteLines(runTwoBuildStoreCensus(t, builds)))
 		var commits []string
@@ -150,10 +147,13 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 		t.Logf("the registry holds %q", commits)
 		stop(t, previous)
 		for _, ref := range forTheTick {
-			awaitTheTicksCure(t, builds, ref)
+			awaitTheTicksCure(t, builds, ref, graphstore.StateLive)
+		}
+		for _, ref := range orphansForTheTick {
+			awaitTheTicksCure(t, builds, ref, graphstore.StateGone)
 		}
 		var ticks []string
-		written := 0
+		written, gone := 0, 0
 		for _, line := range strings.Split(current.Output.String(), "\n") {
 			if !strings.Contains(line, `msg="dispatch: block index"`) {
 				continue
@@ -163,11 +163,19 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 				count, _ := strconv.Atoi(field[1])
 				written += count
 			}
+			if field := regexp.MustCompile(`\borphans_gone=([0-9]+)\b`).FindStringSubmatch(line); field != nil {
+				count, _ := strconv.Atoi(field[1])
+				gone += count
+			}
 		}
 		t.Logf("this build's block-index ticks: %q", ticks)
 		if written < len(forTheTick) {
 			t.Errorf("this build's ticks wrote %d object node(s) in all, want at least the %d the orders left: no backfill ran after those rows were made, so a tick has to be what cured them",
 				written, len(forTheTick))
+		}
+		if gone < len(orphansForTheTick) {
+			t.Errorf("this build's ticks stated %d orphaned node(s) gone in all, want at least the %d the orders left: nothing else states one gone",
+				gone, len(orphansForTheTick))
 		}
 	})
 }
@@ -217,10 +225,11 @@ func requireDocumentNodeState(t *testing.T, builds *twoBuilds, ref, state string
 }
 
 // awaitTheTicksCure waits, for at most three block-index intervals and a margin, until a tick of
-// this build, once the previous build has stopped, has written the live node of the row at ref and
-// the census names no project row or node at all. No backfill is run: the tick's object pass is
-// the cure. It fails naming what the census still names once the wait is over.
-func awaitTheTicksCure(t *testing.T, builds *twoBuilds, ref string) {
+// this build, once the previous build has stopped, has left the node at ref in state - live for a
+// row it wrote the node of, gone for an orphan it states gone - and the census names no project
+// row or node at all. No backfill is run: the tick's object pass is the cure. It fails naming what
+// the census still names once the wait is over.
+func awaitTheTicksCure(t *testing.T, builds *twoBuilds, ref, state string) {
 	t.Helper()
 	deadline := time.Now().Add(3*docs.BlockIndexReconcileInterval + 30*time.Second)
 	for {
@@ -231,12 +240,12 @@ func awaitTheTicksCure(t *testing.T, builds *twoBuilds, ref string) {
 		`, graphstore.KindArtifact, ref, noDocumentNode).Scan(&held); err != nil {
 			t.Fatalf("read the node of %s: %v", ref, err)
 		}
-		if held == graphstore.StateLive && len(incompleteLines(census)) == 0 {
+		if held == state && len(incompleteLines(census)) == 0 {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("this build's ticks left the node of %s %s and the census naming %q, %s after the previous build made the row, with no backfill run: the tick's object pass did not cure it",
-				ref, held, incompleteLines(census), 3*docs.BlockIndexReconcileInterval+30*time.Second)
+			t.Fatalf("this build's ticks left the node of %s %s, want %s, and the census naming %q, %s after the previous build left it, with no backfill run: the tick's object pass did not cure it",
+				ref, held, state, incompleteLines(census), 3*docs.BlockIndexReconcileInterval+30*time.Second)
 		}
 		time.Sleep(5 * time.Second)
 	}
@@ -288,17 +297,48 @@ func runCurrentCommand(t *testing.T, builds *twoBuilds, wants []int, args ...str
 	return runCommand(t, builds, wants, strings.Join(args, " "), exec.Command(builds.binary, args...))
 }
 
-// runPrinted runs a command line as the census printed it, in a POSIX shell whose PATH finds this
-// tree's envoy-dispatch first, against the pair's database, failing the test unless it exits with
-// want. The shell reads the line as an operator's does, its quoting included.
-func runPrinted(t *testing.T, builds *twoBuilds, want int, line string) string {
+// twoBuildLeaseNamespace is the first key every loop lease is taken under - duty's leaseNamespace,
+// which stays unexported - the four bytes of "LOOP". The second key is the lease's own name, which
+// Postgres hashes with hashtext. graph_cost_test.go and memory_harness_test.go state the same two
+// for the same lease, behind build tags this file does not carry.
+const twoBuildLeaseNamespace int32 = 0x4C4F4F50
+
+// holdTwoBuildBlockIndex takes the block-index pass's own lease on the pair's database and answers
+// the call that gives it back, so no tick of either build runs while it is held: duty.Exclusive
+// takes that lease before every pass and skips the pass where another session holds it. A pass
+// reads one batch of each queue it serves and gives the lease back, so the wait for it is bounded
+// by one block-index interval and a margin, a hang guard on a wait nothing healthy reaches.
+func holdTwoBuildBlockIndex(t *testing.T, builds *twoBuilds) func() {
 	t.Helper()
-	command := exec.Command("sh", "-c", line)
-	command.Env = append(command.Environ(), "PATH="+filepath.Dir(builds.binary)+string(os.PathListSeparator)+os.Getenv("PATH"))
-	if filepath.Base(builds.binary) != "envoy-dispatch" {
-		t.Fatalf("this tree's server is built as %s, so no shell finds it as envoy-dispatch", builds.binary)
+	ctx := context.Background()
+	conn, err := builds.database.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("take a connection for the block-index lease: %v", err)
 	}
-	return runCommand(t, builds, []int{want}, line, command)
+	deadline := time.Now().Add(docs.BlockIndexReconcileInterval + 30*time.Second)
+	for {
+		var held bool
+		if err := conn.QueryRow(ctx, `select pg_try_advisory_lock($1, hashtext($2))`,
+			twoBuildLeaseNamespace, docs.BlockIndexLease).Scan(&held); err != nil {
+			conn.Release()
+			t.Fatalf("take the block-index lease: %v", err)
+		}
+		if held {
+			break
+		}
+		if time.Now().After(deadline) {
+			conn.Release()
+			t.Fatalf("a block-index pass held the %q lease for more than %s", docs.BlockIndexLease,
+				docs.BlockIndexReconcileInterval+30*time.Second)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return func() {
+		if err := duty.FreeSessionLock(conn, `select pg_advisory_unlock($1, hashtext($2))`,
+			twoBuildLeaseNamespace, docs.BlockIndexLease); err != nil {
+			t.Errorf("give the block-index lease back: %v", err)
+		}
+	}
 }
 
 func runCommand(t *testing.T, builds *twoBuilds, wants []int, shown string, command *exec.Cmd) string {

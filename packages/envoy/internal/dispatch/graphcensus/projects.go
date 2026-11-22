@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
@@ -369,20 +368,24 @@ func writeProjectCensus(w io.Writer, kinds []ProjectKindReport) {
 // a node's project would answer wrongly. An empty answer is every row and every node of every kind
 // complete. The cure is the backfill for a row with no node, a node that is not the row's, or a
 // node naming neither a project nor parties (backfillCure), but for a row that names a party the
-// store refuses, which no writer and no pass of the backfill writes a node for (refusedCure); the
-// erase that removes it for an orphaned node, since no backfill reads a node no row stands behind
-// (`; remove it with: ` and eraseCommand's line); and none for a node that names another project
-// or other parties than its row, since the backfill walks no node naming either and only a person
-// can tell which of the two is wrong (differsCure).
+// store refuses, which no writer and no pass of the backfill writes a node for (refusedCure); for
+// an orphaned document node at an issue's address, the block-index tick of this build, which
+// states it gone as this build's removal states a removed document's node (sweptCure, docs'
+// writeObjectNodesAnotherBuildWrote and StateOrphanedGone), since no backfill reads a node no row
+// stands behind; none for any other orphaned node, whose row no release removes (unsweptCure); and
+// none for a node that names another project or other parties than its row, since the backfill
+// walks no node naming either and only a person can tell which of the two is wrong (differsCure).
 func ProjectComplete(ctx context.Context, q graphstore.Queryer) ([]string, error) {
 	return projectIncomplete(ctx, q, nil)
 }
 
-// The cures ProjectComplete ends its lines with, but an orphaned node's, which names its node.
+// The cures ProjectComplete ends its lines with.
 const (
 	backfillCure = "; run envoy-dispatch backfill-graph-store"
 	differsCure  = "; no command cures it: compare the row with its node"
 	refusedCure  = "; no command cures it: the row names a party the store refuses, one empty or holding white space"
+	sweptCure    = "; this build's block-index tick states it gone"
+	unsweptCure  = "; no command cures it: no release removes its row, and the block-index tick states gone only a removed document of an issue"
 )
 
 // projectIncomplete is ProjectComplete's read, of at most limit lines in its order when limit is
@@ -390,7 +393,8 @@ const (
 // earlier release left without nodes holds every row of it.
 func projectIncomplete(ctx context.Context, q graphstore.Queryer, limit *int) ([]string, error) {
 	rows, err := q.Query(ctx, scopedRowsSQL+classedRows+`
-		select kind, id, class, refused
+		select kind, id, class, refused,
+		       class = '`+classOrphaned+`' and kind = '`+graphstore.KindArtifact+`' and `+issueDocumentAddress("classed.id")+`
 		from classed
 		where class is not null
 		order by kind, id
@@ -401,12 +405,14 @@ func projectIncomplete(ctx context.Context, q graphstore.Queryer, limit *int) ([
 	}
 	var incomplete []string
 	var kind, id, class string
-	var refused bool
-	if _, err := pgx.ForEachRow(rows, []any{&kind, &id, &class, &refused}, func() error {
+	var refused, swept bool
+	if _, err := pgx.ForEachRow(rows, []any{&kind, &id, &class, &refused, &swept}, func() error {
 		line := kind + " " + id + ": " + class
 		switch {
+		case class == classOrphaned && swept:
+			line += sweptCure
 		case class == classOrphaned:
-			line += "; remove it with: " + eraseCommand(kind, id)
+			line += unsweptCure
 		case class == classDiffers:
 			line += differsCure
 		case refused:
@@ -421,18 +427,3 @@ func projectIncomplete(ctx context.Context, q graphstore.Queryer, limit *int) ([
 	}
 	return incomplete, nil
 }
-
-// eraseCommand is the command line that erases the node kind:id (grapherase.Erase), written as a
-// POSIX shell reads it: the node bare where it holds only characters no shell treats specially,
-// and otherwise in single quotes, each quote in it closed, escaped and opened again. Run as
-// printed, it lists what the erase would remove and the digest its --confirm takes.
-func eraseCommand(kind, id string) string {
-	node := kind + ":" + id
-	if !shellBare.MatchString(node) {
-		node = "'" + strings.ReplaceAll(node, "'", `'\''`) + "'"
-	}
-	return "envoy-dispatch erase --node " + node
-}
-
-// shellBare is a word a POSIX shell passes through unquoted and unchanged.
-var shellBare = regexp.MustCompile(`^[A-Za-z0-9._/:@%+=,-]+$`)

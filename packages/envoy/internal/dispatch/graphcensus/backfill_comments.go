@@ -120,12 +120,11 @@ func readCommentRows(ctx context.Context, database *store.Store, after string) (
 // project or its parties where it belongs to one (refs.CommentWrite.BaseAttributes): every
 // comment here is new, since a row that already names its node is never read.
 //
-// The batch is read before this transaction, and another run can mark a row and the erase can
-// then remove it before this run writes. So the transaction takes the owner lock of every comment
-// of the batch first (refs.LockCommentOwners), the lock every writer of a comments row and the
-// erase take, and reads the rows again under it (refs.CommentsNamingNoNode), so a row a writer of
-// the comment moved or named meanwhile, or the erase removed, is written as it now stands, or left
-// alone, and a cached batch cannot restore an erased node. Then it runs its writes back to back in
+// The batch is read before this transaction, and another run can mark a row before this run
+// writes. So the transaction takes the owner lock of every comment of the batch first
+// (refs.LockCommentOwners), the lock every writer of a comments row takes, and reads the rows
+// again under it (refs.CommentsNamingNoNode), so a row a writer of the comment moved or named
+// meanwhile is written as it now stands, or left alone. Then it runs its writes back to back in
 // one batch, holding a transaction id for those statements alone: every node of the batch goes in
 // its one store write, the comments' and their authors', so the transaction takes every node row
 // in ascending (kind, id) before it appends its first tuple, and names the nodes on the comments

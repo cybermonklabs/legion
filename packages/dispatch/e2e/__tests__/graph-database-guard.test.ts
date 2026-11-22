@@ -8,7 +8,7 @@ import { rowLimit, runBounded } from "./bounded-subprocess";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const directories = temporaryDirectories("graph-database-guard");
-const drivers = ["node-projects.sh", "graph-store.sh", "graph-erase.sh", "graph-sizing.sh"];
+const drivers = ["node-projects.sh", "graph-store.sh", "graph-sizing.sh"];
 
 // Run each real driver only through its guard. Its first HTTP call leaves a marker and fails,
 // so a bad URL can reach neither a real server nor a database even if the guard lets it through.
