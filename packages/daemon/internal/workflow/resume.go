@@ -260,9 +260,11 @@ func (e *Engine) startSuspendedOwner(ctx context.Context, tx pgx.Tx, owner suspe
 }
 
 // sweepMerged closes every issue of the project that awaits a merge GitHub already reported
-// (booted). Each is re-read before its close: a child's close may have closed the merged issues
-// above it (closeAwaitingMerge), and a root's close lingers the tree its children then close
-// under. A root whose tree still runs is left where it stands by closeMerged, which owns that
+// (booted): the merge of the pull request of its task that merges (record.Store.MergePullRequest).
+// Each is re-read before its close, for that task (issueOfPullRequest), so an issue whose plan
+// holds several tasks closes as that task's merge closes it: a child's close may have closed the
+// merged issues above it (closeAwaitingMerge), and a root's close lingers the tree its children then
+// close under. A root whose tree still runs is left where it stands by closeMerged, which owns that
 // rule, and the sweep tells nobody of the wait: a restart must not repeat the architect's
 // notice, and a root can now wait for days across many boots.
 func (e *Engine) sweepMerged(ctx context.Context, tx pgx.Tx) error {
@@ -274,14 +276,14 @@ func (e *Engine) sweepMerged(ctx context.Context, tx pgx.Tx) error {
 		if !awaitsMerge(listed) {
 			continue
 		}
-		pr, err := e.store.PullRequest(ctx, tx, listed.Key)
+		pr, err := e.store.MergePullRequest(ctx, tx, listed.Key)
 		if err != nil || pr == nil || pr.State != record.PullRequestMerged {
 			if err != nil {
 				return err
 			}
 			continue
 		}
-		issue, err := e.store.Issue(ctx, tx, listed.Key)
+		issue, err := e.issueOfPullRequest(ctx, tx, *pr)
 		if err != nil || issue == nil || !awaitsMerge(*issue) {
 			if err != nil {
 				return err

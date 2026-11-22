@@ -20,17 +20,18 @@ import (
 
 // PhaseFinished says whether issue's phase is over by its own terminating fact rather than by its
 // worker's completion, so no worker of it is started or resumed for it. Merging's fact is the pull
-// request being merged: the merger merges, the daemon merges nothing, and a merged root then
-// stands in merging until the rest of its tree leaves the workflow (closeMerged), which can be
-// days. Accepting's is the architect's sign-off, which moves the issue on in the transaction that
-// records it, so an issue standing in accepting is always still waiting for it; every other
-// phase ends with its worker's completion, which moves the issue too. A recorded completion
-// answers nothing here: the merger's is recorded and moves no issue.
+// request of the task that merges being merged (record.Store.MergePullRequest): the merger merges,
+// the daemon merges nothing, and a merged root then stands in merging until the rest of its tree
+// leaves the workflow (closeMerged), which can be days. Accepting's is the architect's sign-off,
+// which moves the issue on in the transaction that records it, so an issue standing in accepting is
+// always still waiting for it; every other phase ends with its worker's completion, which moves the
+// issue too. A recorded completion answers nothing here: the merger's is recorded and moves no
+// issue.
 func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (bool, error) {
 	if issue.Phase != phase.Merging {
 		return false, nil
 	}
-	pr, err := store.PullRequest(ctx, tx, issue.Key)
+	pr, err := store.MergePullRequest(ctx, tx, issue.Key)
 	if err != nil || pr == nil {
 		return false, err
 	}

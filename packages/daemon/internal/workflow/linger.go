@@ -106,7 +106,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 			return err
 		}
 	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	pr, err := e.store.MergePullRequest(ctx, tx, issue.Key)
 	if err != nil {
 		return err
 	}
@@ -293,7 +293,7 @@ func (e *Engine) LeaveUnslotted(ctx context.Context, tx pgx.Tx, root record.Issu
 // does a merged one of a project that checks nothing in production, whose openCheck opens no
 // record, queues no bound row and starts no look (Engine.checkRole).
 func (e *Engine) openCheckIfMerged(ctx context.Context, tx pgx.Tx, issue record.Issue, wake bool) error {
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	pr, err := e.store.MergePullRequest(ctx, tx, issue.Key)
 	if err != nil || pr == nil || pr.State != record.PullRequestMerged {
 		return err
 	}
@@ -301,21 +301,27 @@ func (e *Engine) openCheckIfMerged(ctx context.Context, tx pgx.Tx, issue record.
 }
 
 // closeAwaitingMerge closes merged when its own merge was waiting on the issues beneath it: an
-// issue whose pull request merged stands in merging (or held from it) while any issue
-// beneath it is in the workflow (closeMerged), and closes, as its merge would have, once the
-// last of them leaves. Which issues still hold it is closeMerged's to judge, so this runs on
-// every merged ancestor of an issue that leaves the workflow and changes nothing for any other.
-// It tells nobody: the architect heard the wait when the close entered it (merged), and this
-// path is walked at every departure.
+// issue whose pull request of its task that merges (record.Store.MergePullRequest) merged stands in
+// merging (or held from it) while any issue beneath it is in the workflow (closeMerged), and
+// closes, as its merge would have, once the last of them leaves. The close is that task's, on the
+// copy of merged read for it (viewOfPullRequest), as the merge's own close is (merged), so an issue
+// whose plan holds several tasks closes too. Which issues still hold it is closeMerged's to judge,
+// so this runs on every merged ancestor of an issue that leaves the workflow and changes nothing
+// for any other. It tells nobody: the architect heard the wait when the close entered it (merged),
+// and this path is walked at every departure.
 func (e *Engine) closeAwaitingMerge(ctx context.Context, tx pgx.Tx, merged record.Issue) error {
 	if !awaitsMerge(merged) {
 		return nil
 	}
-	pr, err := e.store.PullRequest(ctx, tx, merged.Key)
+	pr, err := e.store.MergePullRequest(ctx, tx, merged.Key)
 	if err != nil || pr == nil || pr.State != record.PullRequestMerged {
 		return err
 	}
-	waiting, err := e.closeMerged(ctx, tx, merged, pr)
+	view, _, ok, err := e.viewOfPullRequest(ctx, tx, merged, *pr)
+	if err != nil || !ok {
+		return err
+	}
+	waiting, err := e.closeMerged(ctx, tx, view, pr)
 	if err != nil || len(waiting) > 0 {
 		return err
 	}
@@ -451,9 +457,10 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // guard would otherwise strand is exactly the one holding an open pull request with no live tree
 // left to merge it — green and approved, with nothing in the workflow that would ever merge it.
 // Whether that pull request is open is the one fact here that record.Issue does not carry, so it
-// is read from the pull_requests row (record.Store.PullRequest), and only for a member of a
-// non-done root's tree that this clause could take — one at phase.Merging that is in the
-// workflow — so a tree of many members costs a handful of reads at most.
+// is read from the pull_requests row of the member's task that merges
+// (record.Store.MergePullRequest), and only for a member of a non-done root's tree that this
+// clause could take — one at phase.Merging that is in the workflow — so a tree of many members
+// costs a handful of reads at most.
 //
 // What the close does around the hand-over, for a member handed over under either rule: the same
 // expiry still queues a tree_close for each claim of every member — one for each stored claim, and
@@ -485,7 +492,7 @@ func (e *Engine) unfinishedHandOvers(ctx context.Context, tx pgx.Tx, root record
 			if member.Phase != phase.Merging {
 				continue
 			}
-			pr, err := e.store.PullRequest(ctx, tx, member.Key)
+			pr, err := e.store.MergePullRequest(ctx, tx, member.Key)
 			if err != nil {
 				return nil, err
 			}
