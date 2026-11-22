@@ -1635,7 +1635,7 @@ func roleDrainReport(t *testing.T, plan roleDrainPlan) (map[string]string, strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	guard := testwait.Bounded(t, 3*time.Minute, 10*time.Second)
+	guard := beforeDeadline(t)
 	ctx, cancel := context.WithTimeout(context.Background(), guard)
 	defer cancel()
 	stage := exec.CommandContext(ctx, self, "-test.run=^TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills$")

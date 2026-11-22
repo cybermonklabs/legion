@@ -480,7 +480,7 @@ func TestTheLauncherLogsOneLineForEachAcknowledgedHello(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := unacknowledged.SetReadDeadline(time.Now().Add(testwait.Bounded(t, time.Minute, time.Second))); err != nil {
+	if err := unacknowledged.SetReadDeadline(time.Now().Add(beforeDeadline(t))); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := bufio.NewReader(unacknowledged).ReadBytes('\n'); err != nil {
@@ -626,7 +626,7 @@ func (g *rig) told(generation uint64, expansion string, env []string, resume str
 		g.t.Fatalf("start of generation %d = %#v", generation, got)
 	}
 	var said string
-	if !testwait.Holds(testwait.Bounded(g.t, time.Minute, time.Second), testwait.Poll, func() bool {
+	if !testwait.Holds(beforeDeadline(g.t), testwait.Poll, func() bool {
 		body, err := os.ReadFile(told)
 		if err != nil {
 			return false
@@ -913,7 +913,7 @@ func TestAStopOfOneRolesGenerationLeavesTheOtherRoleRunning(t *testing.T) {
 	}
 	since := beatAt(running)
 	var beat string
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
+	if !testwait.Holds(beforeDeadline(t), testwait.Poll, func() bool {
 		beat = f.waitForRoleFile(f.roleTmp("reviewer", "beat"))
 		return time.Duration(beatAt(beat)-since) >= 500*time.Millisecond
 	}) {
@@ -1283,7 +1283,7 @@ func TestTheReaperSparesEveryManagersGenerationAndReapsTheRest(t *testing.T) {
 	signals <- syscall.SIGCHLD
 	// A reaped process is gone from the process table; a zombie still takes signal 0. The wait is
 	// for that fact under the test's hang guard: when the reaper's pass runs is not the claim.
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
+	if !testwait.Holds(beforeDeadline(t), testwait.Poll, func() bool {
 		return errors.Is(syscall.Kill(orphan.Process.Pid, 0), syscall.ESRCH)
 	}) {
 		t.Fatal("the reaper left the orphan unreaped")
@@ -1300,7 +1300,9 @@ func TestTheReaperSparesEveryManagersGenerationAndReapsTheRest(t *testing.T) {
 // awaitZombie waits for pid, a child of the test that exits at once, to have exited and to wait as
 // a zombie for whoever reaps it. It is the setup of a reap, so it waits for that fact under the
 // test's hang guard and not for a span: how long a loaded machine takes to run a shell that exits
-// is not what any reap case reads.
+// is not what any reap case reads. It keeps testwait.Eventually's minute rather than
+// beforeDeadline, because TestControllerDrainPIDOneHelper calls it in a process the test binary
+// re-enters, where there is no deadline to wait before (beforeDeadline).
 func awaitZombie(t *testing.T, pid int) {
 	t.Helper()
 	testwait.Eventually(t, fmt.Sprintf("process %d to exit", pid), func() bool { return zombie(pid) })

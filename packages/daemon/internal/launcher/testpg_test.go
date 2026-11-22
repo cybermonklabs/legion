@@ -108,7 +108,7 @@ func TestTheLauncherServesTheTestDatabaseBeforeAnyRoleAndKeepsAsking(t *testing.
 	// The second call comes on the ticker, every 20 ms; how soon it comes is not the claim, so the
 	// wait is for it under the test's hang guard.
 	var again []byte
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 5*time.Millisecond, func() bool {
+	if !testwait.Holds(beforeDeadline(t), 5*time.Millisecond, func() bool {
 		var err error
 		again, err = os.ReadFile(calls)
 		return err == nil && strings.Count(string(again), "ensure ") > 1

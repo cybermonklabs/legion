@@ -820,7 +820,7 @@ func TestThePodsProcessesAreVisibleThroughEveryProcEntry(t *testing.T) {
 	// Each process reports itself ready by a marker of its own; the chrooted one writes its
 	// marker inside the root it took, which is that same directory from here.
 	markers := []string{filepath.Join(tree.Ready, "opener"), filepath.Join(tree.Ready, "runner"), filepath.Join(tree.Ready, "mapper"), filepath.Join(tree.Root, "chrooted")}
-	deadline := time.Now().Add(testwait.Bounded(t, time.Minute, time.Second))
+	deadline := time.Now().Add(beforeDeadline(t))
 	for ready := false; !ready; {
 		ready = true
 		for _, marker := range markers {

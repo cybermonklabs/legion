@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/memoryguard"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"golang.org/x/sys/unix"
 )
 
@@ -97,7 +96,7 @@ func TestMemoryGuardOnRealRoleNamespaces(t *testing.T) {
 			_ = initProcess.Wait()
 		}
 	})
-	bound := testwait.Bounded(t, time.Minute, time.Second)
+	bound := beforeDeadline(t)
 	if err := readyRead.SetReadDeadline(time.Now().Add(bound)); err != nil {
 		t.Fatal(err)
 	}

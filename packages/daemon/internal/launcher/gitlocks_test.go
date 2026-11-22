@@ -256,6 +256,13 @@ func newGatedProc(t *testing.T, pids ...int) *gatedProc {
 // by a fixed span, so a pass or a goroutine that is merely slow on a loaded machine still passes its
 // row, and one that never comes still fails it, naming what it waited for. One that never comes
 // thus costs the rest of the binary's -timeout.
+//
+// Every wait of the package's tests for a fact whose span is not the claim is bounded by it, or by
+// cleanupBeforeDeadline in a cleanup, with one exception: a wait inside a process the test binary
+// re-enters (a *Helper test, the role stage, the session-peer stand-ins, the PID 1 helpers) keeps
+// testwait's minute (testwait.Eventually, testwait.Bounded of a minute). That process is started
+// with no -test.timeout, so it has no deadline, and beforeDeadline there would be 36 years; the
+// minute is what ends its wait for something that never comes.
 func beforeDeadline(t *testing.T) time.Duration {
 	return testwait.Bounded(t, 1<<60, 30*time.Second)
 }
@@ -471,7 +478,7 @@ func roleNamespaceHolder(t *testing.T, dir, lock string) int {
 		_ = process.status.Close()
 	})
 	var holder int
-	testwait.Eventually(t, "the role's shim to open "+lock, func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the role's shim to open "+lock, func() bool {
 		if !strings.Contains(out.String(), "holding") {
 			return false
 		}
@@ -920,7 +927,7 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 			if path != running {
 				t.Fatalf("the sweep's clock held at the removal of %s, not of %s; the launcher's log:\n%s", path, running, f.stderr.String())
 			}
-		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+		case <-time.After(beforeDeadline(t)):
 			t.Fatalf("the sweep's clock never reached the removal of %s; the launcher's log:\n%s", running, f.stderr.String())
 		}
 
@@ -939,7 +946,7 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 		// at once. The half second below bounds how long such a Run has to show itself, and a Run
 		// that waits cannot return in it, however loaded the machine is.
 		conn := f.role("tester")
-		if err := conn.conn.SetReadDeadline(time.Now().Add(testwait.Bounded(t, time.Minute, time.Second))); err != nil {
+		if err := conn.conn.SetReadDeadline(time.Now().Add(beforeDeadline(t))); err != nil {
 			t.Fatal(err)
 		}
 		for {
@@ -963,7 +970,7 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 			if !taken {
 				t.Fatalf("Run returned before the pass of its sweep it was ended inside had taken its lock")
 			}
-		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+		case <-time.After(beforeDeadline(t)):
 			t.Fatalf("Run did not return after its context ended and its sweep's pass was let go; the launcher's log:\n%s", f.stderr.String())
 		}
 		if !swept(running) {
@@ -991,7 +998,7 @@ func TestTheSweepRunsAgainOnItsClockForTheLifeOfThePod(t *testing.T) {
 	for _, name := range []string{"index.lock", "refs/heads/one.lock", "refs/heads/two.lock"} {
 		path := c.lock(name, "stale", time.Hour)
 		line := "removed the git lock " + strconv.Quote(path) + ","
-		testwait.Eventually(t, "the clock pass that removes "+path, func() bool {
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the clock pass that removes "+path, func() bool {
 			return strings.Contains(log.String(), line)
 		})
 		if !swept(path) {

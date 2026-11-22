@@ -827,7 +827,7 @@ func (g *peerGeneration) roleTmp(name string) string {
 func (g *peerGeneration) said(name string) string {
 	g.t.Helper()
 	var said string
-	if !testwait.Holds(testwait.Bounded(g.t, time.Minute, time.Second), testwait.Poll, func() bool {
+	if !testwait.Holds(beforeDeadline(g.t), testwait.Poll, func() bool {
 		body, err := os.ReadFile(g.roleTmp(name))
 		said = string(body)
 		return err == nil
@@ -885,7 +885,7 @@ func TestARealRolesAgentIsAdmittedAndItsChildIsRefused(t *testing.T) {
 	child := table.Children(agent.PID)[0]
 	want := fmt.Sprintf("sessionproxy: refused a connection to %s from pid %d (%q): pid %d is not the agent of generation 1, which is pid %d",
 		testInstance, child.PID, child.Name, child.PID, agent.PID)
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool { return strings.Contains(g.log.String(), want) }) {
+	if !testwait.Holds(beforeDeadline(t), testwait.Poll, func() bool { return strings.Contains(g.log.String(), want) }) {
 		t.Fatalf("the launcher's log holds no line %q: %s", want, g.log.String())
 	}
 	if refusals := strings.Count(g.log.String(), "refused a connection"); refusals != 1 {

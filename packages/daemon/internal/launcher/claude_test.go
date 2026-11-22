@@ -121,7 +121,7 @@ func (c *claudeRig) awaitRow(path, want string) {
 	c.t.Helper()
 	var got string
 	var ok bool
-	if !testwait.Holds(testwait.Bounded(c.t, time.Minute, time.Second), 20*time.Millisecond, func() bool {
+	if !testwait.Holds(beforeDeadline(c.t), 20*time.Millisecond, func() bool {
 		got, ok = c.row(path)
 		return ok && got == want
 	}) {
@@ -233,7 +233,7 @@ func TestAClaudeSaveStopsWhenAnotherWriterMovedTheRow(t *testing.T) {
 	}
 	appendTo(t, c.transcript, "{\"n\":2}\n")
 	// The keeper says so at its next save; when that comes is not the claim.
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 20*time.Millisecond, func() bool {
+	if !testwait.Holds(beforeDeadline(t), 20*time.Millisecond, func() bool {
 		return strings.Contains(c.stderr.String(), "stops saving "+c.transcript)
 	}) {
 		t.Fatalf("the launcher logged %q, want it to say it stops saving %s", c.stderr.String(), c.transcript)

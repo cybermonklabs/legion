@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // namespaceHelperEnv marks the test binary re-executed as the PID 1 launcher below: TestMain
@@ -101,7 +100,7 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
-	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(testwait.Bounded(t, time.Minute, time.Second))); err != nil {
+	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(beforeDeadline(t))); err != nil {
 		t.Fatal(err)
 	}
 	g := &rig{t: t, listener: listener, private: t.TempDir(), result: make(chan error, 1)}
@@ -131,7 +130,7 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 			if err != nil {
 				t.Errorf("PID 1 launcher exited: %v\n%s", err, output.String())
 			}
-		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+		case <-time.After(cleanupBeforeDeadline(t)):
 			_ = command.Process.Kill()
 			<-g.result
 			t.Error("PID 1 launcher did not stop after its context ended")

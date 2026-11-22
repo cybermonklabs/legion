@@ -373,14 +373,14 @@ func removeWhileFilling(t *testing.T, held *os.File, filling string) error {
 			_ = os.Mkdir(filepath.Join(filling, fmt.Sprintf("d%07d", n)), 0o755)
 		}
 	}()
-	testwait.Eventually(t, "the writer to have created names in the directory", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the writer to have created names in the directory", func() bool {
 		names, err := os.ReadDir(filling)
 		return err == nil && len(names) >= 100
 	})
 
 	answered := make(chan error, 1)
 	go func() { answered <- removeEntryAt(held, "entry", make([]byte, volumeRemovalNamesBytes)) }()
-	bound := testwait.Bounded(t, time.Minute, 5*time.Second)
+	bound := beforeDeadline(t)
 	select {
 	case removal := <-answered:
 		close(stop)
@@ -564,8 +564,8 @@ const ownHoldEntries = 2000
 // Build and remove the child's fixture on a memory filesystem in its own mount namespace
 // (TestASweepsOwnDeleterIsNoHoldHelper). The separate-holder control leaves all 2000 entries to
 // cleanup, so putting them on the machine's disk would make fixture I/O, not the sweep, consume
-// the child's three-minute hang guard. refreshMidway forces the used-path refresh independently
-// of the filesystem's speed.
+// the child's hang guard. refreshMidway forces the used-path refresh independently of the
+// filesystem's speed.
 func TestASweepsOwnDeleterIsNoHoldOnTheRootsItDeletesFrom(t *testing.T) {
 	requireRoleNamespaces(t)
 	self, err := os.Executable()
@@ -578,7 +578,7 @@ func TestASweepsOwnDeleterIsNoHoldOnTheRootsItDeletesFrom(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, 3*time.Minute, 10*time.Second))
+			ctx, cancel := context.WithTimeout(context.Background(), beforeDeadline(t))
 			defer cancel()
 			child := exec.CommandContext(ctx, self, "-test.run=^TestASweepsOwnDeleterIsNoHoldHelper$", "-test.v")
 			child.Dir = "/"
@@ -752,7 +752,7 @@ func TestTheReaperLeavesTheSweepsDeleterToItsOwnWait(t *testing.T) {
 	// The end of the requests, which the deleter answers by exiting: it then waits, a zombie,
 	// for whoever reaps it.
 	_ = remover.requests.Close()
-	testwait.Eventually(t, fmt.Sprintf("the deleter %d to exit", pid), func() bool { return zombie(pid) })
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, fmt.Sprintf("the deleter %d to exit", pid), func() bool { return zombie(pid) })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	signals := make(chan os.Signal)
@@ -898,7 +898,7 @@ func TestADeleterThatIgnoresTheEndOfItsRequestsIsKilledAtTheGrace(t *testing.T) 
 	go func() { remover.close(); close(closed) }()
 	select {
 	case <-closed:
-	case <-time.After(volumeRemoverGrace + testwait.Bounded(t, time.Minute, 5*time.Second)):
+	case <-time.After(beforeDeadline(t)):
 		t.Fatalf("the remover's close had not returned %v after it began, with a child that ignores the end of its requests", time.Since(began))
 	}
 	if took := time.Since(began); took < volumeRemoverGrace {

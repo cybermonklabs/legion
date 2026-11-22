@@ -431,7 +431,7 @@ func (r *guardRig) nextWait() guardWait {
 	select {
 	case w := <-r.clock.waits:
 		return w
-	case <-time.After(testwait.Bounded(r.t, time.Minute, time.Second)):
+	case <-time.After(beforeDeadline(r.t)):
 		r.t.Fatalf("the guard never waited for its next reading; its log:\n%s", r.log())
 	}
 	return guardWait{}
@@ -498,7 +498,7 @@ func scanTable(t *testing.T, pod *guardPod) *memoryguard.Table {
 	select {
 	case table := <-tables:
 		return table
-	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+	case <-time.After(beforeDeadline(t)):
 		t.Fatal("the guard never scanned the fake pod")
 	}
 	return nil
@@ -782,7 +782,7 @@ func TestMemoryGuardSparesTheAgentAndEndsItsCommand(t *testing.T) {
 		cancel()
 		select {
 		case <-done:
-		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+		case <-time.After(cleanupBeforeDeadline(t)):
 			t.Error("the memory guard did not return after its context ended")
 		}
 	})
@@ -1058,7 +1058,7 @@ func (f *fleet) dropConnection(role string) {
 	ended := func() int { return strings.Count(f.stderr.String(), role+": launcher: daemon connection: ") }
 	before := ended()
 	_ = f.role(role).conn.Close()
-	if !testwait.Holds(testwait.Bounded(f.t, time.Minute, time.Second), testwait.Poll, func() bool { return ended() > before }) {
+	if !testwait.Holds(beforeDeadline(f.t), testwait.Poll, func() bool { return ended() > before }) {
 		f.t.Fatalf("the launcher never saw the %s's connection end; its log: %s", role, f.stderr.String())
 	}
 }
@@ -1173,7 +1173,7 @@ func TestMemoryGuardDropsTheNextOldestWhileTheOldestIsBeingWritten(t *testing.T)
 		defer close(sent)
 		m.openMemoryReports(shimwire.NewWriter(conn), true)
 	}()
-	bound := testwait.Bounded(t, time.Minute, time.Second)
+	bound := beforeDeadline(t)
 	select {
 	case <-conn.writing:
 	case <-time.After(bound):
@@ -1258,7 +1258,7 @@ func waitingKillReport(t *testing.T, microVM bool, report shimwire.LauncherMemor
 		cancel()
 		select {
 		case <-served:
-		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+		case <-time.After(cleanupBeforeDeadline(t)):
 			t.Errorf("the tester's manager did not return after its context ended; its log: %s", stderr.String())
 		}
 	})
@@ -1366,7 +1366,7 @@ func TestAMicroVMLauncherRaisesTheAgentsWorkAndKeepsItsOwnProcessesAtTheStarting
 		cancel()
 		select {
 		case <-done:
-		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+		case <-time.After(cleanupBeforeDeadline(t)):
 			t.Error("the guest watch did not return after its context ended")
 		}
 	})
