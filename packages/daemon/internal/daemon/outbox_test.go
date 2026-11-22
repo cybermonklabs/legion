@@ -212,8 +212,10 @@ func (d *outboxDispatch) PutDesignGates(context.Context, string, []dispatch.Desi
 // noArtifacts is the issue's documents as a fake Dispatch that keeps none: the read of an issue's
 // artifacts answers none, and an upload answers the slug Dispatch files the name under, which for
 // a message's document is its name (record.MessageArtifact). It also takes every role-holder
-// publication and keeps none. Every fake of the client that no test drives through a message's
-// document or a role-holder publication embeds it.
+// publication and keeps none, and it answers the two reads of a change request as a Dispatch older
+// than their routes does, its router's 404 (dispatch.NoRoute), so a gate behind such a fake keeps
+// the rule of a person's approval. Every fake of the client that no test drives through a
+// message's document, a role-holder publication or a change request embeds it.
 type noArtifacts struct{}
 
 func (noArtifacts) ArtifactSlugs(context.Context, string) ([]string, error) { return nil, nil }
@@ -221,6 +223,18 @@ func (noArtifacts) UploadArtifact(_ context.Context, _, name, _ string) (string,
 	return name, nil
 }
 func (noArtifacts) PutRoleHolders(context.Context, string, []dispatch.RoleHolder) error { return nil }
+func (noArtifacts) ChangeRequest(_ context.Context, key string, _ int) (dispatch.ChangeRequest, error) {
+	return dispatch.ChangeRequest{}, olderDispatchRoute("/api/v1/issues/" + key + "/change-request")
+}
+func (noArtifacts) SpecEnding(_ context.Context, key, _ string) (dispatch.SpecEnding, error) {
+	return dispatch.SpecEnding{}, olderDispatchRoute("/api/v1/issues/" + key + "/change-request/ending")
+}
+
+// olderDispatchRoute is the answer a Dispatch older than the route at path gives: its router's
+// 404 under NOT_FOUND, "no route for ...", which dispatch.NoRoute tells.
+func olderDispatchRoute(path string) error {
+	return &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route for GET " + path}
+}
 
 func TestOutboxStatusWriteCallsDispatchOnlyForItsObservedStatus(t *testing.T) {
 	row := mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "todo", ""), time.Now())

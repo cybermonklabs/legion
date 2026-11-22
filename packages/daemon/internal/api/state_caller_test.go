@@ -969,6 +969,23 @@ func servedShape(want map[string]any, contract int) {
 		if check, carries := issue["check"].(map[string]any); carries && contract < checkRoleContract {
 			delete(check, "role")
 		}
+		// A caller below specGateContract is served the gate and each gated step without the keys
+		// that contract added, and a step in `exempt` without its status (withoutGateExemption,
+		// withoutExemptStatus).
+		if contract < specGateContract {
+			if gate, carries := issue["designGate"].(map[string]any); carries {
+				delete(gate, "exemptVersion")
+				delete(gate, "rule")
+			}
+			steps, _ := issue["gatedSteps"].([]any)
+			for _, step := range steps {
+				step := step.(map[string]any)
+				delete(step, "exemptVersion")
+				if step["status"] == string(GatedStepExempt) {
+					delete(step, "status")
+				}
+			}
+		}
 		if contract >= stateMachineContract {
 			continue
 		}

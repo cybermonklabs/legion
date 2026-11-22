@@ -1094,7 +1094,8 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
 // claims.abandoned_session (20261029121200): applied before that version, it fails on the missing
 // column. Any other version left out makes the cases below weaker, never red, which is why the
-// comment says where the list comes from.
+// comment says where the list comes from. The spec gate's exemption, 20261122104755, rewrites the
+// check with spec_ending_read added, so it is in the list too.
 var thisRelease = map[int]bool{
 	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
 	20261029120400: true, 20261029120600: true, 20261029120700: true, 20261029120800: true,
@@ -1103,7 +1104,7 @@ var thisRelease = map[int]bool{
 	20261108152000: true, 20261108190000: true, 20261109130413: true, 20261111181500: true,
 	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261116144907: true,
 	20261116165926: true, 20261117000528: true, 20261117004117: true, 20261117023932: true,
-	20261117064152: true, 20261119003157: true,
+	20261117064152: true, 20261119003157: true, 20261122104755: true,
 }
 
 const idleRelease = 20261101222956

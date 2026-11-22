@@ -181,7 +181,9 @@ func TestPrepareArtifactReadsTheIssueOnlyForAPersonsOwnApproval(t *testing.T) {
 			if tc.failing {
 				client.failing = key
 			}
-			w := &workflowRuntime{dispatch: client, log: quietLogger()}
+			// A version reads the store for the gate that holds its document, which here holds
+			// none, so it reads nothing of Dispatch (prepareArtifact, changeRequestOfGate).
+			w := &workflowRuntime{dispatch: client, log: quietLogger(), pool: isolatedOutboxPool(t), records: record.NewStore()}
 			fact := tc.fact(approval)
 
 			got, err := w.prepareArtifact(context.Background(), fact)

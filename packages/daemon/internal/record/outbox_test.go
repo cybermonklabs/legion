@@ -93,6 +93,8 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext},
 		MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictRulesUnread},
 		MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Retro, PullRequest: 42},
+		SpecEndingRead{Head: "c0de", Cause: SpecEndingCauseHead},
+		SpecEndingRead{Head: "c0de", Cause: SpecEndingCauseOutcomes},
 	}
 	for _, payload := range payloads {
 		t.Run(string(payload.OutboxKind()), func(t *testing.T) {
@@ -268,7 +270,7 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindRoleHoldersPublish, OutboxKindStepRecord, OutboxKindConflictConfirm,
-		OutboxKindMergeForward, OutboxKindPlanRecord}
+		OutboxKindMergeForward, OutboxKindPlanRecord, OutboxKindSpecEndingRead}
 	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneLifecycle, LaneRecord, LaneRoleMessage}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
 		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
@@ -346,6 +348,9 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		// A plan record writes Dispatch the plan one run of an issue carries out (main's plan
 		// ratings, contract 168) and starts no turn, so the pause lets it run as a step record.
 		OutboxKindPlanRecord: "",
+		// A read of a change request's ending condition reads Dispatch and starts no turn; the
+		// role messages and notices its fact queues are held, each by its own kind.
+		OutboxKindSpecEndingRead: "",
 	}
 	for _, lane := range OutboxLanes() {
 		for _, kind := range LaneKinds(lane) {
@@ -482,6 +487,8 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a merge-queue removal of no pull request", payload: MergeQueueRemoval{Head: "c0de"}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
 		{name: "a merge-queue removal with no head", payload: MergeQueueRemoval{Number: 42, Unread: true}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
 		{name: "a conflict confirm of no pull request", payload: ConflictConfirm{Head: "c0de", FirstReadAt: now}, reason: "a conflict confirm names the pull request it reads again and the head"},
+		{name: "a spec ending read at no head", payload: SpecEndingRead{Cause: SpecEndingCauseHead}, reason: "a spec ending read names the head it reads the ending condition at"},
+		{name: "a spec ending read of no cause", payload: SpecEndingRead{Head: "c0de"}, reason: "a spec ending read names what queued it"},
 		{name: "a conflict confirm with no head", payload: ConflictConfirm{Number: 42, FirstReadAt: now}, reason: "a conflict confirm names the pull request it reads again and the head"},
 		{name: "a conflict confirm with no time of the first read", payload: ConflictConfirm{Number: 42, Head: "c0de"}, reason: "a conflict confirm names when the first read it reads again was made"},
 		{name: "a merge-forward message of no step", payload: MergeForwardMessage{Role: claim.RoleImplementer, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictCheckNotGreen}, reason: "is an ask, a hold, a landed or a review"},
@@ -1147,6 +1154,10 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 					Refused: "caches/uv/.../locked (depth 2)", Refusals: 3}},
 				SizesAt: answered, SizesPartial: true, SizesMissing: []VolumeMissing{{Path: "workspaces/LEGION-209", Reason: "openat: permission denied"}},
 				Faults: []string{"read the volume: panic: runtime error\nmain.go:1"}}},
+		{Kind: SpecEndingWaitsNotice, Role: claim.RoleArchitect, Reason: "no_conclusion",
+			Summary: "The change request of the tree may not land at head c0de: no_conclusion: the spec holds no conclusion block."},
+		{Kind: SpecRequestStaleNotice, Role: claim.RoleArchitect, Reason: "the approved spec changed a-node after the request was written",
+			Summary: "Dispatch refused the approval of the change request: a-node is at base 1, and the approved spec holds version 2."},
 	}
 
 	byKind := make(map[NoticeKind]Notice, len(every))

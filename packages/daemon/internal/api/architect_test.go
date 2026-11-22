@@ -99,6 +99,34 @@ type statusRecorder struct {
 	listFails error
 	// reads is every issue and document read, in order: `issue:<key>` and `approval:<id>`.
 	reads []string
+	// changeRequests is each change request this fake answers, by issue: a case that sets none
+	// stands for a Dispatch older than the route, which answers its router's 404 (NoRoute), as
+	// every case written before the route does. changeRequestErr, when set, is every read's
+	// answer instead, and changeRequestReads is each read, `<key>@<version>`, in order.
+	changeRequests     map[string]dispatch.ChangeRequest
+	changeRequestErr   error
+	changeRequestReads []string
+}
+
+// ChangeRequest answers Dispatch's read of an issue's change request at version: the change
+// request the case set for the issue, at the version read, or the router's 404 of a Dispatch older
+// than the route.
+func (r *statusRecorder) ChangeRequest(_ context.Context, key string, version int) (dispatch.ChangeRequest, error) {
+	r.changeRequestReads = append(r.changeRequestReads, fmt.Sprintf("%s@%d", key, version))
+	if r.changeRequestErr != nil {
+		return dispatch.ChangeRequest{}, r.changeRequestErr
+	}
+	answer, ok := r.changeRequests[key]
+	if !ok {
+		return dispatch.ChangeRequest{}, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route for GET /api/v1/issues/" + key + "/change-request"}
+	}
+	answer.Issue, answer.Version = key, version
+	return answer, nil
+}
+
+// SpecEnding is a read no architect route makes.
+func (r *statusRecorder) SpecEnding(context.Context, string, string) (dispatch.SpecEnding, error) {
+	return dispatch.SpecEnding{}, errors.New("the architect routes read no ending condition")
 }
 
 // ListIssues answers Dispatch's project listing: every issue the fake knows, in key order, as the

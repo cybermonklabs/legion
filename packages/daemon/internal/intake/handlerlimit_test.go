@@ -140,7 +140,7 @@ var reviewBoundedReads = map[string]string{
 // boundedReadsPerFact is the most any one fact makes and no fact here makes more than one.
 var otherFactBoundedReads = map[string]string{
 	"PrepareRepository": "a DispatchIssue fact has the repository it resolves to readied before it is applied (prepareRepository); it is no pull request's event, so recordedPullRequest answers true with no read of the pool, and neither review resolver touches it: one read in all",
-	"PrepareArtifact":   "a DispatchArtifact fact has the issue its review is on readied before it is applied (prepareArtifact); it reaches the pool and GitHub through nothing else, for the same reason a DispatchIssue fact does not: one read in all",
+	"PrepareArtifact":   "a DispatchArtifact fact has the issue its review is on readied before it is applied (prepareArtifact), or, for a version of a document a spec gate holds under the rule of a change request, the change request at that version, read after the pool says which gate holds the document; never both, and it reaches GitHub through nothing else, for the same reason a DispatchIssue fact does not: one read of Dispatch in all",
 }
 
 // consumerSpecNotReads are the ConsumerSpec function fields that are no read at all, by field

@@ -2576,9 +2576,10 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // aside: the mark names the contract the caller is served at, 199, the recorded contract below
   // the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's
   // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
-  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. No band stands
-  // between 199 and 202 but the repositories block's, so the narrowing changes this one block and
-  // nothing beside it.
+  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Two bands stand
+  // above 199: the repositories block's at 202, and the spec gate's at 222, which leaves off each
+  // issue's `designGate.exemptVersion` and `designGate.rule` and each gated step's
+  // `exemptVersion`. So the narrowing changes the one block and those keys, and nothing beside.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2595,6 +2596,17 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     lowestPluginContract: _lowest,
     ...rest
   } = fixtureBody("state.json");
+  const issues = rest.issues as Record<string, Record<string, unknown>>;
+  for (const issue of Object.values(issues)) {
+    const gate = issue.designGate as Record<string, unknown> | undefined;
+    if (gate !== undefined) {
+      delete gate.exemptVersion;
+      delete gate.rule;
+    }
+    for (const step of (issue.gatedSteps ?? []) as Array<Record<string, unknown>>) {
+      delete step.exemptVersion;
+    }
+  }
   expect(narrowedRest).toEqual(rest);
 
   // What serving the current block would do, and why it is not served: the reader of 152 refuses

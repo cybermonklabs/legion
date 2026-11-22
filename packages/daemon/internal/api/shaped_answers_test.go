@@ -494,7 +494,92 @@ func valueStripCases() map[string]valueStripCase {
 				Place: 1, Length: 1, Part: "returned", Kind: undeclaredValue, PartPlace: 1, PartLength: 1,
 			}},
 		},
+		// A pod recording 189 and 222 reads a gated step's `status` through its 189 process, which
+		// parses it with an enumeration of the four words before 222 and refuses the whole body for
+		// `exempt`, so a step in it is served without its `status`, which that reader takes as
+		// optional. Every other step stays as it is. The pod's reading counts only the claims below
+		// shapedAnswersContract (podContracts: a process from 193 on states its own contract), so
+		// the 222 claim is not counted and the pod's 189 process decides both halves; a pod whose
+		// one counted claim is at 222 cannot be built, and a pod at 222 alone is counted as no pod
+		// and served whole, which is the `alone` reading. For the same reason the case names no
+		// value that arrived with the field: no pod can record a contract below `status`'s
+		// arrival at 55 beside a counted contract at or above 222.
+		droppedGatedStepStatus: {
+			state: exemptStepState, low: 189, high: specGateContract,
+			carries: func(t *testing.T, body []byte) bool {
+				for _, statuses := range gatedStepStatusesServed(t, body) {
+					if slices.Contains(statuses, string(GatedStepExempt)) {
+						return true
+					}
+				}
+				return false
+			},
+			stays: func(t *testing.T, whole, mixed []byte) {
+				served := gatedStepStatusesServed(t, mixed)
+				for key, statuses := range gatedStepStatusesServed(t, whole) {
+					want := slices.Clone(statuses)
+					for i, status := range want {
+						if status == string(GatedStepExempt) {
+							want[i] = ""
+						}
+					}
+					if !slices.Equal(served[key], want) {
+						t.Errorf("the {189, %d} pod is served %s's gated steps in %q, want %q: the strip takes the word the pod's 189 process refuses and nothing else",
+							specGateContract, key, served[key], want)
+					}
+				}
+			},
+			// A root's gated step in a status no row declares.
+			undeclaredIssue: Issue{Key: fmt.Sprintf("%s-%d", "SHAPES", 3), GatedSteps: []GatedStepView{
+				{Step: record.DesignStepSpec, Status: GatedStepStatus(undeclaredValue)},
+			}},
+		},
 	}
+}
+
+// exemptStepState is the populated state with the first issue that carries gated steps, in key
+// order, holding its first step open by exemption: the body the strip of the `exempt` status is
+// read on.
+func exemptStepState(t *testing.T) State {
+	t.Helper()
+	state := populatedState(t)
+	for _, key := range slices.Sorted(maps.Keys(state.Issues)) {
+		issue := state.Issues[key]
+		if len(issue.GatedSteps) == 0 {
+			continue
+		}
+		steps := slices.Clone(issue.GatedSteps)
+		version := steps[0].CurrentVersion
+		steps[0].Status, steps[0].ExemptVersion = GatedStepExempt, &version
+		issue.GatedSteps = steps
+		state.Issues[key] = issue
+		return state
+	}
+	t.Fatalf("the populated state holds no issue with gated steps; this proves nothing")
+	return state
+}
+
+// gatedStepStatusesServed is each issue's gated step statuses as body serves them, by issue, in
+// order, "" for a step served without one.
+func gatedStepStatusesServed(t *testing.T, body []byte) map[string][]string {
+	t.Helper()
+	var state struct {
+		Issues map[string]struct {
+			GatedSteps []struct {
+				Status string `json:"status"`
+			} `json:"gatedSteps"`
+		} `json:"issues"`
+	}
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatalf("read the gated steps of %s: %v", body, err)
+	}
+	served := map[string][]string{}
+	for key, issue := range state.Issues {
+		for _, step := range issue.GatedSteps {
+			served[key] = append(served[key], step.Status)
+		}
+	}
+	return served
 }
 
 // eachValueStrip runs read on each row of valueStrips with that row's case, in a subtest named

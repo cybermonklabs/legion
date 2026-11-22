@@ -496,6 +496,9 @@ func populatedState(t *testing.T) State {
 					ArtifactID:      "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
 					CurrentVersion:  7,
 					ApprovedVersion: &approvedVersion,
+					// The gate started under the rule of a person's approval and no version
+					// opened it with no person (contract 222).
+					Rule: record.GateRuleApproval.Word(),
 				},
 				// The fixture's deployment gates `root-issues`, which resolves to the one step
 				// spec, so each root carries one entry: this one's document stands a version above
