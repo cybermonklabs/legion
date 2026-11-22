@@ -11,7 +11,10 @@ body: |-
   `verdictAppId`, and `envoy-infra render webhook-listener-env` as `--verdict-app-id`, each refusing
   such a value. Dispatch takes the same id as `DISPATCH_VERDICT_APP_ID`, and its CI reconcile pass
   leaves that App's check suites out too, so the App's completed suite is not written back into a
-  settled record, which published the head a second time. Give the two variables one value.
+  settled record, which published the head a second time. Give the two variables one value: the
+  Dispatch compose file passes `DISPATCH_VERDICT_APP_ID` through from its `.env`, and
+  `envoy-infra:gcp:Dispatch` takes it as the optional input `verdictAppId`, with the App, refusing
+  a blank or malformed value.
 time: 2026-11-22T02:28:15Z
 custom:
     Issue: pr4939

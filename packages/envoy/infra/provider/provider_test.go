@@ -241,6 +241,11 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 	for _, input := range []string{"appClientId", "appId", "appPrivateKeySecretName", "appPrivateKeySecretKey"} {
 		require.False(t, dispatch.InputProperties[input].Secret, input)
 	}
+	// The verdict App's id, DISPATCH_VERDICT_APP_ID, is an optional plain string, named as the
+	// listener's own input (aws:WebhookListener's verdictAppId).
+	require.Equal(t, "string", dispatch.InputProperties["verdictAppId"].Type)
+	require.False(t, dispatch.InputProperties["verdictAppId"].Secret)
+	require.NotContains(t, dispatch.RequiredInputs, "verdictAppId")
 	// The Azure embedder's inputs are references and identifiers, never the key: the key form
 	// takes a Secret Manager path, the keyless form a tenant and a client id.
 	for _, input := range []string{
