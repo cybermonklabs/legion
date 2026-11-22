@@ -195,19 +195,21 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest) ([]Record, err
 	return records, nil
 }
 
-// heldRemotes are the remotes whose remote-tracking refs say what the push's destination holds.
-// Where the push names a remote of the repository, that remote is the one. git hands a pre-push
-// hook the URL where the remote's name goes for a push to a URL (`git push <url>`), and no
-// tracking ref is filed under a URL; for such a push the remotes are each one whose every URL,
-// fetch and push, names the repository the push's URL names on GitHub (RepoFromURL, letter case
-// aside), so that a token in the userinfo, ssh's scp syntax and the https form all name one
-// repository. The URLs on both sides are git's own, after its insteadOf rewriting. A push to a
-// URL that names no repository on GitHub, or one no remote names, holds no remote: none is shown
-// to be the destination, and a remote that is not the destination says nothing of what the
-// destination holds.
+// heldRemotes are the remotes whose remote-tracking refs say what the push's destination holds:
+// each remote whose every URL, fetch and push, names the repository the push's URL names
+// (sameRepository), so that its tracking refs hold what the destination has, and among whose
+// refs no other remote's fetch can file one (filedByAnother). Where the push names a remote of the
+// repository, that remote is the only one it can hold. git hands a pre-push hook the URL where
+// the remote's name goes for a push to a URL (`git push <url>`), and no tracking ref is filed
+// under a URL, so such a push can hold any remote. The URLs on both sides are git's own, after
+// its insteadOf rewriting. A push that holds no remote has every commit read that the
+// destination's ref does not reach: a remote that is not shown to be the destination says nothing
+// of what it holds.
 //
 // The URLs are read with `git remote get-url`, which prints a URL and nothing else, and not from
-// `git remote -v`, which writes a blobless clone's filter after its fetch URL.
+// `git remote -v`, which writes a blobless clone's filter after its fetch URL. The refspecs are
+// read from `git config -z --list`, which, unlike a `--get-regexp` that matches nothing, exits 0
+// whatever the configuration holds.
 func (g *Guard) heldRemotes(ctx context.Context, req PushRequest) ([]string, error) {
 	out, err := g.git(ctx, req.Dir, "remote")
 	if err != nil {
@@ -216,16 +218,21 @@ func (g *Guard) heldRemotes(ctx context.Context, req PushRequest) ([]string, err
 	// One name a line; a remote's name holds no space, since git refuses a remote whose tracking
 	// refs would have an invalid name.
 	names := strings.Fields(out)
+	candidates := names
 	if slices.Contains(names, req.Remote) {
-		return []string{req.Remote}, nil
+		candidates = []string{req.Remote}
 	}
-	repo := RepoFromURL(req.URL)
-	if repo == "" {
-		return nil, nil
+	config, err := g.git(ctx, req.Dir, "config", "-z", "--list")
+	if err != nil {
+		return nil, err
 	}
-	other := func(url string) bool { return !strings.EqualFold(RepoFromURL(url), repo) }
+	files := fetchDestinations(config)
+	elsewhere := func(url string) bool { return !sameRepository(url, req.URL) }
 	var held []string
-	for _, name := range names {
+	for _, name := range candidates {
+		if filedByAnother(name, files) {
+			continue
+		}
 		fetch, err := g.git(ctx, req.Dir, "remote", "get-url", "--all", "--", name)
 		if err != nil {
 			return nil, err
@@ -234,11 +241,64 @@ func (g *Guard) heldRemotes(ctx context.Context, req PushRequest) ([]string, err
 		if err != nil {
 			return nil, err
 		}
-		if urls := strings.Fields(fetch + push); len(urls) > 0 && !slices.ContainsFunc(urls, other) {
+		if urls := strings.Fields(fetch + push); len(urls) > 0 && !slices.ContainsFunc(urls, elsewhere) {
 			held = append(held, name)
 		}
 	}
 	return held, nil
+}
+
+// sameRepository is whether two URLs git reaches name one repository: the same repository on
+// GitHub (RepoFromURL, letter case aside) where either names one there, so that a token in the
+// userinfo, ssh's scp syntax and the https form all name one repository, and the same URL where
+// neither does.
+func sameRepository(a, b string) bool {
+	if repoA, repoB := RepoFromURL(a), RepoFromURL(b); repoA != "" || repoB != "" {
+		return strings.EqualFold(repoA, repoB)
+	}
+	return a == b
+}
+
+// fetchDestinations are, for each remote, the refs its fetch refspecs (remote.<name>.fetch) file
+// what it fetches at, read from `git config -z --list`: each refspec's destination, a pattern
+// where it holds a "*". A refspec with no destination, and a negative one, files no ref.
+func fetchDestinations(config string) map[string][]string {
+	files := map[string][]string{}
+	for entry := range strings.SplitSeq(config, "\x00") {
+		key, refspec, _ := strings.Cut(entry, "\n")
+		name, ok := strings.CutPrefix(key, "remote.")
+		if !ok {
+			continue
+		}
+		if name, ok = strings.CutSuffix(name, ".fetch"); !ok || strings.HasPrefix(refspec, "^") {
+			continue
+		}
+		if _, destination, ok := strings.Cut(strings.TrimPrefix(refspec, "+"), ":"); ok && destination != "" {
+			files[name] = append(files[name], destination)
+		}
+	}
+	return files
+}
+
+// filedByAnother is whether a remote other than name has a fetch refspec that can file a ref under
+// refs/remotes/<name>/, every ref of which `--remotes=<name>` takes: a destination there, as a
+// remote named <name>/<more> has by default, or a pattern whose "*" can reach there, such as a
+// mirror's refs/*. A destination outside refs/ is one git qualifies by rules of its own, and is
+// taken to reach anywhere.
+func filedByAnother(name string, files map[string][]string) bool {
+	own := "refs/remotes/" + name + "/"
+	for other, destinations := range files {
+		if other == name {
+			continue
+		}
+		for _, destination := range destinations {
+			head, _, pattern := strings.Cut(destination, "*")
+			if !strings.HasPrefix(destination, "refs/") || strings.HasPrefix(head, own) || pattern && strings.HasPrefix(own, head) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // commits are the commits one update would add to the destination, oldest first: the commits
