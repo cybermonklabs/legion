@@ -741,7 +741,10 @@ func withAccessMemo(ctx context.Context) context.Context {
 // question is asked once for the list. A kept answer older than projectaccess.CacheTTL is asked
 // again, as is one cut short (accessMemoEntry.cut), so atDecision's second collection reads afresh
 // exactly what aged; a kept failure stands for the list, so a project Dispatch could not answer
-// for leaves off every row naming it at the cost of one read, and no other row.
+// for leaves off every row naming it at the cost of one read, and no other row. Once the list's
+// clock has ended, a question the memo does not hold answered is not asked of Dispatch at all,
+// whatever the state of ctx (start): a question is cut short only by that end, so a read that
+// finds one cut asks no second question.
 func (m *Machine) access(ctx context.Context, project, person string) (projectaccess.Answer, error) {
 	memo, _ := ctx.Value(accessMemoKey{}).(*accessMemo)
 	if memo == nil {
@@ -756,9 +759,9 @@ func (m *Machine) access(ctx context.Context, project, person string) (projectac
 			memo.entries[question] = entry
 			memo.mu.Unlock()
 			if !memo.start(ctx, m.Projects, question, entry) {
-				// ctx ended before the question took a slot: a read on it answers only from the
-				// client's cache, or fails at once, and asks Dispatch nothing.
-				entry.settle(func() (projectaccess.Answer, error) { return m.Projects.Access(ctx, project, person) }, func(err error) bool { return err != nil })
+				// ctx or the list's clock ended before the question took a slot: the read asks
+				// Dispatch nothing, and answers only from the client's cache, or fails at once.
+				entry.settle(func() (projectaccess.Answer, error) { return m.Projects.Access(ended(ctx), project, person) }, func(err error) bool { return err != nil })
 				return entry.answer, entry.err
 			}
 			if !entry.wait(ctx) {
@@ -787,15 +790,25 @@ func (m *Machine) access(ctx context.Context, project, person string) (projectac
 // start asks question, once it holds one of the list's MaySeeAtOnce slots, in a goroutine of its
 // own that gives the slot back once the answer is in, and answers whether it did. The question
 // carries ctx's values, projectaccess.Fresh's mark among them, and ends with the list's clock
-// (memo.list), at its deadline or when the list's caller goes away, and never with ctx alone. A
-// ctx that has ended takes no slot and starts nothing.
+// (memo.list), at its deadline or when the list's caller goes away, and never with ctx alone. It
+// starts nothing once ctx or the list's clock has ended, before or while it waits for a slot. The
+// list's own end is read apart from ctx's: a list's clock cancels the contexts derived from it one
+// after another, so a row's ctx can still read as live just after the clock has ended, and the
+// question it would start then would reach Dispatch before onList's cancel, which runs on a
+// goroutine of its own, ends it.
 func (memo *accessMemo) start(ctx context.Context, a projectaccess.Access, question accessMemoQuestion, entry *accessMemoEntry) bool {
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || memo.list.Err() != nil {
 		return false
 	}
 	select {
 	case memo.slots <- struct{}{}:
 	case <-ctx.Done():
+		return false
+	case <-memo.list.Done():
+		return false
+	}
+	if memo.list.Err() != nil {
+		<-memo.slots
 		return false
 	}
 	asking, cancel := memo.onList(ctx)
@@ -818,6 +831,14 @@ func (memo *accessMemo) onList(ctx context.Context) (context.Context, context.Ca
 		return asking, func() { stop(); cancelAt(); cancel() }
 	}
 	return asking, func() { stop(); cancel() }
+}
+
+// ended is a context carrying ctx's values that has already ended, for a read that must ask
+// Dispatch nothing: the client answers it from its cache, or fails at once.
+func ended(ctx context.Context) context.Context {
+	done, cancel := context.WithCancel(ctx)
+	cancel()
+	return done
 }
 
 // settle writes entry's answer from ask, cut when cut says its error is, and closes done however

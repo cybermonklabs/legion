@@ -2,8 +2,9 @@
 // The review of cybermonklabs/legion#4779 at d7d72138db: a question a row asked before a project
 // hid it is still asked once for the list; a row waiting on another row's question holds none of
 // the list's question slots, and the list asks at most MaySeeAtOnce questions at once; a list reads
-// at most listRowsAtOnce rows at once; and a read that panics fails its row closed while the list
-// goes on.
+// at most listRowsAtOnce rows at once; a read that panics fails its row closed while the list
+// goes on; and, from the review at 5c9c94ec02, once a list's clock has ended its memo asks Dispatch
+// nothing more.
 package requests
 
 import (
@@ -14,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -271,6 +273,83 @@ func TestARowWaitingOnAnotherRowsQuestionHoldsNoSlot(t *testing.T) {
 	}
 	if asked != 1 {
 		t.Errorf("Dispatch was asked about SLOW %d times; want once, however many rows name it", asked)
+	}
+}
+
+// liveCalls is a projectaccess.Access that counts the access questions it is asked on a context
+// still live when they arrive, the ones a client would send to Dispatch, and passes each to inner.
+type liveCalls struct {
+	inner projectaccess.Access
+	live  atomic.Int32
+}
+
+func (l *liveCalls) Access(ctx context.Context, project, person string) (projectaccess.Answer, error) {
+	if ctx.Err() == nil {
+		l.live.Add(1)
+	}
+	return l.inner.Access(ctx, project, person)
+}
+
+func (l *liveCalls) MemberKind(ctx context.Context, person string) (string, error) {
+	return l.inner.MemberKind(ctx, person)
+}
+
+func (l *liveCalls) States(ctx context.Context, projects []string) (map[string]projectaccess.Answer, error) {
+	return l.inner.States(ctx, projects)
+}
+
+// TestNoQuestionIsAskedOnceTheListsClockHasEnded: once a list's clock has ended, its memo asks
+// Dispatch nothing more, even for a read whose own context still reads as live, as a row's does
+// for a moment while the clock's end reaches the contexts derived from it one after another. SLOW's
+// question reaches Dispatch on the list's clock; the clock ends and cuts it short. Then, on a
+// context the clock does not end, a row naming SLOW finds the question cut, and a row naming 16
+// projects the memo never held asks each: no question reaches Dispatch on a live context, and both
+// rows are ErrProjectAccessUnavailable. Were a question started after the clock's end, it would
+// reach Dispatch unless onList's cancel, which runs on a goroutine of its own, ended it first, a
+// race each of the 17 questions runs. Dispatch holds SLOW for the length of a list's clock, so a
+// read that wrongly asks it on a live context fails here rather than holding the test.
+func TestNoQuestionIsAskedOnceTheListsClockHasEnded(t *testing.T) {
+	stall := &stallFor{inner: publicAnswers{}, project: stalledProject, hold: listOwnRowsBound, arrived: make(chan struct{}, 1)}
+	dispatch := &liveCalls{inner: stall}
+	m := &Machine{Projects: dispatch}
+	clock, cancel := context.WithCancel(t.Context())
+	list := withAccessMemo(clock)
+	memo := list.Value(accessMemoKey{}).(*accessMemo)
+	first := make(chan struct{})
+	go func() {
+		defer close(first)
+		_, _, _ = m.maySee(list, outsider, nil, stalledProject+"-1: rotate the slow key")
+	}()
+	<-stall.arrived
+	cancel()
+	<-first
+	memo.mu.Lock()
+	cutShort := memo.entries[accessMemoQuestion{project: stalledProject, person: outsider}]
+	memo.mu.Unlock()
+	if cutShort == nil {
+		t.Fatal("the memo holds no question about SLOW: the test is blind")
+	}
+	<-cutShort.done
+	if !cutShort.cut {
+		t.Fatalf("SLOW's question ended with %v and was not cut short by the clock: the test is blind", cutShort.err)
+	}
+	before := dispatch.live.Load()
+	if before != 1 {
+		t.Fatalf("Dispatch was asked %d questions on a live context before the clock ended; want 1, SLOW's: the test is blind", before)
+	}
+
+	live := context.WithValue(context.Background(), accessMemoKey{}, memo)
+	keys := make([]string, 16)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("E%c-1", 'A'+rune(i))
+	}
+	for _, reason := range []string{stalledProject + "-1: rotate the slow key", strings.Join(keys, " ")} {
+		if shown, _, err := m.maySee(live, outsider, nil, reason); shown || !errors.Is(err, ErrProjectAccessUnavailable) {
+			t.Errorf("maySee(%q) once the list's clock has ended = %v, %v; want false, ErrProjectAccessUnavailable", reason, shown, err)
+		}
+	}
+	if asked := dispatch.live.Load() - before; asked != 0 {
+		t.Errorf("Dispatch was asked %d questions on a live context once the list's clock had ended; want none", asked)
 	}
 }
 
