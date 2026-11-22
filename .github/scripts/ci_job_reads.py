@@ -328,9 +328,9 @@ def bun_job(job, workflow=""):
     install runs at the repository root, and Bun reads bunfig.toml from the working directory."""
     install = at(job, "bun install --frozen-lockfile", workflow)
     return setup_bun(job, workflow) + reads(
-        ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :52-60)"),
+        ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :52-61)"),
         ("bun.lock", f"{install} reads the lockfile to install the versions it records"),
-        ("patches/**", f"{install} applies package.json:52-60 patchedDependencies"),
+        ("patches/**", f"{install} applies package.json:52-61 patchedDependencies"),
         ("packages/proof-editor/proof-sdk-*.tgz",
          f"{install} installs proof-sdk-upstream from it, the file: dependency of packages/proof-editor/package.json"),
         *[(f"{w}/package.json", f"{install}: package.json:19-31 lists {w}; a frozen install reads every workspace manifest")
