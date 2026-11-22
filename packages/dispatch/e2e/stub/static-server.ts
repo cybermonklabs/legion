@@ -15,7 +15,7 @@
  *
  *  It serves no API route at all: a stub row's API answers come from its recording, and a request
  *  the recording has none of is aborted by the fixture rather than answered here. */
-import { existsSync, statSync } from "node:fs";
+import { existsSync, fstatSync, statSync } from "node:fs";
 import { basename, extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -129,3 +129,16 @@ const server = Bun.serve({
 });
 
 console.log(`dispatch stub static server: listening ${server.url} over ${dist}`);
+
+// It ends with the process that started it. Playwright starts a `webServer` with a pipe for its
+// stdin and stops it at the end of a run, but a runner killed with SIGKILL stops nothing, and
+// this server went on serving its fixed port, so the next run holding a stubbed row was refused
+// (measured on main 6977266e41: `/bin/sh -c bun e2e/stub/static-server.ts` and this server still
+// running 15 s after a SIGKILL of the runner). The other end of that pipe is held by the runner
+// alone, and the kernel closes it when the runner dies, however it dies. A stdin that is no pipe
+// - a terminal, /dev/null - has no such end, and leaves a server started by hand running.
+const stdin = fstatSync(0);
+if (stdin.isFIFO() || stdin.isSocket()) {
+  process.stdin.on("data", () => {});
+  process.stdin.once("end", () => process.exit(0));
+}

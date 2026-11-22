@@ -34,6 +34,7 @@ import {
   type StackDatabase,
   stackPostgres,
 } from "./harness-postgres";
+import { directoryKey, reaperStarted, reapIfAbandoned, stopReaping } from "./harness-reaper";
 import { type Harness, startHarness } from "./harness-start";
 import { Interrupted } from "./local-instance-support";
 
@@ -97,8 +98,11 @@ let terminating = false;
  *  `Supervisor.stop`, which SIGKILLs whatever is left 10 s after its SIGTERM. The bound is not
  *  generous for its own sake, because whoever sent the signal is counting too: a pod's
  *  `terminationGracePeriodSeconds` is 30 s by default and a `timeout -k` is of that order, and
- *  a handler still waiting when the SIGKILL arrives stops nothing at all. 15 s leaves the stop
- *  that follows it the 10 s `Supervisor.stop` can take, inside a 30 s grace. */
+ *  a handler still waiting when the SIGKILL arrives stops nothing more. What it has not stopped by
+ *  then is the reaper's (e2e/harness-reaper.ts) where that SIGKILL reaches the run and not the
+ *  reaper, which runs in a session of its own: `timeout -k`'s goes to its own process group, the
+ *  run's, while a pod's goes to every process of the container, servers included. 15 s leaves
+ *  the stop that follows it the 10 s `Supervisor.stop` can take, inside a 30 s grace. */
 const terminateGraceMs = 15_000;
 
 /** The pool's own signal listeners, held so they can be taken off again: `stopStacks` leaves
@@ -228,7 +232,36 @@ function clearRunDir(keepLogs: boolean): void {
       console.error(`${named}: ${path} is left behind: ${(error as Error).message}`);
     }
   }
+  stopReaping(directoryKey(root));
   if (keep) console.error(`${named}: the stacks' logs are in ${root}`);
+}
+
+/** What the reaper does with the run's directory when this process dies before `clearRunDir`
+ *  ran: what a SIGTERM's stop does with it (`terminate`), which keeps the logs a run of more than
+ *  one stack writes and loses every data directory, a template and a stack's copy each about
+ *  50 MB and 100 MB. It is handed over before the first database is, so the reaper, which runs
+ *  the last-added first, removes the data directories once each database in them is stopped. */
+function reapRunDir(root: string, count: number): void {
+  const command =
+    count === 1
+      ? ["rm", "-rf", "--", root]
+      : [
+          "find",
+          root,
+          "-mindepth",
+          "2",
+          "-maxdepth",
+          "2",
+          "-name",
+          "pgdata",
+          "-exec",
+          "rm",
+          "-rf",
+          "--",
+          "{}",
+          "+",
+        ];
+  reapIfAbandoned(directoryKey(root), { commands: [command] });
 }
 
 /** Starts `count` stacks at once - each is an initdb or a `docker run` and a server build away,
@@ -261,7 +294,10 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
   watchSignals();
   try {
     const given = (env.DATABASE_URL ?? "").trim();
+    // A reaper that cannot start refuses the run before its first directory or server exists.
+    await reaperStarted();
     runDir = mkdtempSync(join(tmpdir(), "dispatch-e2e-run-"));
+    reapRunDir(runDir, count);
     // A run of one stack against the database the caller named starts no Postgres, which is what
     // every other user of this harness does (packages/dispatch/README.md).
     const postgres =

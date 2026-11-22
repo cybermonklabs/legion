@@ -152,15 +152,29 @@ the SPA first, or the Playwright command itself, as in
 which builds nothing. Playwright stops the harness
 when the run ends, a Ctrl-C included, and exits with its own status.
 
-A SIGTERM stops the stacks this suite starts and no more. A run that holds a stubbed row also
-starts Playwright's own `webServer` (`e2e/stub/static-server.ts`), which Playwright stops on a
-SIGINT and leaves running on a SIGTERM: measured on playwright 1.64.1, a signalled mixed run
-exited 143 with every stack of this suite gone and that static server still serving its fixed
-port, so the
-next run holding a stubbed row was refused with
-`http://127.0.0.1:4319/index.html is already used`. It is Playwright's own leak, not this
-suite's - a run of the stubbed layer alone, which installs no signal handler here, leaks the
-same server - so `kill` that process, or use a Ctrl-C, which stops everything.
+A SIGTERM stops the stacks this suite starts. A SIGKILL of the run - a `kill -9`, the OOM
+killer, a runner that crashes - stops nothing in the run itself, so whatever starts a harness
+(Playwright's runner through `globalSetup`, `e2e/harness-up.ts`, `bun run dispatch:local`) also
+starts one reaper beside it (`e2e/reaper.ts`, `e2e/harness-reaper.ts`), and refuses to start
+anything when the reaper does not say it is ready. The reaper notices its starter's end through
+a pipe only the starter holds, and stops what the starter had not stopped: each server's
+process group, each stack's Postgres (`pg_ctl stop`, or `docker rm` of its container) and the
+run's data directories, keeping the logs a SIGTERM keeps. It signals a group only while the
+group's leader still runs with the start time it had when it was handed over, and a group whose
+leader exits is taken off its list at once, so a process number the kernel has since given to
+another run's server or a daemon is never signalled. On a machine with no `/proc` to read a
+start time from, no group is handed over. A run that stopped everything leaves the reaper
+nothing to do, and it exits with its starter. Measured on main 6977266e41, a SIGKILL of `bunx`
+and the runner mid-row left the fake Envoy, GitHub and broker, the real broker and its dev
+issuer, the plain-HTTP proxy and the Postgres running 15 s later; with the reaper, no server of
+the run was left.
+
+A run that holds a stubbed row also starts Playwright's own `webServer`
+(`e2e/stub/static-server.ts`), which Playwright stops at the end of a run and on a SIGINT. That
+server ends by itself when its stdin, a pipe the runner holds, ends, so it goes with the runner
+however the runner ends. Before it did, a SIGTERM or a SIGKILL of the runner left it serving its
+fixed port, and the next run holding a stubbed row was refused with
+`http://127.0.0.1:4319/index.html is already used`.
 
 Playwright's UI mode starts the stacks itself. The UI server runs `globalSetup`
 when a client connects rather than when it begins listening, so a session

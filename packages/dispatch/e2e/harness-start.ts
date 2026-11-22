@@ -44,6 +44,7 @@ import { fileURLToPath } from "node:url";
 
 import { type HarnessListener, targetedListeners } from "./harness-listeners";
 import { harnessPorts, harnessVariables } from "./harness-ports";
+import { directoryKey, reaperStarted, reapIfAbandoned, stopReaping } from "./harness-reaper";
 import { type PipedRunning, Supervisor } from "./local-instance-support";
 
 const dispatchPackage = fileURLToPath(new URL("..", import.meta.url));
@@ -243,7 +244,9 @@ async function keepPort(
 }
 
 /** Starts the harness (see the module comment) and returns once every listener serves. A failure
- *  stops every process it started before it throws. */
+ *  stops every process it started before it throws. Every process and the keepers' directory are
+ *  the reaper's until `stop` has put them down (e2e/harness-reaper.ts), so a starter killed with
+ *  the harness up leaves none of it behind. */
 export async function startHarness(options: HarnessOptions = {}): Promise<Harness> {
   // This harness's environment: this process's, under the stack's own variables when a caller
   // starts more than one harness (`options.env`). Every port below resolves through it, and
@@ -253,6 +256,8 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
   const given = harnessPorts(environment);
   const listeners = targetedListeners();
   if (options.logDir !== undefined) mkdirSync(options.logDir, { recursive: true });
+  // A reaper that cannot start refuses the harness before its first process does.
+  await reaperStarted();
   const supervisor = new Supervisor();
   const interrupt = () => supervisor.interrupt();
   options.signal?.addEventListener("abort", interrupt, { once: true });
@@ -260,7 +265,10 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
   let keeperDir: string | undefined;
   const stop = async () => {
     await supervisor.stop();
-    if (keeperDir !== undefined) rmSync(keeperDir, { force: true, recursive: true });
+    if (keeperDir !== undefined) {
+      rmSync(keeperDir, { force: true, recursive: true });
+      stopReaping(directoryKey(keeperDir));
+    }
   };
   const env: Record<string, string> = {};
   const kept = new Map<HarnessListener, Kept>();
@@ -268,7 +276,10 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
   try {
     for (const listener of listeners) {
       if (listener.heldAhead === undefined || given[listener.key].port !== 0) continue;
-      keeperDir ??= mkdtempSync(join(tmpdir(), "dispatch-e2e-held-"));
+      if (keeperDir === undefined) {
+        keeperDir = mkdtempSync(join(tmpdir(), "dispatch-e2e-held-"));
+        reapIfAbandoned(directoryKey(keeperDir), { commands: [["rm", "-rf", "--", keeperDir]] });
+      }
       const held = await keepPort(listener, keeperDir, supervisor, environment);
       kept.set(listener, held);
       env[harnessVariables[listener.key]] = String(held.port);

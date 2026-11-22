@@ -42,6 +42,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { buildStallLibrary, diskStallDir, stallEnvironment } from "./disk-stall";
+import { reapIfAbandoned, startTimeOf, stopReaping } from "./harness-reaper";
 import { Interrupted } from "./local-instance-support";
 import { sqlAt } from "./psql";
 
@@ -262,9 +263,20 @@ async function ready(url: string, what: string, signal?: AbortSignal): Promise<v
   }
 }
 
+/** The reaper's key of the cluster in `data` (e2e/harness-reaper.ts). */
+function clusterKey(data: string): string {
+  return `Postgres ${data}`;
+}
+
 /** Starts the cluster in `data`, with its log and its unix socket in `dir`, and returns the port
  *  it serves on. Returns or throws with no postmaster of `data` left running. `server` is the
- *  environment pg_ctl, and so the postmaster, runs with. */
+ *  environment pg_ctl, and so the postmaster, runs with.
+ *
+ *  The postmaster is a daemon: `pg_ctl` starts it in a session of its own and exits, so nothing
+ *  this process starts or stops reaches it but a `pg_ctl stop`. That stop is the reaper's from
+ *  the moment `pg_ctl start` is under way until a caller's stop has run (`clusterKey`), and while
+ *  the start is under way the reaper waits for it to end before it stops anything: a stop that
+ *  ran first would find no `postmaster.pid` yet and leave the server the start then finishes. */
 async function startCluster(
   bin: string,
   data: string,
@@ -275,15 +287,25 @@ async function startCluster(
 ): Promise<number> {
   let last = "";
   const started = await serverSettings(env);
+  const pgCtl = join(bin, "pg_ctl");
+  const stopArgs = ["-D", data, "-m", "immediate", "-w", "stop"];
+  const stop = [pgCtl, ...stopArgs];
   for (let attempt = 1; attempt <= bindAttempts; attempt++) {
     const port = await freePort();
     const options = [`-p ${port}`, "-h 127.0.0.1", `-k ${dir}`, ...started.map((s) => `-c ${s}`)];
     try {
-      await execFileAsync(
-        join(bin, "pg_ctl"),
+      const starting = execFileAsync(
+        pgCtl,
         ["-D", data, "-l", join(dir, "postgres.log"), "-o", options.join(" "), "-w", "start"],
         { env: server }
       );
+      reapIfAbandoned(clusterKey(data), {
+        awaits: starting.child.pid,
+        commands: [stop],
+        start: startTimeOf(starting.child.pid),
+      });
+      await starting;
+      reapIfAbandoned(clusterKey(data), { commands: [stop] });
       return port;
     } catch (error) {
       last = error instanceof Error ? error.message : String(error);
@@ -293,9 +315,8 @@ async function startCluster(
       // leave a server serving a loopback port while the pool removes the data directory under
       // it (`e2e/harness-pool.ts`). A stop that fails is a server that never bound, which is why
       // the failure the caller sees stays the start's.
-      await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "immediate", "-w", "stop"]).catch(
-        () => {}
-      );
+      await execFileAsync(pgCtl, stopArgs).catch(() => {});
+      stopReaping(clusterKey(data));
     }
   }
   throw new Error(
@@ -382,8 +403,9 @@ function binariesProvider(
     } finally {
       // Whatever happened above: the postmaster is up from `startCluster` on, and a throw that
       // left it running would leave it serving a loopback port while the pool removes the data
-      // directory under it.
+      // directory under it. A stop that throws leaves the cluster the reaper's.
       await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "fast", "-w", "stop"]);
+      stopReaping(clusterKey(data));
     }
     return data;
   };
@@ -401,6 +423,7 @@ function binariesProvider(
         const port = await startCluster(bin, data, stackDir, what, env, server);
         const stop = async (): Promise<void> => {
           await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "immediate", "-w", "stop"]);
+          stopReaping(clusterKey(data));
         };
         const url = `postgres://postgres@127.0.0.1:${port}/${databaseName}?sslmode=disable`;
         try {
@@ -466,13 +489,18 @@ function imageProvider(
           // is removed, and the run removes it with the stack.
           const container = `dispatch-e2e-pg-${run}-${index}-${attempt}`;
           const port = await freePort();
+          // The container is dockerd's, so nothing this process stops reaches it but this
+          // removal, which is the reaper's from the moment `docker run` is under way until a stop
+          // below has run it; while the run is under way the reaper waits for it to end, so its
+          // removal finds the container that run made.
+          const key = `Postgres container ${container}`;
+          const removal = ["rm", "--force", "--volumes", container];
           const remove = async (): Promise<void> => {
-            await execFileAsync("docker", ["rm", "--force", "--volumes", container]).catch(
-              () => {}
-            );
+            await execFileAsync("docker", removal).catch(() => {});
+            stopReaping(key);
           };
           try {
-            await execFileAsync("docker", [
+            const running = execFileAsync("docker", [
               "run",
               "--detach",
               "--name",
@@ -496,6 +524,13 @@ function imageProvider(
               image,
               ...started.flatMap((setting) => ["-c", setting]),
             ]);
+            reapIfAbandoned(key, {
+              awaits: running.child.pid,
+              commands: [["docker", ...removal]],
+              start: startTimeOf(running.child.pid),
+            });
+            await running;
+            reapIfAbandoned(key, { commands: [["docker", ...removal]] });
           } catch (error) {
             // `docker run` publishes the port itself, so this is the port another listener took
             // between `freePort` and here, which is what another port answers.
@@ -534,7 +569,8 @@ function imageProvider(
                     (await containerLog(container, "all"))
                 );
               }
-              await execFileAsync("docker", ["rm", "--force", "--volumes", container]);
+              await execFileAsync("docker", removal);
+              stopReaping(key);
             },
           };
         }

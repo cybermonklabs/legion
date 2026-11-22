@@ -5,12 +5,15 @@
  *  PostgreSQL's answer (`awaitPostgres`), the spec's decision block (`awaitDecisionBlock`) and the
  *  Inbox rows the seed declares (`awaitSeededInbox`), each a read repeated until a deadline
  *  (`awaitFact`), and the live view's first frame (`agentViewRefusal`). Nothing here runs on
- *  import, and of the other e2e modules only e2e/pg-url.ts is imported, which imports nothing and
- *  opens nothing, so `e2e/__tests__/local-instance-support.test.ts` drives it without a server. */
+ *  import, and of the other e2e modules only e2e/pg-url.ts, which opens nothing, and
+ *  e2e/harness-reaper.ts, which starts its reaper at the first process a `Supervisor` starts and
+ *  not before, are imported, so `e2e/__tests__/local-instance-support.test.ts` drives it without
+ *  a server. */
 import { type ChildProcess, spawn } from "node:child_process";
 import type { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Ask, InboxRow } from "../web/src/api/types";
+import { groupKey, reapIfAbandoned, startTimeOf, stopReaping } from "./harness-reaper";
 import { splitDatabaseUrl } from "./pg-url";
 
 export class Interrupted extends Error {}
@@ -44,7 +47,10 @@ export interface PipedRunning extends Running {
 }
 
 /** Every process the command starts, as the leader of a process group of its own, and the one
- *  signal that a stop is under way: a Ctrl-C (`interrupt`) or the end of the run (`stop`). */
+ *  signal that a stop is under way: a Ctrl-C (`interrupt`) or the end of the run (`stop`). Each
+ *  group is the reaper's from its spawn until its leader is seen to exit (e2e/harness-reaper.ts),
+ *  so a command killed before it could stop them leaves none running, and a number the kernel
+ *  hands out again after a leader's exit is never on the reaper's list. */
 export class Supervisor {
   readonly #children: Running[] = [];
   readonly #stopping = new AbortController();
@@ -105,13 +111,27 @@ export class Supervisor {
       stdio: ["ignore", output, output],
     });
     const ended = Promise.withResolvers<number | null>();
-    child.once("exit", (code) => ended.resolve(code));
+    const key = child.pid === undefined ? undefined : groupKey(child.pid);
+    child.once("exit", (code) => {
+      // The leader is gone and its number with it: a number the kernel may hand out again is no
+      // longer this command's, and the reaper must not hold it. What else ran in its group is
+      // `stop`'s, which signals the group whether or not its leader has exited.
+      if (key !== undefined) stopReaping(key);
+      ended.resolve(code);
+    });
     // A command that cannot be started at all - no such binary - never exits, since it never
     // ran; `error` is where Node says so, and the rejection is the caller's to see wherever it
     // awaits this process. The handler below keeps that rejection from being reported as
     // unhandled before then.
     child.once("error", (error) => ended.reject(error));
     ended.promise.catch(() => {});
+    // The group goes to the reaper the moment it exists, with its leader's start time, which the
+    // reaper compares before it signals the number: the command could be killed now. Where there
+    // is no start time to read (no `/proc`), nothing is handed over.
+    const start = startTimeOf(child.pid);
+    if (key !== undefined && start !== undefined) {
+      reapIfAbandoned(key, { group: child.pid, start });
+    }
     const running = { child, exited: ended.promise, name };
     this.#children.push(running);
     return running;
