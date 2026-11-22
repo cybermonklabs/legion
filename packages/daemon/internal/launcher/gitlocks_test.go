@@ -263,10 +263,14 @@ func newGatedProc(t *testing.T, pids ...int) *gatedProc {
 // Every wait of the package's tests for a fact whose span is not the claim is bounded by it, or by
 // cleanupBeforeDeadline in a cleanup, in the test process and in every process the test binary
 // re-enters alike (a *Helper test, the role stage, role-init, the session-peer stand-ins, the PID 1
-// helpers). The exception is the put-back helper's own waits (TestPutBacksPIDOneHelper), whose
-// margins are ordered among themselves: its waits on the reaper give up 30 s before its deadline
-// (reaperBound) and its wait for a put-back 15 s before it. A re-entered process is given a
-// -test.timeout that ends reentryMargin before its starter's own deadline (reentry), or
+// helpers). The exceptions are main's own: the sites #4901 wrote bound their waits with
+// testwait.Bounded of three years and a margin of their own, 30 s at reaperBound (the waits on PID
+// 1's reaper), at pidNamespace's probe, at runAsPIDOne's wait for sudo and at the put-back case's
+// checks of the restored workspaces, and 15 s at the put-back helper's wait for a put-back, which
+// must give up after the waits on the reaper. Each is the same bound as beforeDeadline's, or
+// ordered against it, but hands back a bound already spent where beforeDeadline fails t; each site
+// names its margin in its own failure. A re-entered process is given a -test.timeout that ends
+// reentryMargin before its starter's own deadline (reentry), or
 // helperDeadlineGap before it for runAsPIDOne's helpers, so beforeDeadline there ends before the
 // starter's own beforeDeadline. A starter's wait for a child's end ends no sooner than the child's
 // own deadline, so the child's failure, its cleanups and its alarm all come while the starter still
