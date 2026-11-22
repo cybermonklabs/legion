@@ -390,23 +390,13 @@ func (r *stepRecordsRig) signOff(issue string) {
 	r.waitPhaseOf(issue, phase.Retro)
 }
 
-// merge waits for the merger's launch and publishes GitHub's merge of the pull request, which ends
-// the walk at done.
+// merge waits for the merger's launch and publishes GitHub's merge of the pull request
+// (publishMergeOf), which ends the walk at done.
 func (r *stepRecordsRig) merge() {
-	t := r.t
-	t.Helper()
+	r.t.Helper()
 	r.awaitLaunch(r.token(claim.RoleMerger))
 	r.github.merged(r.number)
-	payload, err := json.Marshal(map[string]string{
-		"action": "closed", "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(r.number), "merged": "true",
-		"merge_commit_sha": "merge-" + stepRecordsHead, "head_sha": stepRecordsHead, "base_ref": "main", "head_ref": "legion/" + r.key,
-		"updated_at": time.Now().UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.pr.%d", r.subjectRepo(), r.number)
-	r.publish(subject, "github", fmt.Sprintf("pr-%d-merged", r.number), string(payload))
+	r.publishMergeOf(r.number, r.key, stepRecordsHead, "main")
 	r.waitPhase(phase.Done)
 }
 
