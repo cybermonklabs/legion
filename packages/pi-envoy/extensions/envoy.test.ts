@@ -14630,6 +14630,97 @@ console.log(JSON.stringify(args));
       });
     }
 
+    // The live view draws the Envoy cards the session displays from its stream, and a person's
+    // Dispatch message from Dispatch's store (dispatch://INFRA-5271, R1). So a card that delivers
+    // a Dispatch message to the session names that message in its `details`, and the stream
+    // leaves the card out; every other card is streamed as the terminal shows it.
+    const cardFrames = () =>
+      natsState.published
+        .filter((published) => published.subject === "agentstream.ses_delivery.frames")
+        .map((published) => JSON.parse(new TextDecoder().decode(published.data)))
+        .filter((frame) => frame.kind === "message");
+
+    /** Hands the session `envelope` while a viewer watches, and writes the card it shows as the
+     *  host does, through `message_start` and `message_end`. */
+    async function writeCard(query: string, envelope: string) {
+      const { agent, context, delivered, fixture } = await bootDirectSession(query, {
+        accept: () => ({ code: "UNAUTHORIZED", status: 401 }),
+      });
+      natsState.controls
+        .get("agentstream.ses_delivery.control")
+        ?.push(JSON.stringify({ type: "watch", v: 1 }));
+      agent.push(envelope);
+      await delivered(1);
+      const [card] = fixture.deliveries;
+      if (card === undefined) throw new Error("the session showed no card");
+      const message = { ...card, role: "custom", timestamp: 10 };
+      await fixture.handlers.get("message_start")?.({ message }, context);
+      await fixture.handlers.get("message_end")?.({ message }, context);
+      return card;
+    }
+
+    for (const [name, envelope, messageID] of [
+      [
+        "an issue message to the session",
+        targetedDispatchEnvelope("steer", "card-stream-issue"),
+        "11111111-1111-4111-8111-111111111111",
+      ],
+      [
+        "a person's direct message Dispatch did not accept as a turn",
+        directDispatchEnvelope("steer", "card-stream-direct"),
+        DIRECT_MESSAGE_ID,
+      ],
+    ] as const) {
+      test(`${name} keeps its card, which names the message, out of the live stream`, async () => {
+        const card = await writeCard(`card-stream-${name}`, envelope);
+
+        expect(card.details).toMatchObject({ dispatchMessageId: messageID });
+        expect(cardFrames()).toEqual([]);
+      });
+    }
+
+    const peerWords = "Two findings:\n\n1. one\n2. two";
+    for (const [name, envelope, text] of [
+      [
+        "a comment that mentions the session",
+        targetedCommentEnvelope("aside", "card-stream-comment"),
+        (content: string) => `Envoy message from dispatch:\n\n\`\`\`\n${content}\n\`\`\``,
+      ],
+      [
+        "another agent's message",
+        JSON.stringify({
+          event_id: "evt-card-stream-peer",
+          source: "agent",
+          source_event_id: "source-card-stream-peer",
+          source_session: "ses_peer",
+          topic: "notifications.agent.ses_delivery",
+          dedupe_key: `agent.ses_peer.${createHash("sha256").update("card-stream-peer").digest("hex").slice(0, 32)}`,
+          issued_at: 1,
+          payload: peerWords,
+          payload_summary: "Two findings: …",
+          trace_id: "trace-card-stream-peer",
+        }),
+        () => `Envoy message from ses_peer:\n\n${peerWords}`,
+      ],
+    ] as const) {
+      test(`${name} reaches the live stream as one user message saying who sent it`, async () => {
+        const card = await writeCard(`card-stream-${name}`, envelope);
+
+        expect(card.details).not.toHaveProperty("dispatchMessageId");
+        const frames = cardFrames();
+        // The card's start and its end, one message.
+        expect(frames).toHaveLength(2);
+        expect(new Set(frames.map((frame) => frame.message.id)).size).toBe(1);
+        expect(frames[1]?.message).toMatchObject({
+          at: 10,
+          parts: [{ text: text(card.content), type: "text" }],
+          role: "user",
+          streaming: false,
+        });
+        expect(frames[1]?.message.dispatchMessageId).toBeUndefined();
+      });
+    }
+
     // On a host with `pi.sendUserInput` (our fork, can1357/oh-my-pi#14323) a person's accepted
     // Send or Aside runs as typed at the terminal: a command, a skill, a template or a prompt.
     // Whatever a command printed, or why it did not run, is the session's reply on Dispatch, which
