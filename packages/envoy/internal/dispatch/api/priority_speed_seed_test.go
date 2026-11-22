@@ -21,9 +21,8 @@ import (
 // package's migrated template (priority_fixture_test.go): 2,500 open issues over 18 projects,
 // two events on every one of them, 20 priorities and 400 `advances` relations, one chain as deep
 // as the parent-depth cap, and the cap of 20 relations on one issue. Written through the routes
-// it would be some 8,000 requests and the minutes they cost, which is time the measurement would
-// then be taken against. One VACUUM (ANALYZE) follows the five (settleSpeedCorpus), so every read
-// is planned from the corpus's own statistics.
+// it would be some 8,000 requests and the minutes they cost. One VACUUM (ANALYZE) follows the
+// five (settleSpeedCorpus), so every read is planned from the corpus's own statistics.
 //
 // Twenty priorities rather than the sixteen the work is spread over: one issue carries the most
 // relations a write allows (contracts.MaxIssueAdvances, 20), and an issue cannot hold twenty
@@ -43,7 +42,7 @@ const (
 	// speedCorpusFanout is how many children an issue of the trees below takes, so the corpus
 	// is trees an inheritance walk climbs rather than 2,500 roots.
 	speedCorpusFanout = 4
-	// speedCorpusPage is the page the listing is measured over, the most issues one page holds
+	// speedCorpusPage is the page the listing is read over, the most issues one page holds
 	// (contracts.MaxIssuePageLimit).
 	speedCorpusPage = 250
 )
@@ -52,19 +51,25 @@ const (
 // lifecycle work is open in. None of them is `done`, because every issue of the corpus is open.
 var speedCorpusStatuses = []string{"triage", "icebox", "backlog", "todo", "in_progress", "testing", "needs_review", "retro"}
 
-// speedCorpusShape is the corpus as the measurements address it: the server over it, the issue
-// carrying the most relations, and the chain as deep as the cap.
+// speedCorpusShape is the corpus as the readings address it: the server over it, the issue
+// carrying the most relations, and the chain as deep as the cap; the database under the server,
+// which the counts explain each statement on, and the trace of what the server sends for a
+// counted request. The server reads through a traced pool of that database, and the caller's
+// identity is resolved on the untraced one, so a count is the read's own statements and not the
+// sign-in lookup every request makes.
 type speedCorpusShape struct {
 	handler  http.Handler
 	server   *server
 	heaviest string
 	chain    []string
+	database *store.Store
+	trace    *speedTrace
 }
 
 // seedSpeedCorpus writes the corpus and answers the server over it. Every issue of the first
-// page the measurements read stands in `triage` with the lowest board keys, so that page is the
+// page the readings take stands in `triage` with the lowest board keys, so that page is the
 // chain as deep as the cap, the issue carrying twenty relations and the issues below them —
-// the heaviest page the corpus holds, which is the one worth timing.
+// the heaviest page the corpus holds, which is the one worth reading.
 func seedSpeedCorpus(t *testing.T) speedCorpusShape {
 	t.Helper()
 	database := storetest.Open(t)
@@ -159,8 +164,12 @@ func seedSpeedCorpus(t *testing.T) speedCorpusShape {
 	assertSpeedCorpus(t, database)
 	settleSpeedCorpus(t, database)
 
-	handler, _, _, srv := newRegisteredTestServer(t, testServerOptions{store: database})
-	return speedCorpusShape{handler: handler, server: srv, heaviest: heaviest, chain: chain}
+	trace := &speedTrace{}
+	handler, _, _, srv := newRegisteredTestServer(t, testServerOptions{store: database, tracer: trace, identity: headerIdentity(database)})
+	return speedCorpusShape{
+		handler: handler, server: srv, heaviest: heaviest, chain: chain,
+		database: database, trace: trace,
+	}
 }
 
 // settleSpeedCorpus leaves the corpus as a deployment's database stands between writes: every
