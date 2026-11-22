@@ -1565,6 +1565,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/issues/{key}/change-request": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The change request of the issue at a version of its spec (?version=, the latest by default): {issue, version, spec_source, repo, verification_version, proposes, changes_checks, proposals, changed_checks, problems, conclusion, judgment, judgment_reasons, final_list}. An issue whose repository is an enabled spec source of its project proposes each statement, component and interface of its spec that it adds, changes, removes or wrote against a version that is no longer the approved one (stale), against that repository's approved spec, and changes each such check of its Verification document's latest settled version (verification_version, 0 where it holds none); each is {id, kind, what, base, current, block}, and a fault of a block is a problem {block, rule, detail} that counts as a proposal of its document's kind. Any other issue proposes nothing and changes no check. The spec's conclusion block {block, statement, difference, no_statement, evidence, outcomes, answers}, answers being each comment anchored to its block, oldest first, is judged none, incomplete, uncovered or complete, with each reason, against the newest final list of outcomes recorded for the issue or an issue under it, at ?head= where given (final_list, null where none). Refused 404 ISSUE_NOT_FOUND, 400 INVALID_VERSION, 404 VERSION_NOT_FOUND, 400 INVALID_HEAD, and 409 CHANGE_REQUEST_UNREADABLE for a version whose text Dispatch cannot read: never an empty answer. */
+    get: operations["getApiV1IssuesByKeyChangeRequest"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/issues/{key}/change-request/ending": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Whether the change of the issue may land at ?head=, a whole commit id (400 INVALID_HEAD otherwise): {issue, head, version, state, reasons, judgment, judgment_reasons, approved, final_list}. The spec is read at its latest version, and its conclusion judged against the newest final list recorded at head for the issue or an issue under it. reasons, in order: no_final_list_for_head (no final list anywhere) or final_list_of_another_head (final lists of other heads alone); then no_conclusion, incomplete, or uncovered_without_approval (an outcome no approved statement covers while no person's approval of the latest spec version stands, which approved says). state is ready exactly when reasons is empty, else waiting. 404 ISSUE_NOT_FOUND and 409 CHANGE_REQUEST_UNREADABLE as the change request read. */
+    get: operations["getApiV1IssuesByKeyChangeRequestEnding"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/issues/{key}/claim": {
     parameters: {
       query?: never;
@@ -1869,6 +1903,24 @@ export interface paths {
     put?: never;
     /** @description Write the node state of the node {id} names {state}: proposed, overtaken or live on any node the store holds that is not gone, and gone only on a node that belongs to no document - a lens, a finding, a risk or a constraint - since a document's own write removes its block. gone is final: any write on a gone node is 409 NODE_GONE, naming the node. The write that takes a lens, a finding, a risk or a constraint to gone takes its whole part_of subtree to gone in the same write, at every depth and whatever each node's kind - a finding or a risk under a lens, a lens invoked on a lens, a finding, a risk or a constraint, and all that stands under each - those the caller may not see included, so no read by its own address answers one of them once the node above it is gone. A block of an ask, a comment or a message is no node the store holds: every read answers it live, and every value on it is 409 NODE_STATE_NOT_WRITABLE, saying so. {id} is the node's store address under the issue (`<ref_key>#<block id>` for a block of a document, `lens/<uuid>`, or its whole dispatch:// address), percent-encoded as one path segment; a node the caller may not see under the issue is 404 NOT_FOUND, gone or not. The value is checked first: a word that is none of live, gone, proposed, settled and overtaken is 400 INVALID_ATTRIBUTE_VALUE, naming the attribute state and the word, and nothing is stored. settled is 409 NODE_STATE_NOT_WRITABLE, since POST /api/v1/issues/{key}/nodes/{id}/settle alone settles a proposed node, and so is gone on a block of a document or an issue, a document, an ask, a comment or a message, each naming the node's kind, its state and the value asked for. A move of a lens, a finding, a risk or a constraint into gone is a person's alone - a browser's cookie, or a token holding the person scope - since it takes what the caller may not see: any other caller, the node's own author included, is 403 STATE_NOT_PERMITTED naming the node, in the same words whatever stands under it, and an agent marks a node it wrote overtaken instead. Any other move of a node into or out of proposed or settled, other than the settle itself, takes the settle's caller rule: a person makes it on any node, and any other caller only on a node whose recorded author is the author its credential proves, by the one author rule the settle reads; any other is 403 STATE_NOT_PERMITTED, naming the node, and nothing is stored, so the deployment's shared agent token makes no such move. A move out of settled undoes a decision, a move out of proposed ends a proposal and counts a proposed check or plan task as serving its requirement, and a move into proposed takes a requirement's gaps out of the coverage read and the approval request. The write appends one state tuple on each node it moves, written by the caller - a person's as the person it acts for, as the settle's is - and no event, and every read of the node answers the new state at once; a write of the state the node holds appends nothing and takes no caller rule, since it moves nothing. Answers 200 {node: {address, kind, state, visibility}, previous}, previous the state it held before. */
     post: operations["postApiV1IssuesByKeyNodesByIdState"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/issues/{key}/outcomes": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Every list of outcomes recorded for the issue, oldest first, each {id, issue, pull_request, head, list, outcomes, actor, recorded_at}, narrowed by ?pull_request=, ?head= and ?list= where given (400 INVALID_PULL_REQUEST, INVALID_HEAD or INVALID_LIST for a malformed one); 404 ISSUE_NOT_FOUND for an issue Dispatch does not hold. */
+    get: operations["getApiV1IssuesByKeyOutcomes"];
+    put?: never;
+    /** @description Record one list of outcomes of a pull request's head for the issue {pull_request, head, list, outcomes, actor?}: pull_request owner/repo#number (400 INVALID_PULL_REQUEST otherwise), head a whole commit id (400 INVALID_HEAD), list author, reviewer or final (400 INVALID_LIST), and outcomes each {text, statement?, restored?}, [] for an empty list (400 INVALID_OUTCOME for a blank text, a line break, both markers, a statement that is no id, a text that opens with a marker, or two outcomes of one key). Each record is a new row, and the newest final record at a head is that head's final list. Refused 403 OUTCOME_LIST_BY_AUTHOR for a reviewer or final list from the actor that recorded the author's list of the pull request, 403 OUTCOME_LIST_BY_REVIEWER for an author's list from one that recorded a reviewer or final list of it, 409 OUTCOME_AUTHOR_LIST_FIRST for a final list while no author's list of it is recorded, and 409 OUTCOME_REVIEWER_LIST_FIRST for a final list from an actor that recorded no reviewer's list at that head. Answers 201 the record {id, issue, pull_request, head, list, outcomes, actor, recorded_at}, and appends spec.outcomes_recorded on the issue {issue, record, pull_request, head, list, outcomes}, outcomes their count. */
+    post: operations["postApiV1IssuesByKeyOutcomes"];
     delete?: never;
     options?: never;
     head?: never;
@@ -4296,6 +4348,83 @@ export interface components {
       per_deploy: components["schemas"]["DeliveryDeployFlagCounts"];
       per_pr: components["schemas"]["DeliveryFlagCounts"];
     };
+    ChangeRequestConclusion: {
+      answers: components["schemas"]["ConclusionAnswer"][] | null;
+      block: string;
+      difference: string;
+      evidence: string[] | null;
+      no_statement: boolean;
+      outcomes: components["schemas"]["SpecOutcome"][] | null;
+      statement: string;
+    };
+    ChangeRequestEnding: {
+      approved: boolean;
+      final_list: components["schemas"]["SpecFinalList"] | null;
+      head: string;
+      issue: string;
+      /** @enum {string} */
+      judgment: "none" | "incomplete" | "uncovered" | "complete";
+      judgment_reasons: components["schemas"]["ChangeRequestJudgmentReason"][] | null;
+      reasons: components["schemas"]["ChangeRequestEndingReason"][] | null;
+      /** @enum {string} */
+      state: "ready" | "waiting";
+      version: number;
+    };
+    ChangeRequestEndingReason: {
+      /** @enum {string} */
+      code:
+        | "no_final_list_for_head"
+        | "final_list_of_another_head"
+        | "no_conclusion"
+        | "incomplete"
+        | "uncovered_without_approval";
+      detail: string;
+    };
+    ChangeRequestJudgmentReason: {
+      /** @enum {string} */
+      code:
+        | "no_statement_or_kind"
+        | "statement_and_no_statement"
+        | "statement_not_approved"
+        | "no_evidence"
+        | "omits_outcome"
+        | "two_conclusions"
+        | "uncovered_outcome";
+      detail: string;
+      outcome?: string;
+    };
+    ChangeRequestNode: {
+      base: number;
+      block: string;
+      current: number;
+      id: string;
+      /** @enum {string} */
+      kind: "statement" | "component" | "interface" | "check";
+      /** @enum {string} */
+      what: "added" | "changed" | "removed" | "stale";
+    };
+    ChangeRequestProblem: {
+      block: string;
+      detail: string;
+      rule: string;
+    };
+    ChangeRequestRead: {
+      changed_checks: components["schemas"]["ChangeRequestNode"][] | null;
+      changes_checks: boolean;
+      conclusion: components["schemas"]["ChangeRequestConclusion"] | null;
+      final_list: components["schemas"]["SpecFinalList"] | null;
+      issue: string;
+      /** @enum {string} */
+      judgment: "none" | "incomplete" | "uncovered" | "complete";
+      judgment_reasons: components["schemas"]["ChangeRequestJudgmentReason"][] | null;
+      problems: components["schemas"]["ChangeRequestProblem"][] | null;
+      proposals: components["schemas"]["ChangeRequestNode"][] | null;
+      proposes: boolean;
+      repo: string;
+      spec_source: boolean;
+      verification_version: number;
+      version: number;
+    };
     CheckBasis: {
       branch?: string;
       commit?: string;
@@ -4567,6 +4696,13 @@ export interface components {
       resolved_by: components["schemas"]["Actor"] | null;
       suggestion: components["schemas"]["Suggestion"] | null;
       turn: null | string;
+    };
+    ConclusionAnswer: {
+      author: components["schemas"]["Actor"];
+      body: string;
+      comment: string;
+      /** Format: date-time */
+      created_at: string;
     };
     ConstraintInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -7036,6 +7172,14 @@ export interface components {
       runtime_id: string;
       slot: null | string;
     };
+    RecordOutcomesInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      head: string;
+      /** @enum {string} */
+      list: "author" | "reviewer" | "final";
+      outcomes: components["schemas"]["SpecOutcome"][] | null;
+      pull_request: string;
+    };
     RecordResponse: {
       approver: string;
       decided: components["schemas"]["RecordDecisionResp"] | null;
@@ -7415,6 +7559,14 @@ export interface components {
       name?: string;
       version: number;
     };
+    SpecFinalList: {
+      head: string;
+      /** Format: int64 */
+      id: number;
+      pull_request: string;
+      /** Format: date-time */
+      recorded_at: string;
+    };
     SpecFormError: {
       changes_reason?: string;
       code: string;
@@ -7508,6 +7660,24 @@ export interface components {
       block: string;
       provenance: components["schemas"]["SpecProvenance"];
       version: number;
+    };
+    SpecOutcome: {
+      restored?: boolean;
+      statement?: string;
+      text: string;
+    };
+    SpecOutcomeRecord: {
+      actor: components["schemas"]["Actor"];
+      head: string;
+      /** Format: int64 */
+      id: number;
+      issue: string;
+      /** @enum {string} */
+      list: "author" | "reviewer" | "final";
+      outcomes: components["schemas"]["SpecOutcome"][] | null;
+      pull_request: string;
+      /** Format: date-time */
+      recorded_at: string;
     };
     SpecProvenance: {
       act: string;
@@ -11873,6 +12043,77 @@ export interface operations {
       };
     };
   };
+  getApiV1IssuesByKeyChangeRequest: {
+    parameters: {
+      query?: {
+        version?: number;
+        head?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ChangeRequestRead"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1IssuesByKeyChangeRequestEnding: {
+    parameters: {
+      query?: {
+        head?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ChangeRequestEnding"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   postApiV1IssuesByKeyClaim: {
     parameters: {
       query?: {
@@ -12691,6 +12932,81 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["NodeStateWritten"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1IssuesByKeyOutcomes: {
+    parameters: {
+      query?: {
+        pull_request?: string;
+        head?: string;
+        list?: "author" | "reviewer" | "final";
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SpecOutcomeRecord"][];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1IssuesByKeyOutcomes: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["RecordOutcomesInput"];
+      };
+    };
+    responses: {
+      /** @description Created */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SpecOutcomeRecord"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -16751,6 +17067,13 @@ export type BroadcastRecipient = components["schemas"]["BroadcastRecipient"];
 export type BroadcastSummary = components["schemas"]["BroadcastSummary"];
 export type CarriedBlock = components["schemas"]["CarriedBlock"];
 export type ChangeFailureRate = components["schemas"]["ChangeFailureRate"];
+export type ChangeRequestConclusion = components["schemas"]["ChangeRequestConclusion"];
+export type ChangeRequestEnding = components["schemas"]["ChangeRequestEnding"];
+export type ChangeRequestEndingReason = components["schemas"]["ChangeRequestEndingReason"];
+export type ChangeRequestJudgmentReason = components["schemas"]["ChangeRequestJudgmentReason"];
+export type ChangeRequestNode = components["schemas"]["ChangeRequestNode"];
+export type ChangeRequestProblem = components["schemas"]["ChangeRequestProblem"];
+export type ChangeRequestRead = components["schemas"]["ChangeRequestRead"];
 export type CheckBasis = components["schemas"]["CheckBasis"];
 export type CheckBlock = components["schemas"]["CheckBlock"];
 export type CheckCI = components["schemas"]["CheckCI"];
@@ -16770,6 +17093,7 @@ export type CommentRead = components["schemas"]["CommentRead"];
 export type CommentReplyInput = components["schemas"]["CommentReplyInput"];
 export type CommentWithTrees = components["schemas"]["CommentWithTrees"];
 export type CommentWriteResponse = components["schemas"]["CommentWriteResponse"];
+export type ConclusionAnswer = components["schemas"]["ConclusionAnswer"];
 export type ConstraintInput = components["schemas"]["ConstraintInput"];
 export type ConstraintRead = components["schemas"]["ConstraintRead"];
 export type CreateAgentMessageInput = components["schemas"]["CreateAgentMessageInput"];
@@ -17045,6 +17369,7 @@ export type RebuildArtifactInput = components["schemas"]["RebuildArtifactInput"]
 export type RecordCheckResultInput = components["schemas"]["RecordCheckResultInput"];
 export type RecordDecisionResp = components["schemas"]["RecordDecisionResp"];
 export type RecordEnrollmentResp = components["schemas"]["RecordEnrollmentResp"];
+export type RecordOutcomesInput = components["schemas"]["RecordOutcomesInput"];
 export type RecordResponse = components["schemas"]["RecordResponse"];
 export type ReferenceLink = components["schemas"]["ReferenceLink"];
 export type ReferenceMember = components["schemas"]["ReferenceMember"];
@@ -17088,6 +17413,7 @@ export type SessionAnswerAsk = components["schemas"]["SessionAnswerAsk"];
 export type SessionAnswersResponse = components["schemas"]["SessionAnswersResponse"];
 export type SlowWriteInput = components["schemas"]["SlowWriteInput"];
 export type SpecDocumentRead = components["schemas"]["SpecDocumentRead"];
+export type SpecFinalList = components["schemas"]["SpecFinalList"];
 export type SpecFormError = components["schemas"]["SpecFormError"];
 export type SpecFormFinding = components["schemas"]["SpecFormFinding"];
 export type SpecFormRead = components["schemas"]["SpecFormRead"];
@@ -17099,6 +17425,8 @@ export type SpecLevelImport = components["schemas"]["SpecLevelImport"];
 export type SpecNodeRead = components["schemas"]["SpecNodeRead"];
 export type SpecNodeRemoval = components["schemas"]["SpecNodeRemoval"];
 export type SpecNodeVersion = components["schemas"]["SpecNodeVersion"];
+export type SpecOutcome = components["schemas"]["SpecOutcome"];
+export type SpecOutcomeRecord = components["schemas"]["SpecOutcomeRecord"];
 export type SpecProvenance = components["schemas"]["SpecProvenance"];
 export type SpecSource = components["schemas"]["SpecSource"];
 export type StandingReview = components["schemas"]["StandingReview"];

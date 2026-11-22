@@ -95,6 +95,8 @@ POST /api/v1/issues/{key}/artifacts/{slug}/versions any
 GET /api/v1/issues/{key}/artifacts/{slug}/versions/{number} any
 GET /api/v1/issues/{key}/asks any
 POST /api/v1/issues/{key}/asks any
+GET /api/v1/issues/{key}/change-request any
+GET /api/v1/issues/{key}/change-request/ending any
 DELETE /api/v1/issues/{key}/claim any
 POST /api/v1/issues/{key}/claim any
 GET /api/v1/issues/{key}/collaborators any
@@ -117,6 +119,8 @@ POST /api/v1/issues/{key}/nodes/{id}/findings any
 POST /api/v1/issues/{key}/nodes/{id}/pointers any
 POST /api/v1/issues/{key}/nodes/{id}/settle any
 POST /api/v1/issues/{key}/nodes/{id}/state any
+GET /api/v1/issues/{key}/outcomes any
+POST /api/v1/issues/{key}/outcomes any
 PUT /api/v1/issues/{key}/plans/{id} any
 GET /api/v1/issues/{key}/proposed any
 GET /api/v1/issues/{key}/references any
@@ -126,6 +130,7 @@ POST /api/v1/issues/{key}/results/dry-run any
 POST /api/v1/issues/{key}/risks any
 GET /api/v1/issues/{key}/role-holders any
 PUT /api/v1/issues/{key}/role-holders any
+POST /api/v1/issues/{key}/spec-import-level any
 GET /api/v1/issues/{key}/steps any
 PUT /api/v1/issues/{key}/steps/{id} any
 PUT /api/v1/issues/{key}/steps/{id}/rating any
@@ -196,6 +201,10 @@ PUT /api/v1/projects/{key}/legion/daemon any
 GET /api/v1/projects/{key}/plans any
 GET /api/v1/projects/{key}/related any
 POST /api/v1/projects/{key}/related any
+GET /api/v1/projects/{key}/spec-sources any
+DELETE /api/v1/projects/{key}/spec-sources/{owner}/{repo} any
+PUT /api/v1/projects/{key}/spec-sources/{owner}/{repo} any
+GET /api/v1/projects/{key}/spec/{owner}/{repo}/nodes/{id} any
 GET /api/v1/reference-targets any
 GET /api/v1/references any
 GET /api/v1/references/questions any

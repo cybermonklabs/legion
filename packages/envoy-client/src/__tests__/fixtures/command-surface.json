@@ -1,5 +1,5 @@
 {
-  "commands": 51,
+  "commands": 53,
   "refusals": 31,
   "runs": [
     {
@@ -1280,6 +1280,59 @@
       ]
     },
     {
+      "tool": "dispatch_outcomes",
+      "call": "valid",
+      "args": {
+        "body": "(restored) A second payment of one order is refused again.\n(requires a-bill-names-its-order) The refusal names the order.\n",
+        "head": "0123456789abcdef0123456789abcdef01234567",
+        "issue": "<KEY>",
+        "list": "final",
+        "pull_request": "acme/app#12"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/issues/%3CKEY%3E/outcomes",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "head": "0123456789abcdef0123456789abcdef01234567",
+            "list": "final",
+            "outcomes": [
+              {
+                "restored": true,
+                "text": "A second payment of one order is refused again."
+              },
+              {
+                "statement": "a-bill-names-its-order",
+                "text": "The refusal names the order."
+              }
+            ],
+            "pull_request": "acme/app#12"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Recorded the final list of acme/app#12 at 0123456789abcdef0123456789abcdef01234567 for %3CKEY%3E: 2 outcomes (record 7).",
+        "- (restored) A second payment of one order is refused again.",
+        "- (requires a-bill-names-its-order) The refusal names the order."
+      ]
+    },
+    {
       "tool": "dispatch_plan_approve",
       "call": "valid",
       "args": {
@@ -2232,6 +2285,30 @@
       ]
     },
     {
+      "tool": "dispatch_spec_ending",
+      "call": "valid",
+      "args": {
+        "head": "0123456789abcdef0123456789abcdef01234567",
+        "issue": "<KEY>"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/%3CKEY%3E/change-request/ending?head=0123456789abcdef0123456789abcdef01234567",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "waiting",
+        "no_conclusion: Version 3 of the spec holds no conclusion block. Write the conclusion in the spec."
+      ]
+    },
+    {
       "tool": "dispatch_spec_form",
       "call": "valid",
       "args": {
@@ -2267,13 +2344,13 @@
       "tool": "dispatch_spec_import_level",
       "call": "valid",
       "args": {
-        "issue": "DSP-1",
+        "issue": "<KEY>",
         "notes": "notes.md"
       },
       "requests": [
         {
           "method": "POST",
-          "path": "/api/v1/issues/DSP-1/spec-import-level",
+          "path": "/api/v1/issues/%3CKEY%3E/spec-import-level",
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
@@ -2295,7 +2372,7 @@
         },
         {
           "method": "POST",
-          "path": "/api/v1/issues/DSP-1/spec-import-level",
+          "path": "/api/v1/issues/%3CKEY%3E/spec-import-level",
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
@@ -2317,7 +2394,7 @@
         },
         {
           "method": "POST",
-          "path": "/api/v1/issues/DSP-1/spec-import-level",
+          "path": "/api/v1/issues/%3CKEY%3E/spec-import-level",
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
@@ -2339,7 +2416,7 @@
         },
         {
           "method": "POST",
-          "path": "/api/v1/issues/DSP-1/spec-import-level",
+          "path": "/api/v1/issues/%3CKEY%3E/spec-import-level",
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
@@ -2361,7 +2438,7 @@
         },
         {
           "method": "POST",
-          "path": "/api/v1/issues/DSP-1/spec-import-level",
+          "path": "/api/v1/issues/%3CKEY%3E/spec-import-level",
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
@@ -2384,7 +2461,7 @@
       ],
       "outcome": "error",
       "text": [
-        "POST http://dispatch.test/api/v1/issues/DSP-1/spec-import-level failed on its last attempt (unexpected request: POST /api/v1/issues/DSP-1/spec-import-level) (the last of 5 attempts), and an attempt of the write may have reached Dispatch, so it may or may not have taken effect. Dispatch finishes an attempt it received whatever this command does, so read the write back before you send it again: a new command sends it under a new key."
+        "POST http://dispatch.test/api/v1/issues/%3CKEY%3E/spec-import-level failed on its last attempt (unexpected request: POST /api/v1/issues/%3CKEY%3E/spec-import-level) (the last of 5 attempts), and an attempt of the write may have reached Dispatch, so it may or may not have taken effect. Dispatch finishes an attempt it received whatever this command does, so read the write back before you send it again: a new command sends it under a new key."
       ]
     },
     {

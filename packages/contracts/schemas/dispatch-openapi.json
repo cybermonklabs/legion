@@ -6418,6 +6418,121 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v1/issues/{key}/change-request": {
+      "get": {
+        "description": "The change request of the issue at a version of its spec (?version=, the latest by default): {issue, version, spec_source, repo, verification_version, proposes, changes_checks, proposals, changed_checks, problems, conclusion, judgment, judgment_reasons, final_list}. An issue whose repository is an enabled spec source of its project proposes each statement, component and interface of its spec that it adds, changes, removes or wrote against a version that is no longer the approved one (stale), against that repository's approved spec, and changes each such check of its Verification document's latest settled version (verification_version, 0 where it holds none); each is {id, kind, what, base, current, block}, and a fault of a block is a problem {block, rule, detail} that counts as a proposal of its document's kind. Any other issue proposes nothing and changes no check. The spec's conclusion block {block, statement, difference, no_statement, evidence, outcomes, answers}, answers being each comment anchored to its block, oldest first, is judged none, incomplete, uncovered or complete, with each reason, against the newest final list of outcomes recorded for the issue or an issue under it, at ?head= where given (final_list, null where none). Refused 404 ISSUE_NOT_FOUND, 400 INVALID_VERSION, 404 VERSION_NOT_FOUND, 400 INVALID_HEAD, and 409 CHANGE_REQUEST_UNREADABLE for a version whose text Dispatch cannot read: never an empty answer.",
+        "operationId": "getApiV1IssuesByKeyChangeRequest",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "head",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChangeRequestRead"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
+    "/api/v1/issues/{key}/change-request/ending": {
+      "get": {
+        "description": "Whether the change of the issue may land at ?head=, a whole commit id (400 INVALID_HEAD otherwise): {issue, head, version, state, reasons, judgment, judgment_reasons, approved, final_list}. The spec is read at its latest version, and its conclusion judged against the newest final list recorded at head for the issue or an issue under it. reasons, in order: no_final_list_for_head (no final list anywhere) or final_list_of_another_head (final lists of other heads alone); then no_conclusion, incomplete, or uncovered_without_approval (an outcome no approved statement covers while no person's approval of the latest spec version stands, which approved says). state is ready exactly when reasons is empty, else waiting. 404 ISSUE_NOT_FOUND and 409 CHANGE_REQUEST_UNREADABLE as the change request read.",
+        "operationId": "getApiV1IssuesByKeyChangeRequestEnding",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "head",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChangeRequestEnding"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
     "/api/v1/issues/{key}/claim": {
       "post": {
         "description": "Claim the issue for the calling session (or human): records who is working it. The status does not move. The answer is the issue with legion_managed_status beside it: true when the issue carries the legion label in any case, or sits under one that does, which means the Legion daemon owns the status and a status another writer sets is undone. 409 ISSUE_CLAIMED names a live holder (or a human one, whose claim has no session to end); a caller whose credential holds the person scope may pass {force: true} to take it anyway, and one that does not is 403 OAUTH_SCOPE_REQUIRED. 409 CLAIM_CONTENDED means the holder changed twice while the request ran, so nothing was applied and nobody's liveness was checked: read the issue and retry.",
@@ -7720,6 +7835,138 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/NodeStateWritten"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      }
+    },
+    "/api/v1/issues/{key}/outcomes": {
+      "get": {
+        "description": "Every list of outcomes recorded for the issue, oldest first, each {id, issue, pull_request, head, list, outcomes, actor, recorded_at}, narrowed by ?pull_request=, ?head= and ?list= where given (400 INVALID_PULL_REQUEST, INVALID_HEAD or INVALID_LIST for a malformed one); 404 ISSUE_NOT_FOUND for an issue Dispatch does not hold.",
+        "operationId": "getApiV1IssuesByKeyOutcomes",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pull_request",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "head",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "list",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "author",
+                "reviewer",
+                "final"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SpecOutcomeRecord"
+                  },
+                  "type": "array"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      },
+      "post": {
+        "description": "Record one list of outcomes of a pull request's head for the issue {pull_request, head, list, outcomes, actor?}: pull_request owner/repo#number (400 INVALID_PULL_REQUEST otherwise), head a whole commit id (400 INVALID_HEAD), list author, reviewer or final (400 INVALID_LIST), and outcomes each {text, statement?, restored?}, [] for an empty list (400 INVALID_OUTCOME for a blank text, a line break, both markers, a statement that is no id, a text that opens with a marker, or two outcomes of one key). Each record is a new row, and the newest final record at a head is that head's final list. Refused 403 OUTCOME_LIST_BY_AUTHOR for a reviewer or final list from the actor that recorded the author's list of the pull request, 403 OUTCOME_LIST_BY_REVIEWER for an author's list from one that recorded a reviewer or final list of it, 409 OUTCOME_AUTHOR_LIST_FIRST for a final list while no author's list of it is recorded, and 409 OUTCOME_REVIEWER_LIST_FIRST for a final list from an actor that recorded no reviewer's list at that head. Answers 201 the record {id, issue, pull_request, head, list, outcomes, actor, recorded_at}, and appends spec.outcomes_recorded on the issue {issue, record, pull_request, head, list, outcomes}, outcomes their count.",
+        "operationId": "postApiV1IssuesByKeyOutcomes",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordOutcomesInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpecOutcomeRecord"
                 }
               }
             }
@@ -17291,6 +17538,349 @@
         ],
         "type": "object"
       },
+      "ChangeRequestConclusion": {
+        "properties": {
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/ConclusionAnswer"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "block": {
+            "type": "string"
+          },
+          "difference": {
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "no_statement": {
+            "type": "boolean"
+          },
+          "outcomes": {
+            "items": {
+              "$ref": "#/components/schemas/SpecOutcome"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "statement": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "block",
+          "statement",
+          "difference",
+          "no_statement",
+          "evidence",
+          "outcomes",
+          "answers"
+        ],
+        "type": "object"
+      },
+      "ChangeRequestEnding": {
+        "properties": {
+          "approved": {
+            "type": "boolean"
+          },
+          "final_list": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpecFinalList"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "head": {
+            "type": "string"
+          },
+          "issue": {
+            "type": "string"
+          },
+          "judgment": {
+            "enum": [
+              "none",
+              "incomplete",
+              "uncovered",
+              "complete"
+            ],
+            "type": "string"
+          },
+          "judgment_reasons": {
+            "items": {
+              "$ref": "#/components/schemas/ChangeRequestJudgmentReason"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "reasons": {
+            "items": {
+              "$ref": "#/components/schemas/ChangeRequestEndingReason"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "state": {
+            "enum": [
+              "ready",
+              "waiting"
+            ],
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "issue",
+          "head",
+          "version",
+          "state",
+          "reasons",
+          "judgment",
+          "judgment_reasons",
+          "approved",
+          "final_list"
+        ],
+        "type": "object"
+      },
+      "ChangeRequestEndingReason": {
+        "properties": {
+          "code": {
+            "enum": [
+              "no_final_list_for_head",
+              "final_list_of_another_head",
+              "no_conclusion",
+              "incomplete",
+              "uncovered_without_approval"
+            ],
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "ChangeRequestJudgmentReason": {
+        "properties": {
+          "code": {
+            "enum": [
+              "no_statement_or_kind",
+              "statement_and_no_statement",
+              "statement_not_approved",
+              "no_evidence",
+              "omits_outcome",
+              "two_conclusions",
+              "uncovered_outcome"
+            ],
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "ChangeRequestNode": {
+        "properties": {
+          "base": {
+            "type": "integer"
+          },
+          "block": {
+            "type": "string"
+          },
+          "current": {
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "statement",
+              "component",
+              "interface",
+              "check"
+            ],
+            "type": "string"
+          },
+          "what": {
+            "enum": [
+              "added",
+              "changed",
+              "removed",
+              "stale"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "what",
+          "base",
+          "current",
+          "block"
+        ],
+        "type": "object"
+      },
+      "ChangeRequestProblem": {
+        "properties": {
+          "block": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "rule": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "block",
+          "rule",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "ChangeRequestRead": {
+        "properties": {
+          "changed_checks": {
+            "items": {
+              "$ref": "#/components/schemas/ChangeRequestNode"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "changes_checks": {
+            "type": "boolean"
+          },
+          "conclusion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChangeRequestConclusion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "final_list": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpecFinalList"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "issue": {
+            "type": "string"
+          },
+          "judgment": {
+            "enum": [
+              "none",
+              "incomplete",
+              "uncovered",
+              "complete"
+            ],
+            "type": "string"
+          },
+          "judgment_reasons": {
+            "items": {
+              "$ref": "#/components/schemas/ChangeRequestJudgmentReason"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "problems": {
+            "items": {
+              "$ref": "#/components/schemas/ChangeRequestProblem"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "proposals": {
+            "items": {
+              "$ref": "#/components/schemas/ChangeRequestNode"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "proposes": {
+            "type": "boolean"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "spec_source": {
+            "type": "boolean"
+          },
+          "verification_version": {
+            "type": "integer"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "issue",
+          "version",
+          "spec_source",
+          "repo",
+          "verification_version",
+          "proposes",
+          "changes_checks",
+          "proposals",
+          "changed_checks",
+          "problems",
+          "conclusion",
+          "judgment",
+          "judgment_reasons",
+          "final_list"
+        ],
+        "type": "object"
+      },
       "CheckBasis": {
         "properties": {
           "branch": {
@@ -18579,6 +19169,30 @@
           "mentions",
           "deliveries",
           "reply_block"
+        ],
+        "type": "object"
+      },
+      "ConclusionAnswer": {
+        "properties": {
+          "author": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "body": {
+            "type": "string"
+          },
+          "comment": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "comment",
+          "author",
+          "body",
+          "created_at"
         ],
         "type": "object"
       },
@@ -29654,6 +30268,50 @@
         ],
         "type": "object"
       },
+      "RecordOutcomesInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "head": {
+            "type": "string"
+          },
+          "list": {
+            "enum": [
+              "author",
+              "reviewer",
+              "final"
+            ],
+            "type": "string"
+          },
+          "outcomes": {
+            "items": {
+              "$ref": "#/components/schemas/SpecOutcome"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "pull_request": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pull_request",
+          "head",
+          "list",
+          "outcomes"
+        ],
+        "type": "object"
+      },
       "RecordResponse": {
         "properties": {
           "approver": {
@@ -31169,6 +31827,31 @@
         ],
         "type": "object"
       },
+      "SpecFinalList": {
+        "properties": {
+          "head": {
+            "type": "string"
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "pull_request": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "pull_request",
+          "head",
+          "recorded_at"
+        ],
+        "type": "object"
+      },
       "SpecFormError": {
         "properties": {
           "changes_reason": {
@@ -31586,6 +32269,75 @@
           "at",
           "block",
           "provenance"
+        ],
+        "type": "object"
+      },
+      "SpecOutcome": {
+        "properties": {
+          "restored": {
+            "type": "boolean"
+          },
+          "statement": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
+      "SpecOutcomeRecord": {
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "head": {
+            "type": "string"
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "issue": {
+            "type": "string"
+          },
+          "list": {
+            "enum": [
+              "author",
+              "reviewer",
+              "final"
+            ],
+            "type": "string"
+          },
+          "outcomes": {
+            "items": {
+              "$ref": "#/components/schemas/SpecOutcome"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "pull_request": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "issue",
+          "pull_request",
+          "head",
+          "list",
+          "outcomes",
+          "actor",
+          "recorded_at"
         ],
         "type": "object"
       },
