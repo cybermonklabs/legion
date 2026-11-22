@@ -558,6 +558,7 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "lowestPluginContract and the claim views' updateState and wake"},
 	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
+	{contract: podHoldContract, issue: withoutPodHold, dropped: "the issues' podHold"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -974,6 +975,27 @@ const pauseContract = 178
 // with this change's own number, and it is the last number of answers.go's SupportedContracts,
 // which names the constant rather than its number for that reason.
 const repositoriesLiveContract = 202
+
+// podHoldContract is the daemon contract that added each issue's `podHold` to the state
+// (version.go's 221, dispatch://INFRA-5208): the standing hold of the issue's pod, which the
+// idle rule wrote only to its own table before. A plugin before it reads each issue with a
+// strict schema that names no `podHold` and refuses the whole body for it, so every caller below
+// it is served the issues without the key (withoutPodHold). childRouteRemovedContract stands
+// below it with no row of stateNarrowings between the two, so a caller from that contract to 220
+// is served 205's keys, which are 202's on this route.
+//
+// It is a literal of its own and never DaemonAPIVersion, for the reason repositoriesLiveContract
+// is, and it is the last number of answers.go's SupportedContracts, which names the constant.
+const podHoldContract = 221
+
+// withoutPodHold is the issue with no `podHold`, the one key podHoldContract added to the state;
+// nothing else of that contract is on the route. The key is written only for an issue whose pod
+// a hold stands on, so the band reports a move only for an issue that carries one.
+func withoutPodHold(issue Issue) (Issue, bool) {
+	moved := issue.PodHold != nil
+	issue.PodHold = nil
+	return issue, moved
+}
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a

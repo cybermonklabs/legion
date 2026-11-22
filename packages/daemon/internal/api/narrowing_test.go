@@ -293,13 +293,56 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	})
 
 	// The newest narrowing is a row of the table like every other, so the caller below it is
-	// told what it lost: a caller one contract below the highest row, 201, which states that
+	// told what it lost: a caller one contract below the highest row, 220, which states that
 	// contract in its header as every plugin from shapedAnswersContract on does, is served at the
-	// recorded contract below it, 199, so it stands below that row alone and the log holds that
+	// recorded contract below it, 205, so it stands below that row alone and the log holds that
 	// row's line and nothing else. This subtest does not catch a strip applied beside the loop,
 	// because it reads both its expectation and its answer from stateNarrowings; the subtests
 	// below, which name their lines as literals, are what catch that.
 	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
+		state := populatedState(t)
+		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000",
+			podClaims(podHoldContract-1), podHoldContract-1)
+
+		if bytes.Contains(body, []byte(`"podHold"`)) {
+			t.Errorf("the body served to a caller below %d carries `podHold`, the key that contract added: %s",
+				podHoldContract, body)
+		}
+		want := narrowingsExpected(state, podHoldContract-1)
+		if len(narrowings) != len(want) {
+			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
+				len(narrowings), podHoldContract-1, len(want), narrowings)
+		}
+		for i, line := range narrowings {
+			if line.Dropped != want[i] {
+				t.Errorf("line %d of a caller at %d says it dropped %q, want %q",
+					i, podHoldContract-1, line.Dropped, want[i])
+			}
+		}
+	})
+
+	// The pod hold line is named as a literal for the reason the assignments line below is: take
+	// the row out of stateNarrowings and clear the key beside the loop as an `if` of its own, and
+	// every subtest that reads the table loses its expectation with its answer, so the body is
+	// still narrowed, no line is written and only this one fails.
+	t.Run("the pod hold narrowing names its own keys in the log", func(t *testing.T) {
+		const dropped = "the issues' podHold"
+		_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000",
+			podClaims(podHoldContract-1), podHoldContract-1)
+
+		for _, line := range narrowings {
+			if line.Dropped == dropped {
+				return
+			}
+		}
+		t.Fatalf("a caller at %d was served no line saying it dropped %q; the daemon wrote %+v",
+			podHoldContract-1, dropped, narrowings)
+	})
+
+	// The repositories narrowing still writes its own line: a caller one contract below it, 201,
+	// is served at 199 and stands below that row and the pod hold's, so the block it reads is
+	// contract 152's.
+	t.Run("the repositories narrowing writes its own line", func(t *testing.T) {
 		state := populatedState(t)
 		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000",
 			podClaims(repositoriesLiveContract-1), repositoriesLiveContract-1)

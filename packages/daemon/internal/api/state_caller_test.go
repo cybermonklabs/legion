@@ -259,6 +259,25 @@ func withoutEntryTimeKeys(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
+// withoutPodHoldKey is a state body with no issue carrying `podHold`, which is what a caller below
+// podHoldContract is served of a state that carries one (api's withoutPodHold). It serves the
+// table below as withoutEntryTimeKeys does.
+func withoutPodHoldKey(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	for _, issue := range served["issues"].(map[string]any) {
+		delete(issue.(map[string]any), "podHold")
+	}
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without its pod holds: %v", body, err)
+	}
+	return encoded
+}
+
 // stripRepositoryApps takes `apps` off every entry of a decoded state body's
 // `repositories.mapped` and `repositories.refused`, which is what a caller below
 // repositoryAppsContract is served (api's withoutRepositoryApps). It is the one statement of that
@@ -706,7 +725,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// place a caller at (callerKind.reaches), so each is served the repositories block
 			// in contract 152's shape before any key of it is taken out (withRepositoriesAt152),
 			// and only the three rows served this daemon's own body the block this contract
-			// writes.
+			// writes. Each is below podHoldContract as well, so its issues carry no `podHold`
+			// (withoutPodHoldKey), and only those three rows are served the key.
 			if tc.rounds && tc.stall {
 				want := full
 				if !tc.answers {
@@ -741,6 +761,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				}
 				if !tc.pause {
 					want = withoutPausedKey(t, want)
+				}
+				if tc.contract < podHoldContract {
+					want = withoutPodHoldKey(t, want)
 				}
 				want = servedAt(t, want, tc.contract)
 				if withoutLowestContract(t, body) != withoutLowestContract(t, want) {
@@ -819,13 +842,14 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 					delete(issue, key)
 				}
 				// Every row that reaches here is below phaseEntriesContract too, so the two
-				// entry numbers, the two times of their task and the architect-stalled arms go
-				// whatever the row is, as the decided record's keys above do.
+				// entry numbers, the two times of their task, the architect-stalled arms and the
+				// pod's standing hold go whatever the row is, as the decided record's keys above do.
 				delete(issue, "phaseEntry")
 				delete(issue, "givenEntry")
 				delete(issue, "entryQueuedAt")
 				delete(issue, "entryConfirmedAt")
 				delete(issue, "architectStalls")
+				delete(issue, "podHold")
 				if !tc.quiet {
 					delete(issue, TreeMovedAtField)
 					delete(issue, QuietHoursField)
