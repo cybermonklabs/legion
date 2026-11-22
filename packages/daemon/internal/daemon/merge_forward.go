@@ -29,10 +29,11 @@ import (
 // transaction, and finishes the row undelivered, with one log line naming why, once the message is
 // no longer to be delivered by the workflow's rule for these rows (workflow.MergeForwardAt): the
 // record holds no such issue, the issue has left the workflow, its tree lingers, the record holds
-// no pull request or one that is not open, it holds no merge forward or one of another head, the
-// row is an ask or a hold and the merge forward has landed, or the row is an ask to a role the
-// record's ask no longer names. Role-message rows run in no order of the issue's, so a hold still
-// queued behind its landed would otherwise tell the worker to wait for a head that already came.
+// no pull request or one that is not open, the row is to the merger and the issue no longer stands
+// in merging, the record holds no merge forward or one of another head, or the row is an ask or a
+// hold and the merge forward has landed. Role-message rows run in no order of the issue's, so a
+// hold still queued behind its landed would otherwise tell the worker to wait for a head that
+// already came.
 // What follows - a claim that failed or retired, the design gate, the wake and the publish - is
 // deliverHeld's, as it is a merge-queue removal's.
 func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, payload record.MergeForwardMessage) error {
