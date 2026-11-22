@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/infra/writerhold"
@@ -132,9 +133,11 @@ func (h *stack) mixedBuildModesWindow(listener *mixedBuildListener) {
 		}
 		return true
 	}, 2*time.Minute, time.Second, "JetStream never answered the operator's stream infos after the hub's restart")
-	require.Eventually(h.t, func() bool {
+	if !assert.Eventually(h.t, func() bool {
 		return strings.Contains(strings.ToLower(listener.Output.String()[before:]), "authorization violation")
-	}, 60*time.Second, 200*time.Millisecond, "the held hub never refused the listener's reconnect:\n%s", listener.Output.String())
+	}, 60*time.Second, 200*time.Millisecond) {
+		h.t.Fatalf("the held hub never refused the listener's reconnect:\n%s", listener.Output.String())
+	}
 	for line := range strings.SplitSeq(listener.Output.String()[before:], "\n") {
 		if strings.Contains(strings.ToLower(line), "authorization violation") {
 			h.t.Logf("the held hub refused the listener's reconnect: %s", line)
