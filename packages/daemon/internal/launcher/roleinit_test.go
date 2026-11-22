@@ -662,10 +662,12 @@ func runGeneration(t *testing.T, plan stagePlan, layout agentPlan, generation ui
 }
 
 // detachedGoneWithin is how long the stage waits for a role's detached process to be gone once the
-// role's init has exited, before it answers "running". How soon the kernel shows that process gone
-// is not the claim, and on a loaded machine it can take seconds, so the cap is far past that; it is
-// an answer the stage prints rather than a hang guard, so it is short enough that a "running" still
-// leaves the stage its time for the generations after it (beforeDeadline).
+// role's init has exited, before it answers "running", and how long the agent waits for that
+// process to report its ignore of SIGTERM, before it answers that it never did. How soon either
+// shows is not the claim, and on a loaded machine it can take seconds, so the cap is far past
+// that; each is an answer the stage or the agent prints rather than a hang guard, so it is short
+// enough that the answer still leaves the stage its time for the generations after it
+// (beforeDeadline).
 const detachedGoneWithin = time.Minute
 
 // detachedProcess says whether any process of the machine still runs the detached command the
@@ -837,7 +839,7 @@ func TestRoleInitAgentHelper(t *testing.T) {
 	detached.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := detached.Start(); err != nil {
 		say("detached-start", err.Error())
-	} else if !testwait.Holds(beforeDeadline(t), 10*time.Millisecond, func() bool {
+	} else if !testwait.Holds(detachedGoneWithin, 10*time.Millisecond, func() bool {
 		_, err := os.Stat(trapped)
 		return err == nil
 	}) {

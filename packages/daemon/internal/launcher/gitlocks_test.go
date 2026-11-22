@@ -271,8 +271,9 @@ func newGatedProc(t *testing.T, pids ...int) *gatedProc {
 // budget (raceSwaps); the racer's 30 s (raceTheSwap's deadline) and removeWhileFilling's 30 s, each
 // of which also sets how long a load generator runs, so a removal that never stops its passes fails
 // with the case's own line rather than at the binary's timeout; the role-drain bounds handed to
-// role-init (roleDrainStaysBound); and the role stage's minute for a detached process to be gone
-// (detachedGoneWithin), whose "running" must leave the stage its time for the generations after it.
+// role-init (roleDrainStaysBound); and the role's minute for a detached process, to report its trap
+// to the agent and to be gone for the stage (detachedGoneWithin), whose answers must leave the stage
+// its time for the generations after it.
 func beforeDeadline(t *testing.T) time.Duration {
 	return testwait.Bounded(t, 1<<60, 30*time.Second)
 }
