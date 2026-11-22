@@ -1,19 +1,22 @@
-import { expect, test } from "bun:test"
+import { beforeEach, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { FakeNatsServer } from "./fake-nats-server"
+import { beforeTheGuard, collected, rowStarted } from "./row-deadline"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
 // The row waits for the server's registration and then for its exit, and decides on what the
-// listener was asked; a server that ends before it registers is named with its exit. Its `60_000`
-// is its hang guard, the package test script's own `--timeout` (`bun test --timeout=60000`,
-// package.json), given here so a run of this file alone has it too. A fixed 20 s decided it before:
-// at a load near 1,000 the server, writing Bun's transpiler cache into its empty HOME first
-// (`./transpiler-cache.ts`), had not registered in 20 s.
+// listener was asked; a server that ends before it registers is named with its exit, and a
+// registration or an exit that never comes fails the row by name before its hang guard, the
+// `60_000` it states (`./row-deadline.ts`). A fixed 20 s decided it before: at a load near 1,000
+// the server, writing Bun's transpiler cache into its empty HOME first (`./transpiler-cache.ts`),
+// had not registered in 20 s.
+beforeEach(rowStarted)
+
 test("a hangup from the Claude process group deregisters the session before the server exits", async () => {
   // tmux kill-session (and a closing terminal) hang up the whole process group;
   // the channel server shares it with `claude`, so SIGHUP arrives directly and
@@ -61,17 +64,28 @@ test("a hangup from the Claude process group deregisters the session before the 
     stdout: "pipe",
     stderr: "pipe",
   })
+  const stderr = collected(server.stderr)
+  const state = () => `the listener was asked [${calls.join(", ")}]; stderr: ${stderr.text()}`
 
   try {
-    await Promise.race([
-      registered.promise,
-      server.exited.then(async (code) => {
-        const stderr = await new Response(server.stderr).text()
-        throw new Error(`the channel server exited ${code} before it registered: ${stderr}`)
-      }),
-    ])
+    await beforeTheGuard(
+      Promise.race([
+        registered.promise,
+        server.exited.then(async (code) => {
+          throw new Error(
+            `the channel server exited ${code} before it registered: ${await stderr.ended}`,
+          )
+        }),
+      ]),
+      "the channel server's registration",
+      state,
+    )
     server.kill("SIGHUP")
-    const exitCode = await server.exited
+    const exitCode = await beforeTheGuard(
+      server.exited,
+      "the channel server's exit on SIGHUP",
+      state,
+    )
 
     expect(exitCode).toBe(0)
     expect(calls).toContain("DELETE /v1/sessions/ses_hangup")

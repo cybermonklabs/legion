@@ -1,8 +1,9 @@
-import { expect, test } from "bun:test"
+import { beforeEach, expect, test } from "bun:test"
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { collected, exitBeforeTheGuard, rowStarted } from "./row-deadline"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 import { unresolvedNames } from "./unresolved-names"
 
@@ -10,11 +11,13 @@ const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
 /** The Dispatch token the hook is handed, in its environment or in envoy.json. */
 const DISPATCH_TOKEN = fixtureSecret("dsp")
 
-// A row waits for its hooks to exit and decides on what they printed and wrote. A row that states
-// a limit states `60_000`, the package test script's own `--timeout` (`bun test --timeout=60000`,
-// package.json), so a run of this file alone has that hang guard too. Fixed limits of 20 s and
-// 30 s decided rows before: each hook first wrote Bun's transpiler cache into its empty HOME
-// (`./transpiler-cache.ts`), and at loads of 790 to 960 a hook did not exit within them.
+// A row waits for its hooks to exit and decides on what they printed and wrote. A hook that never
+// exits fails its row by name before the row's hang guard, the package test script's `--timeout`,
+// which a row that states a limit states as `60_000` so a run of this file alone has it too
+// (`./row-deadline.ts`). Fixed limits of 20 s and 30 s decided rows before: each hook first wrote
+// Bun's transpiler cache into its empty HOME (`./transpiler-cache.ts`), and at loads of 790 to 960
+// a hook did not exit within them.
+beforeEach(rowStarted)
 
 /** Runs the hook as Claude Code does, with `env` as its whole environment (and Bun's transpiler
  * cache off, `./transpiler-cache.ts`) and `preload` given to Bun first where set. The session's
@@ -32,12 +35,15 @@ async function runHook(
     stdout: "pipe",
     stderr: "pipe",
   })
-  const [exitCode, stdout, stderr] = await Promise.all([
-    run.exited,
-    new Response(run.stdout).text(),
-    new Response(run.stderr).text(),
-  ])
-  return { exitCode, stdout, stderr }
+  const stdout = collected(run.stdout)
+  const stderr = collected(run.stderr)
+  const exitCode = await exitBeforeTheGuard(
+    run,
+    "the open-asks hook",
+    () =>
+      `it wrote ${JSON.stringify(stdout.text())} to stdout, ${JSON.stringify(stderr.text())} to stderr`,
+  )
+  return { exitCode, stdout: await stdout.ended, stderr: await stderr.ended }
 }
 
 const hookInput = {

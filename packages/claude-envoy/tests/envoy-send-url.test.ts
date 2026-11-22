@@ -8,11 +8,12 @@
 // d-listener-url-userinfo, d-listener-env-userinfo, i-basic-listener-echo and
 // d-listener-url-at-in-password. Put it in packages/claude-envoy/tests/ and run
 // `bun test tests/envoy-send-url.test.ts` in packages/claude-envoy.
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { randomBytes } from "node:crypto"
 import { writeFileSync } from "node:fs"
 import * as path from "node:path"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
+import { collected, exitBeforeTheGuard, rowStarted } from "./row-deadline"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 import { unresolvedNames } from "./unresolved-names"
 
@@ -23,11 +24,11 @@ afterEach(() => {
 const tempDir = temporaryDirectories("envoy-send-url")
 const command = path.join(import.meta.dir, "..", "bin", "envoy-send.ts")
 
-// Each row waits for the send to end, and for nothing else: its `60_000` is its hang guard, the
-// package test script's own `--timeout` (`bun test --timeout=60000`, package.json), given here so
-// a run of this file alone has it too. A fixed 20 s decided the 401 row before: its child wrote
-// Bun's transpiler cache into its empty HOME first (`./transpiler-cache.ts`), and at a load of
-// about 900 it had not reached the listener in 20 s.
+// Each row waits for the send to end, and for nothing else; a send that never ends fails the row
+// by name before its hang guard, the `60_000` each row states (`./row-deadline.ts`). A fixed 20 s
+// decided the 401 row before: its child wrote Bun's transpiler cache into its empty HOME first
+// (`./transpiler-cache.ts`), and at a load of about 900 it had not reached the listener in 20 s.
+beforeEach(rowStarted)
 
 /** Runs envoy-send against `url` as the listener the session's envoy.json names, with `preload`
  *  given to Bun first where set. `ended` is how it ended: its exit code, or the signal that ended
@@ -54,13 +55,16 @@ async function send(
     stdout: "pipe",
     stderr: "pipe",
   })
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ])
+  const stdout = collected(child.stdout)
+  const stderr = collected(child.stderr)
+  const exitCode = await exitBeforeTheGuard(
+    child,
+    "envoy-send",
+    () =>
+      `it wrote ${JSON.stringify(stdout.text())} to stdout, ${JSON.stringify(stderr.text())} to stderr`,
+  )
   const ended = child.signalCode === null ? `exit ${exitCode}` : `signal ${child.signalCode}`
-  return { ended, exitCode, stderr, stdout }
+  return { ended, exitCode, stderr: await stderr.ended, stdout: await stdout.ended }
 }
 
 describe("envoy-send's failure line names no part of the listener URL's user info", () => {
