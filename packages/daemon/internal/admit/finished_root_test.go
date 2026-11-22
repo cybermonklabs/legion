@@ -466,7 +466,8 @@ func TestACarriedRootResumesFromTheApprovedHeadAndTheHold(t *testing.T) {
 			}
 			if tc.hold == nil {
 				// The merger is no longer told an approved head: Legion re-implements none of a
-				// repository's rules, so no role compares a head with the one a review approved
+				// repository's rules, so, outside a forward merge of the base, no role compares a head with
+				// the one a review approved
 				// (dispatch://INFRA-714 R2). A carried root's merger is resumed into the phase it
 				// stood in, and the merge it makes is the head it reads for itself.
 				want := "Continue " + child + ". Issue: " + child + ". Phase: merging. Resume the existing phase work."

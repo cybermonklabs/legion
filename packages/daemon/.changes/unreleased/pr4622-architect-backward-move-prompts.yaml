@@ -15,4 +15,5 @@ body: |-
   closed, where it is not the tree's root. The reviewer's and the merger's prompts no longer say
   that nothing holds the head that merges to the head the reviewer approved: a forward merge past
   the review is the exception, and the reviewer's prompt also excepts a backward move from its "no
-  implementation or further review change" after approval.
+  implementation or further review change" after approval and from "your approved head is the head
+  the merger merges".

@@ -7,5 +7,5 @@ body: |-
   them, and `legion-oracle` drops its pointer to `default-branch-check.md`. `legion-worker`'s
   reference list again names the act that sends a merger to `merge-gate.md`, and `legion-worker`,
   `legion-architect` and `legion-controller` correct the sentences that were false against the
-  code. `legion-retro` excepts a forward merge of the base from "No Legion check compares the head
-  that merges with the one the review approved".
+  code. `legion-retro` excepts a forward merge of the base and a backward move from "No Legion
+  check compares the head that merges with the one the review approved".

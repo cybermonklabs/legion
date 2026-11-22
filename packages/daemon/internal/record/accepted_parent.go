@@ -80,7 +80,7 @@ func byKey(members []Issue) map[string]Issue {
 // The close this exclusion allows does not strand the issue it excluded: the expiry of the
 // closed tree's linger hands every member that is in the workflow and never started to Legion
 // as a root of its own (workflow's unfinishedHandOvers), whatever held it there, so the work a
-// person asked for runs once that linger ends. This is the one recorded departure from
+// person asked for is handed over once that linger ends. This is the one recorded departure from
 // the spec of dispatch://INFRA-980, decided by that tree's architect
 // (dispatch://INFRA-980/comment/d642164a-31d2-4d6c-ae5e-4da5dd0b9104).
 func OpenBeneath(issue Issue, members []Issue) []string {
