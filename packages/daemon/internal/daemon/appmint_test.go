@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -533,43 +534,70 @@ func commandTokensWith(t *testing.T, answer func(w http.ResponseWriter, r *http.
 	}, appauth.Options{BaseURL: server.URL, HTTPClient: server.Client(), Stderr: io.Discard})
 }
 
+// keyProofHolds is a token source whose InstalledOwners, the boot's key proof (proveAppKeys, its
+// one caller before the daemon serves a launch), first writes the file begun, so a token_command
+// can hold each release asked for once the key proof has begun and none the App logins read asked
+// for, whatever the number of runs the logins read made: an attempt of the logins read that ends
+// after it took a role's release, as one can on a loaded box past appMintAttempt, runs the command
+// again on its next attempt for every role, the roles it already read among them
+// (appLoginsAtBoot).
+type keyProofHolds struct {
+	*appauth.Manager
+	begun string
+}
+
+func (k *keyProofHolds) InstalledOwners(ctx context.Context, role appauth.AppRole) ([]string, error) {
+	if err := os.WriteFile(k.begun, nil, 0o644); err != nil {
+		return nil, err
+	}
+	return k.Manager.InstalledOwners(ctx, role)
+}
+
 // A token_command still running when an attempt of the boot's key proof ends holds the boot
 // without ending it, however many attempt bounds it outlasts: a grant may wait on a person's
 // approval. Each such attempt is pending and spends no attempt of appMintRetry
 // (appauth.ErrCommandPending, appAttempt), the next attempt joins the command's run still going
 // (appauth.Manager.InstalledOwners, whose token-mode read is runTokenCommand's), and once the
 // command prints its release the key proof passes and the boot serves. Here each App's
-// token_command answers the logins read at once, and holds the key proof's release of every
-// installation for twice the bounds of all appMintRetry's attempts. Control: with InstalledOwners
-// answering its caller's bare ctx.Err() in token mode too, as it did before INFRA-4401's review
-// 5996655281, each attempt the bound ends is transient, and the boot refuses once the three are
-// spent, naming the key proof's context deadline exceeded.
+// token_command holds each release of every installation the key proof asks for (keyProofHolds)
+// for twice the bounds of all appMintRetry's attempts and writes the hold down, so each App's
+// command holds one run: the key proof's attempts join it. It holds no release the logins read
+// asked for; an attempt of the logins read may still outlast its bound on a loaded box, pending
+// or transient, which is the boot doing its job, so no line of the logins read is counted.
+// Control: with InstalledOwners answering its caller's bare ctx.Err() in token mode too, as it did
+// before INFRA-4401's review 5996655281, each attempt the bound ends is transient, and the boot
+// refuses once the three are spent, naming the key proof's context deadline exceeded.
 func TestABootWaitsForATokenCommandThatOutlastsEveryAttemptOfTheKeyProof(t *testing.T) {
 	quickAppMints(t)
 	hold := 2 * time.Duration(appMintRetry.Attempts) * appMintAttempt
 	dir := t.TempDir()
-	tokens := commandTokensWith(t, func(http.ResponseWriter, *http.Request) bool { return false }, func(role appauth.AppRole) string {
-		// The runs that name no owner are the logins read's, then the key proof's, which holds.
-		runs := filepath.Join(dir, string(role)+".runs")
-		return fmt.Sprintf(`if [ -z "${%s}" ]; then echo run >>%q; [ "$(( $(wc -l <%q) ))" -ne 2 ] || sleep %.3f; fi; `,
-			appauth.TokenCommandOwner, runs, runs, hold.Seconds())
+	begun := filepath.Join(dir, "key-proof-begun")
+	held := func(role appauth.AppRole) string { return filepath.Join(dir, string(role)+".held") }
+	manager := commandTokensWith(t, func(http.ResponseWriter, *http.Request) bool { return false }, func(role appauth.AppRole) string {
+		return fmt.Sprintf(`if [ -z "${%s}" ] && [ -e %q ]; then echo held >>%q; sleep %.3f; fi; `,
+			appauth.TokenCommandOwner, begun, held(role), hold.Seconds())
 	})
 	logs := &syncBuffer{}
 	started := time.Now()
-	if err := bootsOrExitsLogging(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil))); err != nil {
+	if err := bootsOrExitsLogging(t, workflowConfig(t, workflowNATS(t)), &keyProofHolds{Manager: manager, begun: begun}, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil))); err != nil {
 		t.Fatalf("boot = %v, want it to wait for the token_command past every attempt of the key proof and serve", err)
 	}
 	if took := time.Since(started); took < hold {
 		t.Errorf("the daemon served %s after it started, want after the key proof's command held %s", took, hold)
 	}
+	for _, role := range appauth.Roles {
+		runs, err := os.ReadFile(held(role))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("read the %s App's held runs: %v", role, err)
+		}
+		if n := strings.Count(string(runs), "held\n"); n != 1 {
+			t.Errorf("the %s App's token_command held %d runs for the key proof, want one: each attempt after the first joins the run still going", role, n)
+		}
+	}
 	byProbe := func(lines []map[string]any, probe string) []map[string]any {
 		return slices.DeleteFunc(lines, func(line map[string]any) bool { return line["probe"] != probe })
 	}
-	pending := loggedMessages(t, logs.String(), "boot probe's work is still running")
-	if logins := byProbe(slices.Clone(pending), "GitHub App logins read"); len(logins) != 0 {
-		t.Errorf("the logins read was pending %d times, want never: its command answers at once", len(logins))
-	}
-	proof := byProbe(pending, "GitHub App key proof")
+	proof := byProbe(loggedMessages(t, logs.String(), "boot probe's work is still running"), "GitHub App key proof")
 	if len(proof) <= appMintRetry.Attempts {
 		t.Fatalf("the key proof was pending %d times, want more than appMintRetry's %d attempts", len(proof), appMintRetry.Attempts)
 	}
