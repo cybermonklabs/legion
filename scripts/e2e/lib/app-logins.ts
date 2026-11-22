@@ -150,7 +150,7 @@ export const DEFAULT_DRAIN_LIMIT_MS = 5000;
  * longer one fires at once (Bun 1.4.4: a 2^31 ms setTimeout fired after 10 ms), so a longer
  * bound would end every drain at the exit. */
 export const MAX_DRAIN_LIMIT_MS = 2 ** 31 - 1;
-let drainLimitMs = DEFAULT_DRAIN_LIMIT_MS;
+let drainLimitMs = 2000; // CONTROL: the default not used
 /** The GitHub token forms, which a command's stderr may carry and no log or error may. */
 const tokenPattern = /(gh[opsur]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})/g;
 /** A GitHub account login: what a release may name an installation by (internal/appauth,
@@ -346,7 +346,7 @@ async function runCredentialCommand(
   const armDrain = (ms: number) => {
     drainTimer = setTimeout(() => {
       // blockedMs grows while the timer waits, so a firing that is early re-arms for the rest.
-      const left = exitedAt + drainLimitMs + (blockedMs - blockedAtExit) - performance.now();
+      const left = exitedAt + drainLimitMs + blockedMs - performance.now(); // CONTROL: every block since the spawn
       if (left <= 0) drainWait.resolve(false);
       else armDrain(left);
     }, ms);
