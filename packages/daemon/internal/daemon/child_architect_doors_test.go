@@ -145,10 +145,9 @@ func (r *childArchitectRig) apply(id string, fact intake.Fact) {
 }
 
 // written is a route of the daemon's own write of the child's status in Dispatch — an architect's
-// release_children, park_child or rerun_child — as Dispatch answered it (issue), and the fact
-// the route then applies (api's recordOwnStatusWrite): Dispatch's view of the issue, which applies
-// to an issue the record does not hold, carrying the write's own event, which applies to one it
-// holds.
+// release_children or rerun_child — as Dispatch answered it (issue), and the fact the route then
+// applies (api's recordOwnStatusWrite): Dispatch's view of the issue, which applies to an issue the
+// record does not hold, carrying the write's own event, which applies to one it holds.
 func (r *childArchitectRig) written(id string, issue dispatch.Issue) {
 	r.t.Helper()
 	r.dispatch.issue = issue
