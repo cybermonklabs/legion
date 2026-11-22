@@ -2820,7 +2820,7 @@ Its outputs are `serviceArn`, `serviceName`, `logGroupName`, `taskDefinitionArn`
 | `seedSecretArn` | unset | The secret holding the seed of the NATS user the listener connects as. Unset, it connects with none. |
 | `webhooks` | required | The webhooks the listener serves: `["github", "slack"]`, or `[]` for none. With `[]` the container carries no webhook's setting or secret, and the listener mounts no webhook route. This version takes no other list. |
 | `githubWebhookSecretArn`, `reviewerAppId`, `mentionTrigger` | with `github` | Required while `webhooks` lists `github`, refused while it does not. |
-| `verdictAppId` | optional, with `github` | The App whose own check suites the listener leaves out of the CI record. Written only when given; refused blank, and refused while `webhooks` does not list `github`. |
+| `verdictAppId` | optional, with `github` | The App whose own check suites the listener leaves out of the CI record. Written only when given; refused blank, refused when it is not a GitHub App id (a whole number above 0 with no leading zero), and refused while `webhooks` does not list `github`. |
 | `slackSigningSecretArn` | with `slack` | Required while `webhooks` lists `slack`, refused while it does not. |
 | `clusterArn`, `executionRoleArn`, `taskRoleArn` | required | The ECS cluster and the task's two roles. |
 | `executionRoleName` | required | The execution role's name, which the read policies attach to. |

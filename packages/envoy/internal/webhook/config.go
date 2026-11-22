@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/ghrename"
 )
 
@@ -74,11 +75,17 @@ func LoadWebhookConfig() (*WebhookConfig, error) {
 			if reviewerAppID == "" {
 				return nil, fmt.Errorf("ENVOY_REVIEWER_APP_ID required when github enabled")
 			}
+			// A verdict App id that is not a GitHub App's would match no suite and leave the
+			// filter off without a word, so it refuses the start; unset or blank is no verdict App.
+			verdictAppID := strings.TrimSpace(os.Getenv("ENVOY_VERDICT_APP_ID"))
+			if verdictAppID != "" && !contracts.IsGithubAppID(verdictAppID) {
+				return nil, fmt.Errorf("ENVOY_VERDICT_APP_ID %q is not a GitHub App id: a whole number above 0, with no leading zero; leave it unset for no verdict App", verdictAppID)
+			}
 			cfg.GitHub = &GitHubWebhook{
 				Secret:            secret,
 				MentionTrigger:    trigger,
 				ReviewerAppID:     reviewerAppID,
-				VerdictAppID:      strings.TrimSpace(os.Getenv("ENVOY_VERDICT_APP_ID")),
+				VerdictAppID:      verdictAppID,
 				RepositoryRenames: renames,
 			}
 		case "slack":

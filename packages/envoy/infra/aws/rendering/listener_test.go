@@ -25,7 +25,9 @@ func listenerEnv() rendering.ListenerEnv {
 }
 
 // withoutGitHub drops github's own inputs, as a listener that does not list github gives none.
-func withoutGitHub(e *rendering.ListenerEnv) { e.ReviewerAppId, e.VerdictAppId, e.MentionTrigger = nil, nil, nil }
+func withoutGitHub(e *rendering.ListenerEnv) {
+	e.ReviewerAppId, e.VerdictAppId, e.MentionTrigger = nil, nil, nil
+}
 
 // Check refuses each value the listener cannot run on, naming its input. This is the one table of
 // these refusals: aws:WebhookListener tests that its validate runs Check, and `envoy-infra render
@@ -85,6 +87,16 @@ func TestListenerEnvCheck(t *testing.T) {
 			name:   "github with a blank verdictAppId",
 			mutate: func(e *rendering.ListenerEnv) { e.VerdictAppId = appID(" ") },
 			input:  "verdictAppId", err: "verdictAppId is blank: give the verdict App's id, or leave it out",
+		},
+		{
+			name:   "github with a verdictAppId that is not a number",
+			mutate: func(e *rendering.ListenerEnv) { e.VerdictAppId = appID("not-a-number") },
+			input:  "verdictAppId", err: `verdictAppId "not-a-number" is not a GitHub App id: a whole number above 0, with no leading zero`,
+		},
+		{
+			name:   "github with a verdictAppId with a leading zero",
+			mutate: func(e *rendering.ListenerEnv) { e.VerdictAppId = appID("05341240") },
+			input:  "verdictAppId", err: `verdictAppId "05341240" is not a GitHub App id`,
 		},
 		{
 			name: "a verdictAppId with github unlisted",

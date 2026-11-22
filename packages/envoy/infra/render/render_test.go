@@ -729,6 +729,11 @@ func TestWebhookListenerEnvRefusals(t *testing.T) {
 			args: listenerFlags([]string{"reviewer-app-id"}, "--reviewer-app-id", "123\n4567"),
 			want: "refused: --reviewer-app-id: holds a line break, which a KEY=value line cannot carry",
 		},
+		{
+			name: "a --verdict-app-id that is not a GitHub App id",
+			args: listenerFlags(nil, "--verdict-app-id", "not-a-number"),
+			want: `refused: --verdict-app-id: verdictAppId "not-a-number" is not a GitHub App id: a whole number above 0, with no leading zero`,
+		},
 		// Usage errors.
 		{
 			name: "no --machine-id", usage: true,
@@ -858,6 +863,7 @@ func TestRenderNeverEchoesASeed(t *testing.T) {
 			want: "refused: --nats-url" + seedFlag,
 		},
 		{name: "--reviewer-app-id", args: listenerFlags([]string{"reviewer-app-id"}, "--reviewer-app-id", testSeed), want: "refused: --reviewer-app-id" + seedFlag},
+		{name: "--verdict-app-id", args: listenerFlags(nil, "--verdict-app-id", testSeed), want: "refused: --verdict-app-id" + seedFlag},
 		{name: "--mention-trigger", args: listenerFlags([]string{"mention-trigger"}, "--mention-trigger", "@"+testSeed), want: "refused: --mention-trigger" + seedFlag},
 		{name: "--listen-host", args: listenerFlags([]string{"listen-host"}, "--listen-host", testSeed), want: "refused: --listen-host" + seedFlag},
 		{name: "--machine-id, lowercase", args: listenerFlags([]string{"machine-id"}, "--machine-id", lower), want: "refused: --machine-id" + seedFlag},

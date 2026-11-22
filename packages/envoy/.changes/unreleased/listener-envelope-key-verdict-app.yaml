@@ -1,8 +1,0 @@
-kind: Added
-body: |-
-  `ENVOY_VERDICT_APP_ID` names the App that writes `legion-verdict`. The listener leaves that App's
-  own check suites out of the CI record in every action, and logs
-  `ci: left out the verdict App's own check suite` for each, so a head settles beside the queued
-  suite GitHub makes the App on each push; another App's queued suite still holds the head. Unset,
-  nothing changes. `aws:WebhookListener` takes it as the optional input `verdictAppId`, and
-  `envoy-infra render webhook-listener-env` as `--verdict-app-id`.

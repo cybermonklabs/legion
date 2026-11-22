@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 const (
@@ -46,12 +47,12 @@ func WebhookOwner(webhooks []string, name string) Owner {
 // is made of. The component checks it and writes its Variables into the container definitions;
 // `envoy-infra render webhook-listener-env` checks and prints it the same way.
 type ListenerEnv struct {
-	MachineID      string
-	NatsUrls       []string
-	ListenHost     string
-	NatsReplicas   int
-	Webhooks       []string
-	ReviewerAppId  *string // written only with github
+	MachineID     string
+	NatsUrls      []string
+	ListenHost    string
+	NatsReplicas  int
+	Webhooks      []string
+	ReviewerAppId *string // written only with github
 	// VerdictAppId is the verdict App's id, ENVOY_VERDICT_APP_ID, whose own check suites the
 	// listener leaves out of the CI record. It is optional, and written only with github and only
 	// when given.
@@ -81,13 +82,17 @@ func (e ListenerEnv) Check() error {
 		return err
 	}
 	// The verdict App's id is optional: without it the listener leaves no App's suites out. Given,
-	// it is github's like the two above, and a blank one would write an empty variable.
+	// it is github's like the two above, a blank one would write an empty variable, and one that is
+	// not a GitHub App's id would stop the listener at start (webhook.LoadWebhookConfig).
 	if e.VerdictAppId != nil {
 		if !github.Present {
 			return core.InputErrorf("verdictAppId", "verdictAppId is given for %s, %s", github.Name, github.Absent)
 		}
 		if !set(e.VerdictAppId) {
 			return core.InputErrorf("verdictAppId", "verdictAppId is blank: give the verdict App's id, or leave it out")
+		}
+		if !contracts.IsGithubAppID(*e.VerdictAppId) {
+			return core.InputErrorf("verdictAppId", "verdictAppId %q is not a GitHub App id: a whole number above 0, with no leading zero", *e.VerdictAppId)
 		}
 	}
 	if !slices.ContainsFunc(supportedWebhooks, func(w []string) bool { return slices.Equal(e.Webhooks, w) }) {

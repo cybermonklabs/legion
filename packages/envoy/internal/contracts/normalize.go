@@ -169,6 +169,22 @@ func VerdictAppsOwnSuite(observation CIObservation, verdictAppID string) bool {
 	return verdictAppID != "" && observation.CheckName == "" && observation.AppID == verdictAppID
 }
 
+// IsGithubAppID reports whether id is a GitHub App's id as GitHub's JSON gives it and an
+// observation's AppID writes it (nestedNumberString): a whole number above 0, in decimal digits
+// with no leading zero. Any other id would match no App's suite, so a verdict App setting of one
+// is refused rather than read as a filter that leaves nothing out.
+func IsGithubAppID(id string) bool {
+	if id == "" || id[0] == '0' {
+		return false
+	}
+	for _, digit := range []byte(id) {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // githubCount is a count GitHub gives as a JSON number, which a decoded body holds as a float64,
 // and nil for anything that is no whole number of zero or more: absent, null, negative,
 // fractional, or a string. GitHub caps a check suite at 50,000 check runs, so a value past
