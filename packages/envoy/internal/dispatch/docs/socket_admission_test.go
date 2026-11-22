@@ -729,8 +729,8 @@ func TestTheUpgradeThroughTheProcessHeaderWriterNamesTheProcess(t *testing.T) {
 		t.Fatalf("dial the socket: %v", err)
 	}
 	t.Cleanup(func() { _ = connection.Close() })
-	if served := response.Header.Get(ProcessHeader); served != "task-a" {
-		t.Fatalf("the upgrade names %q as its process, want task-a; header %v", served, response.Header)
+	if served := response.Header.Values(ProcessHeader); !slices.Equal(served, []string{"task-a"}) {
+		t.Fatalf("the upgrade names %q as its process, want exactly [task-a]; header %v", served, response.Header)
 	}
 	if err := connection.WriteMessage(gws.BinaryMessage, []byte("frame")); err != nil {
 		t.Fatalf("write a frame: %v", err)
