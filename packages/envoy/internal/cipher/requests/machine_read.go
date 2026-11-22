@@ -1810,10 +1810,13 @@ const listOwnRowsBound = 3 * time.Second
 // Questions of Dispatch are bounded apart from it, at MaySeeAtOnce for the whole list
 // (withAccessMemo), and a row waiting on another row's question holds none. A row waiting on a
 // project Dispatch does not answer does hold its place here until the list's clock runs out
-// (listOwnRowsBound), so the bound is also how many such rows a list takes before they cost it any
-// other: when the rows read first that wait on a project Dispatch does not answer take all 64
-// places, every row after them starts only once that clock has run out, and is listed only if the
-// list or the client already holds the answers it needs.
+// (listOwnRowsBound). So when the first 64 of the reader's own rows a list reads all wait on such
+// a project, every own row after them starts only once that clock has run out, and is listed only
+// where it asks Dispatch nothing or the list or the client already holds every answer it needs. In
+// the pending list the reads of the rows that name another person take one of the 64 places while
+// they run, at most listFallbackBound (2 s): for that long 63 of the reader's own rows are read at
+// once, and an own row behind 63 such rows starts when those reads end, with the rest of the 3 s
+// clock left for its questions.
 const listRowsAtOnce = 64
 
 // rowVerdict is what a list read of one row: whether its reader may see it, or why that could not

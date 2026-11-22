@@ -584,13 +584,16 @@ func UnderJudgeDispatch(ctx context.Context) bool {
 // no project-access client, and its reason is a private project's text as much as any other's. A
 // reason is at most record.MaxReasonRunes (400) runes, and each issue key takes at least five of
 // them with the rune that parts it from the next ("AB-1 "), so a stored reason names at most 80
-// projects. They are asked MaySeeAtOnce at a time, and the first answer that hides the row ends
-// the questions not yet answered, since nothing they answer could show it. Within one list each
-// question is asked once however many rows ask it, a question a row asked before a project hid it
-// included, and the list as a whole asks Dispatch at most MaySeeAtOnce questions at a time
-// (withAccessMemo, access). Every project is asked whatever ctx's state, so once ctx has ended a
-// project the list or the client already holds an answer for is still answered, and only a
-// question Dispatch would have to be asked now fails. The answer is deterministic whatever order
+// projects. They are asked MaySeeAtOnce at a time. Once an answer hides the row, no question not
+// yet started is asked, since nothing it answers could show the row, and the row's wait on each
+// question still in flight ends. Outside a list such a question ends with that wait; inside one, a
+// question this row asked first goes on, on the list's clock (accessMemo.start), for the other
+// rows that wait on it. So within one list each question is asked once however many rows ask it,
+// a question a row asked before a project hid it included, and the list as a whole asks Dispatch
+// at most MaySeeAtOnce questions at a time (withAccessMemo, access). Short of an answer that hides
+// the row, every project is asked whatever ctx's state, so once ctx has ended a project the list or
+// the client already holds an answer for is still answered, and only a question Dispatch would
+// have to be asked now fails. The answer is deterministic whatever order
 // the questions end in (maySeeAnswer): false when any project hides the row; else
 // ErrProjectAccessUnavailable, with the failure of the first project in sorted order that Dispatch
 // did not answer for, when any did not, a project no read answered being one; else true. So a

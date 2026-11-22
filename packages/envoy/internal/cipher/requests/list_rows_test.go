@@ -233,14 +233,15 @@ func (publicAnswers) States(context.Context, []string) (map[string]projectaccess
 
 // TestARowWaitingOnAnotherRowsQuestionHoldsNoSlot: on one list's memo, under its 3 s clock, 20
 // rows name SLOW, which Dispatch holds until the clock ends. The first row asks it, in one of the
-// list's MaySeeAtOnce (16) slots, and the others wait on its question. Once 15 of them wait (the
-// memo's joined hook says so), a row naming TEAM asks: a waiting row holds no slot, so TEAM's
-// question takes one of the 15 left and the row is shown at once, while SLOW is still asked once.
-// Were a waiting row to take a slot, the 15 would hold every slot the question leaves, TEAM's
-// question could take none before the clock ran out, and the row would be
-// ErrProjectAccessUnavailable.
+// list's MaySeeAtOnce (16) slots, and the others wait on its question. Once the question has
+// reached Dispatch (stallFor's arrived) and 15 rows wait on it (the memo's joined hook), a row
+// naming TEAM asks: a waiting row holds no slot, so TEAM's question takes one of the 15 left and
+// the row is shown at once. SLOW is asked once: the count is read while the question is still in
+// flight, before the clock ends, when no waiting row can ask it again. Were a waiting row to take a
+// slot, the 15 would hold every slot the question leaves, TEAM's question could take none before
+// the clock ran out, and the row would be ErrProjectAccessUnavailable.
 func TestARowWaitingOnAnotherRowsQuestionHoldsNoSlot(t *testing.T) {
-	stall := &stallFor{inner: publicAnswers{}, project: stalledProject, hold: time.Hour}
+	stall := &stallFor{inner: publicAnswers{}, project: stalledProject, hold: time.Hour, arrived: make(chan struct{}, 1)}
 	m := &Machine{Projects: stall}
 	clock, cancel := context.WithTimeout(t.Context(), listOwnRowsBound)
 	defer cancel()
@@ -251,19 +252,25 @@ func TestARowWaitingOnAnotherRowsQuestionHoldsNoSlot(t *testing.T) {
 	for range 20 {
 		slow.Go(func() { _, _, _ = m.maySee(list, outsider, nil, stalledProject+"-1: rotate the slow key") })
 	}
+	select {
+	case <-stall.arrived:
+	case <-clock.Done():
+		t.Fatal("the question about SLOW did not reach Dispatch before the list's clock ended")
+	}
 	for range MaySeeAtOnce - 1 {
 		<-joined
 	}
 
 	shown, _, err := m.maySee(list, outsider, nil, teamProject+"-1: rotate the deploy key")
+	asked := stall.stalled.Load()
 	cancel()
 	slow.Wait()
 
 	if !shown || err != nil {
 		t.Errorf("maySee(the row naming TEAM-1) while 15 rows wait on SLOW = %v, %v; want true, nil: a waiting row holds no slot", shown, err)
 	}
-	if n := stall.stalled.Load(); n != 1 {
-		t.Errorf("Dispatch was asked about SLOW %d times; want once, however many rows name it", n)
+	if asked != 1 {
+		t.Errorf("Dispatch was asked about SLOW %d times; want once, however many rows name it", asked)
 	}
 }
 

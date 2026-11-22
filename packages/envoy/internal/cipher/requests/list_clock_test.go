@@ -22,13 +22,16 @@ const stalledProject = "SLOW"
 // stallFor is a projectaccess.Access that holds every access question about project for hold, or
 // until its caller's context ends, and then answers the deadline error the client answers when
 // Dispatch says nothing within its own bound; every other question goes to inner. stalled counts
-// the questions it held. A question on a context that has already ended is answered its error at
-// once and not counted, as the client answers one without asking Dispatch.
+// the questions it held, and arrived, where set, is sent to (without blocking, so give it room)
+// once each is counted, so a test can wait for a question to reach Dispatch rather than for the
+// rows that asked it. A question on a context that has already ended is answered its error at once
+// and not counted, as the client answers one without asking Dispatch.
 type stallFor struct {
 	inner   projectaccess.Access
 	project string
 	hold    time.Duration
 	stalled atomic.Int32
+	arrived chan struct{}
 }
 
 func (s *stallFor) Access(ctx context.Context, project, person string) (projectaccess.Answer, error) {
@@ -39,6 +42,10 @@ func (s *stallFor) Access(ctx context.Context, project, person string) (projecta
 		return projectaccess.Answer{}, err
 	}
 	s.stalled.Add(1)
+	select {
+	case s.arrived <- struct{}{}:
+	default:
+	}
 	select {
 	case <-time.After(s.hold):
 		return projectaccess.Answer{}, fmt.Errorf("dispatchread: ask dispatch: %w", context.DeadlineExceeded)

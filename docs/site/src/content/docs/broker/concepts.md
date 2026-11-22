@@ -743,10 +743,15 @@ requests waiting on its reader, and of its grants, at once, asking Dispatch at m
 at once: a request whose answers have not come by then is left out of that list and logged the
 same way. A request waiting on a question another request asked takes none of those 16, so a
 project Dispatch is slow to answer, or never answers, costs a list only the requests that name
-it, unless they are the first 64 it reads: the requests after those start only once the 3 seconds
-have run out, and are listed only where the broker already holds their answers. A read of a
-request that fails in the broker itself leaves that request out in the same way, with an error
-line naming it, and the list goes on. Every other request is listed and decided
+it, unless they are the first 64 waiting on its reader that it reads. A request waiting on such a
+project keeps its place until the 3 seconds have run out, so the requests after those 64 start
+only then, and each is listed only where it asks Dispatch nothing or the broker already holds
+every answer it needs. While the pending list reads the requests that name someone else as
+responsible, for at most 2 seconds, those reads take one of the 64 places between them, so for
+that long 63 of the requests waiting on its reader are read at once; a request behind 63 such
+requests starts when those reads end, inside the 3 seconds. A read of a request that fails in
+the broker itself leaves that request out in the same way, with an error line naming it, and the
+list goes on. Every other request is listed and decided
 as before. A decision reads the projects of both credentials a request has had:
 the one that asked, which the lists and the page read, and the one it hangs off now, which a
 session that moved to another box makes it; a person either would hide it from does not decide
