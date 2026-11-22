@@ -175,24 +175,24 @@ func (g *firstReplaceGate) AcceptSuggestion(ctx context.Context, artifactID, mar
 }
 
 // waitForSecondReplacementOrCommentLock waits until the second accept reaches the document service
-// or waits on a lock in the test's own database. Its one bound is the test binary's deadline
-// (waitUntil): a request a loaded machine runs late still ends the wait.
-func waitForSecondReplacementOrCommentLock(t *testing.T, database *store.Store, secondReplacement <-chan struct{}) {
+// or its backend, second, queues behind a lock the first accept's backend, first, holds
+// (storetest.QueuedBehindBackend). Each accept runs on a connection of its own
+// (oneConnectionHandler), so no other session waiting on a lock is taken for the second accept.
+// Its one bound is the test binary's deadline (waitUntil): a request a loaded machine runs late
+// still ends the wait.
+func waitForSecondReplacementOrCommentLock(t *testing.T, database *store.Store, first, second uint32, secondReplacement <-chan struct{}) {
 	t.Helper()
-	waitUntil(t, "the second accept to reach the document service or wait for the comment lock", func() bool {
+	waitUntil(t, "the second accept to reach the document service or queue behind the first's comment lock", func() bool {
 		select {
 		case <-secondReplacement:
 			return true
 		default:
 		}
-		var waiting int
-		if err := database.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'
-		`).Scan(&waiting); err != nil {
-			t.Fatalf("inspect database locks: %v", err)
+		queued, err := storetest.QueuedBehindBackend(context.Background(), database, first, second)
+		if err != nil {
+			t.Fatal(err)
 		}
-		return waiting > 0
+		return queued
 	})
 }
 
@@ -395,8 +395,9 @@ func TestListIssueAsksFiltersByState(t *testing.T) {
 
 func TestAnswerAskLocksIssueBeforeAskRow(t *testing.T) {
 	// The seeded spec's settlement would take the issue's owner lock this test holds; keep it
-	// out of the lock queue so the counted waiter is the answer handler.
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	// out of the lock queue. The answer runs on a connection of its own, so the wait below watches
+	// the answer's backend alone, whatever else queues behind the edit.
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "Answer lock order", "A spec")
 	created := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
 		"question": "Can this be answered?", "actor": sessionActor(),
@@ -416,13 +417,16 @@ func TestAnswerAskLocksIssueBeforeAskRow(t *testing.T) {
 	if err := store.LockOwner(context.Background(), edit, store.IssueOwner(issue.Key)); err != nil {
 		t.Fatalf("take the issue's owner lock for edit: %v", err)
 	}
+	answerHandler, answerPID := oneConnectionHandler(t, deps)
 	responses := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		responses <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+ask.ID+"/answer", map[string]any{
+		responses <- dispatchRequest(t, answerHandler, http.MethodPost, "/api/v1/asks/"+ask.ID+"/answer", map[string]any{
 			"text": "Yes.",
 		}, "alice")
 	}()
-	waitForDatabaseLocks(t, edit, 1)
+	if response, early := storetest.WaitForQueuedBehind(t, edit, answerPID, responses); early {
+		t.Fatalf("the answer answered status=%d body=%s before it queued behind the issue's owner lock", response.Code, response.Body.String())
+	}
 	if _, err := edit.Exec(context.Background(), `update asks set anchor = anchor where id = $1`, ask.ID); err != nil {
 		t.Fatalf("edit anchors while answer awaits issue lock: %v", err)
 	}
@@ -1541,7 +1545,7 @@ func TestUploadClearsItsUploaderBeforeNextVersion(t *testing.T) {
 func TestConcurrentSuggestionAcceptAppliesReplacementExactlyOnce(t *testing.T) {
 	var documentService *docs.Service
 	var gate *firstReplaceGate
-	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+	handler, database, deps := newInteractionDeps(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 		gate = &firstReplaceGate{
@@ -1549,9 +1553,14 @@ func TestConcurrentSuggestionAcceptAppliesReplacementExactlyOnce(t *testing.T) {
 		}
 		return gate
 	})
+	// Each accept runs on a connection of its own, so the wait below reads the second's backend
+	// waiting on the first's, and no other session waiting on a lock is taken for it.
+	firstHandler, firstPID := oneConnectionHandler(t, deps)
+	secondHandler, secondPID := oneConnectionHandler(t, deps)
 	// The first accept waits at the gate until the test lets it go, holding its transaction's
-	// pooled connection. A test that fails before then lets it go as it ends: the cleanups that run
-	// after this one, the pool's close among them, would otherwise wait on that connection for ever.
+	// connection. A test that fails before then lets it go as it ends: the cleanups that run after
+	// this one, the close of that accept's own pool among them, would otherwise wait on that
+	// connection for ever.
 	releaseFirst := sync.OnceFunc(func() { close(gate.releaseFirst) })
 	t.Cleanup(releaseFirst)
 	issue := createInteractionIssue(t, handler, "TEST", "Concurrent accepts", "foo")
@@ -1565,13 +1574,13 @@ func TestConcurrentSuggestionAcceptAppliesReplacementExactlyOnce(t *testing.T) {
 
 	responses := make(chan *httptest.ResponseRecorder, 2)
 	go func() {
-		responses <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")
+		responses <- dispatchRequest(t, firstHandler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")
 	}()
 	testwait.Receive(t, "the first acceptance's arrival at the document replacement", gate.firstEntered)
 	go func() {
-		responses <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")
+		responses <- dispatchRequest(t, secondHandler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")
 	}()
-	waitForSecondReplacementOrCommentLock(t, database, gate.secondEntered)
+	waitForSecondReplacementOrCommentLock(t, database, firstPID, secondPID, gate.secondEntered)
 	releaseFirst()
 
 	var success, conflict int
@@ -1600,7 +1609,7 @@ func TestConcurrentSuggestionAcceptAppliesReplacementExactlyOnce(t *testing.T) {
 
 func TestSuggestionAcceptChecksClosureBeforeApplyingReplacement(t *testing.T) {
 	var documentService *docs.Service
-	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+	handler, database, deps := newInteractionDeps(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 		return documentService
@@ -1623,11 +1632,16 @@ func TestSuggestionAcceptChecksClosureBeforeApplyingReplacement(t *testing.T) {
 	if err := store.LockOwner(context.Background(), blocker, store.IssueOwner(issue.Key)); err != nil {
 		t.Fatalf("take the issue's owner lock: %v", err)
 	}
+	// The accept runs on a connection of its own, so the wait below watches its backend alone,
+	// whatever else queues behind the blocker.
+	acceptHandler, acceptPID := oneConnectionHandler(t, deps)
 	responses := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		responses <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")
+		responses <- dispatchRequest(t, acceptHandler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")
 	}()
-	waitForDatabaseLocks(t, blocker, 1)
+	if response, early := storetest.WaitForQueuedBehind(t, blocker, acceptPID, responses); early {
+		t.Fatalf("the accept answered status=%d body=%s before it queued behind the issue's owner lock", response.Code, response.Body.String())
+	}
 	if _, err := blocker.Exec(context.Background(), `update issues set status = 'done', closed_at = now() where key = $1`, issue.Key); err != nil {
 		t.Fatalf("close locked issue: %v", err)
 	}

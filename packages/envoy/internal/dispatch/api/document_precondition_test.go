@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 type documentPreconditionRead struct {
@@ -378,7 +379,17 @@ func TestDocumentPreconditionRejectsAnchorAddedAfterRead(t *testing.T) {
 }
 
 func TestDocumentEditPreconditionRejectsWriterAfterDurableAppendRace(t *testing.T) {
-	service, handler, database := browserDocumentService(t)
+	// browserDocumentService's server (anchors_test.go), answering also its Deps, so the
+	// conditional edit below can run on a connection of its own (oneConnectionHandler).
+	var service *docs.Service
+	handler, database, deps := newInteractionDeps(t, func(database *store.Store) docs.API {
+		service = docs.New(docs.Deps{
+			Store: database, Settle: time.Hour, MarkWait: 50 * time.Millisecond,
+			Identity: headerIdentity(database),
+		})
+		t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+		return service
+	})
 	issue := createInteractionIssue(t, handler, "TEST", "Precondition race", "before")
 	stale := readDocumentPrecondition(t, handler, issue.PrimaryArtifactID)
 
@@ -393,18 +404,29 @@ func TestDocumentEditPreconditionRejectsWriterAfterDurableAppendRace(t *testing.
 
 	// A browser's edit reaches the room at once, and its durable append waits for the room's
 	// lock: the one writer that does not first take the document's owner row, as every server
-	// write and the conditional edit below do.
+	// write and the conditional edit below do. The append runs on the room-appends pool
+	// (store.Pool.RoomAppends), which nothing but a room's batch of browser updates uses, so the
+	// wait counts that pool's backends alone, named by the application_name the pool gives them.
+	appends, err := database.Pool.RoomAppends()
+	if err != nil {
+		t.Fatalf("open the room-appends pool: %v", err)
+	}
 	writeBrowserDocument(t, service, issue.PrimaryArtifactID, "writer")
-	waitForDatabaseLocks(t, blocker, 1)
+	storetest.WaitForLockWaitersFrom(t, blocker, 1, appends.Config().ConnConfig.RuntimeParams["application_name"])
 
+	// The conditional edit runs on a connection of its own, so the wait below watches its backend
+	// alone: the room's lock is let go only once the edit has queued behind the append.
+	editHandler, editPID := oneConnectionHandler(t, deps)
 	conditionalDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		conditionalDone <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
+		conditionalDone <- dispatchRequest(t, editHandler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
 			"ops":          []map[string]string{{"op": "replace", "find": "writer", "with": "late"}},
 			"precondition": map[string]string{"document": stale.Token},
 		}, "alice")
 	}()
-	waitForDatabaseLocks(t, blocker, 2)
+	if response, early := storetest.WaitForQueuedBehind(t, blocker, editPID, conditionalDone); early {
+		t.Fatalf("the conditional edit answered status=%d body=%s before it queued behind the room's lock", response.Code, response.Body.String())
+	}
 	if err := blocker.Commit(context.Background()); err != nil {
 		t.Fatalf("release document lock: %v", err)
 	}
