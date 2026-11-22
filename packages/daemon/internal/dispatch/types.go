@@ -541,8 +541,10 @@ type HandoffAuthor struct {
 func (a HandoffAuthor) IsSession(id string) bool { return a.Kind == "session" && a.ID == id }
 
 // Error is a non-success response from Dispatch. Code is empty only when the response did not
-// carry Dispatch's normal error body. Issues is the open children a ForeignChildOpen refusal
-// names, and empty for every other refusal.
+// carry Dispatch's normal error body. Issues is the children a refusal of an acceptance write
+// names as holding it (ForeignChildrenOpen): each open child of another project of a
+// ForeignChildOpen refusal, and each child entry of a ParentStatusConflict refusal; empty for
+// every other refusal.
 type Error struct {
 	Status  int
 	Code    string
@@ -550,8 +552,9 @@ type Error struct {
 	Issues  []ForeignChild
 }
 
-// ForeignChild is one open child of another project that Dispatch names in a ForeignChildOpen
-// refusal: its key, its project and the status it shows.
+// ForeignChild is one child that Dispatch names as holding an acceptance write: its key, its
+// project and the status it shows. A ForeignChildOpen refusal names its project; a
+// ParentStatusConflict refusal names none, and its key's project is taken.
 type ForeignChild struct {
 	Key     string `json:"key"`
 	Project string `json:"project"`
@@ -565,14 +568,29 @@ type ForeignChild struct {
 // shares a value between this module and Dispatch's, so the spellings change together.
 const ForeignChildOpen = "FOREIGN_CHILD_OPEN"
 
-// ForeignChildrenOpen is the open children of another project that err, Dispatch's refusal of an
-// acceptance write, names, and whether err is that refusal.
+// ParentStatusConflict is Dispatch's refusal of a status write that its parent status rule
+// (R24, DISPATCH_PARENT_STATUS_RULE) refuses, which it judges before the open-child check: a done
+// is refused while any child is not done, in any project, an iceboxed child of another project
+// included, which ForeignChildOpen lets through. Its issues name each issue that holds the rule,
+// with its relation to the issue written, "parent" or "child".
+const ParentStatusConflict = "PARENT_STATUS_CONFLICT"
+
+// ForeignChildrenOpen is the children that err, Dispatch's refusal of an acceptance write, names
+// as holding it, and whether err is such a refusal: a 409 ForeignChildOpen, or a 409
+// ParentStatusConflict that names at least one child (a parent entry holds no child, so one that
+// names only the parent is no such refusal).
 func ForeignChildrenOpen(err error) ([]ForeignChild, bool) {
 	var refusal *Error
-	if !errors.As(err, &refusal) || refusal.Status != http.StatusConflict || refusal.Code != ForeignChildOpen {
+	if !errors.As(err, &refusal) || refusal.Status != http.StatusConflict {
 		return nil, false
 	}
-	return refusal.Issues, true
+	switch refusal.Code {
+	case ForeignChildOpen:
+		return refusal.Issues, true
+	case ParentStatusConflict:
+		return refusal.Issues, len(refusal.Issues) > 0
+	}
+	return nil, false
 }
 
 // Missing says whether a Dispatch call failed because what it asked for is not there, as against

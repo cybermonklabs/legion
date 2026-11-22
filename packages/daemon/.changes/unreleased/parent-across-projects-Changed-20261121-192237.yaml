@@ -7,7 +7,12 @@ body: |-
   the write while a child of another project is open under the issue (any status but `done` and
   `icebox`, as `record.ChildOpen` reads it), also a child filed after the last controller tick.
   The daemon answers that refusal `409 SIGNOFF_CHILD_OPEN`, naming each such child with its
-  project and status, and records nothing. Before it writes, the route compares the status
+  project and status, and records nothing. Where Dispatch's parent status rule is on, it judges a
+  `done` by that rule first and refuses it `409 PARENT_STATUS_CONFLICT` while any child is not
+  done, in any project, an iceboxed child of another project included; the daemon's Dispatch client
+  reads that refusal's `relation: child` entries as the children that hold the write, and the route
+  answers it the same way, `409 SIGNOFF_CHILD_OPEN` naming them, recording nothing and writing
+  nothing back. Before it writes, the route compares the status
   Dispatch shows with what its record has taken: a status past the newest event the record
   applied that is neither the status that event showed nor the one the daemon holds the issue at
   is a person's move the consumer has not applied yet, such as a close or a park, and the route

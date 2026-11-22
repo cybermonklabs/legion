@@ -347,6 +347,43 @@ func TestSetAcceptanceStatusAsksForTheOpenChildCheckAndReadsItsRefusal(t *testin
 	}
 }
 
+// With Dispatch's parent status rule on (R24), a flagged done is refused 409
+// PARENT_STATUS_CONFLICT before the open-child check, naming every issue that holds the rule:
+// each child that is not done, in any project, an iceboxed child of another project among them,
+// and the parent where it holds the rule too, each with its relation. The client reads its child
+// entries as the children that hold the close (ForeignChildrenOpen), each with the project of its
+// key, and leaves the parent out. A refusal that names no child, only a parent, holds no child and
+// is no open-child refusal: its code and message stand.
+func TestAnAcceptanceWriteRefusedByTheParentStatusRuleNamesTheChildrenThatHoldIt(t *testing.T) {
+	var body string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+	client := New(server.URL, dispatchToken)
+	read := Issue{Key: "LEGION-4", Status: "todo", LastSeq: 12}
+
+	body = `{"code":"PARENT_STATUS_CONFLICT","error":"this change would leave a parent's status out of line with its children's.","issues":[` +
+		`{"key":"OTHR-5","title":"Tidal gauge","status":"icebox","relation":"child"},` +
+		`{"key":"LEGION-6","title":"Ledger","status":"in_progress","relation":"child"},` +
+		`{"key":"OTHR-1","title":"Billing","status":"backlog","relation":"parent"}]}`
+	_, err := client.SetAcceptanceStatus(context.Background(), read, "done")
+	children, open := ForeignChildrenOpen(err)
+	if want := []ForeignChild{{Key: "OTHR-5", Project: "OTHR", Status: "icebox"}, {Key: "LEGION-6", Project: "LEGION", Status: "in_progress"}}; !open || !slices.Equal(children, want) {
+		t.Fatalf("the acceptance write the parent status rule refused = %v, children %#v (open %v), want %#v", err, children, open, want)
+	}
+
+	body = `{"code":"PARENT_STATUS_CONFLICT","error":"this change would leave a parent's status out of line with its children's.","issues":[` +
+		`{"key":"OTHR-1","title":"Billing","status":"backlog","relation":"parent"}]}`
+	_, err = client.SetAcceptanceStatus(context.Background(), read, "retro")
+	var refusal *Error
+	if _, open := ForeignChildrenOpen(err); open || !errors.As(err, &refusal) || refusal.Code != ParentStatusConflict || len(refusal.Issues) != 0 {
+		t.Fatalf("a parent status refusal naming its parent alone = %#v, want PARENT_STATUS_CONFLICT with no children", err)
+	}
+}
+
 // A claim release is a DELETE on the issue's claim, under the daemon's own session. It sends a
 // body carrying that actor and nothing else: Dispatch's route decodes the request, so a release
 // with no JSON body would be refused before it reached the claim. A claim this caller may not

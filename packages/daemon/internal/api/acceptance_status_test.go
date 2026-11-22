@@ -613,3 +613,65 @@ func TestAnAcceptanceWriteRefusedWithNoCodeAnswersDispatchFailed(t *testing.T) {
 		})
 	}
 }
+
+// With Dispatch's parent status rule on (R24), close_root's flagged done is refused 409
+// PARENT_STATUS_CONFLICT, ahead of the open-child check, naming every issue that holds the rule
+// with its relation. Over the daemon's real Dispatch client, against a stand-in Dispatch that
+// answers so, close_root answers 409 SIGNOFF_CHILD_OPEN naming the children, an iceboxed child of
+// another project among them, and not the parent; it applies no fact, writes nothing back and
+// leaves the record as it was. With the rule off, a flagged write is refused FOREIGN_CHILD_OPEN,
+// which TestAnAcceptanceIsWrittenInDispatchBeforeItsFact pins.
+func TestACloseRootRefusedByTheParentStatusRuleNamesTheChildrenThatHoldIt(t *testing.T) {
+	var patches []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues/LEGION-208":
+			_, _ = w.Write([]byte(`{"key":"LEGION-208","title":"LEGION-208","status":"todo","last_seq":7}`))
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/issues/LEGION-208":
+			var patch map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+				t.Errorf("decode the PATCH: %v", err)
+			}
+			patches = append(patches, patch)
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"code":"PARENT_STATUS_CONFLICT","error":"this change would leave a parent's status out of line with its children's.","issues":[` +
+				`{"key":"OTHR-5","title":"Tidal gauge","status":"icebox","relation":"child"},` +
+				`{"key":"LEGION-209","title":"LEGION-209","status":"in_progress","relation":"child"},` +
+				`{"key":"OTHR-1","title":"Billing","status":"backlog","relation":"parent"}]}`))
+		default:
+			t.Errorf("unexpected Dispatch call %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	h := newHarness(t)
+	facts := &factRecorder{}
+	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
+		Grants: credential.New(nil), Pool: h.store.Pool(), Record: record.NewStore(), Handlers: []intake.Handler{facts},
+		Dispatch: dispatch.New(server.URL, "dispatch-test-token"), Acceptance: &acceptanceJudge{},
+	}).Handler
+	seedTree(t, h, "LEGION-208", "LEGION-209")
+	recordSaw(t, h, "LEGION-208", "todo", "todo", 7)
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+
+	answer := h.request(http.MethodPost, "/legion/v1/roots/close", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208",
+		"reason": "The human decided no change is needed."}, nil)
+	message := refused(t, answer, http.StatusConflict, "SIGNOFF_CHILD_OPEN")
+	if !strings.Contains(message, "OTHR-5 (OTHR, icebox)") || !strings.Contains(message, "LEGION-209 (LEGION, in_progress)") || strings.Contains(message, "OTHR-1") {
+		t.Fatalf("the refusal = %q, want it naming OTHR-5 and LEGION-209, the children, and not OTHR-1, the parent", message)
+	}
+	if len(patches) != 1 || patches[0]["status"] != "done" || patches[0]["refuse_open_foreign_children"] != true {
+		t.Fatalf("Dispatch writes = %#v, want the one flagged done and no write back", patches)
+	}
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("facts = %#v, want none applied", got)
+	}
+	var status, shown string
+	var seq int64
+	if err := h.store.Pool().QueryRow(t.Context(), "select status, dispatch_status, last_dispatch_seq from issues where key = 'LEGION-208'").Scan(&status, &shown, &seq); err != nil ||
+		status != "todo" || shown != "todo" || seq != 7 {
+		t.Fatalf("the record of LEGION-208 = %s, %s at %d (%v), want todo, todo at 7 as it was", status, shown, seq, err)
+	}
+}

@@ -1570,8 +1570,10 @@ type acceptAct struct {
 //  3. It writes a.status with refuse_open_foreign_children (dispatch.Client.SetAcceptanceStatus),
 //     at the sequence of the read of step 2 (writeAtRead). Dispatch refuses it while a child of
 //     another project is open under the issue, under the lock every parent write takes, so no
-//     child is filed between its check and its write; the refusal is answered 409
-//     SIGNOFF_CHILD_OPEN, naming each such child, and nothing is written. Where someone moved the
+//     child is filed between its check and its write (FOREIGN_CHILD_OPEN); where its parent status
+//     rule is on, it refuses a done over any child not done first (PARENT_STATUS_CONFLICT). Either
+//     refusal is answered 409 SIGNOFF_CHILD_OPEN, naming each child that holds the act
+//     (foreignChildOpenRefusal), and nothing is written or recorded. Where someone moved the
 //     issue since that read, nothing is written over the move, and the act is answered 409
 //     ISSUE_CHANGED naming the status Dispatch shows now.
 //  4. It tells the test seam, if any, and applies the act's fact. From the write on, the act runs
@@ -1834,8 +1836,13 @@ func (s *server) writeBack(ctx context.Context, a acceptAct, shown, written disp
 }
 
 // foreignChildOpenRefusal is the SIGNOFF_CHILD_OPEN refusal of a's act that Dispatch's refusal of
-// its status write (dispatch.ForeignChildOpen) makes, naming each open child of another project
-// with its project and status, as Dispatch named them.
+// its status write makes, naming each child that holds it with its project and status, as Dispatch
+// named them (dispatch.ForeignChildrenOpen). Dispatch refuses it two ways, and both are one
+// refusal here, since each says the same to the daemon: a child holds the act, the write was not
+// made, and nothing is recorded or written back. ForeignChildOpen names each open child of another
+// project, which holds until it is done or in icebox. ParentStatusConflict, the parent status
+// rule (R24) that Dispatch judges first where it is on, names each child that is not done, in any
+// project, an iceboxed child of another project included, which holds until it is done.
 func foreignChildOpenRefusal(a acceptAct, children []dispatch.ForeignChild, cause error) string {
 	if len(children) == 0 {
 		return fmt.Sprintf("Dispatch refused the %s write of %s's %s while a child of another project is open, so nothing was recorded: %v", a.status, a.issue, a.act, cause)
@@ -1847,6 +1854,13 @@ func foreignChildOpenRefusal(a acceptAct, children []dispatch.ForeignChild, caus
 	verb, again := "accepted", "Sign off again"
 	if a.act == "close_root" {
 		verb, again = "closed", "Close the tree again"
+	}
+	var refusal *dispatch.Error
+	if errors.As(cause, &refusal) && refusal.Code == dispatch.ParentStatusConflict {
+		return fmt.Sprintf("%s is not %s while these Dispatch children of it are not done: %s. Dispatch's parent status rule refused the %s write, so nothing was recorded. "+
+			"A parent is %s after its children; a child of another project is run by that project's daemon, and its own architect or a person moves it. "+
+			"%s once each one is done",
+			a.issue, verb, strings.Join(named, ", "), a.status, verb, again)
 	}
 	return fmt.Sprintf("%s is not %s while these Dispatch children of it in other projects are open: %s. Dispatch refused the %s write, so nothing was recorded. "+
 		"A parent is %s after its children, a child of another project included; that project's daemon runs the child, and its own architect or a person moves it. "+

@@ -739,10 +739,32 @@ func dispatchError(status int, statusText string, payload []byte) *Error {
 		response.Error = statusText
 	}
 	refusal := &Error{Status: status, Code: response.Code, Message: response.Error}
-	// Only FOREIGN_CHILD_OPEN's issues are read: another refusal's list has a shape of its own. A
-	// list that does not decode leaves Issues empty, and the code and the message stand.
-	if response.Code == ForeignChildOpen && len(response.Issues) > 0 {
+	// Only the issues of the two refusals of an acceptance write are read: another refusal's list
+	// has a shape of its own. A list that does not decode leaves Issues empty, and the code and the
+	// message stand.
+	if len(response.Issues) == 0 {
+		return refusal
+	}
+	switch response.Code {
+	case ForeignChildOpen:
 		_ = json.Unmarshal(response.Issues, &refusal.Issues)
+	case ParentStatusConflict:
+		var holding []struct {
+			Key      string `json:"key"`
+			Status   string `json:"status"`
+			Relation string `json:"relation"`
+		}
+		if json.Unmarshal(response.Issues, &holding) != nil {
+			return refusal
+		}
+		// The rule names the parent too where it holds the rule, which holds no child: only the
+		// child entries are the children that hold the write.
+		for _, issue := range holding {
+			if issue.Relation == "child" {
+				project, _, _ := strings.Cut(issue.Key, "-")
+				refusal.Issues = append(refusal.Issues, ForeignChild{Key: issue.Key, Project: project, Status: issue.Status})
+			}
+		}
 	}
 	return refusal
 }
