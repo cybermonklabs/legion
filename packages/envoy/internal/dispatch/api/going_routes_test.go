@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -417,7 +418,10 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 		}
 	}
 
-	// A reader holding frame 2, polling for whatever comes after it.
+	// A reader holding frame 2, polling for whatever comes after it, on a connection of its own:
+	// the wait below watches the stream's backend (storetest.WaitForQueuedBehind), so no other
+	// session waiting on going_requests is taken for its state read.
+	streamHandler, streamPID := oneConnectionHandler(t, rig.server.deps)
 	sink := &goingStreamSink{header: http.Header{}, flushed: make(chan struct{}, 4)}
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/going/requests/"+run.ID+"/stream", nil)
 	request.Header.Set("X-Dispatch-User", "alice")
@@ -425,7 +429,7 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
-		rig.handler.ServeHTTP(sink, request)
+		streamHandler.ServeHTTP(sink, request)
 	}()
 	testwait.Receive(t, "the stream's headers (its first flush)", sink.flushed)
 
@@ -443,15 +447,9 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 	`, run.ID, contracts.GoingEventEnd); err != nil {
 		t.Fatalf("store the ending: %v", err)
 	}
-	waitUntil(t, "the stream's state read waiting on going_requests", func() bool {
-		var waiting int
-		if err := rig.database.Pool.QueryRow(ctx, `
-			select count(*) from pg_locks where relation = 'going_requests'::regclass and not granted
-		`).Scan(&waiting); err != nil {
-			t.Fatalf("read what is waiting on going_requests: %v", err)
-		}
-		return waiting > 0
-	})
+	if _, early := storetest.WaitForQueuedBehind(t, ending, streamPID, served); early {
+		t.Fatalf("the stream ended (it wrote %q) before its state read waited on going_requests", sink.text())
+	}
 
 	if err := ending.Commit(ctx); err != nil {
 		t.Fatalf("commit the ending: %v", err)

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -25,7 +24,9 @@ import (
 // The correction is held just after its update ran, so the comment starts while the correction's
 // transaction holds whatever that update left it holding; once the comment waits on a lock, the
 // correction goes on. Both must succeed, and the document must carry the corrected title and the
-// comment.
+// comment. Each runs on a connection of its own, so the wait for the comment's queue watches the
+// comment's backend behind the correction's (storetest.WaitForQueuedBehindBackend), and no other
+// session waiting on a lock - a settlement of the server's own - is taken for it.
 func TestARenameOfAProjectDocumentBesideACommentOnItBothSucceed(t *testing.T) {
 	held := newHeldStatement(t, "update artifacts set name")
 	fixture := newItemRowFixture(t, testServerOptions{tracer: held}, "Project document title", "A spec.\n")
@@ -34,9 +35,13 @@ func TestARenameOfAProjectDocumentBesideACommentOnItBothSucceed(t *testing.T) {
 	waitForArtifactVersion(t, fixture.handler, document.ID, 1)
 	const corrected = "Outbox design notes"
 
+	// The fixture's tracer is on every connection opened from its pool's configuration, these two
+	// among them (storetest.OneConnection), so the correction is held on its own connection.
+	renameHandler, renamePID := oneConnectionHandler(t, fixture.deps)
+	commentHandler, commentPID := oneConnectionHandler(t, fixture.deps)
 	held.armed.Store(true)
 	renamed := make(chan *httptest.ResponseRecorder, 1)
-	go func() { renamed <- correctTitle(t, fixture.handler, document.ID, corrected) }()
+	go func() { renamed <- correctTitle(t, renameHandler, document.ID, corrected) }()
 	testwait.Until(t, "the correction's update of the document's title to be held", func() (string, bool) {
 		select {
 		case <-held.reached:
@@ -50,27 +55,15 @@ func TestARenameOfAProjectDocumentBesideACommentOnItBothSucceed(t *testing.T) {
 
 	commented := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		commented <- sessionRequest(t, fixture.handler, http.MethodPost, "/api/v1/artifacts/"+document.ID+"/comments", map[string]any{
+		commented <- sessionRequest(t, commentHandler, http.MethodPost, "/api/v1/artifacts/"+document.ID+"/comments", map[string]any{
 			"body":   "Does this still hold once the outbox is sharded?",
 			"anchor": map[string]any{"artifact": document.Slug, "quote": quote}, "actor": sessionActor(),
 		})
 	}()
-	testwait.Until(t, "the comment to wait on a lock the correction's transaction holds (the waiting sessions)", func() (int, bool) {
-		waiting, err := storetest.CountLockWaits(context.Background(), fixture.database, "%")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if waiting > 0 {
-			return waiting, true
-		}
-		select {
-		case response := <-commented:
-			t.Fatalf("the comment answered while the correction's transaction was held, waiting on nothing: status=%d body=%s",
-				response.Code, response.Body.String())
-		default:
-		}
-		return waiting, false
-	})
+	if response, early := storetest.WaitForQueuedBehindBackend(t, fixture.database, renamePID, commentPID, commented); early {
+		t.Fatalf("the comment answered while the correction's transaction was held, without waiting on it: status=%d body=%s",
+			response.Code, response.Body.String())
+	}
 	held.let()
 
 	renameResponse := awaitAnswer(t, renamed, "the title correction")

@@ -9,7 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -74,10 +73,12 @@ func (h *heldStatement) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.Tr
 // The publish is held just after its update ran, so the create starts while the publish's
 // transaction holds whatever that update left it holding; once the create waits on a lock, the
 // publish goes on. Both must succeed, and the issue must be the one the session asked for,
-// assigned to the person the project names.
+// assigned to the person the project names. Each runs on a connection of its own, so the wait for
+// the create's queue watches the create's backend behind the publish's
+// (storetest.WaitForQueuedBehindBackend), and no other session waiting on a lock is taken for it.
 func TestASessionsIssueCreateBesideTheDaemonsBootPublishOfGatedStepsIsCreated(t *testing.T) {
 	held := newHeldStatement(t, "update projects set gated_steps")
-	handler, database, _ := newTestServer(t, testServerOptions{tracer: held})
+	handler, database, deps := newTestServer(t, testServerOptions{tracer: held})
 	const project = "HANDOVER"
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects",
 		map[string]string{"key": project, "name": "A person's handover"}, "alice"); response.Code != http.StatusCreated {
@@ -88,10 +89,14 @@ func TestASessionsIssueCreateBesideTheDaemonsBootPublishOfGatedStepsIsCreated(t 
 		t.Fatalf("map acme/widgets to the project: status=%d body=%s", response.Code, response.Body.String())
 	}
 
+	// The server's tracer is on every connection opened from its pool's configuration, these two
+	// among them (storetest.OneConnection), so the publish is held on its own connection.
+	publishHandler, publishPID := oneConnectionHandler(t, deps)
+	createHandler, createPID := oneConnectionHandler(t, deps)
 	held.armed.Store(true)
 	published := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		published <- agentRequest(t, handler, http.MethodPut, "/api/v1/projects/"+project+"/gated-steps",
+		published <- agentRequest(t, publishHandler, http.MethodPut, "/api/v1/projects/"+project+"/gated-steps",
 			map[string]any{"steps": []string{"spec"}, "actor": map[string]string{"kind": "session", "id": "legion-daemon:" + project}},
 			"agent-token")
 	}()
@@ -108,7 +113,7 @@ func TestASessionsIssueCreateBesideTheDaemonsBootPublishOfGatedStepsIsCreated(t 
 
 	created := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		created <- sessionRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		created <- sessionRequest(t, createHandler, http.MethodPost, "/api/v1/issues", map[string]any{
 			"project": project,
 			"title":   "Earlier run keeps its gate",
 			"spec":    "# Plan\n\nThe service ships behind a flag.\n",
@@ -116,22 +121,10 @@ func TestASessionsIssueCreateBesideTheDaemonsBootPublishOfGatedStepsIsCreated(t 
 			"actor":   sessionActor(),
 		})
 	}()
-	testwait.UntilPolling(t, 20*time.Millisecond, "the create to wait on a lock the publish's transaction holds (the sessions waiting on a lock)", func() (int, bool) {
-		waiting, err := storetest.CountLockWaits(context.Background(), database, "%")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if waiting > 0 {
-			return waiting, true
-		}
-		select {
-		case response := <-created:
-			t.Fatalf("the create answered while the publish's transaction was held, waiting on nothing: status=%d body=%s",
-				response.Code, response.Body.String())
-		default:
-		}
-		return waiting, false
-	})
+	if response, early := storetest.WaitForQueuedBehindBackend(t, database, publishPID, createPID, created); early {
+		t.Fatalf("the create answered while the publish's transaction was held, without waiting on it: status=%d body=%s",
+			response.Code, response.Body.String())
+	}
 	held.let()
 
 	createResponse := awaitAnswer(t, created, "the session's create")
