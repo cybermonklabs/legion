@@ -1,0 +1,26 @@
+-- 20261114020013_design_gates_holds.up.sql — whether a design-gate row holds its issue's tree.
+--
+--   holds  whether the Legion deployment's gate holds the issue's tree on this row's step, as the
+--          daemon that published the row says it: true or false, and null for a row a daemon
+--          older than this column published, which is every row this migration leaves.
+--
+-- INFRA-175: Dispatch's `superseded_approval` advice names the design gates a new version of an
+-- approved document closes (api/write_advice.go, supersededApprovalGates), and it kept a row only
+-- where the project's gated steps name the row's step (projects.gated_steps). A root's architect
+-- may register its Verification document as `criteria` beside a deployment that gates `spec`
+-- alone, and that row holds the tree from then on although the project's list does not name it,
+-- so the advice dropped it. Which steps hold a tree is the daemon's rule, so the daemon publishes
+-- its answer for each row (PUT /api/v1/issues/{key}/design-gates, api/issue_design_gates.go) and
+-- Dispatch stores it here. The advice keeps a row where `coalesce(holds, step = any(gated_steps))`,
+-- so a null row reads as every row read before this column, and the daemon and Dispatch deploy in
+-- either order.
+--
+-- Adding a nullable column with no default writes the catalog alone, so the statement holds
+-- design_gates' ACCESS EXCLUSIVE lock for milliseconds and rewrites no row; design_gates holds a
+-- row for each registered step of each gated issue, tens and not millions. The release before
+-- this one neither reads nor writes the column and names its columns in its one insert
+-- (api/issue_design_gates.go), so it keeps taking publications against this schema while it still
+-- serves (cmd/dispatch/README.md, "Database migrations"). Its identifier is the UTC moment it was
+-- written, as `migrationid` requires of every migration past the numbered series, which closed at
+-- 0161.
+alter table design_gates add column holds boolean;

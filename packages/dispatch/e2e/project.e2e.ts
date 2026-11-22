@@ -7,7 +7,7 @@ import {
   getIssue,
   patchIssue,
   putIssueState,
-  putRepoProject,
+  putProjectDefaultRepository,
 } from "./api";
 import { filterPicker, pickFilterOption } from "./filters";
 import { nextFrames } from "./frames";
@@ -358,8 +358,7 @@ test("picker keeps a pick on screen: the repository on the issue page, over a re
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
-  await putRepoProject("acme/widgets", { default: true, project: "CORE" });
-  await putRepoProject("acme/gadgets", { project: "CORE" });
+  await putProjectDefaultRepository("CORE", "acme/widgets");
   const issue = await createIssue({ project: "CORE", title: "Repository under a held save" });
   await patchIssue(issue.key, { repo: "acme/widgets" });
   const renamed = "Repository under a held save, renamed while it is out";

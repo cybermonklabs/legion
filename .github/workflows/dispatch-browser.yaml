@@ -42,6 +42,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-binaries-job-restores-go-envoy-test
       - id: go-cache
@@ -292,6 +294,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-restores-go-envoy-test
       - id: go-cache
@@ -368,6 +372,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # go-envoy, restored only, as the multiprocess job restores it and for the same reason:
       # run-server.sh builds the Dispatch server, which the family's saving jobs do not.
@@ -436,6 +442,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-visual-job-restores-go-envoy-test
       - id: go-cache
@@ -516,6 +524,8 @@ jobs:
     # why: .github/ci-notes/dispatch-browser.md#the-merge-jobs-measured-steps-and-its-budget
     # 180 + 37 = 217 s, which is 3 min 37 s, so 4 min.
     timeout-minutes: 4
+    env:
+      JOB_TIMEOUT_MINUTES: 4 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -557,6 +567,7 @@ jobs:
         timeout-minutes: 3
         env:
           GH_TOKEN: ${{ github.token }}
+          STEP_TIMEOUT_MINUTES: 3 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         run: .github/scripts/dispatch-browser-reading-rows.sh "${{ steps.download-blobs.conclusion }}"
       # Reading two. Read from the merged JSON report with jq, and nowhere else: a flake is a row
       # that failed and passed on its retry, which only the report of the whole run holds.

@@ -103,8 +103,8 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	}
 	dispatchCall(t, baseURL, http.MethodPost, "/api/v1/projects",
 		map[string]string{"key": cfg.Project, "name": "Blocked issues"}, nil)
-	dispatchCall(t, baseURL, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets",
-		map[string]any{"project": cfg.Project, "default": true}, nil)
+	dispatchCall(t, baseURL, http.MethodPut, "/api/v1/projects/"+cfg.Project+"/default-repository",
+		map[string]any{"repo": "acme/widgets"}, nil)
 
 	rt := fake.NewRuntime()
 	// A pods runtime provisions each claim's workspace itself, so the daemon clones nothing: these
