@@ -472,7 +472,8 @@ func TestAPushToAURLReadsOnlyWhatTheRemoteWithThatURLDoesNotHold(t *testing.T) {
 
 	for _, tc := range []struct {
 		name string
-		// remote and url are what git hands the hook: for a push to a URL, the URL twice.
+		// remote and url are what git hands the hook. For a push to a URL, remote is the URL as
+		// typed and url the one git reaches, after any insteadOf rewrites it.
 		remote, url string
 		// reads are the commits the push reads, and refused is whether the push is refused.
 		reads   []string
@@ -481,6 +482,7 @@ func TestAPushToAURLReadsOnlyWhatTheRemoteWithThatURLDoesNotHold(t *testing.T) {
 		{name: "origin by name", remote: "origin", url: theURL},
 		{name: "the URL", remote: theURL, url: theURL},
 		{name: "the URL with a token in its userinfo", remote: withToken, url: withToken},
+		{name: "a URL an insteadOf rewrites to the destination's", remote: "gh:" + theRepo, url: theURL},
 		{name: "the URL in git's scp syntax for ssh", remote: "git@github.com:" + theRepo + ".git", url: "git@github.com:" + theRepo + ".git"},
 		{name: "the URL in other capitals", remote: "https://github.com/Invented-Org/Invented-Repo.git", url: "https://github.com/Invented-Org/Invented-Repo.git"},
 		{
@@ -522,7 +524,8 @@ func TestAPushToAURLReadsOnlyWhatTheRemoteWithThatURLDoesNotHold(t *testing.T) {
 // on, is one the destination need not have, so the push reads it whether it names the destination
 // by its remote's name or by its URL. That commit's author is one a rule refuses, and the report
 // names it and nothing else. A guard that took every remote's tracking refs for the destination's
-// would pass this push and publish the commit unread.
+// would pass this push and publish the commit unread, and so would one that read the destination
+// out of the path of a third remote's URL, which names another host.
 func TestAPushReadsACommitOnlyAnotherRemoteHolds(t *testing.T) {
 	home, repo := t.TempDir(), filepath.Join(t.TempDir(), "repo")
 	fixture := fixturegit.Isolated(t, home)
@@ -549,6 +552,8 @@ func TestAPushReadsACommitOnlyAnotherRemoteHolds(t *testing.T) {
 	elsewhere := commit(t, "a commit of another repository", "GIT_AUTHOR_EMAIL=builder@"+theHost)
 	fixture.Run(repo, "git", "remote", "add", "other", "https://github.com/invented-org/another-repo.git")
 	fixture.Run(repo, "git", "update-ref", "refs/remotes/other/side", elsewhere)
+	fixture.Run(repo, "git", "remote", "add", "lookalike", "https://example.invalid/a@github.com/"+theRepo+".git")
+	fixture.Run(repo, "git", "update-ref", "refs/remotes/lookalike/side", elsewhere)
 	fixture.Run(repo, "git", "checkout", "--quiet", "-b", "work")
 	write(t, "work.md", "a line of the branch's own\n")
 	own := commit(t, "the branch's own commit")

@@ -7,7 +7,9 @@ body: |-
     main, where the same push to `origin` took 18 s. The guard now holds the tracking refs of each
     remote whose every URL names the GitHub repository the push's URL names, with a token in the
     userinfo, ssh's scp syntax and letter case ignored. A URL that no remote names still has every
-    commit read. A push from a shallow repository whose commits run down to a shallow commit is
+    commit read. The guard reads a URL's host from its authority alone, and only for git's network
+    schemes, so a URL whose path holds `@github.com` names no GitHub repository, and a push to it is
+    scanned. A push from a shallow repository whose commits run down to a shallow commit is
     refused at once, naming the commit and the `git fetch --unshallow <remote>` that brings in its
     parents: the guard read the destination's commits beneath the shallow boundary as the push's
     own.
