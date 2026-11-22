@@ -46,32 +46,47 @@ others_equal() {
   pattern=${pattern%|}
   [ "$(grep -Ev "$pattern" <<<"$got")" = "$(grep -Ev "$pattern" <<<"$base")" ] && echo true || echo false
 }
-# held_of <workflow>: the outputs a merge group turns on and an unlabelled pull request holds
-# false, every filter saying yes, one per line. No label term decides it.
-held_of() {
-  comm -12 <(grep '=false$' <<<"$(outputs_of "$1" --event pull_request)" | cut -d= -f1) \
-    <(grep '=true$' <<<"$(outputs_of "$1" --event merge_group)" | cut -d= -f1)
+# held_of <workflow>: the outputs whose expression reads the pull request's labels, one per line,
+# found in the text (ci_router_outputs.py --label-readers), so no broken term of an output can
+# take it out of the set the cases below test.
+held_of() { "$script_dir/ci_router_outputs.py" "$1" --label-readers; }
+# not_value <workflow> <want> <argument>...: each output of held_of that does not read <want>
+# for that event and those labels.
+not_value() {
+  local workflow=$1 want=$2 name got
+  shift 2
+  got=$(outputs_of "$workflow" "$@")
+  while read -r name; do
+    [ "$(value "$got" "$name")" = "$want" ] || echo "$name"
+  done < <(held_of "$workflow")
 }
-# off_under <workflow> <label>...: each output of held_of that those labels leave off.
+# off_under <workflow> <label>...: each output of held_of that those labels leave off on a pull
+# request.
 off_under() {
-  local workflow=$1 name got label
+  local workflow=$1 label
   local args=()
   shift
   for label in "$@"; do args+=(--label "$label"); done
-  got=$(outputs_of "$workflow" --event pull_request "${args[@]}")
-  while read -r name; do
-    [ "$(value "$got" "$name")" = true ] || echo "$name"
-  done < <(held_of "$workflow")
+  not_value "$workflow" true --event pull_request "${args[@]}"
 }
 
 baseline=$(outputs --event pull_request)
 mapfile -t held < <(held_of "$repo/.github/workflows/ci.yaml")
 
-echo "case: some outputs a merge group turns on are held false on an unlabelled pull request"
-check "it holds at least one back (${#held[@]}: ${held[*]})" "$(is "$([ "${#held[@]}" -gt 0 ] && echo yes)" yes)"
+echo "case: some outputs read the pull request's labels"
+check "at least one does (${#held[@]}: ${held[*]})" "$(is "$([ "${#held[@]}" -gt 0 ] && echo yes)" yes)"
 
-echo "case: full-ci turns every held-back output on"
-check "no held-back output stays off under full-ci" \
+echo "case: each of them is on for a merge group and for a push, where no label is read"
+check "a merge group leaves none off" \
+  "$(is "$(not_value "$repo/.github/workflows/ci.yaml" true --event merge_group | tr '\n' ' ')" "")"
+check "a push leaves none off" \
+  "$(is "$(not_value "$repo/.github/workflows/ci.yaml" true --event push | tr '\n' ' ')" "")"
+
+echo "case: each of them is held off on an unlabelled pull request"
+check "none is on" "$(is "$(not_value "$repo/.github/workflows/ci.yaml" false --event pull_request | tr '\n' ' ')" "")"
+
+echo "case: full-ci turns each of them on"
+check "no one stays off under full-ci" \
   "$(is "$(off_under "$repo/.github/workflows/ci.yaml" full-ci | tr '\n' ' ')" "")"
 
 echo "case: a lane label turns on its own output and no other"
@@ -100,28 +115,35 @@ for label in lane:no_such_output lane:typecheck lane:envoy-go "lane:${held[0]}x"
   check "$label leaves every output as an unlabelled pull request has it" "$(is "$got" "$baseline")"
 done
 
-# broken_copy <dir> <output> <literal> <replacement>: a copy of this repository's ci.yaml and
-# filters under <dir> with that literal changed on that output's line alone.
+# broken_copy <dir> <output> <text> <replacement>: a copy of this repository's ci.yaml and filters
+# under <dir> with <text> changed to <replacement> on that output's line alone (neither holds a
+# `|`, which the sed below delimits with).
 broken_copy() {
   mkdir -p "$1/.github/workflows"
   cp "$repo/.github/ci-filters.yaml" "$1/.github/ci-filters.yaml"
-  sed -E "/^ +$2: /s/'$3'/'$4'/" "$repo/.github/workflows/ci.yaml" > "$1/.github/workflows/ci.yaml"
-  cmp -s "$repo/.github/workflows/ci.yaml" "$1/.github/workflows/ci.yaml" && echo "broken_copy: $2 has no '$3'" >&2
+  sed -E "/^ +$2: /s|$3|$4|" "$repo/.github/workflows/ci.yaml" > "$1/.github/workflows/ci.yaml"
+  cmp -s "$repo/.github/workflows/ci.yaml" "$1/.github/workflows/ci.yaml" && echo "broken_copy: $2 has no $3" >&2
   echo "$1/.github/workflows/ci.yaml"
 }
 
 echo "case: an output whose full-ci literal is broken stays in the set and fails the full-ci case"
-broken=$(broken_copy "$work/no-full-ci" envoy_go_race_api full-ci full-cj)
+broken=$(broken_copy "$work/no-full-ci" envoy_go_race_api "'full-ci'" "'full-cj'")
 check "the copy differs from ci.yaml" "$(is "$(cmp -s "$broken" "$repo/.github/workflows/ci.yaml" && echo same)" "")"
-check "envoy_go_race_api is still held back" "$(contains "$(held_of "$broken")" '^envoy_go_race_api$')"
 check "the set keeps all ${#held[@]}" "$(is "$(held_of "$broken" | wc -l)" "${#held[@]}")"
 check "full-ci leaves exactly envoy_go_race_api off" "$(is "$(off_under "$broken" full-ci | tr '\n' ' ')" "envoy_go_race_api ")"
 
 echo "case: an output whose lane literal is broken fails its lane row"
-broken=$(broken_copy "$work/no-lane" envoy_smoke lane:envoy_smoke lane:envoy_smokx)
-check "envoy_smoke is still held back" "$(contains "$(held_of "$broken")" '^envoy_smoke$')"
+broken=$(broken_copy "$work/no-lane" envoy_smoke "'lane:envoy_smoke'" "'lane:envoy_smokx'")
+check "the set keeps all ${#held[@]}" "$(is "$(held_of "$broken" | wc -l)" "${#held[@]}")"
 check "lane:envoy_smoke leaves it off" "$(is "$(off_under "$broken" lane:envoy_smoke | grep -c '^envoy_smoke$')" 1)"
 check "full-ci still turns it on" "$(is "$(off_under "$broken" full-ci | tr '\n' ' ')" "")"
+
+echo "case: an output whose event term is broken stays in the set and fails the merge-group case"
+broken=$(broken_copy "$work/no-event" envoy_go_race "github.event_name != 'pull_request'" "github.event_name == 'workflow_dispatch'")
+check "the copy differs from ci.yaml" "$(is "$(cmp -s "$broken" "$repo/.github/workflows/ci.yaml" && echo same)" "")"
+check "the set keeps all ${#held[@]}" "$(is "$(held_of "$broken" | wc -l)" "${#held[@]}")"
+check "a merge group leaves exactly envoy_go_race off" \
+  "$(is "$(not_value "$broken" true --event merge_group | tr '\n' ' ')" "envoy_go_race ")"
 
 echo "case: an expression this reader does not model is refused, never read as false"
 mkdir -p "$work/.github/workflows"

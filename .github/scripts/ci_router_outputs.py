@@ -17,8 +17,11 @@ name with exit 2, never read as false.
 
 Usage: ci_router_outputs.py <workflow> --event <name> [--label <name>]... [--verdict <filter>=<value>]...
   [--verdicts <true|false>]
+       ci_router_outputs.py <workflow> --label-readers
 Prints `<output>=<value>` for each output of the `changes` job, in the file's order. --verdicts
-sets every filter's verdict (default true); --verdict overrides one.
+sets every filter's verdict (default true); --verdict overrides one. --label-readers prints, one
+per line, each output whose expression reads the pull request's labels, found in the text
+rather than by evaluating it, so a broken term cannot drop an output from that list.
 Run from anywhere; ci.yaml's test job runs its harness."""
 import argparse
 import json
@@ -169,13 +172,21 @@ class Evaluator:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("workflow")
-    parser.add_argument("--event", required=True)
+    parser.add_argument("--event")
+    parser.add_argument("--label-readers", action="store_true")
     parser.add_argument("--label", action="append", default=[])
     parser.add_argument("--verdict", action="append", default=[])
     parser.add_argument("--verdicts", default="true", choices=["true", "false"])
     args = parser.parse_args()
     document = yaml.safe_load(Path(args.workflow).read_text())
     outputs = document["jobs"]["changes"]["outputs"]
+    if args.label_readers:
+        for name, expression in outputs.items():
+            if "github.event.pull_request.labels" in str(expression):
+                print(name)
+        return 0
+    if not args.event:
+        parser.error("--event is required unless --label-readers is given")
     filters = yaml.safe_load(Path(args.workflow).parent.parent.joinpath("ci-filters.yaml").read_text())
     verdicts = {name: args.verdicts for name in filters}
     for pair in args.verdict:
