@@ -16,11 +16,18 @@ import (
 // once: suites GitHub creates for an App on every push, to which that App adds no run.
 var emptySuiteApps = []string{"5789269", "5341243", "5447700"}
 
+// actionsApp is GitHub Actions' public App id, written out rather than read from
+// githubActionsAppID, so a change of the constant fails the test instead of moving with it.
+const actionsApp = "15368"
+
 // A record written before the webhook route stopped taking suite requests, whose runs have all
 // finished, settles once beside another App's queued suite, or three Apps' suites. A queued suite
 // of GitHub Actions (App 15368) holds it, and so does a queued suite the record names no App for.
 // A recorded run that is not finished holds it, whichever App's suite stands beside it.
 func TestAQueuedSuiteHoldsAHeadOnlyIfItIsActionsOrOfNoApp(t *testing.T) {
+	if githubActionsAppID != actionsApp {
+		t.Fatalf("githubActionsAppID is %q, want GitHub Actions' App id %q", githubActionsAppID, actionsApp)
+	}
 	queued := func(id, app string) Suite {
 		return Suite{ID: id, AppID: app, Status: "queued", ObservedAt: "2026-11-22T01:00:00Z"}
 	}
@@ -39,14 +46,14 @@ func TestAQueuedSuiteHoldsAHeadOnlyIfItIsActionsOrOfNoApp(t *testing.T) {
 			}
 		}, 1},
 		{"GitHub Actions' queued suite", func(st *State) {
-			st.Suites["200"] = queued("200", githubActionsAppID)
+			st.Suites["200"] = queued("200", actionsApp)
 		}, 0},
 		{"three Apps' queued suites beside GitHub Actions' queued suite", func(st *State) {
 			for i, app := range emptySuiteApps {
 				id := string(rune('a' + i))
 				st.Suites[id] = queued(id, app)
 			}
-			st.Suites["200"] = queued("200", githubActionsAppID)
+			st.Suites["200"] = queued("200", actionsApp)
 		}, 0},
 		{"a queued suite the record names no App for", func(st *State) {
 			st.Suites["200"] = queued("200", "")
