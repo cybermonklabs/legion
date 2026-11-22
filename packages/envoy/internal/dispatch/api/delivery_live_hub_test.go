@@ -389,8 +389,8 @@ func (r *hubRig) cursors() (changeSeq, eventCursor int64) {
 }
 
 // waitForEventCursor waits until the hub holds every event through want. The relay publishes an
-// event to the hub only once the server's event horizon has passed it, and an open write anywhere
-// on the Postgres instance holds that back, so the wait is the horizon's (horizontest.PollInProcess).
+// event to the hub only once the server's event horizon has passed it, and an open event write of
+// the server's database holds that back, so the wait is the horizon's (horizontest.PollInProcess).
 func (r *hubRig) waitForEventCursor(t *testing.T, want int64, what string) {
 	t.Helper()
 	horizontest.PollInProcess(t, fmt.Sprintf("the hub's event log through %d (%s)", want, what), r.database, func() bool {
@@ -1508,8 +1508,8 @@ func TestAResetEventLogIsCaughtAndEveryViewRecomputed(t *testing.T) {
 	// takes once it has a feed again, which stands once the relay's next generation does, behind a
 	// horizon proven after the reset (firstRelayCursor); or, when the relay found the reset before
 	// the retitle committed and the new feed began below the retitle's event, the one that event
-	// asks for, which the relay publishes once the horizon has passed it. A transaction held
-	// anywhere on the Postgres instance puts off either, so the wait is the horizon's.
+	// asks for, which the relay publishes once the horizon has passed it. An event write of the
+	// server's database held open puts off either, so the wait is the horizon's.
 	delta := conn.eventDelta(t, rig.database, "t")
 	if got := liveMapValues(t, delta, "issue_titles"); got[key] != "Ship the widgets" {
 		t.Fatalf("after the event log's reset the delta's issue_titles = %v, want %s retitled", got, key)

@@ -607,12 +607,20 @@ func (h *Horizon) Mark(ctx context.Context) (Mark, error) {
 // above it, so when it is above $1 it answers that: every comparison the caller makes with it then
 // comes out as it would with the oldest event writer's own id. Only otherwise does it read the
 // event writers (eventWritersSQL), and pg_locks with them, the one part of the read whose cost
-// grows with the locks held on the whole instance. pg_stat_activity is read fresh here: a
-// transaction caches its first read of it, and neither caller reads it earlier in the transaction.
-// A backend that has taken its transaction id has stored it where pg_stat_activity reads it before
-// any later transaction id is handed out, so an event writer whose id is below the observer's is
-// listed. Ids are 32-bit in both views; each is widened against the snapshot's xmax, which no
-// running id is more than 2^31 from.
+// grows with the locks held on the whole instance, and then the prepared transactions again. Each
+// step reads the backends before the prepared transactions (a union all reads its branches in
+// order): a transaction that prepares is listed in pg_prepared_xacts before it leaves its backend,
+// since Postgres marks the prepared transaction valid before it moves the transaction's locks to
+// it (pg_locks shows those with no pid, so eventWritersSQL leaves them out) and clears its
+// transaction id from the backend. An event writer that prepares while a step runs is therefore
+// in that step's read of the backends or in its read of the prepared transactions after it. The
+// second step reads them afresh rather than reuse the first step's copy: an event writer that
+// prepared after that copy was read and before pg_locks was is in neither of those two reads.
+// pg_stat_activity is read fresh here: a transaction caches its first read of it, and neither
+// caller reads it earlier in the transaction. A backend that has taken its transaction id has
+// stored it where pg_stat_activity reads it before any later transaction id is handed out, so an
+// event writer whose id is below the observer's is listed. Ids are 32-bit in every view; each is
+// widened against the snapshot's xmax, which no running id is more than 2^31 from.
 const oldestEventWriterSQL = `
 	with next as (
 		select pg_snapshot_xmax(pg_current_snapshot())::text::numeric as nx
@@ -632,7 +640,7 @@ const oldestEventWriterSQL = `
 		from (
 			select w.transactionid::text::numeric as x from (` + eventWritersSQL + `) w
 			union all
-			select x from prepared
+			select transaction::text::numeric from pg_prepared_xacts where database = current_database()
 		) held, next
 	)
 	select (case

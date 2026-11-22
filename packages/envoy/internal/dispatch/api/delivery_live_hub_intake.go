@@ -15,9 +15,9 @@ import (
 // intake moves g's change-log cursor and applies the relay's events, until g ends.
 //
 // ready closes once the change log's cursor is read. The relay subscription the events arrive on
-// waits for a safe horizon (firstRelayCursor), which a transaction holding an id anywhere on the
-// Postgres instance holds back for as long as it stays open, and neither the worker's answers nor
-// the change log depend on it, so it is taken on a goroutine of its own (seedEvents) and handed to
+// waits for a safe horizon (firstRelayCursor), which an event write of Dispatch's own database
+// holds back for as long as it stays open, and neither the worker's answers nor the change log
+// depend on it, so it is taken on a goroutine of its own (seedEvents) and handed to
 // this one (applyFeed). Until it is, the hub acts on no event; the subscription's head, read
 // before the open P0 issues it arrives with, is what leaves no gap: every event at or below the
 // head was committed and is final before the reads that follow it (those P0 issues, each view's

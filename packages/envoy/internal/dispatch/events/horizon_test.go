@@ -586,44 +586,12 @@ func TestAnObservationReadsTheEventWritersAfterItsMark(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	before := commitHorizonEvent(ctx, t, database)
-	gate, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the gate: %v", err)
-	}
-	t.Cleanup(func() { _ = gate.Rollback(context.Background()) })
-	if _, err := gate.Exec(ctx, `select pg_advisory_xact_lock($1)`, pausedObservationLock); err != nil {
-		t.Fatalf("take the gate's lock: %v", err)
-	}
+	gate := holdObservationGate(ctx, t, database)
 	db := &pausedHorizonDB{HorizonDB: database.Pool}
 	db.armed.Store(true)
 	horizon := NewHorizon(db)
-	type answer struct {
-		safe int64
-		err  error
-	}
-	answered := make(chan answer, 1)
-	go func() {
-		safe, err := horizon.Safe(ctx)
-		answered <- answer{safe, err}
-	}()
-	deadline := time.Now().Add(10 * time.Second)
-	// The wait is for this database's waiter on the gate's own key: a waiter on an advisory lock
-	// in another database of the shared server would end it before the observation reached the
-	// gate, and the test would then pass with the two reads swapped.
-	for waiting := false; !waiting; {
-		if err := database.Pool.QueryRow(ctx, `
-			select exists (select 1 from pg_locks
-				where locktype = 'advisory' and not granted
-					and database = (select oid from pg_database where datname = current_database())
-					and classid = 0 and objid = $1 and objsubid = 1)
-		`, pausedObservationLock).Scan(&waiting); err != nil {
-			t.Fatalf("read whether the observation waits on the gate: %v", err)
-		}
-		if !waiting && time.Now().After(deadline) {
-			t.Fatal("the observation did not reach the gate between its two reads within 10 s")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	answered := safeInBackground(ctx, horizon)
+	awaitObservationAtGate(ctx, t, database, "between its two reads")
 	writer, _ := openEventWriter(ctx, t, database)
 	open := insertHorizonEvent(ctx, t, writer)
 	committed := commitHorizonEvent(ctx, t, database)
@@ -643,14 +611,163 @@ func TestAnObservationReadsTheEventWritersAfterItsMark(t *testing.T) {
 	}
 }
 
+// An event writer that prepares its transaction (PREPARE TRANSACTION) leaves its backend: Postgres
+// lists it in pg_prepared_xacts, then moves its locks to the prepared transaction, which pg_locks
+// shows with no pid, so from then on the read of the event writers finds it only among the
+// prepared transactions. That read lists them after it has read pg_locks. A list read before
+// pg_locks and used again after it misses a writer that prepared between the two, and the
+// observation then proves an id above the writer's open event. Here the writer takes its
+// transaction id and inserts an event, a higher event commits, and the observation then waits
+// inside its read of the event writers, after its first step and before pg_locks
+// (pausedHorizonDB.withinWriters), on an advisory lock the test holds, while the writer prepares.
+// The horizon must stay below the writer's event until it commits. The server must allow
+// prepared transactions (max_prepared_transactions above 0). An event insert notifies
+// dispatch_events (the events_notify trigger), and Postgres refuses to prepare a transaction that
+// has notified, so only an event write that bypassed that trigger can prepare: the writer here
+// bypasses it as a logical replication apply worker does (session_replication_role = replica).
+func TestAnObservationFindsAnEventWriterThatPreparesDuringItsRead(t *testing.T) {
+	database := storetest.Open(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	var allowed int
+	if err := database.Pool.QueryRow(ctx, `select current_setting('max_prepared_transactions')::int`).Scan(&allowed); err != nil {
+		t.Fatalf("read max_prepared_transactions: %v", err)
+	}
+	if allowed == 0 {
+		t.Skip("the server runs with max_prepared_transactions = 0, so PREPARE TRANSACTION fails; " +
+			"start it with -c max_prepared_transactions=10 to run this test")
+	}
+	if n := strings.Count(oldestEventWriterSQL, observerXactIDCall); n != 1 {
+		t.Fatalf("oldestEventWriterSQL calls %s %d times, not once between its two steps: the test cannot pause it there",
+			observerXactIDCall, n)
+	}
+	if _, err := database.Pool.Exec(ctx, fmt.Sprintf(`
+		create function %s() returns xid8 language plpgsql as $$
+		begin
+			perform pg_advisory_xact_lock(%d);
+			return pg_current_xact_id_if_assigned();
+		end
+		$$
+	`, pausedXactIDFunction, pausedObservationLock)); err != nil {
+		t.Fatalf("create %s: %v", pausedXactIDFunction, err)
+	}
+
+	writer, writerXid := openEventWriter(ctx, t, database)
+	if _, err := writer.Exec(ctx, `set local session_replication_role = replica`); err != nil {
+		t.Fatalf("turn the event writer's triggers off: %v", err)
+	}
+	open := insertHorizonEvent(ctx, t, writer)
+	committed := commitHorizonEvent(ctx, t, database)
+	gate := holdObservationGate(ctx, t, database)
+	db := &pausedHorizonDB{HorizonDB: database.Pool, withinWriters: true}
+	db.armed.Store(true)
+	horizon := NewHorizon(db)
+	answered := safeInBackground(ctx, horizon)
+	awaitObservationAtGate(ctx, t, database, "inside its read of the event writers")
+	// A prepared transaction's name is the server's, not the database's, and so is a transaction
+	// id: a name made from the writer's id is one no other test's prepared transaction has.
+	gid := fmt.Sprintf("horizon-test-%d", writerXid)
+	if _, err := writer.Exec(ctx, "prepare transaction '"+gid+"'"); err != nil {
+		t.Fatalf("prepare the event writer's transaction: %v", err)
+	}
+	t.Cleanup(func() { _, _ = database.Pool.Exec(context.Background(), "rollback prepared '"+gid+"'") })
+	if err := gate.Rollback(ctx); err != nil {
+		t.Fatalf("release the gate: %v", err)
+	}
+	got := <-answered
+	if got.err != nil || got.safe >= open {
+		t.Fatalf("Safe of an observation during whose read the writer of event %d prepared = %d, %v; want below %d (event %d committed above it)",
+			open, got.safe, got.err, open, committed)
+	}
+	requireHorizonBelow(ctx, t, horizon, open)
+	if _, err := database.Pool.Exec(ctx, "commit prepared '"+gid+"'"); err != nil {
+		t.Fatalf("commit the prepared event write: %v", err)
+	}
+	if safe, err := horizon.Await(ctx); err != nil || safe < committed {
+		t.Fatalf("Await once the prepared write committed = %d, %v; want at least %d", safe, err, committed)
+	}
+}
+
+// observationAnswer is what Safe answered on the goroutine safeInBackground ran it on.
+type observationAnswer struct {
+	safe int64
+	err  error
+}
+
+// safeInBackground runs horizon.Safe on a goroutine of its own and sends its answer on the channel
+// it returns.
+func safeInBackground(ctx context.Context, horizon *Horizon) <-chan observationAnswer {
+	answered := make(chan observationAnswer, 1)
+	go func() {
+		safe, err := horizon.Safe(ctx)
+		answered <- observationAnswer{safe, err}
+	}()
+	return answered
+}
+
+// holdObservationGate takes the advisory lock pausedObservationLock in a transaction of its own and
+// returns that transaction: a pausedHorizonDB's observation waits on the lock until it ends.
+func holdObservationGate(ctx context.Context, t *testing.T, database *store.Store) pgx.Tx {
+	t.Helper()
+	gate, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the gate: %v", err)
+	}
+	t.Cleanup(func() { _ = gate.Rollback(context.Background()) })
+	if _, err := gate.Exec(ctx, `select pg_advisory_xact_lock($1)`, pausedObservationLock); err != nil {
+		t.Fatalf("take the gate's lock: %v", err)
+	}
+	return gate
+}
+
+// awaitObservationAtGate waits, for up to 10 s, until a backend of this database waits on the
+// gate's lock (holdObservationGate): the paused observation has reached the gate. where names the
+// place the observation waits at, for the failure.
+//
+// The wait is for this database's waiter on the gate's own key: a waiter on an advisory lock in
+// another database of the shared server would end it before the observation reached the gate, and
+// the test would then pass with the order it checks broken.
+func awaitObservationAtGate(ctx context.Context, t *testing.T, database *store.Store, where string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for waiting := false; !waiting; {
+		if err := database.Pool.QueryRow(ctx, `
+			select exists (select 1 from pg_locks
+				where locktype = 'advisory' and not granted
+					and database = (select oid from pg_database where datname = current_database())
+					and classid = 0 and objid = $1 and objsubid = 1)
+		`, pausedObservationLock).Scan(&waiting); err != nil {
+			t.Fatalf("read whether the observation waits on the gate: %v", err)
+		}
+		if !waiting && time.Now().After(deadline) {
+			t.Fatalf("the observation did not reach the gate %s within 10 s", where)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // pausedObservationLock is the advisory lock key a pausedHorizonDB's observation waits on.
 const pausedObservationLock = 4913
 
-// pausedHorizonDB, once armed, adds one statement to the next observation between its two reads,
-// which waits on the advisory lock pausedObservationLock, and passes every other batch through.
+// observerXactIDCall is the call oldestEventWriterSQL makes between its two steps, for the
+// observer's own transaction id.
+const observerXactIDCall = "pg_current_xact_id_if_assigned()"
+
+// pausedXactIDFunction names the function a pausedHorizonDB with withinWriters set calls in place
+// of observerXactIDCall: it waits on pausedObservationLock, then answers that call. The test that
+// sets withinWriters creates it in its database.
+const pausedXactIDFunction = "horizon_test_paused_xact_id"
+
+// pausedHorizonDB, once armed, holds the next observation on the advisory lock
+// pausedObservationLock and passes every other batch through. It holds the observation between
+// its two reads, with one statement added there that waits on the lock, or, with withinWriters
+// set, inside its read of the event writers (oldestEventWriterSQL), which then calls
+// pausedXactIDFunction in place of observerXactIDCall: after the read's first step has read the
+// backends and the prepared transactions, and before its second reads pg_locks.
 type pausedHorizonDB struct {
 	HorizonDB
-	armed atomic.Bool
+	armed         atomic.Bool
+	withinWriters bool
 }
 
 func (db *pausedHorizonDB) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults {
@@ -659,10 +776,17 @@ func (db *pausedHorizonDB) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.
 	}
 	paused := &pgx.Batch{}
 	for index, query := range batch.QueuedQueries {
-		if index == 3 {
+		sql := query.SQL
+		switch {
+		case index == 3 && db.withinWriters:
+			sql = strings.Replace(sql, observerXactIDCall, pausedXactIDFunction+"()", 1)
+		case index == 3:
 			paused.Queue(`select pg_advisory_xact_lock($1)`, pausedObservationLock)
 		}
-		paused.Queue(query.SQL, query.Arguments...)
+		paused.Queue(sql, query.Arguments...)
+	}
+	if db.withinWriters {
+		return db.HorizonDB.SendBatch(ctx, paused)
 	}
 	return &pausedResults{BatchResults: db.HorizonDB.SendBatch(ctx, paused)}
 }

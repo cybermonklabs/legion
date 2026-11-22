@@ -36,8 +36,8 @@ func readEventLogPage(t *testing.T, handler http.Handler, query string) ([]event
 }
 
 // readEventLogBehindHorizon reads the event log's first page until holds accepts it: the log
-// answers only the events at or below the server's safe horizon (sinceHorizon), which a
-// transaction held anywhere on the Postgres instance keeps back (awaitHorizonRead).
+// answers only the events at or below the server's safe horizon (sinceHorizon), which an event
+// write of the server's database keeps back for as long as it stays open (awaitHorizonRead).
 func readEventLogBehindHorizon(t *testing.T, handler http.Handler, database *store.Store, what string, holds func([]eventLogRow) bool) ([]eventLogRow, map[int64]json.RawMessage) {
 	t.Helper()
 	type page struct {

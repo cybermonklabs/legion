@@ -457,10 +457,10 @@ func awaitSinceRead(
 }
 
 // awaitHorizonRead reads again until holds accepts the answer, for a route that answers only what
-// stands at or below the event log's safe horizon (sinceHorizon): any transaction holding a
-// transaction id on the Postgres instance holds that horizon back - in this package, storetest's
-// own "create database … template …" and "drop database … with (force)" transactions
-// (storetest.Open and storetest's dropDatabase), and on CI's one Postgres every other package's.
+// stands at or below the event log's safe horizon (sinceHorizon): an event write of the server's
+// database holds that horizon back for as long as it stays open - the test's own fixtures, the
+// server's own request writes - and a transaction in another database, or one that writes no
+// event, holds nothing (events.Horizon).
 // Such a read waits out referencesSinceWait and then answers at the horizon it was left with,
 // which may be short of what committed before it, so it is read again for as long as the horizon
 // says it is held back (horizontest.Watch), however long that is; database is the one the server

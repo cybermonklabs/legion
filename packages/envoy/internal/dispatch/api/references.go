@@ -45,10 +45,10 @@ func (s *server) queueAskParts(
 }
 
 // referencesSinceWait bounds how long a since read waits for the safe horizon to pass every event
-// committed before the read (events.Horizon.Await). Only a transaction held open on the Postgres
-// instance keeps the horizon back that long, and a poller would rather have the mentions at or
-// below the horizon now, and the rest on its next read, than an answer that waits on someone
-// else's transaction for as long as it stays open.
+// committed before the read (events.Horizon.Await). Only an event write of Dispatch's own database
+// held open that long keeps the horizon back that long: the horizon waits on no other
+// transaction. A poller would rather have the mentions at or below the horizon now, and the rest
+// on its next read, than an answer that waits on another event write for as long as it stays open.
 const referencesSinceWait = time.Second
 
 // getReferences reads one node's edges in the reference graph: ?to= lists every edge pointing

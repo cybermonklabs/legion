@@ -57,10 +57,10 @@ const EventsChannel = "dispatch_events"
 // eventGapReread schedules a generation's re-read while a gap stands open above the safe horizon
 // (run), on the cadence the horizon's package documentation describes ("Cadence"): at once when
 // the read's own observation is the only one unproven (events.GapUnproven), since observing again
-// proves it unless an older transaction id is still running; otherwise (events.GapHeld) on the
-// next commit notification, read without the coalescing window (eager), or after the fallback
-// delay (eventRelayGapMin to eventRelayGapMax), whichever comes first. Nothing is scheduled while
-// no gap is open, so an idle generation observes nothing.
+// proves it unless an event write of this database older than its observer is still open;
+// otherwise (events.GapHeld) on the next commit notification, read without the coalescing window
+// (eager), or after the fallback delay (eventRelayGapMin to eventRelayGapMax), whichever comes
+// first. Nothing is scheduled while no gap is open, so an idle generation observes nothing.
 //
 // The re-reads it asks for at once are bounded by the event log's own commits: a read gets one
 // only when the horizon moved since the read before (or the gap is new), and the horizon moves
@@ -416,15 +416,16 @@ func (g *relayGeneration) onConnected() { signal(g.wake) }
 //
 // A read that leaves a gap open above the horizon (an observed id the horizon does not yet cover)
 // schedules a re-read of its own on the horizon's cadence (eventGapReread): at once when its own
-// observation is the only one unproven, which the next observation proves unless an older
-// transaction id is still running; and while an older transaction holds the gap, on that
-// transaction's commit notification, read at once, or after the fallback delay, eventRelayGapMin
-// doubling to eventRelayGapMax while the horizon stands still and back to eventRelayGapMin
-// whenever it moves. Nothing is scheduled while no gap is open, so an idle generation observes
-// nothing. A gap re-read skips the reset check: it asks only whether the horizon has moved, on
-// the horizon's own connection, and reads the shared pool only once there is something to
-// publish, so a gap held open by a long transaction costs no request a connection. A reset is
-// still caught at the next notification, which the refill's own inserts send.
+// observation is the only one unproven, which the next observation proves unless an event write
+// of this database older than its observer is still open; and while such an older event write
+// holds the gap, on that write's commit notification, read at once, or after the fallback delay,
+// eventRelayGapMin doubling to eventRelayGapMax while the horizon stands still and back to
+// eventRelayGapMin whenever it moves. Nothing is scheduled while no gap is open, so an idle
+// generation observes nothing. A gap re-read skips the reset check: it asks only whether the
+// horizon has moved, on the horizon's own connection, and reads the shared pool only once there
+// is something to publish, so a gap held open by a long event write costs no request a
+// connection. A reset is still caught at the next notification, which the refill's own inserts
+// send.
 func (r *eventStreamRelay) run(ctx context.Context, g *relayGeneration) {
 	gaps := eventGapReread{first: r.gapFallback}
 	defer gaps.stop()
