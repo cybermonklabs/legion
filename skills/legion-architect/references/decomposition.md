@@ -21,7 +21,8 @@ one of the codes below writes nothing: release the rest again without the child 
   controller.
 - `ISSUE_NOT_OWNED`: the issue is another architect's; send the move to the architect above you.
 - `CHILD_UNDER_ACCEPTED_PARENT`: an ancestor is already accepted. Ask the role that holds its
-  phase to take it back with `request_backward_move`, or release once it has closed.
+  phase to take it back with `request_backward_move`, or, where it is not the tree's root, release
+  once it has closed.
 
 ## Creating children
 
