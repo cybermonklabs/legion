@@ -652,9 +652,7 @@ func sessionPeerShim() int {
 		fmt.Fprintln(os.Stderr, "shim stand-in:", err)
 		return 1
 	}
-	// A short end's line is already on the shim's standard error, in the launcher's log the case
-	// prints.
-	args, _ := reentryUntil(plan.End, "TestSessionPeerStandInHelper")
+	args := reentryUntil(plan.End, "TestSessionPeerStandInHelper")
 	agent := exec.Command(self, args...)
 	agent.Env = append(os.Environ(), peerStandInEnv+"=agent")
 	agent.Stdout, agent.Stderr = os.Stdout, os.Stderr

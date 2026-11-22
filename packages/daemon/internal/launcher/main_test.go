@@ -78,29 +78,21 @@ func TestMain(m *testing.M) {
 //
 // So a test waits for a child it re-entered to end with no bound of its own (cmd.Wait,
 // CombinedOutput): the child's -test.timeout ends it, its alarm's goroutine dump in its output, and
-// each child of its own ends before it, so its failure, its cleanups and its alarm all reach the
-// test while the test still waits, and nothing of it outlives the test. A bound of the test's own
-// there, beforeDeadline say, would give up on the child 25 s before the child's own end, kill it
-// without its report, and leave its own children running. A wait for something the child does
-// short of its end is an ordinary hang guard: the child's own waits end before it, and the case's
-// cleanup ends the child.
+// each child of its own that is re-entered ends before it, so its failure, its cleanups and its
+// alarm all reach the test while the test still waits. A bound of the test's own there,
+// beforeDeadline say, would give up on the child 25 s before the child's own end and kill it
+// without its report. A wait for something the child does short of its end is an ordinary hang
+// guard: the child's own waits end before it, and the case's cleanup ends the child. What the child
+// starts that is not re-entered ends with it only where the child sees to that: a PID namespace the
+// child is PID 1 of, or a parent-death signal, as the role stage's sleep outside the role has.
 //
-// A child that would get less than beforeDeadlineMargin, the 30 s its own waits keep back, would
-// start with waits that end at once and fail on whatever fact it asked first. It is still started,
-// with what is left, and t fails on the line reentryUntil writes, which names the deadline: what
-// fails is the time the starter had left, not the fact the child had no time to wait for. So a
-// starter needs reentryMargin and beforeDeadlineMargin, 35 s, left to start a child whose waits can
-// wait at all. reentryUntil writes the line to standard error as well, because the starter may be
-// a re-entered process itself, the role stage say, whose parent prints what it wrote, while t's own
-// report of the line comes only once its test returns, which a helper that ends by os.Exit never
-// does (exitHelper). So in the test process the line shows twice. t.Error rather than t.Fatal,
-// because a launcher may call this from a goroutine of its own (roleInitHelperLaunch).
+// A child started with too little time is still started, with what is left (reentryUntil), and
+// fails at its first wait bounded by beforeDeadline, on a line that names its deadline; a child
+// with no such wait that runs out of time ends at its own alarm, whose panic names its timeout. So
+// no starter checks the time up front: what a child with little time does depends on whether it
+// waits at all.
 func reentry(t *testing.T, helper string) []string {
-	args, short := reentryUntil(reentryEnd(t), helper)
-	if short != "" {
-		t.Error(short)
-	}
-	return args
+	return reentryUntil(reentryEnd(t), helper)
 }
 
 // reentryMargin is how much of its deadline a test keeps back from a child it re-enters: the time
@@ -125,29 +117,19 @@ func reentryEnd(t *testing.T) time.Time {
 // reentryUntil is reentry for a child that must end by end, the zero time for no end. The timeout
 // is whole seconds, so no command line of the package's gains digits a test reads /proc for (the
 // role stage's detached sleep), and one second at least, so a child started at or after end ends
-// at once rather than with no deadline, which a -test.timeout of 0 would be. When the child would
-// get less than beforeDeadlineMargin (reentry), it also answers the line that names the deadline,
-// which it has written to standard error; otherwise "". The session peer's shim calls it with the
-// end its plan carries, so a short agent of the shim's is named there too.
-func reentryUntil(end time.Time, helper string) ([]string, string) {
+// at once rather than with no deadline, which a -test.timeout of 0 would be. The session peer's
+// shim calls it with the end its plan carries.
+func reentryUntil(end time.Time, helper string) []string {
 	args := []string{"-test.run=^" + helper + "$"}
 	if end.IsZero() {
-		return args, ""
+		return args
 	}
-	left := time.Until(end)
-	var short string
-	if left < beforeDeadlineMargin {
-		deadline := end.Add(reentryMargin)
-		short = fmt.Sprintf("%s started %s before the test binary's deadline (%s): after the %s its starter keeps back, it has less than the %s its own waits keep back, so they would end at once",
-			helper, time.Until(deadline).Round(time.Millisecond), deadline.Format(time.RFC3339), reentryMargin, beforeDeadlineMargin)
-		fmt.Fprintln(os.Stderr, short)
-	}
-	return append(args, "-test.timeout="+max(left.Truncate(time.Second), time.Second).String()), short
+	return append(args, "-test.timeout="+max(time.Until(end).Truncate(time.Second), time.Second).String())
 }
 
 // exitHelper ends a helper test that runs as a process of its own and ends by os.Exit: with 0, or
 // with 1 when t has failed. os.Exit never returns to the test framework, so without it a failure t
-// recorded there, as reentry records a child it started with too little time, would end as a pass.
+// recorded there with t.Error would end as a pass.
 func exitHelper(t *testing.T) {
 	if t.Failed() {
 		os.Exit(1)
