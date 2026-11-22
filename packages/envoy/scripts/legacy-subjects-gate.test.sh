@@ -24,15 +24,35 @@
 # stays skipped, its NATS_URLS printed with any credential masked, and makes the reading UNKNOWN
 # when it serves as the machine of a listener read (its machine read trimmed, as the listener reads
 # it), or sets its machine as no literal value (a $(VAR) reference among them), and a container that
-# lists ENVOY_MACHINE_ID or NATS_URLS twice makes it UNKNOWN too. Every case runs from the same
-# clean fixture with one thing changed, so each fails for its own reason. The old-form rule itself
-# is held row by row. The summary counts cases.
+# lists ENVOY_MACHINE_ID or NATS_URLS twice makes it UNKNOWN too. At a second reading it reads the
+# four facts, each with a case that shuts the gate or makes it UNKNOWN for that fact alone: a pin
+# behind the new-form commit (a1), a census of pins that read none, a connected client at an older
+# build (a2), a connection that names no build, a hub server that does not answer the census, a
+# census with no connection, a consumer that has not acknowledged the last old-form message it
+# takes (b), a session's as well as a daemon's, an empty consumer list, and an old-form message
+# still on the stream (c); new pins with one older client still connected keep the gate shut, and
+# the purge driver refuses that reading. Every case runs from the same clean fixture with one thing
+# changed, so each fails for its own reason. The old-form rule itself is held row by row. The
+# summary counts cases.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-gate="$here/legacy-subjects-gate.sh"
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
+# The gate runs from a copy of this directory's gate and lib/, beside a fake daemon-release-gate.sh
+# (the census of pinned builds (a1) reads), which records its arguments in $FAKE/release-gate.args,
+# prints $FAKE/release-gate.out and exits $FAKE/release-gate.rc (0 when absent).
+mkdir -p "$root/gate/lib"
+cp "$here/legacy-subjects-gate.sh" "$root/gate/"
+cp "$here"/lib/legacy-subjects-gate-*.* "$root/gate/lib/"
+cat >"$root/gate/daemon-release-gate.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >"$FAKE/release-gate.args"
+cat "$FAKE/release-gate.out"
+exit "$(cat "$FAKE/release-gate.rc" 2>/dev/null || echo 0)"
+EOF
+chmod +x "$root/gate/daemon-release-gate.sh"
+gate="$root/gate/legacy-subjects-gate.sh"
 passed=0
 failed=0
 
@@ -64,7 +84,21 @@ case "$*" in
   "get pods --all-namespaces -o json")
     [ ! -e "$FAKE/pods.fail" ] || { echo "error: You must be logged in to the server (Unauthorized)" >&2; exit 1; }
     cat "$FAKE/pods.json" ;;
-  "-n envoy logs job/"*) cat "$FAKE/job.log" ;;
+  "-n envoy logs job/"*)
+    # The census rows name the census connection by the name the gate drew for this reading,
+    # which the Job was created with (CENSUS_NAME); the fixture writes @CENSUS_NAME@ for it.
+    census=$(jq -r '[.spec.template.spec.containers[0].env[]? | select(.name == "CENSUS_NAME") | .value] | first // "no-census-name"' "$FAKE/created-job.json" 2>/dev/null)
+    while IFS= read -r row; do
+      if [ "$(cut -f1 <<<"$row")" = census ]; then
+        out=$(cut -f4 <<<"$row" | base64 -d | sed "s/@CENSUS_NAME@/${census:-no-census-name}/g" | base64 -w 0)
+        printf '%s\t%s\t%s\t%s\t%s\n' census "$(cut -f2 <<<"$row")" "$(cut -f3 <<<"$row")" "$out" "$(cut -f5 <<<"$row")"
+      else
+        printf '%s\n' "$row"
+      fi
+    done <"$FAKE/job.log" ;;
+  "-n envoy get statefulset envoy-nats -o json")
+    [ ! -e "$FAKE/statefulset.fail" ] || { echo 'Error from server (NotFound): statefulsets.apps "envoy-nats" not found' >&2; exit 1; }
+    cat "$FAKE/statefulset.json" ;;
   "-n "*" logs "*" -c "*" --since=5m")
     ns=$2
     pod=$4
@@ -89,6 +123,18 @@ case "$*" in
   *) echo "fake kubectl: no answer for: $*" >&2; exit 99 ;;
 esac
 EOF
+cat >"$root/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+# A fake gh for `gh api repos/cybermonklabs/legion/compare/<base>...<head> --jq <filter>`, answering
+# from $FAKE/compare/<head> and recording the call in $FAKE/calls.
+set -u
+printf 'gh %s\n' "$*" >>"$FAKE/calls"
+[ "$1" = api ] && [ "$3" = --jq ] || { echo "fake gh: no answer for: $*" >&2; exit 99; }
+head=${2##*...}
+if [ -f "$FAKE/compare/$head" ]; then jq -c "$4" "$FAKE/compare/$head"
+else echo "gh: Not Found (HTTP 404)" >&2; exit 1
+fi
+EOF
 cat >"$root/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 # A fake curl for `curl -sS --max-time N -o FILE -w '%{http_code}' URL`, answering URL from
@@ -111,7 +157,7 @@ if [ -f "$FAKE/outside/$host" ]; then cp "$FAKE/outside/$host" "$out"; printf 20
 else echo "curl: (7) Failed to connect to $host port 9020" >&2; exit 7
 fi
 EOF
-chmod +x "$root/bin/kubectl" "$root/bin/curl"
+chmod +x "$root/bin/kubectl" "$root/bin/curl" "$root/bin/gh"
 
 # --- the clean fixture ----------------------------------------------------------------------------
 readonly envoy_image="ghcr.io/cybermonklabs/legion/envoy@sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -166,13 +212,15 @@ line() {
   printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$(printf '%s' "$4" | base64 -w 0)" "$(printf '%s' "$5" | base64 -w 0)"
 }
 
-# consumer NAME FILTERS(JSON) [PUSH_BOUND [INACTIVE_THRESHOLD_NS]] prints one ConsumerInfo.
+# consumer NAME FILTERS(JSON) [PUSH_BOUND [INACTIVE_THRESHOLD_NS [ACK_FLOOR_STREAM_SEQ]]] prints one
+# ConsumerInfo, its ack floor at stream sequence 900 unless ACK_FLOOR_STREAM_SEQ is given.
 consumer() {
-  jq -cn --arg name "$1" --argjson filters "$2" --argjson bound "${3:-null}" --argjson lapse "${4:-null}" '
+  jq -cn --arg name "$1" --argjson filters "$2" --argjson bound "${3:-null}" --argjson lapse "${4:-null}" --argjson floor "${5:-900}" '
     {stream_name: "ENVOY_NOTIFICATIONS", name: $name,
      config: ({durable_name: $name} + (if ($filters | length) == 1 then {filter_subject: $filters[0]} else {filter_subjects: $filters} end)
        + (if $lapse == null then {} else {inactive_threshold: $lapse} end)),
-     delivered: {consumer_seq: 40, stream_seq: 900, last_active: "2026-11-20T23:59:00Z"}}
+     delivered: {consumer_seq: 40, stream_seq: 900, last_active: "2026-11-20T23:59:00Z"},
+     ack_floor: {consumer_seq: 40, stream_seq: $floor, last_active: "2026-11-20T23:59:00Z"}}
     + (if $bound == null then {} else {push_bound: $bound} end)'
 }
 
@@ -234,6 +282,34 @@ clean_consumers() {
   consumer listener-envoy-hub '["notifications.agent.>","notifications.dispatch.>"]' true "$durable_lapse_ns"
 }
 
+# The four facts' fixture. new_form is the commit from which every client writes only new-form
+# names; newer is a later one. Each build a connection names has its compare with new_form in
+# $FAKE/compare/<head>.
+readonly new_form=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+readonly newer=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+
+# conn CID NAME [USER] prints one connection as the census Job prints it.
+conn() {
+  jq -cn --argjson cid "$1" --arg name "$2" --arg user "${3:-UCLIENT}" \
+    '{cid: $cid, name: $name, account: "ENVOY", lang: "go", version: "1.55.0", authorized_user: $user}'
+}
+
+# census_reply SERVER [CONNECTION...] prints one server's census answer as the Job prints it.
+census_reply() {
+  local server=$1
+  shift
+  printf '%s\n' "$@" | jq -cs --arg s "$server" 'map(select(. != null)) as $c
+    | {server: {name: $s, id: "N\($s)"}, error: null, data: {total: ($c | length), offset: 0, limit: 1024, connections: $c}}'
+}
+
+# clean_census prints the clean fleet's census: on each of the hub's three servers, connections
+# that each name a build at or after new_form, the census connection's own among them.
+clean_census() {
+  census_reply envoy-nats-0 "$(conn 11 "envoy legion@$new_form")" "$(conn 12 "omp-ses_a @sjawhar/pi-envoy@21.0.0")" "$(conn 13 "@CENSUS_NAME@" UCENSUS)"
+  census_reply envoy-nats-1 "$(conn 21 "legion-daemon ACME legion@$newer")" "$(conn 22 "dispatch legion@$new_form")"
+  census_reply envoy-nats-2 "$(conn 31 "claude-envoy-channel-ses_b @sjawhar/claude-envoy@6.0.0")"
+}
+
 # job_log CONSUMERS_PAGE ISSUE_SUBJECTS_PAGE [INTEREST_KEYS] prints a whole Job log.
 job_log() {
   local keys=${3-$'ses_a\nses_b\n'}
@@ -251,6 +327,7 @@ job_log() {
     line interest ses_a 0 "$(interest ses_a notifications.agent.ses_a 'notifications.dispatch.issue.ACME.ACME-12.>')" ""
     line interest ses_b 0 "$(interest ses_b notifications.agent.ses_b notifications.team.deploy-squad)" ""
   fi
+  line census 0 0 "$(clean_census)" ""
   printf 'end\t-\t0\t\t\n'
 }
 
@@ -283,6 +360,19 @@ jq -n '{spec: {template: {spec: {
     volumeAttributes: {secretProviderClass: "envoy-listener-nats-seed"}}}]}}}}' >"$base/deployment.json"
 echo '{"status":{"succeeded":1}}' >"$base/job-status.json"
 job_log "$(consumers_page "$(clean_consumers)")" "$(clean_issue_subjects)" >"$base/job.log"
+jq -n '{metadata: {name: "envoy-nats"}, spec: {replicas: 3}, status: {replicas: 3, currentRevision: "envoy-nats-7d9", updateRevision: "envoy-nats-7d9"}}' >"$base/statefulset.json"
+printf '%s\n' "PASS: ACME's image ghcr.io/example/worker@sha256:1111 runs pi-envoy and claude-envoy at $new_form" \
+  "PASS: the sessions image ghcr.io/example/sessions@sha256:2222 runs pi-envoy and claude-envoy at $newer" "GATE OPEN" >"$base/release-gate.out"
+mkdir -p "$base/compare"
+echo '{"status":"identical","behind_by":0}' >"$base/compare/$new_form"
+for head in "$newer" pi-envoy-v21.0.0 claude-envoy-v6.0.0; do
+  echo '{"status":"ahead","behind_by":0}' >"$base/compare/$head"
+done
+echo '{"status":"behind","behind_by":12}' >"$base/compare/pi-envoy-v19.0.0"
+
+# facts are the four facts' flags a second reading takes.
+readonly facts=(--deployment example/deploy --new-form-commit "$new_form" --census-seed-class envoy-census-seed
+  --census-seed-file census.nk --hub-statefulset envoy-nats)
 
 # --- running a case -------------------------------------------------------------------------------
 # new_case NAME copies the clean fixture into a fresh case directory, sets FAKE to it and names the
@@ -306,9 +396,11 @@ run_gate() {
 }
 
 # reading [ARG...] runs the gate as a reading of the case, with the hub's listener named, writing
-# $FAKE/record.json.
+# $FAKE/record.json; a second reading (--since) takes the four facts' flags too.
 reading() {
-  run_gate --context example-cluster --record "$FAKE/record.json" --listener envoy-hub=https://envoy-hub.example-tailnet.ts.net:9020 "$@"
+  local extra=()
+  case " $* " in *" --since "*) extra=("${facts[@]}") ;; esac
+  run_gate --context example-cluster --record "$FAKE/record.json" --listener envoy-hub=https://envoy-hub.example-tailnet.ts.net:9020 "$@" ${extra[@]+"${extra[@]}"}
 }
 
 # replace_row LEG ARG [LINE...] replaces, in the case's Job log, the one row that is the read LEG of
@@ -365,10 +457,17 @@ first_reading_of() {
 first_reading_with() {
   local hours=$1
   shift
+  first_reading_secs "$((hours * 3600))" "$@"
+}
+
+# first_reading_secs SECONDS_AGO READER [ARG...] is first_reading_with, moved SECONDS_AGO seconds.
+first_reading_secs() {
+  local seconds=$1
+  shift
   "$@"
   [ "$status" = 4 ] || fail "the first reading exited $status, want 4 (FIRST READING); output:"$'\n'"$output"
   if [ -f "$FAKE/record.json" ]; then
-    jq --argjson s "$((hours * 3600))" '.started_at -= $s | .finished_at -= $s | .read_at = (.started_at | todate)
+    jq --argjson s "$seconds" '.started_at -= $s | .finished_at -= $s | .read_at = (.started_at | todate)
       | .listeners |= map(.read_at -= $s)' "$FAKE/record.json" >"$FAKE/earlier.json"
   fi
   rm -f "$FAKE/record.json"
@@ -560,7 +659,11 @@ done_case
 new_case "a clean fleet's first reading is a first reading, never GATE OPEN"
 reading
 expect_status 4
-expect_last "FIRST READING: $FAKE/record.json holds a first reading of every surface, with 0 FOUND line(s) naming old-form names still in use; read again at or after $(jq -r '(.finished_at + 259200 + 180) | todate' "$FAKE/record.json") with --since $FAKE/record.json: that reading opens only if the stream then holds no old-form message (none after stream sequence 900), no listener's count moved, and no interest record or consumer filter holds an old form"
+expect_last "FIRST READING: $FAKE/record.json holds a first reading of every surface, with 0 FOUND line(s) naming old-form names still in use; read again at or after $(jq -r '(.finished_at + 180) | todate' "$FAKE/record.json") with --since $FAKE/record.json and the four facts' flags: that reading opens only if the stream then holds no old-form message (none after stream sequence 900), no listener's count moved, no interest record or consumer filter holds an old form, and the pins, the running clients and the consumers are all past the old form"
+[ "$(jq -c .facts "$FAKE/record.json")" = null ] || fail "a first reading recorded facts: $(jq -c .facts "$FAKE/record.json")"
+[ ! -e "$FAKE/release-gate.args" ] || fail "a first reading ran the release gate: $(cat "$FAKE/release-gate.args")"
+jq -e '[.spec.template.spec.containers[0].env[] | select(.name | startswith("CENSUS_"))] | length == 0' "$FAKE/created-job.json" >/dev/null ||
+  fail "a first reading's Job asks the census"
 expect_no_line "GATE OPEN"
 expect_line "PASS: the stream holds 2 subject(s) under notifications.dispatch.issue.>, none in an old form"
 expect_line "PASS: no consumer of the stream's 7 filters a name only the old form matches (3 of them are Legion daemons')"
@@ -636,21 +739,36 @@ expect_status 4
 expect_line "IDENTITY: the server answers that the NATS reads ran as user $listener_nkey, account \$G"
 done_case
 
-new_case "a clean fleet read twice, 73 hours apart, opens"
-first_reading_of 73
+# No wait for the stream's retention: a second reading 200 s after the first, with the four facts
+# true, opens.
+new_case "a clean fleet read twice, 200 s apart, with the four facts true, opens"
+first_reading_secs 200 reading
 reading --since "$FAKE/earlier.json"
 expect_status 0
 expect_last "GATE OPEN"
 expect_line "PASS: listener pod envoy/envoy-listener-7f9c container envoy-listener counted no old-form name between the readings"
 expect_line "PASS: listener envoy-hub at https://envoy-hub.example-tailnet.ts.net:9020 counted no old-form name between the readings"
-[ "$(jq -r .verdict "$FAKE/record.json")" = complete ] || fail "an open reading's record is $(jq -r .verdict "$FAKE/record.json"), want complete, a first reading for the next window"
+expect_line "PASS: (a1) the pins: daemon-release-gate.sh --clients $new_form read 2 pin(s) and client(s), each at or after it"
+expect_line "PASS: (a2) the running clients: every one of the 5 connection(s) on the 3 hub server(s) (envoy-nats-0, envoy-nats-1, envoy-nats-2) names a build at or after $new_form, 4 build(s): @sjawhar/claude-envoy@6.0.0, @sjawhar/pi-envoy@21.0.0, legion@$new_form, legion@$newer"
+expect_line "PASS: (b) the consumers: each of the stream's 7 consumer(s) has acknowledged every old-form message it takes (0 old-form subject(s) on the stream)"
+expect_line "PASS: (c) the stream: the stream holds no old-form message under"
+[ "$(jq -r .verdict "$FAKE/record.json")" = complete ] || fail "an open reading's record is $(jq -r .verdict "$FAKE/record.json"), want complete, a first reading for the next"
+[ "$(jq -c '.facts | {a1, a2, b, c, new_form_commit}' "$FAKE/record.json")" = "{\"a1\":\"true\",\"a2\":\"true\",\"b\":\"true\",\"c\":\"true\",\"new_form_commit\":\"$new_form\"}" ] ||
+  fail "the record's facts are $(jq -c .facts "$FAKE/record.json")"
+[ "$(cat "$FAKE/release-gate.args" 2>/dev/null)" = "--deployment example/deploy --clients $new_form" ] ||
+  fail "the release gate was run as $(cat "$FAKE/release-gate.args" 2>/dev/null)"
+jq -e --arg nkey /var/run/secrets/census/census.nk '.spec.template.spec as $s
+  | ([$s.containers[0].env[] | select(.name == "CENSUS_NKEY") | .value] == [$nkey])
+  and ([$s.containers[0].env[] | select(.name == "CENSUS_NAME") | .value | test("^legacy-subjects-gate-census-[0-9a-f]{16}$")] == [true])
+  and ($s.containers[0].volumeMounts | any(. == {name: "census-seed", mountPath: "/var/run/secrets/census", readOnly: true}))
+  and ($s.volumes | any(. == {name: "census-seed", csi: {driver: "secrets-store-gke.csi.k8s.io", readOnly: true, volumeAttributes: {secretProviderClass: "envoy-census-seed"}}}))' \
+  "$FAKE/created-job.json" >/dev/null || fail "the second reading's Job does not ask the census as the seed envoy-census-seed mounts: $(jq -c .spec.template.spec "$FAKE/created-job.json")"
 done_case
 
 # The time a first reading names must open a clean fleet however old each listener's counter line
 # is at the second reading: the first reading read each line at or before its own end, and the
-# second takes a line up to three minutes old, so the time named is the window after the first
-# reading's end and those three minutes besides. Read at the window alone, a listener whose line
-# is 150 s old at the second reading was read less than the window apart, and the gate shut.
+# second takes a line up to three minutes old, so the time named is those three minutes after the
+# first reading's end, and each listener's line then is later than the one the first reading read.
 new_case "a second reading at the time the first reading names opens a clean fleet, its counter lines however old"
 reading
 expect_status 4
@@ -1089,26 +1207,25 @@ expect_line "UNKNOWN: listener pod envoy/envoy-listener-8a01 container envoy-lis
 expect_line "UNKNOWN: listener pod envoy/envoy-listener-7f9c container envoy-listener served at the first reading and was not read now"
 done_case
 
-new_case "a second reading sooner than the stream's retention shuts the gate"
-first_reading_of 10
+new_case "a second reading sooner than a listener's counter line may be old shuts the gate"
+first_reading_secs 100 reading
 reading --since "$FAKE/earlier.json"
 expect_status 1
-expect_line "h passed between the first reading's end"
-expect_line "the stream keeps 72 h, so read again at or after"
+expect_line "s passed between the first reading's end"
+expect_line "less than the 180 s a listener's counter line may be old, so this reading may read a first reading's own line; read again at or after"
 done_case
 
-new_case "a listener whose counter was read less than the window apart shuts the gate"
-first_reading_of 73
-# The listener's newest line at the second reading is a minute old, and its line at the first
-# reading 71.83 hours before it: the readings are 73 hours apart, the listener's own two reads not.
-log_at=$(($(date -u +%s) - 60))
-echo "$log_at" >"$FAKE/log_at"
-jq --argjson read "$((log_at - 259200 + 600))" '.listeners |= map(if .uid == "envoy-uid-1" then .read_at = $read else . end)' "$FAKE/earlier.json" >"$FAKE/earlier.tmp"
+new_case "a listener whose counter line is no later than the one the first reading read shuts the gate"
+first_reading_secs 200 reading
+# The listener stopped logging after the first reading read its line: its newest line now is that
+# same line, though it is younger than three minutes.
+jq '.listeners |= map(if .uid == "envoy-uid-1" then .read_at = (now | floor) - 30 else . end)' "$FAKE/earlier.json" >"$FAKE/earlier.tmp"
 mv "$FAKE/earlier.tmp" "$FAKE/earlier.json"
+echo "$(($(date -u +%s) - 30))" >"$FAKE/log_at"
 reading --since "$FAKE/earlier.json"
 expect_status 1
-expect_line "GATE SHUT: listener pod envoy/envoy-listener-7f9c container envoy-listener's counter was read"
-expect_line "less than the 72 h window"
+expect_line "GATE SHUT: listener pod envoy/envoy-listener-7f9c container envoy-listener's counter line at this reading was logged at"
+expect_line "no later than the line the first reading read"
 done_case
 
 new_case "a stream made anew between the readings is UNKNOWN"
@@ -1119,13 +1236,171 @@ expect_status 3
 expect_line "UNKNOWN: the stream is not the one the first reading read: its envoy_stream_id was stream-id-1 and is stream-id-2"
 done_case
 
-new_case "a stream that holds less than the window at the second reading is UNKNOWN"
-first_reading_of 73
+# The purge moves the stream's first message on, and the wait for the stream's retention is gone:
+# a stream whose first message is ten hours old opens a clean second reading.
+new_case "a stream whose first message is younger than its retention opens a clean second reading"
+first_reading_secs 200 reading
 replace_row stream_info - "$(line stream_info - 0 "$(stream_info "$(jq -rn 'now - 36000 | floor | todate')")" "")"
 reading --since "$FAKE/earlier.json"
+expect_status 0
+expect_last "GATE OPEN"
+done_case
+
+# --- the four facts -------------------------------------------------------------------------------
+new_case "a second reading given none of the four facts' flags is UNKNOWN, naming each"
+first_reading_secs 200 reading
+run_gate --context example-cluster --record "$FAKE/record.json" --listener envoy-hub=https://envoy-hub.example-tailnet.ts.net:9020 --since "$FAKE/earlier.json"
 expect_status 3
-expect_line "UNKNOWN: the stream holds messages only since"
-expect_line "not the 72 h it keeps: it was purged or made anew within the window"
+expect_line "UNKNOWN: (a1) the pins: the census of pinned builds was not read: name --deployment <owner/repo> and --new-form-commit <commit>"
+expect_line "UNKNOWN: (a2) the running clients: no census of the hub's connections was read: name --census-seed-class <SecretProviderClass> and --census-seed-file <file> and --new-form-commit <commit>"
+[ "$(jq -c '.facts | {a1, a2, b, c}' "$FAKE/record.json")" = '{"a1":"unknown","a2":"unknown","b":"true","c":"true"}' ] ||
+  fail "the record's facts are $(jq -c .facts "$FAKE/record.json")"
+done_case
+
+new_case "(a1) a pin that still writes an old form shuts the gate"
+first_reading_secs 200 reading
+printf '%s\n' "PASS: the sessions image ghcr.io/example/sessions@sha256:2222 runs pi-envoy and claude-envoy at $newer" \
+  "GATE SHUT: ACME's image ghcr.io/example/worker@sha256:3333 runs pi-envoy at cccccccccccccccccccccccccccccccccccccccc, behind $new_form" "GATE SHUT" >"$FAKE/release-gate.out"
+echo 1 >"$FAKE/release-gate.rc"
+reading --since "$FAKE/earlier.json"
+expect_status 1
+expect_line "GATE SHUT: (a1) the pins: daemon-release-gate.sh --clients $new_form shut: ACME's image ghcr.io/example/worker@sha256:3333 runs pi-envoy at cccccccccccccccccccccccccccccccccccccccc, behind $new_form"
+expect_last "GATE SHUT"
+done_case
+
+new_case "(a1) an empty census of pins is UNKNOWN, whether the release gate says so or opens on nothing"
+first_reading_secs 200 reading
+printf '%s\n' "UNKNOWN: the deployment's Legion projects run no daemon, so no pin was read" "UNKNOWN" >"$FAKE/release-gate.out"
+echo 3 >"$FAKE/release-gate.rc"
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: (a1) the pins: daemon-release-gate.sh --clients $new_form did not read every pin (exit 3): the deployment's Legion projects run no daemon, so no pin was read"
+rm -f "$FAKE/record.json" "$FAKE/release-gate.rc"
+echo "GATE OPEN" >"$FAKE/release-gate.out"
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: (a1) the pins: daemon-release-gate.sh --clients $new_form enumerated no pin (its verdict GATE OPEN, exit 0), and a census that read nothing passes nothing"
+expect_last "UNKNOWN"
+done_case
+
+new_case "(a2) a connected client at an older build shuts the gate"
+first_reading_secs 200 reading
+replace_row census 0 "$(line census 0 0 "$(clean_census | sed '3d'; census_reply envoy-nats-2 "$(conn 31 "claude-envoy-channel-ses_b @sjawhar/claude-envoy@6.0.0")" "$(conn 32 "omp-ses_old @sjawhar/pi-envoy@19.0.0" UOLD)")" "")"
+reading --since "$FAKE/earlier.json"
+expect_status 1
+expect_line "GATE SHUT: (a2) the running clients: 1 connection(s) run @sjawhar/pi-envoy@19.0.0, pi-envoy-v19.0.0 is behind $new_form (behind by 12): omp-ses_old @sjawhar/pi-envoy@19.0.0 (server envoy-nats-2, cid 32, user UOLD)"
+[ "$(jq -r .facts.a2 "$FAKE/record.json")" = false ] || fail "the record's (a2) is $(jq -r .facts.a2 "$FAKE/record.json")"
+done_case
+
+new_case "(a2) a connection that names no build is UNKNOWN"
+first_reading_secs 200 reading
+replace_row census 0 "$(line census 0 0 "$(clean_census | sed '3d'; census_reply envoy-nats-2 "$(conn 31 "claude-envoy-channel-ses_b @sjawhar/claude-envoy@6.0.0")" "$(conn 33 "omp-ses_custom" UCUSTOM)")" "")"
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: (a2) the running clients: 1 connection(s) name no build: omp-ses_custom (server envoy-nats-2, cid 33, user UCUSTOM)"
+done_case
+
+new_case "(a2) a hub server that does not answer the census is UNKNOWN"
+first_reading_secs 200 reading
+replace_row census 0 "$(line census 0 0 "$(clean_census | sed '3d')" "")"
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: (a2) the running clients: hub server(s) envoy-nats-2 did not answer the request \$SYS.REQ.SERVER.PING.CONNZ at offset 0"
+done_case
+
+new_case "(a2) a census that enumerates no connection but its own is UNKNOWN"
+first_reading_secs 200 reading
+replace_row census 0 "$(line census 0 0 "$(census_reply envoy-nats-0 "$(conn 13 "@CENSUS_NAME@" UCENSUS)"; census_reply envoy-nats-1; census_reply envoy-nats-2)" "")"
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: (a2) the running clients: the census of 3 hub server(s) (envoy-nats-0, envoy-nats-1, envoy-nats-2) enumerated no connection but its own, and a census that read nothing passes nothing"
+done_case
+
+new_case "(a2) a census request the grant refuses, and a hub StatefulSet that cannot be read, are each UNKNOWN"
+first_reading_secs 200 reading
+replace_row census 0 "$(line census 0 0 "" "04:10:18 Unexpected NATS error from server nats://envoy-hub.envoy.svc.cluster.local:4222: nats: permissions violation: Permissions Violation for Publish to \"\$SYS.REQ.SERVER.PING.CONNZ\"")"
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: (a2) the running clients: the request \$SYS.REQ.SERVER.PING.CONNZ at offset 0: 04:10:18 Unexpected NATS error from server nats://envoy-hub.envoy.svc.cluster.local:4222: nats: permissions violation"
+rm -f "$FAKE/record.json"
+cp "$base/job.log" "$FAKE/job.log"
+touch "$FAKE/statefulset.fail"
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: (a2) the running clients: the hub servers that must each answer the census could not be read: the StatefulSet envoy/envoy-nats could not be read: Error from server (NotFound)"
+done_case
+
+# The bus a second reading finds before the purge: every producer has moved and the old-form
+# messages are still stored. ACME-13's old-form subject's last message is stream sequence 812.
+# old_stream_rows replaces the case's issue subjects with one that still holds it.
+old_stream_rows() {
+  replace_row subjects "notifications.dispatch.issue.> 0" \
+    "$(line subjects "notifications.dispatch.issue.> 0" 0 "$(subjects_page notifications.dispatch.issue.ACME.ACME-12.comment.created notifications.dispatch.issue.ACME-13.comment.created)" "")" \
+    "$(last_message notifications.dispatch.issue.ACME-13.comment.created 812)"
+}
+
+new_case "(b) a daemon's consumer that has not acknowledged the last old-form message it takes shuts the gate"
+first_reading_secs 200 reading
+old_stream_rows
+replace_row consumers 0 "$(line consumers 0 0 "$(consumers_page "$(clean_consumers | grep -v '"legion-go-ACME-dispatch"')" "$(consumer legion-go-ACME-dispatch '["notifications.dispatch.issue.>"]' null null 812)" "$(consumer legion-go-ZED-dispatch '["notifications.dispatch.issue.>"]' null null 700)")" "")"
+reading --since "$FAKE/earlier.json"
+expect_status 1
+expect_line "GATE SHUT: (b) the consumers: consumer legion-go-ZED-dispatch has acknowledged up to stream sequence 700, before the last old-form message it takes, notifications.dispatch.issue.ACME-13.comment.created at stream sequence 812"
+# One that has acknowledged it, at its ack floor, is past it.
+expect_no_line "consumer legion-go-ACME-dispatch has acknowledged"
+[ "$(jq -r .facts.b "$FAKE/record.json")" = false ] || fail "the record's (b) is $(jq -r .facts.b "$FAKE/record.json")"
+done_case
+
+new_case "(b) a session's consumer that has not acknowledged the last old-form message it takes shuts the gate"
+first_reading_secs 200 reading
+replace_row subjects "notifications.agent.> 0" \
+  "$(line subjects "notifications.agent.> 0" 0 "$(subjects_page notifications.agent.ACME.ses_a notifications.agent._.ses_b notifications.agent.ses_twin)" "")" \
+  "$(last_message notifications.agent.ses_twin 850)"
+replace_row consumers 0 "$(line consumers 0 0 "$(consumers_page "$(clean_consumers | grep -v '"ses_twin"')" "$(consumer ses_twin '["notifications.agent.ses_twin","notifications.agent.*.ses_twin"]' null null 849)")" "")"
+reading --since "$FAKE/earlier.json"
+expect_status 1
+expect_line "GATE SHUT: (b) the consumers: consumer ses_twin has acknowledged up to stream sequence 849, before the last old-form message it takes, notifications.agent.ses_twin at stream sequence 850"
+done_case
+
+new_case "(b) an empty consumer list is UNKNOWN"
+first_reading_secs 200 reading
+replace_row consumers 0 "$(line consumers 0 0 '{"type":"io.nats.jetstream.api.v1.consumer_list_response","total":0,"offset":0,"limit":256,"consumers":[]}' "")"
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: (b) the consumers: the stream lists no consumer, and a census that read nothing passes nothing"
+done_case
+
+new_case "(c) an old-form message still on the stream shuts the gate, every consumer past it"
+first_reading_secs 200 reading
+old_stream_rows
+reading --since "$FAKE/earlier.json"
+expect_status 1
+expect_line "GATE SHUT: (c) the stream: the stream holds 1 old-form subject(s); once (a1), (a2) and (b) read true, legacy-subjects-purge.sh purges them"
+expect_line "PASS: (b) the consumers: each of the stream's 7 consumer(s) has acknowledged every old-form message it takes (1 old-form subject(s) on the stream, the last at stream sequence 812)"
+expect_line "PASS: (a2) the running clients:"
+[ "$(jq -c '.facts | {a1, a2, b, c, last_old_seq}' "$FAKE/record.json")" = '{"a1":"true","a2":"true","b":"true","c":"false","last_old_seq":812}' ] ||
+  fail "the record's facts are $(jq -c .facts "$FAKE/record.json")"
+done_case
+
+# The reading the purge exists for, less one client: the pins are new and every consumer is past
+# the stored old-form messages, but one older client is still connected and could publish more.
+new_case "new pins with one older client still connected keep the gate shut, and the purge driver refuses that reading"
+first_reading_secs 200 reading
+old_stream_rows
+replace_row census 0 "$(line census 0 0 "$(clean_census | sed '3d'; census_reply envoy-nats-2 "$(conn 31 "claude-envoy-channel-ses_b @sjawhar/claude-envoy@6.0.0")" "$(conn 32 "omp-ses_old @sjawhar/pi-envoy@19.0.0" UOLD)")" "")"
+reading --since "$FAKE/earlier.json"
+expect_status 1
+expect_line "PASS: (a1) the pins:"
+expect_line "GATE SHUT: (a2) the running clients: 1 connection(s) run @sjawhar/pi-envoy@19.0.0"
+: >"$FAKE/calls"
+set +e
+output=$(PATH="$root/bin:$PATH" bash "$here/legacy-subjects-purge.sh" --context example-cluster --reading "$FAKE/record.json" \
+  --seed-class envoy-purge-seed --seed-file purge.nk --service-account envoy-purge 2>&1)
+status=$?
+set -e
+expect_status 1
+expect_line "REFUSED: the reading $FAKE/record.json read (a2) the running clients false, not true"
+[ ! -s "$FAKE/calls" ] || fail "the refused purge called $(head -n 1 "$FAKE/calls")"
 done_case
 
 new_case "a stream whose configuration carries no identity is UNKNOWN at a first reading"
@@ -1433,7 +1708,9 @@ moved_cluster() {
 # moved_reading [ARG...] runs the gate as a reading of the case, naming no listener outside the
 # cluster, writing $FAKE/record.json.
 moved_reading() {
-  run_gate --context example-cluster --record "$FAKE/record.json" "$@"
+  local extra=()
+  case " $* " in *" --since "*) extra=("${facts[@]}") ;; esac
+  run_gate --context example-cluster --record "$FAKE/record.json" "$@" ${extra[@]+"${extra[@]}"}
 }
 
 new_case "a listener that dials the bus by another name is skipped, its durable UNKNOWN, until --bus-alias names that name"

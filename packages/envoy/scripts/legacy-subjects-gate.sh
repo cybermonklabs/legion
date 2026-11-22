@@ -2,15 +2,48 @@
 # packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record <file>
 #   [--since <earlier record>] [--listener <machine>=<url>]... [--insecure]
 #   [--bus-alias <nats-urls>]... [--token-file <path>] [--inbox-prefix <prefix>]
+#   [--deployment <owner/repo> --new-form-commit <commit> [--dotfiles <dir>]]
+#   [--census-seed-class <SecretProviderClass> --census-seed-file <file> [--census-inbox-prefix <prefix>]]
+#   [--hub-statefulset <name>] [--hub-server <name>]...
 #
 # Says whether any reader or writer of the bus still uses the old form of a name the rename moved
 # (an issue event named by its key alone, an agent's or a role's name with no project, a kept lane
 # with no project, and a failed-delivery report of one), the reading a pull request quotes before it
 # refuses the old form and deletes the code that reads it.
-# One reading cannot say that nothing moved, so the gate is read twice, at least the stream's
-# retention apart (its max_age, 72 hours): the first reading is written to --record, and the second
-# names it with --since. It prints GATE OPEN only at a second reading, when both readings read every
-# surface, neither found an old-form name, and no listener counted one in between.
+# One reading cannot say that nothing moved, so the gate is read twice: the first reading is written
+# to --record, and the second names it with --since, no sooner than a listener's counter line may be
+# old (180 s, the judge's log_line_bound), so each listener's line at the second reading comes after
+# the one the first read. It prints GATE OPEN only at a second reading, when both readings read
+# every surface, no listener counted an old-form name in between, nothing still holds an old form,
+# and the four facts below read true.
+#
+# The four facts, read at a second reading alone, each printed on lines that name it first and kept
+# in the record's facts (true, false or unknown), which legacy-subjects-purge.sh reads:
+#
+#   (a1) The pins, for the clients that start later: daemon-release-gate.sh --deployment
+#        <owner/repo> --clients [--dotfiles <dir>] <commit>, run beside this script, where <commit>
+#        is --new-form-commit, the commit from which every client writes only new-form names. It
+#        is true when that gate opens having read at least one pin; its GATE SHUT lines make it
+#        false; anything else, a census that read no pin among it, is unknown.
+#   (a2) The running clients: every connection of every hub server, read by the census of
+#        connections, $SYS.REQ.SERVER.PING.CONNZ, which the Job requests page by page as the
+#        identity whose nkey seed --census-seed-class mounts (file --census-seed-file); each server
+#        answers for the account that identity sits in, the clients' own. Each server --hub-
+#        statefulset (its pods, <name>-<ordinal>, as the servers name themselves) and --hub-server
+#        name must answer every page, and no other may. Each connection but the census's own must
+#        end its name with its build (lib/legacy-subjects-gate-forms.jq, build_token):
+#        legion@<commit>, judged by GitHub's compare of --new-form-commit with that commit, or
+#        @sjawhar/<plugin>@<version>, judged by the commit of its release tag (pi-envoy-v<version>,
+#        claude-envoy-v<version> for claude-envoy and codex-envoy), as daemon-release-gate.sh
+#        judges a pin. A build behind or beside the commit makes it false; a connection that names
+#        no build, a server that does not answer, a census that moved between its pages and one
+#        that enumerates no connection make it unknown.
+#   (b)  The consumers: each consumer of the stream has acknowledged (its ack floor's stream
+#        sequence) the newest message of the old-form subjects its filters match; a stream that
+#        holds no old-form message hands none. A consumer list that lists none is unknown.
+#   (c)  The stream: it holds no old-form message. Once (a1), (a2) and (b) read true, the committed
+#        driver legacy-subjects-purge.sh, given that reading, purges each old-form subject and reads
+#        back that none is left, in place of waiting out the stream's retention.
 #
 # What it reads, all of it read-only:
 #
@@ -49,14 +82,14 @@
 #     those subjects in an old form, and every record of the interest store envoy_interests.
 #
 # The first reading shuts on no old-form name: the stream still holds the old-form messages
-# published before every producer moved, for its retention, and interest records and consumer
-# filters may still be in an old form. It names each one it finds (FOUND), and records the stream's
-# last sequence, the newest old-form message and every old-form counter. What holds the gate shut at
-# the second reading, at least the stream's retention later:
+# published before every producer moved, and interest records and consumer filters may still be in
+# an old form. It names each one it finds (FOUND), and records the stream's last sequence, the
+# newest old-form message and every old-form counter. What holds the gate shut at the second
+# reading:
 #
-#   - any old-form message the stream still holds: the stream keeps the window, so a clean second
-#     reading says it is wholly new-form; one published after the first reading's last stream
-#     sequence (its subject's last message, read by last_by_subj, is later) is named apart;
+#   - any old-form message the stream still holds, fact (c); one published after the first
+#     reading's last stream sequence (its subject's last message, read by last_by_subj, is later)
+#     is named apart;
 #   - a listener whose count rose since the first reading, under any kind;
 #   - a consumer one of whose filters only an old-form name matches, and whose new form the same
 #     consumer does not also filter under every project its names carry (a session consumer filters
@@ -67,8 +100,10 @@
 #     wildcard in the family's own tokens too (notifications.dispatch.*.*.comment.created);
 #   - an interest record holding an old-form topic other than its session's own agent subject,
 #     which the listener writes into every record itself until the old form is refused;
-#   - a reading named with --since that shut the gate, or less than the retention between the two
-#     readings (for each listener, between the two moments its counter was read).
+#   - a reading named with --since that shut the gate, less than 180 s between the two readings,
+#     or a listener whose counter line is no later than the one the first reading read;
+#   - a fact read false: a pin or a running client behind the commit, a consumer that has not
+#     acknowledged an old-form message it takes.
 #
 # The old form is the gate's own rule (lib/legacy-subjects-gate-forms.jq, old_form), so the gate
 # stays right once the code that reads the old form is deleted.
@@ -88,9 +123,8 @@
 # once (the kubelet takes the last entry, the gate would read the first), a start-time gauge served
 # at one reading only, a record that cannot be written, and at a second reading: a first reading
 # that did not read every surface, a stream that is not the first reading's (its envoy_stream_id
-# changed), a stream that does not hold the whole window (its first message is younger than the
-# window, less an hour), and readings further apart than a listener's durable outlives its
-# listener.
+# changed), readings further apart than a listener's durable outlives its listener, and a fact it
+# could not read (above).
 #
 # The Job: namespace envoy, the ServiceAccount, NATS URL and credential of the listener Deployment
 # envoy/envoy-listener as it is deployed (read at each run, so the Job connects with whatever
@@ -107,9 +141,14 @@
 # delete is UNKNOWN and named with the command that deletes it, and one it could not create is
 # never deleted. The Job's log holds what the gate judges and no more: of an interest record, its
 # session id and its topics; of a stored message, its subject, stream sequence and time; of a seed
-# nsc could not read, a fixed line. The cluster keeps a container's log in its logging backend as
-# it keeps the listener's own, which logs every topic it delivers, so the Job adds no kind of text
-# the namespace does not already log.
+# nsc could not read, a fixed line; of a connection the census lists, its server, id, name,
+# account, client library and NATS user. The cluster keeps a container's log in its logging
+# backend as it keeps the listener's own, which logs every topic it delivers, so the Job adds no
+# kind of text the namespace does not already log. At a second reading with --census-seed-class,
+# the Job also mounts that SecretProviderClass's volume, read-only, at /var/run/secrets/census
+# (its CSI driver reads the secret as the Job's ServiceAccount, the listener's), and requests the
+# census as the nkey user of the seed file --census-seed-file names there, under a connection name
+# of its own that this reading draws at random and leaves out of the census.
 #
 # It prints the identity the NATS reads ran as (`IDENTITY`), one line per surface, `READ`, `SKIP` (a
 # listener on another bus, with its machine), `PASS`, `FOUND` (an old-form name a first reading
@@ -120,7 +159,7 @@
 # names it found, the stream sequence the second reading reads after, and when to read again (exit
 # 4). It writes the reading to --record in every case, as a new file in a directory that exists
 # when the gate starts: a file made at that path meanwhile is left as it is, and the reading is
-# UNKNOWN. A second reading that opened is a first reading for the next window. A usage error exits
+# UNKNOWN. A second reading that opened is a first reading for the next one. A usage error exits
 # 2 and reads nothing. No line of a reading prints a URL's user, password or token (user:***@,
 # ***@ in its place), whether a NATS_URLS or a nats error naming its server holds it.
 #
@@ -129,20 +168,26 @@
 # pods in each namespace that runs one, read the envoy-listener Deployment, and create, read, read
 # the logs of and delete Jobs and pods in envoy: a developer box's account holds list through its
 # container.viewer role, and the rest through its edit role in envoy and its pods/log read in
-# dispatch), jq, curl, base64 and date.
+# dispatch), jq, curl, base64 and date; at a second reading, gh too (signed in with read access to
+# cybermonklabs/legion, for each build a connection names), and what daemon-release-gate.sh needs.
 set -euo pipefail
 
 usage() {
   [ -z "${1:-}" ] || echo "legacy-subjects-gate.sh: $1" >&2
-  echo "usage: legacy-subjects-gate.sh --context <kube-context> --record <file> [--since <earlier record>] [--listener <machine>=<url>]... [--insecure] [--bus-alias <nats-urls>]... [--token-file <path>] [--inbox-prefix <prefix>]" >&2
+  echo "usage: legacy-subjects-gate.sh --context <kube-context> --record <file> [--since <earlier record>] [--listener <machine>=<url>]... [--insecure] [--bus-alias <nats-urls>]... [--token-file <path>] [--inbox-prefix <prefix>] [--deployment <owner/repo> --new-form-commit <commit> [--dotfiles <dir>]] [--census-seed-class <name> --census-seed-file <file> [--census-inbox-prefix <prefix>]] [--hub-statefulset <name>] [--hub-server <name>]..." >&2
   echo "  <kube-context> is the kubectl context of the cluster that runs the listeners and the hub bridge" >&2
   echo "  <file> is where this reading is written; it must not exist" >&2
-  echo "  <earlier record> is the first reading's --record, read at least the stream's retention (72 h) before" >&2
+  echo "  <earlier record> is the first reading's --record, taken at least 180 s before" >&2
   echo "  <machine>=<url> names a listener outside the cluster: its ENVOY_MACHINE_ID and its https://host[:port]" >&2
   echo "  --insecure takes an http:// listener URL, whose answer anyone on the way could read or change" >&2
   echo "  <nats-urls> is a NATS_URLS that reaches the NATS servers the listener Deployment's NATS_URLS reaches, by another name: a listener container that dials it is read as one of the bus's" >&2
   echo "  <path> is where the listener Deployment mounts its projected NATS token, for a hub that is not static" >&2
   echo "  <prefix> is the inbox prefix the listener identity's grant subscribes, for a hub that is not static" >&2
+  echo "  at a second reading, for the four facts:" >&2
+  echo "  <owner/repo> is the deployment repository daemon-release-gate.sh --clients reads the pins of (a1)" >&2
+  echo "  <commit> is the full commit from which every client writes only new-form names (a1, a2)" >&2
+  echo "  --census-seed-class names the SecretProviderClass in envoy that mounts the census identity's nkey seed, and --census-seed-file its file there (a2)" >&2
+  echo "  --hub-statefulset names the hub's StatefulSet in envoy, and --hub-server a hub server outside it, each of which must answer the census (a2)" >&2
   exit 2
 }
 
@@ -152,8 +197,16 @@ since=""
 insecure=0
 token_file=""
 inbox_prefix=""
+deployment=""
+new_form_commit=""
+dotfiles=""
+census_class=""
+census_file=""
+census_inbox=""
+hub_statefulset=""
 outside=()
 aliases=()
+hub_servers=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --context) [ "$#" -ge 2 ] || usage "--context takes a value"; context=$2; shift 2 ;;
@@ -164,6 +217,14 @@ while [ "$#" -gt 0 ]; do
     --insecure) insecure=1; shift ;;
     --token-file) [ "$#" -ge 2 ] || usage "--token-file takes a value"; token_file=$2; shift 2 ;;
     --inbox-prefix) [ "$#" -ge 2 ] || usage "--inbox-prefix takes a value"; inbox_prefix=$2; shift 2 ;;
+    --deployment) [ "$#" -ge 2 ] || usage "--deployment takes a value"; deployment=$2; shift 2 ;;
+    --new-form-commit) [ "$#" -ge 2 ] || usage "--new-form-commit takes a value"; new_form_commit=$2; shift 2 ;;
+    --dotfiles) [ "$#" -ge 2 ] || usage "--dotfiles takes a value"; dotfiles=$2; shift 2 ;;
+    --census-seed-class) [ "$#" -ge 2 ] || usage "--census-seed-class takes a value"; census_class=$2; shift 2 ;;
+    --census-seed-file) [ "$#" -ge 2 ] || usage "--census-seed-file takes a value"; census_file=$2; shift 2 ;;
+    --census-inbox-prefix) [ "$#" -ge 2 ] || usage "--census-inbox-prefix takes a value"; census_inbox=$2; shift 2 ;;
+    --hub-statefulset) [ "$#" -ge 2 ] || usage "--hub-statefulset takes a value"; hub_statefulset=$2; shift 2 ;;
+    --hub-server) [ "$#" -ge 2 ] || usage "--hub-server takes a value"; hub_servers+=("$2"); shift 2 ;;
     *) usage "unknown argument $1" ;;
   esac
 done
@@ -186,14 +247,32 @@ case "$token_file/" in
   */../* | */./*) usage "--token-file $token_file holds a . or .. segment; name the token's own path" ;;
 esac
 [ -z "$inbox_prefix" ] || [[ $inbox_prefix =~ ^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$ ]] || usage "--inbox-prefix $inbox_prefix is not a NATS subject of literal tokens"
+[ -z "$census_inbox" ] || [[ $census_inbox =~ ^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$ ]] || usage "--census-inbox-prefix $census_inbox is not a NATS subject of literal tokens"
+[ -z "$deployment" ] || [[ $deployment =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || usage "--deployment $deployment is not <owner>/<repo>"
+[ -z "$new_form_commit" ] || [[ $new_form_commit =~ ^[0-9a-f]{40}$ ]] || usage "--new-form-commit $new_form_commit is not a full commit id (40 lowercase hex digits): GitHub's compare resolves any ref, so a branch would compare as wherever it points now"
+[ -z "$census_class" ] || [[ $census_class =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]] || usage "--census-seed-class $census_class is not a Kubernetes object name"
+case "$census_file" in
+  '' | [A-Za-z0-9_-]*) [[ $census_file =~ ^[A-Za-z0-9._-]*$ ]] || usage "--census-seed-file $census_file is not one file name" ;;
+  *) usage "--census-seed-file $census_file is not one file name" ;;
+esac
+if { [ -n "$census_class" ] && [ -z "$census_file" ]; } || { [ -z "$census_class" ] && [ -n "$census_file" ]; }; then
+  usage "--census-seed-class and --census-seed-file name the census identity's seed together"
+fi
+[ -z "$hub_statefulset" ] || [[ $hub_statefulset =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || usage "--hub-statefulset $hub_statefulset is not a Kubernetes object name"
+for server in ${hub_servers[@]+"${hub_servers[@]}"}; do
+  [[ $server =~ ^[A-Za-z0-9._-]+$ ]] || usage "--hub-server $server is not a NATS server name"
+done
 for tool in kubectl jq curl base64 date; do
   command -v "$tool" >/dev/null 2>&1 || usage "$tool is required and is not on PATH"
 done
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-readonly here context record since insecure token_file inbox_prefix
+readonly here context record since insecure token_file inbox_prefix deployment new_form_commit dotfiles
+readonly census_class census_file census_inbox hub_statefulset
 readonly judge="$here/lib/legacy-subjects-gate-judge.jq"
 readonly job_script="$here/lib/legacy-subjects-gate-nats.sh"
+# (a1)'s census of pinned builds: the release gate beside this script, in its --clients mode.
+readonly release_gate="$here/daemon-release-gate.sh"
 # The nats-box image the deployment pins for its own NATS Jobs (envoy-cluster/Pulumi.prod.yaml
 # moveImage), by digest, so the Job runs the nats CLI the reads were measured with.
 readonly nats_box="mirror.gcr.io/natsio/nats-box:0.19.0@sha256:00f10dd4156f28ece84bb3a52cf356ef220ebaa0494310caa90dec184d9e2b89"
@@ -369,6 +448,67 @@ for entry in ${outside[@]+"${outside[@]}"}; do
   jq -cn --arg name "$name" --arg url "$url" --argjson read "$read_json" '{name: $name, url: $url, read: $read}' >>"$work/outside-reads.jsonl"
 done
 
+# --- the four facts' reads, at a second reading -------------------------------------------------
+# (a1): the release gate's census of pinned builds, as it prints it. (a2): the hub servers that must
+# each answer the census, and the census connection's own name, drawn here so no client can name
+# itself to be left out. A flag a fact needs and was not given is named, and the fact is unknown.
+echo '{}' >"$work/facts.json"
+census_name=""
+if [ -n "$since" ]; then
+  a1_missing=()
+  [ -n "$deployment" ] || a1_missing+=("--deployment <owner/repo>")
+  [ -n "$new_form_commit" ] || a1_missing+=("--new-form-commit <commit>")
+  a1_error=""
+  a1_rc=null
+  : >"$work/a1.out"
+  if [ "${#a1_missing[@]}" = 0 ]; then
+    set +e
+    "$release_gate" --deployment "$deployment" --clients ${dotfiles:+--dotfiles "$dotfiles"} "$new_form_commit" >"$work/a1.out" 2>"$work/a1.err"
+    a1_rc=$?
+    set -e
+    if [ "$a1_rc" = 2 ]; then
+      a1_error="it refused its arguments (exit 2): $(first_line "$work/a1.err")"
+    fi
+  fi
+  census_missing=()
+  [ -n "$census_class" ] || census_missing+=("--census-seed-class <SecretProviderClass> and --census-seed-file <file>")
+  [ -n "$new_form_commit" ] || census_missing+=("--new-form-commit <commit>")
+  [ "${#census_missing[@]}" != 0 ] || census_name="legacy-subjects-gate-census-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+  hub_error=""
+  : >"$work/hub-servers"
+  if [ -n "$hub_statefulset" ]; then
+    if kc -n "$job_namespace" get statefulset "$hub_statefulset" -o json >"$work/hub.json" 2>"$work/hub.err"; then
+      # A StatefulSet's pods are <name>-<ordinal>, and each hub server is named after its pod
+      # (SERVER_NAME, the pod's name): every ordinal the StatefulSet wants is a server that must
+      # answer, and one that is coming or going makes the set no settled one.
+      if ! jq -r -e '(.spec.replicas // 1) as $want | (.metadata.name // "") as $name
+          | if (.status.replicas // -1) != $want or (.status.currentRevision // "") != (.status.updateRevision // "") or $name == "" then error("changing")
+            else range(0; $want) | "\($name)-\(.)" end' "$work/hub.json" >"$work/hub-servers" 2>/dev/null; then
+        hub_error="the StatefulSet $job_namespace/$hub_statefulset is no settled set of servers (its replicas or revisions differ between its spec and its status, or it cannot be read)"
+        : >"$work/hub-servers"
+      fi
+    else
+      hub_error="the StatefulSet $job_namespace/$hub_statefulset could not be read: $(first_line "$work/hub.err")"
+    fi
+  fi
+  for server in ${hub_servers[@]+"${hub_servers[@]}"}; do
+    echo "$server" >>"$work/hub-servers"
+  done
+  jq -n --arg commit "$new_form_commit" --argjson a1_rc "$a1_rc" --arg a1_error "$a1_error" \
+    --rawfile a1_out "$work/a1.out" --arg census_name "$census_name" --arg hub_error "$hub_error" \
+    --rawfile hub "$work/hub-servers" \
+    --arg a1_missing "$(printf '%s\n' ${a1_missing[@]+"${a1_missing[@]}"})" \
+    --arg census_missing "$(printf '%s\n' ${census_missing[@]+"${census_missing[@]}"})" '
+    def lines: split("\n") | map(select(length > 0));
+    {new_form_commit: (if $commit == "" then null else $commit end),
+     a1: {missing: ($a1_missing | lines), rc: $a1_rc, error: (if $a1_error == "" then null else $a1_error end),
+       lines: ($a1_out | lines)},
+     census: {missing: ($census_missing | lines), name: (if $census_name == "" then null else $census_name end)},
+     hub: {error: (if $hub_error == "" then null else $hub_error end),
+       servers: ($hub | split("\n") | map(select(length > 0)) | unique)},
+     builds: {}}' >"$work/facts.json"
+fi
+
 # --- the NATS reads, from a Job that connects as the in-cluster listener --------------------------
 job_ok=0
 job_error=""
@@ -398,7 +538,9 @@ else
     jq -n --arg name "$name" --arg namespace "$job_namespace" --arg owner "$owner" \
       --arg image "$nats_box" --rawfile script "$job_script" --argjson deadline "$job_deadline" \
       --rawfile forms "$here/lib/legacy-subjects-gate-forms.jq" \
-      --arg inbox "$inbox_prefix" --slurpfile identity "$work/identity.json" '
+      --arg inbox "$inbox_prefix" --slurpfile identity "$work/identity.json" \
+      --arg census_class "$census_class" --arg census_file "$census_file" --arg census_inbox "$census_inbox" \
+      --arg census_name "$census_name" '
       $identity[0] as $id
       | {"app.kubernetes.io/name": "legacy-subjects-gate", "created-by": "legacy-subjects-gate", owner: $owner} as $labels
       | "legacy-subjects-gate-work" as $scratch
@@ -413,11 +555,17 @@ else
                env: ([{name: "NATS_URL", value: $id.urls},
                       (if $id.credential == "token" then {name: "NATS_TOKEN_FILE", value: $id.file} else {name: "NATS_NKEY", value: $id.file} end),
                       {name: "WORK_DIR", value: "/work"}, {name: "FORMS_JQ", value: $forms}]
-                     + (if $inbox == "" then [] else [{name: "NATS_INBOX_PREFIX", value: $inbox}] end)),
-               volumeMounts: [$id.mount + {readOnly: true}, {name: $scratch, mountPath: "/work"}],
+                     + (if $inbox == "" then [] else [{name: "NATS_INBOX_PREFIX", value: $inbox}] end)
+                     + (if $census_name == "" then [] else
+                         [{name: "CENSUS_NKEY", value: "/var/run/secrets/census/\($census_file)"}, {name: "CENSUS_NAME", value: $census_name}]
+                         + (if $census_inbox == "" then [] else [{name: "CENSUS_INBOX_PREFIX", value: $census_inbox}] end) end)),
+               volumeMounts: ([$id.mount + {readOnly: true}, {name: $scratch, mountPath: "/work"}]
+                 + (if $census_name == "" then [] else [{name: "census-seed", mountPath: "/var/run/secrets/census", readOnly: true}] end)),
                resources: {requests: {cpu: "250m", memory: "512Mi"}, limits: {cpu: "250m", memory: "512Mi"}},
                securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}}}],
-             volumes: [$id.volume, {name: $scratch, emptyDir: {medium: "Memory", sizeLimit: "16Mi"}}]}}}}' >"$work/job.json"
+             volumes: ([$id.volume, {name: $scratch, emptyDir: {medium: "Memory", sizeLimit: "16Mi"}}]
+               + (if $census_name == "" then [] else
+                   [{name: "census-seed", csi: {driver: "secrets-store-gke.csi.k8s.io", readOnly: true, volumeAttributes: {secretProviderClass: $census_class}}}] end))}}}}' >"$work/job.json"
     if ! kc -n "$job_namespace" create -f "$work/job.json" -o name >"$work/create.out" 2>"$work/create.err"; then
       job_error="the Job could not be created: $(first_line "$work/create.err")"
     else
@@ -454,6 +602,45 @@ else
   fi
 fi
 
+# --- (a2)'s builds: each build a connection of the census names, judged as daemon-release-gate.sh
+# judges a pin: GitHub's compare of --new-form-commit with the build's commit, or with its release
+# tag's, passes when the build is ahead of it or identical (behind_by 0). The builds are few (one per
+# release and image in use); a census naming more than max_builds is not judged, and is unknown.
+readonly max_builds=40
+if [ -n "$census_name" ] && [ -s "$work/job-lines.jsonl" ]; then
+  jq -r -L "$here/lib" -s 'include "legacy-subjects-gate-forms";
+    [.[] | select(.leg == "census") | .out | split("\n")[] | select(length > 0) | try fromjson catch empty
+      | .data.connections[]? | .name | build_token | strings] | unique[]' "$work/job-lines.jsonl" >"$work/builds" 2>/dev/null || : >"$work/builds"
+  : >"$work/build-verdicts.jsonl"
+  if [ "$(wc -l <"$work/builds")" -gt "$max_builds" ]; then
+    jq -cn --arg n "$(wc -l <"$work/builds")" --argjson max "$max_builds" '{verdict: "unknown", detail: "the census names \($n) builds, more than the \($max) this gate asks GitHub about in one reading"}' >"$work/too-many"
+  fi
+  while IFS= read -r build; do
+    case "$build" in
+      legion@*) head=${build#legion@} ;;
+      @sjawhar/pi-envoy@*) head="pi-envoy-v${build##*@}" ;;
+      @sjawhar/claude-envoy@* | @sjawhar/codex-envoy@*) head="claude-envoy-v${build##*@}" ;;
+      *) continue ;;
+    esac
+    if [ -s "$work/too-many" ]; then
+      verdict=$(cat "$work/too-many")
+    elif ! command -v gh >/dev/null 2>&1; then
+      verdict='{"verdict": "unknown", "detail": "gh is not on PATH, so GitHub was not asked"}'
+    elif gh api "repos/cybermonklabs/legion/compare/$new_form_commit...$head" --jq '{status, behind_by}' >"$work/compare" 2>"$work/compare.err"; then
+      verdict=$(jq -c --arg head "$head" --arg commit "$new_form_commit" '
+        if (.status == "ahead" or .status == "identical") and .behind_by == 0 then {verdict: "pass", detail: "\($head) is \(.status) of \($commit)"}
+        elif .status == "behind" or .status == "diverged" then {verdict: "shut", detail: "\($head) is \(.status) \(if .status == "behind" then "" else "from " end)\($commit) (behind by \(.behind_by))"}
+        else {verdict: "unknown", detail: "GitHub compared \($head) with \($commit) as \(.status // "nothing")"} end' "$work/compare" 2>/dev/null) ||
+        verdict='{"verdict": "unknown", "detail": "GitHub'"'"'s compare answered no status"}'
+    else
+      verdict=$(jq -cn --arg head "$head" --arg error "$(first_line "$work/compare.err")" '{verdict: "unknown", detail: "GitHub could not compare \($head): \($error)"}')
+    fi
+    jq -cn --arg build "$build" --argjson verdict "$verdict" '{key: $build, value: $verdict}' >>"$work/build-verdicts.jsonl"
+  done <"$work/builds"
+  jq --slurpfile verdicts "$work/build-verdicts.jsonl" '.builds = ($verdicts | from_entries)' "$work/facts.json" >"$work/facts.tmp" &&
+    mv "$work/facts.tmp" "$work/facts.json"
+fi
+
 finished_at=$(date -u +%s)
 
 # --- the judgement --------------------------------------------------------------------------------
@@ -471,17 +658,19 @@ jq -n \
   --slurpfile lines "$work/job-lines.jsonl" \
   --argjson job_ok "$job_ok" \
   --arg job_error "$job_error" \
+  --slurpfile facts "$work/facts.json" \
   '{context: $context, started_at: $started, finished_at: $finished, earlier: $earlier,
     pods_error: (if $pods_error == "" then null else $pods_error end),
     pods: $pods, other_bus: ($other_bus[0] // []), bus: $bus, bus_aliases: $bus_aliases, outside: $outside,
-    job: {ok: ($job_ok == 1), error: (if $job_error == "" then null else $job_error end), lines: $lines}}' >"$work/input.json"
+    job: {ok: ($job_ok == 1), error: (if $job_error == "" then null else $job_error end), lines: $lines},
+    facts: $facts[0]}' >"$work/input.json"
 # A judgement that fails on what it was given (a fault in the judge itself) is a reading that could
 # not be judged: UNKNOWN, with a line and a record naming the failure, never a bare jq exit.
 if ! jq -L "$here/lib" -f "$judge" "$work/input.json" >"$work/judgement.json" 2>"$work/judge.err"; then
   jq -n --arg context "$context" --argjson started "$started_at" --argjson finished "$finished_at" \
     --argjson earlier "$earlier" --arg error "$(first_line "$work/judge.err")" '
     "the judgement could not read what the gate read: \($error | gsub("[[:cntrl:]]"; "?"))" as $why
-    | {verdict: "unknown", window: 259200, lines: ["UNKNOWN: " + $why],
+    | {verdict: "unknown", lines: ["UNKNOWN: " + $why],
        record: {gate: "legacy-subjects-gate", version: 3, context: $context, started_at: $started,
          finished_at: $finished, read_at: ($started | todate), verdict: "unknown",
          compared_with: (if $earlier == null then null else $earlier.read_at end),
@@ -512,7 +701,7 @@ case "$verdict" in
     again=$(jq -r '.again | todate' "$work/judgement.json")
     found=$(jq -r .found "$work/judgement.json")
     last_seq=$(jq -r .last_seq "$work/judgement.json")
-    echo "FIRST READING: $record holds a first reading of every surface, with $found FOUND line(s) naming old-form names still in use; read again at or after $again with --since $record: that reading opens only if the stream then holds no old-form message (none after stream sequence $last_seq), no listener's count moved, and no interest record or consumer filter holds an old form"
+    echo "FIRST READING: $record holds a first reading of every surface, with $found FOUND line(s) naming old-form names still in use; read again at or after $again with --since $record and the four facts' flags: that reading opens only if the stream then holds no old-form message (none after stream sequence $last_seq), no listener's count moved, no interest record or consumer filter holds an old form, and the pins, the running clients and the consumers are all past the old form"
     exit 4
     ;;
 esac

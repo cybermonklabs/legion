@@ -67,9 +67,14 @@ const (
 // Config is the daemon's settled configuration: the file, the environment, and the defaults
 // resolved into the values the daemon runs on.
 type Config struct {
-	Project string
-	Port    int
-	Bind    string
+	// Revision is the commit this binary was built from (cmd/legion's revision, which the worker
+	// image and the release link in), "" for a build nothing stamped. It is not read from the file:
+	// `legion start` sets it, and the daemon names it after its NATS connection's name
+	// (natsauth.ConnectionName).
+	Revision string
+	Project  string
+	Port     int
+	Bind     string
 	// AdvertiseHost is `advertise_host`: the host every pod's shim dials the worker stream at in
 	// Bind's place, so Bind can be the unspecified address a daemon running as a pod listens on; ""
 	// (the default) has pods dial Bind. Only runtime: kubernetes accepts it, and readAdvertiseHost

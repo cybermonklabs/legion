@@ -392,6 +392,7 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 		}
 	}
 	applyLinkedPlugins(&cfg)
+	cfg.Revision = revision
 	absoluteConfig, err := filepath.Abs(configPath)
 	if err != nil {
 		printRefusal(stderr, "legion start: resolve "+configPath, err)
