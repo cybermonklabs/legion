@@ -392,13 +392,15 @@ func TestTheLineNamesTheRouteAndTheCallersCorrelationID(t *testing.T) {
 }
 
 // TestTheEdgesAnswersNameTheirPortAndItsUnroutedOnesWriteNoLine: behind EdgeMiddleware, a route's
-// refusal writes its line naming port=edge and is counted with port="edge", and the mux's own 404
-// and 405, which anyone on the internet can send at any rate, are counted with port="edge" and
-// write no line. The same requests behind Middleware, the API port's, write a line for each of
-// the three, none naming a port, and count samples with no port label.
+// refusal writes its line naming port=edge and is counted with port="edge", and the mux's own 404,
+// 405 and the 400 it answers a request for * (GET * HTTP/1.1), which anyone on the internet can
+// send at any rate, are counted with port="edge" and write no line. The same requests behind
+// Middleware, the API port's, write a line for each of the four, none naming a port, and count
+// samples with no port label.
 //
-// The named reverts: record the edge with Middleware, and its lines name no port and its 404 and
-// 405 write lines; drop unrouted's check, and the edge's 404 and 405 write lines.
+// The named reverts: record the edge with Middleware, and its lines name no port and its 404, 405
+// and 400 write lines; drop unrouted's check, and the edge's 404, 405 and 400 write lines; drop its
+// request-for-* clause, and the edge's 400 writes a line.
 func TestTheEdgesAnswersNameTheirPortAndItsUnroutedOnesWriteNoLine(t *testing.T) {
 	mux := func() *http.ServeMux {
 		m := http.NewServeMux()
@@ -408,12 +410,17 @@ func TestTheEdgesAnswersNameTheirPortAndItsUnroutedOnesWriteNoLine(t *testing.T)
 		return m
 	}
 	send := func(r *rig) {
-		for _, call := range []struct{ method, path string }{
+		for _, call := range []struct{ method, target string }{
 			{http.MethodPost, "/v1/oauth/token"},
 			{http.MethodGet, "/wp-login.php"},
 			{http.MethodGet, "/v1/oauth/token"},
+			{http.MethodGet, "*"},
 		} {
-			r.serve(httptest.NewRequest(call.method, call.path, nil))
+			req := httptest.NewRequest(call.method, call.target, nil)
+			if call.target == "*" && req.RequestURI != "*" {
+				t.Fatalf("a request for * reads its target as %q, want *", req.RequestURI)
+			}
+			r.serve(req)
 		}
 	}
 
@@ -421,12 +428,13 @@ func TestTheEdgesAnswersNameTheirPortAndItsUnroutedOnesWriteNoLine(t *testing.T)
 	send(edge)
 	lines := edge.lines(t)
 	if len(lines) != 1 || lines[0]["code"] != "EDGE_GRANT_REFUSED" || lines[0]["port"] != answer.PortEdge {
-		t.Fatalf("the edge's three refusals wrote lines %v; want one, the route's EDGE_GRANT_REFUSED naming port=edge", lines)
+		t.Fatalf("the edge's four refusals wrote lines %v; want one, the route's EDGE_GRANT_REFUSED naming port=edge", lines)
 	}
 	for _, labels := range []string{
 		`outcome="refused",code="EDGE_GRANT_REFUSED",caller_class="public",port="edge"`,
 		`outcome="refused",code="HTTP_404",caller_class="public",port="edge"`,
 		`outcome="refused",code="HTTP_405",caller_class="public",port="edge"`,
+		`outcome="refused",code="HTTP_400",caller_class="public",port="edge"`,
 	} {
 		if got := edge.count(t, labels); got != "1" {
 			t.Errorf("the edge's broker_answers_total{%s} = %s, want 1", labels, got)
@@ -436,8 +444,8 @@ func TestTheEdgesAnswersNameTheirPortAndItsUnroutedOnesWriteNoLine(t *testing.T)
 	api := newRigOf(t, mux(), answer.Middleware)
 	send(api)
 	lines = api.lines(t)
-	if len(lines) != 3 {
-		t.Fatalf("the API port's three refusals wrote %d lines, want 3: %v", len(lines), lines)
+	if len(lines) != 4 {
+		t.Fatalf("the API port's four refusals wrote %d lines, want 4: %v", len(lines), lines)
 	}
 	for i, line := range lines {
 		if port, named := line["port"]; named {
@@ -448,6 +456,7 @@ func TestTheEdgesAnswersNameTheirPortAndItsUnroutedOnesWriteNoLine(t *testing.T)
 		`outcome="refused",code="EDGE_GRANT_REFUSED",caller_class="public"`,
 		`outcome="refused",code="HTTP_404",caller_class="public"`,
 		`outcome="refused",code="HTTP_405",caller_class="public"`,
+		`outcome="refused",code="HTTP_400",caller_class="public"`,
 	} {
 		if got := api.count(t, labels); got != "1" {
 			t.Errorf("the API port's broker_answers_total{%s} = %s, want 1", labels, got)

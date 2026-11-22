@@ -697,11 +697,14 @@ func (rec *Recorder) labels(labels ...[2]string) [][2]string {
 	return labels
 }
 
-// unrouted reports whether this is an edge answer the mux wrote itself for a path or a method the
-// edge serves no route for: a 404 or a 405 with no route matched. EdgeMiddleware counts such an
-// answer and writes it no line, since anyone on the internet can send it at any rate.
+// unrouted reports whether this is an edge answer the mux wrote itself for a request the edge
+// serves no route for: a 404 or a 405 with no route matched, and the 400 the mux answers a request
+// whose target is * (such as GET * HTTP/1.1; net/http answers OPTIONS * itself). EdgeMiddleware
+// counts such an answer and writes it no line, since anyone on the internet can send it at any
+// rate.
 func (rec *Recorder) unrouted(r *http.Request) bool {
-	return rec.port == PortEdge && r.Pattern == "" && (rec.status == http.StatusNotFound || rec.status == http.StatusMethodNotAllowed)
+	return rec.port == PortEdge && r.Pattern == "" &&
+		(rec.status == http.StatusNotFound || rec.status == http.StatusMethodNotAllowed || r.RequestURI == "*")
 }
 
 // CountCarried counts one answer the broker carried rather than wrote: a call the airlock's

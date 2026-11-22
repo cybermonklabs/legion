@@ -19,8 +19,9 @@ import (
 // action holds a rune of Unicode category Cc, Cf, Co, Zl or Zp, naming the field, before anything
 // is written. A space (Zs) is no refused rune, and an object with one in every field is accepted:
 // the control that the refusals are the runes' and not the object's. A lone surrogate (Cs) cannot
-// reach the check: JSON carries it only as an escape, which encoding/json reads as U+FFFD, so the
-// object is accepted and stores no surrogate.
+// reach the check: JSON carries it as an escape, which encoding/json reads as U+FFFD, or as its
+// raw UTF-8-style bytes (ED A0 80), which are no UTF-8 and which encoding/json reads as three
+// U+FFFD, so the object is accepted and stores no surrogate.
 //
 // A detail's type is refused by the details check first (validateDetails takes agent_secret and
 // launcher_credential alone), so its row names that reason; every other row names its own field.

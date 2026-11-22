@@ -48,7 +48,7 @@ func newEdgeServer(mux http.Handler, answers *metrics.Counter, log *slog.Logger,
 // its answer recorder (answer.EdgeMiddleware), which wraps the mux itself so it reads each answer's
 // route; the request deadline around that; and, outermost, the edge's access log on log, so every
 // request a handler of the edge is handed writes its line, the 404 and 405 the mux answers and a
-// refusal before any route among them, with the status its answer went out with.
+// refusal before any route among them, with the status the broker answered with.
 func edgeHandler(mux http.Handler, answers *metrics.Counter, log *slog.Logger) http.Handler {
 	return edgeAccessLog(withRequestDeadline(answer.EdgeMiddleware(mux, answers), requestDeadline), log)
 }
@@ -56,8 +56,10 @@ func edgeHandler(mux http.Handler, answers *metrics.Counter, log *slog.Logger) h
 // edgeAccessLog serves next, then writes one line on log at INFO under edgeRequestMessage for the
 // request: an access log's line, which no proxy of the deployment's own writes for the edge, since
 // nothing but the load balancer stands in front of it. The line names the method; the path, never
-// its query string; the protocol; the status the answer went out with, read once next has
-// returned; the User-Agent; and X-Forwarded-For, each of its header lines in order joined by ", ".
+// its query string; the protocol; the status the broker answered with, read once next has
+// returned, which a client can still miss when the load balancer's or the server's own timeout
+// ends the exchange first; the User-Agent; and X-Forwarded-For, each of its header lines in order
+// joined by ", ".
 // It names nothing else of the request: not the query string, the Referer, the body, the
 // Authorization header, the DPoP proof or a cookie, any of which can carry a credential or a
 // person's login.
@@ -80,7 +82,7 @@ func edgeAccessLog(next http.Handler, log *slog.Logger) http.Handler {
 }
 
 // edgeAnswer is one edge request's response writer as its access log reads it: the status the
-// answer went out with. It overrides WriteHeader alone of the writer's own methods: the edge's
+// broker answered with. It overrides WriteHeader alone of the writer's own methods: the edge's
 // answer recorder, always inside it (edgeHandler), sets each answer's status with WriteHeader
 // before the answer's first byte, so a Write of its own would only pass the handlers' bytes on,
 // and code scanning reads every such pass-through as one more place a caller's text is written

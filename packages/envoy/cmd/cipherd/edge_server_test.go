@@ -1,7 +1,7 @@
 // edge_server_test.go holds the broker's edge server (newEdgeServer) to its idle timeout, and its
 // access log (edgeHandler, edgeAccessLog) to its line: one at INFO for every request a handler of
 // the edge is handed, the 404 and 405 its mux answers and a refused login among them, naming the
-// method, the path, the protocol, the status the answer went out with, the User-Agent and
+// method, the path, the protocol, the status the broker answered with, the User-Agent and
 // X-Forwarded-For, and nothing else the request carries. The access log's first rows drive the
 // server main builds over a mux of their own; the last drives the REAL compiled broker with its
 // edge, on a real Postgres.
@@ -188,7 +188,7 @@ func TestTheEdgeAccessLogNamesTheRequestsFieldsAndNothingElse(t *testing.T) {
 }
 
 // TestTheEdgeAccessLogWritesALineForEveryAnswer: every request a handler of the edge is handed
-// writes one line, in order, with the status its answer went out with, read once the handler has
+// writes one line, in order, with the status the broker answered with, read once the handler has
 // returned: a path the edge serves no route for (the mux's 404), a method its login path does not
 // take (the mux's 405), a login a gate refuses (a 400 the answer recorder holds until the handler
 // returns, and writes no refusal line for), the health check, and a handler that panics, which
