@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -103,7 +102,7 @@ func TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused(t *testing.T) {
 // reply was written, leaves the thread read.
 func TestAThreadReadWaitsForAWritersReadPhase(t *testing.T) {
 	gate := &gatedProjectMark{entered: make(chan struct{}), release: make(chan struct{})}
-	handler, _, database := pooledDocumentHandlerWith(t, 8, time.Hour, func(service *docs.Service) docs.API {
+	handler, _, database, deps := pooledDocumentHandlerWith(t, 8, time.Hour, func(service *docs.Service) docs.API {
 		gate.API = service
 		return gate
 	})
@@ -116,12 +115,20 @@ func TestAThreadReadWaitsForAWritersReadPhase(t *testing.T) {
 		"body": "Is alpha right?", "anchor": map[string]any{"artifact": "spec", "quote": "alpha"},
 	}, "alice")
 
+	// The reply and the mark each run on a connection of their own, so the wait watches the mark's
+	// backend queue behind the reply's (storetest.WaitForQueuedBehindBackend): no other backend
+	// queued on the thread owner's lock is taken for the mark.
+	replyHandler, replyPID := oneConnectionHandler(t, deps)
+	replyHandler = withDeadline(t, replyHandler)
+	markHandler, markPID := oneConnectionHandler(t, deps)
+	markHandler = withDeadline(t, markHandler)
+
 	// A reply to an anchored comment projects the thread onto its root's mark (ProjectMark), in
 	// its read phase, after it has read its creation time and queued its insert.
 	gate.armed.Store(true)
 	replies := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		replies <- sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+		replies <- sessionRequest(t, replyHandler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
 			"body": "Yes.", "reply_to": root.ID, "actor": sessionActor(),
 		})
 	}()
@@ -138,8 +145,8 @@ func TestAThreadReadWaitsForAWritersReadPhase(t *testing.T) {
 
 	mark := time.Now()
 	marks := make(chan *httptest.ResponseRecorder, 1)
-	go func() { marks <- markThreadRead(t, handler, "alice", root.ID, mark) }()
-	if response, early, _ := storetest.AwaitOwnerLockWaiter(t, database, "the thread read", marks); early {
+	go func() { marks <- markThreadRead(t, markHandler, "alice", root.ID, mark) }()
+	if response, early := storetest.WaitForQueuedBehindBackend(t, database, replyPID, markPID, marks); early {
 		t.Fatalf("the thread read answered %d %s without waiting for the owner lock its writer holds", response.Code, response.Body.String())
 	}
 	release()
@@ -165,55 +172,13 @@ func TestAThreadReadWaitsForAWritersReadPhase(t *testing.T) {
 	}
 }
 
-// transactionIDHolders is how many backends of this test's database hold a transaction id, and
-// what each of them is running, so a holder this test does not drive is named rather than
-// counted alone.
-func transactionIDHolders(t *testing.T, database *store.Store) (int, string) {
-	t.Helper()
-	var holders int
-	var running string
-	if err := database.Pool.QueryRow(context.Background(), `
-		select count(*), coalesce(string_agg(query, ' | '), '') from pg_stat_activity
-		where datname = current_database() and backend_xid is not null and pid <> pg_backend_pid()
-	`).Scan(&holders, &running); err != nil {
-		t.Fatalf("read pg_stat_activity: %v", err)
-	}
-	return holders, running
-}
-
-// awaitNoTransactionIDHolder waits until the TEST project's search term statistics are committed
-// and then until no backend holds a transaction id. An issue create leaves one write running past
-// its answer: the refresh of the project's search term statistics its related-item check starts
-// for a project that has none (ensureSearchTermStats), a background write with an id of its own.
-// That refresh can begin after the create answers, and its rebuild takes its id only once it
-// inserts, so a moment with no holder does not show it has ended; its row of search_term_totals,
-// written in the same transaction, does. A test that counts every backend waits it out first, as
-// the refusal tests wait it out, so what it counts afterwards is the writers it drives. Each of its
-// two waits has one bound, the test binary's deadline (testwait.UntilPolling).
-func awaitNoTransactionIDHolder(t *testing.T, database *store.Store) {
-	t.Helper()
-	testwait.UntilPolling(t, 5*time.Millisecond, "the TEST project's search term statistics to be refreshed (its search_term_totals row)", func() (bool, bool) {
-		var refreshed bool
-		if err := database.Pool.QueryRow(context.Background(), `
-			select exists (select 1 from search_term_totals where project_key = 'TEST')
-		`).Scan(&refreshed); err != nil {
-			t.Fatalf("read search_term_totals: %v", err)
-		}
-		return refreshed, refreshed
-	})
-	testwait.UntilPolling(t, 5*time.Millisecond, "no backend to hold a transaction id (the holders and what they run)", func() (string, bool) {
-		holders, running := transactionIDHolders(t, database)
-		return fmt.Sprintf("%d: %s", holders, running), holders == 0
-	})
-}
-
 // Two anchored comments on one spec still run one at a time, and the second waits for the first
 // holding no transaction id, so a transaction waiting its turn holds back no live update capped by
 // the event horizon. Both land, their events in the order they arrived and the issue's sequence
 // without a gap.
 func TestTwoWritersOfOneOwnerSerializeWithoutATransactionID(t *testing.T) {
 	gate := &gatedMarkQuote{entered: make(chan struct{}), release: make(chan struct{})}
-	handler, _, database := pooledDocumentHandlerWith(t, 8, time.Hour, func(service *docs.Service) docs.API {
+	handler, _, database, deps := pooledDocumentHandlerWith(t, 8, time.Hour, func(service *docs.Service) docs.API {
 		gate.API = service
 		return gate
 	})
@@ -222,15 +187,24 @@ func TestTwoWritersOfOneOwnerSerializeWithoutATransactionID(t *testing.T) {
 	release := func() { released.Do(func() { close(gate.release) }) }
 	defer release()
 	issue := createInteractionIssue(t, handler, "TEST", "Serialized writers", "alpha bravo charlie delta")
-	awaitNoTransactionIDHolder(t, database)
 
-	comment := func(quote, body string) *httptest.ResponseRecorder {
-		return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
-			"anchor": map[string]string{"artifact": "spec", "quote": quote}, "body": body,
-		}, "alice")
+	// Each comment runs on a connection of its own, so each read below names that comment's
+	// backend: whether the first holds a transaction id in its read phase
+	// (storetest.HoldsTransactionID), and whether the second queues behind the first
+	// (storetest.WaitForQueuedBehindBackend) holding none. No other backend, the server's own
+	// background writes among them, is taken for either.
+	comment := func(quote, body string) (uint32, chan *httptest.ResponseRecorder) {
+		callHandler, pid := oneConnectionHandler(t, deps)
+		callHandler = withDeadline(t, callHandler)
+		answered := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			answered <- dispatchRequest(t, callHandler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+				"anchor": map[string]string{"artifact": "spec", "quote": quote}, "body": body,
+			}, "alice")
+		}()
+		return pid, answered
 	}
-	firsts := make(chan *httptest.ResponseRecorder, 1)
-	go func() { firsts <- comment("alpha", "first") }()
+	firstPID, firsts := comment("alpha", "first")
 	testwait.Until(t, "the first comment to reach its quote's mark", func() (bool, bool) {
 		select {
 		case <-gate.entered:
@@ -241,19 +215,20 @@ func TestTwoWritersOfOneOwnerSerializeWithoutATransactionID(t *testing.T) {
 		}
 		return false, false
 	})
-	holders, running := transactionIDHolders(t, database)
-	if holders != 0 {
-		t.Fatalf("%d backends hold a transaction id while the first comment is in its read phase, want none: %s", holders, running)
+	if holdingXid, err := storetest.HoldsTransactionID(context.Background(), database, firstPID); err != nil {
+		t.Fatal(err)
+	} else if holdingXid {
+		t.Fatal("the first comment holds a transaction id in its read phase, want none")
 	}
 
-	seconds := make(chan *httptest.ResponseRecorder, 1)
-	go func() { seconds <- comment("bravo", "second") }()
-	response, early, holdingXid := storetest.AwaitOwnerLockWaiter(t, database, "the second comment", seconds)
-	if early {
+	secondPID, seconds := comment("bravo", "second")
+	if response, early := storetest.WaitForQueuedBehindBackend(t, database, firstPID, secondPID, seconds); early {
 		t.Fatalf("the second comment answered %d %s without waiting for the owner lock its writer holds", response.Code, response.Body.String())
 	}
-	if holdingXid != 0 {
-		t.Fatalf("the second comment waits on the owner lock holding a transaction id")
+	if holdingXid, err := storetest.HoldsTransactionID(context.Background(), database, secondPID); err != nil {
+		t.Fatal(err)
+	} else if holdingXid {
+		t.Fatal("the second comment waits on the owner lock holding a transaction id")
 	}
 	release()
 
@@ -309,9 +284,8 @@ func TestTwoWritersOfOneOwnerSerializeWithoutATransactionID(t *testing.T) {
 // one another's label. Both wait for the lock's holder with no transaction id, then each reads
 // what the one before it committed: both labels land, and the issue's sequence has no gap.
 func TestTwoPatchesOfOneIssueSerializeOnItsOwnerLockAndLoseNoUpdate(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "Two patches", "A spec")
-	awaitNoTransactionIDHolder(t, database)
 
 	holder, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -322,25 +296,36 @@ func TestTwoPatchesOfOneIssueSerializeOnItsOwnerLockAndLoseNoUpdate(t *testing.T
 		t.Fatalf("take the issue's owner lock: %v", err)
 	}
 
-	addLabel := func(label string, answered chan<- *httptest.ResponseRecorder) {
-		answered <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key,
-			map[string]any{"labels_add": []string{label}}, "alice")
+	// Each PATCH runs on a connection of its own, so the wait watches each one's backend
+	// (storetest.WaitForQueuedBehind) and the transaction id read is that backend's: no other
+	// backend queued on the issue's owner lock or holding a transaction id, the server's own among
+	// them, is taken for a PATCH.
+	type labelPatch struct {
+		label    string
+		pid      uint32
+		answered chan *httptest.ResponseRecorder
 	}
-	answers := make(chan *httptest.ResponseRecorder, 2)
-	go addLabel("alpha", answers)
-	go addLabel("bravo", answers)
-	testwait.UntilPolling(t, 5*time.Millisecond, "two PATCHes to wait on the issue's owner lock (the waiters)", func() (int, bool) {
-		select {
-		case response := <-answers:
-			t.Fatalf("a PATCH answered %d %s while another transaction held the issue's owner lock", response.Code, response.Body.String())
-		default:
+	var patches []labelPatch
+	for _, label := range []string{"alpha", "bravo"} {
+		callHandler, pid := oneConnectionHandler(t, deps)
+		answered := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			answered <- dispatchRequest(t, callHandler, http.MethodPatch, "/api/v1/issues/"+issue.Key,
+				map[string]any{"labels_add": []string{label}}, "alice")
+		}()
+		patches = append(patches, labelPatch{label: label, pid: pid, answered: answered})
+	}
+	for _, patch := range patches {
+		if response, early := storetest.WaitForQueuedBehind(t, holder, patch.pid, patch.answered); early {
+			t.Fatalf("the %s PATCH answered %d %s while another transaction held the issue's owner lock",
+				patch.label, response.Code, response.Body.String())
 		}
-		waiting, holdingXid := storetest.OwnerLockWaiters(t, database)
-		if holdingXid != 0 {
-			t.Fatalf("%d of %d PATCHes wait on the issue's owner lock holding a transaction id, want none", holdingXid, waiting)
+		if holdingXid, err := storetest.HoldsTransactionID(context.Background(), database, patch.pid); err != nil {
+			t.Fatal(err)
+		} else if holdingXid {
+			t.Fatalf("the %s PATCH waits on the issue's owner lock holding a transaction id, want none", patch.label)
 		}
-		return waiting, waiting >= 2
-	})
+	}
 	var lastSeqBefore int
 	if err := database.Pool.QueryRow(context.Background(), `select last_seq from issues where key = $1`, issue.Key).Scan(&lastSeqBefore); err != nil {
 		t.Fatalf("read the issue's sequence: %v", err)
@@ -348,9 +333,9 @@ func TestTwoPatchesOfOneIssueSerializeOnItsOwnerLockAndLoseNoUpdate(t *testing.T
 	if err := holder.Commit(context.Background()); err != nil {
 		t.Fatalf("release the issue's owner lock: %v", err)
 	}
-	for range 2 {
-		if response := awaitResponse(t, answers); response.Code != http.StatusOK {
-			t.Fatalf("PATCH answered %d %s, want 200", response.Code, response.Body.String())
+	for _, patch := range patches {
+		if response := awaitResponse(t, patch.answered); response.Code != http.StatusOK {
+			t.Fatalf("the %s PATCH answered %d %s, want 200", patch.label, response.Code, response.Body.String())
 		}
 	}
 

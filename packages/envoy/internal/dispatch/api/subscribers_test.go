@@ -657,7 +657,7 @@ func TestUnsubscribeArtifactSessionRejectsIssueLinkedArtifacts(t *testing.T) {
 // subscription.removed: read under the lock, the request is answered and nothing more is appended;
 // read before it, the request would be answered twice.
 func TestASubscriptionRemovalCompletionQueuedBehindAnotherAppendsNoSecondRemoval(t *testing.T) {
-	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "Removed once", "A spec")
 	ctx := context.Background()
 	own := issueOwner(issue.Key)
@@ -690,15 +690,25 @@ func TestASubscriptionRemovalCompletionQueuedBehindAnotherAppendsNoSecondRemoval
 		event *model.Event
 		err   error
 	}
+	// The completion runs on a connection of its own, so the wait watches its backend alone
+	// (storetest.WaitForQueuedBehind) and the transaction id read is that backend's: no other
+	// backend queued on the issue's owner lock is taken for it.
+	callStore, callPID := oneConnectionStore(t, deps)
+	callDeps := deps
+	callDeps.Store = callStore
+	completer := directServer(callDeps)
 	completed := make(chan completion, 1)
 	go func() {
-		event, err := served.completeSubscriptionRemoval(ctx, own, session, request.ID, actor)
+		event, err := completer.completeSubscriptionRemoval(ctx, own, session, request.ID, actor)
 		completed <- completion{event: event, err: err}
 	}()
-	if early, answered, holdingXid := storetest.AwaitOwnerLockWaiter(t, database, "the removal's completion", completed); answered {
+	if early, answered := storetest.WaitForQueuedBehind(t, holder, callPID, completed); answered {
 		t.Fatalf("the completion answered (%v, %v) while this test held the issue's owner lock", early.event, early.err)
-	} else if holdingXid != 0 {
-		t.Fatalf("%d backends wait on the owner lock holding a transaction id, want none", holdingXid)
+	}
+	if holdingXid, err := storetest.HoldsTransactionID(ctx, database, callPID); err != nil {
+		t.Fatal(err)
+	} else if holdingXid {
+		t.Fatal("the completion waits on the issue's owner lock holding a transaction id, want none")
 	}
 	if _, err := served.appendEvent(ctx, holder, own.event("subscription.removed", actor,
 		subscriptionRemovedPayload{SessionID: session, By: actor, Topics: topics, RequestEventID: request.ID})); err != nil {
@@ -734,7 +744,12 @@ func TestAnUnsubscribeQueuedBehindAnotherTakesItsPendingRequest(t *testing.T) {
 	key := createTestIssue(t, bootstrap, "TEST", "Issue")
 	topic := "notifications.dispatch.issue." + key + ".>"
 	envoyURL, _ := newFakeListener(t, map[string][]string{"planner": {topic}}, nil)
-	handler := newSubscribersHandler(t, database, envoyURL)
+	// The unsubscribe's handler serves from a store of one connection (storetest.OneConnection), so
+	// the wait watches the unsubscribe's backend alone (storetest.WaitForQueuedBehind) and the
+	// transaction id read is that backend's: no other backend queued on the issue's owner lock, the
+	// bootstrap server's own among them, is taken for it.
+	callPool, callPID := storetest.OneConnection(t, database.Pool)
+	handler := newSubscribersHandler(t, &store.Store{Pool: callPool}, envoyURL)
 	ctx := context.Background()
 
 	holder, err := database.Pool.Begin(ctx)
@@ -749,10 +764,13 @@ func TestAnUnsubscribeQueuedBehindAnotherTakesItsPendingRequest(t *testing.T) {
 	go func() {
 		answered <- dispatchRequest(t, handler, http.MethodDelete, "/api/v1/issues/"+key+"/subscribers/planner", nil, "alice")
 	}()
-	if early, answeredEarly, holdingXid := storetest.AwaitOwnerLockWaiter(t, database, "the unsubscribe", answered); answeredEarly {
+	if early, answeredEarly := storetest.WaitForQueuedBehind(t, holder, callPID, answered); answeredEarly {
 		t.Fatalf("the unsubscribe answered %d %s while this test held the issue's owner lock", early.Code, early.Body.String())
-	} else if holdingXid != 0 {
-		t.Fatalf("%d backends wait on the owner lock holding a transaction id, want none", holdingXid)
+	}
+	if holdingXid, err := storetest.HoldsTransactionID(ctx, database, callPID); err != nil {
+		t.Fatal(err)
+	} else if holdingXid {
+		t.Fatal("the unsubscribe waits on the issue's owner lock holding a transaction id, want none")
 	}
 	actor := model.Actor{Kind: "user", ID: "alice"}
 	if _, err := events.NewBroker().Append(ctx, holder, issueOwner(key).event("subscription.remove_requested", actor,

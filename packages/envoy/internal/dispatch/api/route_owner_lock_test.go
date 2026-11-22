@@ -648,13 +648,17 @@ func TestADeliverySettleWaitsForItsReceiptOwnersLockHoldingNoTransactionID(t *te
 			close(release)
 		}
 	}()
-	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, settle: time.Hour})
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "LOCK", "Delivery settle", "A spec.\n")
 	ctx := context.Background()
 
+	// The message, and so its send's settle, runs on a connection of its own, so the wait watches
+	// its backend alone (storetest.WaitForQueuedBehind) and the transaction id read is that
+	// backend's: no other backend queued on the issue's owner lock is taken for the settle.
+	callHandler, callPID := oneConnectionHandler(t, deps)
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		answered <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages",
+		answered <- dispatchRequest(t, callHandler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages",
 			map[string]any{"body": "Did this ship?", "target": "session:s1", "delivery": "btw"}, "alice")
 	}()
 	testwait.Until(t, "the message's send to reach the listener", func() (bool, bool) {
@@ -677,10 +681,13 @@ func TestADeliverySettleWaitsForItsReceiptOwnersLockHoldingNoTransactionID(t *te
 	}
 	released = true
 	close(release)
-	if early, answeredEarly, holdingXid := storetest.AwaitOwnerLockWaiter(t, database, "the send's settle", answered); answeredEarly {
+	if early, answeredEarly := storetest.WaitForQueuedBehind(t, holder, callPID, answered); answeredEarly {
 		t.Fatalf("the message answered %d %s while this test held the issue's owner lock: its settle took no lock",
 			early.Code, early.Body.String())
-	} else if holdingXid != 0 {
+	}
+	if holdingXid, err := storetest.HoldsTransactionID(ctx, database, callPID); err != nil {
+		t.Fatal(err)
+	} else if holdingXid {
 		t.Fatal("the send's settle waits for the issue's owner lock with a transaction id already open: it updated " +
 			"the attempt before it took that lock, under a writer holding the issue's owner")
 	}
