@@ -1241,6 +1241,14 @@ DAEMON_FORCED_ORDER_PKGS = ["./internal/testnats/", "./internal/intake/"]
 FORCED_ORDER_TEST = f"{ENVOY}/scripts/forced-order.test.sh"
 ENVOY_FORCED_ORDER_TEST_STEP = "Test forced-order.sh's refusals"
 ENVOY_FORCED_ORDER_TEST_PKGS = ["./internal/testnats/hooktest/skiponly/"]
+# envoy-infra-go's two forced-order steps, the writer hold's and the consumer-names commands'
+# TestForcedOrder rows on the hooked nats-server the module links and on v2.10.29, each running
+# forced-order.sh over INFRA_FORCED_ORDER_PKGS.
+INFRA_FORCED_ORDER_STEPS = [
+    "Writer hold and consumer-names forced-order tests on the hooked nats-server the module links",
+    "Writer hold and consumer-names forced-order tests on the hooked nats-server v2.10.29",
+]
+INFRA_FORCED_ORDER_PKGS = ["./writerhold/", "./consumernames/"]
 
 
 def envoy_forced_order_step(server):
@@ -3546,7 +3554,7 @@ GATES = [
     gate("envoy_infra_go", "envoy-infra-go", runs=[
         step_run("envoy-infra-go", "Vet envoy-infra, its live-test tags included", "go vet -tags pulumilive,natslive ./...", INFRA, ["./..."],
                  tags="pulumilive,natslive", mode="vet"),
-    ], exact=[
+    ] + [forced_order_run("envoy-infra-go", step, INFRA, INFRA_FORCED_ORDER_PKGS) for step in INFRA_FORCED_ORDER_STEPS], exact=[
         # The module but the text checks, which the text-check job runs: the step runs
         # INFRA_RACE_UNIT_SCRIPT, which lists the packages, drops that one and runs go test -race
         # over the rest, and is pinned whole as the other two lanes' plain steps are; the script's
@@ -3570,7 +3578,8 @@ GATES = [
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: consts Image, HubImage"),
         (f"{ENVOY}/internal/testpg/testpg.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: const Image"),
         (TAGGED_TESTS, f"{at('envoy-infra-go', INFRA_NATSLIVE_STEP)} takes each call's -run from it"),
-    ) + setup_go("envoy-infra-go", f"{INFRA}/go.mod") + darwin_vet_reads("envoy-infra-go", INFRA_DARWIN_VET, INFRA)),
+    ) + [read for step in INFRA_FORCED_ORDER_STEPS for read in forced_order_reads("envoy-infra-go", step)]
+      + setup_go("envoy-infra-go", f"{INFRA}/go.mod") + darwin_vet_reads("envoy-infra-go", INFRA_DARWIN_VET, INFRA)),
 
     # The text-check job: one `go test` of each module's text checks, in that module's own
     # directory, the Dispatch API's source guards by name, and the supervise table's two pure
