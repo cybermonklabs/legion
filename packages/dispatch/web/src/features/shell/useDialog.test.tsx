@@ -219,7 +219,7 @@ function SheetThatOpensAnother({
         Menu
       </button>
       {sheet || staysMounted ? (
-        // biome-ignore lint/a11y/useAriaPropsSupportedByRole: named only while it is an open dialog, as the margin sheet's `aside` is
+        // biome-ignore lint/a11y/useAriaPropsSupportedByRole: named only while it is an open dialog, so a closed sheet is no dialog of that name; its role follows the open state, as the margin sheet's `aside`'s role and `aria-modal` do
         <div
           aria-label={sheet ? "Sheet" : undefined}
           ref={sheetDialog.containerRef}
@@ -288,8 +288,9 @@ for (const staysMounted of [false, true]) {
 }
 
 // A pair of nested dialogs - one in a child component of the other - opened in the commit that
-// closes another dialog: the closing one hands its target to both dialogs that hold the focus, so
-// the outer one, which has none of its own, gives the focus back to the closed one's opener.
+// closes another dialog. The outer one has no target of its own, and the closing one gives it its
+// own; the inner one's target is the outer element, which stays. So the outer one gives the focus
+// back to the closed one's opener.
 test("a nested pair opened as another closes gives the focus back in turn, then to that one's opener", async () => {
   const user = userEvent.setup();
   const view = render(
@@ -434,7 +435,8 @@ test("a dialog inside another that closes before the outer's frame gives the foc
 
 // A dialog whose only controls are a dialog's inside it is its own field: when the inner one
 // closes the focus goes to the outer element, which stays focusable for it, and not to a control
-// the inner one took with it.
+// the inner one took with it. happy-dom focuses an element without `tabindex` too, where a browser
+// leaves the focus on the body, so the row reads the attribute after the frames.
 test("a dialog whose only controls are inside a dialog inside it gets the focus back on itself", async () => {
   const user = userEvent.setup();
   const view = render(
@@ -446,6 +448,10 @@ test("a dialog whose only controls are inside a dialog inside it gets the focus 
   try {
     await user.click(view.getByRole("button", { name: "Opener" }));
     frames.run();
+    expect(
+      view.getByRole("dialog", { name: "Outer" }).getAttribute("tabindex"),
+      "the outer dialog, with no field of its own, stopped being focusable at its frame"
+    ).toBe("-1");
     await user.keyboard("{Escape}");
     expect(
       view.queryByRole("dialog", { name: "Inner" }),
@@ -458,6 +464,87 @@ test("a dialog whose only controls are inside a dialog inside it gets the focus 
     await user.keyboard("{Escape}");
     expect(document.activeElement, "the outer dialog gave the focus back to no opener").toBe(
       view.getByRole("button", { name: "Opener" })
+    );
+  } finally {
+    frames.restore();
+    view.unmount();
+  }
+});
+
+/** A sheet whose own control closes it and opens a pair of nested dialogs of one component, the
+ *  outer one's hook first, as the margin sheet and its thread are (`MarginSheet`). */
+function SheetThatOpensASheetWithThread() {
+  const [sheet, setSheet] = useState(false);
+  const [pair, setPair] = useState(false);
+  const [thread, setThread] = useState(false);
+  const sheetDialog = useDialog<HTMLDivElement>({ onClose: () => setSheet(false), open: sheet });
+  const pairDialog = useDialog<HTMLDivElement>({ onClose: () => setPair(false), open: pair });
+  const threadDialog = useDialog<HTMLDivElement>({
+    onClose: () => setThread(false),
+    open: pair && thread,
+  });
+  return (
+    <>
+      <button onClick={() => setSheet(true)} type="button">
+        Menu
+      </button>
+      {sheet ? (
+        <div aria-label="Sheet" ref={sheetDialog.containerRef} role="dialog">
+          <button
+            onClick={() => {
+              setSheet(false);
+              setPair(true);
+              setThread(true);
+            }}
+            type="button"
+          >
+            Open the pair
+          </button>
+        </div>
+      ) : null}
+      {pair ? (
+        <div aria-label="Pair" ref={pairDialog.containerRef} role="dialog">
+          <button type="button">First control of Pair</button>
+          {thread ? (
+            <div aria-label="Thread" ref={threadDialog.containerRef} role="dialog">
+              <button type="button">First control of Thread</button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+// A nested pair of one component, the outer hook first, opened in the commit that closes another
+// dialog: both hold the focus, the outer's record comes first and has no target, and the inner's
+// names the outer. The closing dialog gives its target to every holder whose own is none, so the
+// outer gives the focus back to the closed one's opener: a hand-over to the last holder alone
+// would leave the outer none.
+test("a pair of one component opened as another closes gives the focus back in turn, then to that one's opener", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <KeymapProvider>
+      <SheetThatOpensASheetWithThread />
+    </KeymapProvider>
+  );
+  const frames = holdFrames();
+  try {
+    await user.click(view.getByRole("button", { name: "Menu" }));
+    frames.run();
+    await user.click(view.getByRole("button", { name: "Open the pair" }));
+    expect(document.activeElement, "the thread took no focus as it opened").toBe(
+      view.getByRole("dialog", { name: "Thread" })
+    );
+    frames.run();
+    await user.keyboard("{Escape}");
+    expect(document.activeElement, "the thread gave the focus to no control of the pair").toBe(
+      view.getByRole("button", { name: "First control of Pair" })
+    );
+    await user.keyboard("{Escape}");
+    expect(view.queryByRole("dialog", { name: "Pair" }), "Escape left the pair open").toBeNull();
+    expect(document.activeElement, "the pair gave the focus back to no opener").toBe(
+      view.getByRole("button", { name: "Menu" })
     );
   } finally {
     frames.restore();
