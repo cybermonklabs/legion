@@ -6,9 +6,9 @@ body: |-
     `hold <path> aside: stat <path>: no such file or directory`. It now carries only the mounts a
     path reaches, decided from each mount's chain of parents and not from the table's order, so a
     hidden mount listed after the mount that hides it, as gVisor can list one, is not carried
-    either, and the role never sees the container's own directory at a hidden mount's path. Of a
+    either, and the role does not see the container's own directory at a hidden mount's path. Of a
     mount inside another carried mount, role-init binds back only the outer one, whose recursive
     bind brings the inner one, so it no longer follows a path inside a volume every role may write.
-time: 2026-11-21T21:59:19Z
+time: 2026-11-22T01:17:54Z
 custom:
-    Issue: roleinit-hidden-mounts
+    Issue: pr4934
