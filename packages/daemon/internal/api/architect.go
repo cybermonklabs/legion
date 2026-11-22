@@ -226,7 +226,7 @@ func (s *server) treeMembers(ctx context.Context, tree string) ([]record.Issue, 
 // children's merged work, so nothing enters the workflow beneath a head already accepted.
 // operation is what the caller would do again once the ancestor has closed.
 func childUnderAcceptedParent(child, ancestor, operation string) string {
-	return fmt.Sprintf("%s is beneath %s, whose own reviewed head the daemon has already accepted, and work entering the workflow beneath %s now would let it merge a head that does not carry that work; %s once %s has closed, or take %s back with a backward move first",
+	return fmt.Sprintf("%s is beneath %s, whose own reviewed head the daemon has already accepted, and work entering the workflow beneath %s now would let it merge a head that does not carry that work; %s once %s has closed, where %s is not the tree's root",
 		child, ancestor, ancestor, operation, ancestor, ancestor)
 }
 
