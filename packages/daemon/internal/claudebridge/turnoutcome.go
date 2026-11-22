@@ -43,7 +43,9 @@ type turnReports struct {
 	bootToken  string
 	generation uint64
 	client     *http.Client
-	log        *log.Logger
+	// clock is the bridge's (Config.Clock), which the report's bound runs on.
+	clock Clock
+	log   *log.Logger
 	// sequence is the bridge's own count of the turns it has ended at generation, from 1. It is
 	// atomic because the posts run off the loop, though only the loop ever takes a number.
 	sequence atomic.Uint64
@@ -67,7 +69,8 @@ func startTurnReports(cfg Config, logger *log.Logger) *turnReports {
 		url:        strings.TrimSuffix(cfg.DaemonURL, "/") + "/legion/v1/claims/turn-outcome",
 		bootToken:  strings.TrimSpace(string(token)),
 		generation: cfg.Generation,
-		client:     &http.Client{Timeout: reportTimeout},
+		client:     &http.Client{},
+		clock:      cfg.clock(),
 		log:        logger,
 	}
 }
@@ -116,8 +119,17 @@ func (r *turnReports) post(request claim.TurnOutcomeRequest) {
 		r.log.Printf("could not encode the outcome of turn %d: %v", request.Sequence, err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
+	// The call's bound, reportTimeout, runs on the bridge's clock; ending the request's context
+	// ends its dial, its wait for an answer and its read of the body alike.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	go func() {
+		select {
+		case <-r.clock.After(reportTimeout):
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	post, err := http.NewRequestWithContext(ctx, http.MethodPost, r.url, bytes.NewReader(body))
 	if err != nil {
 		r.log.Printf("could not report the outcome of turn %d: %v", request.Sequence, err)

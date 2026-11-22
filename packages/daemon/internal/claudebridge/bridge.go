@@ -21,10 +21,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
-// grace is Grace as end reads it: a variable so that a test whose row reads Claude Code's own exit
-// can give a stand-in a loaded machine makes slow the time it takes.
-var grace = Grace
-
 const (
 	// Grace is how long Claude Code has to exit after the bridge's SIGTERM before it is killed.
 	Grace = 3 * time.Second
@@ -174,7 +170,7 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	// inboxStop releases a delivery's send blocked on the loop and closes every inbox connection,
 	// so each client's handler returns and inbox.close's wait for them ends.
 	inboxStop := make(chan struct{})
-	inbox, err := listenInbox(events, inboxStop, b.log)
+	inbox, err := listenInbox(events, inboxStop, cfg.clock(), b.log)
 	if err != nil {
 		return 1, err
 	}
@@ -261,7 +257,7 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 				return status, nil
 			}
 			if stopping && flushBound == nil {
-				flushBound = time.After(flushTimeout)
+				flushBound = cfg.clock().After(flushTimeout)
 			}
 		}
 		claudeIn := (<-chan []byte)(claudeLines)
@@ -311,7 +307,7 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		case <-claudeExit:
 			claudeExit, exited = nil, true
 			if drained != nil {
-				drainBound = time.After(drainTimeout)
+				drainBound = cfg.clock().After(drainTimeout)
 			}
 		case <-drained:
 			drained, drainBound = nil, nil
@@ -338,7 +334,7 @@ func (b *bridge) end(ctx context.Context, claude *os.Process, inputEnded, exited
 		}
 		b.log.Printf("%s: sending SIGTERM to Claude Code", why)
 		_ = claude.Signal(syscall.SIGTERM)
-		killAt = time.After(grace)
+		killAt = b.cfg.clock().After(Grace)
 	}
 	done := ctx.Done()
 	for {
@@ -353,12 +349,12 @@ func (b *bridge) end(ctx context.Context, claude *os.Process, inputEnded, exited
 			terminate("Claude Code stopped reading its input")
 		case <-inputEnded:
 			inputEnded = nil
-			inputBound = time.After(grace)
+			inputBound = b.cfg.clock().After(Grace)
 		case <-inputBound:
 			inputBound = nil
-			terminate(fmt.Sprintf("Claude Code is still running %v after its input ended", grace))
+			terminate(fmt.Sprintf("Claude Code is still running %v after its input ended", Grace))
 		case <-killAt:
-			b.log.Printf("Claude Code is still running %v after SIGTERM; killing it", grace)
+			b.log.Printf("Claude Code is still running %v after SIGTERM; killing it", Grace)
 			_ = claude.Kill()
 			return
 		}
