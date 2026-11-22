@@ -4,9 +4,9 @@ body: |-
   broker token for Cipher's audience, `cipher`, in place of `agent-secrets`, and
   `legion config reference` gives that default. A deployment whose broker verifies another
   audience names it in `audience`; a pod made under the old default is replaced in its update
-  round, as for any change of the audience. The Stage 4a live proof takes the broker's audience as
-  the input `LEGION_E2E_AGENT_SECRETS_AUDIENCE`, required once its broker URL or login account is
-  set, and no longer mints its login token for a fixed audience.
+  round, as for any change of the audience. The Stage 4a live proof mints its login token and
+  enrolls its pods for that same default, read from `legion config reference`, in place of a fixed
+  `agent-secrets`.
 time: 2026-11-22T21:10:24Z
 custom:
     Issue: cipher-audience-default

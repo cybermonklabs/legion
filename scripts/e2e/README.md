@@ -1741,20 +1741,17 @@ Each item below names an input and its default, then what it means.
   The stage is unattended: `secrets-approval-ask` makes one request for `LEGION_E2E_APPROVAL`, asserts the approver the broker names for it is that secret's single owner and not the shared marker `anyone`, and then cancels its own request, so no card waits on a person and none is left behind.
   The run's own broker login asks no one either: it logs in as the daemon does, with a token for `LEGION_E2E_AGENT_SECRETS_ACCOUNT`
 
-- `LEGION_E2E_AGENT_SECRETS_AUDIENCE` — unset; required once `LEGION_E2E_AGENT_SECRETS_URL` or `LEGION_E2E_AGENT_SECRETS_ACCOUNT` is set
-
-  the token audience that broker verifies, its `BROKER_K8S_OIDC_AUDIENCE`:
-  the run's login token and the projected token of every pod the run enrolls carry it, and the run guesses none
-
 - `LEGION_E2E_AGENT_SECRETS_ACCOUNT` — unset
 
   `<namespace>/<name>` of a ServiceAccount of the proof's own that the production broker's `BROKER_SERVICE_LOGINS` lets log in as `legion-daemon` and that no pod runs as, never the production daemon's:
   each account holds one launcher credential, which every login moves to its own key, so a run logging in as a running daemon's account would take that daemon's credential, and the two would trade it for the whole run.
   The script refuses an account any pod in its namespace runs as, naming the pods.
-  It mints an hour-long token for the account with the operator context (`kubectl create token … --audience "$LEGION_E2E_AGENT_SECRETS_AUDIENCE" --duration 1h`;
+  It mints an hour-long token for the account with the operator context (`kubectl create token … --audience <audience> --duration 1h`;
   the broker refuses a longer one) into an owner-only file it never prints, and mints it again every half hour while the run lasts;
   the harness logs in with that token, reading the file afresh at each login, as a daemon off the cluster does; no person approves it.
-  With this input, the URL or the SHA-256 unset, the harness starts no login and every `secrets-*` check reports `SKIPPED-BLOCKED`;
+  The audience is the one a daemon gives a `runtime.kubernetes.agent_secrets` block that names none, as `legion config reference --json` prints it, and the harness enrolls the run's pods for the same one:
+  a broker that verifies another refuses the login.
+  With this or any other `LEGION_E2E_AGENT_SECRETS_*` input unset, the harness starts no login and every `secrets-*` check reports `SKIPPED-BLOCKED`;
   a refused login blocks them with the broker's answer, never fails the stage
 
 - `LEGION_E2E_AGENT_SECRETS_AUTO_SHA256` — unset
@@ -1926,7 +1923,7 @@ Each item below names a check, then what it does and what it requires.
 - `secrets-two-roles-enrolled`
 
   the root and worker share one actual pod UID but each hello enrolls under its own role-generation slot;
-  each role has a private 0600 `key.pem` and enrollment id and the two ids differ, while one projected token for the broker's audience (`LEGION_E2E_AGENT_SECRETS_AUDIENCE`) remains shared by the pod
+  each role has a private 0600 `key.pem` and enrollment id and the two ids differ, while one projected token for the broker's audience remains shared by the pod
 
 - `secrets-automatic-grant`
 

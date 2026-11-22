@@ -276,17 +276,19 @@ type liveEnv struct {
 	// audience filled in, the operator's pod every launch carries; operatorConfigMap is the run's
 	// copy of the ConfigMap it names.
 	operatorPodFile, operatorConfigMap string
-	// The agent-secrets checks' inputs: the production broker and the token audience it verifies,
-	// the sha256 of the automatic rule's dummy value, the checkout's agent-secrets binary, and the
-	// token file the script mints for LEGION_E2E_AGENT_SECRETS_ACCOUNT, which the harness logs in
-	// with as the daemon does, no person approving it. No check here waits on a person:
+	// The agent-secrets checks' inputs: the production broker, the sha256 of the automatic rule's
+	// dummy value, the checkout's agent-secrets binary, and the token file the script mints for
+	// LEGION_E2E_AGENT_SECRETS_ACCOUNT, which the harness logs in with as the daemon does, no
+	// person approving it. No check here waits on a person:
 	// secrets-approval-ask asserts its pending request's approver is one owner rather than the
 	// shared marker and cancels the request itself. Every field here is read with os.Getenv,
 	// unlike the rest of liveEnv: unset is a blocked run of the secrets-* checks, never a refusal
-	// to start (secretsBlocked). The audience alone is required once the URL or the token file is
-	// set, since every enrolled pod's projected token carries it and New refuses none:
-	// readLiveEnv refuses that run, as the script does.
-	agentSecretsURL, agentSecretsAudience, agentSecretsAutoSHA, agentSecretsBin, agentSecretsTokenFile string
+	// to start (secretsBlocked).
+	agentSecretsURL, agentSecretsAutoSHA, agentSecretsBin, agentSecretsTokenFile string
+	// agentSecretsAudience is the audience the run enrolls its pods for, the one a daemon gives an
+	// agent_secrets block that names none (agentSecretsDefaultAudience); the script mints the
+	// run's login token for the same one, read from `legion config reference`.
+	agentSecretsAudience string
 	// The scratch Postgres the script started, which every pod of the run keeps its sessions in:
 	// the file holding its URL at streamAdvertiseHost, which the script also wrote into the
 	// providers Secret under liveSessionsSecretKey for every pod to dial as it dials the worker
@@ -343,7 +345,6 @@ func readLiveEnv(t *testing.T) liveEnv {
 		operatorPodFile:       get("LEGION_E2E_OPERATOR_POD"),
 		operatorConfigMap:     get("LEGION_E2E_OPERATOR_CONFIGMAP"),
 		agentSecretsURL:       os.Getenv("LEGION_E2E_AGENT_SECRETS_URL"),
-		agentSecretsAudience:  os.Getenv("LEGION_E2E_AGENT_SECRETS_AUDIENCE"),
 		agentSecretsAutoSHA:   os.Getenv("LEGION_E2E_AGENT_SECRETS_AUTO_SHA256"),
 		agentSecretsBin:       os.Getenv("LEGION_E2E_AGENT_SECRETS_BIN"),
 		agentSecretsTokenFile: os.Getenv("LEGION_E2E_AGENT_SECRETS_TOKEN_FILE"),
@@ -391,8 +392,8 @@ func readLiveEnv(t *testing.T) liveEnv {
 		fmt.Printf("CHECK identity: FAIL: the run project %q lacks the reserved prefix s4a-\n", env.project)
 		t.FailNow()
 	}
-	if (env.agentSecretsURL != "" || env.agentSecretsTokenFile != "") && env.agentSecretsAudience == "" {
-		fmt.Printf("CHECK identity: FAIL: LEGION_E2E_AGENT_SECRETS_AUDIENCE is unset beside the broker's URL or login token: every enrolled pod's projected token carries the broker's audience (scripts/e2e/stage4a-sandbox-runtime.sh refuses the same run)\n")
+	if env.agentSecretsAudience, err = agentSecretsDefaultAudience(); err != nil {
+		fmt.Printf("CHECK identity: FAIL: %v\n", err)
 		t.FailNow()
 	}
 	// The claim token's project is a project token, [a-z0-9]+; the label keeps the dashes.

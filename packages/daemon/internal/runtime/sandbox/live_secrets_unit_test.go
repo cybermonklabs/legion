@@ -1,15 +1,40 @@
 // Ordinary, always-visible unit tests for the Stage 4a agent-secrets checks' pure logic
 // that live_secrets_pure_test.go defines with no e2e build tag: shellJoin's shell
-// quoting and agentSecretsBlockReason's blocking-reason string (what live_secrets_test.go's
-// secretsBlocked delegates to). The e2e-tagged checks these back (checkSecretsTwoPodsEnrolled and
-// friends) need a real cluster and a real broker and stay untestable here, exactly as the plan
-// anticipates (SKIPPED-BLOCKED without them).
+// quoting, agentSecretsBlockReason's blocking-reason string (what live_secrets_test.go's
+// secretsBlocked delegates to) and agentSecretsDefaultAudience. The e2e-tagged checks these back
+// (checkSecretsTwoPodsEnrolled and friends) need a real cluster and a real broker and stay
+// untestable here, exactly as the plan anticipates (SKIPPED-BLOCKED without them).
 package sandbox
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/config"
 )
+
+// The run enrolls its pods for the audience the daemon's loader gives an agent_secrets block that
+// names none: what agentSecretsDefaultAudience reads off the key table is what that loader settles.
+func TestAgentSecretsDefaultAudienceIsTheLoaders(t *testing.T) {
+	got, err := agentSecretsDefaultAudience()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "legion.yaml")
+	block := "    agent_secrets:\n      url: https://secrets.internal.example\n      token_file: /var/run/legion/agent-secrets-token/token\n"
+	if err := os.WriteFile(path, []byte(microVMProjectFile+block), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadForValidation(path, func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("LoadForValidation: %v", err)
+	}
+	if want := cfg.Runtime.Kubernetes.AgentSecrets.Audience; got != want {
+		t.Fatalf("the key table's default audience is %q, and the loader settles %q", got, want)
+	}
+}
 
 func TestShellJoin(t *testing.T) {
 	for name, tc := range map[string]struct {

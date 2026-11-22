@@ -241,10 +241,8 @@ func manifestCases(t *testing.T) map[string]manifestCase {
 		"resume":            {spec: resume},
 		"controller":        {spec: controllerSpec(t)},
 		"controller-resume": {spec: controllerResume},
-		// root-enrolled is the enrollment a block naming only url and token_file settles on
-		// (rootEnrolled).
-		"root-enrolled": {spec: rootSpec(t), agentSecrets: rootEnrolled()},
-		"root-microvm":  {spec: rootSpec(t), sandbox: SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}},
+		"root-enrolled":     {spec: rootSpec(t), agentSecrets: rootEnrolled()},
+		"root-microvm":      {spec: rootSpec(t), sandbox: SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}},
 		// root-microvm-kept is root-microvm with keep_volume on: the one case whose issue Sandbox
 		// owns a claim template, its kept volume (TestOnlyAMicroVMPodKeepsItsVolume).
 		"root-microvm-kept": {spec: rootSpec(t), sandbox: SandboxConfig{Type: SandboxMicroVM, MicroVM: keptMicroVM()}},
