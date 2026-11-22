@@ -108,9 +108,13 @@ func (r *outbox) applyEnding(ctx context.Context, eventID, issue, head string, e
 // without reading, with one line naming why, once the read would tell nobody anything: the issue
 // is not recorded or not in merging, its pull request's head moved past the row (the move queued a
 // read of its own), or its tree's spec gate stands open by exemption no more (a closed gate holds
-// the merger itself). A Dispatch older than the route finishes the row too, since it will not
-// answer this read: the merger's start fence and the merger's own reading before each merge still
-// hold the merge. A read Dispatch fails is retried on the row's backoff.
+// the merger itself). A row queued because the gate turned open by exemption
+// (record.SpecEndingCauseExempted) is the read that tells a merger already running the ending
+// step, and the move's own read may find the reading unchanged and tell it nothing, so such a row
+// whose head moved reads the pull request's current head instead. A Dispatch older than the route
+// finishes the row too, since it will not answer this read: the merger's start fence and the
+// merger's own reading before each merge still hold the merge. A read Dispatch fails is retried on
+// the row's backoff.
 func (r *outbox) specEndingRead(ctx context.Context, row record.OutboxRow, payload record.SpecEndingRead) error {
 	if r.dispatch == nil {
 		return fmt.Errorf("spec ending read executor has no Dispatch client")
@@ -119,14 +123,18 @@ func (r *outbox) specEndingRead(ctx context.Context, row record.OutboxRow, paylo
 	if err != nil {
 		return err
 	}
-	attributes := []any{"row", row.ID, "issue", row.Issue, "head", payload.Head, "cause", payload.Cause}
+	at := payload.Head
+	if payload.Cause == record.SpecEndingCauseExempted && head != "" {
+		at = head
+	}
+	attributes := []any{"row", row.ID, "issue", row.Issue, "head", payload.Head, "at", at, "cause", payload.Cause}
 	var why string
 	switch {
 	case issue == nil:
 		why = "the issue is not recorded"
 	case issue.Phase != phase.Merging:
 		why = fmt.Sprintf("the issue stands in %s, not merging", issue.Phase)
-	case head != payload.Head:
+	case head != at:
 		why = "the pull request's head moved past the row"
 	case !exempt:
 		why = "the tree's spec gate stands open by exemption no more"
@@ -135,16 +143,16 @@ func (r *outbox) specEndingRead(ctx context.Context, row record.OutboxRow, paylo
 		r.log.Info("outbox spec ending read finished without reading", append(attributes, "why", why)...)
 		return nil
 	}
-	ending, err := r.dispatch.SpecEnding(ctx, issue.Tree, payload.Head)
+	ending, err := r.dispatch.SpecEnding(ctx, issue.Tree, at)
 	if dispatch.NoRoute(err) {
 		r.log.Warn("outbox spec ending read finished without reading: Dispatch has no route for the ending condition", attributes...)
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("read the ending condition of %s at %s from Dispatch: %w", issue.Tree, payload.Head, err)
+		return fmt.Errorf("read the ending condition of %s at %s from Dispatch: %w", issue.Tree, at, err)
 	}
 	r.log.Info("outbox spec ending read", append(attributes, "state", ending.State, "reasons", len(ending.Reasons))...)
-	return r.applyEnding(ctx, fmt.Sprintf("spec-ending-read:%d", row.ID), issue.Key, payload.Head, ending, payload.Cause, false)
+	return r.applyEnding(ctx, fmt.Sprintf("spec-ending-read:%d", row.ID), issue.Key, at, ending, payload.Cause, false)
 }
 
 // mergerWaitsForTheEnding is the merger's start fence of a tree whose spec gate stands open by

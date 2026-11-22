@@ -76,8 +76,14 @@ func (e *Engine) exemptSpecGate(ctx context.Context, tx pgx.Tx, tree string) (bo
 	if err != nil {
 		return false, err
 	}
+	return specGateExempt(gates), nil
+}
+
+// specGateExempt is whether gates, the rows a tree's root holds by step, hold a spec gate that
+// stands open by exemption (record.GateExempt).
+func specGateExempt(gates map[record.DesignStep]record.DesignGate) bool {
 	spec := record.SpecGate(gates)
-	return spec != nil && record.GateExempt(*spec), nil
+	return spec != nil && record.GateExempt(*spec)
 }
 
 // queueEndingReads queues the read of the ending condition for every member of tree in merging
@@ -115,14 +121,13 @@ func (e *Engine) queueEndingReads(ctx context.Context, tx pgx.Tx, tree string, c
 	return nil
 }
 
-// endingCauseOfVersion is the cause a registration, a version or a reset that leaves the root's
-// spec gate open by exemption queues its reads under (queueEndingReads): SpecEndingCauseExempted
-// where the gate did not stand open by exemption before it (wasExempt), since a merger that runs
-// then was started without the ending step and is told it by that read, and SpecEndingCauseVersion
-// otherwise.
-func endingCauseOfVersion(wasExempt bool) record.SpecEndingCause {
+// endingCause is the cause a fact that leaves the root's spec gate open by exemption queues its
+// reads under (queueEndingReads): SpecEndingCauseExempted where the gate did not stand open by
+// exemption before the fact (wasExempt), since a merger that runs then was started without the
+// ending step and is told it by that read, and cause, the fact's own, otherwise.
+func endingCause(wasExempt bool, cause record.SpecEndingCause) record.SpecEndingCause {
 	if wasExempt {
-		return record.SpecEndingCauseVersion
+		return cause
 	}
 	return record.SpecEndingCauseExempted
 }
@@ -165,7 +170,11 @@ func (e *Engine) specOutcomesRecorded(ctx context.Context, tx pgx.Tx, fact intak
 // The read is held to the record as it stands now, since a read is made outside the fact's lock:
 // a member that left merging, a pull request whose head moved past the read, or a tree whose spec
 // gate stands open by exemption no more, takes nothing from it. The head that moved has a read of
-// its own queued (headMovedInMerging), and a gate that closed holds the merger itself.
+// its own queued (headMovedInMerging), and a gate that closed holds the merger itself. A read
+// queued because the gate turned open by exemption (record.SpecEndingCauseExempted) is the one
+// that tells a merger already running the ending step, and the head's own read may find the
+// reading unchanged and tell it nothing, so such a read whose head moved is queued again at the
+// pull request's current head, under the same cause.
 //
 // The merger is told how the condition stands for that head — the closed-gate message of a
 // reading that waits, the opened-gate message of one that is ready, each ending with the ending
@@ -176,10 +185,13 @@ func (e *Engine) specOutcomesRecorded(ctx context.Context, tx pgx.Tx, fact intak
 // exemption, whose task names no step, whatever reading an earlier time the gate stood exempt
 // left. A reading the same as the one before tells it nothing, and so does the start fence's own
 // reading (intake.SpecEndingRead.Start): that merger is not running yet, and the task its start
-// gives names the step (the outbox's startTask). The message goes to the merger's own role topic
-// (record.RoleMessage), which a merger that holds no role is not told: its start is held by the
-// same reading (the outbox's merger fence), and a released merger's woken deliveries wait for it
-// (deliverHeld).
+// gives names the step (the outbox's startTask). The merger is told nothing either while another
+// step the deployment gates is closed (standingGateOpen): that step's closed gate holds the merge,
+// and an opened message of the ending would say the merge is released. The reading is recorded
+// all the same, and the opening of that step gives the merger the ending step (tellGateMoved). The
+// message goes to the merger's own role topic (record.RoleMessage), which a merger that holds no
+// role is not told: its start is held by the same reading (the outbox's merger fence), and a
+// released merger's woken deliveries wait for it (deliverHeld).
 //
 // Each reason is told once per head, in a spec-ending-waits notice on the tree's root, so it reaches
 // the root's architect, the owner of the change request; the record keeps the codes told at the
@@ -193,21 +205,28 @@ func (e *Engine) specEndingRead(ctx context.Context, tx pgx.Tx, fact intake.Spec
 	if err != nil {
 		return intake.Result{}, err
 	}
-	exempt, err := e.exemptSpecGate(ctx, tx, issue.Tree)
+	gates, err := e.store.GatesOf(ctx, tx, issue.Tree)
 	if err != nil {
 		return intake.Result{}, err
 	}
+	exempt := specGateExempt(gates)
 	var stale string
+	headMoved := false
 	switch {
 	case issue.Phase != phase.Merging:
 		stale = fmt.Sprintf("the issue stands in %s, not merging", issue.Phase)
 	case pr == nil || pr.HeadSHA != fact.Head:
-		stale = "the pull request's head moved past the read"
+		stale, headMoved = "the pull request's head moved past the read", true
 	case !exempt:
 		stale = "the tree's spec gate stands open by exemption no more"
 	}
 	if stale != "" {
 		e.logOnCommit(ctx, "workflow: a read of the ending condition takes nothing: "+stale, "issue", issue.Key, "head", fact.Head, "state", fact.State)
+		if headMoved && exempt && fact.Cause == record.SpecEndingCauseExempted && pr != nil && pr.HeadSHA != "" {
+			e.logOnCommit(ctx, "workflow: a read of the turn to exemption whose head moved is queued again at the current head", "issue", issue.Key,
+				"tree", issue.Tree, "head", pr.HeadSHA, "read_head", fact.Head)
+			return intake.Result{}, e.enqueue(ctx, tx, issue.Key, record.SpecEndingRead{Head: pr.HeadSHA, Cause: record.SpecEndingCauseExempted})
+		}
 		return intake.Result{}, nil
 	}
 	before, err := e.store.SpecEnding(ctx, tx, issue.Key)
@@ -237,10 +256,11 @@ func (e *Engine) specEndingRead(ctx context.Context, tx pgx.Tx, fact intake.Spec
 		return intake.Result{}, err
 	}
 	wasWaiting := before != nil && before.Waits()
-	tell := !fact.Start && (before == nil || waits != wasWaiting || fact.Cause == record.SpecEndingCauseExempted)
+	stands := e.standingGateOpen(gates)
+	tell := !fact.Start && stands && (before == nil || waits != wasWaiting || fact.Cause == record.SpecEndingCauseExempted)
 	e.logOnCommit(ctx, "workflow: the ending condition of a change request was read", "issue", issue.Key, "tree", issue.Tree,
 		"head", fact.Head, "state", reading.State, "was_waiting", wasWaiting, "cause", fact.Cause, "start", fact.Start, "told", told,
-		"tells_merger", tell)
+		"gates_stand_open", stands, "tells_merger", tell)
 	if !tell {
 		return intake.Result{}, nil
 	}

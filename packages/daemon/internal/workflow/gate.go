@@ -190,9 +190,9 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	// A registration that leaves the root's spec gate open by exemption can turn the ending
 	// condition of its change request, which is judged at the registered version, so every member
 	// in merging is read again (D10), under the cause that tells a merger already running the ending
-	// step where the gate did not stand open by exemption before (endingCauseOfVersion).
+	// step where the gate did not stand open by exemption before (endingCause).
 	if !ungated && record.GateExempt(gate) {
-		if err := e.queueEndingReads(ctx, tx, fact.Issue, endingCauseOfVersion(sameDocument && record.GateExempt(*stored))); err != nil {
+		if err := e.queueEndingReads(ctx, tx, fact.Issue, endingCause(sameDocument && record.GateExempt(*stored), record.SpecEndingCauseVersion)); err != nil {
 			return intake.Result{}, err
 		}
 	}
@@ -581,14 +581,17 @@ func (e *Engine) gateAboveDispatch(ctx context.Context, tx pgx.Tx, fact intake.G
 		return intake.Result{}, err
 	}
 	// A reset that leaves the gate open by exemption reads the ending condition again for every
-	// member in merging, as a version does (D10).
+	// member in merging, as a version does (D10): once per member, under the cause of the gate the
+	// reset found (endingCause). A reset by a review leaves that read to the review's own apply,
+	// which queues it for an approval and under the same cause, so no member is read twice.
+	wasExempt := record.GateExempt(*gate)
+	if !ungated && fact.Read.Kind != intake.DispatchArtifactVersion {
+		return intake.Result{}, e.applyArtifact(ctx, tx, reset, fact.Read, false, wasExempt)
+	}
 	if !ungated && record.GateExempt(reset) {
-		if err := e.queueEndingReads(ctx, tx, issue.Key, endingCauseOfVersion(record.GateExempt(*gate))); err != nil {
+		if err := e.queueEndingReads(ctx, tx, issue.Key, endingCause(wasExempt, record.SpecEndingCauseVersion)); err != nil {
 			return intake.Result{}, err
 		}
-	}
-	if !ungated && fact.Read.Kind != intake.DispatchArtifactVersion {
-		return intake.Result{}, e.applyArtifact(ctx, tx, reset, fact.Read, false)
 	}
 	return intake.Result{}, nil
 }
@@ -687,7 +690,7 @@ func (e *Engine) dispatchArtifact(ctx context.Context, tx pgx.Tx, fact intake.Di
 		if carried && !copyTakes(gate, fact) {
 			continue
 		}
-		if err := e.applyArtifact(ctx, tx, gate, fact, carried); err != nil {
+		if err := e.applyArtifact(ctx, tx, gate, fact, carried, record.GateExempt(gate)); err != nil {
 			return intake.Result{}, err
 		}
 	}
@@ -859,7 +862,7 @@ func copyTakes(gate record.DesignGate, fact intake.DispatchArtifact) bool {
 // waiting root is told once, by the resume task or by a notice, never both (tellChangesOnce). A
 // changes request that cannot be placed against that wait (unplaceable) is neither told nor
 // recorded as told.
-func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.DesignGate, fact intake.DispatchArtifact, carried bool) error {
+func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.DesignGate, fact intake.DispatchArtifact, carried, wasExempt bool) error {
 	key := gate.Issue
 	ungated, stale := e.artifactIgnored(gate, fact)
 	if ungated || stale {
@@ -934,15 +937,17 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 	}
 	// A version or an approval of the root's spec document that leaves its gate open by exemption
 	// can turn the ending condition of its change request, which is judged at the latest version,
-	// so every member in merging is read again (D10). A version that turned the gate exempt queues
-	// its reads under the cause that tells a merger already running the ending step
-	// (endingCauseOfVersion).
+	// so every member in merging is read again (D10). An event that turned the gate exempt queues
+	// its reads under the cause that tells a merger already running the ending step (endingCause).
+	// wasExempt is whether the gate stood open by exemption before the event: gate's own exemption
+	// for a live event, and the row the reset found for the review a reset applies
+	// (gateAboveDispatch), whose reset row already stands exempt.
 	if !carried && record.GateExempt(updated) {
 		switch fact.Kind {
 		case intake.DispatchArtifactVersion:
-			err = e.queueEndingReads(ctx, tx, key, endingCauseOfVersion(record.GateExempt(gate)))
+			err = e.queueEndingReads(ctx, tx, key, endingCause(wasExempt, record.SpecEndingCauseVersion))
 		case intake.DispatchArtifactApproved:
-			err = e.queueEndingReads(ctx, tx, key, record.SpecEndingCauseApproval)
+			err = e.queueEndingReads(ctx, tx, key, endingCause(wasExempt, record.SpecEndingCauseApproval))
 		}
 		if err != nil {
 			return err
@@ -1018,6 +1023,12 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // that just opened was started before the gate opened with no person, and its task does not name
 // that step.
 //
+// A person's opening while the tree's spec gate stands open by exemption (specExempt, as when a
+// person approves another gated step) releases the merge on the ending condition alone (D10), and
+// a read of the ending told the merger nothing while that other step was closed (specEndingRead).
+// So the merger's copy of that opening says the change request proposes nothing and ends with the
+// ending step too. Every other holder's copy is the person's opening as it was.
+//
 // Linger holds a member of a closed tree where it stood (record.TreeLingers): every role of it is
 // suspended there, so a gate that moves then tells nobody, as a CI settlement tells nobody.
 //
@@ -1027,7 +1038,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // daemon could not spell - a tree whose root key is not an issue key is one such - which would
 // leave the gate closed under workers the message existed to warn.
 func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step record.DesignStep,
-	document string, version int, open, exempt bool) error {
+	document string, version int, open, exempt, specExempt bool) error {
 	root, err := e.store.Issue(ctx, tx, key)
 	if err != nil || root == nil {
 		return err
@@ -1076,8 +1087,13 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	}
 	for _, to := range told {
 		text := body
-		if open && exempt && to.role == claim.RoleMerger {
-			text += " " + mergerEndingStep(root.Tree)
+		if open && to.role == claim.RoleMerger {
+			switch {
+			case exempt:
+				text += " " + mergerEndingStep(root.Tree)
+			case specExempt:
+				text += " " + mergerEndingAlsoHolds + " " + mergerEndingStep(root.Tree)
+			}
 		}
 		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: text}); err != nil {
 			return err
@@ -1109,7 +1125,8 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 //
 // version and the row's own document are what the message names, so a reader is sent to the
 // document that moved rather than to the spec. An opening this row makes with no person
-// (openedByExemption) is told as one.
+// (openedByExemption) is told as one, and a person's opening while the tree's spec gate stands
+// open by exemption gives the merger the ending step (specGateExempt).
 func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignGate, version int) error {
 	step := gate.Step.OrSpec()
 	gates, err := e.store.GatesOf(ctx, tx, gate.Issue)
@@ -1125,8 +1142,13 @@ func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignG
 	if stands == stood {
 		return nil
 	}
-	return e.tellGateMoved(ctx, tx, gate.Issue, step, gate.ArtifactID, version, stands, stands && openedByExemption(gate))
+	return e.tellGateMoved(ctx, tx, gate.Issue, step, gate.ArtifactID, version, stands, stands && openedByExemption(gate), specGateExempt(gates))
 }
+
+// mergerEndingAlsoHolds is what the merger's copy of a person's opening adds while the tree's
+// spec gate stands open by exemption (tellGateMoved): the opening releases the gate, and the merge
+// still waits for the ending condition of the change request (D10).
+const mergerEndingAlsoHolds = "Its change request proposes nothing, so a merge also waits until the ending condition of the change request holds."
 
 // standingGateOpen is whether the tree's work stands released under gates, the rows an issue
 // holds by step: no step the deployment gates is closed with a row of its own
