@@ -18,23 +18,30 @@ import (
 )
 
 // The bridge waits on nothing but its Config.Clock. A row that reads the stop on a stopClock sees
-// every bound that passes on that clock, but a wait on the wall clock ends on its own, so such a
-// row passes a bridge that holds (TestTheBridgeEndsWithAnInboxClientConnected says why it cannot
-// see one). This row is the one that sees it: it type-checks the package's non-test files and
-// fails by name on each wall-clock wait, found by what each name denotes, so that no import name,
-// alias or function value hides one (wallClockWaits):
-//   - a reference to time's Sleep, After, AfterFunc, NewTimer, NewTicker or Tick, or to context's
-//     WithTimeout, WithDeadline, WithTimeoutCause or WithDeadlineCause, anywhere but in the wall
-//     clock's own methods (wallClock, config.go);
-//   - a reference to net/http.Client's Timeout field;
-//   - a SetDeadline, SetReadDeadline or SetWriteDeadline whose argument is not exactly time.Now()
-//     or the zero time.Time{}, the two forms that unblock at once.
+// every bound that passes on that clock, and a wall-clock wait it fails at run time only by the
+// state the wait leaves the bridge's goroutines in (TestTheBridgeEndsWithAnInboxClientConnected,
+// heldOnTheWallClock). This row finds the waits in the source: it type-checks the package's
+// non-test files and fails by name on each wall-clock wait, found by what each name denotes, so
+// that no import name, alias, function value or method value hides one (wallClockWaits):
+//   - a reference to time's Sleep, After, AfterFunc, NewTimer, NewTicker or Tick, to context's
+//     WithTimeout, WithDeadline, WithTimeoutCause or WithDeadlineCause, or to a sleep or a wait
+//     with a timeout of syscall's or golang.org/x/sys/unix's (Nanosleep, Select, Poll and their
+//     kin), anywhere but in the wall clock's own After (wallClock, config.go);
+//   - a reference to a timeout field of net's or net/http's (http.Client's Timeout,
+//     http.Transport's ResponseHeaderTimeout and its kin, net.Dialer's Timeout and Deadline);
+//   - a reference to a SetDeadline, SetReadDeadline or SetWriteDeadline method other than a call
+//     with exactly time.Now(), the one form that unblocks at once: a later time waits on the wall
+//     clock, the zero time.Time{} clears the deadline so the call waits without bound, and a
+//     method value or method expression can be called with anything.
 //
-// The row shows it can fail, in four subtests: each plants one wall-clock wait in a copy of the
+// The row shows it can fail, in eight subtests: each plants one wall-clock wait in a copy of the
 // package's own source, in memory, and the wait must be found by name. They are a read deadline
 // set 6 s ahead in the inbox's stop path, which holds the bridge's exit for a connected client;
-// time imported under another name, with a Sleep in the inbox's close; time.Sleep taken as a value
-// and called; and the report's http.Client given back a Timeout.
+// time imported under another name, with a Sleep in the inbox's close; time.Sleep taken as a
+// value and called; the report's http.Client given back a Timeout; the read deadline set through
+// a method value; a second method of the wall clock's that sleeps, called from the inbox's close;
+// syscall.Nanosleep in the inbox's close; and the report's client given a Transport with a
+// ResponseHeaderTimeout.
 func TestTheBridgeWaitsOnlyOnItsClock(t *testing.T) {
 	sources := bridgeSources(t)
 	for _, found := range wallClockWaits(t, sources) {
@@ -57,6 +64,20 @@ func TestTheBridgeWaitsOnlyOnItsClock(t *testing.T) {
 			replaces: []replace{{"inbox.go", "func (in *inbox) close() {\n", "func (in *inbox) close() {\n\tsleep := time.Sleep\n\tsleep(6 * time.Second)\n"}}},
 		{name: "the report's http.Client given a Timeout", want: "net/http.Client's Timeout",
 			replaces: []replace{{"turnoutcome.go", "client:     &http.Client{},", "client:     &http.Client{Timeout: reportTimeout},"}}},
+		{name: "a read deadline set through a method value", want: "SetReadDeadline",
+			replaces: []replace{{"inbox.go", "_ = conn.SetReadDeadline(time.Now())", "setDeadline := conn.SetReadDeadline\n\t\t_ = setDeadline(time.Now().Add(6 * time.Second))"}}},
+		{name: "a second method of the wall clock's that sleeps", want: "time.Sleep",
+			replaces: []replace{
+				{"config.go", "func (wallClock) After(d time.Duration) <-chan time.Time { return time.After(d) }\n", "func (wallClock) After(d time.Duration) <-chan time.Time { return time.After(d) }\n\nfunc (wallClock) hold() { time.Sleep(6 * time.Second) }\n"},
+				{"inbox.go", "func (in *inbox) close() {\n", "func (in *inbox) close() {\n\twallClock{}.hold()\n"},
+			}},
+		{name: "syscall.Nanosleep in the inbox's close", want: "syscall.Nanosleep",
+			replaces: []replace{
+				{"inbox.go", "import (\n", "import (\n\tsleepsys \"syscall\"\n"},
+				{"inbox.go", "func (in *inbox) close() {\n", "func (in *inbox) close() {\n\t_ = sleepsys.Nanosleep(&sleepsys.Timespec{Sec: 6}, nil)\n"},
+			}},
+		{name: "the report's client given a Transport with a ResponseHeaderTimeout", want: "net/http.Transport's ResponseHeaderTimeout",
+			replaces: []replace{{"turnoutcome.go", "client:     &http.Client{},", "client:     &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: reportTimeout}},"}}},
 	} {
 		t.Run(plant.name, func(t *testing.T) {
 			planted := maps.Clone(sources)
@@ -109,6 +130,9 @@ func bridgeSources(t *testing.T) map[string]string {
 var (
 	timeWaits    = []string{"Sleep", "After", "AfterFunc", "NewTimer", "NewTicker", "Tick"}
 	contextWaits = []string{"WithTimeout", "WithDeadline", "WithTimeoutCause", "WithDeadlineCause"}
+	// syscallWaits are the sleeps and the waits with a timeout of their own in syscall and
+	// golang.org/x/sys/unix.
+	syscallWaits = []string{"Nanosleep", "ClockNanosleep", "Select", "Pselect", "Poll", "Ppoll", "EpollWait", "Pause"}
 	deadlineSets = []string{"SetDeadline", "SetReadDeadline", "SetWriteDeadline"}
 )
 
@@ -141,12 +165,13 @@ func wallClockWaits(t *testing.T, sources map[string]string) []string {
 	if _, err := config.Check("github.com/sjawhar/legion/daemon/internal/claudebridge", fset, files, info); err != nil {
 		t.Fatalf("type-check the package's source: %v", err)
 	}
-	// The wall clock's own methods are where the bridge reads the wall clock (wallClock).
+	// The wall clock's After is where the bridge reads the wall clock (wallClock); no other method
+	// of the wall clock's is.
 	var wall [][2]token.Pos
 	for _, file := range files {
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Recv == nil {
+			if !ok || fn.Recv == nil || fn.Name.Name != "After" {
 				continue
 			}
 			method, ok := info.Defs[fn.Name].(*types.Func)
@@ -183,31 +208,43 @@ func wallClockWaits(t *testing.T, sources map[string]string) []string {
 			if object.Pkg() == nil || object.Signature().Recv() != nil {
 				continue
 			}
-			if path := object.Pkg().Path(); path == "time" && slices.Contains(timeWaits, object.Name()) || path == "context" && slices.Contains(contextWaits, object.Name()) {
+			path := object.Pkg().Path()
+			if path == "time" && slices.Contains(timeWaits, object.Name()) || path == "context" && slices.Contains(contextWaits, object.Name()) ||
+				(path == "syscall" || path == "golang.org/x/sys/unix") && slices.Contains(syscallWaits, object.Name()) {
 				add(ident.Pos(), "%s.%s waits on the wall clock", path, object.Name())
 			}
 		case *types.Var:
-			if object.IsField() && object.Name() == "Timeout" && isHTTPClientField(object) {
-				add(ident.Pos(), "net/http.Client's Timeout bounds a call on the wall clock")
+			if owner, ok := netTimeoutField(object); ok {
+				add(ident.Pos(), "%s's %s bounds a call on the wall clock", owner, object.Name())
 			}
 		}
 	}
+	// A deadline method is allowed only where it is called at once with exactly time.Now(): a
+	// deadline already passed, which ends a blocked read or write at once. Any other argument sets
+	// a span on the wall clock, the zero time.Time{} included, which clears the deadline so the
+	// read or write waits without bound; and a method value or method expression of one can be
+	// called with anything.
+	allowed := map[*ast.SelectorExpr]bool{}
 	for _, file := range files {
 		ast.Inspect(file, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
+			if call, ok := n.(*ast.CallExpr); ok {
+				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && len(call.Args) == 1 && unblocksAtOnce(info, call.Args[0]) {
+					allowed[sel] = true
+				}
 			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || !slices.Contains(deadlineSets, sel.Sel.Name) {
+			return true
+		})
+	}
+	for _, file := range files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			sel, ok := n.(*ast.SelectorExpr)
+			if !ok || !slices.Contains(deadlineSets, sel.Sel.Name) || allowed[sel] {
 				return true
 			}
 			if selection := info.Selections[sel]; selection == nil || selection.Kind() == types.FieldVal {
 				return true
 			}
-			if len(call.Args) != 1 || !unblocksAtOnce(info, call.Args[0]) {
-				add(call.Pos(), "%s sets a deadline on the wall clock; only time.Now() or time.Time{}, which unblock at once, may be set", sel.Sel.Name)
-			}
+			add(sel.Pos(), "%s sets a deadline on the wall clock; only a call with exactly time.Now(), which unblocks at once, may be made", sel.Sel.Name)
 			return true
 		})
 	}
@@ -224,49 +261,52 @@ func wallClockWaits(t *testing.T, sources map[string]string) []string {
 	return texts
 }
 
-// isHTTPClientField is whether field is net/http.Client's own field.
-func isHTTPClientField(field *types.Var) bool {
-	if field.Pkg() == nil || field.Pkg().Path() != "net/http" {
-		return false
+// netTimeoutField is the type that owns field, "<package>.<type>", where field is one of net's or
+// net/http's timeout fields: one named Timeout or Deadline, or ending in Timeout (http.Client's
+// Timeout, http.Transport's ResponseHeaderTimeout and its kin, http.Server's, net.Dialer's).
+func netTimeoutField(field *types.Var) (string, bool) {
+	if !field.IsField() || field.Pkg() == nil {
+		return "", false
 	}
-	client, ok := field.Pkg().Scope().Lookup("Client").(*types.TypeName)
-	if !ok {
-		return false
+	path, name := field.Pkg().Path(), field.Name()
+	if path != "net" && path != "net/http" || name != "Deadline" && !strings.HasSuffix(name, "Timeout") {
+		return "", false
 	}
-	fields, ok := client.Type().Underlying().(*types.Struct)
-	if !ok {
-		return false
-	}
-	for i := range fields.NumFields() {
-		if fields.Field(i) == field {
-			return true
+	scope := field.Pkg().Scope()
+	for _, typeName := range scope.Names() {
+		owner, ok := scope.Lookup(typeName).(*types.TypeName)
+		if !ok {
+			continue
+		}
+		fields, ok := owner.Type().Underlying().(*types.Struct)
+		if !ok {
+			continue
+		}
+		for i := range fields.NumFields() {
+			if fields.Field(i) == field {
+				return path + "." + typeName, true
+			}
 		}
 	}
-	return false
+	return "", false
 }
 
-// unblocksAtOnce is whether expr is exactly time.Now() or the zero time.Time{}: a deadline that
-// has already passed, which ends a blocked read or write at once rather than after a span.
+// unblocksAtOnce is whether expr is exactly time.Now(): a deadline that has already passed, which
+// ends a blocked read or write at once rather than after a span.
 func unblocksAtOnce(info *types.Info, expr ast.Expr) bool {
-	switch expr := expr.(type) {
-	case *ast.CallExpr:
-		if len(expr.Args) != 0 {
-			return false
-		}
-		var name *ast.Ident
-		switch fun := expr.Fun.(type) {
-		case *ast.Ident:
-			name = fun
-		case *ast.SelectorExpr:
-			name = fun.Sel
-		default:
-			return false
-		}
-		fn, ok := info.Uses[name].(*types.Func)
-		return ok && fn.Pkg() != nil && fn.Pkg().Path() == "time" && fn.Name() == "Now" && fn.Signature().Recv() == nil
-	case *ast.CompositeLit:
-		named, ok := info.Types[expr].Type.(*types.Named)
-		return ok && len(expr.Elts) == 0 && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "time" && named.Obj().Name() == "Time"
+	call, ok := expr.(*ast.CallExpr)
+	if !ok || len(call.Args) != 0 {
+		return false
 	}
-	return false
+	var name *ast.Ident
+	switch fun := call.Fun.(type) {
+	case *ast.Ident:
+		name = fun
+	case *ast.SelectorExpr:
+		name = fun.Sel
+	default:
+		return false
+	}
+	fn, ok := info.Uses[name].(*types.Func)
+	return ok && fn.Pkg() != nil && fn.Pkg().Path() == "time" && fn.Name() == "Now" && fn.Signature().Recv() == nil
 }

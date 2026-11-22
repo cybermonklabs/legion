@@ -1286,9 +1286,47 @@ func TestTheBridgeEndsWithAnInboxClientConnected(t *testing.T) {
 	bound := Grace + drainTimeout + inboxFlushTimeout + flushTimeout
 	clock.raise(bound)
 	r.stopped()
+	// The clock fires every timer of the stop as it is asked for, so a bridge that has not ended
+	// waits on something else: a process, a pipe, a goroutine that is runnable but not yet run on a
+	// loaded machine, or the wall clock. Only the last is a hold, and it leaves a goroutine of the
+	// bridge's blocked in a sleep or a timed wait (heldOnTheWallClock), which no clock moves.
+	held := make(chan string, 1)
+	watched := make(chan struct{})
+	defer close(watched)
+	go func() {
+		seen, key := 0, ""
+		for {
+			select {
+			case <-watched:
+				return
+			case <-time.After(testwait.Poll):
+			}
+			found, ok := heldOnTheWallClock(allStacks())
+			switch {
+			case !ok:
+				seen, key = 0, ""
+			case firstLine(found) != key:
+				seen, key = 1, firstLine(found)
+			default:
+				seen++
+			}
+			if seen == heldSamples {
+				held <- found
+				return
+			}
+		}
+	}()
 	select {
 	case code := <-r.done:
 		r.done <- code
+	case found := <-held:
+		t.Errorf("the bridge told to stop with an inbox client connected waits on the wall clock, which no clock of its moves, so the shim's kill would come first; held in %d samples in a row:\n%s", heldSamples, found)
+		select {
+		case code := <-r.done:
+			r.done <- code
+		case <-time.After(deadlineWait(t)):
+			t.Fatalf("the bridge held on the wall clock did not end either; waited until %s before the test binary's deadline", deadlineMargin)
+		}
 	case <-time.After(deadlineWait(t)):
 		t.Fatalf("the bridge told to stop with an inbox client connected did not end within its own bound of %s on its clock; waited until %s before the test binary's deadline", bound, deadlineMargin)
 	}
