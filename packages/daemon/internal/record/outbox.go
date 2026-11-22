@@ -36,14 +36,17 @@ const (
 	OutboxKindWorkspaceRemove  OutboxKind = "workspace_remove"
 	OutboxKindIssueBranch      OutboxKind = "issue_branch"
 	OutboxKindTaskBranch       OutboxKind = "task_branch"
-	OutboxKindCheckWake        OutboxKind = "check_wake"
-	OutboxKindCheckLook        OutboxKind = "check_look"
-	OutboxKindCheckBound       OutboxKind = "check_bound"
-	OutboxKindRoleMessage      OutboxKind = "role_message"
-	OutboxKindHookPrompt       OutboxKind = "hook_prompt"
-	OutboxKindUpdateAsk        OutboxKind = "update_ask"
-	OutboxKindIssueBundle      OutboxKind = "issue_bundle"
-	OutboxKindIssueRelease     OutboxKind = "issue_release"
+	// OutboxKindTaskPullRequestsClose closes the open pull requests of the other tasks of an issue
+	// once the pull request of the task that merges has merged (TaskPullRequestsClose).
+	OutboxKindTaskPullRequestsClose OutboxKind = "task_pull_requests_close"
+	OutboxKindCheckWake             OutboxKind = "check_wake"
+	OutboxKindCheckLook             OutboxKind = "check_look"
+	OutboxKindCheckBound            OutboxKind = "check_bound"
+	OutboxKindRoleMessage           OutboxKind = "role_message"
+	OutboxKindHookPrompt            OutboxKind = "hook_prompt"
+	OutboxKindUpdateAsk             OutboxKind = "update_ask"
+	OutboxKindIssueBundle           OutboxKind = "issue_bundle"
+	OutboxKindIssueRelease          OutboxKind = "issue_release"
 	// OutboxKindGatedStepsPublish is the one kind whose row belongs to no issue: its issue column
 	// holds the bare project key (GatedStepsPublish).
 	OutboxKindGatedStepsPublish OutboxKind = "gated_steps_publish"
@@ -124,7 +127,7 @@ const (
 // laneKinds is each lane's kinds in the order LaneKinds lists them. Every OutboxKind is in exactly
 // one lane (TestEveryOutboxKindIsInExactlyOneLane).
 var laneKinds = map[OutboxLane][]OutboxKind{
-	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindTaskBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
+	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindTaskBranch, OutboxKindTaskPullRequestsClose, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
 	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward},
 	LaneClaim:       {OutboxKindClaimRelease},
@@ -1592,6 +1595,23 @@ type TaskBranch struct {
 
 func (TaskBranch) OutboxKind() OutboxKind { return OutboxKindTaskBranch }
 
+// TaskPullRequestsClose closes, as the implement App, each pull request Numbers names, of the other
+// tasks of the row's issue, with Comment on each before its close: GitHub leaves the pull request of
+// a task that does not merge open once the work it holds merged in the pull request of the task that
+// merges. A pull request GitHub shows closed already is done, so a row that runs again closes
+// nothing more.
+type TaskPullRequestsClose struct {
+	// Generation is the issue generation the pull requests were recorded at. A row of an earlier
+	// generation finishes without acting.
+	Generation uint64 `json:"generation"`
+	// Numbers is the number of each pull request the row closes, in the order it closes them.
+	Numbers []int `json:"numbers"`
+	// Comment is what the row writes on each pull request before it closes it.
+	Comment string `json:"comment"`
+}
+
+func (TaskPullRequestsClose) OutboxKind() OutboxKind { return OutboxKindTaskPullRequestsClose }
+
 // CheckWakeDue is the one row that can start a production check's next look beside the check's
 // own bound (CheckBound): the wake the checking agent named for itself on a pending report
 // (ProductionCheck.WakeAt), or the retry of a look nobody reported. There is at most one such row
@@ -2180,6 +2200,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindTaskPullRequestsClose:
+		value := TaskPullRequestsClose{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindIssueBranch:
 		value := IssueBranch{}
 		if err := decoder.Decode(&value); err != nil {
@@ -2320,6 +2346,10 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 	case TaskBranch:
 		if value.Task == "" {
 			return fmt.Errorf("a task's branch row requires the task it makes the branch of")
+		}
+	case TaskPullRequestsClose:
+		if len(value.Numbers) == 0 || value.Comment == "" {
+			return fmt.Errorf("a close of a task's pull requests requires each pull request it closes and the comment it writes on them")
 		}
 	case IssueSuspend:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {

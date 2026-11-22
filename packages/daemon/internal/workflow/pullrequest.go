@@ -431,6 +431,9 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 		return intake.Result{}, err
 	}
+	if err := e.closeOtherTaskPullRequests(ctx, tx, *pr); err != nil {
+		return intake.Result{}, err
+	}
 	issue, err := e.issueOfPullRequest(ctx, tx, *pr)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
@@ -443,6 +446,40 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byMerge)
+}
+
+// closeOtherTaskPullRequests queues the close of each other open pull request of merged's issue
+// (record.TaskPullRequestsClose), each with the comment `Merged in #<n>.`, where merged, the pull
+// request the fact just recorded merged, is the pull request of the task that merges
+// (record.Store.MergePullRequest): its merge put the work of every task on the default branch, and
+// GitHub leaves the pull request of each other task open. The merge of any other task's pull request
+// closes nothing, and neither does the merge of an issue whose other pull requests are closed or
+// that has none, as an issue of one task has none. It is written in the merge's own transaction, so
+// the row is queued once, as GitHub sends the merge once.
+func (e *Engine) closeOtherTaskPullRequests(ctx context.Context, tx pgx.Tx, merged record.PullRequest) error {
+	sink, err := e.store.MergePullRequest(ctx, tx, merged.Issue)
+	if err != nil || sink == nil || sink.Number != merged.Number || !e.sameRepository(sink.Repo, merged.Repo) {
+		return err
+	}
+	prs, err := e.store.TaskPullRequests(ctx, tx, merged.Issue)
+	if err != nil {
+		return err
+	}
+	var open []int
+	for _, pr := range prs {
+		if pr.State == record.PullRequestOpen && pr.Number != merged.Number {
+			open = append(open, pr.Number)
+		}
+	}
+	if len(open) == 0 {
+		return nil
+	}
+	issue, err := e.store.Issue(ctx, tx, merged.Issue)
+	if err != nil || issue == nil {
+		return err
+	}
+	return e.enqueue(ctx, tx, issue.Key, record.TaskPullRequestsClose{Generation: issue.Generation, Numbers: open,
+		Comment: fmt.Sprintf("Merged in #%d.", merged.Number)})
 }
 
 // waitingForTree is what the architect that owns a merged issue is told when the merge of its pull

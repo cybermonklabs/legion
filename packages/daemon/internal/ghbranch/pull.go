@@ -51,3 +51,36 @@ func OpenPullRequest(ctx context.Context, github githubrest.Client, repo ghrepo.
 		return 0, failed(err)
 	}
 }
+
+// ClosePullRequest closes pull request number of repo, whose REST API github calls, with comment
+// written on it first (POST /repos/{owner}/{repo}/issues/{number}/comments, then PATCH
+// /repos/{owner}/{repo}/pulls/{number} with the state closed), and answers whether it closed it. A
+// pull request GitHub shows closed already, merged or not, is left as it is, with no comment, so a
+// close made again writes nothing. Every answer other than 2xx is an error naming the repository and
+// the pull request and wrapping GitHub's *githubrest.Answer.
+//
+// The comment is published on GitHub as a pull request's body is, so it passes this repository's
+// own private-name rules first (leakguard.Rules): a comment they match, and a rule pass that could
+// not be made to run, are each an error, and nothing is sent.
+func ClosePullRequest(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, number int, comment string) (bool, error) {
+	failed := func(err error) error {
+		return fmt.Errorf("close pull request #%d on %s: %w", number, repo, err)
+	}
+	if err := leakguard.New(leakguard.Options{}).Rules(ctx, leakguard.Record{Label: "the pull request's comment", Text: comment}); err != nil {
+		return false, failed(err)
+	}
+	var pull githubrest.PullRequest
+	if err := github.Get(ctx, fmt.Sprintf("/pulls/%d", number), &pull); err != nil {
+		return false, failed(err)
+	}
+	if pull.State != "open" {
+		return false, nil
+	}
+	if err := github.Post(ctx, fmt.Sprintf("/issues/%d/comments", number), map[string]string{"body": comment}, nil); err != nil {
+		return false, failed(err)
+	}
+	if err := github.Patch(ctx, fmt.Sprintf("/pulls/%d", number), map[string]string{"state": "closed"}, nil); err != nil {
+		return false, failed(err)
+	}
+	return true, nil
+}

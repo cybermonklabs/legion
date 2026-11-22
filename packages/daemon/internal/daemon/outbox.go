@@ -783,8 +783,9 @@ type rateLimit struct {
 // Retry-After. The read of the base's rules either makes on a conflicting answer (readBaseRules)
 // is no exception: a rate limit there reads as rules the daemon could not read.
 var githubBudgets = map[record.OutboxKind][]githubrest.Budget{
-	record.OutboxKindIssueBranch: {githubrest.BudgetCore, githubrest.BudgetSecondary},
-	record.OutboxKindTaskBranch:  {githubrest.BudgetCore, githubrest.BudgetSecondary},
+	record.OutboxKindIssueBranch:           {githubrest.BudgetCore, githubrest.BudgetSecondary},
+	record.OutboxKindTaskBranch:            {githubrest.BudgetCore, githubrest.BudgetSecondary},
+	record.OutboxKindTaskPullRequestsClose: {githubrest.BudgetCore, githubrest.BudgetSecondary},
 }
 
 // standingLimit is the limit in limits, among the budgets a row of kind spends, that still stands
@@ -960,6 +961,8 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 		return r.issueBranch(ctx, row, value)
 	case record.TaskBranch:
 		return r.taskBranch(ctx, row, value)
+	case record.TaskPullRequestsClose:
+		return r.closeTaskPullRequests(ctx, row, value)
 	case record.CheckWakeDue:
 		return r.checkWake(ctx, row, value)
 	case record.CheckLook:
@@ -4631,6 +4634,40 @@ func (r *outbox) openTaskPullRequest(ctx context.Context, issue record.Issue, ta
 		task, issue.Key, issue.Key)
 	_, err = ghbranch.OpenPullRequest(ctx, github, repo, branch, base, fmt.Sprintf("%s: %s", issue.Key, task), body)
 	return err
+}
+
+// closeTaskPullRequests closes each pull request the row names, of the other tasks of the row's
+// issue, as branchClient makes each write of a branch (the implement App), within branchRowTimeout:
+// the row's comment is written on each, then it is closed (ghbranch.ClosePullRequest). A pull
+// request GitHub shows closed already is done, so a row that runs again, or one that a failure cut
+// short and that runs again on its backoff, closes only those still open. A row of a generation the
+// issue has left finishes without acting.
+func (r *outbox) closeTaskPullRequests(ctx context.Context, row record.OutboxRow, payload record.TaskPullRequestsClose) error {
+	issue, err := r.issue(ctx, row.Issue)
+	if err != nil {
+		return err
+	}
+	if payload.Generation != issue.Generation {
+		r.log.Info("outbox close of task pull requests serves an earlier generation; finished without acting", "row", row.ID, "issue", issue.Key,
+			"generation", payload.Generation, "current", issue.Generation)
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, branchRowTimeout)
+	defer cancel()
+	github, repo, err := r.branchClient(ctx, issue)
+	if err != nil {
+		return err
+	}
+	for _, number := range payload.Numbers {
+		closed, err := ghbranch.ClosePullRequest(ctx, github, repo, number, payload.Comment)
+		if err != nil {
+			return fmt.Errorf("close the pull request #%d of another task of %s: %w", number, issue.Key, err)
+		}
+		if closed {
+			r.log.Info("outbox closed the pull request of another task of the issue", "row", row.ID, "issue", issue.Key, "pullRequest", number)
+		}
+	}
+	return nil
 }
 
 // joined applies fact, the end of the join row made (intake.TaskJoined), through the outbox's

@@ -268,7 +268,7 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindRoleHoldersPublish, OutboxKindStepRecord, OutboxKindConflictConfirm,
-		OutboxKindMergeForward, OutboxKindPlanRecord}
+		OutboxKindMergeForward, OutboxKindPlanRecord, OutboxKindTaskPullRequestsClose}
 	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneLifecycle, LaneRecord, LaneRoleMessage}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
 		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
@@ -330,13 +330,16 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		// A task's branch row makes the branch on GitHub at the joined work of its needs, as the
 		// issue's branch row makes the issue's, and launches no role and hands none a task: the
 		// start that waits for it is a supervise start, which the pause holds.
-		OutboxKindTaskBranch:         "",
-		OutboxKindIssueBundle:        "",
-		OutboxKindIssueRelease:       "",
-		OutboxKindGatedStepsPublish:  "",
-		OutboxKindClaimRelease:       "",
-		OutboxKindDesignGatesPublish: "",
-		OutboxKindMergeQueueRead:     "",
+		OutboxKindTaskBranch: "",
+		// The close of the other tasks' pull requests after the issue's merge writes GitHub as the
+		// implement App and launches no role and hands none a task.
+		OutboxKindTaskPullRequestsClose: "",
+		OutboxKindIssueBundle:           "",
+		OutboxKindIssueRelease:          "",
+		OutboxKindGatedStepsPublish:     "",
+		OutboxKindClaimRelease:          "",
+		OutboxKindDesignGatesPublish:    "",
+		OutboxKindMergeQueueRead:        "",
 		// A conflict's second read reads the pull request from GitHub and starts no turn; the merge
 		// forward its fact queues is held.
 		OutboxKindConflictConfirm: "",
