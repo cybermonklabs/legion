@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -351,35 +353,79 @@ func listedNames(t *testing.T, dir string) []string {
 	return names
 }
 
+// fillingLead is how many names removeWhileFilling's writer may keep ahead of the removal: it makes
+// a name only for a name the removal has reached, past its first fillingLead. So no pass of the
+// removal reads more than about fillingLead names, two passes reach at most about twice that, and
+// what stands for t.TempDir's cleanup to remove is bounded by a count, not by how long the writer
+// ran. It is far more than a pass needs to meet new names, since the removal's work per name is
+// four calls and the writer's one.
+const fillingLead = 4096
+
 // removeWhileFilling removes held's entry while a writer creates names in filling, a directory
-// under it, as fast as it can, and answers the removal. The writer runs until the removal answers:
-// the question is whether the removal ends while something keeps writing, and its passes are
-// finite, so the answer must not ride on a span its share of a loaded machine's CPUs decides (a
-// fixed 30 s once failed a correct removal under 32 pinned hogs). The wait for the answer is a hang
-// guard, beforeDeadline: a removal with no bound on its passes chases the writer until it ends,
-// and fails the case there, on a line that names the guard.
+// under it, as fast as it can and at most fillingLead ahead of the removal, and answers the
+// removal. The question is whether the removal ends while something keeps writing, and its passes
+// are finite, so no verdict rides on a clock and the removal's share of a loaded machine's CPUs (a
+// fixed 30 s once failed a correct removal under 32 pinned hogs):
 //
-// Once the guard has fired and the writer stopped, the removal still has to delete what the writer
-// got ahead by before it can answer, which grows with the time the writer ran. The case waits for
-// that until cleanupBeforeDeadline at most, then fails, so its line comes before the binary's
-// alarm however long the writer ran. The removal works on a descriptor of its own, a duplicate of
-// held's that it closes when it answers, so a removal still running after the case has closed held
+//   - the writer runs until the removal answers, paced by the removal's own progress, which the
+//     case reads through betweenUnlinkAndOpen, called once for each name of the writer's the
+//     removal reaches;
+//   - a removal that has reached three times fillingLead of the writer's names has made more than
+//     two passes' worth, and one with no bound on its passes fails there, on its own line, by
+//     count;
+//   - a removal that never answers fails at the hang guard, beforeDeadline, on its own line.
+//
+// The writer is stopped, and the hook put back, in a cleanup registered after the caller's
+// t.TempDir, so it runs before that directory's removal and on every way out of the case, a
+// failure before the removal starts among them. With no -v, go test prints a case's lines only once
+// its cleanups end, and at most about fillingLead names are left to remove then, so the line comes
+// before the binary's alarm. The removal works on a descriptor of its own, a duplicate of held's
+// that it closes when it answers, so a removal still running after the case has closed held
 // reaches no descriptor the number is reused for.
 func removeWhileFilling(t *testing.T, held *os.File, filling string) error {
 	t.Helper()
-	// The writer creates names until it is told to stop, as fast as it can: a removal that read
-	// the directory again for as long as it found new names would never answer while it runs.
-	// Each name is an empty directory, which is one mkdir to the writer and an unlink, an open, a
-	// read and a second unlink to the removal, so the writer keeps ahead of it: 80 runs of 80
+	tokens := make(chan struct{}, fillingLead)
+	for range fillingLead {
+		tokens <- struct{}{}
+	}
+	var reached atomic.Int64
+	overrun := make(chan struct{})
+	var overrunOnce sync.Once
+	previous := betweenUnlinkAndOpen
+	betweenUnlinkAndOpen = func(name string) {
+		if !isFillingName(name) {
+			return
+		}
+		select {
+		case tokens <- struct{}{}:
+		default:
+		}
+		if reached.Add(1) > 3*fillingLead {
+			overrunOnce.Do(func() { close(overrun) })
+		}
+	}
+	// The writer creates names until it is told to stop, as fast as its tokens let it: a removal
+	// that read the directory again for as long as it found new names would never answer while it
+	// runs. Each name is an empty directory, which is one mkdir to the writer and an unlink, an
+	// open, a read and a second unlink to the removal, so the writer keeps its lead: 80 runs of 80
 	// answered errStillFilling, on 2026-11-14, kernel 4.19.0-gvisor, under go1.27.3.
 	stop, stopped := make(chan struct{}), make(chan struct{})
+	var stopOnce sync.Once
+	stopWriter := func() {
+		stopOnce.Do(func() { close(stop) })
+		<-stopped
+	}
+	t.Cleanup(func() {
+		stopWriter()
+		betweenUnlinkAndOpen = previous
+	})
 	go func() {
 		defer close(stopped)
 		for n := 0; ; n++ {
 			select {
 			case <-stop:
 				return
-			default:
+			case <-tokens:
 			}
 			_ = os.Mkdir(filepath.Join(filling, fmt.Sprintf("d%07d", n)), 0o755)
 		}
@@ -391,8 +437,6 @@ func removeWhileFilling(t *testing.T, held *os.File, filling string) error {
 
 	fd, err := unix.Dup(int(held.Fd()))
 	if err != nil {
-		close(stop)
-		<-stopped
 		t.Fatalf("a descriptor of the removal's own on the entry's directory: %v", err)
 	}
 	own := os.NewFile(uintptr(fd), held.Name())
@@ -402,25 +446,40 @@ func removeWhileFilling(t *testing.T, held *os.File, filling string) error {
 		_ = own.Close()
 		answered <- removal
 	}()
+	// drained is what the removal did once the writer had stopped: it has at most about
+	// fillingLead names left to remove, so it answers soon, unless it never answers at all.
+	drained := func() string {
+		select {
+		case removal := <-answered:
+			return fmt.Sprintf("answered %v once the writer stopped", removal)
+		case <-time.After(cleanupBeforeDeadline(t)):
+			return "had not answered when the case gave up on it, at cleanupBeforeDeadline"
+		}
+	}
 	guard := beforeDeadline(t)
 	select {
 	case removal := <-answered:
-		close(stop)
-		<-stopped
+		stopWriter()
 		return removal
+	case <-overrun:
+		stopWriter()
+		t.Fatalf("the removal had reached %d of the writer's names while the writer kept at most %d ahead of it, more than the %d two passes reach: a removal with no bound on its passes, which a writer still creating names holds for as long as it writes; it %s",
+			reached.Load(), fillingLead, 2*fillingLead, drained())
 	case <-time.After(guard):
+		stopWriter()
+		t.Fatalf("the removal had not answered %v after it began, to 30 s before the test binary's deadline, and had reached %d of the writer's names: a removal that never answers; it %s",
+			guard.Round(time.Second), reached.Load(), drained())
 	}
-	close(stop)
-	<-stopped
-	began := time.Now()
-	drained := "had not answered when the case gave up on it, at cleanupBeforeDeadline"
-	select {
-	case removal := <-answered:
-		drained = fmt.Sprintf("answered %v %v after the writer stopped", removal, time.Since(began).Round(time.Millisecond))
-	case <-time.After(cleanupBeforeDeadline(t)):
-	}
-	t.Fatalf("the removal had not answered %v after it began, to 30 s before the test binary's deadline, with a writer still creating names in the directory it was emptying: a removal with no bound on its passes; it %s", guard.Round(time.Second), drained)
 	return nil
+}
+
+// isFillingName is whether name is one removeWhileFilling's writer makes: d and seven digits.
+func isFillingName(name string) bool {
+	if len(name) != 8 || name[0] != 'd' {
+		return false
+	}
+	_, err := strconv.Atoi(name[1:])
+	return err == nil
 }
 
 // A removal that fails deep in a tree answers an error that names the entry, the name that
