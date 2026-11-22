@@ -260,11 +260,13 @@ func newGatedProc(t *testing.T, pids ...int) *gatedProc {
 // Every wait of the package's tests for a fact whose span is not the claim is bounded by it, or by
 // cleanupBeforeDeadline in a cleanup, in the test process and in every process the test binary
 // re-enters alike (a *Helper test, the role stage, role-init, the session-peer stand-ins, the PID 1
-// helpers). A re-entered process is given a -test.timeout whose deadline is the moment its
-// starter's beforeDeadline runs out (reentry), so beforeDeadline there ends 30 s before that, and
-// the child's failure, its cleanups and its alarm all come while its starter still waits. The one
-// re-entry whose argv the test does not write, the session peer's shim (roleShim's `worker-shim`),
-// waits on nothing of its own and hands its agent the deadline its plan carries (peerPlan.End).
+// helpers). A re-entered process is given a -test.timeout that ends reentryMargin before its
+// starter's own deadline (reentry), so beforeDeadline there ends 30 s before that, and the child's
+// failure, its cleanups and its alarm all come while its starter still waits. A child started with
+// less than those 30 s has waits that end at once, so its starter names the deadline (reentry). The
+// one re-entry whose argv the test does not write, the session peer's shim (roleShim's
+// `worker-shim`), waits on nothing of its own and hands its agent the deadline its plan carries
+// (peerPlan.End).
 //
 // Not hang guards, so not bounded by it: a span that is part of a case's claim, or an answer a
 // re-entered process prints and then goes on from. These are the race cases' two-minute search
@@ -275,8 +277,12 @@ func newGatedProc(t *testing.T, pids ...int) *gatedProc {
 // to the agent and to be gone for the stage (detachedGoneWithin), whose answers must leave the stage
 // its time for the generations after it.
 func beforeDeadline(t *testing.T) time.Duration {
-	return testwait.Bounded(t, 1<<60, 30*time.Second)
+	return testwait.Bounded(t, 1<<60, beforeDeadlineMargin)
 }
+
+// beforeDeadlineMargin is how long before the test binary's deadline beforeDeadline ends: what a
+// failing row's cleanups and its failure have left to run in.
+const beforeDeadlineMargin = 30 * time.Second
 
 // cleanupBeforeDeadline is beforeDeadline for a wait in a cleanup: it ends 10 s before the test
 // binary's deadline, so a cleanup that runs after its row gave up at beforeDeadline still has 20 s
