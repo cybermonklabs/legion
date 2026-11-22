@@ -3153,6 +3153,15 @@ test("a change request sent from the header leaves the focus in the header", asy
       ).toBeVisible();
       await open();
       await expect(dialog, `${from} opened no Request changes`).toBeVisible();
+      // The dialog is laid out, and so visible to the row, before it takes the focus: `useDialog`
+      // moves the focus into its Reason box at the next animation frame, which a loaded machine
+      // draws late. A key typed before that frame lands on the control that opened the dialog,
+      // and the Space of "One change." then presses Approve and approves the document. A reader
+      // types once the caret is in the box.
+      await expect(
+        dialog.getByRole("textbox", { name: "Reason" }),
+        `${from} left the focus outside Request changes' Reason`
+      ).toBeFocused();
       await page.keyboard.type("One change.");
       await dialog.getByRole("button", { exact: true, name: "Request changes" }).focus();
       await page.keyboard.press("Enter");
@@ -3260,6 +3269,9 @@ test("a change request sent from the header's Request changes leaves the focus o
     await page.keyboard.press("Enter");
     const dialog = page.getByRole("dialog", { name: "Request changes" });
     await expect(dialog, "Enter on Request changes opened no dialog").toBeVisible();
+    // The keys wait for the caret in Reason (the row "a change request sent from the header
+    // leaves the focus in the header" says why).
+    await expect(dialog.getByRole("textbox", { name: "Reason" })).toBeFocused();
     await page.keyboard.type("One change.");
     await dialog.getByRole("button", { exact: true, name: "Request changes" }).focus();
     await page.keyboard.press("Enter");
@@ -3308,6 +3320,9 @@ test("a change request sent after the header's actions went leaves the focus on 
     await page.keyboard.press("Enter");
     const dialog = page.getByRole("dialog", { name: "Request changes" });
     await expect(dialog, "Enter on Request changes opened no dialog").toBeVisible();
+    // The keys wait for the caret in Reason (the row "a change request sent from the header
+    // leaves the focus in the header" says why).
+    await expect(dialog.getByRole("textbox", { name: "Reason" })).toBeFocused();
     await page.keyboard.type("One change.");
 
     await reviewArtifact(seeded.specArtifactId, { state: "approved" }, { login: "bob" });
@@ -3448,6 +3463,9 @@ test("Request changes in its dialog pressed again by Enter before the change req
     await page.keyboard.press("Enter");
     const dialog = page.getByRole("dialog", { name: "Request changes" });
     await expect(dialog, "Enter on Request changes opened no dialog").toBeVisible();
+    // The keys wait for the caret in Reason (the row "a change request sent from the header
+    // leaves the focus in the header" says why).
+    await expect(dialog.getByRole("textbox", { name: "Reason" })).toBeFocused();
     await page.keyboard.type("One change.");
     const submit = dialog.getByRole("button", { exact: true, name: "Request changes" });
     await submit.focus();

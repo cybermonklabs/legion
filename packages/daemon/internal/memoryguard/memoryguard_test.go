@@ -629,7 +629,7 @@ func (h *harness) nextWait() fakeWait {
 		return w
 	case <-h.done:
 		h.t.Fatalf("Run returned before ctx ended; the log:\n%s", strings.Join(h.log.all(), "\n"))
-	case <-time.After(testwait.Bounded(h.t, time.Minute, time.Second)):
+	case <-time.After(testwait.Remaining(h.t)):
 		h.t.Fatalf("the guard never waited for its next reading; the log:\n%s", strings.Join(h.log.all(), "\n"))
 	}
 	return fakeWait{}
