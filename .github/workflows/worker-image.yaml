@@ -259,14 +259,22 @@ jobs:
           # layer into the attested release build (no cache shared between trusted and untrusted
           # builds, BuildKit advisory GHSA-f2v9-hprr-32q3). A newer head can cancel a pull request's
           # build mid-export, and on 2026-10-27 the Actions cache held 10.80 GB of
-          # pull-request-scope buildkit entries. mode=min exports only the final image's layers, not
-          # every intermediate stage's: on 2026-10-28 main alone held 10.44 GB, 5.97 GB of it
-          # buildkit blobs, mostly this build's mode=max export, over the repository's limit, so main
-          # evicted its own entries (the Envoy listener measured 136.8 MB a run with mode=min
-          # against 1.6 GB with mode=max). ignore-error=true: the cache only saves time, so a failed
-          # export never fails the build that pushed the image a release pins.
+          # pull-request-scope buildkit entries. mode=max exports every stage's layers, not only the
+          # final image's, so a pull request reuses the stage work main did, each part keyed on its
+          # own inputs: the module download, go-licenses and gopls, the compiled dependencies
+          # (go-deps), the workspace install, and the toolchain and tools downloads. Under mode=min
+          # every build ran all of it again. On 2026-10-28 a mode=max export put main over the
+          # repository's limit of then 10 GB (10.44 GB, 5.97 GB of it buildkit blobs; the Envoy
+          # listener measured 136.8 MB a run with mode=min against 1.6 GB with mode=max). The
+          # organization's limit is 25 GB now (`gh api orgs/cybermonklabs/actions/cache/storage-limit`,
+          # 2026-11-22), and what a main commit adds is small: the Go stages keep their build caches
+          # out of their layers (cache mounts, and the go stage's discarded read-write bind of
+          # go-deps' cache), and the module cache no longer changes with the hour it is fetched,
+          # which under mode=min made a new module-cache layer, and every layer after it, on every
+          # main build. ignore-error=true: the cache only saves time, so a failed export never fails
+          # the build that pushed the image a release pins.
           cache-from: type=gha,scope=worker-image
-          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,mode=min,scope=worker-image,ignore-error=true' || '' }}
+          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,mode=max,scope=worker-image,ignore-error=true' || '' }}
           tags: ${{ steps.meta.outputs.tags }}
           # org.opencontainers.image.source is the Dockerfile's LABEL (the in-repo convention).
           labels: |

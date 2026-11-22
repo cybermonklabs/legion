@@ -877,7 +877,7 @@ The attestation is separate from the image's own BuildKit provenance, which the 
 
 `.github/workflows/worker-image.yaml` builds on the GitHub-hosted runner with `docker/setup-buildx-action` and `docker/build-push-action` (the pair `release-envoy-listener.yaml` uses).
 Its layer cache is the GitHub Actions cache under the image's own scope (`cache-from: type=gha,scope=worker-image`).
-Only a build on `main` writes it, only the final image's layers (`cache-to: type=gha,mode=min,scope=worker-image,ignore-error=true`);
+Only a build on `main` writes it, every stage's layers (`cache-to: type=gha,mode=max,scope=worker-image,ignore-error=true`), so a pull request's build reuses each stage whose own inputs it shares with main: the module download, go-licenses and gopls, the compiled Go dependencies, the workspace install and the toolchain downloads;
 a pull request's build reads what main wrote and writes none, because a newer head can cancel that build in the middle of a cache export, and because GitHub never lets a `main` run restore a branch's entries, so no pull request can put a layer into the attested release build.
 The image is pushed with the workflow's own `GITHUB_TOKEN`: no third-party builder, no project variable, no extra credential.
 It runs (1) from `release.yaml` on every `main` run (its push paths include every file the image builds from):

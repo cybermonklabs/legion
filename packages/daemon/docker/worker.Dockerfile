@@ -512,16 +512,21 @@ RUN apk add --no-cache git
 # runtime stage, each in a stage of its own: neither reads this checkout's source or module files,
 # so neither a source change nor a dependency bump rebuilds them, and the two build beside each
 # other and beside go-modules, where one stage built them one after the other before the download.
+# Each `go install` keeps its build cache and module downloads in cache mounts, which no layer
+# holds: the layers carry the binaries alone, so the cache main's builds export
+# (worker-image.yaml's cache-to) stays small.
 FROM go-base AS go-licenses
 COPY scripts/go-third-party-notices.sh /usr/local/bin/
-RUN go-third-party-notices.sh --install
+RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/go/pkg/mod \
+    go-third-party-notices.sh --install
 
 # `go install pkg@version` builds the module at that tag with its own go.mod, whatever this
 # checkout's go.work says, so the binary changes only with GOPLS_VERSION (or GO_VERSION), never
 # with a commit.
 FROM go-base AS gopls
 ARG GOPLS_VERSION
-RUN set -eu; \
+RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/go/pkg/mod \
+    set -eu; \
     mkdir -p /out; \
     CGO_ENABLED=0 GOBIN=/out go install "golang.org/x/tools/gopls@v${GOPLS_VERSION}"
 
@@ -563,40 +568,89 @@ RUN go mod download \
 
 # ------------------------------------------------------------------------------------------------
 # go-source: this checkout's two Go modules on go-modules, which the go and go-notices stages build
-# from, beside each other.
+# from, beside each other, and the list of every package the two binaries compile that is not this
+# checkout's own: the standard library's and the dependencies' (1,224 of 1,337 on 2026-11-22, 83%
+# of a cold build's compile time: 265 of 318 CPU-seconds, on a development host pinned to 4 CPUs).
+# The list is sorted, so it changes only when the set of packages outside the two modules does,
+# not when this checkout's own imports reorder, and go-deps, which compiles it, is reused while the
+# source changes. Listing extracts every module it reads into /gomodcache and writes package
+# indexes into the build cache; the RUN binds the first read-write from go-modules and puts the
+# second on a tmpfs, so BuildKit discards both and this stage's layers, which change on every
+# commit, carry the source and the list alone into main's cache export.
 FROM go-modules AS go-source
 COPY packages/daemon packages/daemon
 COPY packages/envoy packages/envoy
 WORKDIR /src/packages/daemon
+RUN --mount=type=bind,from=go-modules,source=/gomodcache,target=/gomodcache,rw \
+    --mount=type=tmpfs,target=/root/.cache/go-build \
+    set -eu; \
+    CGO_ENABLED=0 go list -deps \
+      -f '{{if or .Standard (and .Module (not .Module.Main))}}{{.ImportPath}}{{end}}' \
+      ./cmd/legion github.com/sjawhar/envoy/cmd/cipher > /deps.unsorted; \
+    LC_ALL=C sort -u /deps.unsorted > /deps.txt; \
+    rm /deps.unsorted; \
+    test -s /deps.txt; \
+    echo "go-source: $(wc -l < /deps.txt) packages outside this checkout's modules"
+
+# ------------------------------------------------------------------------------------------------
+# go-deps: every package go-source listed, compiled as the go stage compiles it (CGO_ENABLED=0, the
+# same GOOS, GOARCH, GOROOT, module paths and working directory): its build cache, and the module
+# trees the compile extracted into /gomodcache. It copies the list and no source, so BuildKit reuses
+# this stage, from main's cache, on every build whose list is the same, however the source changed;
+# the go stage then extracts no module and compiles only this checkout's own packages.
+FROM go-modules AS go-deps
+COPY --from=go-source /deps.txt /deps.txt
+# The list is one import path a line, split into arguments on purpose.
+# hadolint ignore=SC2046
+RUN CGO_ENABLED=0 go -C packages/daemon build $(cat /deps.txt)
 
 # ------------------------------------------------------------------------------------------------
 # go-notices: the licenses of the Go modules `legion` and `agent-secrets` compile in, with the
 # build's CGO_ENABLED (which decides them, with the GOARCH the go stage builds for); fails the
 # build when one's license cannot be determined. go-licenses comes built from the go-licenses
 # stage, at the path go-third-party-notices.sh installs it to, so the script finds it and builds it
-# no second time. A stage of its own, so the compile waits for neither the tool nor this step.
+# no second time. A stage of its own, so the compile waits for neither the tool nor this step. It
+# reads the module trees go-deps extracted, bound read-write, with the build cache on a tmpfs, so
+# whatever it extracts or indexes is discarded, as in go-source.
 FROM go-source AS go-notices
 COPY scripts/go-third-party-notices.sh /usr/local/bin/
 COPY --from=go-licenses /root/.cache/legion /root/.cache/legion
-RUN mkdir -p /out && CGO_ENABLED=0 go-third-party-notices.sh /out/go-notices \
+RUN --mount=type=bind,from=go-deps,source=/gomodcache,target=/gomodcache,rw \
+    --mount=type=tmpfs,target=/root/.cache/go-build \
+    mkdir -p /out && CGO_ENABLED=0 go-third-party-notices.sh /out/go-notices \
     ./cmd/legion github.com/sjawhar/envoy/cmd/cipher
+
+# ------------------------------------------------------------------------------------------------
+# agent-secrets: envoy's cmd/cipher, the pod's secrets client, built on go-source beside the go
+# stage. go-deps' build cache and module trees are bound in read-write, so the compile reads every
+# package outside this checkout from them, and BuildKit discards what it writes there: the layer
+# holds the binary, not the gigabytes of build cache and module trees that main's cache export
+# would otherwise carry on every commit. It is a go command of its own, on a bind of its own:
+# Go trims cache entries unused for five days when a command ends, and go-deps' layer can be older
+# than that, so one command run after another on one bind would find the entries only it uses
+# deleted. It takes none of `legion`'s link flags, which Go would record in its build information.
+FROM go-source AS agent-secrets
+RUN --mount=type=bind,from=go-deps,source=/gomodcache,target=/gomodcache,rw \
+    --mount=type=bind,from=go-deps,source=/root/.cache/go-build,target=/root/.cache/go-build,rw \
+    CGO_ENABLED=0 go -C /src/packages/envoy build -o /out/agent-secrets ./cmd/cipher
 
 # ------------------------------------------------------------------------------------------------
 # go: the Go coordinator's `legion`, built as the repository builds it — `go build ./cmd/legion` in
 # packages/daemon under go.work, whose other module (packages/envoy) contributes its go.mod and go.sum
 # to dependency selection and its listenfd package to `legion start` — static, so it runs on any
 # base. LEGION_REVISION is the commit the workflow builds; it is linked in so `legion version` names
-# it, and the build refuses without it.
+# it, and the build refuses without it. It binds go-deps as the agent-secrets stage does.
 FROM go-source AS go
 # Declared here, after the dependency layers, so a new commit re-runs only the compile.
 ARG LEGION_REVISION
 ARG PI_LEGION_VERSION
 ARG PI_ENVOY_VERSION
-RUN test -n "$LEGION_REVISION" \
+RUN --mount=type=bind,from=go-deps,source=/gomodcache,target=/gomodcache,rw \
+    --mount=type=bind,from=go-deps,source=/root/.cache/go-build,target=/root/.cache/go-build,rw \
+    test -n "$LEGION_REVISION" \
     && ldflags="-X main.revision=${LEGION_REVISION}" \
     && if [ -n "$PI_LEGION_VERSION" ] && [ -n "$PI_ENVOY_VERSION" ]; then ldflags="$ldflags -X main.piLegionVersion=${PI_LEGION_VERSION} -X main.piEnvoyVersion=${PI_ENVOY_VERSION}"; fi \
-    && CGO_ENABLED=0 go build -ldflags "$ldflags" -o /out/legion ./cmd/legion \
-    && CGO_ENABLED=0 go -C /src/packages/envoy build -o /out/agent-secrets ./cmd/cipher
+    && CGO_ENABLED=0 go build -ldflags "$ldflags" -o /out/legion ./cmd/legion
 
 # ------------------------------------------------------------------------------------------------
 # toolchain: what a worker needs to work a repository that is not Legion's, specific to none: uv (which
@@ -1557,7 +1611,7 @@ COPY --from=go /out/legion /opt/legion/bin/legion
 # from PATH, which /opt/legion/bin leads in the image and in every worker container (the PATH
 # mainEnvironment sets in packages/daemon/internal/runtime/sandbox/manifest.go). The daemon's
 # Tools.AgentSecrets names this path.
-COPY --from=go /out/agent-secrets /opt/legion/bin/agent-secrets
+COPY --from=agent-secrets /out/agent-secrets /opt/legion/bin/agent-secrets
 # gh in a pod is `legion gh`, first on the image PATH, which runs the real gh at /usr/local/bin/gh
 # (LEGION_GH_PATH, which every agent container is told) with GH_CONFIG_DIR at the gh directory of
 # the repository the command names, or of its owner where the bundle holds the repository none:

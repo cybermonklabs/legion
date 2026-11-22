@@ -2555,7 +2555,7 @@ jobs:
           context: .
           file: docker/Dockerfile
           cache-from: type=gha,scope=worker-image
-          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,mode=min,scope=worker-image,ignore-error=true' || '' }}
+          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,mode=max,scope=worker-image,ignore-error=true' || '' }}
 YAML
   cat > "$root/.github/workflows/ci.yaml" <<YAML
 name: CI
