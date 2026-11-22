@@ -184,20 +184,28 @@ func TestUpdateStreamReturnsTheAnswerAndFailsOnARefusal(t *testing.T) {
 	}
 }
 
-// leaderlessUpdates answers the first update of a stream with the 503 a member answers while it
-// knows no leader of the metadata group (NewJSClusterNotAvailError), sending nothing; every later
+// firstUpdateAnswered answers the first update of a stream with first, sending nothing; every later
 // update, and every other request, is js's own.
-type leaderlessUpdates struct {
+type firstUpdateAnswered struct {
 	natsgo.JetStreamContext
+	first *natsgo.APIError
 	sends atomic.Int32
 }
 
-func (l *leaderlessUpdates) UpdateStream(cfg *natsgo.StreamConfig, opts ...natsgo.JSOpt) (*natsgo.StreamInfo, error) {
-	if l.sends.Add(1) == 1 {
-		return nil, &natsgo.APIError{Code: http.StatusServiceUnavailable, ErrorCode: 10008, Description: "JetStream system temporarily unavailable"}
+func (f *firstUpdateAnswered) UpdateStream(cfg *natsgo.StreamConfig, opts ...natsgo.JSOpt) (*natsgo.StreamInfo, error) {
+	if f.sends.Add(1) == 1 {
+		return nil, f.first
 	}
-	return l.JetStreamContext.UpdateStream(cfg, opts...)
+	return f.JetStreamContext.UpdateStream(cfg, opts...)
 }
+
+// leaderlessAnswer is the 503 a member answers while it knows no leader of the metadata group
+// (JSClusterNotAvailErr), and insufficientResources a 503 that is a refusal (JSInsufficientResourcesErr),
+// as nats-server v2.15.1 writes them.
+var (
+	leaderlessAnswer      = natsgo.APIError{Code: http.StatusServiceUnavailable, ErrorCode: 10008, Description: "JetStream system temporarily unavailable"}
+	insufficientResources = natsgo.APIError{Code: http.StatusServiceUnavailable, ErrorCode: 10023, Description: "insufficient resources"}
+)
 
 // resentWait is how long TestAnUpdateAnsweredWithA503IsSentAgainAndLands gives UpdateStream before
 // its recorder's deadline less updateMargin: a helper that took the 503 as a refusal fails at once,
@@ -220,7 +228,8 @@ func TestAnUpdateAnsweredWithA503IsSentAgainAndLands(t *testing.T) {
 	}
 	config := info.Config
 	config.MaxAge = time.Hour
-	leaderless := &leaderlessUpdates{JetStreamContext: js}
+	answer := leaderlessAnswer
+	leaderless := &firstUpdateAnswered{JetStreamContext: js, first: &answer}
 	recorder := deadlineRecorder{fatalRecorder: &fatalRecorder{TB: t}, deadline: time.Now().Add(updateMargin + resentWait)}
 	var got *natsgo.StreamInfo
 	done := make(chan struct{})
@@ -234,6 +243,39 @@ func TestAnUpdateAnsweredWithA503IsSentAgainAndLands(t *testing.T) {
 	}
 	if sends := leaderless.sends.Load(); sends != 2 {
 		t.Fatalf("the update first answered with a 503 was sent %d times, want twice", sends)
+	}
+}
+
+// An update answered with a 503 that is not the leaderless one, insufficient resources (10023), is
+// a refusal: it fails the test at once with the server's answer, and is not sent again.
+func TestAnUpdateAnsweredWithAnother503IsARefusal(t *testing.T) {
+	conn := Connect(t, URL(t))
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := js.AddStream(&natsgo.StreamConfig{Name: "INSUFFICIENT", Subjects: []string{"insufficient.>"}})
+	if err != nil {
+		t.Fatalf("add stream: %v", err)
+	}
+	config := info.Config
+	config.MaxAge = time.Hour
+	answer := insufficientResources
+	refused := &firstUpdateAnswered{JetStreamContext: js, first: &answer}
+	began := time.Now()
+	recorder := deadlineRecorder{fatalRecorder: &fatalRecorder{TB: t}, deadline: began.Add(updateMargin + refusalWait)}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		UpdateStream(recorder, refused, config)
+	}()
+	<-done
+	if took := time.Since(began); took > refusalWait || !strings.Contains(recorder.message, "refused the update of stream INSUFFICIENT") || !strings.Contains(recorder.message, "insufficient resources") {
+		t.Fatalf("an update answered 503 insufficient resources failed after %s with %q, want within %s with the server's refusal", took.Round(time.Millisecond), recorder.message, refusalWait)
+	}
+	if sends := refused.sends.Load(); sends != 1 {
+		t.Fatalf("the refused update was sent %d times, want once", sends)
 	}
 }
 
@@ -265,8 +307,10 @@ func TestUpdateStreamsReadWaitDoublesAfterALostReadAndFollowsAnAnsweredOne(t *te
 			t.Fatalf("readLost(%v) = false, want a read that came to nothing", lost)
 		}
 	}
-	if readLost(natsgo.ErrStreamNotFound) {
-		t.Fatalf("readLost(%v) = true, want an answer", natsgo.ErrStreamNotFound)
+	for _, answered := range []error{natsgo.ErrStreamNotFound, &insufficientResources} {
+		if readLost(answered) {
+			t.Fatalf("readLost(%v) = true, want an answer", answered)
+		}
 	}
 }
 

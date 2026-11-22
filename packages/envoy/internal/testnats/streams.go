@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"net/http"
 	"reflect"
 	"slices"
 	"strings"
@@ -118,15 +117,21 @@ func (r *updateReadLimit) answered(took time.Duration) {
 	r.limit = min(max(firstUpdateReadWait, 3*took), jetStreamWait)
 }
 
-// leaderUnknown reports whether err is the server's 503, which a member answers while it knows no
-// leader of the JetStream metadata group (NewJSClusterNotAvailError).
+// clusterNotAvailable is the JetStream error code of the 503 a member answers while it knows no
+// leader of the metadata group (JSClusterNotAvailErr, nats-server v2.15.1
+// jetstream_errors_generated.go). Other 503s carry other codes, insufficient resources (10023)
+// among them, and are refusals.
+const clusterNotAvailable natsgo.ErrorCode = 10008
+
+// leaderUnknown reports whether err is that 503 (clusterNotAvailable), by its error code: the
+// HTTP status alone is shared by refusals.
 func leaderUnknown(err error) bool {
 	var answer natsgo.JetStreamError
-	return errors.As(err, &answer) && answer.APIError() != nil && answer.APIError().Code == http.StatusServiceUnavailable
+	return errors.As(err, &answer) && answer.APIError() != nil && answer.APIError().ErrorCode == clusterNotAvailable
 }
 
 // readLost reports whether a read of the stream came to nothing UpdateStream can use: no answer
-// within its wait, or the server's 503 (leaderUnknown).
+// within its wait, or the server's 503 with no leader (leaderUnknown).
 func readLost(err error) bool {
 	return errors.Is(err, natsgo.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) || leaderUnknown(err)
 }
@@ -215,10 +220,12 @@ func HoldStreamWithoutLeader(t testing.TB, cluster *Cluster, stream string, read
 // no read holds config by then, it fails the test naming the stream and each setting the last read
 // held otherwise.
 //
-// It sends the update again only after a 503: a member answers that while it knows no leader of
-// the metadata group, before anything is proposed (jsStreamUpdateRequest, nats-server v2.15.1
-// jetstream_api.go:1673-1676), so that send was not applied. The next send waits one read wait
-// after the 503, so a cluster electing its leader is not sent the update a hundred times a second.
+// It sends the update again only after the 503 with error code 10008 (leaderUnknown): a member
+// answers that while it knows no leader of the metadata group, before anything is proposed
+// (jsStreamUpdateRequest, nats-server v2.15.1 jetstream_api.go:1673-1676), so that send was not
+// applied. Any other 503, as insufficient resources (10023), is a refusal. The next send waits one
+// read wait after the 503, so a cluster electing its leader is not sent the update a hundred times
+// a second.
 // Any other answer, and no answer, is never sent again: an update replaces the whole configuration
 // with no compare, and nats-server has no conditional update (the corrected rule on a stream
 // update), so a second send could write over a change that the code under test made after the
