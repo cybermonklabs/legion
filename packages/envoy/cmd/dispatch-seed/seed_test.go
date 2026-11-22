@@ -372,8 +372,7 @@ var checksums = []struct {
 	table   string
 	columns string
 }{
-	{"projects", `key, name, next_number, created_at, last_seq`},
-	{"repo_projects", `repo, project, created_at, is_default`},
+	{"projects", `key, name, default_repo, next_number, created_at, last_seq`},
 	{"issues", `key, project_key, number, title, status, parent_key, created_at, updated_at,
 		closed_at, rank, repo, priority, last_seq, tasks_done, tasks_total, tasks_version,
 		md5(search::text), title_lexemes::text`},
