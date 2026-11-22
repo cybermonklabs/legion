@@ -280,7 +280,17 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 	case intake.PullRequestSynchronized:
 		return e.pullRequestSynchronized(ctx, tx, fact)
 	case intake.Push:
-		return e.push(ctx, tx, fact)
+		result, err := e.push(ctx, tx, fact)
+		if err != nil {
+			return result, err
+		}
+		// A task's branch is also the base of the pull request of each task that needs it (one
+		// need: its pull request is based on that need's branch), and a push on it is the only
+		// notice that base moved. The push decodes as this branch's own Push, since the branch is
+		// an issue's (intake's decodePush), so it is a base push of the pull requests on that
+		// branch as well; a branch no pull request is based on finds none.
+		_, err = e.basePush(ctx, tx, intake.BasePush{Repo: fact.Repo, Branch: fact.Branch, After: fact.After})
+		return result, err
 	case intake.BasePush:
 		return e.basePush(ctx, tx, fact)
 	case intake.PullRequestChecks:

@@ -784,11 +784,13 @@ func decodeReview(repository ghrepo.Repository, raw map[string]json.RawMessage) 
 		CommitID: commitID, HeadSHA: headSHA, Author: author, Body: body, BodyTruncated: bodyTruncated == "true"}, unread, nil
 }
 
-// decodePush decodes a push to a branch: to an issue's branch (claim.BranchIssue) it is the Push
-// the workflow applies to the pull request it records there, and to any other branch it is a
-// BasePush, the only notice the daemon gets that a pull request's base moved. GitHub recomputes
-// whether each head on a base still merges into it when the base moves and sends no event for the
-// pull request itself, so a head the record holds as clean goes behind or dirty unheard.
+// decodePush decodes a push to a branch: to an issue's branch, or a task's (claim.BranchIssue), it
+// is the Push the workflow applies to the pull request it records there, and to any other branch it
+// is a BasePush. Each is the notice the daemon gets that a pull request's base moved: the workflow
+// applies a Push as a push to a base as well, since the pull request of a task that needs another
+// is based on that task's branch. GitHub recomputes whether each head on a base still merges into
+// it when the base moves and sends no event for the pull request itself, so a head the record holds
+// as clean goes behind or dirty unheard.
 //
 // A base push costs the daemon one transaction under the fact lock (ApplyFact), which a heard
 // repository that other automation pushes to many times a minute pays per push; the cost is paid
