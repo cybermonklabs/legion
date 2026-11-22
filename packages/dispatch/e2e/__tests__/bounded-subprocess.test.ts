@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { randomInt } from "node:crypto";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -23,7 +24,8 @@ import {
   maxReads,
   named,
   ownUnknown,
-  pidsPerTurn,
+  processTableYielding,
+  procTreeAt,
   rowLimit,
   runBounded,
   stopTree,
@@ -638,39 +640,40 @@ test("a kill with its own signal and pause sends SIGKILL through process.kill an
   });
 });
 
-// The kill `runBounded` runs once a child ends reads every entry of `/proc`, a turn of the event
-// loop after every `pidsPerTurn` of them (`stopTreeYielding`), so a server this process runs, as
-// the origin stand-ins of `outside-edge.test.ts` do, answers while it reads. This row stands in for
-// `setImmediate`, which each of those turns waits on, and counts its calls while one bounded `true`
-// runs and its kill reads the table. A kill that read the table in one pass, as `stopTree` does,
-// makes none of them. The row skips where `/proc` is missing, or lists too few entries for a turn
-// to be told from none: on Linux it lists about sixty files and directories of its own beside one
-// per process.
-const procEntries = present("/proc/self/stat") ? readdirSync("/proc").length : 0;
-test.skipIf(procEntries <= 2 * pidsPerTurn)(
+// The kill `runBounded` runs once a child ends reads each process's files under `/proc` through
+// `Bun.file` (`processTableYielding`), whose read waits off this process's event loop, so a server
+// this process runs, as the origin stand-ins of `outside-edge.test.ts` do, answers while it reads;
+// the slow-read row below holds that such a read holds no timer. This row stands in for
+// `Bun.file` and counts the files under `/proc` it is asked for while one bounded `true` runs and
+// its kill reads the table. A kill that read the table synchronously, as `stopTree` does, asks for
+// none. The row skips where `/proc` is missing.
+const procProcesses = present("/proc/self/stat")
+  ? readdirSync("/proc").filter((entry) => /^\d+$/.test(entry)).length
+  : 0;
+test.skipIf(procProcesses === 0)(
   "a bounded child's kill hands this process's event loop back while it reads the process table",
   async () => {
-    const realImmediate = globalThis.setImmediate;
-    let turns = 0;
+    const realFile = Bun.file;
+    let asked = 0;
     try {
-      Object.assign(globalThis, {
-        setImmediate: (...args: Parameters<typeof setImmediate>) => {
-          turns += 1;
-          return realImmediate(...args);
+      Object.assign(Bun, {
+        file: (...args: unknown[]) => {
+          if (typeof args[0] === "string" && args[0].startsWith("/proc/")) asked += 1;
+          return Reflect.apply(realFile, Bun, args);
         },
       });
-      expect(globalThis.setImmediate, "setImmediate is not the stand-in").not.toBe(realImmediate);
+      expect(Bun.file, "Bun.file is not the stand-in").not.toBe(realFile);
       await runBounded({ argv: ["true"], bound: "short", from: import.meta.url });
     } finally {
-      Object.assign(globalThis, { setImmediate: realImmediate });
+      Object.assign(Bun, { file: realFile });
     }
-    // At least one turn for every two `pidsPerTurn` of the entries this row counted, so a kill
-    // that turned once, or read half the table in one pass, fails too, while the table may have
-    // lost processes between this row's count and the kill's read.
+    // At least one file, its stat, for every two of the processes this row counted, so a kill
+    // that read half the table synchronously fails too, while the table may have lost processes
+    // between this row's count and the kill's read.
     expect(
-      turns,
-      `turns of the kill's read of ${procEntries} entries of /proc`
-    ).toBeGreaterThanOrEqual(Math.floor(procEntries / (2 * pidsPerTurn)));
+      asked,
+      `files the kill read through Bun.file, of ${procProcesses} processes under /proc`
+    ).toBeGreaterThanOrEqual(Math.floor(procProcesses / 2));
   },
   rowLimit("short")
 );
@@ -733,11 +736,82 @@ test("an unknown process stays unknown in this process's cgroup alone, and not w
   expect(ownUnknown(unknown, other, undefined)).toEqual(unknown);
 });
 
+// The kill `runBounded` runs reads the table through `processTableYielding`, whose `entryReads`
+// hands the cgroup of each unknown process to `ownUnknown`. The row above holds `ownUnknown`
+// alone, and the row below holds the whole on a real machine, but skips in CI's runners and in a
+// pod, where every process stands in one cgroup. This row lays out a `/proc` of its own in a
+// scratch directory, a `self` in one cgroup and one process whose environment reads empty and
+// which started at the child's start, and drives the yielding kill over it with `runBounded`'s
+// read, handed that directory. With the process in another cgroup than `self`'s, it is listed as
+// not unknown and the kill reads once; in the same cgroup, which shows the kill read this
+// directory and can wait on it, it is listed as unknown and the kill waits after every read until
+// `maxReads`. No process is signalled: the process carries no token, its parent is no child, and
+// the signal and the child's `kill` only record.
+test("a kill reads a /proc whose process of another cgroup reads empty, and does not wait on it", async () => {
+  const root = mkdtempSync(join(tmpdir(), "bounded-proc-"));
+  try {
+    const own = "0::/user.slice/user-1000.slice/app.slice/run-u1.scope\n";
+    const other = "0::/user.slice/user-1000.slice/app.slice/run-u2.scope\n";
+    mkdirSync(join(root, "self"));
+    writeFileSync(join(root, "self", "cgroup"), own);
+    const entry = join(root, String(readProcess.pid));
+    mkdirSync(entry);
+    writeFileSync(join(entry, "stat"), statText());
+    writeFileSync(join(entry, "environ"), "");
+    const tree = procTreeAt(root);
+    expect(tree.own, "the cgroup of the tree's self").toBe(own);
+    // What the yielding kill's read lists, and what the kill did, with the process in `cgroup`.
+    const readAndKill = async (cgroup: string) => {
+      writeFileSync(join(entry, "cgroup"), cgroup);
+      const table = await processTableYielding(tree);
+      const did: string[] = [];
+      await stopTreeYielding(
+        {
+          child: {
+            ...exitedByCode,
+            kill: () => {
+              did.push("child.kill");
+            },
+            pid: scriptedChild.pid,
+          },
+          start: readProcess.start,
+          token: scriptedChild.token,
+        },
+        {
+          pause: () => {
+            did.push("pause");
+          },
+          procfs: true,
+          read: () => {
+            did.push("read");
+            return processTableYielding(tree);
+          },
+          signal: (pid) => {
+            did.push(`signal ${pid}`);
+          },
+        }
+      );
+      return { did, table };
+    };
+    expect(await readAndKill(other), "the process in another cgroup").toEqual({
+      did: ["read"],
+      table: [{ ...readProcess, tokens: [], unknown: false }],
+    });
+    expect(await readAndKill(own), "the process in this cgroup").toEqual({
+      did: Array.from({ length: maxReads }, () => ["read", "pause"]).flat(),
+      table: [{ ...readProcess, tokens: [], unknown: true }],
+    });
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
 /** Whether this machine runs a user service manager that starts a command in a scope, a cgroup, of
  *  its own (`systemd-run --user --scope`), as a dev box many sessions share does. The row below
  *  needs one to start a process outside this process's cgroup, and skips where there is none, as
- *  in CI's runners and in a pod, where every process of a run stands in one cgroup and the rows of
- *  `ownUnknown` above hold the rule. */
+ *  in CI's runners and in a pod, where every process of a run stands in one cgroup, and the two
+ *  rows above hold the rule: `ownUnknown` alone, and the kill over a `/proc` laid out with a
+ *  process in another cgroup. */
 const userScopes =
   present("/proc/self/cgroup") &&
   Bun.which("systemd-run") !== null &&
@@ -794,6 +868,76 @@ test.skipIf(!userScopes)(
     }
   },
   rowLimit("short", "short")
+);
+
+// A read of one `/proc/<pid>/environ` can take seconds by itself on a machine of many processes,
+// and the kill reads every process's. This row lays out a `/proc` of its own whose one process's
+// `environ` is a named pipe, which a read waits on until a writer opens it and closes it. The
+// writer, a bounded child, waits for a file that this row's timer, due 50 ms after the read
+// begins, writes, and opens the pipe once the file is there, or after 10 s without it. So where
+// the read holds no timer of this process, the timer fires and the read ends after it; a read
+// that held the loop, as a synchronous one does, ends after the writer's 10 s with the timer not
+// yet fired. The table it reads is held too: the process, whose environment read empty, in this
+// tree's cgroup, so unknown.
+test(
+  "a kill's read of the process table holds no timer of this process while a read of /proc waits",
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "bounded-proc-"));
+    try {
+      const own = "0::/user.slice/user-1000.slice/app.slice/run-u1.scope\n";
+      mkdirSync(join(root, "self"));
+      writeFileSync(join(root, "self", "cgroup"), own);
+      const entry = join(root, String(readProcess.pid));
+      mkdirSync(entry);
+      writeFileSync(join(entry, "stat"), statText());
+      writeFileSync(join(entry, "cgroup"), own);
+      const environ = join(entry, "environ");
+      const go = join(root, "go");
+      await runBounded({ argv: ["mkfifo", environ], bound: "short", from: import.meta.url });
+      const writing = runBounded({
+        argv: [
+          "sh",
+          "-c",
+          'i=0; while [ ! -e "$1" ] && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i + 1)); done; : > "$2"',
+          "writer",
+          go,
+          environ,
+        ],
+        bound: "short",
+        from: import.meta.url,
+      });
+      const started = performance.now();
+      let firedAt = Number.POSITIVE_INFINITY;
+      // A real timer, not a fake clock: what the row holds is whether this process's event loop
+      // runs a timer while a read of the table waits, which only the loop itself can answer.
+      const timer = setTimeout(() => {
+        firedAt = performance.now() - started;
+        writeFileSync(go, "");
+      }, 50);
+      // The writer's exit, or what its wait threw.
+      let wrote: unknown;
+      try {
+        const table = await processTableYielding(procTreeAt(root));
+        const endedAt = performance.now() - started;
+        expect(table, "the table").toEqual([{ ...readProcess, tokens: [], unknown: true }]);
+        expect(
+          firedAt,
+          `ms to the timer due at 50 ms, against the read's end at ${Math.round(endedAt)} ms`
+        ).toBeLessThan(endedAt);
+      } finally {
+        clearTimeout(timer);
+        writeFileSync(go, "");
+        wrote = await writing.then(
+          ({ code }) => code,
+          (error: unknown) => error
+        );
+      }
+      expect(wrote, "the writer's exit").toBe(0);
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  },
+  rowLimit("short", "short", "short")
 );
 
 test("the table lists a zombie whose environment reads empty as not unknown", () => {
