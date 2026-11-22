@@ -380,7 +380,7 @@ test("a press while the view is drawn keeps the focus on the control pressed, wh
     const control = render(<button type="button">A control outside the stage</button>).getByRole(
       "button"
     );
-    const row = await writeUpRowAfter(frames, () => {
+    await writeUpRowAfter(frames, () => {
       control.dispatchEvent(new window.PointerEvent("pointerdown", { bubbles: true }));
       control.focus();
     });
@@ -388,7 +388,6 @@ test("a press while the view is drawn keeps the focus on the control pressed, wh
       control,
       `a press while the view was drawn lost the focus to ${focusedRow() ?? document.activeElement?.tagName}`
     ).toHaveFocus();
-    expect(row, "the outline's row of the write-up took the focus").not.toHaveFocus();
   } finally {
     frames.restore();
   }

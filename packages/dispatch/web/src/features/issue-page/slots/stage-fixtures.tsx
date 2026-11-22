@@ -23,7 +23,7 @@ import { type SlotsFilled, StageSlot, type ViewSlots } from "./stage";
  */
 
 /** A navigator that goes nowhere, for a router whose location the case sets itself. */
-export const NO_NAVIGATION: Navigator = {
+const NO_NAVIGATION: Navigator = {
   createHref: (to) => (typeof to === "string" ? to : createPath(to)),
   go: () => {},
   push: () => {},

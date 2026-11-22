@@ -517,8 +517,11 @@ export function DecisionsFilterBody({
   // that control, as Left goes to a row's parent in the outline. The outline's keys read every
   // row at the list's one level (`rows`), where Left says there is no level above, so the key is
   // taken here, before they read it: the key table passes over a press already taken
-  // (`keymap.ts`). It is taken on the keys' own terms: with no modifier, and not on a block that
-  // scrolls its own content, which the browser scrolls by the key (`useTreeKeymap.ts`).
+  // (`keymap.ts`). It is taken on three of the keys' terms: with no modifier, not already taken,
+  // and not on a block that scrolls its own content, which the browser scrolls by the key
+  // (`useTreeKeymap.ts`); such a block carries `data-kept-scroller`, the mark `RowText.tsx`'s
+  // `KEPT_SCROLLER` owns. The key table's other two terms, no composition and no editable
+  // target, do not apply: a foot row holds no field and no composition (R4).
   const footRowLeft = (event: KeyboardEvent<HTMLDivElement>): void => {
     if (
       event.key !== "ArrowLeft" ||
