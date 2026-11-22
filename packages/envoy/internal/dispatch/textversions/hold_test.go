@@ -167,18 +167,18 @@ func TestAStandbyTakesAFreeHoldWithNoNotification(t *testing.T) {
 
 	first.Stop(t)
 	// The holder released its hold as it stopped, or, where its release did not reach the
-	// database, the hold lapses holdOptions.TTL after its last renewal: either way it comes free,
-	// and nothing tells the standby.
-	testwait.Until(t, "the stopped holder's hold to be free", func() (string, bool) {
+	// database, the hold lapses holdOptions.TTL after its last renewal: either way the stopped
+	// holder's hold ends, and nothing tells the standby.
+	testwait.Until(t, "the stopped holder's hold to end", func() (string, bool) {
 		live := liveHolder(t, database)
-		return live, live == ""
+		return live, live != firstHolder
 	})
 	id := commitComment(t, database, broker, textversionstest.Issue).id
 	second.Wake()
 	// Nothing has told the standby that the hold is free, so it has not taken it: only a retry,
 	// below, can.
-	if second.Logged(t, tookHoldMessage) {
-		t.Fatalf("the standby took the hold before its retry, with no wake for the release:\n%s", second.Log())
+	if live := liveHolder(t, database); live != "" || second.Logged(t, tookHoldMessage) {
+		t.Fatalf("the standby took the hold before its retry, with no wake for the release: the hold names %q live:\n%s", live, second.Log())
 	}
 
 	// The test retries as the ticker does, again after a try that found no free hold or failed,
