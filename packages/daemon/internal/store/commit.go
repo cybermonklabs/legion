@@ -40,6 +40,12 @@ var errTransactionOnAnotherPool = errors.New("store: a transaction on another po
 // snapshot and a read-only one PostgreSQL's refusal of its writes.
 var errJoinOfOtherOptions = errors.New("store: a transaction asked for other options than the open transaction it would join")
 
+// errSavepointNotEnded is TransactWith's refusal to commit a transaction in which a joined write's
+// savepoint was neither rolled back nor released (join): the join answered an error while that
+// write's rows may still be in the transaction, so the transaction rolls back, whatever its body
+// returned.
+var errSavepointNotEnded = errors.New("store: a joined write's savepoint was neither rolled back nor released, so its transaction does not commit")
+
 const (
 	// commitReplyBound is how long a commit waits for its reply after its caller's context ends.
 	commitReplyBound = 1 * time.Second
@@ -68,14 +74,17 @@ const CommitSettleBound = commitReplyBound + outcomeReadBound
 type commitHooksKey struct{}
 
 // commitScope is one open transaction of TransactWith: the hooks its body registers, the
-// transaction, its pool and its options, and whether its body still runs. A TransactWith called on
-// a context whose scope's body still runs joins that transaction (join).
+// transaction, its pool and its options, whether its body still runs, and the error of each joined
+// write whose savepoint was neither rolled back nor released (savepointNotEnded), which keeps the
+// transaction from committing. A TransactWith called on a context whose scope's body still runs
+// joins that transaction (join).
 type commitScope struct {
-	hooks   []func()
-	tx      pgx.Tx
-	pool    TxPool
-	options pgx.TxOptions
-	writing atomic.Bool
+	hooks             []func()
+	tx                pgx.Tx
+	pool              TxPool
+	options           pgx.TxOptions
+	writing           atomic.Bool
+	savepointNotEnded error
 }
 
 // scopeOf is ctx's commit scope, or nil for a context no TransactWith scopes or one an outcome
@@ -165,12 +174,17 @@ func ReadOnly[T any](ctx context.Context, pool TxPool, what string, read func(ct
 //     with another isolation level or access mode, runs nothing and is refused
 //     (errTransactionOnAnotherPool, errJoinOfOtherOptions). A joined write runs under a
 //     savepoint: one that fails is rolled back to it, and its hooks are cut, whatever the open
-//     transaction's body then does with its error.
+//     transaction's body then does with its error; one that succeeds releases it. Either
+//     statement that fails fails the whole transaction (below).
 //   - A rollback is deferred as soon as the transaction begins, so a panic in write, or any
 //     return below, gives the connection back to the pool and clears the caller's hold mark. It
 //     runs on the commit's context, below, so a rollback after the caller's cancel still reaches
 //     the server and the pool gets back a connection whose transaction has ended.
 //   - write's error is returned. No hook runs.
+//   - A joined write whose savepoint was neither rolled back nor released (join) is returned as
+//     errSavepointNotEnded, with that write's error and the savepoint statement's, even when write
+//     returned nil, and nothing commits: pgx leaves the transaction open after a failed savepoint
+//     statement, so a commit would keep the rows of a join that answered an error. No hook runs.
 //   - The transaction's id is read. No id means the transaction wrote nothing. A read-only
 //     transaction, in which PostgreSQL refuses every write to a table or a sequence (SQLSTATE
 //     25006), reads none.
@@ -210,6 +224,9 @@ func TransactWith(ctx context.Context, pool TxPool, options pgx.TxOptions, write
 	if err := runWrite(scoped, scope, write); err != nil {
 		return err
 	}
+	if scope.savepointNotEnded != nil {
+		return fmt.Errorf("%w: %w", errSavepointNotEnded, scope.savepointNotEnded)
+	}
 	xid := ""
 	if options.AccessMode != pgx.ReadOnly {
 		var assigned *string
@@ -247,13 +264,18 @@ func runWrite(scoped context.Context, scope *commitScope, write func(ctx context
 }
 
 // join runs write inside the scope's open transaction, on ctx, the scope's own context, under a
-// savepoint of that transaction. A write that fails is rolled back to the savepoint, and the hooks
-// it registered are cut from the scope's list, so an outer body that swallows its error commits
-// neither; its error is returned with the rollback's, if that failed too. The rollback runs on the
-// commit's context (commitContext), as TransactWith's does: on ctx alone, a ctx that has ended
-// sends no rollback, and the outer commit would keep the rows whose hooks are cut. A write that
-// succeeds releases the savepoint and keeps its hooks on the scope. A join on another pool, or
-// with another isolation level or access mode than the open transaction's, runs nothing.
+// savepoint of that transaction, and answers nil only for a write whose rows and hooks commit or
+// roll back with the open transaction's. A write that fails is rolled back to the savepoint, and
+// the hooks it registered are cut from the scope's list, so an outer body that swallows its error
+// commits neither. A write that succeeds releases the savepoint and keeps its hooks on the scope.
+// The rollback and the release run on the commit's context (commitContext), as TransactWith's
+// rollback and commit do: on ctx alone, a ctx that has ended sends neither, and a join whose write
+// succeeded would answer an error for rows and hooks that commit. A rollback or a release that
+// fails all the same is returned with the write's error, and kept on the scope
+// (savepointNotEnded): the write's rows may still be in the transaction, so TransactWith then
+// commits nothing, whatever the outer body returns. So a join that answers an error leaves
+// nothing of its write to commit. A join on another pool, or with another isolation level or
+// access mode than the open transaction's, runs nothing.
 func (s *commitScope) join(ctx context.Context, pool TxPool, options pgx.TxOptions, write func(ctx context.Context, tx pgx.Tx) error) error {
 	if !samePool(s.pool, pool) {
 		return errTransactionOnAnotherPool
@@ -266,13 +288,20 @@ func (s *commitScope) join(ctx context.Context, pool TxPool, options pgx.TxOptio
 		return err
 	}
 	registered := len(s.hooks)
-	if err := write(ctx, savepoint); err != nil {
+	written := write(ctx, savepoint)
+	ending, stop := commitContext(ctx)
+	defer stop()
+	var ended error
+	if written != nil {
 		s.hooks = s.hooks[:registered]
-		rolling, stop := commitContext(ctx)
-		defer stop()
-		return errors.Join(err, savepoint.Rollback(rolling))
+		ended = savepoint.Rollback(ending)
+	} else {
+		ended = savepoint.Commit(ending)
 	}
-	return savepoint.Commit(ctx)
+	if ended != nil {
+		s.savepointNotEnded = errors.Join(s.savepointNotEnded, written, ended)
+	}
+	return errors.Join(written, ended)
 }
 
 // isolation is options' isolation level, the server's default (read committed) when it names none.
@@ -363,10 +392,12 @@ func (e *notCommittedError) Unwrap() error { return e.lost }
 // sets it (TestOnlyTheOutcomeReadWaivesTheCommitGrace).
 type noCommitGrace struct{}
 
-// commitContext is ctx without its cancel, ended commitReplyBound after ctx ends, for the commit
-// and the rollback alone: a ctx that never ends never ends it. stop ends it at once and releases
-// what it holds. An outcome read's ctx (readOutcome) is its own commit context, with a stop
-// that does nothing: its deadline cuts its COMMIT and its rollback as it cuts its query.
+// commitContext is ctx without its cancel, ended commitReplyBound after ctx ends, for the
+// statements that end a transaction or a joined write's savepoint alone: the commit, the rollback,
+// and a savepoint's release and rollback (join). A ctx that never ends never ends it. stop ends it
+// at once and releases what it holds. An outcome read's ctx (readOutcome) is its own commit
+// context, with a stop that does nothing: its deadline cuts its COMMIT and its rollback as it cuts
+// its query.
 func commitContext(ctx context.Context) (committing context.Context, stop func()) {
 	if ctx.Value(noCommitGrace{}) != nil {
 		return ctx, func() {}

@@ -228,7 +228,7 @@ func TestAJoinedWriteThatFailsKeepsNeitherItsWritesNorItsHooks(t *testing.T) {
 // the rollback runs on the commit's context, which outlives the joined context by
 // commitReplyBound, so it reaches the server. An outer body that then returns nil commits neither
 // the joined write's row nor its hook. On the joined context alone, pgconn sends no rollback once
-// that context has ended, while the hook is cut, and the outer commit keeps the row without it.
+// that context has ended, and the whole transaction then fails (errSavepointNotEnded).
 func TestAJoinedWriteWhoseContextEndedBeforeItsRollbackKeepsNeitherItsRowsNorItsHooks(t *testing.T) {
 	rig := newCommitRig(t)
 	ctx := WithTransactionTracking(context.Background())
@@ -265,6 +265,159 @@ func TestAJoinedWriteWhoseContextEndedBeforeItsRollbackKeepsNeitherItsRowsNorIts
 	}
 	if got := hooks.order(); !slices.Equal(got, []string{"A", "C"}) {
 		t.Fatalf("hooks ran %v, want [A C]: the failed joined write's hook is cut", got)
+	}
+}
+
+// A joined write that succeeds once its own context has ended is still released: the release runs
+// on the commit's context, which outlives the joined context by commitReplyBound, so it reaches
+// the server and the join answers nil. The joined write's row and hook then commit with the outer
+// transaction's. On the joined context alone, pgconn sends no release once that context has ended,
+// and the join answers an error for a write whose row and hook commit.
+func TestAJoinedWriteWhoseContextEndedBeforeItsReleaseCommitsWithItsHooks(t *testing.T) {
+	rig := newCommitRig(t)
+	ctx := WithTransactionTracking(context.Background())
+	var hooks joinedHooks
+	err := Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := insertProbe(ctx, tx, 1); err != nil {
+			return err
+		}
+		OnCommit(ctx, hooks.hook("A"))
+		joined, cancel := context.WithCancel(ctx)
+		defer cancel()
+		if err := Transact(joined, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+			if _, err := insertProbe(ctx, tx, 2); err != nil {
+				return err
+			}
+			OnCommit(ctx, hooks.hook("B"))
+			cancel()
+			return nil
+		}); err != nil {
+			t.Errorf("the joined Transact = %v, want nil: its write succeeded and its release reaches the server", err)
+		}
+		if _, err := insertProbe(ctx, tx, 3); err != nil {
+			return err
+		}
+		OnCommit(ctx, hooks.hook("C"))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Transact = %v, want nil", err)
+	}
+	if ids := rig.probeIDs(t); !slices.Equal(ids, []int{1, 2, 3}) {
+		t.Fatalf("committed rows = %v, want [1 2 3]: the joined write whose context ended is released all the same", ids)
+	}
+	if got := hooks.order(); !slices.Equal(got, []string{"A", "B", "C"}) {
+		t.Fatalf("hooks ran %v, want [A B C]: the joined write's hook commits with its row", got)
+	}
+}
+
+// heldSavepoints is a pool whose savepoints each hold one statement, their rollback or, with
+// release set, their release, until that statement's context has ended, then hand it to the
+// driver: a statement whose goroutine was delayed past its grace before pgconn could send it, so
+// pgconn sends none and answers the ended context.
+type heldSavepoints struct {
+	pool    TxPool
+	t       *testing.T
+	release bool
+}
+
+func (p *heldSavepoints) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
+	tx, err := p.pool.BeginTx(ctx, options)
+	if err != nil {
+		return nil, err
+	}
+	return &heldSavepointsTx{Tx: tx, pool: p}, nil
+}
+
+type heldSavepointsTx struct {
+	pgx.Tx
+	pool *heldSavepoints
+}
+
+func (t *heldSavepointsTx) Begin(ctx context.Context) (pgx.Tx, error) {
+	savepoint, err := t.Tx.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &heldSavepoint{Tx: savepoint, pool: t.pool}, nil
+}
+
+type heldSavepoint struct {
+	pgx.Tx
+	pool *heldSavepoints
+}
+
+func (s *heldSavepoint) Rollback(ctx context.Context) error {
+	if !s.pool.release {
+		testwait.Receive(s.pool.t, "the savepoint rollback's context to end", ctx.Done())
+	}
+	return s.Tx.Rollback(ctx)
+}
+
+func (s *heldSavepoint) Commit(ctx context.Context) error {
+	if s.pool.release {
+		testwait.Receive(s.pool.t, "the savepoint release's context to end", ctx.Done())
+	}
+	return s.Tx.Commit(ctx)
+}
+
+// A joined write whose savepoint was neither rolled back nor released answered an error while its
+// row may still be in the transaction, so the transaction does not commit, whatever its outer body
+// does with that error: here the body swallows it and returns nil, and TransactWith rolls back and
+// answers errSavepointNotEnded. Each row holds one savepoint statement until its grace has ended
+// (heldSavepoints), so it is never sent: the rollback of a joined write that fails, and the release
+// of one that succeeds. pgx's savepoint statement that fails leaves the outer transaction open, so
+// a commit there would keep the joined write's row, without its hook after a rollback and with it
+// after a release, for a join that answered an error.
+func TestAJoinedWriteWhoseSavepointWasNeverEndedFailsItsWholeTransaction(t *testing.T) {
+	innerFails := errors.New("the inner body fails once its context has ended")
+	for _, row := range []struct {
+		name    string
+		release bool
+		inner   error
+	}{
+		{name: "rollback", inner: innerFails},
+		{name: "release", release: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newCommitRig(t)
+			pool := &heldSavepoints{pool: rig.pool, t: t, release: row.release}
+			ctx := WithTransactionTracking(context.Background())
+			var hooks joinedHooks
+			err := Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+				if _, err := insertProbe(ctx, tx, 1); err != nil {
+					return err
+				}
+				OnCommit(ctx, hooks.hook("A"))
+				joined, cancel := context.WithCancel(ctx)
+				defer cancel()
+				err := Transact(joined, pool, func(ctx context.Context, tx pgx.Tx) error {
+					if _, err := insertProbe(ctx, tx, 2); err != nil {
+						return err
+					}
+					OnCommit(ctx, hooks.hook("B"))
+					cancel()
+					return row.inner
+				})
+				if !errors.Is(err, context.Canceled) || (row.inner != nil && !errors.Is(err, row.inner)) {
+					t.Errorf("the joined Transact = %v, want its body's error, if any, and its %s's, which the ended grace kept from being sent", err, row.name)
+				}
+				if _, err := insertProbe(ctx, tx, 3); err != nil {
+					return err
+				}
+				OnCommit(ctx, hooks.hook("C"))
+				return nil
+			})
+			if !errors.Is(err, errSavepointNotEnded) {
+				t.Errorf("Transact = %v, want %v although the outer body returned nil", err, errSavepointNotEnded)
+			}
+			if ids := rig.probeIDs(t); len(ids) != 0 {
+				t.Errorf("committed rows = %v, want none: the joined write's savepoint never ended, so its transaction must not commit", ids)
+			}
+			if got := hooks.order(); len(got) != 0 {
+				t.Errorf("hooks ran %v, want none", got)
+			}
+		})
 	}
 }
 
