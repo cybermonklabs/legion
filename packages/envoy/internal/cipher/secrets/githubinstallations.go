@@ -74,10 +74,10 @@ var GitHubInstallationsShapeVersions = []int{1}
 // RepositoryScopeAllExceptProtected is the one value a stored entry's repository_scope takes: the
 // seed minter's marker of a token it cut to every repository of the installation but the protected
 // ones, stored beside repository_selection "selected" and no repositories list. Only the seed
-// minter writes it, into a secret only the seed's own route may write, so Cipher trusts it for the
-// list the token was cut to and serves the token to a profile that names no repositories
-// (repositoriesMismatch). Cipher does not prove the cut: the deployment's own checks of the admin
-// token do.
+// minter writes it, into a secret its deployment lets only its minter and its appliers write, so
+// Cipher trusts it for the list the token was cut to and serves the token to a profile that names
+// no repositories (repositoriesMismatch). Cipher does not prove the cut: the deployment's own
+// checks of the admin token do.
 const RepositoryScopeAllExceptProtected = "all-except-protected"
 
 // StoredInstallation is one installation token a minter stored: the account's login as the minter
@@ -429,8 +429,8 @@ type GitHubInstallations struct {
 //
 // What it holds a token to is what the minter declared beside it: the permissions, the
 // repositories and the marker. Cipher cannot tell that the token under an account is that
-// account's, or that it holds what its entry says; the minter, which alone may write the secret,
-// and the deployment's checks of its output stand behind that.
+// account's, or that it holds what its entry says; the minter and the deployment's appliers, which
+// alone may write the secret, and the deployment's checks of its output stand behind that.
 func (m GitHubInstallations) Mint(_ context.Context, req MintRequest) (Minted, error) {
 	scope := req.GitHub
 	if scope == nil {

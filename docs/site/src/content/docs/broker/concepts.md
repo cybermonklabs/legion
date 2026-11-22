@@ -1059,8 +1059,9 @@ The broker evaluates every name
   a token cannot be cut once it is minted, so the broker holds each stored token to the profile
   before it hands it over. What it holds the token to is what the minter declared beside it: the
   permissions, the repository lists and the marker. The broker cannot tell that the token under an
-  account is that account's, or that it holds what its entry says; the minter, which alone may
-  write the secret, and the deployment's checks of its output stand behind that. A token that
+  account is that account's, or that it holds what its entry says; the minter and the deployment's
+  appliers, which alone may write the secret, and the deployment's checks of its output stand
+  behind that. A token that
   holds a permission the profile does not name, or a level
   above the profile's, is refused `422 PROFILE_MINT_REFUSED`. A token that holds less than the
   profile is served, and the values answer names each permission it lacks (`github_left_out`), as
@@ -1074,9 +1075,10 @@ The broker evaluates every name
   every repository is refused too. The deployment's
   seed minter cuts one token to every repository of the installation but the protected ones and
   marks it `"repository_scope": "all-except-protected"`, beside `"repository_selection":
-  "selected"` and no list. Only that minter writes the marker, into a secret only its own route
-  may write, so the broker trusts it for the list the token was cut to and serves the token to a
-  profile that names no repositories; the proof of the cut is the deployment's own check. Any other
+  "selected"` and no list. Only that minter writes the marker, into a secret its deployment lets
+  only its minter and its appliers write, so the broker trusts it for the list the token was cut to
+  and serves the token to a profile that names no repositories; the proof of the cut is the
+  deployment's own check. Any other
   value of `repository_scope` refuses the value, and a `selected` token with no list and no marker
   is refused. A target of such a
   profile names its account alone: a target that names a repository is refused
