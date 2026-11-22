@@ -1024,12 +1024,14 @@ printed on lines that name it first, `(a1) the pins`, `(a2) the running clients`
   of a kind `lib/legacy-subjects-gate-callout-publishers.json` lists is one too, by the name the
   service gives its user (`<kind>/<machine id>`); natscallout's
   `TestTheGateCountsEveryCalloutKindWhoseGrantPublishesANotificationSubject` holds that list to the
-  grants the service answers (`dispatch` and `listener` today). Nothing the gate reads links a user
-  to the stack that runs it, so the operator maps each with `--publisher <identity>=<pin key>`,
-  repeated for a user more than one process runs, to a key of `daemon-release-gate.sh --listeners`,
-  run beside the gate: `envoy` (the VM hub's listener), `envoy-cluster`, `dispatch` (Dispatch's
-  listener) or `dispatch-server`. It is true when every such user is mapped and every key it maps
-  to printed `PASS`; a key that printed `GATE SHUT` makes it false; a user no `--publisher` maps, a
+  grants the service answers (`dispatch`, `edge-listener` and `listener` today). Nothing the gate
+  reads links a user to the stack that runs it, so the operator maps each with
+  `--publisher <identity>=<pin key>`, repeated for a user more than one process runs, to a key of
+  `daemon-release-gate.sh --listeners`, run beside the gate: `envoy` (the VM hub's listener),
+  `envoy-cluster`, `dispatch` (Dispatch's listener) or `dispatch-server`. An edge listener's entry
+  is mapped as any other, to the key of the pin that runs it; none of these keys is named for one.
+  It is true when every such user is mapped and every key it maps to printed `PASS`; a key that
+  printed `GATE SHUT` makes it false; a user no `--publisher` maps, a
   key with no `PASS`, a `--hub-server` (whose users cannot be read), an `auth.conf` of another
   shape, a callout with no `--broker` or whose Deployment cannot be read or sets the variable
   through `valueFrom`, and no such user at all make it unknown. The record keeps each

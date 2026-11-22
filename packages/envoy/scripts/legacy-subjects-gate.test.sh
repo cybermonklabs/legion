@@ -1740,15 +1740,16 @@ done
 
 # Behind an auth callout, each entry of the auth service whose kind's grant publishes a notification
 # subject (lib/legacy-subjects-gate-callout-publishers.json) is a publisher too, by the name the
-# service gives its user.
-new_case "(a3) behind an auth callout, the auth service's dispatch and listener entries are publishers, and its daemon's, measurement job's and edge listener's are not"
+# service gives its user: the edge listener's among them, since natsgrant.Edge publishes its
+# projects' agent and role subjects.
+new_case "(a3) behind an auth callout, the auth service's dispatch, edge listener and listener entries are publishers, and its daemon's and measurement job's are not"
 hub_configmap "$FAKE" --callout "${clean_users[@]}"
-facts+=(--publisher listener/host-a=envoy-cluster --publisher dispatch/example-dispatch=dispatch-server)
+facts+=(--publisher listener/host-a=envoy-cluster --publisher dispatch/example-dispatch=dispatch-server --publisher edge-listener/edge-a=envoy-cluster)
 first_reading_secs 200 reading
 reading --since "$FAKE/earlier.json"
 expect_status 0
 expect_last "GATE OPEN"
-expect_line "PASS: (a3) the publishers: each of the 4 user(s) of the hub that may publish a notification subject runs a listener pin the census passed at or after $new_form: dispatch (dispatch, dispatch-server); dispatch/example-dispatch (dispatch-server); listener (envoy-cluster); listener/host-a (envoy-cluster)"
+expect_line "PASS: (a3) the publishers: each of the 5 user(s) of the hub that may publish a notification subject runs a listener pin the census passed at or after $new_form: dispatch (dispatch, dispatch-server); dispatch/example-dispatch (dispatch-server); edge-listener/edge-a (envoy-cluster); listener (envoy-cluster); listener/host-a (envoy-cluster)"
 grep -qxF -- "--context example-cluster --request-timeout=60s -n dispatch get deployment envoy-broker -o json" "$FAKE/calls" ||
   fail "the auth service's Deployment was not read"
 done_case
@@ -1761,7 +1762,7 @@ reading --since "$FAKE/earlier.json"
 expect_status 3
 expect_line "UNKNOWN: (a3) the publishers: listener/host-a may publish a notification subject, and no --publisher maps it to a listener pin"
 expect_no_line "daemon/system:serviceaccount:legion:daemon may publish"
-expect_no_line "edge-listener/edge-a may publish"
+expect_line "UNKNOWN: (a3) the publishers: edge-listener/edge-a may publish a notification subject, and no --publisher maps it to a listener pin"
 done_case
 
 new_case "(a3) behind an auth callout with no --broker named is UNKNOWN"
