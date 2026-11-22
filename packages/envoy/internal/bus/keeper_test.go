@@ -156,6 +156,29 @@ func (js *interleavedJetStream) UpdateStream(cfg *nats.StreamConfig, opts ...nat
 	return info, err
 }
 
+// holdKeeperUpdates holds the first stream update the keeper of each of keepers sends until the
+// func it returns runs, which a test runs once its own update of what those keepers restore has
+// been read back (testnats.UpdateStream): a keeper that put the update back before a read of it
+// came back would leave no read that ever shows it, and the read-back would fail the test at its
+// deadline. A keeper reads the update before it writes over it, so it waits about as long as that
+// read, far inside its step's hang guard (startHangGuard). A pass takes its client's JetStream
+// context once, as it starts (keepPass), so this waits for one whole pass after the swap: every
+// pass that reads the update holds the gated context. The hold ends on every way out of the test,
+// before a client's close waits for its keeper.
+func holdKeeperUpdates(t *testing.T, keepers ...*Client) func() {
+	t.Helper()
+	gate := make(chan struct{})
+	open := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(open)
+	for _, keeper := range keepers {
+		keeper.mu.Lock()
+		keeper.js = &interleavedJetStream{JetStreamContext: keeper.js, beforeUpdate: func() { <-gate }}
+		keeper.mu.Unlock()
+	}
+	keeperPasses(t, keepers, 1)
+	return open
+}
+
 // awaitRestoredLog waits until the keeper's restore lines name every one of wants. The keeper logs
 // a restore after the server applied it, so a test that reads the stream as kept can get there
 // before the line is written.
@@ -250,9 +273,7 @@ func TestEachReleasesKeeperAddsBackItsOwnSubjectAConcurrentWriteTookAway(t *test
 	}
 	lowered := deployedStream(t, js).Config
 	lowered.MaxBytes = -1
-	if _, err := js.UpdateStream(&lowered); err != nil {
-		t.Fatalf("remove the byte limit: %v", err)
-	}
+	testnats.UpdateStream(t, js, lowered)
 
 	keeper := &interleavedJetStream{JetStreamContext: js, beforeUpdate: func() {
 		if _, err := ensureStreamWithConfig(t.Context(), js, &newer, capsAnUnsetStream, atStart); err != nil {
@@ -404,9 +425,9 @@ func TestTheKeeperRestoresWhatAnOperatorTookAwayAndKeepsAForeignSubject(t *testi
 	lowered.Subjects = append(slices.DeleteFunc(slices.Clone(info.Config.Subjects), func(subject string) bool { return subject == removed }), "operations.foreign.>")
 	lowered.MaxAge = info.Config.MaxAge + time.Hour
 	lowered.Discard = nats.DiscardOld
-	if _, err := js.UpdateStream(&lowered); err != nil {
-		t.Fatalf("operator update: %v", err)
-	}
+	open := holdKeeperUpdates(t, keeper)
+	testnats.UpdateStream(t, js, lowered)
+	open()
 
 	restored := awaitKept(t, js, Stream, "three copies, the byte limit and an id", keptAtSettings(""))
 	if want := append(slices.Clone(lowered.Subjects), removed); !slices.Equal(restored.Config.Subjects, want) {
@@ -451,9 +472,7 @@ func TestTheKeeperKeepsAnOperatorsRaiseOfTheByteLimitAndRaisesALowerOne(t *testi
 
 	raise := info.Config
 	raise.MaxBytes = 4 * keeperByteLimit
-	if _, err := js.UpdateStream(&raise); err != nil {
-		t.Fatalf("operator raise: %v", err)
-	}
+	testnats.UpdateStream(t, js, raise)
 	raised := testnats.AwaitSettledStream(t, js, Stream).Config
 	if raised.MaxBytes != raise.MaxBytes {
 		t.Fatalf("stream byte limit = %d after the operator's raise, want %d", raised.MaxBytes, raise.MaxBytes)
@@ -477,9 +496,9 @@ func TestTheKeeperKeepsAnOperatorsRaiseOfTheByteLimitAndRaisesALowerOne(t *testi
 
 	lower := raised
 	lower.MaxBytes = keeperByteLimit / 2
-	if _, err := js.UpdateStream(&lower); err != nil {
-		t.Fatalf("operator lowering: %v", err)
-	}
+	open := holdKeeperUpdates(t, first, second)
+	testnats.UpdateStream(t, js, lower)
+	open()
 	awaitKept(t, js, Stream, "the byte limit", func(info *nats.StreamInfo) bool { return info.Config.MaxBytes == keeperByteLimit })
 	awaitRestoredLog(t, logs, fmt.Sprintf("max_bytes %d -> %d", lower.MaxBytes, keeperByteLimit))
 }
@@ -507,9 +526,14 @@ func TestTheKeeperRaisesTheBucketsItsProgramNamesBackToTheirCopies(t *testing.T)
 	}
 
 	client := startOnCluster(t, cluster, WithReplicas(3), WithKeptBuckets(listed, missing), WithKeepInterval(testKeepInterval))
+	// Each lowering is read back (testnats.UpdateStream): a replica change on a loaded cluster was
+	// answered after jetStreamWait, or never, and failed the row as "context deadline exceeded".
+	// The buckets are opened on the client's own context, which holdKeeperUpdates does not hold.
+	opened := client.JS()
+	open := holdKeeperUpdates(t, client)
 	before := map[string]nats.StreamConfig{}
 	for _, bucket := range []string{listed, unlisted} {
-		if _, err := EnsureKeyValue(t.Context(), client.Conn, client.JS(), &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3, History: 5, TTL: time.Hour}); err != nil {
+		if _, err := EnsureKeyValue(t.Context(), client.Conn, opened, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3, History: 5, TTL: time.Hour}); err != nil {
 			t.Fatalf("open %s at three copies: %v", bucket, err)
 		}
 		stream := "KV_" + bucket
@@ -517,9 +541,8 @@ func TestTheKeeperRaisesTheBucketsItsProgramNamesBackToTheirCopies(t *testing.T)
 		before[bucket] = info.Config
 		lowered := info.Config
 		lowered.Replicas = 1
-		if _, err := js.UpdateStream(&lowered); err != nil {
-			t.Fatalf("lower %s to one copy: %v", stream, err)
-		}
+		testnats.UpdateStream(t, js, lowered)
+		open()
 	}
 
 	raised := awaitKept(t, js, "KV_"+listed, "three copies", func(info *nats.StreamInfo) bool { return info.Config.Replicas == 3 })
@@ -600,9 +623,7 @@ func TestAKeeperWithTheDefaultSettingsSendsNoUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the stream: %v", err)
 	}
-	if _, err := js.UpdateStream(&info.Config); err != nil {
-		t.Fatalf("update the stream: %v", err)
-	}
+	testnats.UpdateStream(t, js, info.Config)
 	testwait.Until(t, "the watch to see the update sent to the stream", func() (int, bool) {
 		n := sent()
 		return n, n > 0
@@ -649,9 +670,7 @@ func TestStoppingTheClientStopsItsKeeper(t *testing.T) {
 			keeperPasses(t, []*Client{client}, 1)
 			lowered := info.Config
 			lowered.Replicas = 1
-			if _, err := js.UpdateStream(&lowered); err != nil {
-				t.Fatalf("lower the stream to one copy: %v", err)
-			}
+			testnats.UpdateStream(t, js, lowered)
 			testwait.Receive(t, "the keeper's update of the lowered stream", entered)
 
 			stopped := make(chan struct{})
