@@ -84,13 +84,21 @@ func newLiveProof(t *testing.T, script string) liveProof {
 	return newLiveProofOn(t, natsURL)
 }
 
-// newLiveProofOn readies workflowConfig over natsURL for a driver to seed and boot: Dispatch and
-// Envoy's listener answered by the run's own stand-ins, the stream the daemon's intake consumes,
-// and the store opened and migrated. A driver whose proof needs more of the configuration sets it
-// on cfg before it boots: nothing here reads more of it than the project and the store.
+// newLiveProofOn readies workflowConfig over natsURL for a driver to seed and boot
+// (newLiveProofOf), its store in the run's database.
 func newLiveProofOn(t *testing.T, natsURL string) liveProof {
 	t.Helper()
-	cfg := workflowConfig(t, natsURL)
+	return newLiveProofOf(t, workflowConfig(t, natsURL))
+}
+
+// newLiveProofOf readies cfg, a workflowConfig, for a driver to seed and boot: Dispatch and Envoy's
+// listener answered by the run's own stand-ins, the stream the daemon's intake consumes on cfg's
+// broker, and the store opened and migrated in cfg's database. A driver whose daemon takes the
+// events of a scratch Dispatch gives cfg a database of its own first (newSpecGateRig), for the
+// reason blockersDatabase gives. A driver whose proof needs more of the configuration sets it on
+// cfg before it boots: nothing here reads more of it than the project, the broker and the store.
+func newLiveProofOf(t *testing.T, cfg config.Config) liveProof {
+	t.Helper()
 	p := liveProof{t: t, cfg: cfg, board: newLiveDispatch(t, cfg.Project), notices: newNoticeListener(), records: record.NewStore()}
 	p.cfg.DispatchURL = p.board.url
 	envoyServer := httptest.NewServer(p.notices)
@@ -101,7 +109,7 @@ func newLiveProofOn(t *testing.T, natsURL string) liveProof {
 	if p.project, err = claim.ProjectToken(cfg.Project); err != nil {
 		t.Fatal(err)
 	}
-	p.js = workflowJetStream(t, natsURL)
+	p.js = workflowJetStream(t, cfg.NatsURLs[0])
 	testnats.CreateStream(t, p.js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
 	ctx := context.Background()
 	if p.st, err = store.Open(ctx, p.cfg.PostgresDSN); err != nil {

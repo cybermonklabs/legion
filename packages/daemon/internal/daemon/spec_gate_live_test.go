@@ -147,14 +147,19 @@ type specGateRig struct {
 	issues map[string]specGateIssue
 }
 
-// newSpecGateRig starts the NATS server, the daemon's store and the scratch Dispatch on that
-// server, writes the project, its spec source and its approved spec, creates each fixture, seeds
-// each Legion root at admitted with no design gate registered (approved where the fixture says
-// so), boots the daemon and meets each root's architect.
+// newSpecGateRig starts the NATS server, the daemon's store in a database of its own and the
+// scratch Dispatch on that server, writes the project, its spec source and its approved spec,
+// creates each fixture, seeds each Legion root at admitted with no design gate registered
+// (approved where the fixture says so), boots the daemon and meets each root's architect. The
+// database is the daemon's own for the reason blockersDatabase gives: this Dispatch numbers its
+// events from one, and in the run's database the intake would drop each one an earlier test of the
+// run applied under the same id.
 func newSpecGateRig(t *testing.T, fixtures ...specGateFixture) *specGateRig {
 	t.Helper()
 	natsURL := testnats.URL(t)
-	proof := newLiveProofOn(t, natsURL)
+	cfg := workflowConfig(t, natsURL)
+	cfg.PostgresDSN = blockersDatabase(t)
+	proof := newLiveProofOf(t, cfg)
 	dispatch := startScratchDispatchOn(t, scratchDispatchOptions{natsURL: natsURL})
 	// A Dispatch project key is at most ten characters, and the daemon's project is its Dispatch
 	// project, so the run's project is a short one of its own.
@@ -746,10 +751,17 @@ func (r *specGateRig) moveHead(key, head string) {
 // its role topic in order, a closed one holding it and dequeuing what it queued, an opened one
 // releasing it; and before each enqueue it reads Dispatch's ending condition for the head and
 // enqueues only on ready. actions is each enqueue and dequeue it made.
+//
+// It reads each message's text, the listener's message field: the payload field carries the same
+// text as a JSON string (notify.HTTPPublisher). And it reads only what was sent once it runs, from
+// the topic's count when the test makes it, after the merger took its task: Envoy's listener
+// refuses a role message to a role nobody holds, and the noticeListener takes every publish, so a
+// message the daemon sent before the merger ran is one no merger was given.
 type specGateMerger struct {
 	r       *specGateRig
 	key     string
 	topic   string
+	from    int
 	read    int
 	held    bool
 	queued  string
@@ -757,15 +769,18 @@ type specGateMerger struct {
 }
 
 func (r *specGateRig) merger(key string) *specGateMerger {
-	return &specGateMerger{r: r, key: key, topic: notify.RoleTopicPrefix + string(r.tokenOf(key, claim.RoleMerger))}
+	topic := notify.RoleTopicPrefix + string(r.tokenOf(key, claim.RoleMerger))
+	from := len(r.notices.acceptedOn(topic))
+	return &specGateMerger{r: r, key: key, topic: topic, from: from, read: from}
 }
 
-// messages is every gate message of kind ("closed" or "opened") the daemon has sent the merger.
+// messages is every gate message of kind ("closed" or "opened") the daemon has sent the merger
+// since it runs.
 func (m *specGateMerger) messages(kind string) []string {
 	var got []string
-	for _, published := range m.r.notices.acceptedOn(m.topic) {
-		if strings.HasPrefix(published.Payload, "The design gate of "+m.key+" "+kind+":") {
-			got = append(got, published.Payload)
+	for _, published := range m.r.notices.acceptedOn(m.topic)[m.from:] {
+		if strings.HasPrefix(published.Message, "The design gate of "+m.key+" "+kind+":") {
+			got = append(got, published.Message)
 		}
 	}
 	return got
@@ -786,7 +801,7 @@ func (m *specGateMerger) waitMessages(kind string, count int, what string) {
 func (m *specGateMerger) follow() {
 	published := m.r.notices.acceptedOn(m.topic)
 	for ; m.read < len(published); m.read++ {
-		switch body := published[m.read].Payload; {
+		switch body := published[m.read].Message; {
 		case strings.HasPrefix(body, "The design gate of "+m.key+" closed:"):
 			m.held = true
 			if m.queued != "" {
