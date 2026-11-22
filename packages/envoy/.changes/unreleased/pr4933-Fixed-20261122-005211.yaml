@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+    Dispatch's CI reconcile records every check run GitHub answers for a head, queued and running ones too, where it recorded only finished runs. After the listener missed a head's webhooks, the reconcile wrote the runs that had finished and left out the ones still queued, and the listener announced `checks settled` for a head whose CI GitHub was still running. A queued or running run never replaces the same run finished, nor a newer run of its name. So a pass re-arms a settled head only for a re-run or a new job that GitHub has not finished, and the head settles again, superseding the earlier settlement, once that run ends. Check suites are still recorded only once they complete.
+
+    The reconcile writes all check runs of one head in one compare-and-swap (`cistore.Writer.RecordRuns`, which replaces `cistore.Writer.Record`). Before, it wrote each run alone, and a failed write could leave a passed run in the record without the failed run beside it, which the listener announced as a green head. A failed write now lands none of the head's runs, and the next pass reads the head in full again. A write that would take the record past its bound is refused whole: the record is written as it was, marked overflowed, so the head never settles, and nothing of the batch is written. The WARN line of a failed write is now `ci reconcile did not record the check runs of a head`, with `runs`, in place of one `ci reconcile did not record a check run` line per run.
+time: 2026-11-22T00:52:11.653997338Z
+custom:
+    Issue: pr4933
