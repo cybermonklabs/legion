@@ -799,16 +799,16 @@ pass
 # same session. The instruction is
 # what makes the turn settle that way: it arrives as a delivery, which puts the run of reminders back
 # at zero, so the reminder this settle earns is the hook's own continuation rather than a later
-# timer's; it forbids the `legion` tool, so the phase is still open when the turn ends; and it
-# forbids a WAITING line, which would buy a quiet wait in place of the block. The run moves no
-# LEGION_STALL_* number: every wait of this step is on that first reminder, which the machine hands
-# back to the hook as the turn settles. The reminded turn's own settle earns the stall's second
-# reminder, which the server arms on the default five-minute timer instead; the next step's
-# instruction arrives well inside that, and were it not to, that reminder is the behaviour under
-# test and the worker answers it as it answered this one.
+# timer's; and it forbids the `legion` tool, so the phase is still open when the turn ends and no
+# wait declared with the tool's `declare_wait` holds the reminder back in place of the block. The
+# run moves no LEGION_STALL_* number: every wait of this step is on that first reminder, which the
+# machine hands back to the hook as the turn settles. The reminded turn's own settle earns the
+# stall's second reminder, which the server arms on the default five-minute timer instead; the
+# next step's instruction arrives well inside that, and were it not to, that reminder is the
+# behaviour under test and the worker answers it as it answered this one.
 begin stop-hook-reminds-the-open-phase
 stall_offset=$(stat -c %s "$transcript")
-send_agent "$issue" implementer "Claude backend proof stall operation: reply with one line of plain prose saying you are standing by for your implementation instruction, and end your turn there. Change nothing, do not call the legion tool in this turn, call no other tool either, and do not begin any line with WAITING. Legion will then remind you that your phase is not complete: answer that reminder with one more line of plain prose saying the proof will instruct you next, under these same rules — no legion tool, no other tool, no WAITING line."
+send_agent "$issue" implementer "Claude backend proof stall operation: reply with one line of plain prose saying you are standing by for your implementation instruction, and end your turn there. Change nothing, do not call the legion tool in this turn, and call no other tool either. Legion will then remind you that your phase is not complete: answer that reminder with one more line of plain prose saying the proof will instruct you next, under these same rules — no legion tool and no other tool."
 timeout_hook=report_stall_entries
 until_true 600 "the implementer's turn to end with its phase open and the reminder to reach it as Stop hook feedback" \
   reminded_or_completed "$stall_offset"
@@ -901,7 +901,7 @@ cc=$(claude_pid "$(claim_pane_pid "$issue" implementer)") || fail "the relaunche
 argv=$(claude_argv "$cc")
 argv_has_pair "$argv" --resume "$session" || fail "the relaunched claude was not started with --resume $session: $(tr '\n' ' ' <<<"$argv" | cut -c1-300)"
 [ "$(head -c "$size" "$transcript" | sha256sum)" = "$prefix" ] || fail "the transcript's first $size bytes changed across the relaunch"
-send_agent "$issue" implementer "Claude backend proof after a relaunch: reply with one line starting WAITING that quotes the proof marker your implementation instruction in this session carried. Change nothing and call no tool."
+send_agent "$issue" implementer "Claude backend proof after a relaunch: reply with one line that quotes the proof marker your implementation instruction in this session carried. Change nothing and call no tool."
 until_true 600 "the resumed implementer to quote its first instruction's marker" resumed_reply_names "$size" "$marker"
 note "killed pane $pane (generation $generation): generation $(jq -r .generation <<<"$claim") runs claude --resume $session; the transcript kept its $turns earlier turns ($size bytes unchanged) and the resumed session quoted $marker"
 pass

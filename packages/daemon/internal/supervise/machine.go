@@ -31,6 +31,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/backoff"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
@@ -482,6 +483,18 @@ type Claim struct {
 	// UpdateReasons is what the round was opened for, as the daemon found the drift: the task's
 	// text and the operator's reading of why this pod is being replaced.
 	UpdateReasons string
+	// UpdateRepository is the repository the round's pod was built from, as that pod named it at
+	// the round's open (runtime.Runtime.PodRepository), whatever drift opened the round, and the
+	// zero Repository on a round whose pod named none, as a runtime with no such pod answers,
+	// and while no round is open. On a round that a correction of the issue's repository opened,
+	// the reasons name it too, but as text for a reader. The daemon reads this field instead
+	// where it acts on the repository, on every round, because a correction can land while any
+	// round runs: where the issue's record has left this repository, a message on an issue whose
+	// pod went before its round was over, or whose round's replacement may have taken work, names
+	// this repository's issue branch, and its workspace where the pod's disk is a kept volume
+	// that is still there (internal/daemon's roundMove). It is fixed at the round's open with the
+	// reasons, and the round's end clears it (clearUpdate).
+	UpdateRepository ghrepo.Repository
 	// UpdateOpenedAt is the round's own clock — when the round was opened on this claim — and
 	// UpdateTaskedAt is when the round's ask reached a session of this claim's role
 	// (record.UpdateAsk, Machine.PublishUpdateAsk), nil until one has: the mark that makes the
@@ -987,6 +1000,37 @@ type Deps struct {
 	// is never put to it, which the machine decides rather than this answer. generation is 0 for a
 	// task of no run. nil holds every delivery.
 	PhaseHolds func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
+	// WaitHolds names the wait c's phase worker declared when it stands now, "" when none does,
+	// and says whether it holds d back (dispatch://INFRA-2040 R3): d is a task the claim had
+	// already taken when it declared — one a death in its turn took back (Delivery.Interrupted,
+	// interrupted), or one of a phase entry no higher than the entry it had taken — or the
+	// daemon's own delivery of a relaunch's record (Delivery.Relaunch, queueRelaunch), which
+	// hands no work and ends no wait. Any other task is new work, which the wait does not hold:
+	// the answer only decides and writes nothing, and the send ends the wait just before d leaves
+	// (EndWait). It is asked of every delivery sendPending is about to send a phase worker, once
+	// the phase check has kept it, and never of an architect's or the controller's, which declare
+	// no wait. It is asked holding the machine's lock, so it takes no lock of the daemon's. nil
+	// holds no delivery.
+	WaitHolds func(ctx context.Context, c Claim, d Delivery) (wait string, holds bool, err error)
+	// EndWait ends wait, the standing wait of c's phase worker that WaitHolds named and that does
+	// not hold d, as d's send ends it (dispatch://INFRA-2040 R3's third end, D4 of its plan): in a
+	// write of its own, just before d leaves, once every other hold of the send has let d
+	// through, so the end names a send that happens. A wait some fact ended or replaced meanwhile
+	// keeps that end. It is asked holding the machine's lock, so it takes no lock of the daemon's.
+	// The daemon supplies it with WaitHolds.
+	EndWait func(ctx context.Context, c Claim, d Delivery, wait string) error
+	// GateNote is the design gate's state that d, a delivery of c's merger, carries at its send
+	// (dispatch://INFRA-2040 R7): the note the workflow builds from the gate of the merger's tree
+	// as it stands at that moment (workflow.MergerGateNote), which the prompt opens with
+	// (Delivery.message), and nothing for a merger whose tree has no registered gated step. For the
+	// design gate's own task (Delivery.GateMessage, R8) it is the gate's whole message, built the
+	// same way (workflow.MergerGateMessage): the closing message while the gate is closed, and the
+	// opening message once it stands open. It is asked before every send of a merger's delivery,
+	// once every other hold has let it through, and of no other role's; the note is never stored
+	// and never rotates the delivery's id, so a task queued before the gate moved and sent after it
+	// says what the gate is at the send. It is asked holding the machine's lock, so it takes no
+	// lock of the daemon's. nil carries no note.
+	GateNote func(ctx context.Context, c Claim, d Delivery) (GateNote, error)
 	// RootHears says whether the root of c's tree has an architect to hear d now: it runs, it does
 	// not linger and it does not wait in `todo` for an admission slot. A root architect's task of
 	// a run names no phase, so no phase ever drops it, and it waits on the claim until that claim
@@ -1391,25 +1435,26 @@ type Machine struct {
 	// that release spawned for the claim, registering as a session of its own on that release's
 	// older plugin contract: this release starts no fresh agent for a claim that still records its
 	// session, so the refusal stands, and the end of that process — its death, or its registration
-	// deadline — is charged nothing (endUncharged), so the launch failures the earlier release's
-	// loop charged do not fail the claim at the deploy, and its next launch resumes the session by
-	// its id or forgets it once. The next launch clears it (launchNow). It is memory only: it must
-	// hold across the one refusal and the end after it, in one daemon run, and a restart in that
-	// window costs the claim the one launch failure that end is then charged.
+	// deadline — names runtime.OutcomeEarlierReleaseProcessEnded (endOutcome), which the policy
+	// charges nothing, so the launch failures the earlier release's loop charged do not fail the
+	// claim at the deploy, and its next launch resumes the session by its id or forgets it once.
+	// The next launch clears it (launchNow). It is memory only: it must hold across the one
+	// refusal and the end after it, in one daemon run, and a restart in that window costs the
+	// claim the one launch failure that end is then charged.
 	refusedEarlierRelease uint64
 	// outstanding is every prompt of the pending task that Oh My Pi acknowledged and has not yet
 	// reported the end of (shimwire.PromptResult), by delivery id. The pinned Oh My Pi answers each
 	// prompt with exactly one prompt_result, owned by the first run after the prompt's admission
-	// (rpc-prompt-results.ts), and refuses a prompt that arrives while another is admitted ("Agent
-	// is already processing") rather than queue it; the Claude Code bridge takes one prompt at a
-	// time too (internal/claudebridge's Busy and promptRun). So the session's next turn after an
-	// acknowledgement is that prompt's, however long its pre-turn work runs past the wait for it
-	// (noTurn): a turn that starts while an id is held here is the task's (turnStarted), and a
-	// result naming one is the task's whichever id the task has moved on to since (fence,
-	// promptResulted). While one is held, a turn that ends is not known to be the task's — with
-	// background work on, a role's own background result wakes it and starts turns the daemon
-	// never prompted — so the delivery's life ends at its result rather than at any agent_end
-	// (turnEnded, resultPending).
+	// (rpc-prompt-results.ts), and refuses a prompt that arrives while another is admitted, with
+	// the busy answer whose code the stream mints OutcomeAgentBusy for, rather than queue it; the
+	// Claude Code bridge takes one prompt at a time too (internal/claudebridge's busyWords and
+	// promptRun). So the session's next turn after an acknowledgement is that prompt's, however
+	// long its pre-turn work runs past the wait for it (noTurn): a turn that starts while an id is
+	// held here is the task's (turnStarted), and a result naming one is the task's whichever id the
+	// task has moved on to since (fence, promptResulted). While one is held, a turn that ends is
+	// not known to be the task's — with background work on, a role's own background result wakes
+	// it and starts turns the daemon never prompted — so the delivery's life ends at its result
+	// rather than at any agent_end (turnEnded, resultPending).
 	//
 	// acked and ackedInTurn add an id. A result or a refusal naming one removes it, and the
 	// result of a prompt that ran a turn ends the wait for them all (promptResulted); the wait for
@@ -1423,6 +1468,15 @@ type Machine struct {
 	// prompt outstanding and asks the agent where it is instead (askFirst), so that window keeps
 	// the behaviour it had before the set: a turn that starts is taken for the task by askFirst.
 	outstanding []string
+	// answeredBusy is the id of the pending delivery whose acknowledged prompt the agent said,
+	// while the wait for its turn was armed, it could not take because it is in a turn of its
+	// own: a refusal the one rule of the refusal paths read as OutcomeAgentBusy
+	// (agentRefusalOutcome), which left the wait running (refusedElsewhere — the shim's replay of
+	// what Oh My Pi answered an earlier send of this same task). The wait's running out reads it
+	// (noTurn): the agent said it was in a turn, so the wait ended on that turn rather than on an
+	// agent that took the prompt and never turned. A delivery taken back clears it
+	// (takeBackPending), so it names no task after its wait. It is memory only, as the wait is.
+	answeredBusy string
 	// askFirst is a restored claim whose agent an earlier daemon was talking to: a pending
 	// delivery it may already have sent, or a turn it saw start and may not have seen end. The
 	// machine asks the agent (get_state) before it acts on either. On a working claim it is one of
@@ -1436,6 +1490,11 @@ type Machine struct {
 	// held is the suspension held for the agent's turn (holdSuspension), or for a launch's ready
 	// (holdSuspendUntilReady), nil for none.
 	held *RequestSuspend
+	// waitHeld is the last delivery a phase worker's standing wait held back (waitHolds) and the
+	// wait that held it, so the line that says so is written once for each, rather than at every
+	// sweep, hello and ready that asks again while the wait stands. It is memory only, as askFirst
+	// is: a restarted daemon writes it once more.
+	waitHeld heldByWait
 	// heldLaunch is whether the held suspension waits over a launch — one holdSuspendUntilReady
 	// keeps until the agent says ready — and false whenever held is nil: it is set with held and
 	// cleared with it (dropHeld, letGo). A project pause's stop owes the role that launch at the
@@ -1951,16 +2010,17 @@ const (
 //     owed write at its head (repair), finds the mark and publishes nothing, and it answers an
 //     error for as long as the write stays owed. A write the store refuses outright is not owed
 //     (writeOwed): the mark stays in memory alone, the row's next attempt finds it and finishes,
-//     and after a restart, which loads the claim without it, the sweep asks the role again under
-//     a new row's dedupe key.
+//     and after a restart, which loads the claim without it, the sweep asks the role again in a
+//     new row, under the ask's own dedupe key all the same (record.UpdateAskKey: one claim and
+//     one round opening give one key).
 //
 // What is left is a daemon that dies between a delivered publish and the write of its mark, a
 // crash rather than a stop, which the write outlives. It boots with the row still queued and the
-// claim unmarked, so the row publishes once more, under the row's own dedupe key
-// (record.OutboxKey), which the listener answers as a repeat, forwarding nothing, to a holder it
-// already forwarded that key to within its dedupe window (ten minutes, in the listener's memory).
-// Past that window, or across a listener restart, the role reads the ask twice: one message more,
-// never an ask lost (dispatch://INFRA-4109 R4 accepts it).
+// claim unmarked, so the row publishes once more, under the ask's own dedupe key
+// (record.UpdateAskKey, the outbox's updateAsk), which the listener answers as a repeat,
+// forwarding nothing, to a holder it already forwarded that key to within its dedupe window (ten
+// minutes, in the listener's memory). Past that window, or across a listener restart, the role
+// reads the ask twice: one message more, never an ask lost (dispatch://INFRA-4109 R4 accepts it).
 //
 // It is no event, as PodUpdateTold is none: the outbox's publish is what reaches the role, and the
 // mark is bookkeeping of it.
@@ -2658,7 +2718,8 @@ func (m *Machine) fenceOutcome(ctx context.Context, event string, generation uin
 // session before it spawns a fresh agent (start), so a process that registers as another session
 // is never that session's agent. A refused registration's plugin exits on the 409, and the end of
 // its process is charged as the end of any process that never registered is (died,
-// registrationDeadline), except the two ends that are charged nothing (endUncharged).
+// registrationDeadline), except the two ends that name an outcome the policy charges nothing
+// (endOutcome).
 func (m *Machine) fenceRequest(request string, generation uint64, session string) (bool, error) {
 	if generation != m.claim.Generation {
 		return false, fmt.Errorf("%s for %s at generation %d, the claim is at %d: %w",
@@ -2678,15 +2739,15 @@ func (m *Machine) fenceRequest(request string, generation uint64, session string
 // and starts no fresh agent for a claim that still records its session. At the deploy such a
 // claim can run a fresh agent the earlier release spawned and carry the launch failures its loop
 // charged, so the refusal marks the claim's generation (refusedEarlierRelease) and the end of
-// that process is charged nothing (endUncharged); the 409 stands. A refusal at the generation of a
-// start that had Oh My Pi resume the session by its id (Claim.AgentResumeGeneration) is no roll
-// edge: that process is this release's own start, and its end is the uncharged end of that start.
-// Every other refusal is marked nothing and keeps its charge: a process of this release adopted at
-// a restart registers at the daemon's own contract, and so does this release's resume by the id
-// through the pod's launcher; a daemon that knows no contract of its own (Deps.PluginContract 0)
-// marks nothing. The mark writes the one line a production check reads for the roll edge, once
-// for the generation: that check reads it because no launched line of this daemon run comes
-// before such a refusal.
+// that process names an outcome the policy charges nothing (endOutcome); the 409 stands. A
+// refusal at the generation of a start that had Oh My Pi resume the session by its id
+// (Claim.AgentResumeGeneration) is no roll edge: that process is this release's own start, and
+// its end is the uncharged end of that start. Every other refusal is marked nothing and keeps its
+// charge: a process of this release adopted at a restart registers at the daemon's own contract,
+// and so does this release's resume by the id through the pod's launcher; a daemon that knows no
+// contract of its own (Deps.PluginContract 0) marks nothing. The mark writes the one line a
+// production check reads for the roll edge, once for the generation: that check reads it because
+// no launched line of this daemon run comes before such a refusal.
 func (m *Machine) markRollEdge(ev RequestRegister) {
 	if m.claim.SessionFile != "" || m.deps.PluginContract <= 0 || ev.PluginContract >= m.deps.PluginContract ||
 		m.claim.Generation == m.claim.AgentResumeGeneration || m.refusedEarlierRelease == m.claim.Generation {
@@ -2912,10 +2973,10 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			return m.promptRefused(ctx, starting, err)
 		}
 		err = errors.Join(err, m.stopPrevious(starting))
-		m.claim.Budgets.LaunchFailures++
+		spent := m.chargeLaunch(runtime.OutcomeLaunchFailed)
 		m.logFarSideError(ctx, slog.LevelWarn, "supervise: launch failed", err,
 			"generation", m.claim.Generation, "launchFailures", m.claim.Budgets.LaunchFailures, "limit", m.deps.Limits.LaunchFailures)
-		if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
+		if spent {
 			return m.failLaunch(ctx, err, fmt.Sprintf("launch failures ran out: %v", err))
 		}
 		charged = true
@@ -2942,11 +3003,12 @@ func (m *Machine) promptRefused(ctx, starting context.Context, refusal error) er
 // failLaunch fails the claim over a launch the runtime refused, with err, the refusal and what
 // stopping the process it let go answered, and detail, the claim's failure sentence. The refusal
 // is this claim's own cause only where nothing else is already being relaunched after: a claim
-// that died and whose relaunch the runtime then refused reads died (Claim.PendingCause).
+// that died and whose relaunch the runtime then refused reads died (Claim.PendingCause). Its own
+// cause is the one a refused launch's outcome derives (failureCause of runtime.OutcomeLaunchFailed).
 func (m *Machine) failLaunch(ctx context.Context, err error, detail string) error {
 	cause := m.claim.PendingCause
 	if cause == "" {
-		cause = CauseLaunchRefused
+		cause = failureCause(runtime.OutcomeLaunchFailed)
 	}
 	return errors.Join(err, m.fail(ctx, cause, detail))
 }
@@ -3381,13 +3443,14 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 // held leaves the claim suspended instead (endHeld). A process that ended with a pod the daemon
 // itself replaced is not a death at all (displaced).
 //
-// Two deaths of a claim that records a session and no file are charged nothing (endUncharged):
-// that of a process an earlier release started, whose registration the fence refused, and that of
-// a start that had Oh My Pi resume the session by its id and did not register as it. Each is
-// recorded, taken back from, stopped and written as any death is, and relaunched through launch,
-// which charges no launch failure and waits no backoff, in place of relaunchAfterFailure. Neither
-// counts a death: each is of a claim whose agent has not registered as its session, which
-// chargeDeath counts none of.
+// Two deaths of a claim that records a session and no file name an outcome of their own
+// (endOutcome), which the policy charges nothing (Charges): that of a process an earlier release
+// started, whose registration the fence refused, and that of a start that had Oh My Pi resume the
+// session by its id and did not register as it. Each is recorded, taken back from, stopped and
+// written as any death is, and relaunched through relaunchAfterFailure under that outcome, which
+// counts no launch failure, records no pending cause and waits no backoff. Neither counts a
+// death: each is of a claim whose agent has not registered as its session, which chargeDeath
+// counts none of.
 //
 // One dead process is one death, however often the runtime reports that process gone. The report
 // that reaches the charge below makes the charge decision and writes it (Claim.DeathCharged), and a
@@ -3456,16 +3519,13 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	if m.held != nil {
 		return m.endHeld(ctx, false, stopSent)
 	}
-	relaunch := func(ctx context.Context) error { return m.relaunchAfterFailure(ctx, CauseDied, ended) }
-	if m.endUncharged("died") {
-		relaunch = func(ctx context.Context) error { return m.launch(ctx, ended) }
-	}
+	o := m.endOutcome(runtime.OutcomeProcessDied, "died")
 	if m.claim.DeathCharged {
-		return relaunch(ctx)
+		return m.relaunchAfterFailure(ctx, o, ended)
 	}
 	m.claim.DeathCharged = true
-	if m.chargeDeath() {
-		return m.fail(ctx, CauseDied, "deaths with work outstanding ran out")
+	if m.chargeDeath(o) {
+		return m.fail(ctx, failureCause(o), "deaths with work outstanding ran out")
 	}
 	// The decision and the count it charged are written here, before the relaunch, because
 	// every window that leaves this claim to be reported again writes nothing of it: the
@@ -3476,42 +3536,48 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	// a death that left the claim standing for want of a write would be a worse answer to an
 	// outage than a charge written late — and a launch that does run clears the charge with
 	// the process it replaces anyway (letGo).
-	return errors.Join(m.persist(ctx), relaunch(ctx))
+	return errors.Join(m.persist(ctx), m.relaunchAfterFailure(ctx, o, ended))
 }
 
-// endUncharged is whether the end of the claim's process is charged nothing, and it logs why
-// where it is; ended is how the process ended, which the line names. died and
-// registrationDeadline ask it once they have done what they do for any end, and relaunch an end
-// it answers true for through launch, which charges no launch failure and waits no backoff, in
-// place of relaunchAfterFailure. Both such ends are of a claim that records a session and no file,
-// at the generation of a process that never registered as that session (dispatch://INFRA-4108):
+// endOutcome is the outcome of the end of the claim's process, where named is the outcome the
+// site names for that end of any process — OutcomeProcessDied (died) or OutcomeNeverRegistered
+// (registrationDeadline) — and ended is how the process ended, which the line it logs names. It
+// is the one place that names the outcomes of two ends, each of a claim that records a session
+// and no file, at the generation of a process that never registered as that session
+// (dispatch://INFRA-4108), and it logs a line for each:
 //
-//   - The roll edge (R1): at this generation the fence refused the registration of a process an
-//     earlier release started (refusedEarlierRelease, markRollEdge).
-//   - A start that had Oh My Pi resume the session by its id itself (R3): the claim's mark names
-//     this generation (Claim.AgentResumeGeneration), and the start ended before it registered as
-//     the session, or its registration deadline passed, a registration as another session that
-//     the fence refused included. Through a launcher that cannot look the session up, nothing
-//     else can resume it, so the next try forgets it, charged nothing either (resumeByID).
+//   - The roll edge (R1), runtime.OutcomeEarlierReleaseProcessEnded: at this generation the fence
+//     refused the registration of a process an earlier release started (refusedEarlierRelease,
+//     markRollEdge).
+//   - A start that had Oh My Pi resume the session by its id itself (R3),
+//     runtime.OutcomeResumeByAgentUnregistered: the claim's mark names this generation
+//     (Claim.AgentResumeGeneration), and the start ended before it registered as the session, or
+//     its registration deadline passed, a registration as another session that the fence refused
+//     included. Through a launcher that cannot look the session up, nothing else can resume it,
+//     so the next try forgets it, charged nothing either (resumeByID).
 //
 // A claim whose agent registered as the session records its file (register), so the end of an
-// agent that registered and never said it was ready is charged as every such end is. Each mark
+// agent that registered and never said it was ready is named as every such end is. Each mark
 // names one generation, and the relaunch moves the claim past it.
-func (m *Machine) endUncharged(ended string) bool {
+//
+// This names which process ended and decides nothing: whether its end charges is the policy's
+// (Charges), which the site's relaunch asks (relaunchAfterFailure). The lines say the end is
+// charged nothing because a production check reads them by those words.
+func (m *Machine) endOutcome(named runtime.Outcome, ended string) runtime.Outcome {
 	g := m.claim.Generation
 	switch {
 	case g == 0 || m.claim.SessionFile != "":
-		return false
+		return named
 	case g == m.refusedEarlierRelease:
 		m.log.Info("supervise: the process an earlier release started, whose registration was refused, ended; its end is charged nothing",
 			"session", m.claim.Session, "generation", g, "ended", ended)
-		return true
+		return runtime.OutcomeEarlierReleaseProcessEnded
 	case g == m.claim.AgentResumeGeneration:
 		m.log.Warn("supervise: a start that had Oh My Pi resume the recorded session by its id did not register; its end is charged nothing, and the next try forgets the session",
 			"session", m.claim.Session, "generation", g, "ended", ended)
-		return true
+		return runtime.OutcomeResumeByAgentUnregistered
 	}
-	return false
+	return named
 }
 
 // deathCause is what the claim records of a death: the runtime's own account of it, behind the
@@ -4119,11 +4185,13 @@ func (m *Machine) forgetSend() {
 // are the only calls that do. Store.AdmitClaim and Store.CheckLaunch keep today's behaviour and
 // take no deadline: what they wait on is an advisory lock another transaction holds, so a
 // deadline there would fail a launch that was only queued behind its predecessor. So do the reads
-// of the record — PhaseHolds, RootHears, RootTask, TreeClosable — which decide what the next
-// write will say rather than hold the row, and whose failure costs the decision and nothing
-// after it. The deadline is what keeps a database that has stopped answering from holding the
-// machine's lock for the length of the outage; a write it cuts short is owed and made again at
-// the claim's next decision (owes, repair).
+// of the record — PhaseHolds, WaitHolds, GateNote, RootHears, RootTask, TreeClosable — which
+// decide what the next write will say rather than hold the row, and whose failure costs the
+// decision and nothing after it. So does EndWait, which writes the end of a wait in the record and
+// not the claim's row, and whose failure costs the send it was asked for and nothing after it.
+// The deadline is what keeps a database that has stopped answering
+// from holding the machine's lock for the length of the outage; a write it cuts short is owed and
+// made again at the claim's next decision (owes, repair).
 func (m *Machine) write(ctx context.Context, call func(context.Context) error) error {
 	writing, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
 	defer cancel()

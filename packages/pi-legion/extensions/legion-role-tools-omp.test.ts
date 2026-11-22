@@ -89,6 +89,14 @@ async function toolsPane(
         await runJj(jj, ["git", "init", workspace]);
         await runJj(jj, ["-R", workspace, "describe", "-m", "role tools scratch"]);
       },
+      // The phase reminder (src/phase-reminder.ts in pi-shared) asks the daemon what a phase
+      // worker's claim owes at its boot and at each turn's end, and sends a reminder while it owes
+      // work. These panes complete no phase, so the stand-in answers that the claim owes nothing,
+      // and the run ends on the scripted turns alone.
+      answer: (url) =>
+        url.pathname === "/legion/v1/claims/owed"
+          ? Response.json({ owes: false, work: "" })
+          : undefined,
     },
     cleanup
   );
@@ -109,10 +117,9 @@ const SCRATCH_TURNS: readonly Reply[] = [
     return [call("edit", { input: `${header}\nPUT 1.=1:\n+edited line` })];
   },
   [call("bash", { command: "jj undo --help" })],
-  // The phase-stall follow-up (src/phase-stall.ts) sends a phase worker whose run settles
-  // without a handoff one more turn, unless its last reply starts WAITING: so the settling reply
-  // does, and the run ends on the scripted turns alone.
-  [{ type: "text", text: "WAITING: done." }],
+  // The settling reply: the daemon's answer that the claim owes nothing is what ends the run here,
+  // since a phase worker's reply buys no quiet wait of its own.
+  [{ type: "text", text: "Done." }],
 ];
 
 /** The words any refusal carries. */

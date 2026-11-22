@@ -421,7 +421,7 @@ test("the reviewer treats a result with no report as a failed run, not a verdict
     "Reading the agent's diff yourself and recording that in its place is the same as answering the rubric from a bare verdict"
   );
   expect(mergeGate).toContain(
-    "that half of the round has no review: tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on until it answers"
+    "that half of the round has no review: tell the architect, do not approve, and declare a wait on its answer with `declare_wait`"
   );
 });
 
@@ -558,7 +558,7 @@ test("the worker prompt tells a role to read the pull request's head after its o
     "This read is of the pull request's own head and of no check, so the wait it makes is not a wait on CI",
     "an empty one when your work is complete",
     "A new head is a different commit, so record each `before_merge` check again at the new head. A check carrying `ci_check` is CI's, so skip it.",
-    "tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
+    "tell your architect the commit you pushed, the head each read gave and the time of each, then declare a wait on that answer with `declare_wait` and end the turn rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
     "The push you make to answer an update message is the exception: that message has you push, let your subagents and background jobs finish or stop them, push what they made, answer the daemon and end the turn, so make this read in your next turn, before your phase completes.",
     "The merger pushes nothing, so this step never falls to it; it reports a mismatch it sees to the architect.",
     "the empty commit that carries the pull request onto the commit you pushed",

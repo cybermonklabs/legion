@@ -39,10 +39,17 @@ const (
 	// 4.1 s, which leaves 0.9 s of the 5 s the shim gives it before killing it (shim.DefaultGrace)
 	// for the process to exit on a loaded machine; its inbox is gone 0.5 s before that.
 	flushTimeout = 500 * time.Millisecond
-	// Busy is the refusal of a prompt that arrives during a turn. It begins with Oh My Pi's own
-	// words, which the daemon reads as a turn of the agent's own (supervise's agentBusy): the task
-	// goes back unread, uncharged, and is sent again when the turn ends.
-	Busy = "Agent is already processing a turn; the Claude Code bridge takes a prompt only between turns"
+	// busyWords is the words of the bridge's refusal of a prompt that arrives during a turn. They
+	// are the words the release before this one wrote, kept so a daemon rolled back to that release
+	// still reads the refusal as a turn of the agent's own: it reads a busy agent from the words'
+	// opening, which is Oh My Pi's own. This release's daemon reads only the code the refusal
+	// carries beside them, shimwire.CodeSessionBusy, from which its stream mints the agent's answer
+	// that it is in a turn of its own, so the task goes back unread, uncharged, and is sent again
+	// when the turn ends. They are unexported, so no other package can name them to match a
+	// refusal against; supervise's outcome source test holds what the compiler cannot: that
+	// supervise, the stream and the runtime do not write them out, and that the bridge uses them
+	// only to write this refusal.
+	busyWords = "Agent is already processing a turn; the Claude Code bridge takes a prompt only between turns"
 )
 
 var (
@@ -430,12 +437,13 @@ func (b *bridge) fromDaemon(line []byte) {
 }
 
 // prompt is the daemon's task. Between turns it starts one; during a turn, the bridge's own or one
-// Claude Code started by itself, it is acknowledged and then refused as Oh My Pi refuses it, so the
-// daemon sends it again once the turn ends.
+// Claude Code started by itself, it is acknowledged and then refused busy, with the code Oh My Pi
+// gives that refusal, so the daemon sends it again once the turn ends.
 func (b *bridge) prompt(p shimwire.Prompt) {
 	b.respond(shimwire.Response{ID: p.ID, Command: shimwire.TypePrompt, Success: true})
 	if b.inRun {
-		b.respond(shimwire.Response{ID: p.ID, Command: shimwire.TypePrompt, Success: false, Error: Busy})
+		b.respond(shimwire.Response{ID: p.ID, Command: shimwire.TypePrompt, Success: false, Error: busyWords,
+			Code: shimwire.CodeSessionBusy})
 		return
 	}
 	b.startRun(p.Message, nil, p.ID)

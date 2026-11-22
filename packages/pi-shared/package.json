@@ -125,6 +125,10 @@
       "types": "./test/daemon-state.ts",
       "bun": "./test/daemon-state.ts"
     },
+    "./test/wait-stand-in": {
+      "types": "./test/wait-stand-in.ts",
+      "bun": "./test/wait-stand-in.ts"
+    },
     "./test/cross-imports": {
       "types": "./test/cross-imports.ts",
       "bun": "./test/cross-imports.ts"

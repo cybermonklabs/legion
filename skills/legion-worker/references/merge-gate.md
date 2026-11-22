@@ -6,7 +6,7 @@ Read it when you review or approve, or work a look of a closed issue's productio
 
 1. Read CI on GitHub and the issue's results with `dispatch results --issue <issue>`, never from a handoff.
 2. When the diff the round reads touches runtime code (the whole change, or the difference from the commit your task names), run `task(agent="thermonuclear-deep-review")` and `task(agent="thermonuclear-code-quality")` once at the head the round reviews, and `wait` for each result: each runs as a job of its own. Each agent reviews only the diff its task supplies, so name in each task the commit, the head and `git diff <sha> <head>` as the diff, or the whole change. The last two sentences of your task, `Last reviewed commit: <sha>.` and `Review entry: <n>.`, are the daemon's; your role prompt says how to read them.
-3. A result that carries no report, or that names another place for it, is a failed run, not a verdict: run that agent again, or read its transcript. Reading the agent's diff yourself and recording that in its place is the same as answering the rubric from a bare verdict. When you can do neither, that half of the round has no review: tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on until it answers.
+3. A result that carries no report, or that names another place for it, is a failed run, not a verdict: run that agent again, or read its transcript. Reading the agent's diff yourself and recording that in its place is the same as answering the rubric from a bare verdict. When you can do neither, that half of the round has no review: tell the architect, do not approve, and declare a wait on its answer with `declare_wait`.
 4. A `CHANGES` from either half is answered in the review: its findings are carried into a `REQUEST_CHANGES`, or each finding is recorded with why it does not stand. Your `APPROVE` needs both halves run at the reviewed head, or both `Thermo` rows reading `not run` because the diff the round reads touches no runtime code (the whole change, or the difference from the last reviewed commit to the head).
 
 ### What the base requires
@@ -21,7 +21,7 @@ base=$(gh pr view <n> -R <o>/<r> --json baseRefName -q .baseRefName) && \
   echo code_scanning: && gh api --paginate "repos/<o>/<r>/rules/branches/$base_path" --jq '.[] | select(.type=="code_scanning") | .parameters'
 ```
 
-A `code_scanning` rule requires an analysis that no status-check list names. A read GitHub refuses leaves the required set unknown: report it to the architect, do not approve, and wait with a `WAITING` line naming the read.
+A `code_scanning` rule requires an analysis that no status-check list names. A read GitHub refuses leaves the required set unknown: report it to the architect, do not approve, and declare a wait with `declare_wait` naming the read.
 
 ### The head's checks
 
@@ -33,7 +33,7 @@ A `code_scanning` rule requires an analysis that no status-check list names. A r
 
 ### A required item with no run at the head
 
-Never approve a head while a required item has no run. Sort it, in this order. Cases 2, 3, 4 and 6 end: tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on.
+Never approve a head while a required item has no run. Sort it, in this order. Cases 2, 3, 4 and 6 end: tell the architect, do not approve, and declare a wait with `declare_wait` naming what you wait on.
 
 1. Read `gh pr view <n> --repo <o>/<r> --json mergeable,mergeStateStatus` first. `DIRTY` takes a forward merge, which is the implementer's: the daemon asks for it and tells you the new head when it lands. `UNKNOWN`: read again each minute for up to five minutes, then report it to the architect as a refused read.
 2. A fork head whose runs stand `action_required` waits on a maintainer. Never close and reopen it.

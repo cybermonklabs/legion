@@ -308,8 +308,9 @@ func TestTheSweepWaitsForAReleasesQueuedResumeAndRetiresNothingOfIt(t *testing.T
 
 	r.admitPass()
 	starts = roleStartRows(t, r.pool, r.key, claim.RoleArchitect)
-	if len(starts) != 1 || starts[0].request.Entry != 2 || starts[0].request.Task == "" {
-		t.Fatalf("the architect starts after the resume ran = %+v, want the one start of entry 2 the sweep writes", starts)
+	if len(starts) != 1 || starts[0].request.Entry != 2 || starts[0].request.Task != "" || starts[0].request.Awaiting == nil {
+		t.Fatalf("the architect starts after the resume ran = %+v, want the one start of entry 2 the sweep writes: the resume's own, "+
+			"the wait its row keeps and no text, which the send renders (workflow.Engine.SendArchitectStart)", starts)
 	}
 	r.runStarts()
 	if prompts := r.prompts()[sent:]; len(prompts) != 1 || !strings.Contains(prompts[0].Message, answered) {

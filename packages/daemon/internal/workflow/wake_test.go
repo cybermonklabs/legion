@@ -1,11 +1,9 @@
 package workflow
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"slices"
 	"strings"
 	"testing"
@@ -20,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 )
 
 // wakeAt is when every wake of these tests reaches the daemon, and wakeIssueGeneration the run
@@ -30,21 +29,18 @@ const wakeIssueGeneration = 7
 
 // wakeRig is a released pod the tests wake: a root LEGION-208 implementing at generation 7, its
 // pull request sjawhar/legion#42 open at head1, and its implementer and architect claims both
-// suspended with the source `released`, which is the state a release leaves a pod in.
+// suspended with the source `released`, which is the state a release leaves a pod in. The engine
+// logs to logged.
 type wakeRig struct {
 	pool   *pgxpool.Pool
 	engine *Engine
-	logged *bytes.Buffer
+	logged *testlog.Buffer
 	apply  func(id string, fact intake.Fact) intake.Result
 }
 
 func newWakeRig(t *testing.T) wakeRig {
 	t.Helper()
 	pool := migratedPool(t)
-	logged := &bytes.Buffer{}
-	clock := &checkClock{now: wakeAt}
-	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Pods: wakePods(t, pool), Linger: time.Hour, ProductionCheckRole: claim.RoleTester, Clock: clock.Now},
-		slog.New(slog.NewTextHandler(logged, nil)))
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: wakeIssueGeneration,
 		Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
@@ -52,7 +48,7 @@ func newWakeRig(t *testing.T) wakeRig {
 		Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head1", Failing: []string{}})
 	seedReleasedClaim(t, pool, claim.RoleImplementer, "session-implementer")
 	seedReleasedClaim(t, pool, claim.RoleArchitect, "session-architect")
-	return wakeRig{pool: pool, engine: engine, logged: logged, apply: applyFacts(t, pool, engine)}
+	return wakeRigOf(t, pool, config.DesignGateRootIssues.Steps())
 }
 
 // wakePods is the project's pod records as the daemon hands them to the engine
@@ -598,6 +594,9 @@ func TestWakeTaskNamesItsWake(t *testing.T) {
 		{kind: pods.WakeRoleMessage, detail: "legion-LEGION-208-implementer", want: "role topic"},
 		{kind: pods.WakeAgentMessage, detail: "session-1", want: "sent to your session"},
 		{kind: pods.WakeBackstop, detail: "the backstop came due", want: "backstop"},
+		{kind: pods.WakeWaitTime, detail: waitTimeTask(record.ClaimWait{ID: "wait-1", WaitingOn: "the review of the head"}),
+			want: "The time of your wait wait-1 came."},
+		{kind: pods.WakeDesignGate, detail: gateMovedTask("LEGION-208"), want: "The design gate of LEGION-208 moved."},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
 			task := WakeTask(tc.kind, tc.detail, StoppedByRelease)

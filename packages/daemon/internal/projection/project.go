@@ -58,6 +58,17 @@ type Inputs struct {
 	// to compare with the locator's — and a claim with none shows no capabilities. Nil is no
 	// reports.
 	Reports map[claim.Token]capabilities.Report
+	// Waits is every wait of the project's claims that stands now, by claim
+	// (workflow.StandingWaitsNow), handed in because whether a wait stands is the daemon's one rule
+	// over the record (workflow.WaitStands), which this package may not read, and the caller reads
+	// it in the same transaction. A claim in it carries its wait (api.ClaimView.Wait) and no other
+	// claim carries one (dispatch://INFRA-2040 R4). Nil is no wait.
+	Waits map[claim.Token]record.ClaimWait
+	// Holds is every merger claim the design gate holds now, with the gate row that holds it, by
+	// claim (workflow.HoldsNow), handed in for the same reason: the hold is the daemon's one rule
+	// over the issue and its tree's gate rows (workflow.HeldByDesignGate). A claim in it carries its
+	// hold (api.ClaimView.Hold) and no other claim carries one. Nil is no hold.
+	Holds map[claim.Token]record.DesignGate
 	// Wakes is every wake the daemon's pacing still holds, both lanes as one list
 	// (api.WakesWaitingOf): the state names them under `wakesWaiting`, and each claim view names
 	// the one its own claim waits for, so the two come from one list and cannot disagree. Nil is
@@ -160,6 +171,17 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		if report, reported := in.Reports[current.Token]; reported {
 			view.Capabilities = api.CapabilityReportViewOf(report)
 		}
+		// The wait the claim's worker declared, only while it stands: a wait row with no end that
+		// no longer stands — a fresh session, a phase that moved — is in no entry of waits, so no
+		// reader takes such a claim for waiting.
+		if wait, stands := in.Waits[current.Token]; stands {
+			view.Wait = api.WaitViewOf(wait)
+		}
+		// The closed design gate that holds the claim's merger, only while it holds it: a merger
+		// whose gate opened, or whose issue left merging, is in no entry of holds.
+		if gate, held := in.Holds[current.Token]; held {
+			view.Hold = api.HoldViewOf(gate)
+		}
 		claimViews[current.Token] = view
 	}
 
@@ -193,6 +215,17 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			// hold on it is the ancestry hold, and nothing else on this wire names the chain.
 			Ancestry: issue.Ancestry,
 			Workers:  map[claim.Role]api.PhaseView{},
+		}
+		// The correction of the issue's repository and a change still to be made: what tells a
+		// reader of a record that names one repository that the issue worked another before, or
+		// that Dispatch has named a third the daemon has not applied, and why. Each is one value
+		// of the record, served as the wire's two flat keys of it.
+		if corrected := issue.RepoCorrection; corrected != nil {
+			at := corrected.At
+			view.RepoBefore, view.RepoCorrectedAt = corrected.Before, &at
+		}
+		if change := issue.RepoChange; change != nil {
+			view.RepoChangePending, view.RepoChangeReason = change.Pending, change.Reason
 		}
 		// Every experiment answer the issue runs under, a done issue's included: it is what its
 		// roles ran with, and nothing redraws it. The three memory fields are the answer of the

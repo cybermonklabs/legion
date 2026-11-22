@@ -540,8 +540,14 @@ const bundleRestoreBound = 2 * time.Minute
 // that replaces it. Every other pod spends the attempt the first time it asks, and a pod that
 // is not newer than the save (launcherSession.podCreated) spends it on a refusal: nothing is
 // sent to it, and nothing is sent to the pod after it either, since its roles go on working and
-// pushing from the workspace its own fetch provisioned. That refusal is this hop's one warning
-// an operator must read — the work is in the database and no pod will put it back on its own.
+// pushing from the workspace its own fetch provisioned. A bundle of a repository the issue has
+// left is spent on a refusal of its own, whatever the pod's age: this pod's workspace is a
+// clone of the issue's repository now, which holds none of the saved commits' bases
+// (runtime.WorkspaceBundleRefusedRepository). The store keeps that work in a table of its own,
+// which holds no pod. It is the one refusal this hop logs nothing of: the daemon logs it where it
+// writes it on the issue, with whether that write landed (internal/daemon's
+// tellBundleRepositoryRefused), and a second line here would say the same thing to the same
+// reader, the operator reading this daemon's log.
 //
 // A pod whose own kept volume holds the work takes none of it, and the store drops the bundle
 // first. That pod's Sandbox owns the issue's kept volume and was created before the save
@@ -554,6 +560,10 @@ const bundleRestoreBound = 2 * time.Minute
 // drop runs at a role's start, after the pod's launcher connected, and that launcher runs after
 // both init containers of the pod. So a kept volume whose init failed never drops the bundle its
 // reset needs: the reset replaces that Sandbox, and the pod of the new Sandbox restores the work.
+// The drop keeps a bundle of a repository the issue has left, too
+// (runtime.HeldWorkspaceBundleDrop): the work is in the old repository's workspace on the volume,
+// which this pod does not work in, so the take refuses that bundle for its repository and the
+// daemon writes on the issue where it is.
 func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, podUID string) {
 	if d.saved == nil || d.restored == nil {
 		return

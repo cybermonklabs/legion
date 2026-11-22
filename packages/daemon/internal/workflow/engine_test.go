@@ -345,7 +345,9 @@ func TestReviewRoundCapPostsOneMessageAndNoticeForTheThirdRound(t *testing.T) {
 // A reviewer started on the tester's pass is told the tester's verdict as the tester's, never as a
 // bare "Handoff verdict" it could take for a field of its own completion, which the daemon refuses
 // from a reviewer (VERDICT_ROLE_FORBIDDEN), and the tester's handoff as the Dispatch record it reads
-// with `dispatch handoff-read`, with no commit, since this completion of the tester's names none.
+// with `dispatch handoff-read`, at the version the daemon accepted and at the newest, with no
+// commit, since this completion of the tester's names none, and so no head standing over a later
+// version.
 func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
@@ -357,9 +359,16 @@ func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 		t.Fatalf("ApplyFact tester completion: %v", err)
 	}
 	task := startTask(t, pool, claim.RoleReviewer)
-	if want := "Phase: reviewing. Handoff: test version 3 (dispatch handoff-read --issue LEGION-208 --phase test --version 3). Tester's verdict: pass. Pull request: #42." +
+	if !strings.Contains(task, "Phase: reviewing.") {
+		t.Fatalf("reviewer task %q does not name the phase it starts", task)
+	}
+	assertNamesTheHandoff(t, task, "LEGION-208", "test", 3)
+	if want := " Tester's verdict: pass. Pull request: #42." +
 		reviewedPartOf("none") + reviewEntryPartOf(phaseRowOf(t, pool, claim.RoleReviewer).Entry); !strings.HasSuffix(task, want) {
 		t.Fatalf("reviewer task %q, want it to end with %q", task, want)
+	}
+	if strings.Contains(task, "Where a later version") {
+		t.Fatalf("reviewer task %q names a head standing over a later version, but the tester's completion named no commit", task)
 	}
 	if strings.Contains(task, "Handoff verdict") {
 		t.Fatalf("reviewer task %q still names the verdict as the handoff's", task)

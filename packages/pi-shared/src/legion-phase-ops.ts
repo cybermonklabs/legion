@@ -55,6 +55,7 @@ export const PHASE_OPS = [
   "handoff_complete",
   "request_backward_move",
   "ready_for_update",
+  "declare_wait",
   "read_build",
 ] as const;
 export type PhaseOp = (typeof PHASE_OPS)[number];
@@ -96,6 +97,16 @@ const nextLook = rfc3339String(
   "handoff_complete",
   "wake_at",
   "handoff_complete's wake_at is an RFC 3339 time, as 2026-11-02T09:00:00Z is"
+);
+
+/** `declare_wait`'s `wake_at`: when the wait's time comes and the daemon wakes the worker if
+ * nothing else has (`LegionWaitRequest`'s `wakeAt`, which is what goes on the wire). Its window,
+ * from 1 minute to 24 hours after the declaration, is the daemon's to hold (`WAIT_TOO_SOON`,
+ * `WAIT_TOO_FAR`), since it reads the declaration's moment off its own clock. */
+const waitTime = rfc3339String(
+  "declare_wait",
+  "wake_at",
+  "declare_wait's wake_at is an RFC 3339 time, as 2026-11-02T09:00:00Z is"
 );
 
 /** The refusal of a `plan_rating` that is not one of the scale's whole numbers. */
@@ -227,6 +238,12 @@ export const PhaseOpArguments = z.discriminatedUnion(
     // daemon takes the answer for and no other. The claim says who answers, and the plugin
     // resolves the branch head it reports.
     operation("ready_for_update", { round: requiredString("ready_for_update", "round") }),
+    // The declaration carries two fields of the agent's: what it waits on, and when the wait's
+    // time comes. The claim says who waits, and the daemon holds the time to its window.
+    operation("declare_wait", {
+      waiting_on: requiredString("declare_wait", "waiting_on"),
+      wake_at: waitTime,
+    }),
     // `read_build` takes no field: it reports this process's own build and asks the daemon for
     // the contract it states, and names no issue.
     operation("read_build", {}),
@@ -283,8 +300,8 @@ export function phaseOpParameters(zod: unknown): Record<PhaseOpField, z.ZodType>
 }
 
 /** The `legion` tool's sentences on `read_record`, `read_release_records`,
- * `request_backward_move` and `read_build`, which a host whose tool states them passes as
- * `before` and `after` (`legionToolDescription`). */
+ * `request_backward_move`, `declare_wait` and `read_build`, which a host whose tool states them
+ * passes as `before` and `after` (`legionToolDescription`). */
 export const PHASE_OP_SENTENCES = {
   readRecord:
     "read_record returns the record of `issue` from the daemon's record route for that issue, your own issue when you leave `issue` out. " +
@@ -302,6 +319,14 @@ export const PHASE_OP_SENTENCES = {
   requestBackwardMove:
     "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
     "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. ",
+  declareWait:
+    "declare_wait declares that you wait on something outside your own work: `waiting_on` says what you wait on, and `wake_at` is the RFC 3339 time, " +
+    "from 1 minute to 24 hours ahead, when the daemon wakes you if nothing has. Declare it, then end your turn. While the wait stands, no reminder comes. " +
+    "News ends the wait and wakes you: a message to your role or your session, a person's message, or new work from the daemon; the update round's " +
+    "message does not. A message whose wake is lost waits until the wait's time. A new declaration replaces the standing one, and the answer is " +
+    "the wait the daemon recorded. The daemon refuses an empty `waiting_on` (WAIT_TEXT_REQUIRED), a time too soon or too far ahead (WAIT_TOO_SOON, " +
+    "WAIT_TOO_FAR), a role that does not work its issue's open phase (WAIT_NOT_OPEN_PHASE) and a merger the closed design gate holds " +
+    "(WAIT_HELD_BY_DESIGN_GATE), and records nothing. ",
   readBuild:
     "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
     "It also reports the contract the daemon states on its answer to the health route. " +
@@ -311,6 +336,19 @@ export const PHASE_OP_SENTENCES = {
     "In a pod, an Oh My Pi role relaunched onto the daemon's contract loads the build that relaunch installed under the role's own state home, " +
     "and a Claude Code role installs no plugin: it loads its pod image's own claude-envoy. " +
     "read_build reads no project state. ",
+} as const;
+
+/** The sentences every host's `legion` tool states around `handoff_complete`'s contract, as
+ * `legionToolDescription` takes them: `read_record` and `read_release_records` before it, and
+ * `request_backward_move`, `declare_wait` and `read_build` after it, in that order. A host with
+ * more operations states its own after these (`createLegionTool` in
+ * `packages/pi-legion/src/tools.ts`). */
+export const SHARED_PHASE_OP_SENTENCES = {
+  before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
+  after:
+    PHASE_OP_SENTENCES.requestBackwardMove +
+    PHASE_OP_SENTENCES.declareWait +
+    PHASE_OP_SENTENCES.readBuild,
 } as const;
 
 /**
@@ -439,6 +477,12 @@ export interface PhaseOpRuntime {
   /** The clock `read_release_records` measures a release the daemon has not resumed yet against,
    * `Date` itself unless a test hands it another. */
   readonly now?: () => Date;
+  /** Tells the host's phase reminder the wait `declare_wait` recorded, by its id
+   * (`PhaseReminder.waitDeclared` in `src/phase-reminder.ts`), once the daemon has answered it:
+   * news after the declaration, in the declaring turn or a later one, is reported against that
+   * wait. A host that leaves it out has its reminder learn the wait from the owed answer at the
+   * turn's end, so news in the declaring turn is not reported. */
+  readonly onWaitDeclared?: ((waitId: string) => void) | undefined;
 }
 
 /** A grant for one write of the claim's session, minted on `/grants`' session form with the
@@ -528,10 +572,11 @@ export async function readBuild(runtime: {
  * names or of the claim's own when it names none, the window's records and their counts for
  * `read_release_records`, the daemon's answer for `handoff_complete`, `{}` for
  * `request_backward_move`, this process's build and the daemon's stated contract for
- * `read_build`, and `{}` for `ready_for_update`, or `{ note }` when its branch-head lookup
- * failed. A refusal throws before any write, minting nothing and posting nothing: each problem
- * `PhaseOpArguments` finds, joined by `; `, a field the operation does not take named first,
- * then a root architect's completion,
+ * `read_build`, `{}` for `ready_for_update`, or `{ note }` when its branch-head lookup
+ * failed, and `{ wait }` for `declare_wait`, the wait the daemon recorded, whose id
+ * `onWaitDeclared` hands the host. A refusal throws before any write, minting nothing and posting
+ * nothing: each problem `PhaseOpArguments` finds, joined by `; `, a field the operation does not
+ * take named first, then a root architect's completion,
  * then each problem with the operation's own fields in the order it takes them, and a completion's
  * `plan_rating` or `plan_reason` without the other; then what the record decides (a check
  * report's verdict, its claim's role against the check's own, its `wake_at`, `pending` or
@@ -673,6 +718,23 @@ export async function executePhaseOp(
               "counts without one. Repair what the lookup's message names before your next jj " +
               `command. The lookup said: ${failure}`,
           };
+    }
+    case "declare_wait": {
+      // The claim authenticates the declaration, as it does `ready_for_update`: no grant is
+      // minted. The text and the time are the agent's own, sent as given: the daemon trims the
+      // text and holds the time to its window from its own clock, and a refusal (its code and
+      // sentence) throws as it came and records nothing.
+      const answer = await daemon.declareWait({
+        claimToken: claim.claimToken,
+        sessionId: claim.sessionID,
+        secret: claim.secret,
+        waitingOn: args.waiting_on,
+        wakeAt: args.wake_at,
+      });
+      // The host's reminder learns the wait here, so news later in this same turn is reported
+      // against it (dispatch://INFRA-2040, D8 of its plan).
+      runtime.onWaitDeclared?.(answer.wait.id);
+      return { wait: answer.wait };
     }
     case "read_build":
       // The one read of this operation, and it asks for no project state: the health route,

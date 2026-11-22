@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -18,7 +19,9 @@ import (
 // (workflow.Engine.ResumeAwaitedRoot). When that resume's start row is lost, the sweep sends the
 // entry again, and the work of the entry is the answer: an architect sent a task that does not
 // name it has lost the work it owes (dispatch://INFRA-2614, R4, and the architect's reading at
-// dispatch://INFRA-2614/comment/03dd9487-b44d-4508-bc0e-268fe951b17e).
+// dispatch://INFRA-2614/comment/03dd9487-b44d-4508-bc0e-268fe951b17e). The sweep's start is the
+// resume's own, built from the wait the row keeps, so it is read here as its send renders it
+// (startText).
 //
 // The task sent again says nothing false of the root either. Its architect has run in this
 // generation, so the first act (a spec to write and children to file) is not what it owes (R3),
@@ -72,11 +75,11 @@ func TestTheArchitectSweepResendsWhatALostResumeCarried(t *testing.T) {
 			// sweep is the one thing left that sends the raised entry's work.
 			runStart(t, pool, root)
 			applySweep(t, pool, admission, "resume-lost")
-			starts := architectSweepStarts(t, pool, root)
-			if len(starts) != 1 || starts[0].entry != resumed.Entry {
+			starts := architectStartsOf(t, pool, root)
+			if len(starts) != 1 || starts[0].Entry != resumed.Entry {
 				t.Fatalf("the architect starts of %s after the sweep = %+v, want one at the entry %d the resume raised", root, starts, resumed.Entry)
 			}
-			sent := starts[0].task
+			sent := startText(t, pool, root, config.DesignGateRootIssues, starts[0])
 			for _, want := range tc.names {
 				if !strings.Contains(sent, want) {
 					t.Errorf("the task sent again for entry %d is %q; it does not name %q, which the resume's own task %q named: "+
@@ -96,13 +99,14 @@ func TestTheArchitectSweepResendsWhatALostResumeCarried(t *testing.T) {
 // A person's approval that opens the design gate a root waits on resumes the root and, in the
 // same pass, promotes it past admitted to its first phase (admit's record.LineAnswered branch, then
 // the line's LineFirstPhase once the records are read again). The resume raised the architect's
-// entry with its own text as the work, marked to be sent as written, and queued the architect's
-// start carrying that entry (workflow.Engine.ResumeAwaitedRoot). When that start row is lost, the
-// root stands in planning, where a phase role owns the tree's work, and the entry its architect's
-// row names is still the resume's, one its claim was never given. The sweep's reach keeps such a
-// root while that entry stands unsent (workflow.ArchitectAtWork), so the next pass writes the
-// architect's start at that entry, carrying the resume's own text: a lost row loses none of what
-// the person's answer owes the architect (dispatch://INFRA-2614, R4).
+// entry with its own text as the work and the wait it answers kept beside it, and queued the
+// architect's start carrying that entry (workflow.Engine.ResumeAwaitedRoot). When that start row
+// is lost, the root stands in planning, where a phase role owns the tree's work, and the entry its
+// architect's row names is still the resume's, one its claim was never given. The sweep's reach
+// keeps such a root while that entry stands unsent (workflow.ArchitectAtWork), so the next pass
+// writes the architect's start at that entry, the resume's own start built from the wait the row
+// keeps, which its send renders into the resume's task: a lost row loses none of what the
+// person's answer owes the architect (dispatch://INFRA-2614, R4).
 //
 // The control is the same pass a second time, while the start it wrote is still queued: a start
 // on its way is not written twice (workflow.ArchitectStartPending).
@@ -123,10 +127,11 @@ func TestTheArchitectSweepResendsALostResumeOfARootTheAnswerPromotedPastAdmitted
 			root, got.Phase, got.Awaiting)
 	}
 	resumed := architectRow(t, pool, root)
-	if resumed.Entry != seededEntry+1 || !resumed.EntryVerbatim || !strings.Contains(resumed.EntryTask, "was approved") {
-		t.Fatalf("the architect row of %s after the resume = entry %d carrying %q, sent as written %t; want entry %d carrying the resume's "+
-			"own task, which says the spec was approved, marked to be sent as written", root, resumed.Entry, resumed.EntryTask,
-			resumed.EntryVerbatim, seededEntry+1)
+	if resumed.Entry != seededEntry+1 || resumed.EntryAwaiting == nil || resumed.EntryAwaiting.AnsweredBy != record.AnsweredByApproval ||
+		!strings.Contains(resumed.EntryTask, "was approved") {
+		t.Fatalf("the architect row of %s after the resume = entry %d carrying %q, keeping the wait %+v; want entry %d carrying the resume's "+
+			"own task, which says the spec was approved, beside the approval's wait", root, resumed.Entry, resumed.EntryTask,
+			resumed.EntryAwaiting, seededEntry+1)
 	}
 	if starts := architectSweepStarts(t, pool, root); len(starts) != 1 || starts[0].entry != resumed.Entry {
 		t.Fatalf("the architect starts of %s after the resume = %+v, want the one of entry %d the resume queued", root, starts, resumed.Entry)
@@ -149,9 +154,13 @@ func TestTheArchitectSweepResendsALostResumeOfARootTheAnswerPromotedPastAdmitted
 		t.Fatalf("the architect starts of %s after the sweep = %+v, want one at the entry %d the resume raised: the resume's work "+
 			"is owed to the architect of a root in planning as much as at admitted", root, starts, resumed.Entry)
 	}
-	if starts[0].task != resumed.EntryTask {
-		t.Errorf("the task sent again for entry %d is %q, want the resume's own %q: the answer is the work this entry owes",
-			resumed.Entry, starts[0].task, resumed.EntryTask)
+	if requests := architectStartsOf(t, pool, root); len(requests) != 1 || requests[0].Task != "" ||
+		!sameWait(requests[0].Awaiting, *resumed.EntryAwaiting) {
+		t.Errorf("the start sent again for entry %d = %+v, want the resume's own: no text and the wait %+v the row keeps", resumed.Entry,
+			requests, *resumed.EntryAwaiting)
+	} else if sent := startText(t, pool, root, config.DesignGateRootIssues, requests[0]); sent != resumed.EntryTask {
+		t.Errorf("the task sent again for entry %d, rendered as its send renders it, is %q, want the resume's own %q: the answer is the "+
+			"work this entry owes, and nothing the resume read has moved since", resumed.Entry, sent, resumed.EntryTask)
 	}
 
 	applySweep(t, pool, admission, "resume-lost-past-admitted-again")

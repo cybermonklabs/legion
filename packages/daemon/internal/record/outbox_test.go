@@ -61,6 +61,8 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		SuperviseRequest{Op: "pause_stop", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Pause: 7},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wake", WakeKind: pods.WakeChecks},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, WakeKind: pods.WakePause, Pause: 7},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wait's time", WakeKind: pods.WakeWaitTime},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 3, Task: "the gate moved", WakeKind: pods.WakeDesignGate, GateMessage: true},
 		GateSeed{ArtifactID: "artifact-208", Version: 4},
 		LingerClose{Generation: 7},
 		WorkspaceRemove{Linger: 3},
@@ -76,6 +78,11 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		CheckLook{Look: 2, OpenedAt: now},
 		CheckLook{Look: 1},
 		CheckBound{},
+		WaitDue{Token: "legion-legion-208-tester", WaitID: "9b2f4c1e-wait"},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3,
+			Task: "The time of your wait 9b2f4c1e-wait came.", WaitID: "9b2f4c1e-wait"},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 3,
+			Task: "The design gate of LEGION-208 moved.", GateMessage: true},
 		RoleMessage{Role: "legion.sjawhar-legion.LEGION-208.implementer", Body: "Pull request #42: CI settled at c0de: unit failed."},
 		HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing,
 			Count: 3, Counts: map[string]int{"testing-implementing": 1, "reviewing-implementing": 3},
@@ -265,7 +272,7 @@ func TestPersonHandoverPendingCountsOnlyMarkedStatusRows(t *testing.T) {
 func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 	every := []OutboxKind{OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindSupervise,
 		OutboxKindGateSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch,
-		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindHookPrompt, OutboxKindUpdateAsk,
+		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindWaitDue, OutboxKindRoleMessage, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindRoleHoldersPublish, OutboxKindStepRecord, OutboxKindConflictConfirm,
 		OutboxKindMergeForward, OutboxKindPlanRecord}
@@ -346,6 +353,11 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		// A plan record writes Dispatch the plan one run of an issue carries out (main's plan
 		// ratings, contract 168) and starts no turn, so the pause lets it run as a step record.
 		OutboxKindPlanRecord: "",
+		// A wait's time ends the wait and queues the wait's own start, or wakes the released worker,
+		// in the fact's transaction (dispatch://INFRA-2040 R3), and starts no turn itself: the start
+		// it queues is held, and a wake it takes during a pause is a held wake, as a CI settlement's
+		// is (workflow's wakeReleased, Pods.PauseOfWake).
+		OutboxKindWaitDue: "",
 	}
 	for _, lane := range OutboxLanes() {
 		for _, kind := range LaneKinds(lane) {
@@ -401,6 +413,24 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a ref on a child-status notice", payload: Notice{Kind: "child-status", Ref: "dispatch://LEGION-1/spec"}, reason: "only a spec decision's does"},
 		{name: "a decision on an architect's notice", payload: Notice{Kind: "design-approved", Decision: DecisionDesignApproved}, reason: "only a parked-decision controller notice does"},
 		{name: "a root on an architect's notice", payload: Notice{Kind: "design-approved", Root: "LEGION-1"}, reason: "only a parked-decision controller notice does"},
+		{name: "a review's document on a phase-finished notice",
+			payload: Notice{Kind: "phase-finished", Artifact: "artifact-1"},
+			reason:  "only a design-approved or design-changes-requested notice does"},
+		{name: "a review's document on a carried gate's opening",
+			payload: Notice{Kind: "carried-gate-opened", Version: 3, Actor: "user:a",
+				Ref: "dispatch://LEGION-1/spec", Artifact: "artifact-1"},
+			reason: "only a design-approved or design-changes-requested notice does"},
+		{name: "a review's mark on a tick",
+			payload: ControllerNotice{Kind: TickNotice, Review: EventMark{Seq: 7}},
+			reason:  "relaying a design approval or changes request does"},
+		{name: "a review's document on a held notice to the controller",
+			payload: ControllerNotice{Kind: "held", Artifact: "artifact-1"},
+			reason:  "relaying a design approval or changes request does"},
+		{name: "a review's document on a relayed answer",
+			payload: ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionAskAnswered,
+				Root: "LEGION-1", Ref: "dispatch://LEGION-1/ask/a", Actor: "user:a",
+				Artifact: "artifact-1"},
+			reason: "relaying a design approval or changes request does"},
 		{name: "a parked decision with no root", payload: ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionAskAnswered, Ref: "dispatch://LEGION-1/ask/a", Actor: "user:a"}, reason: "a parked-decision notice needs"},
 		{name: "a parked decision with no ref", payload: ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionAskAnswered, Root: "LEGION-1", Actor: "user:a"}, reason: "a parked-decision notice needs"},
 		{name: "a parked decision by no person", payload: ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionAskAnswered, Root: "LEGION-1", Ref: "dispatch://LEGION-1/ask/a", Actor: "session:s"}, reason: "a parked-decision notice needs"},
@@ -463,6 +493,18 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a negative check look", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, CheckLook: -1}, reason: checkLookRefusal},
 		{name: "a check wake without a look", payload: CheckWakeDue{Reason: "the tester's own wake"}, reason: "check wake requires the look it was named at"},
 		{name: "a check wake without a reason", payload: CheckWakeDue{Look: 1}, reason: "check wake requires the reason it wakes the check"},
+		{name: "a wait's time with no claim", payload: WaitDue{WaitID: "9b2f4c1e-wait"}, reason: "names the claim that declared the wait and the wait"},
+		{name: "a wait's time with no wait", payload: WaitDue{Token: "legion-legion-208-tester"}, reason: "names the claim that declared the wait and the wait"},
+		{name: "a wait's start with no task", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, WaitID: "w"}, reason: waitStartRefusal},
+		{name: "a wait's start of a phase", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Phase: phase.Testing, Task: "t", WaitID: "w"}, reason: waitStartRefusal},
+		{name: "a wait's start of an entry", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "t", Entry: 2, WaitID: "w"}, reason: waitStartRefusal},
+		{name: "a wait on a suspend", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, WaitID: "w"}, reason: waitStartRefusal},
+		{name: "the gate's message on a tester's start", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "t", GateMessage: true}, reason: gateStartRefusal},
+		{name: "the gate's message on a start with no task", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 3, GateMessage: true}, reason: gateStartRefusal},
+		{name: "the gate's message on a start of a phase", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 3, Phase: phase.Merging, Task: "t", GateMessage: true}, reason: gateStartRefusal},
+		{name: "the gate's message on a start of an entry", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 3, Task: "t", Entry: 2, GateMessage: true}, reason: gateStartRefusal},
+		{name: "the gate's message on a wait's start", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 3, Task: "t", WaitID: "w", GateMessage: true}, reason: gateStartRefusal},
+		{name: "the gate's message on a suspend", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 3, GateMessage: true}, reason: gateStartRefusal},
 		{name: "a hook prompt with no hook", payload: HookPrompt{Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "carries the name of the hook that fired it"},
 		{name: "a hook prompt to an architect", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleArchitect, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "never to an architect"},
 		{name: "a hook prompt to no role", payload: HookPrompt{Hook: "back-to-implementing", From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "never to an architect"},
@@ -641,6 +683,8 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a check wake without a look", row: OutboxRow{ID: 40, Kind: OutboxKindCheckWake, Payload: json.RawMessage(`{"reason":"the tester's own wake"}`)}, reason: "check wake requires the look it was named at"},
 		{name: "a check wake without a reason", row: OutboxRow{ID: 42, Kind: OutboxKindCheckWake, Payload: json.RawMessage(`{"look":1}`)}, reason: "check wake requires the reason it wakes the check"},
 		{name: "a check wake with an unknown field", row: OutboxRow{ID: 43, Kind: OutboxKindCheckWake, Payload: json.RawMessage(`{"look":1,"reason":"the tester's own wake","build":"b00f"}`)}, reason: "unknown field"},
+		{name: "a wait's time with no wait", row: OutboxRow{ID: 60, Kind: OutboxKindWaitDue, Payload: json.RawMessage(`{"token":"legion-legion-208-tester"}`)}, reason: "names the claim that declared the wait and the wait"},
+		{name: "a wait's time with an unknown field", row: OutboxRow{ID: 61, Kind: OutboxKindWaitDue, Payload: json.RawMessage(`{"token":"legion-legion-208-tester","waitId":"w","wakeAt":"2026-11-14T06:00:00Z"}`)}, reason: "unknown field"},
 		{name: "a check bound with a field", row: OutboxRow{ID: 41, Kind: OutboxKindCheckBound, Payload: json.RawMessage(`{"look":1}`)}, reason: "unknown field"},
 		{name: "a role message with no body", row: OutboxRow{ID: 48, Kind: OutboxKindRoleMessage, Payload: json.RawMessage(`{"role":"legion.sjawhar-legion.LEGION-208.architect"}`)}, reason: "role message requires body"},
 		{name: "a hook prompt to an architect", row: OutboxRow{ID: 55, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"architect","from":"reviewing","to":"implementing","count":1,"counts":{"reviewing-implementing":1},"prompt":"Read the thread."}`)}, reason: "never to an architect"},
@@ -677,6 +721,15 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 // checkLookRefusal is the validation's words for a supervise row whose check look is not a start
 // of the implementer or the tester with no phase.
 const checkLookRefusal = "a supervise check look names a start of the implementer or the tester with no phase"
+
+// waitStartRefusal is the validation's words for a supervise row that names a wait and is not a
+// start with a task, no phase and no entry: the start of a wait's time is that start and no other.
+const waitStartRefusal = "a supervise start of a wait's time is a start with a task, no phase, no entry and no check look"
+
+// gateStartRefusal is the validation's words for a supervise row that carries the mark of the
+// design gate's own message and is not a merger's start with a task, no phase, no entry and no
+// wait: the gate's own start of a merger is that start and no other.
+const gateStartRefusal = "a supervise start of the design gate's own message is a merger's start with a task, no phase, no entry, no check look and no wait"
 
 // A hook prompt's message is three parts with a blank line between them: the daemon's header,
 // the hook's words exactly as the deployment wrote them, and the daemon's remaining facts. The
@@ -850,6 +903,44 @@ func TestAParkedDecisionKeepsItsDecisionThroughTheRow(t *testing.T) {
 		row, err := NewOutboxRow("LEGION-1", payload, now)
 		if err != nil {
 			t.Fatalf("NewOutboxRow(%#v): %v", payload, err)
+		}
+		got, err := DecodeOutboxPayload(row)
+		if err != nil || !reflect.DeepEqual(got, payload) {
+			t.Fatalf("decoded %#v, %v; want %#v", got, err, payload)
+		}
+	}
+}
+
+// A person's review of a design document travels as Dispatch recorded it, its mark and the
+// document reviewed, on the three notices that carry one: the design-approved and
+// design-changes-requested notices that report it, and the parked-decision controller notice that
+// relays either as the notice did, whose publish asks again whether the review stands when it
+// relays a changes request. Every other kind is refused them
+// (TestNewOutboxRowRefusesInvalidPayloads).
+func TestAReviewsMarkAndDocumentTravelOnTheNoticesOfAReview(t *testing.T) {
+	now := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+	review := EventMark{Seq: 8, At: now.Add(-time.Hour)}
+	spec, reason, document := "dispatch://LEGION-1/spec", "name the rollback path", "artifact-1"
+	for _, payload := range []OutboxPayload{
+		Notice{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: spec, Review: review,
+			Artifact: document},
+		Notice{Kind: "design-changes-requested", Version: 3, Reason: reason, Actor: "user:alice",
+			Ref: spec, Review: review, Artifact: document},
+		ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionDesignChangesRequested,
+			Root: "LEGION-1", Ref: spec, Actor: "user:alice", Version: 3, Reason: reason,
+			Review: review, Artifact: document},
+		ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionDesignApproved,
+			Root: "LEGION-1", Ref: spec, Actor: "user:alice", Version: 3, Review: review,
+			Artifact: document},
+	} {
+		row, err := NewOutboxRow("LEGION-1", payload, now)
+		if err != nil {
+			t.Fatalf("NewOutboxRow(%#v): %v", payload, err)
+		}
+		encoded := string(row.Payload)
+		if !strings.Contains(encoded, `"artifact":"artifact-1"`) ||
+			!strings.Contains(encoded, `"review":`) {
+			t.Fatalf("payload %s, want the review's mark and document in it", row.Payload)
 		}
 		got, err := DecodeOutboxPayload(row)
 		if err != nil || !reflect.DeepEqual(got, payload) {
@@ -1092,9 +1183,9 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "child-not-recorded", Role: claim.RoleArchitect, Reason: "LEGION-209 was not recorded under your tree: the review App is not installed on acme/gadgets; the daemon said so on the issue. Set a repository both Legion Apps are installed on, spelled as GitHub spells it (dispatch issue-update --repo owner/name), then release it again."},
 		{Kind: "catch-up", Role: claim.RoleArchitect, PacedAt: paced, PacedFrom: answered,
 			Reason: "the tree of LEGION-208 at generation 3 as the daemon records it now; start or resume it as your role says",
-			CatchUp: &CatchUp{Generation: 3, Launch: 2,
+			CatchUp: &CatchUp{Generation: 3, Launch: 2, CatchUpTree: CatchUpTree{
 				Gates:  []CatchUpGate{{Step: DesignStepSpec, Gated: true, Artifact: "artifact-208", Version: 3, Approved: 3, Open: true}},
-				Issues: []CatchUpIssue{{Key: "LEGION-208", Title: "The outbox's notices", Phase: phase.Implementing, Status: "in_progress"}}}},
+				Issues: []CatchUpIssue{{Key: "LEGION-208", Title: "The outbox's notices", Phase: phase.Implementing, Status: "in_progress"}}}}},
 		{Kind: "checks-red", Role: claim.RoleArchitect, Phase: phase.Testing, Reason: "CI is red at head: pytest"},
 		{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing, Summary: "alice", Reason: "the review round has not ended",
 			Topic: "notifications.role.legion-LEGION-208-reviewer"},

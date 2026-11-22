@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -532,6 +533,84 @@ func TestTheRoundAClaimLeftRoundTrips(t *testing.T) {
 		t.Fatalf("put claim again: %v", err)
 	}
 	sameClaim(t, onlyClaim(t, store), want)
+}
+
+// The repository a round's pod was built from is read back as the repository it was written as
+// (supervise.Claim.UpdateRepository): a restart has nothing else to name the issue branch of a
+// gone pod's message from, nor the workspace on a kept volume. The round's end clears it, and a
+// claim with no repository reads back with none.
+func TestTheRepositoryARoundsPodWasBuiltFromRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	want := tmuxClaim("legion-LEGION-209-repositoryround")
+	want.UpdateRound = supervise.PodRound("9d3f0c7a-2b41-4a39-9f6b-6c1d0a7e5b22")
+	want.UpdateRepository = ghrepo.MustParse("acme/widgets")
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	sameClaim(t, onlyClaim(t, store), want)
+
+	want.UpdateRound, want.UpdateRepository = "", ghrepo.Repository{}
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim again: %v", err)
+	}
+	sameClaim(t, onlyClaim(t, store), want)
+}
+
+// A daemon of an earlier release names neither repository column in its claim write, so it ends
+// a round this release opened and opens the claim's next round with the name still standing.
+// That name is read for the round it was written with alone: the next round reads as one that
+// recorded no repository, since read as this one's it would name a repository that the next pod
+// was not built from.
+func TestClaimsReadARoundsRepositoryForTheRoundItWasWrittenWithAlone(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	want := tmuxClaim("legion-LEGION-209-earlierround")
+	want.UpdateRound = supervise.PodRound("9d3f0c7a-2b41-4a39-9f6b-6c1d0a7e5b22")
+	want.UpdateRepository = ghrepo.MustParse("acme/widgets")
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	const next = "pod:4b8e1d60-3c92-4f7a-ae15-8d0c2b5f6a34"
+	if _, err := store.pool.Exec(ctx, `update claims set update_round = $2, update_reasons = 'image' where token = $1`,
+		string(want.Token), next); err != nil {
+		t.Fatalf("write the next round as the earlier release writes it: %v", err)
+	}
+
+	got := onlyClaim(t, store)
+	if got.UpdateRound != next || !got.UpdateRepository.IsZero() {
+		t.Fatalf("the claim reads round %q with the repository %q, want %q with none",
+			got.UpdateRound, got.UpdateRepository, next)
+	}
+}
+
+// A repository column written with the claim's own round that is no repository refuses the read
+// by the claim's name, as a locator that does not validate does: the daemon writes only a name it
+// parsed, and read as no repository the row would send the roles of a gone pod to the issue
+// branch at origin, which is not where their work is.
+func TestClaimsRefusesAStoredRoundRepositoryThatIsNoRepository(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	stored := tmuxClaim("legion-LEGION-209-badrepository")
+	stored.UpdateRound = supervise.PodRound("9d3f0c7a-2b41-4a39-9f6b-6c1d0a7e5b22")
+	stored.UpdateRepository = ghrepo.MustParse("acme/widgets")
+	if err := store.PutClaim(ctx, stored); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	if _, err := store.pool.Exec(ctx, `update claims set update_repository = 'acme widgets' where token = $1`,
+		string(stored.Token)); err != nil {
+		t.Fatalf("write a repository with no slash: %v", err)
+	}
+
+	_, err := store.Claims(ctx)
+	if err == nil {
+		t.Fatal("claims loaded a round's repository that is no repository")
+	}
+	for _, want := range []string{"legion-LEGION-209-badrepository", "acme widgets"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not name %q: %v", want, err)
+		}
+	}
 }
 
 // A locator is checked where it is read back: a row nothing could act on is refused by name rather

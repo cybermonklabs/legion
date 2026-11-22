@@ -542,7 +542,7 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 // issue's session runs measure. Each of the first four sentences sits in the core its role
 // composes, so the rule reaches that role and no other: the simplify pass and the class search are
 // the implementer's, the procedure and can-fail rules the tester's, the open-decision rule the
-// planner's, and the planner's WAITING line is phase mechanics, so it lives in its residue rather
+// planner's, and the planner's declared wait is phase mechanics, so it lives in its residue rather
 // than its core. R5 is the exception: Compose names core/oracle.md for no role, and it is pinned
 // beside core/common.md to keep one wording of that rule in the prompt tree, which a later core
 // would copy from.
@@ -566,7 +566,7 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"core/planner.md", "A decision only whoever owns the plan can make is never left open in the plan"},
 		{"core/planner.md", "do not complete the phase, and do not choose for them so the plan can be finished"},
 		{"core/planner.md", "An open decision in a finished plan is a gap the implementation inherits."},
-		{"planner.md", "end the turn with a line that begins WAITING, naming the decision"},
+		{"planner.md", "declare a wait with the `legion` tool's `declare_wait`, its `waiting_on` naming the decision"},
 		// R5: a claim cites the file and the symbol or the text it was read at, never a line, in the
 		// core every phase worker but the merger composes and in the oracle core the composer joins for
 		// no role, which is where a later core would copy the sentence from (dispatch://INFRA-924).

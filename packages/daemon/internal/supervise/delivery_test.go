@@ -339,18 +339,18 @@ func TestAnAgentThatRefusesEveryPromptRunsOutOfItsBudget(t *testing.T) {
 	h.wantState(StateLaunching)
 }
 
-// Oh My Pi answers a prompt that reaches it mid-turn "Agent is already processing": the agent is in
-// a turn of its own — an Envoy notice's, which a tree publishes while its workers boot — so it is
-// working, not refusing the work. That answer to the task's own send is charged nothing, as the
-// same answer after an acknowledgement is (lateRefused), and the turn's end sends the task again.
-// Charged, three such collisions in a row retired the agent in the middle of the turn doing the
-// work, and two retirements failed its claim.
+// Oh My Pi answers a prompt that reaches it mid-turn with the busy code, which the
+// stream mints as OutcomeAgentBusy: the agent is in a turn of its own — an Envoy notice's, which
+// a tree publishes while its workers boot — so it is working, not refusing the work. That answer
+// to the task's own send is charged nothing, as the same answer after an acknowledgement is
+// (lateRefused), and the turn's end sends the task again. Charged, three such collisions in a row
+// retired the agent in the middle of the turn doing the work, and two retirements failed its
+// claim.
 func TestABusyAgentsRefusalOfTheSendIsChargedNothingAndItsTurnsEndSendsTheTask(t *testing.T) {
-	const busy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
 	h := newHarness(t)
 	h.reach(StateReady)
 	base := len(h.prompts())
-	h.conn.RefusePrompt(busy)
+	h.conn.FailPrompt(busyRefusal())
 	h.must(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
 	task := h.pending().ID
 
@@ -406,7 +406,6 @@ func TestABusyAgentsRefusalOfTheSendIsChargedNothingAndItsTurnsEndSendsTheTask(t
 // The busy-refusal test above drives the same refusal with a turn start before each end, which is
 // why this never showed: that is the agent whose turn the daemon watched begin.
 func TestATurnEndTheDaemonNeverSawBeginSendsTheTaskItHolds(t *testing.T) {
-	const busy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
 	for _, tc := range []struct {
 		name string
 		// miss sends the task, which does not reach a turn, and returns the state the claim is
@@ -418,7 +417,7 @@ func TestATurnEndTheDaemonNeverSawBeginSendsTheTaskItHolds(t *testing.T) {
 			// one that began before this claim was registered. The refusal takes the task back
 			// under a new id and records the claim working for that turn.
 			h.must(RequestDeliver{Claim: testToken, Task: "the phase task", Generation: 7})
-			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: h.pending().ID, Error: busy})
+			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: h.pending().ID, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
 			return StateWorking
 		}},
 		{name: "the send lost on the way", miss: func(h *harness) ClaimState {
@@ -460,7 +459,6 @@ func TestATurnEndTheDaemonNeverSawBeginSendsTheTaskItHolds(t *testing.T) {
 // that confirmation back and is still charged nothing; the claim stays working, and the turn's end
 // sends the task again rather than retiring it as served.
 func TestABusyRefusalAfterTheNoticesTurnConfirmedTheSendIsChargedNothing(t *testing.T) {
-	const busy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
 	h := newHarness(t)
 	h.reach(StateReady)
 	gated := newGatedConn()
@@ -475,7 +473,7 @@ func TestABusyRefusalAfterTheNoticesTurnConfirmedTheSendIsChargedNothing(t *test
 	if p := h.pending(); p.ConfirmedAt.IsZero() {
 		t.Fatalf("pending after a turn started with the send in flight = %+v, want it confirmed", p)
 	}
-	gated.RefusePrompt(busy)
+	gated.FailPrompt(busyRefusal())
 	gated.release <- struct{}{}
 	h.m.Wait()
 
@@ -626,11 +624,11 @@ func TestAReplayedTurnStartIsFencedOnItsDeliveryID(t *testing.T) {
 // My Pi acknowledges a prompt at its admission, before its pre-turn work, runs one admitted prompt
 // at a time and refuses the rest ("Agent is already processing"), and hands each prompt its one
 // prompt_result at the end of the first run after its admission (rpc-prompt-results.ts); the
-// Claude Code bridge takes one prompt at a time too (internal/claudebridge's Busy and promptRun).
-// So the late start confirms the task, and the prompt's result — naming the id the bound took
-// back — retires it, and no prompt follows. Before, the late start was taken for a foreign turn,
-// the result was dropped at the fence, and the task was sent again when the turn ended, to a
-// worker that had just done it: the loop dispatch://INFRA-3276 measured.
+// Claude Code bridge takes one prompt at a time too (internal/claudebridge's busyWords and
+// promptRun). So the late start confirms the task, and the prompt's result — naming the id the
+// bound took back — retires it, and no prompt follows. Before, the late start was taken for a
+// foreign turn, the result was dropped at the fence, and the task was sent again when the turn
+// ended, to a worker that had just done it: the loop dispatch://INFRA-3276 measured.
 //
 // The prompt's own result is what corrects a start taken for it that was in fact another input's.
 // A result that says the prompt ran no turn takes the task back, charged nothing more than the
@@ -743,7 +741,7 @@ func TestALateTurnOfAnOutstandingPromptSettlesItsTask(t *testing.T) {
 	if resend == first {
 		t.Fatalf("the re-send went under the first id %s, want an id of its own", first)
 	}
-	h.must(StreamPromptResult{Claim: testToken, DeliveryID: resend, Error: busyAnswer})
+	h.must(StreamPromptResult{Claim: testToken, DeliveryID: resend, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
 	if p := h.pending(); p.ID == resend || !p.ConfirmedAt.IsZero() {
 		t.Fatalf("pending after the busy answer = %+v, want the re-send taken back under an id of its own, unconfirmed", p)
 	}
@@ -788,7 +786,7 @@ func TestANewerTaskTakesTheLateTurnsTaskPlace(t *testing.T) {
 	first := h.wantPrompts(1)[0].DeliveryID
 	h.advance(testRPC)
 	h.observe(runtime.Alive)
-	h.must(StreamPromptResult{Claim: testToken, DeliveryID: h.wantPrompts(2)[1].DeliveryID, Error: busyAnswer})
+	h.must(StreamPromptResult{Claim: testToken, DeliveryID: h.wantPrompts(2)[1].DeliveryID, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
 	h.must(StreamTurnStart{Claim: testToken}) // the first prompt's turn, late
 
 	if err := h.handle(RequestDeliver{Claim: testToken, Task: "the next task", ID: "outbox:2", Generation: 8}); err != nil {
@@ -835,7 +833,7 @@ func TestABusyAnswerBeforeItsOwnAcknowledgementAddsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	resend := waitFor(t, "the re-send", gated.entered)
-	if err := h.m.Handle(h.ctx, StreamPromptResult{Claim: testToken, DeliveryID: resend, Error: busyAnswer}); err != nil {
+	if err := h.m.Handle(h.ctx, StreamPromptResult{Claim: testToken, DeliveryID: resend, Error: busyWords, Outcome: runtime.OutcomeAgentBusy}); err != nil {
 		t.Fatal(err)
 	}
 	if p := h.pending(); p.ID == resend {
@@ -1040,19 +1038,20 @@ func TestALateRefusalCancelsTheRefusedPromptsTurnTimer(t *testing.T) {
 // produces: an assignment prompt sent a moment after that notice is refused the same way. That is
 // not the agent failing to take work, and charging it let the daemon's own notices walk a healthy
 // worker toward the retirement its prompt budget ends in. Two witnesses say the turn is real, and
-// either is enough: Oh My Pi's own busy answer, and a turn the stream saw start. The task is
-// taken back under a new id, nothing is charged, and it is not re-sent on the spot — the turn's
-// end sends it.
+// either is enough: Oh My Pi's own busy answer, whose code the stream mints as OutcomeAgentBusy, and a
+// turn the stream saw start. The task is taken back under a new id, nothing is charged, and it is
+// not re-sent on the spot — the turn's end sends it.
 func TestALateRefusalIsTheAgentsTurn(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		working bool
 		refusal string
+		outcome runtime.Outcome
 	}{
-		{name: "Oh My Pi's own answer says so", refusal: "Agent is already processing. Use steer() or followUp() to queue messages"},
+		{name: "Oh My Pi's own answer says so", refusal: busyWords, outcome: runtime.OutcomeAgentBusy},
 		// This row's witness is the stream alone, so its refusal says nothing about a turn: with
-		// Oh My Pi's busy wording here too, deleting the stream arm would leave the row passing.
-		{name: "the stream saw the turn start", working: true, refusal: "the model provider refused the request"},
+		// Oh My Pi's busy outcome here too, deleting the stream arm would leave the row passing.
+		{name: "the stream saw the turn start", working: true, refusal: "the model provider refused the request", outcome: runtime.OutcomePromptRefused},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
@@ -1065,7 +1064,7 @@ func TestALateRefusalIsTheAgentsTurn(t *testing.T) {
 				h.must(StreamTurnStart{Claim: testToken})
 			}
 
-			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: refused, Error: tc.refusal})
+			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: refused, Error: tc.refusal, Outcome: tc.outcome})
 
 			h.wantBudgets(Budgets{})
 			rotated := h.pending()
@@ -1096,16 +1095,18 @@ func TestALateRefusalForAnotherDeliveryIsDroppedAndLoggedOnce(t *testing.T) {
 }
 
 // A prompt refused after a foreign turn already confirmed the send (B1's matching) was never taken:
-// the confirmation is taken back and the refusal charged once. A prompt lost to the transport
-// takes the confirmation back too, at no charge — the shim answers the same id again without a
-// second turn if the turn was in fact the delivery's.
+// the confirmation is taken back. The refusal lands while the daemon's record holds the claim in
+// that turn, so it is the agent's busy answer whatever its words or its code (agentRefusalOutcome),
+// and is charged nothing. A prompt lost to the transport takes the confirmation back too, at no
+// charge — the shim answers the same id again without a second turn if the turn was in fact the
+// delivery's.
 func TestAFailedSendAfterAConfirmingTurnTakesTheConfirmationBack(t *testing.T) {
 	for _, failure := range []struct {
 		name    string
 		script  func(*gatedConn)
 		charged Budgets
 	}{
-		{"refused", func(g *gatedConn) { g.RefusePrompt("the model provider refused the request") }, Budgets{PromptFailures: 1}},
+		{"refused", func(g *gatedConn) { g.RefusePrompt("the model provider refused the request") }, Budgets{}},
 		{"transport", func(g *gatedConn) { g.FailPrompt(errBoom) }, Budgets{}},
 	} {
 		t.Run(failure.name, func(t *testing.T) {

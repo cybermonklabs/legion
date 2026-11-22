@@ -102,14 +102,20 @@ func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener
 		return nil, fmt.Errorf("sandboxOptions: %w", err)
 	}
 	opts.Agent = controllerSweepKindStub
-	// The proof has prepared no repository and configures no rename, so the rename rule
-	// (repositories.serving) answers every provisioning token's repository as it is recorded.
+	// The proof has prepared no repository and configures no rename, so the repository state's
+	// rules (repositories.serving, repositories.left) answer every repository as it is recorded.
 	repos := newRepositories(cfg.Project, ghrepo.Renames{})
 	// The proof applies no fact of a pod's volume and no memory guard kill, so the trimmer's
 	// reports and the guard's reach holders nothing filled, which drop them
 	// (volumeTrimReports.report, memoryGuardKills.killed).
-	return sandboxRuntime(rc, opts, repos.servesRepository, repos.serving, ghrepo.Renames{}, appauth.NewInstalled(), appauth.NewLeftOut(), "", &memoryGuardKills{}, &volumeTrimReports{})(ctx, listener, listener.Addr(), outboxTokens{}, nil, st, noRepositories)
+	return sandboxRuntime(rc, opts, repos.servesRepository, repos.serving, repos.left, ghrepo.Renames{}, appauth.NewInstalled(), appauth.NewLeftOut(), "", &memoryGuardKills{}, &volumeTrimReports{})(ctx, listener, listener.Addr(), outboxTokens{}, nil, st, noRepositories, noWriteOnIssue)
 }
+
+// noWriteOnIssue is the proof's writer for the one message a runtime may leave on a Dispatch
+// issue, the refusal of a saved workspace bundle of a repository the issue has left
+// (tellBundleRepositoryRefused): the proof saves no bundle and restores none, so nothing calls
+// it. A deployment passes the plan's own write there (plan.writeBodyOnIssue).
+func noWriteOnIssue(context.Context, string, string) error { return nil }
 
 // controllerSweepKindSpec is the project controller's launch as the proof makes it: the
 // controller's token and role, no issue, tree or repository, the launch secret the file's

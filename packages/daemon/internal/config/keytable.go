@@ -314,7 +314,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "worker_silence_minutes", Default: "`30`", RequiredBy: "no",
-			Description: "How many minutes a phase worker that is up, between turns and holding no task may go with no recorded step before the daemon sends it its phase's task again; decimals allowed, and a value under 16 is refused, since a healthy worker that says it is waiting stays quiet for 15 minutes before its own reminder comes again.",
+			Description: "How many minutes a phase worker that is up, between turns and holding no task may go with no recorded step before the daemon sends it its phase's task again; decimals allowed, and a value under 16 is refused, since a healthy worker whose turn ends with background work of its own still running stays quiet for 15 minutes before its own reminder comes again.",
 			Read:        reads(readMinutes, func(f *fileConfig, v *time.Duration) { f.WorkerSilence = v }),
 		},
 		{

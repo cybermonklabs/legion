@@ -680,15 +680,19 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 		select 1 from outbox where issue = $1 and kind = any($2))`, issue, idleWaitingKinds).Scan(&view.Waiting); err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the queued rows of %s for its idle view: %w", issue, err)
 	}
-	if err := tx.QueryRow(ctx, `select exists (select 1 from issue_releases where project = $1 and issue = $2)`,
-		project, issue).Scan(&view.Releasing); err != nil {
-		return pods.IdleView{}, fmt.Errorf("read whether %s is being released: %w", issue, err)
+	releasing, err := issueReleasing(ctx, tx, project, issue)
+	if err != nil {
+		return pods.IdleView{}, err
 	}
+	view.Releasing = releasing
 	unrestored, err := workspaceBundleUnrestored(ctx, tx, issue)
 	if err != nil {
 		return pods.IdleView{}, err
 	}
 	view.BundleUnrestored = unrestored
+	if view.BundleRefusal, view.Head, err = workspaceBundleRefusal(ctx, tx, issue); err != nil {
+		return pods.IdleView{}, err
+	}
 	// The pause's two facts, read by the view's project token as readOpenPauseByToken reads a
 	// pause (which says why): project_pauses and the pod holds carry its Dispatch key, which
 	// project, the token (claim.ProjectToken), lowercases for every key project_pauses admits.

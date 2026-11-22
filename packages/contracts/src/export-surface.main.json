@@ -731,7 +731,6 @@
     "relatedCheckModeWords": "function",
     "relatedCheckSearchWords": "function",
     "retriesUnderKey": "function",
-    "roleForPhase": "function",
     "roleToken": "function",
     "roleTopic": "function",
     "sanitizeSubjectSegment": "function",

@@ -99,10 +99,13 @@ export type Envelope = z.infer<typeof EnvelopeSchema>;
  * The shape of a dedupe key the code that sends a message mints once for it: the listener's own
  * `publish.<id>` and `agent.<session>.<id>` (`id.New`, 32 hex digits, `cmd/listener/api.go`), the
  * same two around the shared transport's idempotency key (`crypto.randomUUID`,
- * `@legion/envoy-client/transport`), and any of them behind the role arbiter's forward mark. Each
- * is repeated only by a re-send of its one message: the transport's retry of a send whose answer
- * was lost, the Legion daemon's copy of a role-lane notice (LEGION-108). `scripts/gen-go.ts` emits
- * it as `contracts.MintedDedupeKeyPattern`.
+ * `@legion/envoy-client/transport`), the Legion daemon's update ask, `publish.` and 32 hex digits
+ * it derives from the claim, the round and the round's opening (`record.UpdateAskKey`,
+ * `packages/daemon/internal/record/outbox.go`), and any of them behind the role arbiter's forward
+ * mark. Each is repeated only by a re-send of its one message: the transport's retry of a send
+ * whose answer was lost, the Legion daemon's copy of a role-lane notice (LEGION-108), a second
+ * row of one update ask of one round opening. `scripts/gen-go.ts` emits it as
+ * `contracts.MintedDedupeKeyPattern`.
  */
 export const MINTED_DEDUPE_KEY_PATTERN =
   "^(?:envoy\\.role\\.forward\\.)?(?:publish|agent\\.[^.]+)\\.(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$";

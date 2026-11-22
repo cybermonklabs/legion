@@ -1186,9 +1186,11 @@ func TestACatchUpCopyCommittedAfterTheFreshOneIsNotPublished(t *testing.T) {
 		}
 	}
 	_, delivered := publisher.snapshot()
+	// The delivery states the tree again, its reason with it (deliverNotice), so each catch-up is
+	// told apart by the launch it was written for, which the row keeps.
 	var got []string
 	for _, published := range delivered {
-		got = append(got, published.payload.(record.Notice).Reason)
+		got = append(got, fmt.Sprintf("launch %d", published.payload.(record.Notice).CatchUp.Launch))
 	}
 	if fmt.Sprint(got) != "[launch 3]" || outboxRows(t, pool) != 0 || !strings.Contains(logged.String(), `msg="outbox catch-up finished without publishing: a newer catch-up supersedes it"`) {
 		t.Fatalf("delivered %v with %d rows left, logged:\n%s\nwant the fresh catch-up alone and the stale copy finished", got, outboxRows(t, pool), logged.String())

@@ -24,8 +24,10 @@
 // (packages/pi-shared/test/omp-harness.ts, messageStream). So the request the daemon answers is
 // the one the shipped plugin builds: its record lookup, its grant and its post. The tool's answer
 // comes back to the stand-in as the next request's tool_result, which is what the step records,
-// and the stand-in answers that with a WAITING line, so the phase-stall reminder adds no turn of
-// its own (packages/pi-shared/src/phase-stall.ts).
+// and the stand-in answers that with plain text (lateTextReply). The phase-stall reminder adds no
+// turn of its own then, because by that turn's end the daemon owes the claim nothing: the record
+// took its completion, or the issue had left the role's phase (api's owedBy, which the reminder
+// asks at each settle, packages/pi-shared/src/phase-reminder.ts).
 //
 // Dispatch is the real server this checkout builds, on a database of its own, as
 // handoff_records_live_test.go runs it (startHandoffDispatch), and the daemon and every pane are
@@ -112,11 +114,13 @@ const (
 // lateCompletionAnswered is the completion route's one line per answer (api's handoffComplete).
 const lateCompletionAnswered = "api: handoff completion answered"
 
-// lateWaitingReply is the text a stand-in answers every turn it makes no call in, the tool's
-// result among them: a WAITING line, which the phase-stall reminder takes as a worker that said
-// what it waits on and answers with its quiet wait rather than another turn
-// (packages/pi-shared/src/phase-stall.ts, WAITING_REPLY).
-const lateWaitingReply = "WAITING on the daemon's next task: the legion tool has answered."
+// lateTextReply is the text a stand-in answers every turn it makes no call in, the tool's result
+// among them. It is plain text, and the phase-stall reminder reads nothing in it. Each turn a step
+// drives that ends on it ends when the daemon owes the claim nothing, because the record took the
+// claim's completion or the issue had left the role's phase, so the reminder adds no turn there
+// (api's owedBy). A turn no step drives, such as one a reminder starts, gets the same text, and no
+// step reads it.
+const lateTextReply = "The legion tool has answered; nothing more to do in this turn."
 
 // The words of the operator's task that starts a finished role's second turn (lateRepeatTask),
 // which that turn's call is armed on: the implementer's and the tester's.
@@ -378,7 +382,8 @@ func (r *lateCompletionLive) pushedHead() string {
 func (r *lateCompletionLive) overrides() overrides {
 	return overrides{
 		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
-			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
+			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository,
+			_ func(ctx context.Context, issue, body string) error) (runtime.Runtime, error) {
 			r.rt.conns, r.rt.stream = listener, address
 			return r.rt, nil
 		},
@@ -890,7 +895,7 @@ func (r *lateCompletionLive) writeOverlays(work string) {
 // completionStandin is the model endpoint of one pane that a step can have call the `legion` tool:
 // it answers the turn whose task carries the marker a step armed (arm) with one tool_use block
 // calling `legion` with that call's input, held first while the call is held; it answers the
-// next request, which carries the tool's result, with lateWaitingReply, handing that result to the
+// next request, which carries the tool's result, with lateTextReply, handing that result to the
 // call; and it answers every other turn, and the plugin's own side question, with text alone, as
 // paneStandin does. A turn is matched on what starts it rather than on its count, because Oh My
 // Pi's own requests and the reminders a settle earns are turns too. What starts it is what the
@@ -1032,7 +1037,7 @@ func (s *completionStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 	}
 	var request messagesRequest
 	if err := json.Unmarshal([]byte(body), &request); err != nil || len(request.Messages) == 0 {
-		streamAnthropicText(w, s.name, lateWaitingReply)
+		streamAnthropicText(w, s.name, lateTextReply)
 		return
 	}
 	turn := turnOf(request)
@@ -1041,7 +1046,7 @@ func (s *completionStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 		case call.result <- result:
 		default:
 		}
-		streamAnthropicText(w, s.name, lateWaitingReply)
+		streamAnthropicText(w, s.name, lateTextReply)
 		return
 	}
 	if call := s.callFor(request, turn); call != nil {
@@ -1056,7 +1061,7 @@ func (s *completionStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 		streamAnthropicToolUse(w, s.name, call.id, call.tool, call.input)
 		return
 	}
-	streamAnthropicText(w, s.name, lateWaitingReply)
+	streamAnthropicText(w, s.name, lateTextReply)
 }
 
 // resultIn is the result of a call this stand-in made, when the turn's blocks carry one.

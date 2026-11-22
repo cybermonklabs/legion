@@ -18,9 +18,11 @@ export interface StallLimits {
   /** How long after a settle that earned a reminder the plugin waits before delivering it, once
    * the first reminder of the run has gone out as the `session_stop` continuation. */
   readonly reminderMs: number;
-  /** How long a WAITING reply buys before the reminder comes again. */
+  /** How long the worker's own background work, still running as its turn ends, buys before the
+   * reminder comes again. */
   readonly waitingMs: number;
-  /** How long after a resume on an open phase the plugin waits before reminding. */
+  /** How long after a resume the plugin waits before it asks the daemon whether the claim owes
+   * work, and reminds the worker if it does. */
   readonly resumeMs: number;
   /** How many delivered reminders in a row change nothing before the architect is told. */
   readonly architectAfter: number;
@@ -49,8 +51,8 @@ export const DEFAULT_STALL_LIMITS: StallLimits = {
   // 5 minutes is one model turn per stalled worker, and it leaves the 60 s idle window a Stage 3
   // e2e measures to the single `session_stop` continuation reminder.
   reminderMs: 300_000,
-  // 15 minutes is longer than a CI run here, so a worker that said what it waits on is not woken
-  // in the middle of the wait.
+  // 15 minutes is longer than a CI run here, so a worker whose own background job waits on one
+  // is not woken in the middle of it.
   waitingMs: 900_000,
   // 2 minutes is longer than the daemon's re-send of an interrupted task after `ready`, so a
   // resumed worker the daemon is about to prompt again is prompted before it is reminded.

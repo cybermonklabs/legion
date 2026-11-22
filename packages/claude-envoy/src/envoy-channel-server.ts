@@ -271,12 +271,15 @@ export interface ChannelDelivery {
    * skipped, dropped, suppressed, or answered on Dispatch with an error instead (once that reply
    * is posted), and `true` without a write for an event whose card the session already has.
    * `late` is a relay frame delivered before or stored before the current epoch
-   * (`ConsumerFrame.late`): a late BTW is suppressed.
+   * (`ConsumerFrame.late`): a late BTW is suppressed. `deliveryKey` is the frame's own dedupe key
+   * as `deliverRelayed` read it (`deliveryIdentity`), which `deliveryWritten` is told as the
+   * frame is written as its card.
    */
   enqueue(input: {
     readonly subject: string
     readonly raw: string
     readonly late?: boolean
+    readonly deliveryKey?: string | undefined
   }): Promise<boolean>
   /** Latest inbound metadata, most recent first; no envelope body is retained. */
   inbox(): readonly ChannelInboxEntry[]
@@ -353,6 +356,16 @@ export interface ChannelSessionOptions {
    * frame arrives as the card it renders as.
    */
   readonly router?: (state: UserTurnState) => UserTurnRouter
+  /**
+   * Told of each relayed Envoy delivery as this session writes it into the conversation as its
+   * card, before the write, with the frame's own dedupe key (`deliveryIdentity(frame.data)` in
+   * `deliverRelayed`), or undefined for a frame that carries none. A person's message the router
+   * takes, a frame skipped, suppressed or already shown, and a notice of Envoy's own are not
+   * told. In a Legion pane it is the phase endpoint's `news` (`./legion-phase-hook`), which reports
+   * each delivery after a declared wait to the daemon under that key (D8 of
+   * dispatch://INFRA-2040's plan). Omitted, nothing is told.
+   */
+  readonly deliveryWritten?: (deliveryKey: string | undefined) => void
   readonly client: Pick<
     EnvoyClient,
     "subscribe" | "unsubscribe" | "unregisterSession" | "setRole" | "getRole" | "getInterest"
@@ -540,6 +553,9 @@ export function createChannelDelivery(input: {
   readonly configFile: SessionConfigFile
   /** What a person's own message, command, pick or BTW becomes; omitted, every frame is a card. */
   readonly router?: () => UserTurnRouter | undefined
+  /** Told of each frame written as its card, before the write, with `enqueue`'s `deliveryKey`
+   *  (`ChannelSessionOptions.deliveryWritten`). */
+  readonly deliveryWritten?: ((deliveryKey: string | undefined) => void) | undefined
 }): ChannelDeliveryPath {
   const inbox: ChannelInboxEntry[] = []
   let tail = Promise.resolve()
@@ -599,7 +615,7 @@ export function createChannelDelivery(input: {
   }
 
   return {
-    enqueue({ subject, raw, late }) {
+    enqueue({ subject, raw, late, deliveryKey }) {
       const rendered = renderInbound(raw, input.identity.id, subject)
       if (rendered.skip) return tail.then(() => false)
       // A targeted Dispatch delivery the shared renderer could not validate is
@@ -644,6 +660,13 @@ export function createChannelDelivery(input: {
         // the message of one event id once, however many copies of it arrive
         // (`../hooks/mod-writer.ts`, `writeOnce`), so the resend costs the model nothing and the
         // listener's copy is the only one that can still reach it.
+        //
+        // The delivery is told before the write: in a Legion pane the bridge hands the line to the
+        // running turn as its next step or starts a turn of its own with it, and the report of
+        // news (`deliveryWritten`) is then already queued ahead of that turn's `Stop`, which sends
+        // it before it reads the owed answer. A frame whose write fails is told again when Envoy
+        // sends it again, and the daemon answers a report for a wait already ended `ended: false`.
+        input.deliveryWritten?.(deliveryKey)
         await input.notifier.notification(notification(rendered, rendered.content))
         list(rendered)
         return true
@@ -820,6 +843,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     notifier: options.notifier,
     configFile: options.configFile,
     router: () => router,
+    deliveryWritten: options.deliveryWritten,
   })
   const userTopics = new Set<string>()
   let heldRole: string | undefined
@@ -1039,7 +1063,11 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * posted) or already shown. A write that fails throws, which the relay answers `nak`, so the
    * listener sends the frame again (from its third delivery on, `done` with a failure notice). The
    * frame stops blocking the next one once it is queued: the write queue keeps the stream's order,
-   * and no frame waits on another's write longer than the queue makes it.
+   * and no frame waits on another's write longer than the queue makes it. The frame's own dedupe
+   * key goes with it, verbatim, to `deliveryWritten`, which reports the delivery as news (the
+   * phase endpoint's `news`): the update ask's key among them, behind the listener's role-forward
+   * prefix, which is how the daemon tells its own ask from news (D9 of dispatch://INFRA-2040's
+   * plan).
    */
   const deliverRelayed = async (owner: Relay, frame: ConsumerFrame): Promise<void> => {
     // The session moved to another id (a `/clear`) or is shutting down: whoever takes it next
@@ -1058,7 +1086,12 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     }
     let shown: boolean
     try {
-      const queued = delivery.enqueue({ subject: frame.subject, raw: frame.data, late: frame.late })
+      const queued = delivery.enqueue({
+        subject: frame.subject,
+        raw: frame.data,
+        late: frame.late,
+        deliveryKey: identityOf?.dedupe_key,
+      })
       frame.release()
       shown = await queued
     } catch (error) {
@@ -2593,7 +2626,8 @@ export async function runEnvoyChannelServer(): Promise<void> {
           claim: () => claim?.capability(),
           booted: claimBooted.promise,
           firstTurnStarted: () => reportFirstTurn?.(),
-          readRecord: (issue, signal) => daemon.record(issue, { signal }),
+          readOwed: (input, signal) => daemon.owed(input, { signal }),
+          reportNews: (input, signal) => daemon.waitNews(input, { signal }),
           reportActivity: (input) => daemon.activity(input),
           inbox: inbox === undefined ? undefined : (text) => inbox.notification({ content: text }),
           publish: client.publish,
@@ -2617,20 +2651,19 @@ export async function runEnvoyChannelServer(): Promise<void> {
         // names, which the pane's `dispatch handoff-write` wrote the record to.
         handoffReport: paneHandoffReport(configFile, process.env, directory, identity.id),
         branchHead: () => findPushedBranchHead({ env: process.env }),
+        // `declare_wait` hands the wait the daemon recorded to the phase endpoint before the call
+        // answers, so news this server writes after the call's result is reported against that
+        // wait, in this turn and in a later one, as the Oh My Pi host's `onWaitDeclared` does.
+        onWaitDeclared: phaseHook?.waitDeclared,
       }
       // The request's signal aborts on the client's notifications/cancelled, which ends a wait
       // for a restarting daemon.
       const answer = await executeLegionTool(legionRuntime, request.params.arguments, extra.signal)
-      // A call that returned without throwing: a completion, and a backward move, which hands the
-      // issue to another phase. Either way this session's phase is no longer open, and the
-      // reminder must stop — the same two operations the Oh My Pi host closes its phase on
-      // (`createLegionTool` in `packages/pi-legion/src/tools.ts`). `ready_for_update` ends no
-      // phase: it answers the pod's update message, and the worker then waits for its process to be
-      // replaced, so the `Stop` of the turn it answered in blocks nothing (`updateAnswered`,
-      // `./legion-phase-hook`), as the Oh My Pi host's `onUpdateAnswered` does.
-      const op = request.params.arguments?.["op"]
-      if (op === "handoff_complete" || op === "request_backward_move") phaseHook?.phaseClosed()
-      else if (op === "ready_for_update") phaseHook?.updateAnswered()
+      // `ready_for_update` answers the pod's update message, and the worker then waits for its
+      // process to be replaced, so the `Stop` of the turn it answered in blocks nothing
+      // (`updateAnswered`, `./legion-phase-hook`), as the Oh My Pi host's `onUpdateAnswered` does
+      // (`createLegionTool` in `packages/pi-legion/src/tools.ts`).
+      if (request.params.arguments?.["op"] === "ready_for_update") phaseHook?.updateAnswered()
       return mcpResult(answer)
     }
     if (runtime === undefined)
@@ -2674,11 +2707,15 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // Every line this server writes into the session: the bridge's inbox in a Legion pane, and the
   // mod's own write in a terminal session, which is a row of the turn running and the prompt of
   // a new turn while the session is idle (`ModSession.show`), since an appended row an idle
-  // session never reads would wait for the person to type. The endpoint is told every line
-  // written for a delivery: the `UserPromptSubmit` that carries one back is that delivery's
-  // turn, not a fresh assignment, and this server, which writes them all, is the only place
-  // that knows.
-  const writer: ChannelNotifier = inbox ?? {
+  // session never reads would wait for the person to type.
+  //
+  // In a Legion pane this server also reports the deliveries it writes as news to the phase
+  // endpoint (`phaseHook.news`, D8 of dispatch://INFRA-2040's plan): each relayed Envoy delivery,
+  // under the frame's own key (`deliveryWritten` below), and each person's message, with none (the
+  // router's `inbox`). The endpoint reports that news to the daemon after a declared wait. Envoy's
+  // own notices, the endpoint's reminders and its recreated-workspace notice go through this
+  // notifier or the inbox too, and none of them is news.
+  const notifier: ChannelNotifier = inbox ?? {
     notification: async ({ content, blocks, eventId }) => {
       await claude.show({
         content: blocks ?? [{ type: "text", text: content }],
@@ -2689,15 +2726,6 @@ export async function runEnvoyChannelServer(): Promise<void> {
       })
     },
   }
-  const notifier: ChannelNotifier =
-    phaseHook === undefined
-      ? writer
-      : {
-          notification: async (notification) => {
-            phaseHook.deliveryWritten(notification.content)
-            await writer.notification(notification)
-          },
-        }
   const capabilities = (): readonly DeliveryCapability[] =>
     sessionCapabilities({ pane: inboxSocket !== undefined, mod: modLink?.connected() === true })
   const booting = new AbortController()
@@ -2715,7 +2743,8 @@ export async function runEnvoyChannelServer(): Promise<void> {
     // The token keeper stops before the session drains its connection: a renewal it ran on a
     // draining connection would be refused and warned about as a failure, at an ordinary stop.
     stopNatsKeeper()
-    // A reminder waiting on a 15-minute WAITING wait holds no shutting-down server open.
+    // A reminder timer, the quiet wait of the worker's own background work the longest of them,
+    // holds no shutting-down server open.
     phaseHook?.stop()
     void modLink?.close().catch(() => undefined)
     agentStream?.stop()
@@ -2783,9 +2812,18 @@ export async function runEnvoyChannelServer(): Promise<void> {
       sessionId: () => identity.id,
       state,
       warn: (text) => process.stderr.write(`envoy-channel: ${text}\n`),
-      // A pane's person message is a line of the bridge's inbox, which makes it a user turn;
-      // the phase endpoint is told of it as it is told of every line this server writes.
-      ...(inboxSocket === undefined ? {} : { inbox: (input) => notifier.notification(input) }),
+      // A pane's person message is a line of the bridge's inbox, which makes it a user turn. It is
+      // news, which carries no key, and it is told before the write, as a relayed delivery is
+      // (`createChannelDelivery`). The router writes nothing else to this inbox: a command, a
+      // pick and a BTW run in the session without a line of the person's own.
+      ...(inboxSocket === undefined
+        ? {}
+        : {
+            inbox: (input) => {
+              if (phaseHook !== undefined) void phaseHook.news()
+              return notifier.notification(input)
+            },
+          }),
     }
     return createUserTurnRouter(options)
   }
@@ -2861,6 +2899,11 @@ export async function runEnvoyChannelServer(): Promise<void> {
         notifier,
         capabilities,
         router,
+        // Each relayed delivery written as its card is news to the phase endpoint, under the
+        // frame's own key (`deliverRelayed`).
+        ...(phaseHook === undefined
+          ? {}
+          : { deliveryWritten: (key: string | undefined) => void phaseHook.news(key) }),
         client,
         heartbeatMs: envoy.heartbeatMs,
         configFile,

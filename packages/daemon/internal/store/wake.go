@@ -718,3 +718,16 @@ func (p *PodRecords) OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue strin
 	}
 	return open, nil
 }
+
+// IssueReleasing is whether an idle release of issue's pod is in progress (issueReleasing): its
+// mark stands, so its rows may still stop the pod's roles and take the pod away.
+func (p *PodRecords) IssueReleasing(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
+	return issueReleasing(ctx, tx, p.project, issue)
+}
+
+// CancelPodBackstops drops the open backstops of issue's role in the caller's transaction
+// (CancelPodBackstops): the design gate's opening cancels the backstop of every merger of the
+// tree in merging, in the opening's own transaction.
+func (p *PodRecords) CancelPodBackstops(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) error {
+	return CancelPodBackstops(ctx, tx, p.project, issue, role)
+}

@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  `POST /legion/v1/claims/owed` answers what a claim owes now, read from the record (its phase, its
+  phase entry, or a production check's look), and the worker's end-of-turn reminder asks it rather
+  than keeping a phase of its own. The answer also names the architect that owns a phase worker's
+  claim, the one the daemon's own notices of its issue go to, and the worker's notices of a stalled
+  run or a stuck tool call go there. A record the daemon cannot read is answered with a failure, so
+  the worker still nudges. The daemon API contract is 206.

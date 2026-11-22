@@ -309,11 +309,13 @@ const (
 	// minWorkerSilence is the floor under `worker_silence_minutes` (checkWorkerSilence). It is a
 	// floor against the longest wait a healthy worker takes in which nothing crosses the wire,
 	// so that to the daemon it reads exactly like silence: the worker's own phase reminder. A
-	// worker that answers a reminder with a WAITING line is reminded again only after
-	// DEFAULT_STALL_LIMITS.waitingMs (`packages/pi-shared/src/stall-limits.ts`), 15 minutes, and
-	// records no step in between. A bound at or below that would have the daemon send a second
-	// task for work the worker already holds, to a worker whose own reminder is about to start a
-	// turn. 16 minutes is the first whole minute past it.
+	// worker whose turn ends with background work of its own still running is reminded again
+	// only after DEFAULT_STALL_LIMITS.waitingMs (`packages/pi-shared/src/stall-limits.ts`), 15
+	// minutes, and records no step in between. A bound at or below that would have the daemon
+	// send a second task for work the worker already holds, to a worker whose own reminder is
+	// about to start a turn. 16 minutes is the first whole minute past it. A wait the worker
+	// declares with the `legion` tool's `declare_wait` sets no floor: while it stands, the
+	// silence sweep sends the worker nothing.
 	minWorkerSilence = 16 * time.Minute
 
 	// defaultWorkerBackground is `worker_background_hours`'s default (Config.WorkerBackground):
@@ -1213,7 +1215,7 @@ func checkWorkerSilence(cfg Config) error {
 	if cfg.WorkerSilence >= minWorkerSilence {
 		return nil
 	}
-	return fmt.Errorf("worker_silence_minutes (%s) is below the %s floor under it: a healthy phase worker that answers its reminder with a WAITING line is quiet for the 15m that reply buys before the reminder comes again (DEFAULT_STALL_LIMITS.waitingMs), so a shorter bound would send a second task for work the worker already holds, to a worker whose own reminder is about to start a turn",
+	return fmt.Errorf("worker_silence_minutes (%s) is below the %s floor under it: a healthy phase worker whose turn ends with background work of its own still running is quiet for the 15m that work buys before the reminder comes again (DEFAULT_STALL_LIMITS.waitingMs), so a shorter bound would send a second task for work the worker already holds, to a worker whose own reminder is about to start a turn",
 		cfg.WorkerSilence, minWorkerSilence)
 }
 

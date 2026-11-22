@@ -1,0 +1,8 @@
+kind: Removed
+body: |-
+    `roleForPhase` is removed. No plugin decides which role works a phase any more: the daemon
+    answers what a claim owes (`LegionOwedResponse`). Its removal also takes away the architect
+    answer for `admitted` that pull request #3711 adds.
+time: 2026-11-13T00:00:00.000000000Z
+custom:
+    Issue: pr3712

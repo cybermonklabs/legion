@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -213,8 +214,8 @@ func TestAnAnsweredRootResumesAtOnceAndKeepsItsRow(t *testing.T) {
 	if len(requests) != 1 || requests[0].Op != "start" || requests[0].Role != claim.RoleArchitect {
 		t.Fatalf("supervise requests = %+v, want the live architect's resume task", requests)
 	}
-	if !strings.Contains(requests[0].Task, "ask-q") {
-		t.Fatalf("resume task %q, want it to name the ask that was answered", requests[0].Task)
+	if task := startText(t, pool, "LEGION-208", config.DesignGateRootIssues, requests[0]); !strings.Contains(task, "ask-q") {
+		t.Fatalf("resume task %q, want it to name the ask that was answered", task)
 	}
 	if !runQueuedArchitectStarts(t, pool, "LEGION-208") {
 		t.Fatal("the live architect's resume task was not queued")

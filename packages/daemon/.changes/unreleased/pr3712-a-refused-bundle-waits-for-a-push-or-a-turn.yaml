@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  An idle release whose save finds the workspace's unpushed work over the 40 MiB a release carries
+  is not marked again every minute. The shim refuses such a bundle itself, and the daemon now reads
+  that refusal from the size the shim sends beside it, not from its words, so it applies with the
+  worker image a deployment already runs. The daemon marks the release again only after a role of
+  the pod does something the daemon records on its claim (a turn, any other change of its state,
+  or an activity report), or the head of the issue's pull request moves: a push moves it, and so
+  does a pull request opened for an issue that had none. The refusal is kept in
+  `workspace_bundle_refusals` across a restart. The refusal tells the issue's worker once for each
+  head of the pull request, naming the size, the bound and what ends the hold. A save that fails for
+  another reason, or a refusal that names no size, is still tried again on the next idle tick.

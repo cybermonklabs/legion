@@ -29,13 +29,13 @@ func clockReads(engine *Engine, at time.Time) {
 }
 
 // readmitsTheTree is the re-admission of LEGION-208's root LEGION-207 at at: the engine's clock
-// reads at from here on, and the tree's generation is cleared (record.Store.ClearTreeGeneration),
-// as admission's re-admission clears it.
+// reads at from here on, and the tree's generation is cleared (Engine.ClearTreeGeneration), as
+// admission's re-admission clears it.
 func readmitsTheTree(t *testing.T, pool *pgxpool.Pool, engine *Engine, at time.Time) {
 	t.Helper()
 	clockReads(engine, at)
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		return record.NewStore().ClearTreeGeneration(ctx, tx, "LEGION-207", at)
+		return engine.ClearTreeGeneration(ctx, tx, "LEGION-207", at)
 	})
 }
 

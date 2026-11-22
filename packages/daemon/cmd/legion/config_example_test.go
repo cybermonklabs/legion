@@ -226,7 +226,7 @@ func TestShippedLegionYAMLExampleRefusesAWorkerSilenceUnderTheFloor(t *testing.T
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
-	want := "legion config check: worker_silence_minutes (15m0s) is below the 16m0s floor under it: a healthy phase worker that answers its reminder with a WAITING line is quiet for the 15m that reply buys before the reminder comes again (DEFAULT_STALL_LIMITS.waitingMs), so a shorter bound would send a second task for work the worker already holds, to a worker whose own reminder is about to start a turn\n"
+	want := "legion config check: worker_silence_minutes (15m0s) is below the 16m0s floor under it: a healthy phase worker whose turn ends with background work of its own still running is quiet for the 15m that work buys before the reminder comes again (DEFAULT_STALL_LIMITS.waitingMs), so a shorter bound would send a second task for work the worker already holds, to a worker whose own reminder is about to start a turn\n"
 	if code != 1 || out.Len() != 0 || errb.String() != want {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), want)
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -48,8 +49,8 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.plugin_contract, c.plugin_relaunch_for, c.agent_resume_generation, c.delivered_rows,
 	c.last_turn_start, c.last_turn_end,
 	c.last_death_cause, c.last_start_failure, c.last_ready, c.turn_outcomes, c.abandoned_session, c.ended_work,
-	c.update_round, c.update_reasons, c.update_opened_at, c.update_tasked_at, c.update_signalled_at,
-	c.update_head, c.update_told_at,
+	c.update_round, c.update_reasons, c.update_repository, c.update_repository_round,
+	c.update_opened_at, c.update_tasked_at, c.update_signalled_at, c.update_head, c.update_told_at,
 	c.update_left_round, c.provider_error_run, c.death_charged,
 	c.step_at, c.turn_started_at, c.step_tool, c.step_call_id, c.step_args_bytes,
 	c.step_args_hash, c.step_started_at, c.step_ended_at,
@@ -57,7 +58,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	d.delivery_id, d.task, d.phase, d.generation, d.entry, d.check_look, d.check_opened_at,
 	d.queued_at, d.delivered_at, d.marked_by, d.confirmed_at, d.interrupted, d.prompted, d.out_of_memory,
 	d.send_failures, d.last_send_failure_at, d.last_send_error,
-	d.kept_decisions, d.provider_error_retries, d.provider_error_note, d.round_named
+	d.kept_decisions, d.provider_error_retries, d.provider_error_note, d.resume, d.round_named, d.gate_message
 	from claims c left join pending_task_deliveries d on d.claim_token = c.token`
 
 // PutClaim persists an admitted claim's state: every write a claim's machine makes. A claim enters
@@ -412,6 +413,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 	if delivered == nil {
 		delivered = []int64{}
 	}
+	repository, repositoryRound := roundRepositoryColumns(c)
 	_, err := db.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, tree_epoch,
 		session, session_file, locator, state, failure, launch_failures, deaths, prompt_failures, prompt_retires,
 		boot_token_hash, capability_hash, uncertain_streak, last_start_row,
@@ -424,10 +426,11 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
 		pod_end, failure_cause, failed_at, pending_cause, leak_check_cause, ended_work,
 		handshake_entry, handshake_generation, handshake_queued_at, handshake_confirmed_at,
+		update_repository, update_repository_round,
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
-		$55, $56, $57, $58, $59,
+		$55, $56, $57, $58, $59, $60, $61,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -463,6 +466,8 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		update_signalled_at = excluded.update_signalled_at, update_head = excluded.update_head,
 		update_told_at = excluded.update_told_at,
 		update_left_round = excluded.update_left_round,
+		update_repository = excluded.update_repository,
+		update_repository_round = excluded.update_repository_round,
 		provider_error_run = excluded.provider_error_run,
 		serving_check_look = excluded.serving_check_look,
 		serving_check_opened_at = excluded.serving_check_opened_at,
@@ -515,6 +520,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
 		c.PodEnd, string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause, endedWork,
 		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
+		repository, repositoryRound,
 	)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
@@ -710,19 +716,23 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		return fmt.Errorf("put delivery %s on %s: generation %d does not fit a bigint", d.ID, token, d.Generation)
 	}
 	kept := keptDecisions(d.Kept)
+	resume, err := resumeColumn(d)
+	if err != nil {
+		return fmt.Errorf("put delivery %s on %s: %w", d.ID, token, err)
+	}
 	unconfirmed := d.ConfirmedAt.IsZero()
 	if unconfirmed {
 		if err := putBackARetakenConfirmation(ctx, tx, token, d.ID, kept); err != nil {
 			return err
 		}
 	}
-	_, err := tx.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task,
+	_, err = tx.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task,
 		phase, generation, entry, check_look, check_opened_at, queued_at, delivered_at, marked_by,
 		confirmed_at, interrupted, prompted, out_of_memory,
 		send_failures, last_send_failure_at, last_send_error, kept_decisions,
-		provider_error_retries, provider_error_note, round_named)
+		provider_error_retries, provider_error_note, resume, round_named, gate_message)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		coalesce($19::jsonb, '{}'::jsonb), $20, $21, $22)
+		coalesce($19::jsonb, '{}'::jsonb), $20, $21, $22::jsonb, $23, $24)
 		on conflict (claim_token) do update set delivery_id = excluded.delivery_id,
 		task = excluded.task, phase = excluded.phase, generation = excluded.generation,
 		entry = excluded.entry, check_look = excluded.check_look,
@@ -733,12 +743,13 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		last_send_failure_at = excluded.last_send_failure_at, last_send_error = excluded.last_send_error,
 		kept_decisions = excluded.kept_decisions,
 		provider_error_retries = excluded.provider_error_retries,
-		provider_error_note = excluded.provider_error_note, round_named = excluded.round_named`,
+		provider_error_note = excluded.provider_error_note, resume = excluded.resume,
+		round_named = excluded.round_named, gate_message = excluded.gate_message`,
 		string(token), d.ID, d.Task, string(d.Phase), int64(d.Generation), d.Entry,
 		d.CheckLook.Look, instant(d.CheckLook.OpenedAt), d.QueuedAt, instant(d.DeliveredAt), d.MarkedBy,
 		instant(d.ConfirmedAt), d.Interrupted, d.Prompted, d.OutOfMemory,
 		d.SendFailures, instant(d.LastSendFailureAt), d.LastSendError, kept,
-		d.ProviderErrorRetries, d.ProviderErrorNote, d.RoundNamed,
+		d.ProviderErrorRetries, d.ProviderErrorNote, resume, d.RoundNamed, d.GateMessage,
 	)
 	if err != nil {
 		return fmt.Errorf("put delivery %s on %s: %w", d.ID, token, err)
@@ -870,10 +881,12 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		endedWork                   []byte
 		updateOpened, updateTasked  *time.Time
 		updateSignalled, updateTold *time.Time
+		repository, repositoryRound string
 		kept                        []byte
 		retries                     *int64
 		note                        *string
-		roundNamed                  *bool
+		resume                      []byte
+		roundNamed, gateMessage     *bool
 		stepAt, turnStarted         *time.Time
 		stepStarted, stepEnded      *time.Time
 		reportedAt, reminderAt      *time.Time
@@ -890,7 +903,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&c.PluginContract, &c.PluginRelaunchFor, &agentResumeGeneration, &c.DeliveredRows,
 		&turnStart, &turnEnd,
 		&c.LastDeathCause, &c.LastStartFailure, &lastReady, &outcomes, &abandoned, &endedWork,
-		&c.UpdateRound, &c.UpdateReasons, &updateOpened, &updateTasked, &updateSignalled,
+		&c.UpdateRound, &c.UpdateReasons, &repository, &repositoryRound, &updateOpened, &updateTasked, &updateSignalled,
 		&c.UpdateHead, &updateTold,
 		&c.UpdateLeftRound, &c.ProviderErrorRun, &c.DeathCharged,
 		&stepAt, &turnStarted, &c.Step.Tool, &c.Step.CallID, &c.Step.ArgsBytes,
@@ -898,7 +911,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&reportedAt, &c.ActivityBackground, &kinds, &reminderAt,
 		&deliveryID, &task, &deliveryPhase, &deliveryGeneration, &deliveryEntry, &deliveryCheckLook, &deliveryCheckOpened,
 		&queuedAt, &delivered, &markedBy, &confirmed, &interrupted, &prompted, &outOfMemory,
-		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note, &roundNamed)
+		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note, &resume, &roundNamed, &gateMessage)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return supervise.Claim{}, err
 	}
@@ -945,6 +958,9 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	}
 	c.LastTurnStart, c.LastTurnEnd, c.LastReady = orZero(turnStart), orZero(turnEnd), orZero(lastReady)
 	c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt, c.UpdateToldAt = updateOpened, updateTasked, updateSignalled, updateTold
+	if c.UpdateRepository, err = roundRepositoryOf(repository, repositoryRound, c.UpdateRound); err != nil {
+		return supervise.Claim{}, fmt.Errorf("read claim %s: %w", token, err)
+	}
 	c.Step.At, c.Step.TurnStartedAt = orZero(stepAt), orZero(turnStarted)
 	c.Step.StartedAt, c.Step.EndedAt = orZero(stepStarted), orZero(stepEnded)
 	// Both activity moments are nullable (migration 20261101214123_claim_session_activity): a
@@ -969,6 +985,10 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		c.Enrollment = &supervise.Enrollment{ID: *enrollmentID, Incarnation: *enrollmentIC}
 	}
 	if deliveryID != nil {
+		wait, err := resumeOf(resume, *deliveryID)
+		if err != nil {
+			return supervise.Claim{}, fmt.Errorf("read claim %s: %w", token, err)
+		}
 		c.Pending = &supervise.Delivery{
 			ID:          *deliveryID,
 			Task:        *task,
@@ -990,14 +1010,83 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 			LastSendFailureAt:    orZero(lastSendFailure),
 			LastSendError:        *lastSendError,
 			Kept:                 keptDecisions(kept),
+			Resume:               wait,
 			ProviderErrorRetries: int(orZeroInt(retries)),
 			ProviderErrorNote:    *note,
 			// A delivery a release before this one wrote takes the column's default, false: its
 			// task names no review round (supervise's Delivery.message).
 			RoundNamed: orFalse(roundNamed),
+			// So does the mark of the design gate's own task, false: the release before queued no
+			// such task (supervise's Delivery.GateMessage).
+			GateMessage: orFalse(gateMessage),
 		}
 	}
 	return c, nil
+}
+
+// roundRepositoryColumns is the repository the pod of the claim's update round was built from
+// (supervise.Claim.UpdateRepository) as claims.update_repository and update_repository_round
+// hold it: its name and the round it was written with, both empty for no repository
+// (20261112012123_issue_repository_correction).
+func roundRepositoryColumns(c supervise.Claim) (repository, round string) {
+	if c.UpdateRepository.IsZero() {
+		return "", ""
+	}
+	return c.UpdateRepository.String(), c.UpdateRound
+}
+
+// roundRepositoryOf is the repository the two columns hold for round, the round the claim
+// records now, and the zero Repository where they hold none for it: an empty name, and a name
+// written with another round. A daemon of an earlier release names neither column, so its write
+// of the claim leaves both standing through the end of the round they were written with and the
+// open of the next, and this release recorded no repository for that next round's pod. A
+// name written with round that is no repository is an error rather than no repository, as a
+// locator that does not validate is (Claims): the daemon writes only a name it parsed, so such a
+// value is a row somebody edited, and read as none it would send the roles of a gone pod to the
+// issue branch at origin, which is not where their work is.
+func roundRepositoryOf(repository, written, round string) (ghrepo.Repository, error) {
+	if repository == "" || written != round {
+		return ghrepo.Repository{}, nil
+	}
+	return ghrepo.Parse("its update round's repository", repository)
+}
+
+// storedResume is pending_task_deliveries.resume (20261112215432_delivery_resume): the wait a
+// resume task answers (supervise.Delivery.Resume) under the id of the delivery it was written
+// with. The id is what keeps the mark on its own delivery: a daemon of an earlier release writes
+// the claim's next delivery over the row without naming the column, which keeps the value, and a
+// wait read under another delivery's id is that leftover and marks nothing.
+type storedResume struct {
+	Delivery string          `json:"delivery"`
+	Wait     json.RawMessage `json:"wait"`
+}
+
+// resumeColumn is d's resume mark as the column holds it, nil for a task that is no resume.
+func resumeColumn(d supervise.Delivery) ([]byte, error) {
+	if len(d.Resume) == 0 {
+		return nil, nil
+	}
+	column, err := json.Marshal(storedResume{Delivery: d.ID, Wait: d.Resume})
+	if err != nil {
+		return nil, fmt.Errorf("encode the wait its resume task answers: %w", err)
+	}
+	return column, nil
+}
+
+// resumeOf is the wait the column holds for the delivery with id, nil for none: a null column, and
+// one written under another delivery's id (storedResume).
+func resumeOf(column []byte, id string) ([]byte, error) {
+	if len(column) == 0 {
+		return nil, nil
+	}
+	var stored storedResume
+	if err := json.Unmarshal(column, &stored); err != nil {
+		return nil, fmt.Errorf("decode the wait its resume task answers: %w", err)
+	}
+	if stored.Delivery != id || len(stored.Wait) == 0 {
+		return nil, nil
+	}
+	return []byte(stored.Wait), nil
 }
 
 // instant is a time as a nullable column: the zero time is "not yet", which SQL says as null.

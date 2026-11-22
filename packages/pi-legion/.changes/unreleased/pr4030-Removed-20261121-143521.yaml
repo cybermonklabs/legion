@@ -1,0 +1,8 @@
+kind: Removed
+body: |-
+  The end-of-turn reminder no longer reads a WAITING line at the end of a reply: a turn that ends
+  with one gets the same reminder as a turn without it. A worker that waits declares the wait with
+  the `legion` tool's `declare_wait`.
+time: 2026-11-21T14:35:21Z
+custom:
+    Issue: pr4030

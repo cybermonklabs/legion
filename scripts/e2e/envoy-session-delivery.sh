@@ -898,7 +898,7 @@ role[cc]="live-delivery-cc-${run_id}"
 readonly team_topic="notifications.team.live-delivery-${run_id}"
 note "the run's team topic is ${team_topic}; the setup prompt makes both sessions follow it"
 readonly pi_note="This session is an automated delivery test. Do exactly what the user's first message says, using the Envoy tools it names. After that, answer every message and every Envoy card with the single word ok, and call no tools."
-readonly cc_note="This session is an automated delivery test. Do exactly what the user's first message says, using the Envoy tools it names. After that, answer every message with exactly one line, WAITING for test events, and call no tools."
+readonly cc_note="This session is an automated delivery test. Do exactly what the user's first message says, using the Envoy tools it names. After that, answer every message with the single word ok, and call no tools."
 natives=$HOME/.omp/natives
 if [ -n "${XDG_DATA_HOME:-}" ] && [ -d "$XDG_DATA_HOME/omp" ]; then natives=$XDG_DATA_HOME/omp/natives; fi
 

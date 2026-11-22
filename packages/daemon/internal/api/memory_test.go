@@ -20,11 +20,11 @@ var memoryDrawnAt = time.Date(2026, 9, 20, 11, 4, 5, 0, time.UTC)
 var planDrawnAt = time.Date(2026, 9, 21, 18, 42, 11, 0, time.UTC)
 
 // The state the fixture builds carries one drawn tree (populatedState): the root LEGION-208 and
-// LEGION-209, a child of it, both showing the root's draw as internal/projection fills them, beside
-// the issues no draw has reached. Its claim views carry the pod's update round, the record of what
-// each claim's agent last did, the six keys the decided claim record added and, on LEGION-210's
-// failed implementer, the sentence a launch try was refused with because the shared public leak
-// check could not be installed, and its issues the three that record added to an issue; its
+// LEGION-209 and LEGION-215, children of it, all showing the root's draw as internal/projection
+// fills them, beside the issues no draw has reached. Its claim views carry the pod's update round,
+// the record of what each claim's agent last did, the six keys the decided claim record added and,
+// on LEGION-210's failed implementer, the sentence a launch try was refused with because the shared
+// public leak check could not be installed, and its issues the three that record added to an issue; its
 // admission block names the live trees and the issues the record holds in the workflow that neither
 // of its other lists names, its stranded claims hold a retired one, it carries the wakes the pacing
 // holds and the count of claims the refresh lane has left, an implementer of it carries its issue's
@@ -35,12 +35,16 @@ var planDrawnAt = time.Date(2026, 9, 21, 18, 42, 11, 0, time.UTC)
 // the times of the task they hold of that entry, a root no architect claim stands for carries the
 // architect-stalled arm the daemon reads for it, each reviewing root of it carries what its round
 // waits on from GitHub, every issue of a live tree carries that tree's quiet time, the issues of
-// its drawn tree carry the experiment answers they hold, and the project stands paused
-// (`paused`), so one state proves every band of stateNarrowings and that they compose; it stands
-// no member of the line of the kind 132 added, whose value strip waiting_on_issue_test.go proves,
-// and the pause's other key, `lastPause`, is pause_test.go's state of its own. What the
-// quiet-time band is measured on in finer grain — both halves on each member of one tree, and
-// neither on an issue whose tree has left the workflow — is quiet_time_test.go's state of its own.
+// its drawn tree carry the experiment answers they hold, the project stands paused (`paused`), one
+// issue carries the correction of its repository and one the change Dispatch has named that the
+// daemon has not applied, LEGION-208's implementer carries the wait it declared, which stands, and
+// LEGION-215's merger carries the design gate's hold on it, so one state proves every band of
+// stateNarrowings and that they compose; it stands no member of the line of the kind 132 added,
+// whose value strip waiting_on_issue_test.go proves, and the pause's other key, `lastPause`, is
+// pause_test.go's state of its own. What the quiet-time band is measured on in finer grain — both
+// halves on each member of one tree, and neither on an issue whose tree has left the workflow — is
+// quiet_time_test.go's state of its own, and what the wait's band is measured on, a wait that
+// stands and one that does not, is state_wait_test.go's, and the hold's is state_hold_test.go's.
 
 // issueViews is every issue of a state body, decoded as the plugin's reader sees it, by key.
 func issueViews(t *testing.T, body []byte) map[string]map[string]any {
@@ -121,12 +125,13 @@ var (
 // at or below that band's contract and none of a later row's, and a pod at this daemon's declared
 // contract (DaemonAPIVersion), a pod whose claims record no contract and a caller in no pod — the
 // operator's `legion state`, whose memory line reads the draws, whose experiment lines read the
-// assignments, whose queue line reads the wakes, whose tool-call line reads the step records and
-// whose merge-wait line reads the waits — are served all of them.
+// assignments, whose queue line reads the wakes, whose tool-call line reads the step records,
+// whose merge-wait line reads the waits on GitHub, whose waits line reads the waits workers
+// declared and whose holds line reads the design gate's holds — are served all of them.
 func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(memoryContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
-	fields := []string{"memoryGroup", "updateRound", "gatedSteps", "waitingLine", "leakCheckCause", TreeMovedAtField, QuietHoursField, "assignments", "apps"}
+	fields := []string{"memoryGroup", "updateRound", "gatedSteps", "waitingLine", "leakCheckCause", TreeMovedAtField, QuietHoursField, "assignments", "apps", "wait"}
 	for _, field := range append(fields, recordFieldKeys...) {
 		field := `"` + field + `"`
 		if !strings.Contains(string(full), field) {
@@ -223,12 +228,24 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// pauseContract added beside `lastPause`, so a pod at it is served the key and every pod
 		// below it is not.
 		pause bool
-		// repos is whether the caller is served the repositories block this contract writes,
-		// `live` beside `caches` and `withoutWebhookApp` (repositoriesLiveContract), so a caller
-		// at it is served that block and every caller below it the block in contract 152's shape,
-		// from the same entries. No pod's claims place a caller at it (callerKind.reaches), so the
-		// rows served it are the three this daemon serves its own body.
+		// repos is whether the caller is served the repositories block repositoriesLiveContract
+		// writes, `live` beside `caches` and `withoutWebhookApp`, so a caller at it is served that
+		// block and every caller below it the block in contract 152's shape, from the same
+		// entries. No pod's claims place a caller at it (callerKind.reaches), so the rows served it
+		// are the three this daemon serves its own body.
 		repos bool
+		// correction is whether the caller is served what a correction of an issue's repository
+		// left on its record (repositoryCorrectionContract), the contract that added the four keys:
+		// a caller at it is served them, and a caller below it that its header places, or a pod
+		// whose claims record a contract below shapedAnswersContract, is not. A pod whose claims
+		// record shapedAnswersContract up to below repositoryCorrectionContract is in no pod
+		// reading (podContracts), so it is served them.
+		correction bool
+		// waiting is whether the caller is served a claim view's `wait`, the wait its worker
+		// declared while it stands, and a merger's `hold`, the design gate's hold on it
+		// (waitContract, this daemon's own, which added both), so the only pod served either
+		// is one at it.
+		waiting bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true, contract: memoryContract - 1},
 		{name: "a pod below PodUpdateContract, below every narrowing", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1), contract: supervise.PodUpdateContract - 1},
@@ -311,48 +328,54 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// are held back, at the band's foot and at its top alike.
 		{name: "a pod at repositoryAppsContract", remote: statePodAddr + ":41000", claims: podClaims(repositoryAppsContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, contract: repositoryAppsContract},
 		{name: "a pod just below pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, contract: pauseContract - 1},
-		// The band from pauseContract to below shapedAnswersContract, the last a pod's claims
-		// place a caller in (callerKind.reaches): the project's pause is served too, and every key
-		// a later row of stateNarrowings adds is held back, the repositories block written in the
-		// shape contract 152 gave it.
+		// The band from pauseContract to below shapedAnswersContract, the last band a pod's
+		// reading reaches (callerKind.reaches): the project's pause is served too, and every key a
+		// later row of stateNarrowings adds is held back, the repositories block written in the
+		// shape contract 152 gave it and the four repository keys among them. A claim at
+		// shapedAnswersContract or above is in no pod's reading (podContracts), since its build
+		// states its contract in the header, so the bands above this one reach a caller by its
+		// header alone (contract_shapes_test.go).
 		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, contract: pauseContract},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, contract: DaemonAPIVersion},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, contract: DaemonAPIVersion},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, contract: DaemonAPIVersion},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, correction: true, contract: DaemonAPIVersion, waiting: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, correction: true, contract: DaemonAPIVersion, waiting: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, correction: true, contract: DaemonAPIVersion, waiting: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
 
-			// Only LEGION-208's tree was drawn: its root and its child carry the draw when the
+			// Only LEGION-208's tree was drawn: its root and its children carry the draw when the
 			// caller is served it, and no other issue carries one whoever asks. Every root of the
-			// fixture carries the one step `root-issues` gates; LEGION-209, a child of LEGION-208's
-			// tree, carries none whoever asks. The two issues `admission.waiting` names carry their
-			// place in that line, and no other issue carries one: the issues `admission.active`
-			// names hold the slots, and LEGION-207 closed. The reviewing roots (waits below) are
-			// the issues whose round waits on GitHub's merge state for its head, and no other issue
-			// carries that object. The issues standing in a tree the admission block names
-			// (measured below) carry that tree's quiet time where the caller is served it;
-			// LEGION-207's tree closed and LEGION-209 stands in no tree of this fixture, so neither
-			// carries a measure whoever asks.
-			drawn := map[string]bool{"LEGION-208": true, "LEGION-209": true}
+			// fixture carries the one step `root-issues` gates; LEGION-209 and LEGION-215, children
+			// of LEGION-208's tree, carry none whoever asks. The two issues `admission.waiting`
+			// names carry their place in that line, and no other issue carries one: the issues
+			// `admission.active` names hold the slots, LEGION-215 stands past its review, and
+			// LEGION-207 closed. The reviewing roots (waits below) are the issues whose round waits
+			// on GitHub's merge state for its head, and no other issue carries that object. The
+			// issues standing in a tree the admission block names (measured below) carry that
+			// tree's quiet time where the caller is served it; LEGION-207's tree closed and
+			// LEGION-209 stands in no tree of this fixture, so neither carries a measure whoever
+			// asks.
+			drawn := map[string]bool{"LEGION-208": true, "LEGION-209": true, "LEGION-215": true}
 			gated := map[string]bool{"LEGION-207": true, "LEGION-208": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true, "LEGION-218": true, "LEGION-219": true}
 			lined := map[string]bool{"LEGION-211": true, "LEGION-212": true}
-			measured := map[string]bool{"LEGION-208": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true, "LEGION-218": true, "LEGION-219": true}
+			measured := map[string]bool{"LEGION-208": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true, "LEGION-215": true, "LEGION-218": true, "LEGION-219": true}
 			// The issues the fixture holds an experiment answer for: the drawn tree's root and
-			// its child, each under two experiments, and LEGION-210, whose hand-over settled it
-			// at no arm, which is an answer and so a row.
-			assigned := map[string]bool{"LEGION-208": true, "LEGION-209": true, "LEGION-210": true}
+			// its children, each under two experiments, and LEGION-210, whose hand-over settled
+			// it at no arm, which is an answer and so a row.
+			assigned := map[string]bool{"LEGION-208": true, "LEGION-209": true, "LEGION-210": true, "LEGION-215": true}
 			// The issues whose current phase names a role carry the entry numbers (entried
 			// below): LEGION-208, whose implementer holds the work its row names, LEGION-211,
-			// whose implementer is behind it, and the reviewing roots LEGION-218 and LEGION-219,
-			// whose reviewers hold theirs. The held, awaiting_person and done issues carry neither
-			// whoever asks. LEGION-208 alone carries the two times: every other issue would carry
-			// an architect's handshake too, a root its own architect's in every phase and
-			// LEGION-209 its architect's at admitted, and no other issue of the fixture holds an
-			// architect claim. LEGION-210, a root no architect claim stands for, is the one the
-			// daemon names an architect-stalled arm for, which leaves with the two times.
-			entried := map[string]bool{"LEGION-208": true, "LEGION-211": true, "LEGION-218": true, "LEGION-219": true}
-			timed := map[string]bool{"LEGION-208": true}
+			// whose implementer is behind it, LEGION-215, whose merger holds its one entry, and the
+			// reviewing roots LEGION-218 and LEGION-219, whose reviewers hold theirs. The held,
+			// awaiting_person and done issues carry neither whoever asks. LEGION-208 and
+			// LEGION-215 alone carry the two times: LEGION-208 its architect's handshake and
+			// LEGION-215 its merger's. Every other issue would carry an architect's handshake too,
+			// a root its own architect's in every phase and LEGION-209 its architect's at admitted,
+			// and no other issue of the fixture holds an architect claim. LEGION-210, a root no
+			// architect claim stands for, is the one the daemon names an architect-stalled arm
+			// for, which leaves with the two times.
+			entried := map[string]bool{"LEGION-208": true, "LEGION-211": true, "LEGION-215": true, "LEGION-218": true, "LEGION-219": true}
+			timed := map[string]bool{"LEGION-208": true, "LEGION-215": true}
 			stalled := map[string]bool{"LEGION-210": true}
 			waits := map[string]bool{"LEGION-218": true, "LEGION-219": true}
 			for key, view := range issueViews(t, body) {
@@ -404,6 +427,22 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			}
 			if leak := strings.Contains(string(body), `"leakCheckCause"`); leak != tc.leak {
 				t.Errorf("the state %s carries a claim view's leakCheckCause = %v, want %v", body, leak, tc.leak)
+			}
+			claimWaits, claimHolds := false, false
+			for _, view := range claimViews(t, body) {
+				if _, carried := view["wait"]; carried {
+					claimWaits = true
+				}
+				if _, carried := view["hold"]; carried {
+					claimHolds = true
+				}
+			}
+			if claimWaits != tc.waiting {
+				t.Errorf("the state %s carries a claim view's wait = %v, want %v", body, claimWaits, tc.waiting)
+			}
+			// The design gate's hold leaves at the wait's contract, beside it (withoutWaitAndHold).
+			if claimHolds != tc.waiting {
+				t.Errorf("the state %s carries a claim view's hold = %v, want %v", body, claimHolds, tc.waiting)
 			}
 			for _, key := range recordFieldKeys {
 				if carries := strings.Contains(string(body), `"`+key+`"`); carries != tc.failure {
@@ -497,6 +536,12 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 						delete(issue, key)
 					}
 				}
+				if !tc.correction {
+					delete(issue, "repoBefore")
+					delete(issue, "repoCorrectedAt")
+					delete(issue, "repoChangePending")
+					delete(issue, "repoChangeReason")
+				}
 				if !tc.assigned {
 					delete(issue, "assignments")
 				}
@@ -561,6 +606,10 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 					}
 					if !tc.leak {
 						delete(view, "leakCheckCause")
+					}
+					if !tc.waiting {
+						delete(view, "wait")
+						delete(view, "hold")
 					}
 				}
 			}

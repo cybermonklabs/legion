@@ -11,9 +11,10 @@
 -- register clears it in the write that records the session and its file, and forgetSession
 -- clears it with the session. It is read at the claim's next try, which forgets the session with
 -- the cause not-resumed-by-id where the mark stands (resumeByID), and by died and
--- registrationDeadline, which charge nothing for the end of the process it names: a start that did
--- not register as the session (endUncharged). A column of its own is what lets a daemon restarted
--- between that launch and its agent's registration read the mark back.
+-- registrationDeadline, which name the end of the process it names, a start that did not register
+-- as the session, by an outcome the policy charges nothing (endOutcome, supervise.Charges). A
+-- column of its own is what lets a daemon restarted between that launch and its agent's
+-- registration read the mark back.
 --
 -- Every row the table already holds takes the default, 0: no such launch is outstanding, since no
 -- release before this one made one.

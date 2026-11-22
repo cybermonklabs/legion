@@ -768,7 +768,7 @@ func TestTheArchitectTaskNamesAKeptDecisionFirstInEveryShape(t *testing.T) {
 // closing sentence reworded by a later release costs no first act.
 func TestNarrowingARootsArchitectTaskKeepsItsShape(t *testing.T) {
 	stays := childDecision()
-	decided := KeptDecisionsTask("LEGION-208", stays)
+	decided, _ := KeptDecisionsTask(KeptGates{}, specGated, "LEGION-208", stays)
 	if decided == "" {
 		t.Fatal("the kept decisions name nothing, so the narrowing has nothing to pin")
 	}
@@ -807,14 +807,14 @@ func TestNarrowingARootsArchitectTaskKeepsItsShape(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			whole := tc.start
 			whole.Decided = decided
-			narrowed := NarrowRootTask(tc.start, heldEntry, stays)
+			narrowed := NarrowRootTask(tc.start, heldEntry, decided)
 			if want := ArchitectStartTask(whole); narrowed != want {
 				t.Fatalf("the narrowed task =\n%q\nwant\n%q", narrowed, want)
 			}
 			if !strings.Contains(narrowed, tc.label) {
 				t.Fatalf("the narrowed task lost the shape labelled %q", tc.label)
 			}
-			if got := NarrowRootTask(tc.start, 0, stays); got != decided {
+			if got := NarrowRootTask(tc.start, 0, decided); got != decided {
 				t.Fatalf("the narrowed task of a held task of no entry = %q, want the decisions' own text %q", got, decided)
 			}
 		})
@@ -830,9 +830,9 @@ const heldEntry int64 = 3
 // phase's own role says what the work is.
 func TestNarrowingARootsArchitectTaskThatMovedOnDropsTheInstruction(t *testing.T) {
 	stays := childDecision()
-	decided := KeptDecisionsTask("LEGION-208", stays)
+	decided, _ := KeptDecisionsTask(KeptGates{}, specGated, "LEGION-208", stays)
 	moved := ArchitectStart{Root: rootAt(phase.Planning), Gate: record.TreeGate{Steps: specGated}}
-	if got := NarrowRootTask(moved, heldEntry, stays); got != decided {
+	if got := NarrowRootTask(moved, heldEntry, decided); got != decided {
 		t.Fatalf("the narrowed task of a root now in planning = %q, want the kept decisions' own text %q", got, decided)
 	}
 }
@@ -841,7 +841,8 @@ func TestNarrowingARootsArchitectTaskThatMovedOnDropsTheInstruction(t *testing.T
 // sends, where the held task is of no entry and so carried no first-task instruction.
 func TestNarrowingARootsKeptDecisionsToNothingWritesNoTask(t *testing.T) {
 	start := ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}}
-	if got := NarrowRootTask(start, 0, record.KeptDecisions{}); got != "" {
+	decided, _ := KeptDecisionsTask(KeptGates{}, specGated, "LEGION-208", record.KeptDecisions{})
+	if got := NarrowRootTask(start, 0, decided); got != "" {
 		t.Fatalf("the narrowed task = %q, want the empty task its caller retires", got)
 	}
 }

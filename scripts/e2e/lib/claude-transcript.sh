@@ -19,11 +19,13 @@
 #   stall_reminder_needle  the reminder's wording the predicates look for, which the caller names
 #                          in its own notes
 
-# The opening of what a worker whose turn ended with its phase still open is told (REMINDER in
-# packages/pi-shared/src/phase-stall.ts), which the implementer's `legion` MCP server answers its
-# `Stop` hook with. A fragment of that paragraph, not the whole of it, so a later rewording of the
-# rest does not break a proof silently; this sentence is in no other message a worker is given.
-stall_reminder_needle="Your turn ended with your Legion phase still open"
+# A sentence of what a worker is told when its turn ends with work its claim still owes
+# (owedReminder in packages/pi-shared/src/phase-stall.ts), which the implementer's `legion` MCP
+# server answers its `Stop` hook with. The reminder a worker is given when the daemon's answer could
+# not be read (UNREAD_REMINDER, the same file) carries the same sentence. A fragment of each, not the
+# whole of either, so a later rewording of the rest does not break a proof silently; this sentence
+# is in no other message a worker is given.
+stall_reminder_needle="This reminder repeats at the end of every turn"
 # claude_entries OFFSET prints one line per transcript entry written past OFFSET bytes: `assistant`
 # for an assistant message, and `user <its text>` for a user one — its content, a string or the text
 # of its blocks, every run of whitespace squeezed to one space. One line is one entry, so the

@@ -97,7 +97,8 @@ func bootingRepositoryRig(t *testing.T, installs *installations, opts ...func(*w
 	}
 	w := &workflowRuntime{pool: isolatedOutboxPool(t), dispatch: client, dispatchProject: "LEGION", installs: installs,
 		repositories: newRepositories("LEGION", ghrepo.Renames{}), defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), log: quietLogger(),
-		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1), heldWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1)}
+		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1), heldWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1),
+		followWake: make(chan struct{}, 1)}
 	// The records ask the refresher for a read of the live records at the commit of each write that
 	// can change them, as the daemon's do (projectRecords, refreshLive), so a repository a new
 	// record names is among the ones whose bad answers the refresher reads again. The anchors are
@@ -106,7 +107,7 @@ func bootingRepositoryRig(t *testing.T, installs *installations, opts ...func(*w
 	records := projectRecords{Store: record.NewStore(), project: "LEGION", live: w.wakeLive}
 	w.records = records
 	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, NoteUnread: w.noteUnread, HearRepository: w.hearRecorded,
-		Steps: config.DesignGateOff.Steps()}, quietLogger())
+		FollowIssue: w.requestFollowOf, Steps: config.DesignGateOff.Steps()}, quietLogger())
 	w.engine, w.admission = engine, admit.New(w.records, engine, 3, "LEGION", quietLogger())
 	w.handlers = []intake.Handler{w.engine, w.admission}
 	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
@@ -1340,7 +1341,7 @@ func (h *heldRefresher) hold(w *workflowRuntime) {
 
 // wakesWaiting is how many of w's refresher wakes are waiting to be taken.
 func wakesWaiting(w *workflowRuntime) int {
-	return len(w.recoverWake) + len(w.rereadWake) + len(w.liveWake) + len(w.heardWake) + len(w.heldWake)
+	return len(w.recoverWake) + len(w.rereadWake) + len(w.liveWake) + len(w.heardWake) + len(w.heldWake) + len(w.followWake)
 }
 
 // park waits until the refresher is stopped in the hook with no wake waiting: every job it was

@@ -950,10 +950,10 @@ func TestTheServedContractsOfACallerBelowTheFloor(t *testing.T) {
 // its own is an answer this names and that does not, which is a programming error rather than a
 // body served unshaped.
 //
-// Each row is handed a body its own route could write, because the four rows whose shape has
-// moved shape a State, an Issue, the release records and a refusal and panic on anything else: a
-// row handed the wrong type would fail here as an answer with no row does, and never serve that
-// body unshaped.
+// Each row is handed a body its own route could write, because the five rows whose shape has
+// moved shape a State, an Issue, the release records, a refusal and the owed answer and panic on
+// anything else: a row handed the wrong type would fail here as an answer with no row does, and
+// never serve that body unshaped.
 func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 	state := populatedState(t)
 	for _, answer := range Answers {
@@ -1007,6 +1007,16 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 				refused := PauseFailure{Failure: Failure{Code: projectPaused, Error: "the project is paused"}, Setting: "runtime: tmux"}
 				if shaped, _ := shapeAnswer(AnswerRefusal, refused, ServingFloor, ServingFloor); shaped != any(refused.Failure) {
 					t.Errorf("a PauseFailure was shaped to %+v at the floor, want its Failure alone", shaped)
+				}
+			case AnswerOwed:
+				owed := owedWaitingAndHeld(record.DesignStepSpec)
+				body, _ := shapeAnswer(AnswerOwed, owed, waitContract-1, waitContract-1)
+				shaped, isOwed := body.(OwedResponse)
+				if !isOwed {
+					t.Fatalf("the owed answer was shaped to %T, want an OwedResponse", body)
+				}
+				if shaped.Wait != nil || shaped.Hold != nil {
+					t.Errorf("the owed answer served below waitContract carries `wait` or `hold`, which that contract added: %+v", shaped)
 				}
 			default:
 				body := map[string]string{"shape": "unmoved"}

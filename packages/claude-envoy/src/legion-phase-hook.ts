@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto"
 import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
-import type { LegionIssue } from "@legion/contracts/legion-api"
+import type { LegionOwed, LegionWaitNews } from "@legion/contracts/legion-api"
 import { messageFor } from "@legion/envoy-client/errors"
-import type { ActivityInput } from "@legion/pi-shared/daemon-client"
+import type { ActivityInput, OwedInput, WaitNewsInput } from "@legion/pi-shared/daemon-client"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import {
   createPhaseReminder,
@@ -47,9 +47,22 @@ import { configuredValue } from "./claude-session"
  * another turn at once and the provider would refuse that one the same way. It does arm one
  * timer, because the task that refused turn carried ended with it and nothing else would wake
  * this worker, so a single transient refusal would otherwise leave the issue idle. What stops
- * the reminding for good is the runner's record check, which drops every reminder once the
- * daemon has failed this role's claim — the refused turns themselves are counted by the bridge,
- * which reports each turn's outcome to the daemon (INFRA-714).
+ * the reminding for good is the runner's owed check: once the daemon has failed this role's
+ * claim it answers that the claim owes nothing, and every reminder is dropped — the refused turns
+ * themselves are counted by the bridge, which reports each turn's outcome to the daemon
+ * (INFRA-714).
+ *
+ * A wait the worker declared (`declare_wait`) and the design gate's hold that keeps a merger back
+ * are the daemon's owed answer to give (dispatch://INFRA-2040). While either stands, the machine
+ * continues no turn, arms no timer and sends no reminder but the one for a tool call written as
+ * text, and every activity report says that no reminder is due, so the daemon can release the
+ * pod. Only the worker's own background work buys a quiet wait (`${background_tasks}` at `Stop`).
+ * News is what this server's channel writes into the session after the declaration: each relayed
+ * Envoy delivery, under the frame's own key, and each person's message, with none (D8 of
+ * dispatch://INFRA-2040's plan). The channel server reports it through `news`, from its own
+ * process, whichever turn Claude Code takes it into: the bridge's inbox and these hooks never see
+ * the frame's key. The CallTool handler of the same server tells this endpoint the wait a
+ * `declare_wait` recorded (`waitDeclared`).
  */
 
 /** The tool's name: Claude Code shows it as `mcp__legion__legion_phase_hook`, and a hook entry
@@ -72,17 +85,6 @@ const HOOK_EVENTS = [
   "PostToolUseFailure",
   "UserPromptSubmit",
 ] as const
-
-/**
- * How many inbox lines this server wrote are kept waiting for the prompt that carries them back.
- * Each is dropped as its prompt arrives, so the set stays at the one or two lines in flight; the
- * cap is what bounds it when a line never comes back at all, because the bridge handed two of
- * them to one turn. A turn whose line was dropped by the cap counts as an assignment rather than
- * an inbound event: both put the count back to 0, but an assignment reopens a phase an inbound
- * event would leave closed, so the mistake is the unsafe direction and the record check is all
- * that bounds it. The cap is high enough that only a bridge that lost a line reaches it.
- */
-const WRITTEN_LINES_KEPT = 32
 
 /** One hook call's arguments: the event, and that event's own fields. Claude Code substitutes
  * `${…}` as strings, so every field is one — `stopHookActive` ("true"/"false") and
@@ -146,22 +148,28 @@ export interface PhaseHookAnswer {
 export interface PhaseHookEndpoint {
   /** Answers one hook call, with the record written before the answer. */
   readonly handle: (input: unknown) => Promise<PhaseHookAnswer>
-  /** One line this server has just written into the bridge's inbox for an Envoy delivery. The
-   * prompt that carries it back is that delivery's turn, not a fresh assignment, and this is the
-   * only way the endpoint can tell the two apart: the server writes every delivery itself. */
-  readonly deliveryWritten: (content: string) => void
-  /** The `legion` tool's `handoff_complete`, or its `request_backward_move`, returned without
-   * throwing: this session's phase is no longer open. The CallTool handler of the same server
-   * calls it (`./envoy-channel-server`), as `onPhaseCompleted` does on the Oh My Pi host. */
-  readonly phaseClosed: () => void
   /** The `legion` tool's `ready_for_update` returned without throwing: the worker has pushed
-   * what it wants kept and waits for the process its claim runs in to be replaced. Its phase
-   * stays open, and the `Stop` of the turn it answered in must block nothing: the work a
-   * continuation did would go with the pod, and the daemon would see no turn end. The same
-   * CallTool handler calls it, as `onUpdateAnswered` does on the Oh My Pi host. */
+   * what it wants kept and waits for the process its claim runs in to be replaced, and the `Stop`
+   * of the turn it answered in must block nothing: the work a continuation did would go with the
+   * pod, and the daemon would see no turn end. The CallTool handler of the same server calls it
+   * (`./envoy-channel-server`), as `onUpdateAnswered` does on the Oh My Pi host. */
   readonly updateAnswered: () => void
-  /** Drops the armed timer, so a 15-minute WAITING wait never holds a shutting-down server
-   * open (the server's own `stop`). */
+  /** The `legion` tool's `declare_wait` returned the wait `waitId` the daemon recorded
+   * (`onWaitDeclared` in `@legion/pi-shared/legion-phase-ops`): news this server writes after the
+   * call's result, in the declaring turn or a later one, is reported against that wait. The
+   * CallTool handler of the same server calls it (`./envoy-channel-server`), as the Oh My Pi
+   * host's `onWaitDeclared` does. An architect's session declares no wait and runs no reminder. */
+  readonly waitDeclared: (waitId: string) => void
+  /** News this server wrote into the session (D8 of dispatch://INFRA-2040's plan): a relayed Envoy
+   * delivery, with `deliveryKey` the frame's own dedupe key (`deliveryIdentity` in
+   * `deliverRelayed`, `./envoy-channel-server`), or a person's message, with none. It starts the
+   * count again, and while a wait this endpoint knows of stands it is reported to the daemon
+   * against that wait, the key verbatim (`PhaseReminder.news`). Settles once the daemon answered
+   * or the report failed and was kept to be sent again; it never rejects. An architect's session
+   * runs no reminder, and its news moves nothing. */
+  readonly news: (deliveryKey?: string) => Promise<void>
+  /** Drops the armed timer, so no reminder timer, the quiet wait of the worker's own background
+   * work the longest of them, holds a shutting-down server open (the server's own `stop`). */
   readonly stop: () => void
 }
 
@@ -171,8 +179,8 @@ export interface PhaseHookDeps {
   /** The pane's registered claim, or undefined while its boot is still registering. */
   readonly claim: () => ClaimCapability | undefined
   /** Settles once the pane's claim boot has run (`startLegionClaim`'s `booted`). The resume
-   * reminder and the recreated-workspace notice both need the claim, and neither is sent before
-   * one exists. Never rejects. */
+   * reminder, the owed read before it, the boot's activity report and the recreated-workspace
+   * notice all need the claim, and none is sent before one exists. Never rejects. */
   readonly booted: Promise<void>
   /** A turn of this session has started, whatever started it: the daemon's task, an Envoy
    * delivery, a reminder, a person. The channel server answers it by firing the claim boot's
@@ -182,12 +190,18 @@ export interface PhaseHookDeps {
    * registered its step — the bridge's seeding `/rename` — signals nothing, and one after the
    * name is taken costs nothing. */
   readonly firstTurnStarted: () => void
-  /** One issue's record, for the reminder's record check, aborted with `signal` once the
-   * check's bound passes (`PhaseReminderDeps.readRecord`): the record, or `undefined` for an
-   * issue the daemon records nothing of. */
-  readonly readRecord: (issue: string, signal: AbortSignal) => Promise<LegionIssue | undefined>
+  /** What this session's claim owes now (`LegionDaemonClient.owed`), the one answer that decides
+   * whether a reminder goes out and that gives the wait the worker declared and the design gate's
+   * hold, aborted with `signal` once the check's bound passes (`PhaseReminderDeps.readOwed`). An
+   * answer that does not arrive is the shared reminder's to decide (`UNREAD_CHECK`,
+   * `@legion/pi-shared/phase-reminder`), as it is on Oh My Pi. */
+  readonly readOwed: (input: OwedInput, signal: AbortSignal) => Promise<LegionOwed>
+  /** Reports news after the declaration of a wait to the daemon (`LegionDaemonClient.waitNews`),
+   * aborted with `signal` once the bound passes (`PhaseReminderDeps.reportNews`). */
+  readonly reportNews: (input: WaitNewsInput, signal: AbortSignal) => Promise<LegionWaitNews>
   /** Sends this session's activity report to the daemon (`LegionDaemonClient.activity`), so the
-   * idle rule can decide whether the pane's pod may be released (INFRA-945). */
+   * idle rule can decide whether the pane's pod may be released (INFRA-945): at each `Stop`, and
+   * once at boot after the owed read. */
   readonly reportActivity: (input: ActivityInput) => Promise<void>
   /** Writes one line into the session over the bridge's inbox, which turns it into a user turn,
    * and resolves once the bridge has queued it. Undefined for a session outside a Legion pane,
@@ -232,7 +246,9 @@ export function paneReminderLog(write: (line: string) => void): PhaseReminderLog
  * left behind, which has no such key, still reads.
  */
 export interface PhaseStallRecord {
-  /** The phase and count the file holds, or undefined when it holds none this build knows. */
+  /** The reminder's rhythm and count the file holds, with the wait news is reported against
+   * (`waitId`) and each report of news the daemon never answered (`unsentNews`, each with its
+   * wait and its delivery's key), or undefined when it holds none this build knows. */
   readonly entry: PhaseStallEntry | undefined
   /** Whether this launch's recreated-workspace notice has already been written into the session
    * (`recreatedNoticeSent` in the file); false for a record that names no such key. It outlives
@@ -248,10 +264,13 @@ const NO_RECORD: PhaseStallRecord = { entry: undefined, recreatedNoticeSent: fal
 /**
  * The record `file` holds: a missing file is no record at all, so a fresh session restores
  * nothing. The entry itself is assembled where the Oh My Pi host's is
- * (`phaseStallEntryFrom`), so a record written by the build now in the pods —
- * `{"state":"quiet"}` or `{"state":"text-call"}` — reads as an open phase with no reminders yet
- * here too, and a missing `count`, `reported` or `reportKey` reads as 0, false and absent. This
- * host adds the warning for a record it understands none of, and its own `recreatedNoticeSent`.
+ * (`phaseStallEntryFrom`), so a record an earlier build wrote — `{"state":"open"}` or
+ * `{"state":"closed"}` with its count, `{"state":"quiet"}` or `{"state":"text-call"}` — reads as
+ * the rhythm's `active` here too, and a missing `count`, `reported` or `reportKey` reads as 0,
+ * false and absent. A record with no `waitId` or `unsentNews`, which every build before
+ * dispatch://INFRA-2040 wrote, reads as no wait known and no report kept; a record that has them
+ * gives the relaunched process the wait and the reports to send again at its boot. This host adds
+ * the warning for a record it understands none of, and its own `recreatedNoticeSent`.
  */
 export function readPhaseStallRecord(file: string, log: PhaseReminderLog): PhaseStallRecord {
   let raw: string
@@ -300,7 +319,8 @@ export function readPhaseStallRecord(file: string, log: PhaseReminderLog): Phase
  * the shape the Go bridge wrote the same file in while it kept this record, kept so a session
  * carried across the cutover reads whatever the build now in the pods left. The key is written
  * only once it is true, so a record this host writes is otherwise the shared entry and nothing
- * more. A write that fails is logged rather than thrown: the worker still gets its reminder. */
+ * more, the wait's id and the unsent reports of news among it. A write that fails is logged
+ * rather than thrown: the worker still gets its reminder. */
 export function writePhaseStallRecord(
   file: string,
   entry: PhaseStallEntry,
@@ -333,7 +353,7 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
   const restored = readPhaseStallRecord(deps.stateFile, deps.log)
   // The machine's entry and this host's own key are one record, so the last entry written is kept
   // for the write the notice makes.
-  let entry: PhaseStallEntry = restored.entry ?? { state: "closed", count: 0, reported: false }
+  let entry: PhaseStallEntry = restored.entry ?? { state: "active", count: 0, reported: false }
   let recreatedNoticeSent = restored.recreatedNoticeSent
   const saveRecord = (next: PhaseStallEntry): void => {
     entry = next
@@ -367,18 +387,6 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
   /** The reminder last written to the inbox: the prompt that carries it back is this endpoint's
    * own reminder, and a reminder must never reset the count it just moved. */
   let lastReminder: string | undefined
-  /** The lines this server wrote into the inbox for something that is not a reminder — an Envoy
-   * delivery, the recreated-workspace notice — whose prompt has not arrived yet. Each is dropped
-   * as its prompt arrives (`WRITTEN_LINES_KEPT` bounds the rest). */
-  const written = new Set<string>()
-  const noteWritten = (content: string): void => {
-    written.add(content)
-    for (const oldest of written) {
-      if (written.size <= WRITTEN_LINES_KEPT) break
-      written.delete(oldest)
-    }
-  }
-
   /** Writes `text` into the session over the bridge's inbox, and settles as the inbox does: it
    * rejects when the bridge did not queue the line. A session with no inbox says so and writes
    * nothing, and that is no failure: no later attempt could reach the worker either. */
@@ -411,7 +419,8 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
     // count was never recorded is what the count exists to catch.
     saveEntry: saveRecord,
     claim: deps.claim,
-    readRecord: deps.readRecord,
+    readOwed: deps.readOwed,
+    reportNews: deps.reportNews,
     // The server's own listener client, so the notice reaches the one this session already talks
     // to; Envoy off for the session leaves it undefined, the runner says so once at debug, and
     // the reminder keeps coming without a notice.
@@ -425,8 +434,10 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
   /**
    * INFRA-945: what this session is doing, reported to the daemon as each turn settles, so the
    * idle rule can decide whether the pane's pod may be released. Claude Code's only sight of
-   * background work is the `Stop` hook's `${background_tasks}`, so this host reports at the
-   * settle and nowhere else; the one kind it can name is a Claude Code background task.
+   * background work is the `Stop` hook's `${background_tasks}`, so this host names background work
+   * at the settle alone; the one kind it can name is a Claude Code background task. The boot
+   * reports once too, after its owed read (below), and names no background work: it has no
+   * `${background_tasks}` to read.
    *
    * A report that does not reach the daemon is logged and dropped: the turn's reminder is what
    * the hook owes its worker, and a claim with no report after its last turn is held rather than
@@ -455,11 +466,12 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
   /**
    * D29: a worker whose launcher recreated its workspace is told so, as an Oh My Pi one is, over
    * the same inbox the reminders use. Once per launch: the record it is written in is the one the
-   * phase and count live in, so a server Claude Code restarts inside the same `claude` process
-   * does not repeat it, and a launch that recreated nothing clears it again. The record lands
-   * before the line does — a notice a broken socket loses is one notice lost, while one written
-   * twice is the thing it must not be — and the line is noted as written, so the turn it starts
-   * counts as an inbound event and leaves a closed phase closed.
+   * reminder's rhythm and count live in, so a server Claude Code restarts inside the same
+   * `claude` process does not repeat it, and a launch that recreated nothing clears it again. The
+   * record lands before the line does — a notice a broken socket loses is one notice lost, while
+   * one written twice is the thing it must not be — and the turn it starts is an inbound message
+   * like any other, which says nothing of what the claim owes. It is this plugin's own notice, not
+   * news, so it ends no wait (D8 of dispatch://INFRA-2040's plan).
    */
   const sendRecreatedNotice = (issue: string): void => {
     if (recreatedNoticeSent) return
@@ -467,7 +479,6 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
     if (notice === undefined) return
     recreatedNoticeSent = true
     saveRecord(entry)
-    noteWritten(notice.content)
     void writeToSession(notice.content, "the recreated-workspace notice").catch(
       (error: unknown) => {
         deps.log.warn("legion: the recreated-workspace notice did not reach this worker", {
@@ -477,21 +488,42 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
     )
   }
 
-  void deps.booted.then(() => {
+  void deps.booted.then(async () => {
     const claim = deps.claim()
     if (claim === undefined) return
     sendRecreatedNotice(claim.issue)
-    // D10: a worker the daemon relaunched into an open phase is reminded from a timer, since
-    // nothing else would wake it. The guard drops that timer when a turn started meanwhile, which
-    // is exactly the case to drop — the daemon re-sending an interrupted task arrives as a
-    // `UserPromptSubmit`.
-    if (claim.role !== "architect") reminder.armResumeReminder()
+    if (claim.role === "architect") return
+    // D10: a worker the daemon relaunched is reminded from a timer, since nothing else would wake
+    // it, and the daemon's answer when it is due says whether anything is owed. The guard drops
+    // that timer when a turn started meanwhile, which is exactly the case to drop — the daemon
+    // re-sending an interrupted task arrives as a `UserPromptSubmit`. The arming first sends
+    // every report of news the restored record kept unsent, then reads the owed answer, which
+    // names the wait that stands, and arms nothing while a wait the worker declared or the
+    // design gate's hold stands (`armResumeReminder`, `@legion/pi-shared/phase-reminder`).
+    await reminder.armResumeReminder()
+    // `sendActivity` otherwise runs only at a `Stop`, and a worker relaunched during a wait may
+    // run no turn before the wait ends. So the boot reports once the owed answer is read: while a
+    // wait or a hold stands it says that no reminder is due, and the daemon can release the pod.
+    // It names no background work. A server Claude Code restarts inside one `claude` process
+    // may leave a background task of the worker's running that this report does not name; the
+    // next `Stop` names it.
+    await sendActivity(claim, false)
   })
 
   return {
-    deliveryWritten: noteWritten,
-    phaseClosed: () => reminder.apply({ kind: "phase-closed" }),
     updateAnswered: () => reminder.apply({ kind: "update-answered" }),
+    // An architect's session runs no phase reminder (the gate in `handle`), so neither entry below
+    // moves anything for one. A delivery written before the claim has registered is news all the
+    // same: the record restored above may name a wait, and a report kept for want of a claim goes
+    // at the boot.
+    waitDeclared: (waitId) => {
+      if (deps.claim()?.role === "architect") return
+      reminder.waitDeclared(waitId)
+    },
+    news: async (deliveryKey) => {
+      if (deps.claim()?.role === "architect") return
+      await reminder.news(deliveryKey)
+    },
     stop: dropTimer,
     handle: async (input) => {
       const parsed = hookArguments.safeParse(input)
@@ -518,7 +550,10 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           // `stop_hook_active` arrives as "true" once this hook has already continued the turn. It
           // decides nothing: the count is what bounds a run of reminders. `background_tasks` does
           // decide: a turn that ends with a background task of the worker's own still running is
-          // a worker waiting to be woken by it, not a stalled one.
+          // a worker waiting to be woken by it, not a stalled one, and that is the one quiet wait
+          // a turn's end buys. A wait the worker declared and the design gate's hold are the
+          // daemon's owed answer to give, which the settle reads: while either stands it
+          // continues nothing and arms nothing, but for a tool call written as text.
           const backgroundWork = backgroundWorkRunning(event.backgroundTasks)
           deps.log.debug("legion: a Claude Code phase worker's turn is settling", {
             issue: claim.issue,
@@ -545,7 +580,8 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           // continuation, because the next turn would be refused the same way, and one timer,
           // because nothing else would wake this worker once the task that turn carried ended
           // with it. What ends a session the provider keeps refusing is the daemon failing its
-          // claim on the outcomes the bridge reports, which the timer's own record check reads.
+          // claim on the outcomes the bridge reports, after which the timer's own owed check is
+          // answered that the claim owes nothing.
           // Claude Code ignores whatever this hook returns, which costs nothing now that there
           // is nothing to return.
           await reminder.settle({ kind: "refused", message: event.lastAssistantMessage ?? "" })
@@ -563,19 +599,20 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
         }
         case "UserPromptSubmit": {
           // D7: the only sight this server has of an inbound turn. The daemon's task reaches
-          // Claude Code's stdin from the bridge and never this process, so what a turn means is
-          // read from the prompt itself. The turn is declared first, which makes every armed
-          // timer stale, and the pending one is dropped outright: the runner's generation guard
-          // answers the same for the timers it armed, and dropping the one timer this server
-          // holds is the plainest way to say the same thing.
+          // Claude Code's stdin from the bridge and never this process, so a turn is read from the
+          // prompt itself: this endpoint's own reminder, or an inbound message, which starts the
+          // count again and says nothing of what the claim owes. It reports no news either: the
+          // daemon's task, the resume task and the wait's own task are prompts, and the news among
+          // these turns — a delivery or a person's message this server wrote — was reported as the
+          // channel server wrote it, with the frame's key this hook never sees (`news`). The turn
+          // is declared first, which makes every armed timer stale, and the pending one is dropped
+          // outright: the runner's generation guard answers the same for the timers it armed, and
+          // dropping the one timer this server holds is the plainest way to say the same thing.
           reminder.turnStarted()
           dropTimer()
           const prompt = event.prompt ?? ""
           if (prompt === lastReminder) return {}
-          // A line this server wrote is dropped as its prompt arrives, so a later turn carrying
-          // the same text is an assignment, which is what a repeat of it would be.
-          const delivered = written.delete(prompt)
-          reminder.apply({ kind: delivered ? "inbound-event" : "assignment" })
+          reminder.apply({ kind: "prompt" })
           return {}
         }
       }

@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  The MCP `legion` tool offers `declare_wait` to a phase worker, as the Oh My Pi plugin does. The
+  channel server reports each relayed Envoy delivery, with the frame's own key, and each person's
+  message it writes after the declaration as news to the daemon. While the daemon's owed answer
+  gives a wait that stands, or the design gate's hold on a merger, the phase hook sends no reminder
+  and arms no timer, except for a tool call written as text. At boot the hook reads the owed answer
+  before it arms anything and sends an activity report, so a worker relaunched during a wait reports
+  no reminder due.
+time: 2026-11-21T14:35:21Z
+custom:
+    Issue: pr4030

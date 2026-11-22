@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  The `legion` tool offers `declare_wait` to a phase worker: `waiting_on` says what it waits on and
+  `wake_at` the time to wake it, 1 minute to 24 hours ahead. While the daemon's owed answer gives a
+  wait that stands, or the design gate's hold on a merger, the end-of-turn reminder sends nothing,
+  arms no timer and reports no reminder due, except for a tool call written as text, whose reminder
+  also names the closed gate during a hold. An Envoy delivery or a person's message after the
+  declaration is reported to the daemon as news, with the delivery's own key, and a report that
+  fails is kept and sent again, also after a relaunch.
+time: 2026-11-21T14:35:21Z
+custom:
+    Issue: pr4030

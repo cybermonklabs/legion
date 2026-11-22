@@ -520,6 +520,7 @@ plugin_pack:
   - '!packages/daemon/internal/testnats/**/*_test.go'
   - '!packages/daemon/internal/testpg/**/*_test.go'
   - '!packages/daemon/internal/testtmp/**/*_test.go'
+  - '!packages/daemon/internal/testtypes/**/*_test.go'
   - '!packages/daemon/internal/textcheck/**/*_test.go'
   - '!packages/daemon/internal/wait/**/*_test.go'
   - '!packages/daemon/internal/wakepace/**/*_test.go'
@@ -571,6 +572,7 @@ claude_envoy:
   - 'packages/pi-shared/test/image-manifest.ts'
   - 'packages/test-fixtures/src/**'
   - 'packages/pi-shared/test/daemon-state.ts'
+  - 'packages/pi-shared/test/wait-stand-in.ts'
   # why: .github/ci-notes/ci.md#claude_envoy-testsenvoy-channel-servertestts-holds-the-marketplace
   - '.claude-plugin/marketplace.json'
   - '.agents/plugins/marketplace.json'

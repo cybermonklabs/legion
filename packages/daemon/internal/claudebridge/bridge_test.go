@@ -587,9 +587,11 @@ func TestATurnIsOneUserMessageWhenTheHandoffSucceeds(t *testing.T) {
 	}
 }
 
-// A prompt during a turn is acknowledged and then refused in Oh My Pi's busy words, so the daemon
-// takes the task back uncharged and sends it again at the turn's end. The gate holds the turn's
-// own result back, so the turn is still running when the second prompt arrives.
+// A prompt during a turn is acknowledged and then refused busy: the bridge's words (busyWords) and
+// beside them the busy code (shimwire.CodeSessionBusy), which the daemon's stream mints as the
+// agent being in a turn of its own (outcome_test.go), so the daemon takes the task back uncharged
+// and sends it again at the turn's end. The gate holds the turn's own result back, so the turn is
+// still running when the second prompt arrives.
 func TestAPromptDuringATurnIsRefusedBusy(t *testing.T) {
 	r := newRig(t, "-p", "--resume", sessionID)
 	r.prompt("p1", backgroundDuringPrompt)
@@ -599,8 +601,9 @@ func TestAPromptDuringATurnIsRefusedBusy(t *testing.T) {
 	}
 	r.prompt("p2", "say again")
 	refusal := r.expect("response", map[string]any{"id": "p2", "command": "prompt", "success": false})
-	if !strings.HasPrefix(refusal["error"].(string), "Agent is already processing") {
-		t.Errorf("the refusal %q is not Oh My Pi's busy answer", refusal["error"])
+	if refusal["error"] != busyWords || refusal["code"] != shimwire.CodeSessionBusy {
+		t.Errorf("the refusal %q with code %v is not the bridge's busy refusal %q with code %q", refusal["error"],
+			refusal["code"], busyWords, shimwire.CodeSessionBusy)
 	}
 	r.open()
 	r.expect("agent_end", nil)
@@ -948,8 +951,9 @@ func TestAPromptDuringAClaudeStartedTurnIsRefusedBusy(t *testing.T) {
 	}
 	r.prompt("p2", "say again")
 	refusal := r.expect("response", map[string]any{"id": "p2", "command": "prompt", "success": false})
-	if !strings.HasPrefix(refusal["error"].(string), "Agent is already processing") {
-		t.Errorf("the refusal %q is not Oh My Pi's busy answer", refusal["error"])
+	if refusal["error"] != busyWords || refusal["code"] != shimwire.CodeSessionBusy {
+		t.Errorf("the refusal %q with code %v is not the bridge's busy refusal %q with code %q", refusal["error"],
+			refusal["code"], busyWords, shimwire.CodeSessionBusy)
 	}
 	r.open()
 	r.expect("agent_end", nil)
@@ -1270,6 +1274,9 @@ func TestUnknownRequestsAreRefusedByName(t *testing.T) {
 	frame := r.expect("response", map[string]any{"id": "s1", "command": "steer", "success": false})
 	if !strings.Contains(frame["error"].(string), "does not support steer") {
 		t.Errorf("the refusal is %q", frame["error"])
+	}
+	if code, coded := frame["code"]; coded {
+		t.Errorf("the refusal of a command the bridge does not support carries code %v, want none: it is no busy answer", code)
 	}
 }
 

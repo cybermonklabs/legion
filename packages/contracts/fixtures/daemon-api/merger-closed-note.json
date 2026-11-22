@@ -1,0 +1,9 @@
+{
+  "tree": "LEGION-208",
+  "hold": {
+    "step": "spec",
+    "artifactId": "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
+    "version": 7
+  },
+  "note": "The design gate of LEGION-208 closed: version 7 of its spec document (d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093) is with its reviewer. Merge nothing, enqueue nothing, and take a pull request you queued back out of the merge queue."
+}

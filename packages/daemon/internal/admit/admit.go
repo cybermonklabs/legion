@@ -725,6 +725,35 @@ func (a *Admission) phaseWorkers(ctx context.Context, tx pgx.Tx, candidates []re
 	return workers, runs, nil
 }
 
+// waitRows is the phases row of each of workers whose claim has a wait row with no end, by token,
+// in one batched read (record.Store.PhasesOf): the row SilentPhaseWorker and
+// BackgroundStalledWorker weigh such a wait against (workflow.WaitStands, whose wait stands only
+// on the entry it was declared at and before a completion). A claim with no wait row needs no row
+// for that term, since no wait of it can stand, and is judged by the zero row, so a pass over a
+// project where no worker waits reads nothing here.
+func (a *Admission) waitRows(ctx context.Context, tx pgx.Tx, workers []phaseWorker, runs map[claim.Token]record.RoleRun) (map[claim.Token]record.PhaseRow, error) {
+	var keys []string
+	for _, worker := range workers {
+		if held := runs[worker.token].Claim; held != nil && held.Wait != nil {
+			keys = append(keys, worker.issue.Key)
+		}
+	}
+	rows := make(map[claim.Token]record.PhaseRow, len(keys))
+	if len(keys) == 0 {
+		return rows, nil
+	}
+	phases, err := a.store.PhasesOf(ctx, tx, keys)
+	if err != nil {
+		return nil, err
+	}
+	for _, worker := range workers {
+		if held := runs[worker.token].Claim; held != nil && held.Wait != nil {
+			rows[worker.token] = record.PhaseRowOf(phases[worker.issue.Key], worker.role)
+		}
+	}
+	return rows, nil
+}
+
 // rootArchitectOf is issue's own architect as a holder the entry repair weighs (owedEntryRoles),
 // and whether it is one: issue is a tree root of this project whose tree does not linger, and its
 // key yields a claim token. Which of these roots the rule reaches is read once the claim is
@@ -741,9 +770,11 @@ func (a *Admission) rootArchitectOf(project string, issue record.Issue) (phaseWo
 }
 
 // silentWorkers is every issue of the project whose phase worker is one nothing will prompt, as
-// the tick notice carries it: its process is up and between turns, it holds no task, and either
-// its agent's last recorded step is older than the bound this deployment gives a phase worker
-// (UseWorkerSilence, config.Config.WorkerSilence; workflow.SilentPhaseWorker) or its own
+// the tick notice carries it: its process is up and between turns, it holds no task, the record
+// gives no reason of the daemon's own for its quiet — no closed design gate holds it as a merger,
+// and no wait of its stands (workflow's quietByDesign, dispatch://INFRA-2040 R1 and R3) — and
+// either its agent's last recorded step is older than the bound this deployment gives a phase
+// worker (UseWorkerSilence, config.Config.WorkerSilence; workflow.SilentPhaseWorker) or its own
 // session's report of background work has stood past the longer bound
 // (config.Config.WorkerBackground; workflow.BackgroundStalledWorker). The daemon prompts the
 // second kind never, and the list marks it with the moment of that report
@@ -793,15 +824,19 @@ func (a *Admission) silentWorkers(ctx context.Context, tx pgx.Tx, issues []recor
 	if err != nil {
 		return nil, err
 	}
+	rows, err := a.waitRows(ctx, tx, workers, runs)
+	if err != nil {
+		return nil, err
+	}
 	now := a.now()
 	var silent []record.SilentIssue
 	for _, held := range workers {
-		run := runs[held.token]
+		run, row := runs[held.token], rows[held.token]
 		gate := facts.Gates[held.issue.Tree]
 		// The two rules never both hold: SilentPhaseWorker refuses the claim whose report
 		// names background work, and BackgroundStalledWorker is about that claim alone.
-		stepped := workflow.SilentPhaseWorker(held.issue, held.root, gate, held.role, run, a.workerSilence, now)
-		background := !stepped && workflow.BackgroundStalledWorker(held.issue, held.root, gate, held.role, run, a.workerBackground, now)
+		stepped := workflow.SilentPhaseWorker(held.issue, held.root, gate, held.role, run, row, a.workerSilence, now)
+		background := !stepped && workflow.BackgroundStalledWorker(held.issue, held.root, gate, held.role, run, row, a.workerBackground, now)
 		if !stepped && !background {
 			continue
 		}
@@ -836,13 +871,14 @@ func (a *Admission) silentWorkers(ctx context.Context, tx pgx.Tx, issues []recor
 //
 // The read is a snapshot with no actor on it: in it, a session's own status write during a restart
 // looks exactly like a human's move. Dispatch says how far each issue's event log has run, so a
-// key the listing shows behind that log — recorded or not, whatever its listed status — is held
-// back rather than decided on now: the stream still holds those events (or the outbox that would
-// still publish one), and a stale one can still redeliver after this read, unless the Dispatch
-// consumer's position had already Reached target when the caller measured it. Then nothing more
-// is coming for any of it, ever, so every summary applies now instead of holding a key nothing
-// will later release. target and position are the caller's own single measurement of the stream
-// and the Dispatch consumer, taken once for the whole call, not per issue.
+// key the listing shows behind that log (record.Issue.Behind) — recorded or not, whatever its
+// listed status — is held back rather than decided on now: the stream still holds those events
+// (or the outbox that would still publish one), and a stale one can still redeliver after this
+// read, unless the Dispatch consumer's position had already Reached target when the caller
+// measured it. Then nothing more is coming for any of it, ever, so every summary applies now
+// instead of holding a key nothing will later release. target and position are the caller's own
+// single measurement of the stream and the Dispatch consumer, taken once for the whole call, not
+// per issue.
 //
 // The listing reaches admission outside intake.ApplyFact, so each summary takes the store's own
 // rule here as a fact takes it there (storetext.Strings), before anything compares it with a
@@ -868,7 +904,7 @@ func (a *Admission) Reconcile(ctx context.Context, tx pgx.Tx, summaries []intake
 		if err != nil {
 			return fmt.Errorf("read reconciled issue %s: %w", summary.Key, err)
 		}
-		behind := stored == nil && summary.Seq > 0 || stored != nil && summary.Seq > stored.LastDispatchSeq
+		behind := stored == nil && summary.Seq > 0 || stored != nil && stored.Behind(summary.Seq)
 		if behind && !caughtUp {
 			a.log.Debug("admission reconcile: the stream may still hold or redeliver an event for this issue; holding it for the consumer to catch up",
 				"issue", summary.Key, "status", summary.Status, "dispatch", summary.Seq)
@@ -1076,39 +1112,43 @@ func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.
 		}
 		return a.putNewRoot(ctx, tx, summary, false)
 	}
-	if summary.Seq > 0 && summary.Seq < stored.LastDispatchSeq {
+	if stored.Outdates(record.ReadSeq, summary.Seq) {
 		return nil
 	}
-	// The record keeps the repository it was recorded with, as for a live event (the engine's
-	// NoteRepositoryKept); the note is said once per resolution, so a listing no newer than the
-	// record says nothing again.
-	if err := a.engine.NoteRepositoryKept(ctx, tx, *stored, summary.ResolvedRepo); err != nil {
+	// The record's repository follows the one Dispatch resolves the issue to, as it does for a
+	// live event (the engine's ApplyRepositoryChange). A recorded issue reaches this from the boot
+	// listing alone: the recovery listing takes no recorded issue (the daemon's recoveredOn). The
+	// boot listing's preparation reads no GitHub for a change and asks for the daemon's follow
+	// pass instead (followListing), which calls the engine itself once the boot is over, so the
+	// fact here carries no read and corrects nothing (Resolution.Unread). It carries the
+	// repository the record held at that preparation (intake.DispatchIssue.PreparedAgainst), so a
+	// summary whose record a correction moved since, a held one's among them, writes nothing and
+	// owes the issue a follow.
+	if err := a.engine.ApplyRepositoryChange(ctx, tx, *stored, summary); err != nil {
 		return err
 	}
-	seq := stored.LastDispatchSeq
-	if summary.Seq > seq {
-		seq = summary.Seq
-	}
+	seq := max(stored.LastDispatchSeq, summary.Seq)
 	status := stored.Status
-	if summary.Status != stored.Status && summary.Seq > stored.LastDispatchSeq {
-		// A snapshot that changes a recorded issue's status, strictly newer than what is stored, is
-		// the fact a live Dispatch event of the same change would carry, so it runs through the
-		// engine's own transition table first — leave/beginLinger out of the workflow, or
-		// ReenterChild for a live tree's child moved back to todo — exactly as that event would.
-		// Engine.dispatchIssue already makes this same newer-or-not decision on its own sequence
-		// fence (fact.Seq <= issue.LastDispatchSeq); pre-filtering by status here to
-		// OutOfWorkflow alone left a parked child's own re-entry unreached, stranding it recorded
-		// todo at phase done under a live tree. Left to recordObservation alone, the record would
-		// move to the snapshot's status with no suspend and no linger, and the record's
-		// LastDispatchSeq would reach the snapshot's own sequence, so the real event, once it
-		// finally arrives, would be dropped by that same sequence fence — nothing would ever run
+	if summary.Status != stored.Status && stored.Behind(summary.Seq) {
+		// A snapshot that changes a recorded issue's status, strictly newer than what is stored
+		// (record.Issue.Behind), is the fact a live Dispatch event of the same change would carry,
+		// so it runs through the engine's own transition table first — leave/beginLinger out of
+		// the workflow, or ReenterChild for a live tree's child moved back to todo — exactly as
+		// that event would. Engine.dispatchIssue already makes this same newer-or-not decision on
+		// its own sequence fence (record.Issue.Outdates, as of an event); pre-filtering by status
+		// here to OutOfWorkflow alone left a parked child's own re-entry unreached, stranding it
+		// recorded todo at phase done under a live tree. Left to recordObservation alone, the
+		// record would move to the snapshot's status with no suspend and no linger, and the
+		// record's LastDispatchSeq would reach the snapshot's own sequence, so the real event, once
+		// it finally arrives, would be dropped by that same sequence fence — nothing would ever run
 		// the transition this snapshot stands in for. A snapshot no newer than the record — a
-		// session's own status write the daemon already recorded through sessionStatusWrite, echoed
-		// back by a boot listing taken before the daemon's own reassert landed — is level, not a
-		// change to apply: status stays what recordObservation below already knows, an admitted
-		// root's or a live tree's own state, not the record it briefly showed on Dispatch. Re-read
-		// afterward: the engine's own write (phase, hold, linger) must not be clobbered by
-		// recordObservation writing back the stale copy this call fetched before the engine ran.
+		// session's own status write the daemon already recorded through sessionStatusWrite,
+		// echoed back by a boot listing taken before the daemon's own reassert landed — is level,
+		// not a change to apply: status stays what recordObservation below already knows, an
+		// admitted root's or a live tree's own state, not the record it briefly showed on
+		// Dispatch. Re-read afterward: the engine's own write (phase, hold, linger) must not be
+		// clobbered by recordObservation writing back the stale copy this call fetched before the
+		// engine ran.
 		if _, err := a.engine.Apply(ctx, tx, summary); err != nil {
 			return fmt.Errorf("apply engine transition for %s: %w", summary.Key, err)
 		}
@@ -1116,12 +1156,13 @@ func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.
 		if err != nil {
 			return fmt.Errorf("re-read %s after its engine transition: %w", summary.Key, err)
 		}
-		// The engine consumed the snapshot when it recorded the snapshot's sequence: it kept its own
-		// status over a status Dispatch already showed (keepStatus), or re-entered a child, and wrote
-		// the observation itself. Recording the snapshot's status now would put a set-back's backlog
-		// on a running tree, whose slot the release would then free. Otherwise the snapshot's
-		// move is recorded, as the live event's would be.
-		if refreshed.LastDispatchSeq >= summary.Seq {
+		// The engine consumed the snapshot when it recorded the snapshot's sequence, leaving the
+		// record no longer behind it: it kept its own status over a status Dispatch already showed
+		// (keepStatus), or re-entered a child, and wrote the observation itself. Recording the
+		// snapshot's status now would put a set-back's backlog on a running tree, whose slot the
+		// release would then free. Otherwise the snapshot's move is recorded, as the live event's
+		// would be.
+		if !refreshed.Behind(summary.Seq) {
 			return nil
 		}
 		stored, status = refreshed, summary.Status
@@ -1153,7 +1194,7 @@ func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.
 // label taken off or put back at the same status moves the waiting line at once. A todo on a
 // lingering or closed root handed to Legion is a re-admission.
 func (a *Admission) applyObservation(ctx context.Context, tx pgx.Tx, stored record.Issue, observation intake.DispatchIssue) error {
-	if observation.Seq != 0 && observation.Seq <= stored.LastDispatchSeq {
+	if stored.Outdates(record.EventSeq, observation.Seq) {
 		return nil
 	}
 	handed := observation.HandedOver
@@ -1216,6 +1257,48 @@ func (a *Admission) consumeHandover(ctx context.Context, tx pgx.Tx, fact intake.
 	root, err := a.store.Issue(ctx, tx, fact.Tree)
 	if err != nil || root == nil || !root.LingersAt(fact.Generation) {
 		return err
+	}
+	// The record's repository follows the one Dispatch resolves the issue to here too, as it does
+	// for a live event (the engine's ApplyRepositoryChange) and for the boot listing
+	// (applySummary): the outbox read the issue from Dispatch before it applied this fact and
+	// carries that read's resolution (intake.Handover.ResolvedRepo), so a child handed over as a
+	// root of its own while its repository changed in Dispatch opens its new generation on the
+	// repository Dispatch resolves it to now, rather than on the one the record holds until its
+	// next event or the next boot listing. A fact carrying no resolution is nothing Dispatch has
+	// said about the issue's repository — no read answered one — so nothing is corrected and the
+	// record stands. The record is not read again after the correction: everything the
+	// re-admission below reads of this copy is the issue's title, rank, parent, chain, sequence
+	// and phase, which the correction writes none of, and the record it writes back names no
+	// repository column at all (record.Store.PutIssue), so the correction stands whatever this
+	// copy holds of the repository. applySummary corrects the repository the same way and reads
+	// the record again only after an engine transition, which writes the phase, the hold and the
+	// linger that its own copy would put back. The correction is written from what the outbox's
+	// preparation of the fact read of GitHub for the repository it moves onto
+	// (intake.Handover.RepositoryRead, RepositoryRefusal), as an event's is, and a hand-over that
+	// read nothing — the outbox's read of GitHub did not answer — corrects nothing, its change read
+	// again by the follow its preparation asked for (the daemon's prepareHandover). Nor does a
+	// hand-over whose Dispatch read is older than the record (record.Issue.Outdates, as of a
+	// read): the event the record took since carried Dispatch's newer resolution, which the engine
+	// acted on then, and the outbox's reads of GitHub between its Dispatch read and this apply
+	// leave time for a person's change of the repository to land first, which the older read
+	// would undo. The follow pass leaves a record a later event carried past its listing the same
+	// way (the daemon's followListing). A hand-over prepared against a repository the record no
+	// longer holds (intake.Handover.PreparedAgainst) corrects nothing either, and the engine owes
+	// the issue a follow (ApplyRepositoryChange): another correction moved the record after the
+	// preparation read it, such as a follow whose Dispatch read is at the outbox read's own
+	// sequence, which no sequence orders against it.
+	if fact.ResolvedRepo != "" && !stored.Outdates(record.ReadSeq, fact.Seq) {
+		change := intake.DispatchIssue{
+			Key:                   fact.Issue,
+			ResolvedRepo:          fact.ResolvedRepo,
+			RepositoryRead:        fact.RepositoryRead,
+			RepositoryRefusal:     fact.RepositoryRefusal,
+			RepositoryRefusalKind: fact.RepositoryRefusalKind,
+			PreparedAgainst:       fact.PreparedAgainst,
+		}
+		if err := a.engine.ApplyRepositoryChange(ctx, tx, *stored, change); err != nil {
+			return err
+		}
 	}
 	intake.OnCommit(ctx, func() {
 		a.log.Info("admission hand-over", "issue", fact.Issue, "tree", fact.Tree, "linger", fact.Generation, "via", "outbox")
@@ -1433,7 +1516,8 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 		}
 		if pr != nil {
 			// The carried pull request starts the generation's fence; its head run goes, as with a
-			// new generation (record.ClearGeneration), since its replay would put the old fence back.
+			// new generation (record.Store.ClearGeneration), since its replay would put the old fence
+			// back.
 			pr.Generation, pr.Run = int64(stored.Generation), nil
 			if err := a.store.PutPullRequest(ctx, tx, *pr); err != nil {
 				return fmt.Errorf("carry pull request to re-admitted orphan %s: %w", stored.Key, err)
@@ -1488,7 +1572,7 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	}
 	// A root set back to todo is a new generation of the whole tree, so the old generation's pull
 	// request, gate and handoffs go for every issue of it, not only the root's.
-	return a.store.ClearTreeGeneration(ctx, tx, stored.Tree, a.now())
+	return a.engine.ClearTreeGeneration(ctx, tx, stored.Tree, a.now())
 }
 
 // keepStaleApproval keeps, for the architect start of the root key re-admission is clearing, the
@@ -2529,8 +2613,8 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 // with nothing to do comes back and is told nothing.
 //
 // Such a role comes back only where it holds a claim row, which is the durable record that the
-// role has run: a re-admission clears the generation's facts — clearGeneration touches
-// pull_requests, design_gates, phases and issues, never claims — and a claim's token carries no
+// role has run: a re-admission clears the generation's facts — record.Store.ClearTreeGeneration
+// touches pull_requests, phases and design_gates, never claims — and a claim's token carries no
 // generation (claim.NewToken), so the row outlives the generation that wrote it. A role that has
 // never run holds none and is started by nothing here: its session would come up with no
 // transcript and nothing asked of it, and only a message could ever wake it. The rows of every
@@ -3171,11 +3255,12 @@ func (a *Admission) architectServed(ctx context.Context, tx pgx.Tx, root record.
 // differs from a phase worker's in the two ways a root architect's start differs: the row waits
 // for no admission slot, because a root architect's start takes no slot, whether the root holds
 // its row, holds none past its review (record.KeepsSlot) or gave it back for a wait
-// (releaseSlotsForWaits), and a task the derivation wrote is derived again from the
-// record rather than taken off the row, while a task the resume of a person's answer wrote is
-// sent as written (workflow's SendArchitectStart, over record.PhaseRow.EntryVerbatim). Where the
-// root's architect claim does not exist, that start is what creates it, exactly as admission's
-// queued-root branch does.
+// (releaseSlotsForWaits), and a task the derivation wrote is derived again from the record
+// rather than taken off the row, while an entry the resume of a person's answer raised is sent
+// the start that resume wrote, built from the wait the row keeps, which the send renders from the
+// record as it stands then (workflow's SendArchitectStart, over record.PhaseRow.EntryAwaiting).
+// Where the root's architect claim does not exist, that start is what creates it, exactly as
+// admission's queued-root branch does.
 //
 // An architect whose phases row names no entry at all is handed one here, rather than resumed:
 // the entry is raised with the task the derivation gives over the record as it stands, and the

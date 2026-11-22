@@ -47,7 +47,7 @@ func statusHarness(t *testing.T) (*harness, []intake.Handler, *statusRecorder) {
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject,
 		OperatorToken: testOperatorToken, Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
-		Handlers: handlers, Dispatch: statuses,
+		Handlers: handlers, Dispatch: statuses, PrepareRepository: testRepositories.prepare,
 	}).Handler
 	root := statusRoot
 	h.recordIssue(record.Issue{Key: statusRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: statusRoot,

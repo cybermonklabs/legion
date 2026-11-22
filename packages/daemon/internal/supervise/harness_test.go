@@ -728,6 +728,24 @@ func newHarnessOf(t *testing.T, c Claim) *harness {
 	return h
 }
 
+// readyHarness is newHarnessOf with c brought up to ready, whose Deps tune sets before the machine
+// exists, as the daemon sets them before it builds a machine (pacedHarness's tune): a wait's
+// answers (waitAnswer.wire), a design gate's (gateAnswer.wire), or a hold of the test's own.
+func readyHarness(t *testing.T, c Claim, tune ...func(*Deps)) *harness {
+	t.Helper()
+	h := newBareHarness(t)
+	h.token = c.Token
+	for _, set := range tune {
+		set(&h.deps)
+	}
+	if err := h.store.PutClaim(h.ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	h.start(c)
+	h.reach(StateReady)
+	return h
+}
+
 func newBareHarness(t *testing.T) *harness {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())

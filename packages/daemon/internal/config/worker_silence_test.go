@@ -62,7 +62,7 @@ func TestWorkerSilenceTakesEveryValueFromTheFloorUp(t *testing.T) {
 func TestWorkerSilenceRefusesAValueUnderTheFloor(t *testing.T) {
 	_, err := LoadForValidation(writeConfigFile(t, minimalFile+"worker_silence_minutes: 15\n"), noEnv)
 
-	want := "worker_silence_minutes (15m0s) is below the 16m0s floor under it: a healthy phase worker that answers its reminder with a WAITING line is quiet for the 15m that reply buys before the reminder comes again (DEFAULT_STALL_LIMITS.waitingMs), so a shorter bound would send a second task for work the worker already holds, to a worker whose own reminder is about to start a turn"
+	want := "worker_silence_minutes (15m0s) is below the 16m0s floor under it: a healthy phase worker whose turn ends with background work of its own still running is quiet for the 15m that work buys before the reminder comes again (DEFAULT_STALL_LIMITS.waitingMs), so a shorter bound would send a second task for work the worker already holds, to a worker whose own reminder is about to start a turn"
 	if err == nil || err.Error() != want {
 		t.Errorf("LoadForValidation error = %v, want %q", err, want)
 	}

@@ -16,6 +16,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/ghbranch"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -79,6 +81,21 @@ func (r servedRepositories) ResolveRepository(resolved string) (workflow.Resolut
 		return workflow.Resolution{Refusal: "the review App is not installed on acme/gadgets", LeftOut: true}, nil
 	}
 	return workflow.Resolution{Refusal: "GitHub has not been read for " + resolved + " yet", Unread: true}, nil
+}
+
+// prepared is fact as the daemon's preparation of a recorded issue's fact leaves it, over these
+// repositories (its prepareRecorded): carrying GitHub's read of the repository it resolves to
+// where both role Apps are installed on it, GitHub's refusal for acme/gadgets, whose review App is
+// not, and neither for a repository GitHub did not answer for. A correction is written from that
+// read and from nothing the daemon keeps (workflow.Engine.ApplyRepositoryChange).
+func (r servedRepositories) prepared(fact intake.DispatchIssue) intake.DispatchIssue {
+	if branch, ok := r[fact.ResolvedRepo]; ok {
+		fact.RepositoryRead = &ghbranch.Repository{Name: ghrepo.MustParse(fact.ResolvedRepo), DefaultBranch: branch}
+	}
+	if fact.ResolvedRepo == "acme/gadgets" {
+		fact.RepositoryRefusal, fact.RepositoryRefusalKind = "the review App is not installed on acme/gadgets", intake.RefusedByGitHub
+	}
+	return fact
 }
 
 func newAdmission(t *testing.T, cap int, log *slog.Logger) *Admission {

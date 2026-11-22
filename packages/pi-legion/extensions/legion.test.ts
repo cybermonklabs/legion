@@ -41,10 +41,11 @@ import {
   resetEnvoyPluginInterfaceForTests,
 } from "@legion/pi-shared/interface";
 import {
+  owedReminder,
   PHASE_STALL_ENTRY,
-  REMINDER,
   reminderText,
   restorePhaseStallEntry,
+  UNREAD_REMINDER,
 } from "@legion/pi-shared/phase-stall";
 import type {
   AsyncJobSnapshot,
@@ -64,6 +65,11 @@ import {
 } from "@legion/pi-shared/stall-watchdog";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { deliveryFor } from "@legion/pi-shared/test/omp-harness";
+import {
+  UPDATE_ASK_KEY,
+  type WaitStandIn,
+  waitStandIn,
+} from "@legion/pi-shared/test/wait-stand-in";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
@@ -945,7 +951,7 @@ async function claimPane(options: {
     url: URL,
     body: unknown,
     init: RequestInit | undefined
-  ) => Response | undefined;
+  ) => Response | Promise<Response> | undefined;
   readonly ensureOnDisk?: () => Promise<void>;
   readonly branch?: readonly unknown[];
   readonly title?: { readonly name: string; readonly source: "auto" | "user" };
@@ -1503,6 +1509,17 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           generation: pane.registration.generation,
         },
       },
+      // A phase worker's boot then asks what its claim owes, before it arms its resume reminder:
+      // the answer also says whether a wait it declared or the design gate's hold stands, which
+      // arms nothing (dispatch://INFRA-2040).
+      {
+        path: "/legion/v1/claims/owed",
+        body: {
+          claimToken: pane.claimToken,
+          sessionId: "ses_worker",
+          secret: pane.registration.secret,
+        },
+      },
     ]);
     // INFRA-1573: the name is taken last, so nothing of this session holds the role until one of
     // its turns has started. The boot is over and no role has been claimed.
@@ -1831,6 +1848,30 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     expect(pane.tools.slice(toolsBeforeBoot).map((tool) => tool.name)).toEqual(["legion"]);
     expect(pane.activeTools).toContain("legion");
   });
+  // A phase worker's boot asks the daemon what its claim owes before it arms the resume reminder
+  // (`armResumeReminder`). The `legion` tool does not wait for that answer: it is registered and
+  // active while the read is still out, and the answer arms the reminder when it comes.
+  test("registers and activates the legion tool before the daemon answers what a phase worker's claim owes", async () => {
+    const asked = Promise.withResolvers<void>();
+    const owed = Promise.withResolvers<Response>();
+    const pane = await claimPane({
+      role: "implementer",
+      sessionId: "ses_owed_late",
+      extraRoutes: (url) => {
+        if (url.pathname !== "/legion/v1/claims/owed") return undefined;
+        asked.resolve();
+        return owed.promise;
+      },
+    });
+    const started = pane.start();
+    await asked.promise;
+    expect(pane.tools.map((tool) => tool.name)).toContain("legion");
+    expect(pane.activeTools).toContain("legion");
+
+    owed.resolve(Response.json({ owes: true, work: "the implementing phase of REPO-43" }));
+    await started;
+    expect(pane.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.resumeMs]);
+  });
   test("leaves the repository-scoped jj config untouched at worker boot: identity is the pane's environment, not config", async () => {
     // Every issue workspace is a workspace of one shared clone, and `--repo` config is one file
     // for all of them: a boot that wrote its identity there would set the author for every other
@@ -1970,22 +2011,30 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     /** jj's root commit: `@-` of a workspace fresh from `jj git init`, which is what a phase that
      * writes no handoff (retro, here) reports as the commit it stands on. */
     const ROOT_COMMIT = "0000000000000000000000000000000000000000";
+    /** What the stand-in daemon calls the work REPO-43's implementer owes, and the reminder that
+     * names it: the reminder renders the daemon's answer and nothing of its own. */
+    const STALL_WORK = "the retro phase of REPO-43";
+    const STALL_REMINDER = owedReminder(STALL_WORK);
+    /** The stand-in daemon's two answers to `POST /legion/v1/claims/owed`. */
+    const owesWork = () => Response.json({ owes: true, work: STALL_WORK });
+    const owesNothing = () => Response.json({ owes: false, work: "" });
     const bootStalling = async (options: {
       readonly role?: LegionRole;
       readonly issue?: IssueKey;
       readonly branch?: readonly unknown[];
       /** The daemon's answer to `POST /legion/v1/handoff/complete`: success unless given. */
       readonly complete?: () => Response;
-      /** The phase the daemon's record puts REPO-43 at; `retro`, the implementer's, unless a
-       * test moves it, which is how the record check decides the reminder is no longer this
-       * role's to get. */
-      readonly phase?: string;
-      /** The daemon's whole answer to `GET /legion/v1/issues/REPO-43/record`, for a daemon that
-       * does not answer with a record at all. */
-      readonly recordAnswer?: () => Response;
+      /** The daemon's answer to `POST /legion/v1/claims/owed` until the case changes it
+       * (`answersOwed`): that the claim owes `STALL_WORK`, unless given. This answer alone
+       * decides whether a reminder goes out. */
+      readonly owed?: () => Response;
       /** What `ctx.getAsyncJobSnapshot()` answers this pane. */
       readonly asyncJobs?: () => AsyncJobSnapshot | null;
+      /** The stand-in daemon's answer to a route the case serves itself, tried before every other
+       * route: the wait's declaration and its news (`waitStandIn`). */
+      readonly routes?: (url: URL, body: unknown) => Response | undefined;
     }) => {
+      let owed = options.owed ?? owesWork;
       // Nothing in these panes reaches the architect: the notice a run of reminders earns is the
       // real binary's case (extensions/legion-phase-stall-omp.test.ts), so the threshold is put
       // out of every mocked pane's reach and the reminding itself is what is measured here.
@@ -2007,7 +2056,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           "REPO-43": {
             key: "REPO-43",
             generation: 2,
-            phase: options.phase ?? "retro",
+            phase: "retro",
             status: "in_progress",
             repo: "acme/widgets",
             defaultBranch: "main",
@@ -2034,10 +2083,13 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         workspace,
         branch: options.branch,
         asyncJobs: options.asyncJobs,
-        extraRoutes: (url) => {
+        extraRoutes: (url, body) => {
+          const own = options.routes?.(url, body);
+          if (own !== undefined) return own;
           if (url.pathname === "/legion/v1/issues/REPO-43/record") {
-            return options.recordAnswer?.() ?? Response.json(state.issues["REPO-43"]);
+            return Response.json(state.issues["REPO-43"]);
           }
+          if (url.pathname === "/legion/v1/claims/owed") return owed();
           if (url.pathname === "/legion/v1/grants") {
             return Response.json({ grantId: "grant-stall", expiresAt: "2099-01-01T00:00:00Z" });
           }
@@ -2060,6 +2112,10 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         ...booted,
         ...session(booted.handlers, booted.context),
         legionTool,
+        /** What the daemon answers `claims/owed` from now on: its record has moved. */
+        answersOwed: (answer: () => Response) => {
+          owed = answer;
+        },
         /** Calls the tool's `handoff_complete`: its result, and the daemon requests it made. */
         completes: async () => {
           const before = booted.requests.length;
@@ -2072,6 +2128,20 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           );
           return { result, calls: daemonRequests(booted.requests.slice(before)) };
         },
+        /** Calls the tool's `declare_wait`: the worker waits on CI, and the daemon wakes it at the
+         * wait's time if nothing has. */
+        declares: () =>
+          legionTool.execute(
+            "call-wait",
+            {
+              op: "declare_wait",
+              waiting_on: "CI on the pull request",
+              wake_at: "2026-11-21T10:00:00Z",
+            },
+            undefined,
+            undefined,
+            booted.context
+          ),
       };
     };
     const followUp = (text: string) => ({
@@ -2191,27 +2261,30 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(pane.intervals).toEqual([]);
     });
 
-    test("the first settle after the assignment is answered by the run's own continuation: run the legion tool's handoff_complete, or reply WAITING", async () => {
+    test("the first settle after the assignment is answered by the run's own continuation: name the work the daemon gave, run the legion tool's handoff_complete, or declare a wait with declare_wait", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
 
       const result = await worker.settles("I pushed the change and CI is green.");
 
+      expect(result).toEqual(followUp(`Your turn ended with ${STALL_WORK} still owed`));
       expect(result).toEqual(followUp("handoff_complete"));
-      expect(result).toEqual(followUp("WAITING"));
+      expect(result).toEqual(followUp("op `declare_wait`"));
+      expect(result).not.toEqual(followUp("WAITING"));
       expect(result).toEqual(followUp("repeats at the end of every turn"));
       expect(result).not.toEqual(followUp("written as text"));
       // The run's first reminder is the continuation itself: nothing is steered into the session
-      // and no timer is armed for it.
+      // and no timer is armed for it. The one timer is the boot's resume reminder, which a boot
+      // arms unless the daemon's answer gives a wait or a hold — a process holds nothing that
+      // says whether it owes work — and which the assignment's turn made stale.
       expect(steered(worker)).toEqual([]);
-      expect(worker.timers).toEqual([]);
+      expect(worker.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.resumeMs]);
       // The settle records what the worker said, so a relaunch's architect notice can still
       // quote it, and the continuation then records its count.
       const said = "I pushed the change and CI is green.";
       expect(recorded(worker)).toEqual([
-        { state: "open", count: 0, reported: false },
-        { state: "open", count: 0, reported: false, lastMessage: said },
-        { state: "open", count: 1, reported: false, lastMessage: said },
+        { state: "active", count: 0, reported: false, lastMessage: said },
+        { state: "active", count: 1, reported: false, lastMessage: said },
       ]);
     });
 
@@ -2222,8 +2295,9 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     // `launch_failure_limit` the daemon counts the turn rather than failing the claim, so without
     // it a single transient refusal would leave the issue idle with nothing to wake it. By the
     // time the timer fires the daemon has had every refusal of the run reported, and at the limit
-    // the claim it reads is failed and the reminder is dropped — which is what ends the reminding
-    // of a session the provider refuses for ever.
+    // it has failed the claim and answers the timer's owed check that nothing is owed, so the
+    // reminder is dropped — which is what ends the reminding of a session the provider refuses
+    // for ever.
     test("a turn the provider refused earns no continuation and no record, and is woken by one timer", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
@@ -2236,12 +2310,15 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       // another turn at once and the provider would refuse that one the same way.
       expect(steered(worker)).toEqual([]);
       expect(recorded(worker)).toEqual(before);
+      // The first timer is the boot's resume reminder, which every boot arms and the assignment's
+      // turn made stale; the refused turn's own is the one after it.
       expect(worker.timers.map((timer) => timer.delayMs)).toEqual([
+        DEFAULT_STALL_LIMITS.resumeMs,
         DEFAULT_STALL_LIMITS.reminderMs,
       ]);
 
       await fires(worker);
-      expect(steered(worker)).toEqual([steeredReminder(REMINDER)]);
+      expect(steered(worker)).toEqual([steeredReminder(STALL_REMINDER)]);
     });
 
     // The daemon's own counter: every turn's end is reported, under a sequence this plugin counts
@@ -2307,13 +2384,14 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(await worker.settles("Still pushing.")).toBeUndefined();
 
       expect(worker.timers.map((timer) => timer.delayMs)).toEqual([
+        DEFAULT_STALL_LIMITS.resumeMs,
         DEFAULT_STALL_LIMITS.reminderMs,
       ]);
       expect(steered(worker)).toEqual([]);
       await fires(worker);
-      expect(steered(worker)).toEqual([steeredReminder(REMINDER)]);
+      expect(steered(worker)).toEqual([steeredReminder(STALL_REMINDER)]);
       expect(recorded(worker).at(-1)).toEqual({
-        state: "open",
+        state: "active",
         count: 2,
         reported: false,
         lastMessage: "Still pushing.",
@@ -2331,7 +2409,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
 
       await hook(worker.handlers, "message_end")(ranTool, worker.context);
       expect(recorded(worker).at(-1)).toEqual({
-        state: "open",
+        state: "active",
         count: 0,
         reported: false,
         lastMessage: "Pushed.",
@@ -2339,6 +2417,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
 
       expect(await worker.settles("Read the file.")).toBeUndefined();
       expect(worker.timers.map((timer) => timer.delayMs)).toEqual([
+        DEFAULT_STALL_LIMITS.resumeMs,
         DEFAULT_STALL_LIMITS.reminderMs,
       ]);
       expect(steered(worker)).toEqual([]);
@@ -2354,15 +2433,17 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         await fires(worker);
       }
 
-      expect(steered(worker)).toEqual([steeredReminder(REMINDER), steeredReminder(REMINDER)]);
+      expect(steered(worker)).toEqual([
+        steeredReminder(STALL_REMINDER),
+        steeredReminder(STALL_REMINDER),
+      ]);
       expect(recorded(worker)).toEqual([
-        { state: "open", count: 0, reported: false },
-        { state: "open", count: 0, reported: false, lastMessage: "Thinking about it." },
-        { state: "open", count: 1, reported: false, lastMessage: "Thinking about it." },
-        { state: "open", count: 1, reported: false, lastMessage: "Still thinking about it." },
-        { state: "open", count: 2, reported: false, lastMessage: "Still thinking about it." },
-        { state: "open", count: 2, reported: false, lastMessage: "Nearly there." },
-        { state: "open", count: 3, reported: false, lastMessage: "Nearly there." },
+        { state: "active", count: 0, reported: false, lastMessage: "Thinking about it." },
+        { state: "active", count: 1, reported: false, lastMessage: "Thinking about it." },
+        { state: "active", count: 1, reported: false, lastMessage: "Still thinking about it." },
+        { state: "active", count: 2, reported: false, lastMessage: "Still thinking about it." },
+        { state: "active", count: 2, reported: false, lastMessage: "Nearly there." },
+        { state: "active", count: 3, reported: false, lastMessage: "Nearly there." },
       ]);
     });
 
@@ -2382,10 +2463,10 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       await fires(worker);
 
       expect(steered(worker)).toEqual([
-        steeredReminder(reminderText(textCall)),
-        steeredReminder(REMINDER),
+        steeredReminder(reminderText(textCall, STALL_WORK)),
+        steeredReminder(STALL_REMINDER),
       ]);
-      expect(reminderText(textCall)).toContain("written as text");
+      expect(reminderText(textCall, STALL_WORK)).toContain("written as text");
     });
 
     // Everything that is the worker, or the daemon, doing something puts the count back to zero:
@@ -2406,7 +2487,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         await hook(worker.handlers, event)(message, worker.context);
 
         expect(recorded(worker).at(-1)).toEqual({
-          state: "open",
+          state: "active",
           count: 0,
           reported: false,
           lastMessage: "Still pushing.",
@@ -2415,43 +2496,51 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       });
     }
 
-    test("a WAITING reply buys the quiet wait, and the reminder comes again when it is over", async () => {
+    // A WAITING line buys nothing (dispatch://INFRA-2040): a worker that waits on something
+    // outside its own work declares the wait with `declare_wait`. A turn that ends with that line
+    // and nothing else gets the reminder a turn without it gets: the run's continuation first,
+    // then the reminder's own timer, never the longer quiet wait background work buys.
+    test("a turn that ends with a WAITING line gets the same reminder as a turn without that line", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
-
-      expect(await worker.settles("Pushed.\nWAITING: CI on the pull request")).toBeUndefined();
-
-      // The wait armed is the WAITING one, not the reminder's, and nothing is steered until it
-      // is over.
-      expect(worker.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.waitingMs]);
-      expect(steered(worker)).toEqual([]);
       const waiting = "Pushed.\nWAITING: CI on the pull request";
+
+      expect(await worker.settles(waiting)).toEqual({
+        continue: true,
+        additionalContext: STALL_REMINDER,
+      });
+      expect(await worker.settles(waiting)).toBeUndefined();
+
+      // The timer armed is the reminder's own, not the quiet wait's.
+      expect(worker.timers.map((timer) => timer.delayMs)).toEqual([
+        DEFAULT_STALL_LIMITS.resumeMs,
+        DEFAULT_STALL_LIMITS.reminderMs,
+      ]);
       expect(recorded(worker).at(-1)).toEqual({
-        state: "waiting",
-        count: 0,
+        state: "active",
+        count: 1,
         reported: false,
         lastMessage: waiting,
       });
 
       await fires(worker);
 
-      expect(steered(worker)).toEqual([steeredReminder(REMINDER)]);
-      // What the worker is told once its wait is over: the reminding repeats, rather than this
-      // being the last it hears until something arrives.
-      expect(REMINDER).toContain("This reminder repeats at the end of every turn");
-      expect(REMINDER).not.toContain("until a new event arrives");
-      // The wait is over, so the phase is open again and the reminder is counted.
+      expect(steered(worker)).toEqual([steeredReminder(STALL_REMINDER)]);
+      // What the worker is told: the reminding repeats, rather than this being the last it hears
+      // until something arrives.
+      expect(STALL_REMINDER).toContain("This reminder repeats at the end of every turn");
+      expect(STALL_REMINDER).not.toContain("until a new event arrives");
       expect(recorded(worker).at(-1)).toEqual({
-        state: "open",
-        count: 1,
+        state: "active",
+        count: 2,
         reported: false,
         lastMessage: waiting,
       });
     });
 
-    test("a resumed worker's open phase is reminded by a timer, carrying the count it restored", async () => {
+    test("a resumed worker the daemon says owes work is reminded by a timer, carrying the count it restored", async () => {
       // The daemon relaunched the worker with --resume: a fresh process whose only memory is the
-      // branch, which holds two reminders nothing was done about.
+      // branch, which holds two reminders nothing was done about, in an earlier release's `open`.
       const resumed = await bootStalling({
         branch: branchAt({ state: "open", count: 2, reported: false }),
       });
@@ -2459,8 +2548,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(resumed.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.resumeMs]);
       await fires(resumed);
 
-      expect(steered(resumed)).toEqual([steeredReminder(REMINDER)]);
-      expect(recorded(resumed)).toEqual([{ state: "open", count: 3, reported: false }]);
+      expect(steered(resumed)).toEqual([steeredReminder(STALL_REMINDER)]);
+      expect(recorded(resumed)).toEqual([{ state: "active", count: 3, reported: false }]);
     });
 
     // What the worker said before the relaunch rides the record with the count, so the architect
@@ -2468,7 +2557,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     test("a resumed worker's record carries what it last said before the relaunch", async () => {
       const resumed = await bootStalling({
         branch: branchAt({
-          state: "open",
+          state: "active",
           count: 2,
           reported: false,
           lastMessage: "Still pushing the change.",
@@ -2478,13 +2567,13 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       await fires(resumed);
 
       expect(recorded(resumed)).toEqual([
-        { state: "open", count: 3, reported: false, lastMessage: "Still pushing the change." },
+        { state: "active", count: 3, reported: false, lastMessage: "Still pushing the change." },
       ]);
     });
 
     test("a resume whose turn started before its timer fired is reminded by nothing", async () => {
       const resumed = await bootStalling({
-        branch: branchAt({ state: "open", count: 2, reported: false }),
+        branch: branchAt({ state: "active", count: 2, reported: false }),
       });
 
       // Whatever started the turn — the daemon re-sending the task it interrupted, the worker's
@@ -2498,13 +2587,13 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(recorded(resumed)).toEqual([]);
     });
 
-    // `quiet` and `text-call` are what the build now in the pods records for an open phase nothing
-    // has been reminded about, so a session resumed on either is reminded rather than left alone.
+    // `quiet` and `text-call` are what an earlier build recorded for a phase nothing had been
+    // reminded about, so a session resumed on either stands at the rhythm's start.
     for (const deployed of ["quiet", "text-call"]) {
-      test(`a resume on the ${deployed} state the deployed build wrote stands at an open phase with nothing counted`, async () => {
+      test(`a resume on the ${deployed} state an earlier build wrote stands active with nothing counted`, async () => {
         const branch = branchAt({ state: deployed });
         expect(restorePhaseStallEntry(branch)).toEqual({
-          state: "open",
+          state: "active",
           count: 0,
           reported: false,
         });
@@ -2519,44 +2608,60 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       });
     }
 
-    test("a record whose phase is no longer this role's silences the reminder", async () => {
+    test("a daemon that answers the claim owes nothing silences the reminder", async () => {
       // The shape of a worker that completed its phase from the shell instead of the tool: the
-      // daemon has moved REPO-43 on, and the reviewer, not this implementer, works it now.
-      const worker = await bootStalling({ phase: "reviewing" });
+      // daemon has moved REPO-43 on, and its record says this implementer owes nothing.
+      const worker = await bootStalling({ owed: owesNothing });
       await worker.arrives(assignment);
 
       expect(await worker.settles("I think I already completed.")).toBeUndefined();
       expect(steered(worker)).toEqual([]);
-      expect(worker.timers).toEqual([]);
+      expect(worker.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.resumeMs]);
       // Nothing was put in front of the worker, so nothing is counted.
       expect(recorded(worker).at(-1)).toEqual({
-        state: "open",
+        state: "active",
         count: 0,
         reported: false,
         lastMessage: "I think I already completed.",
       });
+      // The claim asked about itself, authenticated by its own secret: once at its boot, before it
+      // armed its resume reminder, and once as the turn settled.
+      const asked = {
+        path: "/legion/v1/claims/owed",
+        body: {
+          claimToken: worker.claimToken,
+          sessionId: "ses_stall",
+          secret: worker.registration.secret,
+        },
+      };
+      expect(
+        daemonRequests(worker.requests).filter((r) => r.path === "/legion/v1/claims/owed")
+      ).toEqual([asked, asked]);
     });
 
-    test("a daemon that does not answer the record check reminds all the same: the check fails open", async () => {
-      // An unreachable daemon is exactly when a stalled worker must still be nudged.
+    test("a daemon that does not answer what the claim owes still nudges, and says it could not read the record", async () => {
+      // An unreachable daemon is exactly when a stalled worker must still be nudged; the nudge
+      // names no phase and no work, since it read neither, and the one operation it names is
+      // `declare_wait`.
       const worker = await bootStalling({
-        recordAnswer: () => Response.json({ error: "the daemon is restarting" }, { status: 503 }),
+        owed: () => Response.json({ error: "the daemon is restarting" }, { status: 503 }),
       });
       await worker.arrives(assignment);
 
-      expect(await worker.settles("Pushed.")).toEqual(followUp("handoff_complete"));
+      const result = await worker.settles("Pushed.");
+      expect(result).toEqual({ continue: true, additionalContext: UNREAD_REMINDER });
       expect(recorded(worker).at(-1)).toEqual({
-        state: "open",
+        state: "active",
         count: 1,
         reported: false,
         lastMessage: "Pushed.",
       });
     });
 
-    // R5: the check reads this issue's record, about two kilobytes, and never the whole project
+    // R5: the check asks the daemon what this claim owes, and never reads the whole project
     // body — the read a field changed on another issue's view used to refuse
     // (dispatch://INFRA-2694). This is the reader the plugin itself supplies.
-    test("the reminder's record check asks for this issue's record and never for the project", async () => {
+    test("the reminder's owed check asks the owed route and never for the project", async () => {
       const worker = await bootStalling({});
       const before = worker.requests.length;
       await worker.arrives(assignment);
@@ -2564,11 +2669,11 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(await worker.settles("Pushed.")).toEqual(followUp("handoff_complete"));
 
       const paths = worker.requests.slice(before).map((request) => request.path);
-      expect(paths).toContain("/legion/v1/issues/REPO-43/record");
+      expect(paths).toContain("/legion/v1/claims/owed");
       expect(paths).not.toContain("/legion/v1/state");
     });
 
-    test("a request_backward_move closes the phase too: the next settle sends nothing", async () => {
+    test("a request_backward_move closes nothing of its own: the daemon's answer after it decides the next settle", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
 
@@ -2585,17 +2690,18 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       );
 
       expect(result).toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
+      // The daemon moved the issue, and its record says this role owes nothing now.
+      worker.answersOwed(owesNothing);
       expect(await worker.settles("Asked for the move.")).toBeUndefined();
       expect(steered(worker)).toEqual([]);
-      expect(worker.timers).toEqual([]);
-      expect(recorded(worker).at(-1)).toEqual({ state: "closed", count: 0, reported: false });
+      expect(worker.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.resumeMs]);
     });
 
-    // INFRA-484: the update message reaches the worker while its phase is open, and
-    // `ready_for_update` closes no phase. The turn the worker answers in must still end: a
-    // continuation would do work the pod's replacement throws away, and before the round's bound
-    // the daemon waits for every turn to end before it replaces the pod.
-    test("a ready_for_update answer earns no continuation: the answering turn ends, with the phase still open", async () => {
+    // INFRA-484: the update message reaches the worker as an inbound message, and
+    // `ready_for_update` finishes nothing the daemon records. The turn the worker answers in must
+    // still end: a continuation would do work the pod's replacement throws away, and before the
+    // round's bound the daemon waits for every turn to end before it replaces the pod.
+    test("a ready_for_update answer earns no continuation: the answering turn ends, and no timer is armed in the wait", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
 
@@ -2622,12 +2728,11 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(await worker.settles(answered)).toBeUndefined();
       expect(steered(worker)).toEqual([]);
       // The wait the answer created arms no timer: the daemon's update round is its watchdog, and
-      // a reminder fired here would steer a real `agent_start`, which the daemon reads as a new
-      // turn and so as the answer retracted — the round would restart at every wait and never
-      // converge (INFRA-484, the `awaiting-update` state of `@legion/pi-shared/phase-stall`,
-      // which a record holds as the plain `waiting`). The WAITING reply's own wait keeps its
-      // timer, which the case above holds.
-      expect(worker.timers).toEqual([]);
+      // a reminder fired here would steer a real `agent_start`, a turn of work the replacement
+      // throws away, and before the round's bound a running turn holds that replacement back
+      // (INFRA-484, the `awaiting-update` state of `@legion/pi-shared/phase-stall`, which a record
+      // holds as the plain `waiting`).
+      expect(worker.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.resumeMs]);
       expect(recorded(worker).at(-1)).toEqual({
         state: "waiting",
         count: 0,
@@ -2638,11 +2743,11 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       // A second turn in the same wait — a question answered while the pod waits to be replaced —
       // arms none either, and steers nothing.
       expect(await worker.settles("Still waiting for the pod.")).toBeUndefined();
-      expect(worker.timers).toEqual([]);
+      expect(worker.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.resumeMs]);
       expect(steered(worker)).toEqual([]);
     });
 
-    test("a successful handoff_complete posts the completion with a fresh grant and the commit found in the pane, and closes the phase; an inbound event does not reopen it, the next assignment does", async () => {
+    test("a successful handoff_complete posts the completion with a fresh grant and the commit found in the pane; once the daemon answers nothing is owed, no inbound message reminds, the daemon's update message included", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
 
@@ -2650,7 +2755,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(result).toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
       // The issue's phase is read from the daemon's record of this issue, the commit is found in
       // the pane's workspace with its jj, and the grant is minted in-process and travels only in
-      // the request; nothing is written to the pane.
+      // the request; nothing is written to the pane, and nothing of the completion is kept by the
+      // reminder.
       expect(calls).toEqual([
         { path: "/legion/v1/issues/REPO-43/record", body: undefined },
         {
@@ -2672,22 +2778,106 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           },
         },
       ]);
+      // The daemon took the completion, and its record says this role owes nothing now.
+      worker.answersOwed(owesNothing);
       expect(await worker.settles("Reported.")).toBeUndefined();
       expect(steered(worker)).toEqual([]);
-      expect(worker.timers).toEqual([]);
+      expect(worker.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.resumeMs]);
 
       // After its phase a worker stays to answer other roles' questions over Envoy.
       await worker.arrives(envoyEvent);
       expect(await worker.settles("Answered the reviewer.")).toBeUndefined();
 
+      // The daemon's own update message reaches the role whose phase has closed from outside the
+      // session, here as a user message, a prompt of the daemon's. Like an Envoy delivery, it moves
+      // the rhythm's count and nothing else, so it reminds of nothing.
+      await worker.arrives({
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "Your pod is being updated: push what you keep." }],
+        },
+      });
+      expect(await worker.settles("Nothing of mine to push.")).toBeUndefined();
+      expect(await worker.settles("Still nothing.")).toBeUndefined();
+      for (const timer of worker.timers) await timer.callback();
+      expect(steered(worker)).toEqual([]);
+
+      // The next round is the daemon's: its record owes the work again, and the reminder says so.
+      worker.answersOwed(owesWork);
       await worker.arrives(assignment);
-      expect(await worker.settles("Round 2 pushed.")).toEqual(followUp("handoff_complete"));
+      expect(await worker.settles("Round 2 pushed.")).toEqual(followUp(STALL_WORK));
     });
 
+    // ─── A wait the worker declared, and the design gate's hold (dispatch://INFRA-2040) ───────
+
+    /** Another delivery's key behind the listener's role-forward prefix, as `UPDATE_ASK_KEY`'s
+     * is: news the daemon ends the wait for. */
+    const DELIVERY_KEY = "envoy.role.forward.publish.6f2a9c1e4b7d40a8b3e5c9d1f0a2b4c6";
+    /** An Envoy card as pi-envoy hands it (`handCard`): the frame's own key in its `details`. */
+    const cardWith = (deliveryKey: string, content = "envoy:\n  notice: the review is in") => ({
+      message: {
+        role: "custom",
+        customType: "envoy-message",
+        display: true,
+        content,
+        details: { event_id: `evt-${deliveryKey.slice(-12)}`, dedupe_key: deliveryKey },
+      },
+    });
+    /** What the stand-in daemon calls the merger's work, the closed gate the owed answer gives a
+     * held merger, and the sentence of the closed note a reminder built from that answer carries
+     * (the closed form of the daemon's `workflow.MergerGateNote`). */
+    const MERGER_WORK = "the merging phase of REPO-43";
+    const HOLD = {
+      step: "spec",
+      artifactId: "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
+      version: 7,
+    } as const;
+    const CLOSED_NOTE =
+      "The design gate of REPO-42 closed: version 7 of its spec document " +
+      "(d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093) is with its reviewer. Merge nothing, enqueue " +
+      "nothing, and take a pull request you queued back out of the merge queue.";
+    /** A tool call written as text, in the shape the Stage 3 model emitted. */
+    const TEXT_CALL = '<invoke name="legion"><parameter name="op">handoff_complete</parameter>';
+    const TEXT_CALL_SENTENCE =
+      "Your last message holds a tool call written as text, so it did not run: make it a real tool call.";
+
+    /** A phase worker whose daemon is `standIn` (`waitStandIn`): a process the daemon has just
+     * started, restored from `branch` when given. */
+    const bootWaiting = (
+      standIn: WaitStandIn,
+      options: { readonly role?: LegionRole; readonly branch?: readonly unknown[] } = {}
+    ) =>
+      bootStalling({
+        ...options,
+        owed: standIn.owed,
+        routes: (url, body) => standIn.answer(url.pathname, body),
+      });
+    /** The body of the report of news `pane` sends for `waitId`, with `deliveryKey` when given. */
+    const reportOf = (
+      pane: { readonly claimToken: string; readonly registration: { readonly secret: string } },
+      waitId: string,
+      deliveryKey?: string
+    ) => ({
+      claimToken: pane.claimToken,
+      sessionId: "ses_stall",
+      secret: pane.registration.secret,
+      waitId,
+      ...(deliveryKey === undefined ? {} : { deliveryKey }),
+    });
+    /** The pane's last activity report says that no reminder is due, so the daemon may release
+     * its pod. */
+    const expectNoReminderDue = (pane: ClaimPane) => {
+      expect(activityReports(pane).at(-1)).toMatchObject({
+        activity: { phase: { nextReminderAt: null } },
+      });
+    };
+
     // A person's Send or Aside from Dispatch's Agents page reaches the session as its own user
-    // turn (extensions/envoy.ts), a user message exactly like the daemon's assignment. It is an
-    // inbound event, as its Envoy card was before: it does not open a phase, and it starts the
-    // count of a phase that has been reminded, or had a WAITING reply, again.
+    // turn (extensions/envoy.ts), a user message exactly like the daemon's assignment, which the
+    // record envoy.ts keeps of the turns it sent in tells apart. It is news, as its Envoy card was
+    // before: it starts the count of a run of reminders again and says nothing of what the claim
+    // owes, and after a declared wait it is reported to the daemon with no key, since a person's
+    // message has none.
     const personsMessage = {
       message: {
         role: "user",
@@ -2697,47 +2887,44 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       },
     };
 
-    test("a person's direct message the session took as its own turn opens no phase; the daemon's assignment still does", async () => {
-      const worker = await bootStalling({});
+    test("a person's direct message to a role that owes nothing reminds of nothing; the daemon's answer, not the message, decides", async () => {
+      const worker = await bootStalling({ owed: owesNothing });
       noteInjectedUserTurn("ses_stall", "Where is the dashboard?", "m-1");
       await worker.arrives(personsMessage);
       expect(await worker.settles("It is at /dash.")).toBeUndefined();
 
+      worker.answersOwed(owesWork);
       await worker.arrives(assignment);
       expect(await worker.settles("Pushed.")).toEqual(followUp("handoff_complete"));
     });
 
-    test("a person's direct message ends the wait a WAITING reply bought, as its card did", async () => {
-      const worker = await bootStalling({});
+    test("a person's direct message ends the wait the worker declared: it is reported with no key, and that turn's end gets the reminder", async () => {
+      const standIn = waitStandIn(STALL_WORK);
+      const worker = await bootWaiting(standIn);
       await worker.arrives(assignment);
-      expect(await worker.settles("WAITING: CI on the pull request")).toBeUndefined();
+      await worker.declares();
+      expect(await worker.settles("Declared the wait on CI.")).toBeUndefined();
 
       noteInjectedUserTurn("ses_stall", "Where is the dashboard?", "m-1");
       await worker.arrives(personsMessage);
       expect(await worker.settles("It is at /dash.")).toEqual(followUp("handoff_complete"));
-      // The wait's own timer was armed before that turn, so it is stale and reminds nobody.
+      expect(standIn.reports).toEqual([reportOf(worker, "wait-1")]);
+      expect(standIn.state.wait).toBeUndefined();
+      // The boot's resume timer was armed before those turns, so it is stale and reminds nobody.
       await fires(worker);
       expect(steered(worker)).toEqual([]);
     });
 
-    test("the same words arriving again as a user message are the daemon's, not the person's", async () => {
-      const worker = await bootStalling({});
-      noteInjectedUserTurn("ses_stall", "Where is the dashboard?", "m-1");
-      await worker.arrives(personsMessage);
-      expect(await worker.settles("It is at /dash.")).toBeUndefined();
-
-      await worker.arrives({ message: { ...personsMessage.message, timestamp: 2 } });
-      expect(await worker.settles("Answered.")).toEqual(followUp("handoff_complete"));
-    });
-
     // A person's `/skill:<name>` sent from Dispatch runs as typed input, and the host submits it as
     // its `skill-prompt` custom message, tagged with the Dispatch message, where a plain Send is a
-    // user message. It is the person's message all the same: it ends the wait a WAITING reply
-    // bought, as their Send does.
-    test("a person's /skill: ends the wait a WAITING reply bought, as their Send does", async () => {
-      const worker = await bootStalling({});
+    // user message. It is the person's message all the same: it ends the wait the worker declared,
+    // as their Send does.
+    test("a person's /skill: ends the wait the worker declared, as their Send does", async () => {
+      const standIn = waitStandIn(STALL_WORK);
+      const worker = await bootWaiting(standIn);
       await worker.arrives(assignment);
-      expect(await worker.settles("WAITING: CI on the pull request")).toBeUndefined();
+      await worker.declares();
+      expect(await worker.settles("Declared the wait on CI.")).toBeUndefined();
 
       noteTypedUserTurn("ses_stall", "m-1");
       await worker.arrives({
@@ -2752,9 +2939,238 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         },
       });
       expect(await worker.settles("Reviewed.")).toEqual(followUp("handoff_complete"));
+      expect(standIn.reports).toEqual([reportOf(worker, "wait-1")]);
     });
 
-    test("a handoff_complete the daemon refuses is an error result naming its code and leaves the phase open", async () => {
+    describe("a wait the worker declared, and the design gate's hold (dispatch://INFRA-2040)", () => {
+      // D8: news is after the declaration when its `message_start` comes after the result of the
+      // `declare_wait` call. A delivery and a person's message the session took earlier in the
+      // same turn name no wait, so they report nothing, and the wait stands.
+      test("a delivery and a person's message before the declaration in the same turn report nothing and leave the wait standing", async () => {
+        const standIn = waitStandIn(STALL_WORK);
+        const worker = await bootWaiting(standIn);
+        await worker.arrives(assignment);
+        await worker.arrives(cardWith(DELIVERY_KEY));
+        noteInjectedUserTurn("ses_stall", "Where is the dashboard?", "m-1");
+        await worker.arrives(personsMessage);
+
+        expect(await worker.declares()).toMatchObject({
+          details: { wait: { id: "wait-1", waitingOn: "CI on the pull request" } },
+        });
+        expect(await worker.settles("Declared the wait on CI.")).toBeUndefined();
+
+        expect(standIn.reports).toEqual([]);
+        expect(standIn.state.wait).toMatchObject({ id: "wait-1" });
+        expect(steered(worker)).toEqual([]);
+        // The one timer is the boot's resume reminder, armed before any wait and stale since.
+        expect(worker.timers.map((timer) => timer.delayMs)).toEqual([
+          DEFAULT_STALL_LIMITS.resumeMs,
+        ]);
+        expectNoReminderDue(worker);
+        expect(recorded(worker).at(-1)).toMatchObject({ waitId: "wait-1" });
+      });
+
+      // R3 and D8: a delivery after the declaration, in the declaring turn or in a later one, is
+      // reported to the daemon naming the wait and with the card's own key; the daemon ends the
+      // wait, and that turn's end gets the reminder.
+      for (const when of ["in the declaring turn", "in a later turn"] as const) {
+        test(`a delivery after the declaration ${when} is reported with its details.dedupe_key, and that turn's end gets the reminder`, async () => {
+          const standIn = waitStandIn(STALL_WORK);
+          const worker = await bootWaiting(standIn);
+          await worker.arrives(assignment);
+          await worker.declares();
+          if (when === "in a later turn") {
+            expect(await worker.settles("Declared the wait on CI.")).toBeUndefined();
+            expect(standIn.reports).toEqual([]);
+          }
+
+          await worker.arrives(cardWith(DELIVERY_KEY));
+          expect(await worker.settles("Read the review.")).toEqual(followUp(STALL_WORK));
+
+          expect(standIn.reports).toEqual([reportOf(worker, "wait-1", DELIVERY_KEY)]);
+          expect(standIn.state.wait).toBeUndefined();
+          expect(recorded(worker).at(-1)).not.toHaveProperty("waitId");
+        });
+      }
+
+      // R3: a prompt of the daemon's after the declaration (the wait's own task, the resume task,
+      // the update task) is no news: it reports nothing and leaves the wait standing.
+      test("a daemon prompt after the declaration reports nothing and leaves the wait standing", async () => {
+        const standIn = waitStandIn(STALL_WORK);
+        const worker = await bootWaiting(standIn);
+        await worker.arrives(assignment);
+        await worker.declares();
+        expect(await worker.settles("Declared the wait on CI.")).toBeUndefined();
+
+        for (const prompt of [
+          "The wait you declared on CI on the pull request reached its time.",
+          "Resume REPO-43: the daemon relaunched your process.",
+          "Your pod is being updated: push what you keep, then answer with ready_for_update.",
+        ]) {
+          await worker.arrives({
+            message: { role: "user", content: [{ type: "text", text: prompt }] },
+          });
+          expect(await worker.settles("Took the task up; CI still runs.")).toBeUndefined();
+        }
+
+        expect(standIn.reports).toEqual([]);
+        expect(standIn.state.wait).toMatchObject({ id: "wait-1" });
+        expect(steered(worker)).toEqual([]);
+        expect(worker.timers.map((timer) => timer.delayMs)).toEqual([
+          DEFAULT_STALL_LIMITS.resumeMs,
+        ]);
+        expectNoReminderDue(worker);
+      });
+
+      // D9: the update ask is an Envoy role message, so its card is news like any other, and the
+      // plugin reports it with its key exactly as the card carries it, role-forward prefix
+      // included. The daemon knows that key for its own ask and answers `ended: false`, which
+      // keeps the wait standing in the plugin: nothing is reminded and nothing is armed.
+      test("the update ask is reported with its exact key, and the daemon's ended:false keeps the wait standing", async () => {
+        const standIn = waitStandIn(STALL_WORK);
+        const worker = await bootWaiting(standIn);
+        await worker.arrives(assignment);
+        await worker.declares();
+        expect(await worker.settles("Declared the wait on CI.")).toBeUndefined();
+
+        await worker.arrives(
+          cardWith(UPDATE_ASK_KEY, "envoy:\n  notice: your pod is being updated")
+        );
+        expect(await worker.settles("Answered nothing yet; CI still runs.")).toBeUndefined();
+
+        expect(standIn.reports).toEqual([reportOf(worker, "wait-1", UPDATE_ASK_KEY)]);
+        expect(standIn.state.wait).toMatchObject({ id: "wait-1" });
+        expect(recorded(worker).at(-1)).toMatchObject({ waitId: "wait-1" });
+        expect(recorded(worker).at(-1)).not.toHaveProperty("unsentNews");
+        expect(steered(worker)).toEqual([]);
+        expect(worker.timers.map((timer) => timer.delayMs)).toEqual([
+          DEFAULT_STALL_LIMITS.resumeMs,
+        ]);
+        expectNoReminderDue(worker);
+      });
+
+      // D8: a process relaunched while the wait stands has no record of it here (a fresh
+      // session's branch holds none), so it learns the wait from the daemon's answer at its boot:
+      // it arms no resume reminder, its first activity report says no reminder is due, and news
+      // that reaches it then is reported against that wait.
+      test("a relaunch learns the wait from the owed answer: it arms nothing, and news then is reported against that wait", async () => {
+        const standIn = waitStandIn(STALL_WORK);
+        standIn.state.wait = {
+          id: "wait-7",
+          waitingOn: "CI on the pull request",
+          wakeAt: "2026-11-21T10:00:00Z",
+          declaredAt: "2026-11-21T09:00:00.123456Z",
+        };
+        const relaunched = await bootWaiting(standIn);
+
+        expect(relaunched.timers).toEqual([]);
+        expect(recorded(relaunched).at(-1)).toMatchObject({ waitId: "wait-7" });
+        await ticks(relaunched);
+        expectNoReminderDue(relaunched);
+
+        await relaunched.arrives(cardWith(DELIVERY_KEY));
+        expect(await relaunched.settles("Read the review.")).toEqual(followUp(STALL_WORK));
+        expect(standIn.reports).toEqual([reportOf(relaunched, "wait-7", DELIVERY_KEY)]);
+      });
+
+      // D8: a report that fails ends the wait in the plugin and is kept, with its key, in the
+      // transcript's record. The turn's end sends it again first; when that fails too, it gets
+      // the reminder although the daemon's answer still gives the wait. The process the daemon
+      // relaunches restores the record and sends the report at its boot, before it reads the
+      // owed answer: the daemon takes it and ends the wait, so the resume reminder is armed.
+      test("a failed report gets the reminder, and the relaunched process sends it again", async () => {
+        const standIn = waitStandIn(STALL_WORK);
+        const worker = await bootWaiting(standIn);
+        await worker.arrives(assignment);
+        await worker.declares();
+        expect(await worker.settles("Declared the wait on CI.")).toBeUndefined();
+        standIn.state.failReports = 2;
+
+        await worker.arrives(cardWith(DELIVERY_KEY));
+        expect(await worker.settles("Read the review.")).toEqual(followUp(STALL_WORK));
+        expect(standIn.state.wait).toMatchObject({ id: "wait-1" });
+        expect(recorded(worker).at(-1)).toMatchObject({
+          waitId: "wait-1",
+          unsentNews: [{ waitId: "wait-1", deliveryKey: DELIVERY_KEY }],
+        });
+
+        const relaunched = await bootWaiting(standIn, { branch: worker.entries });
+        expect(standIn.reports).toEqual([
+          reportOf(worker, "wait-1", DELIVERY_KEY),
+          reportOf(worker, "wait-1", DELIVERY_KEY),
+          reportOf(relaunched, "wait-1", DELIVERY_KEY),
+        ]);
+        expect(standIn.state.wait).toBeUndefined();
+        expect(recorded(relaunched).at(-1)).not.toHaveProperty("unsentNews");
+        expect(relaunched.timers.map((timer) => timer.delayMs)).toEqual([
+          DEFAULT_STALL_LIMITS.resumeMs,
+        ]);
+        await fires(relaunched);
+        expect(steered(relaunched)).toEqual([steeredReminder(owedReminder(STALL_WORK))]);
+      });
+
+      // R1 and R9: a merger the closed design gate holds is reminded of nothing, arms nothing and
+      // reports no reminder due, and its boot arms no resume reminder. Once the gate opens, the
+      // daemon's answer gives no hold, and the next turn's end with no completion gets the
+      // reminder.
+      test("a held merger is reminded of nothing and arms nothing, at its boot and at each turn's end; after the gate opens the reminder returns", async () => {
+        const standIn = waitStandIn(MERGER_WORK);
+        standIn.state.hold = HOLD;
+        const merger = await bootWaiting(standIn, { role: "merger" });
+        expect(merger.timers).toEqual([]);
+
+        await merger.arrives(assignment);
+        for (const text of ["The design gate is closed.", "Still held."]) {
+          expect(await merger.settles(text)).toBeUndefined();
+        }
+        expect(merger.timers).toEqual([]);
+        expect(steered(merger)).toEqual([]);
+        expectNoReminderDue(merger);
+
+        // The gate opens, and its opening message reaches the merger on its role topic.
+        standIn.state.hold = undefined;
+        await merger.arrives(
+          cardWith(DELIVERY_KEY, "envoy:\n  notice: the design gate of REPO-42 opened")
+        );
+        expect(await merger.settles("The gate opened.")).toEqual(followUp(MERGER_WORK));
+        expect(standIn.reports).toEqual([]);
+      });
+
+      // R1, R9 and D15: the one reminder a wait or a hold lets through is the one for a tool call
+      // written as text. It says that the call did not run and asks for a real tool call, and
+      // asks for no `handoff_complete`; during a hold it also names the closed gate, its step and
+      // its version, and tells the merger to merge nothing. It keeps every reminder's rhythm: the
+      // run's continuation first, then the reminder's own timer.
+      test("a tool call written as text is reminded during a wait and during a hold, and a hold's reminder names the closed gate", async () => {
+        for (const held of ["wait", "hold"] as const) {
+          const standIn = waitStandIn(held === "hold" ? MERGER_WORK : STALL_WORK);
+          if (held === "hold") standIn.state.hold = HOLD;
+          const worker = await bootWaiting(standIn, held === "hold" ? { role: "merger" } : {});
+          await worker.arrives(assignment);
+          if (held === "wait") await worker.declares();
+
+          const continuation = await worker.settles(TEXT_CALL);
+          expect(continuation, held).toEqual(followUp(TEXT_CALL_SENTENCE));
+          const text =
+            typeof continuation === "object" &&
+            continuation !== null &&
+            "additionalContext" in continuation
+              ? String(continuation.additionalContext)
+              : "";
+          expect(text, held).not.toContain("handoff_complete");
+          if (held === "hold") expect(text, held).toContain(CLOSED_NOTE);
+          else expect(text, held).not.toContain("design gate");
+
+          expect(await worker.settles(TEXT_CALL), held).toBeUndefined();
+          expect(worker.timers.at(-1)?.delayMs, held).toBe(DEFAULT_STALL_LIMITS.reminderMs);
+          await fires(worker);
+          expect(steered(worker), held).toEqual([steeredReminder(text)]);
+          expect(standIn.reports, held).toEqual([]);
+        }
+      });
+    });
+
+    test("a handoff_complete the daemon refuses is an error result naming its code, and the daemon still answers the work is owed", async () => {
       const worker = await bootStalling({
         complete: () =>
           Response.json(
@@ -2804,7 +3220,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       });
       expect(await worker.settles("Noted the new session id.")).toBeUndefined();
       expect(recorded(worker).at(-1)).toEqual({
-        state: "open",
+        state: "active",
         count: 1,
         reported: false,
         lastMessage: "Noted the new session id.",
@@ -2850,14 +3266,25 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       });
     });
 
-    test("before any assignment a settle is quiet, and an inbound event opens nothing", async () => {
-      const worker = await bootStalling({});
+    // A process the daemon has just started holds nothing that says whether its role owes work,
+    // so its first settle — before any task, after an Envoy delivery, or from its resume timer —
+    // is reminded exactly as the daemon answers, and of nothing while the daemon answers that the
+    // claim owes nothing (dispatch://INFRA-2746).
+    test("a process made afresh reports nothing while the daemon answers that the claim owes nothing", async () => {
+      const worker = await bootStalling({ owed: owesNothing });
 
+      await fires(worker);
       expect(await worker.settles("Booted.")).toBeUndefined();
       await worker.arrives(envoyEvent);
       expect(await worker.settles("Read the notice.")).toBeUndefined();
       expect(steered(worker)).toEqual([]);
-      expect(worker.timers).toEqual([]);
+      expect(worker.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.resumeMs]);
+
+      // The same fresh process, with the daemon answering that the work is owed, is reminded at
+      // once: what decides is the daemon's answer, which a restart does not change.
+      const owing = await bootStalling({});
+      await fires(owing);
+      expect(steered(owing)).toEqual([steeredReminder(STALL_REMINDER)]);
     });
 
     test("a settle the host aborted sends nothing and leaves the stall unanswered", async () => {
@@ -2867,24 +3294,27 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       aborted.abort();
 
       expect(await worker.settles("Interrupted.", aborted.signal)).toBeUndefined();
-      expect(worker.timers).toEqual([]);
+      expect(worker.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.resumeMs]);
       expect(await worker.settles("Done.")).toEqual(followUp("handoff_complete"));
     });
 
-    test("a resumed worker restores its phase from the transcript entries it wrote", async () => {
-      const waiting = await bootStalling({});
-      await waiting.arrives(assignment);
-      await waiting.settles("WAITING: CI");
+    test("a resumed worker restores its reminder's rhythm from the transcript entries it wrote, and the daemon says what it owes", async () => {
+      const reminded = await bootStalling({});
+      await reminded.arrives(assignment);
+      await reminded.settles("Pushed; CI runs on the pull request.");
       // The daemon relaunches the worker with --resume: a fresh process whose only memory is the
-      // session's branch. The next turn starts from an Envoy notice, not a new assignment.
-      const resumedOpen = await bootStalling({ branch: waiting.entries });
+      // session's branch. The next turn starts from an Envoy notice, not a new assignment, and
+      // that notice puts the count it restored back to zero.
+      const resumedOpen = await bootStalling({ branch: reminded.entries });
       await resumedOpen.arrives(envoyEvent);
       expect(await resumedOpen.settles("CI passed.")).toEqual(followUp("handoff_complete"));
 
+      // A worker that completed, relaunched: its record holds the rhythm alone, and the daemon's
+      // answer that nothing is owed is what keeps it quiet.
       const completed = await bootStalling({});
       await completed.arrives(assignment);
       await completed.completes();
-      const resumedClosed = await bootStalling({ branch: completed.entries });
+      const resumedClosed = await bootStalling({ branch: completed.entries, owed: owesNothing });
       await resumedClosed.arrives(envoyEvent);
       expect(await resumedClosed.settles("Answered the question.")).toBeUndefined();
 
@@ -2901,7 +3331,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       ]);
 
       await fires(resumedCounting);
-      expect(steered(resumedCounting)).toEqual([steeredReminder(REMINDER)]);
+      expect(steered(resumedCounting)).toEqual([steeredReminder(STALL_REMINDER)]);
     });
 
     test("a sub-architect is never reminded", async () => {

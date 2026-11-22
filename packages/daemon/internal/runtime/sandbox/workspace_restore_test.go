@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -22,6 +23,12 @@ import (
 // testRelease is the id of the idle release whose save the fixture's bundle carries: the daemon
 // deletes the bundle of the release a launcher's restore report names, so a stored bundle has one.
 const testRelease int64 = 11
+
+// savedBundleRepo is the repository every save of these tests was work of
+// (workspace_bundles.repo). The rig records testTree with no repository (bundleStore), so the
+// take reads no repository to disagree with it and refuses none of these bundles by it
+// (store.TakeWorkspaceBundleForRestore).
+const savedBundleRepo = "acme/widgets"
 
 // savedWorkspaceBundle is a release's saved work as the store holds it: more than one
 // shimwire.LauncherBundlePayloadBytes of git bundle, so the hop to the launcher is a sequence of
@@ -58,18 +65,22 @@ func bundleStore(t *testing.T) *store.Store {
 }
 
 // takeBundle is st's take of a release's saved work for a pod of the rig's project, as the daemon
-// wires it into the runtime (internal/daemon's savedWorkspaceBundle).
+// wires it into the runtime (internal/daemon's savedWorkspaceBundle), read by the rule of a
+// deployment that configures no rename (ghrepo.Renames.Left). The record names no repository, so
+// the rule refuses none of these bundles.
 func takeBundle(st *store.Store) runtime.SavedWorkspaceBundle {
 	return func(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
-		return st.TakeWorkspaceBundleForRestore(ctx, testProject, issue, podUID, podCreated)
+		return st.TakeWorkspaceBundleForRestore(ctx, testProject, issue, podUID, podCreated, ghrepo.Renames{}.Left)
 	}
 }
 
 // dropHeldBundle is st's drop of a release's saved work that a kept volume of a pod of the rig's
-// project holds, as the daemon wires it into the runtime (internal/daemon's heldWorkspaceBundle).
+// project holds, as the daemon wires it into the runtime (internal/daemon's heldWorkspaceBundle),
+// read by the rule of a deployment that configures no rename (ghrepo.Renames.Left), as takeBundle
+// reads it.
 func dropHeldBundle(st *store.Store) runtime.HeldWorkspaceBundleDrop {
 	return func(ctx context.Context, issue, podUID string, keptSince time.Time) (runtime.WorkspaceBundle, bool, error) {
-		return st.DropHeldWorkspaceBundle(ctx, testProject, issue, podUID, keptSince)
+		return st.DropHeldWorkspaceBundle(ctx, testProject, issue, podUID, keptSince, ghrepo.Renames{}.Left)
 	}
 }
 
@@ -90,7 +101,7 @@ func frameTypes(frames []shimwire.Frame) []string {
 func TestASavedWorkspaceBundleReachesThePodsLauncherBeforeItStartsAnyRole(t *testing.T) {
 	st := bundleStore(t)
 	saved := savedWorkspaceBundle()
-	if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, saved); err != nil {
+	if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, savedBundleRepo, saved); err != nil {
 		t.Fatalf("save the released workspace's bundle: %v", err)
 	}
 	g := newRig(t, nil, withOptions(func(o *Options) {
@@ -159,7 +170,7 @@ func TestASavedWorkspaceBundleReachesThePodsLauncherBeforeItStartsAnyRole(t *tes
 func TestAFailedRestoreKeepsTheSavedWorkAndSendsItToNoPodAgain(t *testing.T) {
 	st := bundleStore(t)
 	saved := savedWorkspaceBundle()
-	if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, saved); err != nil {
+	if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, savedBundleRepo, saved); err != nil {
 		t.Fatalf("save the released workspace's bundle: %v", err)
 	}
 	const refusal = "git bundle unbundle: object not found"
@@ -224,7 +235,7 @@ func TestARelaunchInThePodBeingReleasedLeavesTheAttemptForItsReplacement(t *test
 	saved := savedWorkspaceBundle()
 	saved.At = rigNow.Add(time.Minute)
 	saved.PodUID = string(released.UID)
-	if err := st.PutWorkspaceBundle(g.ctx, testTree, saved.Release, saved); err != nil {
+	if err := st.PutWorkspaceBundle(g.ctx, testTree, saved.Release, savedBundleRepo, saved); err != nil {
 		t.Fatalf("save the released workspace's bundle: %v", err)
 	}
 	g.advance(2 * time.Minute)
@@ -306,14 +317,14 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 	st := bundleStore(t)
 	ctx := context.Background()
 	first := savedWorkspaceBundle()
-	if err := st.PutWorkspaceBundle(ctx, testTree, first.Release, first); err != nil {
+	if err := st.PutWorkspaceBundle(ctx, testTree, first.Release, savedBundleRepo, first); err != nil {
 		t.Fatalf("save the released workspace's bundle: %v", err)
 	}
 	// The issue woke, worked and was released again while the first pod's launcher still held
 	// its report.
 	second := savedWorkspaceBundle()
 	second.Bundle, second.Head, second.Release = []byte("PACK the work of the second release"), "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9", first.Release+1
-	if err := st.PutWorkspaceBundle(ctx, testTree, second.Release, second); err != nil {
+	if err := st.PutWorkspaceBundle(ctx, testTree, second.Release, savedBundleRepo, second); err != nil {
 		t.Fatalf("save the second release's bundle: %v", err)
 	}
 
@@ -326,7 +337,7 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 	}
 	d.restoreReported(session, shimwire.LauncherRestored{ID: frames[0].ID, Release: first.Release, OK: true})
 
-	kept, take, err := st.TakeWorkspaceBundleForRestore(ctx, testProject, testTree, "pod-uid", rigNow)
+	kept, take, err := takeBundle(st)(ctx, testTree, "pod-uid", rigNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +365,7 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 func TestARefusedBundleSliceStillStartsTheRoleAndKeepsTheSavedWork(t *testing.T) {
 	st := bundleStore(t)
 	saved := savedWorkspaceBundle()
-	if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, saved); err != nil {
+	if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, savedBundleRepo, saved); err != nil {
 		t.Fatalf("save the released workspace's bundle: %v", err)
 	}
 	const refusal = "launcher_bundle sequence rebuilt to another digest than its slices declared"
@@ -411,7 +422,7 @@ func TestAReplacementPodRefusedByClockSkewLeavesNothingForThePodAfterIt(t *testi
 	saved := savedWorkspaceBundle()
 	// The node that took the bundle is a minute ahead of the API server that stamps the pods.
 	saved.At = rigNow.Add(time.Minute)
-	if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, saved); err != nil {
+	if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, savedBundleRepo, saved); err != nil {
 		t.Fatalf("save the released workspace's bundle: %v", err)
 	}
 	g := newRig(t, nil, withOptions(func(o *Options) {
@@ -479,6 +490,13 @@ func TestAReplacementPodRefusedByClockSkewLeavesNothingForThePodAfterIt(t *testi
 // an eviction leaves it. So a rule that reads the Sandbox's age and not its volume fails the
 // test, and so does a rule that never sends a bundle. A rule that sends every bundle fails the
 // first case.
+//
+// A kept Sandbox made before the save does not drop a bundle of a repository the issue has left
+// since the save: the volume holds that work in the old repository's workspace, which the pod of
+// the new repository does not work in. The take that follows refuses the bundle for its repository
+// and moves it to workspace_bundles_refused, so the pod is sent nothing and the work stays in the
+// database. A drop that ignores the repository fails that case: it deletes the only copy of the
+// work that the daemon keeps.
 func TestAKeptVolumeTakesNoSavedWorkItHolds(t *testing.T) {
 	// drop is one bundle the store dropped, as the drop answered it, beside the creation of the
 	// kept Sandbox that the runtime asked it for.
@@ -558,7 +576,7 @@ func TestAKeptVolumeTakesNoSavedWorkItHolds(t *testing.T) {
 		saved := savedWorkspaceBundle()
 		saved.At = rigNow.Add(10 * time.Minute)
 		saved.PodUID = loc.Sandbox.PodUID
-		if err := st.PutWorkspaceBundle(g.ctx, testTree, saved.Release, saved); err != nil {
+		if err := st.PutWorkspaceBundle(g.ctx, testTree, saved.Release, savedBundleRepo, saved); err != nil {
 			t.Fatalf("save the released workspace's bundle: %v", err)
 		}
 		if !s.CreationTimestamp.Time.Before(saved.At) {
@@ -600,10 +618,63 @@ func TestAKeptVolumeTakesNoSavedWorkItHolds(t *testing.T) {
 		}
 	})
 
+	t.Run("a kept Sandbox made before the save keeps a bundle of the repository the issue left, and the take refuses it", func(t *testing.T) {
+		st := bundleStore(t)
+		option, drops := wired(st)
+		g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)), option)
+		spec := workerSpec(t)
+		loc := g.spawn(spec)
+		s := g.sandbox(loc.Sandbox.Name)
+		if s == nil || !ownsKeptVolume(s) {
+			t.Fatalf("the issue's Sandbox = %+v, want one that owns the kept volume, or this case proves nothing", s)
+		}
+		saved := savedWorkspaceBundle()
+		saved.At = rigNow.Add(10 * time.Minute)
+		saved.PodUID = loc.Sandbox.PodUID
+		if err := st.PutWorkspaceBundle(g.ctx, testTree, saved.Release, savedBundleRepo, saved); err != nil {
+			t.Fatalf("save the released workspace's bundle: %v", err)
+		}
+		g.advance(11 * time.Minute)
+		if err := g.r.ReleaseIssue(g.ctx, testTree, testTree, authorized); err != nil {
+			t.Fatalf("ReleaseIssue: %v", err)
+		}
+		// Dispatch moved the issue to another repository after the release, and the record
+		// followed it (record.Store.CorrectIssueRepository).
+		if _, err := st.Pool().Exec(g.ctx, `update issues set repo = 'acme/gadgets' where key = $1`, testTree); err != nil {
+			t.Fatalf("move the record of %s to acme/gadgets: %v", testTree, err)
+		}
+
+		before := len(g.sent(spec.Claim))
+		loc = g.relaunchOnNewPod(loc, &spec)
+		if kept := g.sandbox(loc.Sandbox.Name); kept == nil || kept.UID != s.UID {
+			t.Fatalf("after the release the issue's Sandbox is %+v, want %s kept with its volume", kept, s.UID)
+		}
+		frames := g.sent(spec.Claim)[before:]
+		if !slices.ContainsFunc(frames, func(f shimwire.Frame) bool { _, ok := f.(shimwire.LauncherStart); return ok }) {
+			t.Fatalf("the next pod's launcher was sent %v, want the role's start", frameTypes(frames))
+		}
+		if read, sent := sentBundle(t, frames); sent {
+			t.Fatalf("the pod of the new repository was sent the bundle of release %d saved at %s, want nothing: the work is of %s",
+				testRelease, read.At, savedBundleRepo)
+		}
+		if got := drops(); len(got) != 0 {
+			t.Fatalf("the store dropped %+v, want nothing: the pod does not work in the workspace of %s", got, savedBundleRepo)
+		}
+		if _, held, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || held {
+			t.Fatalf("after the take the store holds a bundle in workspace_bundles for %s = %t (%v), want it moved out", testTree, held, err)
+		}
+		var refused int
+		if err := st.Pool().QueryRow(g.ctx, `select count(*) from workspace_bundles_refused where issue = $1 and release_id = $2 and repo = $3`,
+			testTree, saved.Release, savedBundleRepo).Scan(&refused); err != nil || refused != 1 {
+			t.Fatalf("workspace_bundles_refused holds %d rows of release %d of %s (%v), want the one refused for its repository",
+				refused, saved.Release, testTree, err)
+		}
+	})
+
 	t.Run("a kept Sandbox made after the save, as a reset makes it, is sent the bundle", func(t *testing.T) {
 		st := bundleStore(t)
 		saved := savedWorkspaceBundle()
-		if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, saved); err != nil {
+		if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, savedBundleRepo, saved); err != nil {
 			t.Fatalf("save the released workspace's bundle: %v", err)
 		}
 		option, drops := wired(st)
@@ -640,7 +711,7 @@ func TestAKeptVolumeTakesNoSavedWorkItHolds(t *testing.T) {
 		saved := savedWorkspaceBundle()
 		saved.At = rigNow.Add(10 * time.Minute)
 		saved.PodUID = loc.Sandbox.PodUID
-		if err := st.PutWorkspaceBundle(g.ctx, testTree, saved.Release, saved); err != nil {
+		if err := st.PutWorkspaceBundle(g.ctx, testTree, saved.Release, savedBundleRepo, saved); err != nil {
 			t.Fatalf("save the released workspace's bundle: %v", err)
 		}
 		if !s.CreationTimestamp.Time.Before(saved.At) {

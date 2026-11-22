@@ -30,13 +30,35 @@ resolves for it: its own (the issue header's Repository picker, or `dispatch iss
 owner/name`), else its nearest ancestor's, else the project's default repository, which is set in
 Dispatch. An issue may name any `owner/name`. The daemon records an issue on that repository as
 Dispatch resolved it when the daemon read the issue (its event, or a listing of the project), and
-its default branch as GitHub names it, when it first records the issue, and keeps both: a later
-change of the issue's repository in Dispatch is not applied, and the daemon says so on the issue.
-A change that sends no event of the issue, as a move of the project's default repository does,
-and that lands between that read and the record, is such a later change, said on the issue at
-its next event or the next boot's listing.
-An issue whose repository resolves to none, or to one a role App is not installed on, is not
-admitted, and the daemon says why on the issue. A claim an operator starts on an issue the
+its default branch as GitHub names it, when it first records the issue. The record then follows
+Dispatch: a later change of the issue's repository is applied in the next pass that reads it,
+which is a live Dispatch event of the issue, a hand-over, or the pass over every recorded issue
+that runs once the daemon's boot is over. Each such pass reads both role Apps' installations on
+the repository the change names and its name and default branch from GitHub at that moment, and
+applies the change only from what GitHub answers then. Under `runtime: kubernetes` the daemon then
+replaces the issue's pod, so its workspace, its GitHub token and its clone are of the new owner;
+under `runtime: tmux` there is no pod to replace, and each pane works the repository the issue
+left until its next launch, which provisions it a workspace of the new repository on the daemon's
+host. When GitHub does not answer such a pass's reads (a failure, its rate limit, or no answer in
+time), the pass applies nothing and says nothing on the issue, and the daemon reads that issue
+again from Dispatch's listing and GitHub, 30 seconds doubling to 10 minutes, until GitHub
+answers, with no event of the issue and no restart: the change is then applied, or waits as
+below. A pass that read the record before another pass moved it applies nothing either, since
+two reads of Dispatch at one sequence cannot be ordered (a hand-over, or an event that arrives
+late, after a pass over the listing), and the daemon reads that issue again from Dispatch's
+listing and GitHub at once, so the record ends on what Dispatch resolves then; a daemon that
+stops before that read leaves it to its next boot, which reads again every recorded issue
+Dispatch resolves to another repository than its record names. A change onto a repository a
+role App is not installed on, or one GitHub does not have, is not applied; the record keeps what
+it has, the daemon says so once on the issue, and the record carries the waiting change
+(`repoChangePending` and `repoChangeReason` of `legion state --json`) until the issue's next
+event or the daemon's next boot, the two passes that read the repository again: installing the
+missing App starts no pass by itself. The daemon reads no repository
+mapping from Dispatch, so nothing else reads such a repository again, and a change of the
+project's default repository in Dispatch, which sends no event of the issues that inherit it,
+moves such an issue at that issue's next event or at the next boot. An issue whose repository
+resolves to none, or to one a role App is not installed on, is not admitted, and the daemon says
+why on the issue. A claim an operator starts on an issue the
 workflow does not record works the repository Dispatch resolves for that issue, read at the
 claim's first launch and kept for as long as the issue holds its workspace. When that issue
 resolves to no repository, the launch is refused: `<KEY> names no repository: set the repository
@@ -646,8 +668,10 @@ What each part is for:
   finds each App's installations itself; `installations` (owner to installation id) is optional.
 - **`gates.design`**: the design gate steps, a list naming `decisions` (the root issue's decisions
   document), `criteria` (its Verification document) and `spec` (its primary document), in the
-  order a person approves them. No phase of the tree starts, no released child starts and no
-  merger merges until a person has approved the document of every step listed. The
+  order a person approves them. No phase of the tree starts and no released child starts until a
+  person has approved the document of every step listed. No merger merges while the document of a
+  step that someone registered waits for a person's approval. A step that nobody registered names
+  no document, so it holds no merger. The
   default is `[spec]`, which the word `root-issues` also means; the empty list `[]` skips the
   approval, which the word `off` also means. A list naming one step twice, and any other word,
   is refused at load. There is no other way past the gate. `legion state --json` answers the
@@ -934,8 +958,12 @@ What each part is for:
   (5 minutes). `LEGION_STALL_STEP_MS` is the gap between the ladder's steps, 120000 (2 minutes).
   Four more variables of the same family set the worker's phase reminder rather than its call
   watch: `LEGION_STALL_REMINDER_MS` (300000, how long after a settle that earned a reminder the
-  reminder is delivered), `LEGION_STALL_WAITING_MS` (900000, what a WAITING reply buys),
-  `LEGION_STALL_RESUME_MS` (120000, after a resume on an open phase) and
+  reminder is delivered), `LEGION_STALL_WAITING_MS` (900000, the quiet wait that a turn ending
+  with background work of the worker's own buys, while a wait the worker declares with the
+  `legion` tool's `declare_wait` holds the reminder until that wait ends, and the closed design
+  gate holds a merger's reminder until the gate opens),
+  `LEGION_STALL_RESUME_MS` (120000, after a resume, when the daemon answers that the claim owes
+  work) and
   `LEGION_STALL_ARCHITECT_AFTER` (3: how many delivered reminders in a row change nothing before
   the architect is told, and never fewer than 2). Each of the six millisecond values is a whole
   number of 0 or more; a value that is not is ignored, the default stands, and the worker's log
@@ -1389,6 +1417,8 @@ Closing the terminal leaves the project without one, and the daemon logs
   merge waits: 2; the oldest head, WIDGETS-11 #38, head 9c1f0be, GitHub said blocked, read 2026-10-03T10:40:11Z
   open update rounds: none
   agents in a tool call: 1 — WIDGETS-12 implementer "bash toolu_01F3 since 2026-10-03T10:41:07Z"
+  waits: 1 — WIDGETS-13 reviewer wait 5e2b7c41-9d36-4a8f-b0c2-7e14d9a3f685 until 2026-10-03T12:00:00Z, declared 2026-10-03T10:52:30Z: "the architect's rewrite of check c-smoke"
+  holds: 1 — WIDGETS-16 merger held by spec v3 (8a41c2e7-5b90-4f3d-a6e2-1c7d9b0f4e58)
   pending Dispatch status writes: none
   held lifecycle rows: none
   claims nothing will wake: none

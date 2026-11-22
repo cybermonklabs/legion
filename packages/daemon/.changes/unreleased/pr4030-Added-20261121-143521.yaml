@@ -1,0 +1,20 @@
+kind: Added
+body: |-
+  A phase worker declares a wait: `POST /legion/v1/claims/wait` records what it waits on and the
+  time to wake it, 1 minute to 24 hours ahead, in the new table `claim_waits`, so a relaunch, a pod
+  release and a daemon restart keep it. While the wait stands, the silence sweep, the controller's
+  tick list, the stalled-tree measure and the idle backstop leave the worker alone. A start that
+  hands it no new work delivers nothing, and the send of a task it had already taken waits until
+  the wait ends. The wait ends at its time (the daemon sends a task that repeats what it waited
+  on), at news (`POST /legion/v1/claims/wait-news`, a CI settlement, a message to the role or to
+  the session), at new work, when the claim leaves its phase or its session, at a new declaration,
+  and, for a merger, when the design gate closes. The daemon logs each declaration, refusal and end
+  with its cause. The update ask is published under a key the daemon knows, so it ends no wait.
+  `GET /legion/v1/state`, `read_record`, `legion state` and the owed answer
+  (`POST /legion/v1/claims/owed`) show each wait that stands. The prompts tell a worker that waits
+  to declare the wait with `declare_wait`, where they told it to end its reply with a WAITING line.
+  Daemon API contract 212. A caller below it gets no `wait` or `hold` key. Migrations
+  `20261121160000_claim_waits` and `20261121160100_outbox_kinds_with_the_wait_due`.
+time: 2026-11-21T14:35:21Z
+custom:
+    Issue: pr4030

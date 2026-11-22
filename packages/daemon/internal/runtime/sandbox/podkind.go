@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -157,24 +158,38 @@ func (issuePod) claimToken(project, issue string, role claim.Role) (claim.Token,
 	return claim.NewToken(project, issue, role)
 }
 
+// IssueWorkspaceDir is the directory an issue pod gives the issue's workspace of repository: the
+// place on the issue's volume where workspace-init provisions it (workspace.Location under
+// TreeRoot) and where every role of the pod works. A launch's working directory is read here
+// (issuePod.prepare), and so is the path the daemon names to the roles of an issue's next pod for
+// the workspace that a pod of another repository left on a kept volume (internal/daemon's
+// keptDiskMessage), so a change of the pod's layout moves both.
+func IssueWorkspaceDir(repository ghrepo.Repository, issue string) (string, error) {
+	located, err := workspace.Location(TreeRoot, repository, issue)
+	if err != nil {
+		return "", err
+	}
+	return located.Dir, nil
+}
+
 // prepare refuses a spec with no repository, which the workspace is provisioned from, and resolves
-// the workspace's place on the issue's disk. It runs at every launch and expects nothing of that
-// disk. The pod's own disk is created with the pod and deleted with it (INFRA-80). A kept volume
-// (keptVolume) outlives the pod, so a new pod of the issue finds on it what the pods before it
-// left. Only a new or replacement pod provisions its workspace (provision, which relaunch runs
-// only when it replaces the pod), and a role launched into the live pod finds the workspace the
-// roles before it left. docs/kubernetes.md, "The disk dies with its pod", states which launch is
-// which.
+// the workspace's place on the issue's disk (IssueWorkspaceDir). It runs at every launch and
+// expects nothing of that disk. The pod's own disk is created with the pod and deleted with it
+// (INFRA-80). A kept volume (keptVolume) outlives the pod, so a new pod of the issue finds on it
+// what the pods before it left. Only a new or replacement pod provisions its workspace
+// (provision, which relaunch runs only when it replaces the pod), and a role launched into the
+// live pod finds the workspace the roles before it left. docs/kubernetes.md, "The disk dies with
+// its pod", states which launch is which.
 func (issuePod) prepare(l *launch) error {
 	spec := l.spec
 	if spec.Repository.IsZero() {
 		return errors.New("no repository: a pod's init container provisions the issue's workspace from one")
 	}
-	working, err := workspace.Location(TreeRoot, spec.Repository, spec.Issue)
+	working, err := IssueWorkspaceDir(spec.Repository, spec.Issue)
 	if err != nil {
 		return err
 	}
-	l.workspace = working.Dir
+	l.workspace = working
 	return nil
 }
 

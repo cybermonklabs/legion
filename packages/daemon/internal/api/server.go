@@ -195,7 +195,8 @@ type Options struct {
 	// at no variant; the empty list, which draws nothing, is a caller that declared none.
 	// ExperimentSource is the random source a `random` mode is drawn with; nil is
 	// experiment.CryptoSource, and a test pins it. Now is the clock a draw's instant is read
-	// from; nil is time.Now, and a test pins it.
+	// from, and the moment a declared wait is recorded at (the wait route); nil is time.Now, and a
+	// test pins it.
 	Experiments      []config.Experiment
 	ExperimentSource func(uint64) (uint64, error)
 	Now              func() time.Time
@@ -234,8 +235,19 @@ type Options struct {
 	AwaitRecovery func(repo, tree, child, parent string) bool
 	// RoleFor is the role that works a phase (phase.RoleFor). The operator's retry of a failed
 	// phase worker applies its issue's held phase only when that phase's role is the claim's
-	// (retryClaim); nil retries no held phase, leaving every one to its architect.
+	// (retryClaim); nil retries no held phase, leaving every one to its architect. The claim route
+	// `POST /legion/v1/claims/owed` reads it for whether a claim's role works its issue's phase,
+	// and nil answers that route 500.
 	RoleFor func(phase.Phase) claim.Role
+	// WaitStands and Holds are the daemon's one rule for whether a claim's wait stands
+	// (workflow.WaitStandsNow) and for the closed design gate that holds a merger
+	// (workflow.HoldsNow), each asked of the record in tx under the deployment's steps. This
+	// package may not import internal/workflow, whose own tests read this one, so the daemon
+	// hands both in as it hands RoleFor, and no rule of either is written here. The claim route
+	// `POST /legion/v1/claims/owed` reads both for the wait and the hold it answers, and nil for
+	// either answers that route 500.
+	WaitStands func(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, token claim.Token) (record.ClaimWait, bool, error)
+	Holds      func(ctx context.Context, tx pgx.Tx, store record.Store, project string, steps []record.DesignStep, claims []supervise.Claim) (map[claim.Token]record.DesignGate, error)
 	// Record is the issue record the routes read and write (record.NewStore()). Nil is defaulted
 	// to one: the Postgres implementation is stateless, so a server given none still draws an
 	// operator tree's memory group. A route that needs a database as well tests Pool.
@@ -366,7 +378,7 @@ type server struct {
 	trees     TreeLifecycles
 	// experiments, source and now are Options.Experiments, Options.ExperimentSource and
 	// Options.Now: what the spawn's own draw for a tree it opens for the first time reads
-	// (drawExperiments).
+	// (drawExperiments). now is also the moment a declared wait is recorded at (wait).
 	experiments []config.Experiment
 	source      func(uint64) (uint64, error)
 	now         func() time.Time
@@ -379,6 +391,9 @@ type server struct {
 	records     record.Store
 	dispatch    dispatch.Client
 	claimReady  func(c supervise.Claim)
+	// waitStands and holds are Options.WaitStands and Options.Holds.
+	waitStands func(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, token claim.Token) (record.ClaimWait, bool, error)
+	holds      func(ctx context.Context, tx pgx.Tx, store record.Store, project string, steps []record.DesignStep, claims []supervise.Claim) (map[claim.Token]record.DesignGate, error)
 	// handoffCompleted is Options.HandoffCompleted.
 	handoffCompleted func(issue string)
 	// promptAgents and capabilityReported are Options.PromptAgents and Options.CapabilityReported,
@@ -455,6 +470,8 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		unread:             opts.RepositoryUnread,
 		await:              opts.AwaitRecovery,
 		roleFor:            opts.RoleFor,
+		waitStands:         opts.WaitStands,
+		holds:              opts.Holds,
 		records:            opts.Record,
 		dispatch:           opts.Dispatch,
 		claimReady:         opts.ClaimReady,
@@ -557,6 +574,9 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/claims/exit", s.exit},
 		{"POST /legion/v1/claims/turn-outcome", s.turnOutcome},
 		{"POST /legion/v1/claims/activity", s.activity},
+		{"POST /legion/v1/claims/owed", s.claimOwed},
+		{"POST /legion/v1/claims/wait", s.wait},
+		{"POST /legion/v1/claims/wait-news", s.waitNews},
 		{"POST /legion/v1/claims/release-records", s.releaseRecords},
 		{"POST /legion/v1/grants", s.grant},
 		{"POST /legion/v1/controller/secret", s.controllerSecret},

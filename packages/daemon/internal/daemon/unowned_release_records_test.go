@@ -117,7 +117,7 @@ func saysNoRoleComesBack(t *testing.T, logs *syncBuffer, line, why string) {
 func (r *idleRig) earlierReleasesBundle(t *testing.T) int {
 	t.Helper()
 	saved := idleRigEarlierBundle(r.issue.Key, time.Now().UTC().Add(-time.Hour))
-	if err := r.st.PutWorkspaceBundle(context.Background(), r.issue.Key, idleRigEarlierRelease, saved); err != nil {
+	if err := r.st.PutWorkspaceBundle(context.Background(), r.issue.Key, idleRigEarlierRelease, r.issue.Repo, saved); err != nil {
 		t.Fatalf("save the earlier release's bundle of %s: %v", r.issue.Key, err)
 	}
 	return saved.Size()

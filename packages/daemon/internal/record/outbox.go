@@ -2,6 +2,8 @@ package record
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,6 +38,7 @@ const (
 	OutboxKindWorkspaceRemove  OutboxKind = "workspace_remove"
 	OutboxKindIssueBranch      OutboxKind = "issue_branch"
 	OutboxKindCheckWake        OutboxKind = "check_wake"
+	OutboxKindWaitDue          OutboxKind = "wait_due"
 	OutboxKindCheckLook        OutboxKind = "check_look"
 	OutboxKindCheckBound       OutboxKind = "check_bound"
 	OutboxKindRoleMessage      OutboxKind = "role_message"
@@ -80,7 +83,8 @@ const (
 // leaves (a start after the branch it waits for, a workspace removal after the suspend that
 // stopped the roles). It also carries the production check's rows
 // (check_wake, check_look, check_bound), which start and end the checking role's looks in order
-// with the starts and suspends they queue. The board lane runs the issue's Dispatch writes and
+// with the starts and suspends they queue, and a waiting worker's time (wait_due), whose own task
+// is a start of the same lane. The board lane runs the issue's Dispatch writes and
 // notice publishes beside them, so a status write or a notice never waits behind a start pulling
 // an image, and a slow publish never holds a stop back. It carries the deployment's gated-steps
 // publish too, the one row addressed to the bare project key rather than to an issue, so that
@@ -122,7 +126,7 @@ const (
 // laneKinds is each lane's kinds in the order LaneKinds lists them. Every OutboxKind is in exactly
 // one lane (TestEveryOutboxKindIsInExactlyOneLane).
 var laneKinds = map[OutboxLane][]OutboxKind{
-	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
+	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindWaitDue},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
 	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward},
 	LaneClaim:       {OutboxKindClaimRelease},
@@ -467,6 +471,20 @@ type Notice struct {
 	// `dispatch://<KEY>/ask/<id>` for an answer or a resolution, `dispatch://<KEY>/comment/<id>`
 	// for a reply.
 	Ref string `json:"ref,omitempty"`
+	// Review is where Dispatch recorded the review a design-approved or design-changes-requested
+	// notice reports: its event's sequence and Dispatch's time of it, each zero when the event or
+	// the read gave none. The outbox keeps it with the decision when nobody in the tree hears the
+	// notice (the daemon's parkDecision, ParkedDecision.At and Seq), so the kept decision is later
+	// judged against the gate's approval by Dispatch's order, never by the daemon's clock. The
+	// parked-decision controller notice that relays one of those two carries it as the notice did,
+	// and the publish of a relayed changes request asks again of it whether the review stands (the
+	// daemon's controllerNotice). Every other kind carries none.
+	Review EventMark `json:"review,omitzero"`
+	// Artifact is the Dispatch artifact id of the document that review is of, carried by the same
+	// three: a step's gate can move to another document while its reference (Ref) stays the
+	// step's, and the person's approval of the new document answers no review of the old one
+	// (workflow.SupersedingApproval). A notice an earlier release queued carries none.
+	Artifact string `json:"artifact,omitempty"`
 	// Decision is what a parked-decision notice relays, and Root the root of the tree it was made
 	// on. Every other kind carries neither.
 	Decision DecisionKind `json:"decision,omitempty"`
@@ -797,31 +815,53 @@ type SilentIssue struct {
 // (a catch-up notice). It is a child's own architect's first instruction, since a child's first
 // phase start launches that architect with no task; a tree's root architect is launched with the
 // task its record derives (workflow.ArchitectStartTask), or with none where it derives none, and
-// is told its tree here beside it. It is those issues as the daemon records them then: the
-// generation of the architect's own issue, the launch of the architect's claim it was written
-// for, whether a hand-over created the root at this generation with its child's phase
-// and pull request (HandedOver) and whether its old root's gate came with them (Carried), the
-// design gate step by step (Gates), and every issue the architect owns — a root's whole tree, a
-// child's own issue and every issue under it. A child registers no gate and no hand-over creates
-// one, so a child's catch-up states no step and is neither handed over nor carried. A handed-over
-// root's workers already run their phases, so its architect decomposes nothing anew; one that
-// carried no gate registers its own spec. Decided names what a person decided on the tree while
-// nobody in it could hear it and the start did not name (a decision made while the architect's
-// claim had ended, before this relaunch), in the words of workflow.Engine.ParkedDecisionTask;
-// empty when there is none, and on every child's catch-up, since what is kept for a tree is its
-// root architect's to hear. Kept is what Decided named, which a published catch-up forgets
-// (Store.ForgetKeptDecisions): a catch-up a newer one supersedes hands it over to a fresh catch-up
+// is told its tree here beside it. The generation of the architect's own issue and the launch of
+// the architect's claim it was written for are the ones the row was queued at, and the rest is
+// read from the record when the notice is delivered: the issues the architect owns (CatchUpTree),
+// composed again in the delivery's own read (workflow.TreeCatchUp), and Decided. Decided names
+// what a person decided on the tree while nobody in it could hear it and the start did not name
+// (a decision made while the architect's claim had ended, before this relaunch), in the words of
+// workflow.KeptDecisionsTask; empty when there is none, and on every child's catch-up, since what
+// is kept for a tree is its root architect's to hear. Kept is what the row claimed for that
+// telling when it was queued, and it stays the row's: a published catch-up forgets it
+// (Store.ForgetKeptDecisions), a catch-up a newer one supersedes hands it over to a fresh catch-up
 // instead (workflow.HandOverKept), and one that finishes undelivered any other way leaves it all
-// for the architect's next ready to name again.
+// for the architect's next ready to name again. Decided is written again at the delivery from
+// Kept, each decision asked again of the gates as the delivery reads them
+// (workflow.SupersedingApproval), so it names no decision the person's approval followed while the
+// row waited.
+//
+// Relaunch is the sentence of what the last let-go of the architect's process ended, which the
+// ready that queued the row carried (intake.ClaimReady.Relaunch), and empty for every other
+// catch-up. It stays the row's, as Generation and Launch do: the delivery composes the notice's
+// reason again from the tree it reads and puts this sentence in front of it unchanged
+// (workflow.CatchUpReason), since what ended before the launch is no part of the tree a later
+// read restates. It goes out with the publish, so a re-held copy, which carries only what the
+// publish carried (Published), keeps it for its own delivery.
 type CatchUp struct {
-	Generation uint64         `json:"generation"`
-	Launch     uint64         `json:"launch"`
+	Generation uint64 `json:"generation"`
+	Launch     uint64 `json:"launch"`
+	Relaunch   string `json:"relaunch,omitempty"`
+	CatchUpTree
+	Decided string         `json:"decided,omitempty"`
+	Kept    *KeptDecisions `json:"kept,omitempty"`
+}
+
+// CatchUpTree is the record half of a catch-up: the issues the architect owns as
+// workflow.TreeCatchUp reads them, which the delivery replaces whole with its own read, so no part
+// of it reaches the architect as the row was queued. It is embedded in CatchUp, so its fields are
+// the payload's own keys: whether a hand-over created the root at this generation with its
+// child's phase and pull request (HandedOver) and whether its old root's gate came with them
+// (Carried), the design gate step by step (Gates), and every issue the architect owns — a root's
+// whole tree, a child's own issue and every issue under it. A child registers no gate and no
+// hand-over creates one, so a child's catch-up states no step and is neither handed over nor
+// carried. A handed-over root's workers already run their phases, so its architect decomposes
+// nothing anew; one that carried no gate registers its own spec.
+type CatchUpTree struct {
 	HandedOver bool           `json:"handed_over,omitempty"`
 	Carried    bool           `json:"carried,omitempty"`
 	Gates      []CatchUpGate  `json:"gates"`
 	Issues     []CatchUpIssue `json:"issues"`
-	Decided    string         `json:"decided,omitempty"`
-	Kept       *KeptDecisions `json:"kept,omitempty"`
 }
 
 // CatchUpGate is one design-gate step as a catch-up states it: the step, whether a person must
@@ -1079,6 +1119,17 @@ type SuperviseRequest struct {
 	// (Store.ForgetKeptDecisions), and a start that reached no claim hands them over to a fresh
 	// catch-up (workflow.HandOverKept). Every other request carries none.
 	Kept *KeptDecisions `json:"kept,omitempty"`
+	// Awaiting is the wait an architect start answers when it is the resume task of a root a
+	// person answered (workflow.Engine.ResumeAwaitedRoot), and nil for every other start, which
+	// carries its text in Task as it always has. Such a start carries no Task: the text is rendered
+	// at send (workflow.ResumeTask, through the daemon's rootTask), because the gate may move
+	// between the moment the row is written and the moment the task is sent, and the delivery
+	// carries the wait on to every send of it (supervise.Delivery.Resume), since the issue's record
+	// clears its wait when the root resumes. The field is decoded strictly, as every field is
+	// (DecodeOutboxPayload), so a daemon of an earlier release refuses a row this one wrote and
+	// retries it on its backoff until this release runs again; a row an earlier release wrote has
+	// no Awaiting and carries its Task, which this release delivers as it was written.
+	Awaiting *Awaiting `json:"awaiting,omitempty"`
 	// Generation is the issue generation the request serves. A request of an earlier generation
 	// finishes without acting: it must never suspend, stop, or start the next generation's worker.
 	// Three requests are not held to it. A production check's look start (CheckLook) is fenced on
@@ -1121,9 +1172,10 @@ type SuperviseRequest struct {
 	// released (workflow's cutoverMergerRepair), the phase's resume task a ready worker level with
 	// the entry its phases row names is given (workflow's readyWorkerTask), the silence repair's
 	// resume task to a silent worker level with that entry (workflow's workerSilent), a production
-	// check's look (workflow's startLook), the pod wake (workflow's wakeRow) and the resume of a
-	// cancelled idle release (the daemon's outbox). Each hands its role work it was already on, or
-	// work no phase entry numbers at all.
+	// check's look (workflow's startLook), the pod wake (workflow's wakeRow), the task of a wait's
+	// time (workflow's waitDue, WaitID below), the design gate's own start of a merger (workflow's
+	// deliverGateMove, GateMessage below) and the resume of a cancelled idle release (the daemon's
+	// outbox). Each hands its role work it was already on, or work no phase entry numbers at all.
 	Entry int64 `json:"entry,omitempty"`
 	// ResendEntry marks a start that hands the role the work of the entry its phases row already
 	// names rather than a new entry, so the claim's given entry does not decline the task
@@ -1218,6 +1270,24 @@ type SuperviseRequest struct {
 	// finishes a start without acting when the issue's check is not the one it names; zero names
 	// no instance (a row queued before the field) and is not fenced.
 	CheckOpenedAt time.Time `json:"checkOpenedAt,omitzero"`
+	// WaitID names the wait whose time this start's task tells the worker of (WaitDue, written by
+	// workflow's waitDue): a start with no phase and no entry, so no phase fence holds it, whether
+	// it is a plain start or the wake of a released claim (WakeKind pods.WakeWaitTime). The outbox
+	// finishes such a start with no delivery while a newer wait of the claim stands, since that
+	// task would end the newer wait as new work, and the time of a replaced wait sends nothing
+	// (dispatch://INFRA-2040 R3, D5 and D7 of its plan). Every other request names none.
+	WaitID string `json:"waitId,omitempty"`
+	// GateMessage marks the design gate's own start of a merger (workflow's deliverGateMove, at the
+	// gate's close and at its opening): a start with a task, no phase and no entry, so no phase
+	// fence holds it. The task says only that the gate moved; the gate's message, the closing
+	// message when the gate is closed at the send and the opening message when it stands open, is
+	// built at the send and goes in front of it (dispatch://INFRA-2040 R8, D16 of its plan). The
+	// outbox's start carries the mark into the claim's delivery (supervise.RequestDeliver and
+	// Delivery.GateMessage), where the send reads it (supervise.Deps.GateNote). Every other
+	// request carries none. The release before decodes strictly (DisallowUnknownFields), so the
+	// way back of 20261121160200_pending_delivery_gate_message deletes the key from each row
+	// before that release boots.
+	GateMessage bool `json:"gateMessage,omitempty"`
 	// Pause is the project pause a row serves (store's Pause, its id). A `pause_stop` row carries
 	// it always: its executor stops the claim for that pause, and finishes without acting once
 	// the pause has ended (decision 4 of dispatch://INFRA-3759). A start may carry the pause that
@@ -1548,6 +1618,21 @@ type CheckBound struct{}
 
 func (CheckBound) OutboxKind() OutboxKind { return OutboxKindCheckBound }
 
+// WaitDue is a phase worker's wait coming to its time: due at the wait's WakeAt, queued in the
+// transaction that records the declaration (workflow's waitDeclared), as a production check's next
+// look is a check_wake row. Token is the claim that declared the wait and WaitID the wait, so the
+// row of a wait a newer declaration replaced, or that something else ended, ends nothing and sends
+// nothing (workflow's waitDue). It runs on the lifecycle lane, which runs under every runtime, and
+// it is no row that holds a pod (store's idleWaitingKinds): an idle release may take the pod of a
+// worker that waits, and the row's own task brings it back (dispatch://INFRA-2040 R3, D5 of its
+// plan).
+type WaitDue struct {
+	Token  claim.Token `json:"token"`
+	WaitID string      `json:"waitId"`
+}
+
+func (WaitDue) OutboxKind() OutboxKind { return OutboxKindWaitDue }
+
 // HookPrompt is a hook of the deployment that fired on a move back of the issue, and its words
 // put in front of one role of the issue on that role's own Envoy topic. Hook is the hook's name
 // as the deployment spells it, Role the recipient, From the phase the work left and To the phase
@@ -1649,10 +1734,77 @@ type UpdateAsk struct {
 
 func (UpdateAsk) OutboxKind() OutboxKind { return OutboxKindUpdateAsk }
 
-// Message is what the runner publishes for issue: the text the sweep built, unchanged. Nothing is
-// put in front of it, since the text names the round and the topic it goes to is the role's own
-// claim on issue.
+// Message is what the runner publishes for issue: the text the sweep built, unchanged. Nothing of
+// the round is put in front of it, since the text names the round and the topic it goes to is the
+// role's own claim on issue; a merger's ask alone opens with the design gate's state, which the
+// daemon's updateAsk reads at the publish (dispatch://INFRA-2040 R7).
 func (p UpdateAsk) Message(string) string { return p.Text }
+
+const (
+	// updateAskKeyPrefix begins every key UpdateAskKey writes: the Envoy listener's own publish
+	// key begins so too.
+	updateAskKeyPrefix = "publish."
+	// roleForwardKeyPrefix is the mark the Envoy listener puts in front of the key of a message it
+	// forwards to the holder of a role's topic (contracts.RoleForwardDedupePrefix in the envoy
+	// module, an internal package this module cannot import), so a host may hand the update ask
+	// to its session under it.
+	roleForwardKeyPrefix = "envoy.role.forward."
+	// updateAskTagLabel is hashed in front of a claim's token into the claim's tag
+	// (updateAskTag), so the tag is a hash of the token that nothing else takes.
+	updateAskTagLabel = "legion update ask\x00"
+	// updateAskOpeningLayout writes a round's opening into the key's second half: in UTC, to the
+	// microsecond.
+	updateAskOpeningLayout = "2006-01-02T15:04:05.000000Z07:00"
+)
+
+// updateAskKeyShape is the shape of every key UpdateAskKey writes: `publish.` and 32 lowercase
+// hex digits, a key of the shape the Envoy listener mints for a publish, which
+// MINTED_DEDUPE_KEY_PATTERN in packages/contracts accepts.
+var updateAskKeyShape = regexp.MustCompile(`^` + regexp.QuoteMeta(updateAskKeyPrefix) + `[0-9a-f]{32}$`)
+
+// UpdateAskKey is the dedupe key the daemon publishes the ask of round to token's claim under
+// (the daemon's updateAsk), where openedAt is when the round was opened on that claim
+// (supervise.Claim.UpdateOpenedAt), nil when the claim records no opening. It is `publish.`,
+// then 16 hex digits of a SHA-256 of a fixed label and the token (the claim's tag), then 16 hex
+// digits of a SHA-256 of the round's id and the opening, written in UTC and cut to whole
+// microseconds, or of the round's id alone when there is no opening (dispatch://INFRA-2040 D9).
+//
+// The key has the shape the listener mints for a publish, so the listener keeps it as the
+// daemon gave it, the Envoy client keeps it on the card it hands the session
+// (dedupeKeyNamesItsEvent in packages/contracts), and the session's plugin reports it with news
+// (api's waitNews), where IsUpdateAskKey tells the ask from every other delivery. It is derived
+// rather than kept in the row: the row is deleted once the ask is published, and a report of the
+// ask can come after the round has ended. One claim and one round opening give one key, so a
+// retry of one ask publishes under one key — the row's next attempt, a row the sweep enqueues
+// again for the same opening after an ask that reached no session (the daemon's askRound), and a
+// row published again after a crash before its mark was written (supervise's PublishUpdateAsk) —
+// and the listener and each host drop a repeat of it. The opening is cut to the microsecond the
+// store keeps, so a daemon that restored the claim from the store derives the key the daemon that
+// opened the round did.
+func UpdateAskKey(token claim.Token, round string, openedAt *time.Time) string {
+	opening := round
+	if openedAt != nil {
+		opening += "\x00" + openedAt.UTC().Truncate(time.Microsecond).Format(updateAskOpeningLayout)
+	}
+	sum := sha256.Sum256([]byte(opening))
+	return updateAskKeyPrefix + updateAskTag(token) + hex.EncodeToString(sum[:8])
+}
+
+// IsUpdateAskKey is whether key is a key UpdateAskKey writes for token's claim, of any round,
+// bare or behind one mark of the listener's role forward. It reads the claim's tag alone, so a
+// report of the claim's own update ask is known after its round has ended, as when the plugin
+// sends a report again after a relaunch. A key another publisher minted carries the claim's tag
+// by chance once in 2^64.
+func IsUpdateAskKey(token claim.Token, key string) bool {
+	key, _ = strings.CutPrefix(key, roleForwardKeyPrefix)
+	return updateAskKeyShape.MatchString(key) && strings.HasPrefix(key, updateAskKeyPrefix+updateAskTag(token))
+}
+
+// updateAskTag is the first half of the hex digits of every UpdateAskKey of token's claim.
+func updateAskTag(token claim.Token) string {
+	sum := sha256.Sum256([]byte(updateAskTagLabel + string(token)))
+	return hex.EncodeToString(sum[:8])
+}
 
 // MergeQueueRead is the daemon's one read of a pull request that GitHub reported leaving the merge
 // queue (intake.PullRequestDequeued). The transaction that applies that event writes it, while the
@@ -2086,6 +2238,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindWaitDue:
+		value := WaitDue{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindHookPrompt:
 		value := HookPrompt{}
 		if err := decoder.Decode(&value); err != nil {
@@ -2222,8 +2380,13 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if (value.Kind == "catch-up") != (value.CatchUp != nil) {
 			return fmt.Errorf("a %s notice carries a catch-up only when it is one", value.Kind)
 		}
-		if _, spec := SpecDecision(value.Kind); !spec && (value.Actor != "" || value.Ref != "") {
+		decision, spec := SpecDecision(value.Kind)
+		if !spec && (value.Actor != "" || value.Ref != "") {
 			return fmt.Errorf("a %s notice carries an actor or a ref; only a spec decision's does", value.Kind)
+		}
+		if carriesReview(value) && !designReview(decision) {
+			return fmt.Errorf("a %s notice carries a review's mark or document; "+
+				"only a design-approved or design-changes-requested notice does", value.Kind)
 		}
 		if value.Decision != "" || value.Root != "" {
 			return fmt.Errorf("a %s notice carries a decision or a root; only a parked-decision controller notice does", value.Kind)
@@ -2261,6 +2424,11 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			}
 		} else if value.Decision != "" || value.Actor != "" || value.Ref != "" || value.Root != "" {
 			return fmt.Errorf("a %s controller notice carries a decision, an actor, a ref or a root; only a parked-decision does", value.Kind)
+		}
+		if carriesReview(Notice(value)) && (value.Kind != ParkedDecisionNotice || !designReview(value.Decision)) {
+			return fmt.Errorf("a %s controller notice carries a review's mark or document; only a "+
+				"parked-decision notice relaying a design approval or changes request does",
+				value.Kind)
 		}
 		if (value.Kind == UpdateStalledNotice) != (value.Update != nil) {
 			return fmt.Errorf("a %s notice carries an update round only when it is one", value.Kind)
@@ -2322,6 +2490,16 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.CheckLook != 0 && (value.CheckLook < 0 || value.Op != "start" || !worksCheck(value.Role) || value.Phase != "") {
 			return fmt.Errorf("a supervise check look names a start of the implementer or the tester with no phase, and only a start carries one")
+		}
+		if value.WaitID != "" && (value.Op != "start" || value.Task == "" || value.Phase != "" || value.Entry != 0 || value.CheckLook != 0) {
+			return fmt.Errorf("a supervise start of a wait's time is a start with a task, no phase, no entry and no check look")
+		}
+		if value.GateMessage && (value.Op != "start" || value.Role != claim.RoleMerger || value.Task == "" || value.Phase != "" ||
+			value.Entry != 0 || value.CheckLook != 0 || value.WaitID != "") {
+			return fmt.Errorf("a supervise start of the design gate's own message is a merger's start with a task, no phase, no entry, no check look and no wait")
+		}
+		if value.Awaiting != nil && (value.Op != "start" || value.Role != claim.RoleArchitect || value.Task != "" || value.Phase != "" || value.Kept != nil) {
+			return fmt.Errorf("a supervise start that carries an answered wait is an architect's start with no task, no phase and no kept decisions")
 		}
 		if value.Kept != nil {
 			if value.Op != "start" || value.Task == "" {
@@ -2400,6 +2578,10 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 	case CheckLook:
 		if value.Look <= 0 {
 			return fmt.Errorf("check look bound requires the look it bounds")
+		}
+	case WaitDue:
+		if value.Token == "" || value.WaitID == "" {
+			return fmt.Errorf("a wait's time names the claim that declared the wait and the wait")
 		}
 	case HookPrompt:
 		if value.Hook == "" {
@@ -2499,6 +2681,20 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		return fmt.Errorf("unknown outbox payload %T", payload)
 	}
 	return nil
+}
+
+// carriesReview says whether n carries anything of a person's review of a design document:
+// Dispatch's mark of it (Review) or the document it is of (Artifact). The two travel together,
+// so one rule of the kinds that may carry them holds both.
+func carriesReview(n Notice) bool {
+	return n.Review.Seq != 0 || !n.Review.At.IsZero() || n.Artifact != ""
+}
+
+// designReview says whether decision is a person's review of a design document, an approval or a
+// changes request: the two decisions whose notice, and whose relay to the controller, may carry
+// the review's mark and document (carriesReview).
+func designReview(decision DecisionKind) bool {
+	return decision == DecisionDesignApproved || decision == DecisionDesignChangesRequested
 }
 
 // validNoticeKinds is every notice kind the daemon publishes, which is also every kind a row may
@@ -2630,7 +2826,8 @@ func validSuperviseOp(op SuperviseOp) bool {
 // vocabulary a start's WakeKind is held to.
 func validWakeKind(kind string) bool {
 	switch kind {
-	case pods.WakeDelivery, pods.WakeChecks, pods.WakeRoleMessage, pods.WakeAgentMessage, pods.WakeBackstop, pods.WakePause:
+	case pods.WakeDelivery, pods.WakeChecks, pods.WakeRoleMessage, pods.WakeAgentMessage, pods.WakeBackstop, pods.WakePause,
+		pods.WakeWaitTime, pods.WakeDesignGate:
 		return true
 	default:
 		return false

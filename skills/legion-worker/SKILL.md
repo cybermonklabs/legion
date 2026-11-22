@@ -23,14 +23,14 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
   - `HANDOFF_STALE_ENTRY`: end the turn without completing; the daemon sends the new entry's task by itself. Do what it asks at the head it names, with a handoff of its own.
   - `HANDOFF_HEAD_MERGED_FORWARD`: a merge forward the daemon asked for has landed above the head your completion names, or your completion names no head; nothing was recorded. Read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`), then complete again at the new head with a handoff that names it.
   - `HANDOFF_NOT_CURRENT_PHASE`: report it; never complete again. `HANDOFF_ALREADY_RECORDED`: the first answer stands.
-- These waits stand rather than proceed, each ending the turn with a `WAITING` line naming what it waits on:
+- These waits stand rather than proceed, each declared with the `legion` tool's `declare_wait`, which names what it waits on, before the turn ends:
   - a planner on a decision the plan itself needs, because a plan completed around an open decision carries that gap into every later phase;
   - a reviewer on a half of the round that has no review, on a required check with no run at the head, or on the architect's rewrite of a check whose `run` is a whole test suite (`skill://legion-worker/references/merge-gate.md`);
   - retro on the architect's answer to a defect it reported;
   - a pushing role whose second push still did not carry the pull request onto its commit.
 - Send any other decision someone else owns (product, scope, design, lifecycle, another phase's) to the owning architect with what you observed, what you tried and the decision needed, then go on.
 - No surface reaches the changed path: report it to the architect, never complete (`skill://legion-worker/references/pr-body.md`).
-- A released pod is not a stop. Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives.
+- A released pod is not a stop. Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives. A message whose wake is lost waits until your wait's time, so choose that time with this in mind.
 - When another role's topic answers 404, read its handoff with `dispatch handoff-read`.
 
 ## Commits and pushes

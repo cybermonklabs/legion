@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -192,6 +193,9 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 
 	root, held := "LEGION-500", "LEGION-501"
 	lingerUntil := projectedAt.Add(90 * time.Minute)
+	// When the daemon applied the correction of this issue's repository, which `repoCorrectedAt`
+	// carries beside the repository it left.
+	correctedAt := projectedAt.Add(-3 * time.Hour)
 	answeredAt := projectedAt.Add(-time.Minute)
 	declaredAt := projectedAt.Add(-2 * time.Hour)
 	parent := "LEGION-400"
@@ -206,7 +210,9 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		LastDispatchSeq: 91,
 		HandedOver:      true, TakenBack: true, DispatchStatus: "needs_review",
 		Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Ancestry: []string{parent, "LEGION-300"}, HandedOverFrom: "LEGION-200",
+		RepoCorrection: &record.RepositoryCorrection{Before: "acme/gadgets", At: correctedAt},
+		RepoChange:     &record.RepositoryChange{Pending: "zeta/tools", Reason: "zeta/tools is not mapped to project OTHER in Dispatch"},
+		Ancestry:       []string{parent, "LEGION-300"}, HandedOverFrom: "LEGION-200",
 		Awaiting: &record.Awaiting{
 			Ask: "9a8fd348-55d5-4d72-a793-3cd037f75f13", Since: record.EventMark{Seq: 12, At: projectedAt.Add(-time.Hour)},
 			AnsweredAt: &answeredAt, AnsweredBy: record.AnsweredByAsk,
@@ -264,7 +270,8 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		SuspensionHeldBy: supervise.SuspendedByDaemon, Compacting: true, ProcessGone: true, DeathCharged: true,
 		PluginContract: api.DaemonAPIVersion, PluginRelaunchFor: api.DaemonAPIVersion - 1, AgentResumeGeneration: 3,
 		UpdateRound: "pod:" + podUID, UpdateReasons: "the pod template changed: the image moved",
-		UpdateOpenedAt: &openedAt, UpdateTaskedAt: &openedAt, UpdateSignalledAt: &answeredAt,
+		UpdateRepository: ghrepo.MustParse("acme/widgets"),
+		UpdateOpenedAt:   &openedAt, UpdateTaskedAt: &openedAt, UpdateSignalledAt: &answeredAt,
 		UpdateHead:       "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
 		UpdateToldAt:     &answeredAt,
 		UpdateLeftRound:  "pod:older",
@@ -385,6 +392,8 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"lingerUntil": issue.LingerUntil,
 			"holdReason":  issue.Hold.Reason, "heldFrom": issue.Hold.From,
 			"repo": issue.Repo, "defaultBranch": issue.DefaultBranch,
+			"repoBefore": issue.RepoCorrection.Before, "repoCorrectedAt": issue.RepoCorrection.At,
+			"repoChangePending": issue.RepoChange.Pending, "repoChangeReason": issue.RepoChange.Reason,
 			"ancestry": issue.Ancestry,
 			"waitingOn": map[string]any{
 				"kind": "ask", "ask": issue.Awaiting.Ask, "since": issue.Awaiting.Since.At,

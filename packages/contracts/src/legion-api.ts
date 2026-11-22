@@ -263,6 +263,36 @@ const legionPendingTaskView = z.object({
   lastSendError: nonEmptyString.optional(),
 });
 
+/** `record.DesignStep` — one step of a deployment's design gate, each naming one document of the
+ * root issue: `decisions` its decisions document, `criteria` its Verification document, `spec`
+ * its primary document. */
+const legionDesignStep = z.enum(GATED_STEPS);
+
+/** `api.WaitView` — one wait as the daemon recorded it: the id it minted, what the wait waits on
+ * (trimmed), when its time comes, and when the daemon recorded the declaration, to the
+ * microsecond. The daemon writes all four. `id` is required: the phase reminder reports news
+ * against it and reads whether the owed answer's wait is the one an unsent report names
+ * (`pi-shared/src/phase-reminder.ts`), and `declare_wait` hands it to its host
+ * (`pi-shared/src/legion-phase-ops.ts`). The other three are optional, since no plugin code reads
+ * them (LEGION_ANSWER_READS). */
+const legionWait = z.object({
+  id: nonEmptyString,
+  waitingOn: nonEmptyString.optional(),
+  wakeAt: timestamp.optional(),
+  declaredAt: timestamp.optional(),
+});
+
+/** `api.HoldView` — the closed design gate that holds a merger while the hold stands: the gated
+ * step whose row holds it, the document registered for that step, and the version of that document
+ * that is with its reviewer. The daemon writes all three, and all three are required: the phase
+ * reminder builds the closed note's sentence from them (`quietReminderText` in
+ * `pi-shared/src/phase-stall.ts`, LEGION_ANSWER_READS). */
+const legionHold = z.object({
+  step: legionDesignStep,
+  artifactId: nonEmptyString,
+  version: z.number().int().positive(),
+});
+
 /** `api.ClaimView` — `session` is empty until the claim's agent registers one, `locator` is
  * absent while no process runs (queued, suspended, failed, retired), `capabilities` is absent
  * until a session of the claim reports on `claims/ready` (the controller's never does), and
@@ -354,6 +384,20 @@ const legionClaimView = z.object({
    * with no such key at all (the daemon's `withoutLeakCheckCause`), so every reader takes it as
    * optional. */
   leakCheckCause: nonEmptyString.optional(),
+  /** The wait the claim's worker declared (`POST /legion/v1/claims/wait`) while it stands: the
+   * same four keys the declaration's answer named. Absent for a claim with no wait that stands:
+   * one that declared none, one whose wait ended, and one whose wait has no end yet but no longer
+   * stands — a fresh session, or a phase that moved. A caller below 212, by the contract it states
+   * or its pod records, is served the state with no such key at all (the daemon's
+   * `withoutWaitAndHold`), so every reader takes it as optional. */
+  wait: legionWait.optional(),
+  /** The closed design gate that holds this merger while the hold stands — the same rule the
+   * outbox's fence reads, so it is present exactly while the daemon holds the merger's phase
+   * start. Absent for every other claim: another role's, a merger whose issue is not in
+   * `merging`, and a merger whose tree's gated steps stand open or have no registered row. A
+   * caller below 212, by the contract it states or its pod records, is served the state with no
+   * such key at all (the daemon's `withoutWaitAndHold`), so every reader takes it as optional. */
+  hold: legionHold.optional(),
 });
 
 /** `api.HandoffRecordView` — the Dispatch handoff record a worker's completion of its current
@@ -409,7 +453,11 @@ const legionMergeState = z.enum([
  * repository requires holds the head. `fixAttempts` counted the heads pushed onto a red verdict
  * until contract 59 removed the count. */
 const legionPullRequestView = z.object({
-  /** The repository (`owner/name`) the pull request is in, its issue's (contract 31). */
+  /** The repository (`owner/name`) the pull request is in (contract 31), which is the issue's own
+   * until a correction of the issue's repository leaves it behind: the correction moves the
+   * issue's record alone, so this keeps the repository the pull request was opened on. Where this
+   * and the issue's `repo` name two repositories, the issue has work on a repository it has left,
+   * and the daemon applies no GitHub event of that pull request to the issue any more. */
   repo: nonEmptyString.optional(),
   number: z.number().int().positive().optional(),
   head: nonEmptyString.optional(),
@@ -473,11 +521,6 @@ const legionGateView = z.object({
   currentVersion: z.number().int().positive().optional(),
   approvedVersion: z.number().int().positive().nullable().optional(),
 });
-
-/** `record.DesignStep` — one step of a deployment's design gate, each naming one document of the
- * root issue: `decisions` its decisions document, `criteria` its Verification document, `spec`
- * its primary document. */
-const legionDesignStep = z.enum(GATED_STEPS);
 
 /** `api.GatedStepView` — one step of the deployment's design gate as one issue stands in it
  * (contract 55). `artifactId` and `currentVersion` are the document its architect registered for
@@ -749,6 +792,20 @@ const legionIssue = z.object({
    * workflow does not record (phase `unrecorded`, an operator's claim) (contract 31). */
   repo: nonEmptyString.optional(),
   defaultBranch: nonEmptyString.optional(),
+  /** The repository the record held before the newest correction of the issue's repository, and
+   * the instant the daemon applied that correction. The daemon writes the two together, and
+   * writes neither for an issue no correction has reached, but the schema takes each as optional
+   * and does not check the pair. The issue's branch and its pull request are on `repoBefore`, and
+   * `repo` above is the repository the issue works now. */
+  repoBefore: nonEmptyString.optional(),
+  repoCorrectedAt: timestamp.optional(),
+  /** A repository Dispatch has named for the issue that the daemon has not applied to its record,
+   * and why it has not. The daemon writes the two together, and writes neither while nothing
+   * waits, but the schema takes each as optional and does not check the pair. While they are
+   * there, `repo` above still names the repository the issue works: a reader of a record that
+   * names the old repository reads here why it does. */
+  repoChangePending: nonEmptyString.optional(),
+  repoChangeReason: nonEmptyString.optional(),
   /** Why a held issue is held, when its hold has one: `escalated` once its architect sent it to
    * the controller. `heldFrom` beside it is the phase the hold took the issue out of, and is
    * absent for an issue that is not held. The linger suppression is `holdReason`'s alone: the
@@ -1502,6 +1559,124 @@ export const LegionActivityRequest = z.strictObject({
 
 export type LegionActivityRequestBody = z.output<typeof LegionActivityRequest>;
 
+/** `api.WaitRequest`, the body of `POST /legion/v1/claims/wait`: a phase worker declaring that it
+ * waits on something outside its own work — a person's answer, a CI run, another issue — until
+ * `wakeAt`, so the daemon's own wakes leave it be until then. It is authenticated by the
+ * registration's secret, as `claims/activity` is, and the daemon holds it to the session the claim
+ * records. `waitingOn` says what the wait is for: the daemon refuses one empty once trimmed
+ * (`WAIT_TEXT_REQUIRED`). `wakeAt` is a `LegionInstant`, which the daemon decodes with
+ * `time.Parse(time.RFC3339, …)`, and it must fall from one minute to 24 hours after the daemon
+ * records the declaration (`WAIT_TOO_SOON`, `WAIT_TOO_FAR`). A claim that does not work its
+ * issue's open phase is refused `WAIT_NOT_OPEN_PHASE`, and a merger the design gate holds
+ * `WAIT_HELD_BY_DESIGN_GATE`; every refusal is a `LegionErrorResponse` and records nothing. */
+export const LegionWaitRequest = z.strictObject({
+  claimToken: nonEmptyString,
+  sessionId: nonEmptyString,
+  secret: nonEmptyString,
+  waitingOn: nonEmptyString,
+  wakeAt: LegionInstant,
+});
+
+export type LegionWaitRequestBody = z.output<typeof LegionWaitRequest>;
+
+/** `api.WaitResponse`, the body `POST /legion/v1/claims/wait` answers once the wait is recorded.
+ * A claim keeps one standing wait: a new declaration ends the one it replaces. The daemon always
+ * writes `wait`, and it is required: `declare_wait` answers it and hands its `id` to its host,
+ * which tells the phase reminder (`pi-shared/src/legion-phase-ops.ts`, LEGION_ANSWER_READS). */
+export const LegionWaitResponse = z.object({
+  wait: legionWait,
+});
+
+/** `api.WaitNewsRequest`, the body of `POST /legion/v1/claims/wait-news`: a phase worker's plugin
+ * reporting that news reached its session after the declaration of the wait `waitId` names — an
+ * Envoy delivery, a message to its role, or a person's message — so the daemon ends that wait.
+ * `waitId` is the `wait.id` the declaration's answer named. `deliveryKey` is the reported
+ * delivery's own dedupe key, verbatim as the plugin read it off the delivery, bare or behind the
+ * listener's role-forward mark, and absent for a person's message, which has none. It is
+ * authenticated by the registration's secret, as `claims/wait` is, and the daemon holds it to the
+ * session the claim records. A daemon task is not news. */
+export const LegionWaitNewsRequest = z.strictObject({
+  claimToken: nonEmptyString,
+  sessionId: nonEmptyString,
+  secret: nonEmptyString,
+  waitId: nonEmptyString,
+  deliveryKey: nonEmptyString.optional(),
+});
+
+export type LegionWaitNewsRequestBody = z.output<typeof LegionWaitNewsRequest>;
+
+/** `api.WaitNewsResponse`, the body `POST /legion/v1/claims/wait-news` answers: `ended` is whether
+ * this report ended the wait it names, and `false` keeps the wait standing in the plugin. A report
+ * naming a wait a newer declaration replaced, or one already ended (a second report of the same
+ * wait among them), answers `false` and changes nothing. A report whose `deliveryKey` is a key of
+ * the claim's own update ask — the daemon publishes each update round's ask to the role under a
+ * key it derives from the claim, the round and its opening — ends nothing, records nothing and
+ * answers `false` with `updateAsk: true`, during the round and after it: an update round and its
+ * ask end no wait. Every other report, with any other key or none, is news, whether or not an
+ * update round is open. `updateAsk` is absent from every other answer. The daemon always writes
+ * `ended`, and it is required: the phase reminder ends the wait in the plugin on `true` and keeps
+ * it standing on `false` (`pi-shared/src/phase-reminder.ts`, LEGION_ANSWER_READS). The phase
+ * reminder reads `updateAsk` too: an answer without it drops every other kept report of the wait.
+ * `updateAsk` stays optional, since the daemon writes it only for the update ask. */
+export const LegionWaitNewsResponse = z.object({
+  ended: z.boolean(),
+  updateAsk: z.literal(true).optional(),
+});
+
+export type LegionWaitNews = z.output<typeof LegionWaitNewsResponse>;
+
+/** `api.OwedRequest`, the body of `POST /legion/v1/claims/owed` (contract 206): a live role's
+ * session asking, at the end of its turn, what its claim owes now. It carries what
+ * `claims/activity` carries — the claim, the session the claim records, and the registration's
+ * secret — and no generation, since the question changes nothing. A token the daemon does not
+ * hold, a wrong secret and a session the claim does not record are each refused 403 with
+ * `Invalid session secret`, with one exception: a claim the daemon holds failed, asked from the
+ * session the claim records (from any session when it records none), is answered 200 with
+ * `owes` false whatever the secret, since a failed claim holds no secret any more. */
+export const LegionOwedRequest = z.strictObject({
+  claimToken: nonEmptyString,
+  sessionId: nonEmptyString,
+  secret: nonEmptyString,
+});
+
+export type LegionOwedRequestBody = z.output<typeof LegionOwedRequest>;
+
+/** `api.OwedResponse`, the body `POST /legion/v1/claims/owed` answers: whether the claim owes work
+ * now, and what that work is called as a person reads it in a reminder — `the testing phase of
+ * LEGION-208`, `the production check of LEGION-208`. The daemon reads it from the issue's record,
+ * so a role whose phase has finished owes nothing whatever its process remembers, and a role
+ * whose phase is open owes it. `work` is empty exactly when `owes` is false; a reminder renders
+ * the phrase it is given and names no work of its own. `architect` is the architect claim that
+ * owns the claim now, the end of the owner walk the daemon's own notices of the issue take: the
+ * issue's own architect while its claim holds its role, else the nearest one above it that does,
+ * else the tree root's. It is named for a phase worker whose issue the daemon records, owed or
+ * not, and absent for an architect, the controller, a failed claim and an unrecorded issue; the
+ * reminder's architect notice and the stall watch's notice go to it. */
+export const LegionOwedResponse = z
+  .object({
+    owes: z.boolean(),
+    work: z.string(),
+    architect: nonEmptyString.optional(),
+    /** The wait the claim's worker declared (`POST /legion/v1/claims/wait`) while it stands, by
+     * the rule the state's claim view reads: the same four keys the declaration's answer named.
+     * Absent where no wait stands: none declared, one that ended, and one with no end that no
+     * longer stands — a fresh session, or a phase that moved. It is named whether or not the
+     * claim owes, as `architect` is. A caller below 212 is served the answer with no such key at
+     * all (the daemon's `withoutOwedWaitAndHold`), so every reader takes it as optional. */
+    wait: legionWait.optional(),
+    /** The closed design gate that holds this merger, by the rule the outbox's fence reads: a
+     * merger whose issue is in `merging` while a step its deployment gates stands closed with a
+     * row of its own. Absent for every other claim, once the gate opens, and on a tree with no
+     * registered gate row. A caller below 212 is served the answer with no such key at all (the
+     * daemon's `withoutOwedWaitAndHold`), so every reader takes it as optional. */
+    hold: legionHold.optional(),
+  })
+  .refine((body) => body.owes === (body.work !== ""), {
+    message: "work names the owed work exactly when owes is true",
+  });
+
+export type LegionOwed = z.output<typeof LegionOwedResponse>;
+
 /** `api.ReleaseRecord` — one issue pod the daemon released: the run it released, the roles whose
  * claims it suspended (sorted, as the store holds them), when the release completed, and the size
  * of the git bundle of unpushed work it saved, zero when the workspace held none. `roles` is
@@ -2101,10 +2276,9 @@ export const LegionChildRequest = z.strictObject({
 });
 
 /** What plugin code takes the value of in one issue's record: `legion-phase-ops.ts` reads the
- * issue's phase and its open check for `handoff_complete`, `phase-reminder.ts` and
- * `pi-legion/src/stall-evidence.ts` read the architect's claim state, and the controller's
- * `read_state` summary (`pi-legion/src/tools.ts`) reads each issue's status, hold reason, slot,
- * design gate, and the state and both turn times of the architect's claim and of every worker's.
+ * issue's phase and its open check for `handoff_complete`, and the controller's `read_state`
+ * summary (`pi-legion/src/tools.ts`) reads each issue's status, hold reason, slot, design gate,
+ * and the state and both turn times of the architect's claim and of every worker's.
  * The record route and the state's `issues{}` answer the same node, so the read set below names
  * these paths at both, `LegionIssueRecordResponse` as they stand and `LegionStateResponse` under
  * the state's prefix. They are written once here because the two entries must say the same thing.
@@ -2112,7 +2286,13 @@ export const LegionChildRequest = z.strictObject({
  * The summary reads the state and never the record route. Its fields are in this list because
  * the summary reads them on the node that the two answers share. Each of them is `.optional()`
  * on `legionIssue`, so the record route refuses no body that does not carry one. A change that
- * makes one of them required for the state makes it required on the record route too. */
+ * makes one of them required for the state makes it required on the record route too.
+ *
+ * A claim view's `wait` and `hold` are the owed answer's own nodes (`legionWait`, `legionHold`),
+ * whose `wait.id` and `hold.step`, `hold.artifactId` and `hold.version` the phase reminder and
+ * `declare_wait` read off that answer and the declaration's: the read set names a field at every
+ * path the same parent and name reach, so they stand here too. Each claim view's `wait` and
+ * `hold` stay optional, so a claim that has neither is read as before. */
 const ISSUE_RECORD_READS = [
   "phase",
   "status",
@@ -2121,11 +2301,19 @@ const ISSUE_RECORD_READS = [
   "architect.state",
   "architect.lastTurnStart",
   "architect.lastTurnEnd",
+  "architect.wait.id",
+  "architect.hold.step",
+  "architect.hold.artifactId",
+  "architect.hold.version",
   "workers",
   "workers{}.claim",
   "workers{}.claim.state",
   "workers{}.claim.lastTurnStart",
   "workers{}.claim.lastTurnEnd",
+  "workers{}.claim.wait.id",
+  "workers{}.claim.hold.step",
+  "workers{}.claim.hold.artifactId",
+  "workers{}.claim.hold.version",
   "check",
   "check.role",
   "check.looks",
@@ -2189,11 +2377,12 @@ const ISSUE_RECORD_READS = [
  * as any read is.
  */
 export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = {
-  // The three readers of an issue's record ask the record route for it (dispatch://INFRA-2694),
-  // and the controller's `read_state` summary reads the project's admission line, its
-  // capability report and each issue's own fields. `daemon` and `daemon.project` stood
-  // here until the controller's boot check read the project from the health answer instead
-  // (`pi-legion/src/controller-session.ts`), and both are optional above.
+  // The record route's readers, `legion-phase-ops.ts`'s `read_record` and `handoff_complete`, ask
+  // it for an issue's record (dispatch://INFRA-2694), and the controller's `read_state` summary
+  // reads the project's admission line, its capability report and each issue's own fields.
+  // `daemon` and `daemon.project` stood here until the controller's boot check read the project
+  // from the health answer instead (`pi-legion/src/controller-session.ts`), and both are optional
+  // above.
   LegionStateResponse: [
     "issues",
     ...ISSUE_RECORD_READS.map((field) => `issues{}.${field}`),
@@ -2304,4 +2493,27 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
   // `pi-legion/src/turn-outcome.ts` logs the run of refused turns and whether this report
   // failed the claim on every turn it reports.
   LegionTurnOutcomeResponse: ["refusedRun", "failed"],
+  // `pi-shared/src/phase-reminder.ts` decides whether a due reminder goes out by `owes`, names
+  // the work it gives by `work`, and sends the architect notice to `architect`, as the stall
+  // watch's notice does (`pi-legion/src/stall-evidence.ts`, contract 206). From contract 212 it
+  // holds every reminder but the one for a tool call written as text while the answer's `wait`
+  // stands, which it tells by the wait's `id`, or while its `hold` stands, whose step, document
+  // and version that reminder names (`quietReminderText` in `pi-shared/src/phase-stall.ts`).
+  LegionOwedResponse: [
+    "owes",
+    "work",
+    "architect",
+    "wait",
+    "wait.id",
+    "hold",
+    "hold.step",
+    "hold.artifactId",
+    "hold.version",
+  ],
+  // `declare_wait` (`pi-shared/src/legion-phase-ops.ts`) answers the wait the daemon recorded and
+  // hands its `id` to its host, which tells the phase reminder.
+  LegionWaitResponse: ["wait", "wait.id"],
+  // The phase reminder's report of news ends the wait in the plugin on `ended` true and keeps it
+  // standing on false. An answer without `updateAsk` drops every other kept report of its wait.
+  LegionWaitNewsResponse: ["ended", "updateAsk"],
 };

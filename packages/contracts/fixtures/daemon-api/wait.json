@@ -1,0 +1,8 @@
+{
+  "wait": {
+    "id": "3f6c2a9e-8b14-4d7a-9e25-1c0b7f4d2a68",
+    "waitingOn": "the review of LEGION-207's pull request",
+    "wakeAt": "2026-11-14T08:00:00Z",
+    "declaredAt": "2026-11-14T06:00:00.123456Z"
+  }
+}

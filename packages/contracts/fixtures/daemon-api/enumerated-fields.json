@@ -203,6 +203,42 @@
   },
   {
     "answer": "state",
+    "keyPath": "issues.*.architect.hold.step",
+    "values": [
+      {
+        "value": "criteria",
+        "since": 212
+      },
+      {
+        "value": "decisions",
+        "since": 212
+      },
+      {
+        "value": "spec",
+        "since": 212
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "issues.*.workers.*.claim.hold.step",
+    "values": [
+      {
+        "value": "criteria",
+        "since": 212
+      },
+      {
+        "value": "decisions",
+        "since": 212
+      },
+      {
+        "value": "spec",
+        "since": 212
+      }
+    ]
+  },
+  {
+    "answer": "state",
     "keyPath": "issues.*.pullRequest.state",
     "values": [
       {
@@ -1319,6 +1355,42 @@
   },
   {
     "answer": "issue-record",
+    "keyPath": "architect.hold.step",
+    "values": [
+      {
+        "value": "criteria",
+        "since": 212
+      },
+      {
+        "value": "decisions",
+        "since": 212
+      },
+      {
+        "value": "spec",
+        "since": 212
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
+    "keyPath": "workers.*.claim.hold.step",
+    "values": [
+      {
+        "value": "criteria",
+        "since": 212
+      },
+      {
+        "value": "decisions",
+        "since": 212
+      },
+      {
+        "value": "spec",
+        "since": 212
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
     "keyPath": "pullRequest.state",
     "values": [
       {
@@ -1968,6 +2040,24 @@
       {
         "value": "tester",
         "since": 46
+      }
+    ]
+  },
+  {
+    "answer": "owed",
+    "keyPath": "hold.step",
+    "values": [
+      {
+        "value": "criteria",
+        "since": 212
+      },
+      {
+        "value": "decisions",
+        "since": 212
+      },
+      {
+        "value": "spec",
+        "since": 212
       }
     ]
   }

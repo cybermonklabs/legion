@@ -27,8 +27,10 @@ section can use the words without stopping to explain them.
   issue's repository. Each issue targets one repository, the one Dispatch resolves for it (its
   own, else its nearest ancestor's, else the project's default repository, which is set in
   Dispatch), which Legion records, with that repository's default branch as GitHub names it, when
-  it first records the issue, and keeps. This release's one-time pass is the one exception: it
-  writes a configured rename's new name (`repository_renames`) over the old one on the records.
+  it first records the issue. The record then follows Dispatch: a later change of the issue's
+  repository moves it onto the new one when GitHub answers, at that moment, that both role Apps
+  are installed there ([The project's repositories](/legion/legion/running-legion/#the-projects-repositories)),
+  and a configured rename's pass writes the new name (`repository_renames`) over the old one.
   Legion acts there through two GitHub Apps, so the account that reviews a change is never the one
   that wrote it. The daemon creates a root's branch at the recorded default branch (`main`,
   `develop` or `release/v7.1` alike) when it admits the root, before its architect starts, and a
@@ -42,7 +44,7 @@ section can use the words without stopping to explain them.
 One Legion deployment can work issues across several GitHub repositories, under several owners,
 with exactly one repository per issue — never two.
 A change that spans repositories uses child issues, each in one repository.
-Several children may share a repository, each child's own `--repo` fixed when the daemon records it.
+Several children may share a repository, and each child's record follows the repository Dispatch resolves for it.
 An issue may name any `owner/name`, and the account that installs a role's GitHub App decides what that role reaches.
 Every worker holds a gh bundle of its role's GitHub App, with one token for each owner that App
 is installed on.
@@ -337,8 +339,10 @@ approves the new version. Your own answer to a decision block in the approved sp
 exception: when that answer is the whole change since the version you approved, Dispatch records
 your approval at the new version and the gate reopens, so the architect asks you for nothing; when
 the answer means the spec's text changes too, the architect rewrites it and asks you to approve
-again, naming what changed since your approval. Work already in flight carries on, through its
-merge: the gate holds a tree's start, and nothing after it. The daemon only reads approvals;
+again, naming what changed since your approval. Work already in flight carries on, but the merge
+waits: while a step that someone registered waits for a person's approval, the merger merges
+nothing, and each task it gets says the gate is closed. A step that nobody registered names no
+document, so it holds no merger. The daemon only reads approvals;
 nothing in Legion approves a spec on a person's behalf, and the approval Dispatch records at your
 answer is yours, in your name.
 

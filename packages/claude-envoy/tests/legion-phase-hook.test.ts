@@ -1,17 +1,22 @@
 import { expect, test } from "bun:test"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
-import { LegionStateResponse } from "@legion/contracts/legion-api"
+import { join } from "node:path"
 import {
   EnvoyApiError,
   type PublishInput,
   type PublishResult,
 } from "@legion/envoy-client/transport"
-import { type ActivityInput, createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
+import {
+  type ActivityInput,
+  createLegionDaemonClient,
+  type LegionDaemonClient,
+} from "@legion/pi-shared/daemon-client"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
-import { REMINDER } from "@legion/pi-shared/phase-stall"
+import { owedReminder, UNREAD_REMINDER } from "@legion/pi-shared/phase-stall"
+import { UPDATE_ASK_KEY, type WaitStandIn, waitStandIn } from "@legion/pi-shared/test/wait-stand-in"
 import { legion } from "../package.json" with { type: "json" }
+import { startChannelSession } from "../src/envoy-channel-server"
 import {
   createPhaseHookEndpoint,
   PHASE_HOOK_REFUSAL,
@@ -21,12 +26,26 @@ import {
   phaseHookToolDefinition,
   phaseStallFile,
 } from "../src/legion-phase-hook"
-import { waitFor } from "./channel-session-harness"
+import { executeLegionTool } from "../src/legion-tool"
+import { SessionIdentity } from "../src/session-identity"
+import {
+  directSubject,
+  FakeNats,
+  FakeNotifier,
+  sessionOptions,
+  useScratchState,
+  waitFor,
+} from "./channel-session-harness"
+import { isolatePaneEnvironment } from "./pane-environment"
+
+// The cases that run the channel server's delivery path (`startChannelSession`) read no envoy.json
+// of the caller's own.
+isolatePaneEnvironment()
+const scratchState = useScratchState()
 
 const SESSION = "6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
 
-/** The pane's claim: the implementer of LEGION-208, whose phase in the daemon's state fixture is
- * `implementing`, so the reminder's record check says this role still works this phase. */
+/** The pane's claim: the implementer of LEGION-208. */
 const implementer: ClaimCapability = {
   sessionID: SESSION,
   tree: "LEGION-208",
@@ -36,6 +55,14 @@ const implementer: ClaimCapability = {
   claimToken: "legion-legion-legion-208-implementer",
   generation: 1,
 }
+
+/** What the stand-in daemon calls the work the claim owes, and the reminder that names it: the
+ * reminder renders the daemon's answer and nothing of its own. */
+const WORK = "the implementing phase of LEGION-208"
+const REMINDER = owedReminder(WORK)
+/** The stand-in daemon's answers to `POST /legion/v1/claims/owed`. */
+const owesWork = () => Response.json({ owes: true, work: WORK })
+const owesNothing = () => Response.json({ owes: false, work: "" })
 
 /**
  * The four numbers every case runs on, through the environment the endpoint is given: no test
@@ -55,7 +82,7 @@ const QUICK_LIMITS: Record<string, string> = {
   LEGION_STALL_ARCHITECT_AFTER: "9",
 }
 
-/** One record on disk, as the Go bridge or an earlier run of this server left it. */
+/** One record on disk, as an earlier run of this server, or an earlier release, left it. */
 function recorded(state: string, count: number, extra: Record<string, unknown> = {}): string {
   return JSON.stringify({ state, count, reported: false, ...extra })
 }
@@ -63,9 +90,12 @@ function recorded(state: string, count: number, extra: Record<string, unknown> =
 interface Harness {
   readonly endpoint: PhaseHookEndpoint
   readonly file: string
+  /** The real daemon client the endpoint asks, on the stand-in daemon: what the pane's `legion`
+   * tool posts with too. */
+  readonly daemon: LegionDaemonClient
   /** The record on disk, or undefined when nothing has been written. */
   readonly record: () => Promise<unknown>
-  /** The record as it stood when the daemon answered the record check. */
+  /** The record as it stood when the daemon was asked what the claim owes. */
   readonly recordAtDaemonRead: () => unknown
   /** Every route this endpoint asked the daemon for, in order. */
   readonly daemonPaths: readonly string[]
@@ -75,6 +105,10 @@ interface Harness {
   readonly published: readonly PublishInput[]
   /** Every activity report this endpoint sent the daemon, in order. */
   readonly reports: readonly ActivityInput[]
+  /** Every question this endpoint asked the daemon about what the claim owes, in order. */
+  readonly asked: readonly unknown[]
+  /** What the daemon answers `claims/owed` from now on: its record has moved. */
+  readonly answersOwed: (answer: () => Response) => void
   /** Settles the claim's boot, as `startLegionClaim`'s `booted` does. */
   readonly boot: () => void
   /** How often the endpoint has said a turn of this session started (`firstTurnStarted`). */
@@ -87,8 +121,6 @@ async function harness(
   options: {
     readonly record?: string
     readonly claim?: ClaimCapability
-    /** The state the daemon's record gives the implementer's claim; `working` in the fixture. */
-    readonly claimState?: string
     /** Added to (and overriding) `QUICK_LIMITS` and `LEGION_PROJECT`. */
     readonly env?: Record<string, string | undefined>
     /** False for a session outside a Legion pane, which has no inbox at all. */
@@ -102,44 +134,37 @@ async function harness(
     ) => Promise<Pick<PublishResult, "kept">>
     /** Whether the daemon refuses every activity report: the hook still answers its worker. */
     readonly reportActivityFails?: boolean
+    /** What the daemon answers `claims/owed`: that the claim owes `WORK`, unless given. */
+    readonly owed?: () => Response
+    /** The stand-in daemon's answer to a route the case serves itself, tried before every other
+     * route: the wait's declaration and its news (`waitStandIn`). */
+    readonly routes?: (path: string, body: unknown) => Response | undefined
   } = {},
 ): Promise<Harness> {
   const directory = await mkdtemp(join(tmpdir(), "claude-envoy-phase-hook-"))
   const file = phaseStallFile(directory, SESSION)
   if (options.record !== undefined) await writeFile(file, options.record)
-  const state = LegionStateResponse.parse(
-    JSON.parse(
-      await readFile(
-        resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/state.json"),
-        "utf8",
-      ),
-    ),
-  ) as { issues: Record<string, { workers: Record<string, { claim: { state: string } }> }> }
-  const implementerClaim = state.issues["LEGION-208"]?.workers["implementer"]?.claim
-  if (options.claimState !== undefined && implementerClaim !== undefined) {
-    implementerClaim.state = options.claimState
-  }
   const record = async (): Promise<unknown> => {
     const raw = await readFile(file, "utf8").catch(() => undefined)
     return raw === undefined ? undefined : JSON.parse(raw)
   }
   let atRead: unknown
+  let owed = options.owed ?? owesWork
+  const asked: unknown[] = []
   const paths: string[] = []
-  // The reminder's record check reads one issue's record, never the whole project
-  // (dispatch://INFRA-2694): the stub answers that route from the state golden's own issues.
-  const fetchStub = (async (input, _init) => {
+  // The reminder's owed check asks one route, never the whole project (dispatch://INFRA-2694).
+  const fetchStub = (async (input, init) => {
     const path = new URL(input.toString()).pathname
     paths.push(path)
-    atRead = await record()
-    const named = /^\/legion\/v1\/issues\/([^/]+)\/record$/.exec(path)
-    if (named === null) return Response.json(state)
-    const held = state.issues[decodeURIComponent(named[1] ?? "")]
-    return held === undefined
-      ? Response.json(
-          { code: "RECORD_NOT_FOUND", error: `The daemon has no record for ${named[1]}` },
-          { status: 404 },
-        )
-      : Response.json(held)
+    const body: unknown = init?.body == null ? undefined : JSON.parse(String(init.body))
+    const own = options.routes?.(path, body)
+    if (own !== undefined) return own
+    if (path === "/legion/v1/claims/owed") {
+      atRead = await record()
+      asked.push(body)
+      return owed()
+    }
+    return Response.json({ error: "no stand-in route" }, { status: 404 })
   }) as typeof fetch
   const daemon = createLegionDaemonClient("http://daemon.test", {
     pluginContract: legion.daemonApiVersion,
@@ -158,7 +183,8 @@ async function harness(
     firstTurnStarted: () => {
       turnsStarted += 1
     },
-    readRecord: (issue, signal) => daemon.record(issue, { signal }),
+    readOwed: (question, signal) => daemon.owed(question, { signal }),
+    reportNews: (report, signal) => daemon.waitNews(report, { signal }),
     reportActivity: async (input) => {
       reports.push(input)
       if (options.reportActivityFails === true) throw new Error("the daemon refused the report")
@@ -180,12 +206,17 @@ async function harness(
   return {
     endpoint,
     file,
+    daemon,
     record,
     recordAtDaemonRead: () => atRead,
     inbox,
     daemonPaths: paths,
     published,
     reports,
+    asked,
+    answersOwed: (answer) => {
+      owed = answer
+    },
     boot: booted.resolve,
     turnsStarted: () => turnsStarted,
     lines,
@@ -204,9 +235,9 @@ test("the tool names itself Claude Code's hook endpoint and tells the model not 
   expect(definition.description).toContain("Do not call it")
 })
 
-test("a turn settling on an open phase is blocked once, with the reminder, and the count is recorded before the answer", async () => {
-  const { endpoint, record, recordAtDaemonRead, inbox, daemonPaths, close } = await harness({
-    record: recorded("open", 0),
+test("a turn settling while the daemon says the claim owes work is blocked once, with the reminder naming that work, and the count is recorded before the answer", async () => {
+  const { endpoint, record, recordAtDaemonRead, inbox, asked, daemonPaths, close } = await harness({
+    record: recorded("active", 0),
     claim: implementer,
   })
   try {
@@ -217,15 +248,20 @@ test("a turn settling on an open phase is blocked once, with the reminder, and t
         stopHookActive: "false",
       }),
     ).toEqual({ decision: "block", reason: REMINDER })
-    // The record check reads the daemon before the reminder is counted, and the count is on disk
-    // by the time the hook answers: a reminder the worker has been given is never uncounted. What
-    // the worker said rides the record with it, for a relaunch's architect notice to quote.
+    expect(REMINDER).toContain(`Your turn ended with ${WORK} still owed`)
+    // The claim asked about itself, authenticated by its own secret.
+    expect(asked).toEqual([
+      { claimToken: implementer.claimToken, sessionId: SESSION, secret: implementer.secret },
+    ])
+    // The daemon is asked before the reminder is counted, and the count is on disk by the time
+    // the hook answers: a reminder the worker has been given is never uncounted. What the worker
+    // said rides the record with it, for a relaunch's architect notice to quote.
     const said = { reported: false, lastMessage: "I pushed the branch." }
-    expect(recordAtDaemonRead()).toEqual({ state: "open", count: 0, ...said })
-    expect(await record()).toEqual({ state: "open", count: 1, ...said })
-    // The check reads this issue's record and never the whole project
+    expect(recordAtDaemonRead()).toEqual({ state: "active", count: 0, ...said })
+    expect(await record()).toEqual({ state: "active", count: 1, ...said })
+    // The check asks what this claim owes and never reads the whole project
     // (dispatch://INFRA-2694), which is what the channel server wires it to.
-    expect(daemonPaths).toEqual(["/legion/v1/issues/LEGION-208/record"])
+    expect(daemonPaths).toEqual(["/legion/v1/claims/owed"])
 
     // The second settle of the run lets the turn end and carries its reminder from the timer, so
     // the daemon sees the turn end and can deliver a queued task.
@@ -240,7 +276,7 @@ test("a turn settling on an open phase is blocked once, with the reminder, and t
     await waitFor(async () => inbox.length > 0, "the timer's reminder to reach the inbox")
     expect(inbox).toEqual([REMINDER])
     expect(await record()).toEqual({
-      state: "open",
+      state: "active",
       count: 2,
       reported: false,
       lastMessage: "Still here.",
@@ -250,12 +286,70 @@ test("a turn settling on an open phase is blocked once, with the reminder, and t
   }
 })
 
+// Both ways on this host: the daemon's answer that the claim owes nothing blocks no `Stop`,
+// and its timer, which asks again when it is due, writes nothing into the session.
+test("a turn the daemon says owes nothing is blocked by nothing, from the Stop or its timer", async () => {
+  const { endpoint, record, inbox, asked, close } = await harness({
+    record: recorded("active", 1),
+    claim: implementer,
+    owed: owesNothing,
+  })
+  try {
+    expect(
+      await endpoint.handle({ event: "Stop", lastAssistantMessage: "Completed the phase." }),
+    ).toEqual({})
+    // The restored count makes this settle's reminder a timer's; it asks the daemon when it is
+    // due, and the answer is the same. A case asserting that nothing happens has no condition to
+    // wait for, so this is one of the file's fixed waits, three times the reminder interval.
+    await waitFor(async () => asked.length === 1, "the timer to ask the daemon")
+    await Bun.sleep(60)
+    expect(inbox).toEqual([])
+    expect(await record()).toEqual({
+      state: "active",
+      count: 1,
+      reported: false,
+      lastMessage: "Completed the phase.",
+    })
+  } finally {
+    await close()
+  }
+})
+
+// A daemon that does not answer — unreachable, refusing, or answering what the contract does
+// not describe — still has the worker nudged, and the nudge says it could not read the record:
+// it names no phase and no owed work, because it read neither, and the one operation it names is
+// `declare_wait`.
+test("a daemon that does not say what the claim owes still blocks the Stop, with a reminder that names no phase and no operation but declare_wait", async () => {
+  for (const [failure, answer] of [
+    ["a refusal", () => Response.json({ error: "the daemon is restarting" }, { status: 503 })],
+    ["an answer the contract refuses", () => Response.json({ owes: true, work: "" })],
+  ] as const) {
+    const { endpoint, close } = await harness({
+      record: recorded("active", 0),
+      claim: implementer,
+      owed: answer,
+    })
+    try {
+      expect(
+        await endpoint.handle({ event: "Stop", lastAssistantMessage: "Pushed." }),
+        failure,
+      ).toEqual({ decision: "block", reason: UNREAD_REMINDER })
+    } finally {
+      await close()
+    }
+  }
+  expect(UNREAD_REMINDER).toContain("could not read the Legion daemon's record")
+  for (const named of ["phase", "handoff_complete", "implementing", WORK]) {
+    expect(UNREAD_REMINDER).not.toContain(named)
+  }
+})
+
 // INFRA-945: every settle tells the daemon what this session is doing, so the idle rule can
 // decide whether the pane's pod may be released. A turn ending with a background task of the
 // worker's own still running names it; a report the daemon refuses costs the worker nothing.
 test("the Stop hook reports what this session is doing to the daemon", async () => {
   const { endpoint, reports, close } = await harness({
-    record: recorded("open", 0),
+    record: recorded("active", 0),
     claim: implementer,
   })
   try {
@@ -291,7 +385,7 @@ test("the Stop hook reports what this session is doing to the daemon", async () 
 
 test("a report the daemon refuses still leaves the worker its reminder", async () => {
   const { endpoint, reports, lines, close } = await harness({
-    record: recorded("open", 0),
+    record: recorded("active", 0),
     claim: implementer,
     reportActivityFails: true,
   })
@@ -310,7 +404,7 @@ test("a report the daemon refuses still leaves the worker its reminder", async (
 })
 
 test("a session holding no claim reports nothing", async () => {
-  const { endpoint, reports, close } = await harness({ record: recorded("open", 0) })
+  const { endpoint, reports, close } = await harness({ record: recorded("active", 0) })
   try {
     expect(await endpoint.handle({ event: "Stop", lastAssistantMessage: "Pushed." })).toEqual({})
     expect(reports).toEqual([])
@@ -319,26 +413,53 @@ test("a session holding no claim reports nothing", async () => {
   }
 })
 
-test("a settle that says what it waits on buys the quiet wait, and is reminded once after it", async () => {
+// A WAITING line buys nothing (dispatch://INFRA-2040): a worker that waits on something outside
+// its own work declares the wait with the `legion` tool's `declare_wait`. A turn that ends with
+// that line and nothing else gets the reminder a turn without it gets. The one quiet wait a turn's
+// end buys is the worker's own background work still running (`${background_tasks}`), reminded
+// once after the waiting delay.
+test("a turn that ends with a WAITING line gets the same reminder as a turn without that line, and only background work buys the quiet wait", async () => {
+  for (const said of ["Pushed the branch.", "Pushed the branch.\nWAITING on CI to go green."]) {
+    const { endpoint, record, close } = await harness({
+      record: recorded("active", 0),
+      claim: implementer,
+    })
+    try {
+      expect(await endpoint.handle({ event: "Stop", lastAssistantMessage: said }), said).toEqual({
+        decision: "block",
+        reason: REMINDER,
+      })
+      expect(await record(), said).toEqual({
+        state: "active",
+        count: 1,
+        reported: false,
+        lastMessage: said,
+      })
+    } finally {
+      await close()
+    }
+  }
+
   const { endpoint, record, inbox, close } = await harness({
-    record: recorded("open", 0),
+    record: recorded("active", 0),
     claim: implementer,
   })
   try {
     expect(
       await endpoint.handle({
         event: "Stop",
-        lastAssistantMessage: "WAITING on CI to go green on the branch.",
+        lastAssistantMessage: "Started the build in the background.",
+        backgroundTasks: JSON.stringify([{ id: "bg_1", status: "running" }]),
       }),
     ).toEqual({})
-    const waiting = { reported: false, lastMessage: "WAITING on CI to go green on the branch." }
+    const waiting = { reported: false, lastMessage: "Started the build in the background." }
     expect(await record()).toEqual({ state: "waiting", count: 0, ...waiting })
     // Nothing is sent into the wait itself.
     await Bun.sleep(30)
     expect(inbox).toEqual([])
     await waitFor(async () => inbox.length > 0, "the reminder the wait earned")
     expect(inbox).toEqual([REMINDER])
-    expect(await record()).toEqual({ state: "open", count: 1, ...waiting })
+    expect(await record()).toEqual({ state: "active", count: 1, ...waiting })
     // One reminder, not a second from the same wait.
     await Bun.sleep(60)
     expect(inbox).toEqual([REMINDER])
@@ -355,10 +476,11 @@ test("a settle that says what it waits on buys the quiet wait, and is reminded o
 // One timer is armed all the same, because the task that refused turn carried ended with it and
 // nothing else would wake this worker: a single transient refusal would otherwise leave the issue
 // idle. What stops the reminding of a session the provider refuses for ever is the daemon failing
-// the claim at `launch_failure_limit`, which the test below this one holds.
+// the claim at `launch_failure_limit` and answering then that it owes nothing, which the test
+// below this one holds.
 test("a turn that ended on an API error carries no continuation, and is woken once by its timer", async () => {
   const { endpoint, record, inbox, close } = await harness({
-    record: recorded("open", 0, { lastMessage: "I pushed the branch." }),
+    record: recorded("active", 0, { lastMessage: "I pushed the branch." }),
     claim: implementer,
   })
   try {
@@ -371,7 +493,7 @@ test("a turn that ended on an API error carries no continuation, and is woken on
     // The words the worker last said stand: the provider's error text is not one of them, and a
     // turn the worker never read moves nothing.
     expect(await record()).toEqual({
-      state: "open",
+      state: "active",
       count: 0,
       reported: false,
       lastMessage: "I pushed the branch.",
@@ -386,7 +508,7 @@ test("a turn that ended on an API error carries no continuation, and is woken on
     await Bun.sleep(60)
     expect(inbox).toEqual([REMINDER])
     expect(await record()).toEqual({
-      state: "open",
+      state: "active",
       count: 1,
       reported: false,
       lastMessage: "I pushed the branch.",
@@ -397,69 +519,45 @@ test("a turn that ended on an API error carries no continuation, and is woken on
 })
 
 // The daemon failing this role's claim is its word that this session is finished: the retry it
-// starts runs in a session of its own. It is what ends the reminding here, since this host sees
-// a refused turn only as the `StopFailure` of the turn it refused.
-test("no reminder is sent once the daemon has failed this role's claim", async () => {
-  const { endpoint, record, inbox, lines, close } = await harness({
-    record: recorded("open", 1),
+// starts runs in a session of its own, and the daemon answers that the failed claim owes nothing.
+// It is what ends the reminding here, since this host sees a refused turn only as the
+// `StopFailure` of the turn it refused: the timer that turn arms asks the daemon, and reminds
+// nothing.
+test("a refused turn whose claim the daemon has failed is reminded of nothing", async () => {
+  const { endpoint, record, inbox, asked, lines, close } = await harness({
+    record: recorded("active", 1),
     claim: implementer,
-    claimState: "failed",
+    owed: owesNothing,
   })
   try {
-    expect(await endpoint.handle({ event: "Stop", lastAssistantMessage: "Still here." })).toEqual(
-      {},
-    )
+    expect(
+      await endpoint.handle({
+        event: "StopFailure",
+        lastAssistantMessage: "API Error: Refusal (reasoning_extraction)",
+      }),
+    ).toEqual({})
+    await waitFor(async () => asked.length > 0, "the owed check the refused turn's timer runs")
     // A case asserting that nothing happens has no condition to wait for, so this is one of the
     // file's fixed waits (its header says why a fake clock settles nothing here), three times
     // the reminder interval above.
     await Bun.sleep(60)
     expect(inbox).toEqual([])
-    expect(await record()).toEqual({
-      state: "open",
-      count: 1,
-      reported: false,
-      lastMessage: "Still here.",
-    })
-    expect(lines.some((line) => line.includes("the daemon has failed this claim"))).toBe(true)
+    expect(await record()).toEqual({ state: "active", count: 1, reported: false })
+    expect(lines.some((line) => line.includes("the daemon says this claim owes nothing"))).toBe(
+      true,
+    )
   } finally {
     await close()
   }
 })
 
-test("a successful handoff_complete closes the phase, and the next settle blocks nothing", async () => {
+// INFRA-484: the update message reaches Claude Code as an inbound message, and
+// `ready_for_update` finishes nothing the daemon records. The `Stop` of the turn the worker
+// answers in must still block nothing: a blocked `Stop` continues that same turn, so the work it
+// did would go with the pod, and before the round's bound the daemon waits for every turn to end.
+test("a ready_for_update answer blocks no Stop: the answering turn ends, and nothing is armed in the wait", async () => {
   const { endpoint, record, inbox, close } = await harness({
-    record: recorded("open", 1),
-    claim: implementer,
-  })
-  try {
-    // What the server's CallTool handler does once the `legion` tool returned without throwing
-    // (`./src/envoy-channel-server`): the worker completed its phase, so nothing is open to
-    // remind it about any more.
-    endpoint.phaseClosed()
-    expect(await record()).toEqual({ state: "closed", count: 0, reported: false })
-
-    expect(
-      await endpoint.handle({ event: "Stop", lastAssistantMessage: "Completed the phase." }),
-    ).toEqual({})
-    // Neither a continuation nor a timer: the record check is not what stands between a finished
-    // worker and a reminder telling it to complete again. A case asserting that nothing happens
-    // has no condition to wait for, so this is one of the file's fixed waits, three times the
-    // reminder interval above.
-    await Bun.sleep(60)
-    expect(inbox).toEqual([])
-    expect(await record()).toEqual({ state: "closed", count: 0, reported: false })
-  } finally {
-    await close()
-  }
-})
-
-// INFRA-484: the update message reaches Claude Code while the phase is open, and
-// `ready_for_update` closes no phase. The `Stop` of the turn the worker answers in must still
-// block nothing: a blocked `Stop` continues that same turn, so the work it did would go with the
-// pod, and before the round's bound the daemon waits for every turn to end.
-test("a ready_for_update answer blocks no Stop: the answering turn ends, with the phase still open", async () => {
-  const { endpoint, record, inbox, close } = await harness({
-    record: recorded("open", 1),
+    record: recorded("active", 1),
     claim: implementer,
   })
   try {
@@ -479,13 +577,13 @@ test("a ready_for_update answer blocks no Stop: the answering turn ends, with th
     expect(await record()).toEqual({ state: "waiting", count: 0, ...said })
     // Nothing is written into the wait the answer created, and nothing ever will be: it arms no
     // timer at all. The daemon's update round is its watchdog, and a reminder fired here would be
-    // a prompt, which starts a turn the daemon reads as the answer retracted — the round would
-    // restart at every wait and never converge (INFRA-484, the `awaiting-update` state of
+    // a prompt, which starts a turn of work the replacement throws away, and before the round's
+    // bound a running turn holds that replacement back (INFRA-484, the `awaiting-update` state of
     // `@legion/pi-shared/phase-stall`, which a record holds as the plain `waiting`). A case
     // asserting that nothing happens has no condition to wait for, so this is one of the file's
     // fixed waits, over the quiet wait itself and so over every wait this endpoint arms, and the
-    // endpoint's own `setTimeout` is what runs on the real clock. The WAITING reply's own wait
-    // keeps its reminder, which its own case holds.
+    // endpoint's own `setTimeout` is what runs on the real clock. The quiet wait the worker's own
+    // background work buys keeps its reminder, which its own case holds.
     await Bun.sleep(200)
     expect(inbox).toEqual([])
     expect(await record()).toEqual({ state: "waiting", count: 0, ...said })
@@ -496,7 +594,7 @@ test("a ready_for_update answer blocks no Stop: the answering turn ends, with th
 
 test("the prompt that carries this endpoint's own reminder does not reset its count", async () => {
   const { endpoint, record, inbox, close } = await harness({
-    record: recorded("open", 1),
+    record: recorded("active", 1),
     claim: implementer,
   })
   try {
@@ -505,9 +603,9 @@ test("the prompt that carries this endpoint's own reminder does not reset its co
     )
     await waitFor(async () => inbox.length > 0, "the timer's reminder to reach the inbox")
     const said = { reported: false, lastMessage: "Still here." }
-    expect(await record()).toEqual({ state: "open", count: 2, ...said })
+    expect(await record()).toEqual({ state: "active", count: 2, ...said })
     expect(await endpoint.handle({ event: "UserPromptSubmit", prompt: inbox[0] ?? "" })).toEqual({})
-    expect(await record()).toEqual({ state: "open", count: 2, ...said })
+    expect(await record()).toEqual({ state: "active", count: 2, ...said })
   } finally {
     await close()
   }
@@ -532,7 +630,7 @@ test("every prompt submitted says a turn of this session has started, before the
   expect(architect.turnsStarted()).toBe(1)
   await architect.close()
 
-  const worker = await harness({ record: recorded("open", 0), claim: implementer })
+  const worker = await harness({ record: recorded("active", 0), claim: implementer })
   await worker.endpoint.handle({ event: "PostToolUse", toolName: "Bash" })
   await worker.endpoint.handle({ event: "Stop" })
   expect(worker.turnsStarted()).toBe(0)
@@ -549,41 +647,62 @@ test("every prompt submitted says a turn of this session has started, before the
   await worker.close()
 })
 
-test("a prompt carrying a line this server wrote for a delivery is that delivery's turn", async () => {
-  const delivery = "Envoy delivery from the architect: the architect asks for a status"
-  const open = await harness({ record: recorded("open", 2), claim: implementer })
-  try {
-    open.endpoint.deliveryWritten(delivery)
-    expect(await open.endpoint.handle({ event: "UserPromptSubmit", prompt: delivery })).toEqual({})
-    expect(await open.record()).toEqual({ state: "open", count: 0, reported: false })
-  } finally {
-    await open.close()
-  }
-
-  // A delivery is something happening, but it is not an assignment: it reopens no closed phase.
-  // The line is dropped as its prompt arrives, so the same text next time is an assignment.
-  const closed = await harness({ record: recorded("closed", 0), claim: implementer })
-  try {
-    closed.endpoint.deliveryWritten(delivery)
-    await closed.endpoint.handle({ event: "UserPromptSubmit", prompt: delivery })
-    expect(await closed.record()).toEqual({ state: "closed", count: 0, reported: false })
-    await closed.endpoint.handle({ event: "UserPromptSubmit", prompt: delivery })
-    expect(await closed.record()).toEqual({ state: "open", count: 0, reported: false })
-  } finally {
-    await closed.close()
-  }
-})
-
-test("a prompt carrying anything else is the daemon's assignment and opens the phase", async () => {
+// Every prompt but this endpoint's own reminder is an inbound message — the daemon's task, an
+// Envoy delivery this server wrote, a person's message — and moves the rhythm's count and
+// nothing else.
+test("every other prompt is an inbound message, which starts the count again", async () => {
   const { endpoint, record, close } = await harness({
-    record: recorded("closed", 0),
+    record: recorded("active", 2),
     claim: implementer,
   })
   try {
+    for (const prompt of [
+      "Envoy delivery from the architect: the architect asks for a status",
+      "Implement INFRA-220.",
+    ]) {
+      expect(await endpoint.handle({ event: "UserPromptSubmit", prompt })).toEqual({})
+      expect(await record()).toEqual({ state: "active", count: 0, reported: false })
+    }
+  } finally {
+    await close()
+  }
+})
+
+// The daemon's own update message reaches a role whose phase has closed as a prompt like any
+// other, an Envoy delivery this server wrote. With no model of the phase, nothing a prompt moves
+// can decide that a reminder goes out, so the daemon's answer that the claim owes nothing keeps it
+// quiet: no guard says so, the construction does.
+test("an update message sent to a role whose phase is closed produces no reminder", async () => {
+  const { endpoint, inbox, asked, close } = await harness({
+    record: recorded("active", 0),
+    claim: implementer,
+    owed: owesNothing,
+  })
+  try {
     expect(
-      await endpoint.handle({ event: "UserPromptSubmit", prompt: "Implement INFRA-220." }),
+      await endpoint.handle({ event: "PostToolUse", toolName: "mcp__legion__legion" }),
     ).toEqual({})
-    expect(await record()).toEqual({ state: "open", count: 0, reported: false })
+    expect(await endpoint.handle({ event: "Stop", lastAssistantMessage: "Handed off." })).toEqual(
+      {},
+    )
+
+    expect(
+      await endpoint.handle({
+        event: "UserPromptSubmit",
+        prompt: "Your pod is being updated: push what you keep.",
+      }),
+    ).toEqual({})
+    expect(
+      await endpoint.handle({ event: "Stop", lastAssistantMessage: "Nothing of mine to push." }),
+    ).toEqual({})
+    expect(
+      await endpoint.handle({ event: "Stop", lastAssistantMessage: "Still nothing." }),
+    ).toEqual({})
+    // Each settle asked the daemon, and each answer was that nothing is owed.
+    expect(asked).toHaveLength(3)
+    // A case asserting that nothing happens has no condition to wait for.
+    await Bun.sleep(60)
+    expect(inbox).toEqual([])
   } finally {
     await close()
   }
@@ -591,18 +710,18 @@ test("a prompt carrying anything else is the daemon's assignment and opens the p
 
 test("a helper agent's tool call is not the worker working, and does not reset the count", async () => {
   const { endpoint, record, close } = await harness({
-    record: recorded("open", 2),
+    record: recorded("active", 2),
     claim: implementer,
   })
   try {
     for (const event of ["PostToolUse", "PostToolUseFailure"]) {
       expect(await endpoint.handle({ event, toolName: "Bash", agentId: "agent-7" })).toEqual({})
-      expect(await record()).toEqual({ state: "open", count: 2, reported: false })
+      expect(await record()).toEqual({ state: "active", count: 2, reported: false })
     }
     expect(await endpoint.handle({ event: "PostToolUse", toolName: "Bash", agentId: "" })).toEqual(
       {},
     )
-    expect(await record()).toEqual({ state: "open", count: 0, reported: false })
+    expect(await record()).toEqual({ state: "active", count: 0, reported: false })
   } finally {
     await close()
   }
@@ -610,14 +729,14 @@ test("a helper agent's tool call is not the worker working, and does not reset t
 
 test("a tool call that failed is work too, and resets the count", async () => {
   const { endpoint, record, close } = await harness({
-    record: recorded("open", 2),
+    record: recorded("active", 2),
     claim: implementer,
   })
   try {
     expect(
       await endpoint.handle({ event: "PostToolUseFailure", toolName: "Bash", agentId: "" }),
     ).toEqual({})
-    expect(await record()).toEqual({ state: "open", count: 0, reported: false })
+    expect(await record()).toEqual({ state: "active", count: 0, reported: false })
   } finally {
     await close()
   }
@@ -625,7 +744,7 @@ test("a tool call that failed is work too, and resets the count", async () => {
 
 test("the architect is told at the threshold, asked again when the listener kept nothing, and never twice", async () => {
   const { endpoint, record, inbox, published, close } = await harness({
-    record: recorded("open", 1),
+    record: recorded("active", 1),
     claim: implementer,
     env: { LEGION_STALL_ARCHITECT_AFTER: "2" },
     publish: async (_input, attempt) => {
@@ -654,7 +773,11 @@ test("the architect is told at the threshold, asked again when the listener kept
     expect(refused.reported).toBe(false)
     expect(refused.reportKey).toMatch(/^[0-9a-f-]{36}$/)
     expect(published[0]?.topic).toContain("architect")
-    expect(published[0]?.message).toContain("2 phase reminders")
+    // The notice names the work the daemon answered was owed.
+    expect(published[0]?.message).toContain(
+      `has let 2 reminders go unanswered: its turns keep ending with ${WORK} still owed`,
+    )
+    expect(JSON.parse(String(published[0]?.payload)).work).toBe(WORK)
 
     expect(await endpoint.handle({ event: "Stop", lastAssistantMessage: "Still here." })).toEqual(
       {},
@@ -662,7 +785,7 @@ test("the architect is told at the threshold, asked again when the listener kept
     await waitFor(async () => published.length === 2, "the architect to be told again")
     expect(published[1]?.idempotencyKey).toBe(refused.reportKey)
     expect(await record()).toEqual({
-      state: "open",
+      state: "active",
       count: 3,
       reported: true,
       reportKey: refused.reportKey,
@@ -680,9 +803,44 @@ test("the architect is told at the threshold, asked again when the listener kept
   }
 })
 
+// The notice goes to the architect the daemon names as the claim's owner in its owed answer: a
+// child's own architect while that claim holds its role, the tree's once the daemon names it in
+// its stead, and the tree's, named from the claim, when the answer names none.
+test("the architect notice of a child goes to the architect the daemon names as its owner, else to the tree's", async () => {
+  const child: ClaimCapability = {
+    ...implementer,
+    issue: "LEGION-209",
+    claimToken: "legion-legion-legion-209-implementer",
+  }
+  const work = "the implementing phase of LEGION-209"
+  for (const [named, topic] of [
+    ["legion-legion-legion-209-architect", "notifications.role.legion-legion-legion-209-architect"],
+    ["legion-legion-legion-208-architect", "notifications.role.legion-legion-legion-208-architect"],
+    [undefined, "notifications.role.legion-legion-legion-208-architect"],
+  ] as const) {
+    const { endpoint, published, close } = await harness({
+      record: recorded("active", 1),
+      claim: child,
+      env: { LEGION_STALL_ARCHITECT_AFTER: "2" },
+      owed: () =>
+        Response.json({ owes: true, work, ...(named === undefined ? {} : { architect: named }) }),
+    })
+    try {
+      expect(await endpoint.handle({ event: "Stop", lastAssistantMessage: "Still here." })).toEqual(
+        {},
+      )
+      await waitFor(async () => published.length === 1, "the architect to be told")
+      expect(published[0]?.topic, String(named)).toBe(topic)
+      expect(published[0]?.message).toContain("The implementer of LEGION-209")
+    } finally {
+      await close()
+    }
+  }
+})
+
 test("a timer whose turn has started again writes nothing", async () => {
   const { endpoint, record, inbox, close } = await harness({
-    record: recorded("open", 1),
+    record: recorded("active", 1),
     claim: implementer,
   })
   try {
@@ -696,7 +854,7 @@ test("a timer whose turn has started again writes nothing", async () => {
     await Bun.sleep(60)
     expect(inbox).toEqual([])
     expect(await record()).toEqual({
-      state: "open",
+      state: "active",
       count: 0,
       reported: false,
       lastMessage: "Still here.",
@@ -706,9 +864,9 @@ test("a timer whose turn has started again writes nothing", async () => {
   }
 })
 
-test("a session resumed on an open phase is reminded once its claim has booted", async () => {
+test("a resumed session the daemon says owes work is reminded once its claim has booted", async () => {
   const { record, inbox, boot, close } = await harness({
-    record: recorded("open", 0),
+    record: recorded("active", 0),
     claim: implementer,
   })
   try {
@@ -718,7 +876,7 @@ test("a session resumed on an open phase is reminded once its claim has booted",
     boot()
     await waitFor(async () => inbox.length > 0, "the resume reminder")
     expect(inbox).toEqual([REMINDER])
-    expect(await record()).toEqual({ state: "open", count: 1, reported: false })
+    expect(await record()).toEqual({ state: "active", count: 1, reported: false })
   } finally {
     await close()
   }
@@ -726,7 +884,7 @@ test("a session resumed on an open phase is reminded once its claim has booted",
 
 test("a resumed session whose task arrives first is not reminded on top of it", async () => {
   const { endpoint, inbox, boot, close } = await harness({
-    record: recorded("open", 0),
+    record: recorded("active", 0),
     claim: implementer,
   })
   try {
@@ -745,27 +903,27 @@ test("a resumed session whose task arrives first is not reminded on top of it", 
 
 test("a worker whose workspace was recreated is told once, as a turn of its own", async () => {
   const { endpoint, record, inbox, boot, close } = await harness({
-    record: recorded("closed", 0),
+    record: recorded("active", 0),
     claim: implementer,
     env: { LEGION_WORKSPACE_RECREATED: "true" },
+    owed: owesNothing,
   })
   try {
     boot()
     await waitFor(async () => inbox.length > 0, "the recreated-workspace notice")
     expect(inbox[0]).toContain("it holds what was pushed to legion/LEGION-208")
-    // Recorded in the record the phase and count live in, so a server Claude Code restarts inside
-    // the same process does not repeat it.
+    // Recorded in the record the rhythm and count live in, so a server Claude Code restarts
+    // inside the same process does not repeat it.
     expect(await record()).toEqual({
-      state: "closed",
+      state: "active",
       count: 0,
       reported: false,
       recreatedNoticeSent: true,
     })
-    // The turn it starts is this server's own line, not the daemon's assignment: a phase that was
-    // over stays over.
+    // The turn it starts is an inbound message like any other: it says nothing of what is owed.
     await endpoint.handle({ event: "UserPromptSubmit", prompt: inbox[0] ?? "" })
     expect(await record()).toEqual({
-      state: "closed",
+      state: "active",
       count: 0,
       reported: false,
       recreatedNoticeSent: true,
@@ -779,9 +937,10 @@ test("a worker whose workspace was recreated is told once, as a turn of its own"
 
 test("a record that already says the recreated-workspace notice was sent earns no second one", async () => {
   const { inbox, boot, close } = await harness({
-    record: recorded("closed", 0, { recreatedNoticeSent: true }),
+    record: recorded("active", 0, { recreatedNoticeSent: true }),
     claim: implementer,
     env: { LEGION_WORKSPACE_RECREATED: "true" },
+    owed: owesNothing,
   })
   try {
     boot()
@@ -822,7 +981,7 @@ test("a workspace recreated again, after a launch that recreated nothing, is tol
       await close()
     }
   }
-  const first = await launch(recorded("closed", 0), "true")
+  const first = await launch(recorded("active", 0), "true")
   expect(first.told).toBe(1)
   const second = await launch(first.record, "false")
   expect(second.told).toBe(0)
@@ -833,7 +992,7 @@ test("a workspace recreated again, after a launch that recreated nothing, is tol
 
 test("the architect notice a resumed worker's reminder earns names what the worker last said before its relaunch", async () => {
   const before = await harness({
-    record: recorded("open", 0),
+    record: recorded("active", 0),
     claim: implementer,
     env: { LEGION_STALL_ARCHITECT_AFTER: "3" },
   })
@@ -874,23 +1033,62 @@ test("the architect notice a resumed worker's reminder earns names what the work
 
 test("a launcher that recreated nothing sends no notice and records no key", async () => {
   const { record, inbox, boot, close } = await harness({
-    record: recorded("closed", 0),
+    record: recorded("active", 0),
     claim: implementer,
+    owed: owesNothing,
   })
   try {
     boot()
     await Bun.sleep(40)
     expect(inbox).toEqual([])
-    expect(await record()).toEqual({ state: "closed", count: 0, reported: false })
+    expect(await record()).toEqual({ state: "active", count: 0, reported: false })
   } finally {
     await close()
   }
 })
 
-// `quiet` and `text-call` are what the build now in the pods records for an open phase nothing has
-// been reminded about, so a session resumed on either is reminded rather than left alone.
+// A restarted server reminds no role the daemon says owes nothing (dispatch://INFRA-2746): a
+// server made afresh — with no record, or with one an earlier release wrote, its phase
+// closed or open — holds nothing a restart could reset. While the daemon answers that the claim
+// owes nothing it reports nothing, from its resume timer or from a `Stop`; once it answers that
+// the work is owed, the same fresh server reminds.
+test("a reminder made afresh reports nothing while the daemon answers that the claim owes nothing", async () => {
+  for (const record of [undefined, recorded("closed", 0), recorded("open", 3)]) {
+    const label = record ?? "no record"
+    const { endpoint, inbox, asked, boot, answersOwed, close } = await harness({
+      ...(record === undefined ? {} : { record }),
+      claim: implementer,
+      owed: owesNothing,
+    })
+    try {
+      boot()
+      await waitFor(async () => asked.length === 1, `the resume timer to ask the daemon (${label})`)
+      expect(
+        await endpoint.handle({ event: "Stop", lastAssistantMessage: "Idle." }),
+        label,
+      ).toEqual({})
+      await Bun.sleep(60)
+      expect(inbox, label).toEqual([])
+
+      answersOwed(owesWork)
+      expect(
+        await endpoint.handle({ event: "UserPromptSubmit", prompt: "Implement it." }),
+        label,
+      ).toEqual({})
+      expect(
+        await endpoint.handle({ event: "Stop", lastAssistantMessage: "Started." }),
+        label,
+      ).toEqual({ decision: "block", reason: REMINDER })
+    } finally {
+      await close()
+    }
+  }
+})
+
+// `quiet` and `text-call` are what an earlier build recorded for a phase nothing had been
+// reminded about, so a session resumed on either stands at the rhythm's start.
 for (const deployed of ["quiet", "text-call"]) {
-  test(`a record the deployed build wrote as ${deployed} reads as an open phase with no reminders yet`, async () => {
+  test(`a record an earlier build wrote as ${deployed} reads as the rhythm's start, with no reminders yet`, async () => {
     const { endpoint, record, close } = await harness({
       record: JSON.stringify({ state: deployed }),
       claim: implementer,
@@ -900,7 +1098,7 @@ for (const deployed of ["quiet", "text-call"]) {
         decision: "block",
         reason: REMINDER,
       })
-      expect(await record()).toEqual({ state: "open", count: 1, reported: false })
+      expect(await record()).toEqual({ state: "active", count: 1, reported: false })
     } finally {
       await close()
     }
@@ -908,25 +1106,26 @@ for (const deployed of ["quiet", "text-call"]) {
 }
 
 test("a session holding no claim, as the bridge's seeding /rename turn does, is never reminded", async () => {
-  const { endpoint, record, close } = await harness({ record: recorded("open", 0) })
+  const { endpoint, record, close } = await harness({ record: recorded("active", 0) })
   try {
     expect(await endpoint.handle({ event: "Stop", lastAssistantMessage: "Renamed." })).toEqual({})
-    expect(await record()).toEqual({ state: "open", count: 0, reported: false })
+    expect(await record()).toEqual({ state: "active", count: 0, reported: false })
   } finally {
     await close()
   }
 })
 
 test("an architect's session runs no phase reminder", async () => {
-  const { endpoint, record, close } = await harness({
-    record: recorded("open", 0),
+  const { endpoint, record, asked, close } = await harness({
+    record: recorded("active", 0),
     claim: { ...implementer, role: "architect" },
   })
   try {
     expect(
       await endpoint.handle({ event: "Stop", lastAssistantMessage: "Started the tester." }),
     ).toEqual({})
-    expect(await record()).toEqual({ state: "open", count: 0, reported: false })
+    expect(await record()).toEqual({ state: "active", count: 0, reported: false })
+    expect(asked).toEqual([])
   } finally {
     await close()
   }
@@ -934,24 +1133,14 @@ test("an architect's session runs no phase reminder", async () => {
 
 test("a call naming no event, or one this endpoint does not know, is refused and moves nothing", async () => {
   const { endpoint, record, close } = await harness({
-    record: recorded("open", 2),
+    record: recorded("active", 2),
     claim: implementer,
   })
   try {
     for (const call of [{}, { event: "SessionEnd" }, "Stop", undefined]) {
       expect(await endpoint.handle(call)).toEqual({ error: PHASE_HOOK_REFUSAL })
     }
-    expect(await record()).toEqual({ state: "open", count: 2, reported: false })
-  } finally {
-    await close()
-  }
-})
-
-test("a session with no record at all is no record, not a fresh open phase", async () => {
-  const { endpoint, record, close } = await harness({ claim: implementer })
-  try {
-    expect(await endpoint.handle({ event: "Stop", lastAssistantMessage: "Done." })).toEqual({})
-    expect(await record()).toBeUndefined()
+    expect(await record()).toEqual({ state: "active", count: 2, reported: false })
   } finally {
     await close()
   }
@@ -959,7 +1148,7 @@ test("a session with no record at all is no record, not a fresh open phase", asy
 
 test("a session outside a Legion pane has no inbox, and says so rather than losing the reminder", async () => {
   const { endpoint, lines, close } = await harness({
-    record: recorded("open", 1),
+    record: recorded("active", 1),
     claim: implementer,
     inbox: false,
   })
@@ -980,7 +1169,7 @@ test("a session outside a Legion pane has no inbox, and says so rather than losi
 // failed one is not counted, and the reminder is written again from the timer.
 test("an inbox write the bridge refused is not counted, and the reminder comes again", async () => {
   const { endpoint, record, inbox, lines, close } = await harness({
-    record: recorded("open", 1),
+    record: recorded("active", 1),
     claim: implementer,
     inboxAnswer: async (attempt) => {
       if (attempt === 1) throw new Error("the bridge did not queue the line")
@@ -997,12 +1186,510 @@ test("an inbox write the bridge refused is not counted, and the reminder comes a
     )
     // One reminder reached the worker, so one is counted on top of the restored count.
     expect(await record()).toEqual({
-      state: "open",
+      state: "active",
       count: 2,
       reported: false,
       lastMessage: "Still here.",
     })
   } finally {
     await close()
+  }
+})
+
+// ─── A wait the worker declared, and the design gate's hold (dispatch://INFRA-2040) ───────────
+
+/** Another delivery's key behind the listener's role-forward prefix, as `UPDATE_ASK_KEY`'s is:
+ * news, which the daemon ends the wait for. */
+const DELIVERY_KEY = "envoy.role.forward.publish.6f2a9c1e4b7d40a8b3e5c9d1f0a2b4c6"
+
+/** The merger of the same tree, the claim the closed design gate holds; what the stand-in daemon
+ * calls its work; the gate's hold as the owed answer gives it; and the closed note's sentence a
+ * reminder built from that answer carries (the closed form of the daemon's
+ * `workflow.MergerGateNote`). */
+const merger: ClaimCapability = {
+  ...implementer,
+  role: "merger",
+  claimToken: "legion-legion-legion-208-merger",
+}
+const MERGER_WORK = "the merging phase of LEGION-208"
+const HOLD = {
+  step: "spec",
+  artifactId: "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
+  version: 7,
+} as const
+const CLOSED_NOTE =
+  "The design gate of LEGION-208 closed: version 7 of its spec document " +
+  "(d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093) is with its reviewer. Merge nothing, enqueue " +
+  "nothing, and take a pull request you queued back out of the merge queue."
+/** A tool call written as text, in the shape the Stage 3 model emitted, and the sentence the
+ * reminder for it opens with. */
+const TEXT_CALL = '<invoke name="legion"><parameter name="op">handoff_complete</parameter>'
+const TEXT_CALL_SENTENCE =
+  "Your last message holds a tool call written as text, so it did not run: make it a real tool call."
+
+/** A phase worker's pane whose daemon is `standIn` (`waitStandIn`): the implementer unless
+ * `claim` names another, on a record with no reminder counted unless `record` gives one. */
+function waitingPane(
+  standIn: WaitStandIn,
+  options: { readonly claim?: ClaimCapability; readonly record?: string } = {},
+): Promise<Harness> {
+  return harness({
+    record: options.record ?? recorded("active", 0),
+    claim: options.claim ?? implementer,
+    owed: standIn.owed,
+    routes: standIn.answer,
+  })
+}
+
+/** The worker's `declare_wait` through the pane's `legion` tool, as the channel server's CallTool
+ * handler runs it: the real tool and daemon client, with the endpoint told the wait's id
+ * (`onWaitDeclared`). The worker waits on CI, and the daemon wakes it at the wait's time if
+ * nothing has. */
+function declares(pane: Harness): Promise<unknown> {
+  return executeLegionTool(
+    {
+      daemon: pane.daemon,
+      claim: () => implementer,
+      handoffReport: async () => {
+        throw new Error("no case here completes")
+      },
+      branchHead: async () => {
+        throw new Error("no case here answers an update")
+      },
+      onWaitDeclared: pane.endpoint.waitDeclared,
+    },
+    { op: "declare_wait", waiting_on: "CI on the pull request", wake_at: "2026-11-21T10:00:00Z" },
+  )
+}
+
+/** The body of the implementer's report of news for `waitId`, with `deliveryKey` when given. */
+function reportOf(waitId: string, deliveryKey?: string) {
+  return {
+    claimToken: implementer.claimToken,
+    sessionId: SESSION,
+    secret: implementer.secret,
+    waitId,
+    ...(deliveryKey === undefined ? {} : { deliveryKey }),
+  }
+}
+
+/** The pane's channel server, as far as news goes (`channelOf`). */
+interface Channel {
+  /** The listener relays one message to the worker's role under `key`; resolves with the card the
+   * channel wrote into the session once it has answered the frame `done`. */
+  readonly relays: (key: string, summary: string) => Promise<string>
+  readonly shutdown: () => Promise<void>
+}
+
+/**
+ * The pane's channel server as far as news goes: a channel session on a fake NATS whose relay
+ * writes each frame into the session as its card and tells the endpoint of it, as
+ * `runEnvoyChannelServer` wires `deliveryWritten` to the phase endpoint's `news`. The key the
+ * endpoint is told is the one `deliverRelayed` reads off the frame itself.
+ */
+async function channelOf(endpoint: PhaseHookEndpoint): Promise<Channel> {
+  const nats = new FakeNats()
+  const notifier = new FakeNotifier()
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity("ses_claude", "/tmp"), scratchState(), {
+      connection: nats,
+      notifier,
+      deliveryWritten: (key) => void endpoint.news(key),
+    }),
+  )
+  let seq = 0
+  return {
+    relays: async (key, summary) => {
+      seq += 1
+      const reply = `_INBOX.${seq}`
+      nats.emitRelay("ses_claude", {
+        subject: directSubject,
+        seq,
+        reply,
+        raw: JSON.stringify({
+          event_id: `evt-${seq}`,
+          dedupe_key: key,
+          source: "agent",
+          source_session: "ses_reviewer",
+          topic: "notifications.role.legion-legion-legion-208-implementer",
+          issued_at: 1_763_715_600_000,
+          payload_summary: summary,
+        }),
+      })
+      await waitFor(
+        async () => nats.repliesOn(reply).includes("done"),
+        `the frame under ${key} to be written`,
+      )
+      return notifier.notifications.at(-1)?.content ?? ""
+    },
+    shutdown: () => session.shutdown(),
+  }
+}
+
+// R1, R3 and R9: a turn's end whose owed answer gives a wait the worker declared, or the design
+// gate's hold, continues nothing, arms no timer and reports that no reminder is due, so the daemon
+// can release the pod. The wait is the one the worker declared in that very turn, through the
+// pane's `legion` tool. A case asserting that nothing happens has no condition to wait for, so
+// this one waits out the file's longest delay (the quiet wait's 80 ms) and more.
+test("a standing wait and a standing hold send no reminder, arm no timer and report no reminder due", async () => {
+  for (const held of ["wait", "hold"] as const) {
+    const standIn = waitStandIn(held === "hold" ? MERGER_WORK : WORK)
+    if (held === "hold") standIn.state.hold = HOLD
+    const pane = await waitingPane(standIn, held === "hold" ? { claim: merger } : {})
+    try {
+      await pane.endpoint.handle({ event: "UserPromptSubmit", prompt: "Work LEGION-208." })
+      if (held === "wait") {
+        expect(await declares(pane)).toEqual({ wait: standIn.state.wait })
+      }
+      for (const said of ["Pushed; CI runs on the pull request.", "Still waiting."]) {
+        expect(
+          await pane.endpoint.handle({ event: "Stop", lastAssistantMessage: said }),
+          held,
+        ).toEqual({})
+        expect(pane.reports.at(-1)?.activity.phase.nextReminderAt, held).toBeNull()
+      }
+      const asked = pane.asked.length
+      await Bun.sleep(120)
+      // A timer would have asked the daemon again when it was due.
+      expect(pane.asked, held).toHaveLength(asked)
+      expect(pane.inbox, held).toEqual([])
+      expect(await pane.record(), held).toMatchObject({ state: "active", count: 0 })
+    } finally {
+      await pane.close()
+    }
+  }
+})
+
+// R3 and D8: the channel server reports each delivery it writes after the declaration, under the
+// frame's own key, whichever turn Claude Code takes it into: the declaring turn itself, as that
+// turn's next step, or a turn of its own once the declaring turn has ended. The daemon ends the
+// wait, and the turn's end that follows gets the reminder.
+for (const taken of ["into the declaring turn", "into a turn of its own"] as const) {
+  test(`a delivery the channel server writes after the declaration ends the wait, taken ${taken}`, async () => {
+    const standIn = waitStandIn(WORK)
+    const pane = await waitingPane(standIn)
+    const channel = await channelOf(pane.endpoint)
+    try {
+      await pane.endpoint.handle({ event: "UserPromptSubmit", prompt: "Implement LEGION-208." })
+      await declares(pane)
+      if (taken === "into a turn of its own") {
+        expect(
+          await pane.endpoint.handle({
+            event: "Stop",
+            lastAssistantMessage: "Declared the wait on CI.",
+          }),
+        ).toEqual({})
+        expect(standIn.reports).toEqual([])
+      }
+
+      const card = await channel.relays(DELIVERY_KEY, "The review is in")
+      if (taken === "into a turn of its own") {
+        await pane.endpoint.handle({ event: "UserPromptSubmit", prompt: card })
+      }
+      expect(
+        await pane.endpoint.handle({ event: "Stop", lastAssistantMessage: "Read the review." }),
+      ).toEqual({ decision: "block", reason: REMINDER })
+
+      expect(standIn.reports).toEqual([reportOf("wait-1", DELIVERY_KEY)])
+      expect(standIn.state.wait).toBeUndefined()
+      expect(await pane.record()).not.toHaveProperty("waitId")
+    } finally {
+      await channel.shutdown()
+      await pane.close()
+    }
+  })
+}
+
+// D9: the update ask is a role message the channel server relays like any other, and it is
+// reported under the frame's key exactly as the frame carries it, role-forward prefix included.
+// The daemon knows that key for its own ask and answers `ended: false`, which keeps the wait
+// standing in the plugin: the turn the ask started earns no reminder and arms nothing.
+test("the update ask the channel server writes is reported with the frame's exact key, and the daemon's ended:false keeps the wait standing", async () => {
+  const standIn = waitStandIn(WORK)
+  const pane = await waitingPane(standIn)
+  const channel = await channelOf(pane.endpoint)
+  try {
+    await pane.endpoint.handle({ event: "UserPromptSubmit", prompt: "Implement LEGION-208." })
+    await declares(pane)
+    expect(
+      await pane.endpoint.handle({
+        event: "Stop",
+        lastAssistantMessage: "Declared the wait on CI.",
+      }),
+    ).toEqual({})
+
+    const card = await channel.relays(UPDATE_ASK_KEY, "Your pod is being updated")
+    await pane.endpoint.handle({ event: "UserPromptSubmit", prompt: card })
+    expect(
+      await pane.endpoint.handle({
+        event: "Stop",
+        lastAssistantMessage: "CI still runs; nothing to push yet.",
+      }),
+    ).toEqual({})
+
+    expect(standIn.reports).toEqual([reportOf("wait-1", UPDATE_ASK_KEY)])
+    expect(standIn.state.wait).toMatchObject({ id: "wait-1" })
+    const kept = await pane.record()
+    expect(kept).toMatchObject({ waitId: "wait-1" })
+    expect(kept).not.toHaveProperty("unsentNews")
+    expect(pane.reports.at(-1)?.activity.phase.nextReminderAt).toBeNull()
+    // Nothing is to happen: the file's fixed wait over its longest delay.
+    await Bun.sleep(120)
+    expect(pane.inbox).toEqual([])
+  } finally {
+    await channel.shutdown()
+    await pane.close()
+  }
+})
+
+// D8: a delivery the channel server writes before the declaration, in the declaring turn, names
+// no wait, so it reports nothing, and the wait the worker then declares stands.
+test("a delivery written before the declaration reports nothing and leaves the wait standing", async () => {
+  const standIn = waitStandIn(WORK)
+  const pane = await waitingPane(standIn)
+  const channel = await channelOf(pane.endpoint)
+  try {
+    await pane.endpoint.handle({ event: "UserPromptSubmit", prompt: "Implement LEGION-208." })
+    await channel.relays(DELIVERY_KEY, "The review is in")
+    await declares(pane)
+    expect(
+      await pane.endpoint.handle({
+        event: "Stop",
+        lastAssistantMessage: "Declared the wait on CI.",
+      }),
+    ).toEqual({})
+
+    expect(standIn.reports).toEqual([])
+    expect(standIn.state.wait).toMatchObject({ id: "wait-1" })
+    expect(await pane.record()).toMatchObject({ waitId: "wait-1" })
+    expect(pane.reports.at(-1)?.activity.phase.nextReminderAt).toBeNull()
+  } finally {
+    await channel.shutdown()
+    await pane.close()
+  }
+})
+
+// R3 and D8: a prompt of the daemon's after the declaration (the wait's own task, the resume task)
+// reaches this host only as a `UserPromptSubmit`, which reports nothing and leaves the wait
+// standing. A person's message the channel server writes (the router's `inbox`, which calls the
+// endpoint's `news` with no key) is news with no key: the daemon ends the wait on it, and that
+// turn's end gets the reminder.
+test("a daemon prompt after the declaration leaves the wait standing, and a person's message is reported with no key", async () => {
+  const standIn = waitStandIn(WORK)
+  const pane = await waitingPane(standIn)
+  try {
+    await pane.endpoint.handle({ event: "UserPromptSubmit", prompt: "Implement LEGION-208." })
+    await declares(pane)
+    expect(
+      await pane.endpoint.handle({
+        event: "Stop",
+        lastAssistantMessage: "Declared the wait on CI.",
+      }),
+    ).toEqual({})
+    for (const prompt of [
+      "The wait you declared on CI on the pull request reached its time.",
+      "Resume LEGION-208: the daemon relaunched your process.",
+    ]) {
+      await pane.endpoint.handle({ event: "UserPromptSubmit", prompt })
+      expect(
+        await pane.endpoint.handle({ event: "Stop", lastAssistantMessage: "CI still runs." }),
+        prompt,
+      ).toEqual({})
+    }
+    expect(standIn.reports).toEqual([])
+    expect(standIn.state.wait).toMatchObject({ id: "wait-1" })
+
+    await pane.endpoint.news()
+    await pane.endpoint.handle({ event: "UserPromptSubmit", prompt: "Where is the dashboard?" })
+    expect(
+      await pane.endpoint.handle({ event: "Stop", lastAssistantMessage: "It is at /dash." }),
+    ).toEqual({ decision: "block", reason: REMINDER })
+    expect(standIn.reports).toEqual([reportOf("wait-1")])
+    expect(standIn.state.wait).toBeUndefined()
+  } finally {
+    await pane.close()
+  }
+})
+
+// D8: a report that fails, or that has no answer within the bound, ends the wait in the plugin
+// and is kept, with its key, in the record file. The turn's end sends it again first; when that
+// fails too, the turn gets the reminder although the daemon's answer still gives the wait. The
+// process the daemon relaunches reads the record file, sends the report at its boot before it
+// reads the owed answer, and the daemon ends the wait: the resume reminder is armed, and comes.
+test("a failed report gets the reminder and is sent again, also by a relaunched process", async () => {
+  const standIn = waitStandIn(WORK)
+  const before = await waitingPane(standIn)
+  const channel = await channelOf(before.endpoint)
+  let carried: string
+  try {
+    await before.endpoint.handle({ event: "UserPromptSubmit", prompt: "Implement LEGION-208." })
+    await declares(before)
+    expect(
+      await before.endpoint.handle({ event: "Stop", lastAssistantMessage: "Declared the wait." }),
+    ).toEqual({})
+    standIn.state.failReports = 2
+
+    const card = await channel.relays(DELIVERY_KEY, "The review is in")
+    await waitFor(async () => standIn.reports.length === 1, "the first report of the delivery")
+    await before.endpoint.handle({ event: "UserPromptSubmit", prompt: card })
+    expect(
+      await before.endpoint.handle({ event: "Stop", lastAssistantMessage: "Read the review." }),
+    ).toEqual({ decision: "block", reason: REMINDER })
+    expect(standIn.reports).toEqual([
+      reportOf("wait-1", DELIVERY_KEY),
+      reportOf("wait-1", DELIVERY_KEY),
+    ])
+    expect(standIn.state.wait).toMatchObject({ id: "wait-1" })
+    // The record file carries the wait's id and the unsent report with its delivery key.
+    expect(await before.record()).toMatchObject({
+      waitId: "wait-1",
+      unsentNews: [{ waitId: "wait-1", deliveryKey: DELIVERY_KEY }],
+    })
+    carried = await readFile(before.file, "utf8")
+  } finally {
+    await channel.shutdown()
+    await before.close()
+  }
+
+  const relaunched = await waitingPane(standIn, { record: carried })
+  try {
+    relaunched.boot()
+    await waitFor(
+      async () => relaunched.inbox.length > 0,
+      "the relaunched worker's resume reminder",
+    )
+    expect(relaunched.inbox).toEqual([REMINDER])
+    expect(standIn.reports).toEqual([
+      reportOf("wait-1", DELIVERY_KEY),
+      reportOf("wait-1", DELIVERY_KEY),
+      reportOf("wait-1", DELIVERY_KEY),
+    ])
+    expect(standIn.state.wait).toBeUndefined()
+    const record = await relaunched.record()
+    expect(record).not.toHaveProperty("unsentNews")
+    expect(record).not.toHaveProperty("waitId")
+    // The boot's activity report says when the resume reminder it armed is due.
+    expect(Date.parse(String(relaunched.reports[0]?.activity.phase.nextReminderAt))).not.toBeNaN()
+  } finally {
+    await relaunched.close()
+  }
+})
+
+// D8 and R6: a process relaunched while the wait stands reads the owed answer at its boot before
+// it arms anything. On a record an earlier build wrote, which names no wait, it learns the wait
+// from that answer, arms no resume reminder, and sends an activity report that says no reminder
+// is due, so the daemon can release the pod. News the channel server writes then is reported
+// against that wait.
+test("a boot with a standing wait arms nothing and reports no reminder due, and news then ends that wait", async () => {
+  const standIn = waitStandIn(WORK)
+  standIn.state.wait = {
+    id: "wait-7",
+    waitingOn: "CI on the pull request",
+    wakeAt: "2026-11-21T10:00:00Z",
+    declaredAt: "2026-11-21T09:00:00.123456Z",
+  }
+  const pane = await waitingPane(standIn, { record: recorded("active", 1) })
+  const channel = await channelOf(pane.endpoint)
+  try {
+    pane.boot()
+    await waitFor(async () => pane.reports.length === 1, "the boot's activity report")
+    expect(pane.asked).toHaveLength(1)
+    expect(pane.reports[0]).toMatchObject({
+      claimToken: implementer.claimToken,
+      sessionId: SESSION,
+      secret: implementer.secret,
+      activity: {
+        backgroundWork: { running: false, kinds: [] },
+        phase: { nextReminderAt: null },
+      },
+    })
+    expect(await pane.record()).toEqual({
+      state: "active",
+      count: 1,
+      reported: false,
+      waitId: "wait-7",
+    })
+    // Nothing is to happen: three times the resume reminder's delay.
+    await Bun.sleep(60)
+    expect(pane.inbox).toEqual([])
+    expect(pane.asked).toHaveLength(1)
+
+    const card = await channel.relays(DELIVERY_KEY, "The review is in")
+    await pane.endpoint.handle({ event: "UserPromptSubmit", prompt: card })
+    expect(
+      await pane.endpoint.handle({ event: "Stop", lastAssistantMessage: "Read the review." }),
+    ).toEqual({ decision: "block", reason: REMINDER })
+    expect(standIn.reports).toEqual([reportOf("wait-7", DELIVERY_KEY)])
+  } finally {
+    await channel.shutdown()
+    await pane.close()
+  }
+})
+
+// R1, R9 and D15: the one reminder a wait or a hold lets through is the one for a tool call
+// written as text, as pi-shared builds it. It says that the call did not run, asks for a real tool
+// call and asks for no `handoff_complete`; during a hold it also names the closed gate, its step
+// and its document's version, and tells the merger to merge nothing. It keeps every reminder's
+// rhythm: the run's continuation first, then the reminder's own timer.
+test("a tool call written as text is reminded during a wait and during a hold, and the hold's reminder names the closed gate", async () => {
+  for (const held of ["wait", "hold"] as const) {
+    const standIn = waitStandIn(held === "hold" ? MERGER_WORK : WORK)
+    if (held === "hold") standIn.state.hold = HOLD
+    const pane = await waitingPane(standIn, held === "hold" ? { claim: merger } : {})
+    try {
+      await pane.endpoint.handle({ event: "UserPromptSubmit", prompt: "Work LEGION-208." })
+      if (held === "wait") await declares(pane)
+
+      const continued = await pane.endpoint.handle({
+        event: "Stop",
+        lastAssistantMessage: TEXT_CALL,
+      })
+      const text = held === "hold" ? `${TEXT_CALL_SENTENCE} ${CLOSED_NOTE}` : TEXT_CALL_SENTENCE
+      expect(continued, held).toEqual({ decision: "block", reason: text })
+      expect("reason" in continued ? continued.reason : "", held).not.toContain("handoff_complete")
+
+      expect(
+        await pane.endpoint.handle({ event: "Stop", lastAssistantMessage: TEXT_CALL }),
+        held,
+      ).toEqual({})
+      await waitFor(async () => pane.inbox.length > 0, `the timer's reminder during the ${held}`)
+      expect(pane.inbox, held).toEqual([text])
+      expect(standIn.reports, held).toEqual([])
+    } finally {
+      await pane.close()
+    }
+  }
+})
+
+// R1 and R9: a held merger's boot arms no resume reminder and reports no reminder due, and its
+// turns' ends are reminded of nothing while the gate stays closed. Once the gate opens, the
+// daemon's answer gives no hold, and the next turn's end with no completion gets the reminder.
+test("a held merger is reminded of nothing until the gate opens, and the next turn's end then gets the reminder", async () => {
+  const standIn = waitStandIn(MERGER_WORK)
+  standIn.state.hold = HOLD
+  const pane = await waitingPane(standIn, { claim: merger })
+  try {
+    pane.boot()
+    await waitFor(async () => pane.reports.length === 1, "the boot's activity report")
+    expect(pane.reports[0]?.activity.phase.nextReminderAt).toBeNull()
+
+    await pane.endpoint.handle({ event: "UserPromptSubmit", prompt: "Merge LEGION-208." })
+    expect(
+      await pane.endpoint.handle({ event: "Stop", lastAssistantMessage: "The gate is closed." }),
+    ).toEqual({})
+    expect(pane.reports.at(-1)?.activity.phase.nextReminderAt).toBeNull()
+    expect(pane.inbox).toEqual([])
+
+    // The gate opens, and its opening message starts a turn of the merger's.
+    standIn.state.hold = undefined
+    await pane.endpoint.handle({
+      event: "UserPromptSubmit",
+      prompt: "The design gate of LEGION-208 opened.",
+    })
+    expect(
+      await pane.endpoint.handle({ event: "Stop", lastAssistantMessage: "The gate opened." }),
+    ).toEqual({ decision: "block", reason: owedReminder(MERGER_WORK) })
+  } finally {
+    await pane.close()
   }
 })

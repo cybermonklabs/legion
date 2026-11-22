@@ -23,7 +23,7 @@ import {
   STALE_ENTRY_INSTRUCTION,
 } from "./legion-phase-ops";
 
-/** The contract the build under test speaks, which its client states on every request. */
+/** A contract the test's client states on every request, and the build's package names. */
 const CONTRACT = 60;
 
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
@@ -156,6 +156,7 @@ test("the phase ops' fields, as a host declares them, are every field of every o
       to: { enum: [...LEGION_PHASE_BACKWARD_TARGETS] },
       reason: { type: "string" },
       round: { type: "string" },
+      waiting_on: { type: "string" },
     },
     required: ["op"],
   });
@@ -305,6 +306,24 @@ test("each op refuses its arguments whole before any daemon request, naming ever
     [
       { op: "request_backward_move", to: "integrating", reason: "r" },
       `request_backward_move's to is one of ${LEGION_PHASE_BACKWARD_TARGETS.join(", ")}`,
+    ],
+    [{ op: "declare_wait" }, "declare_wait requires waiting_on; declare_wait requires wake_at"],
+    [
+      { op: "declare_wait", waiting_on: "  ", wake_at: "2026-11-21T10:00:00Z" },
+      "declare_wait requires waiting_on",
+    ],
+    [
+      { op: "declare_wait", waiting_on: "CI on the pull request", wake_at: "in an hour" },
+      "declare_wait's wake_at is an RFC 3339 time, as 2026-11-02T09:00:00Z is",
+    ],
+    [
+      {
+        op: "declare_wait",
+        waiting_on: "CI on the pull request",
+        wake_at: "2026-11-21T10:00:00Z",
+        issue: "LEGION-208",
+      },
+      'declare_wait does not accept field "issue"; it takes waiting_on, wake_at',
     ],
     [
       { op: "set_status" },
@@ -1810,6 +1829,76 @@ test("ready_for_update signals without a head when the branch-head lookup fails,
       },
     },
   ]);
+});
+
+/** A runtime over a daemon that answers the wait route with `answer` (status 200 unless it names
+ * one), recording each route and body it is posted and each wait id the tool hands its host. */
+function waitRuntime(answer: () => Response) {
+  const posted: { route: string; body: unknown }[] = [];
+  const told: string[] = [];
+  const stub = (async (input, init) => {
+    posted.push({
+      route: new URL(input.toString()).pathname,
+      body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+    });
+    return answer();
+  }) as typeof fetch;
+  const ops: PhaseOpRuntime = {
+    ...opsOver(stub),
+    onWaitDeclared: (waitId) => told.push(waitId),
+  };
+  return { ops, posted, told };
+}
+
+// R2: the operation sends the declaration in the claim-secret form, as `ready_for_update` does —
+// no grant is minted — with what the agent waits on and the time as it gave them. It answers the
+// wait the daemon recorded, and hands its id to the host's reminder, so news later in the same
+// turn is reported against it.
+test("declare_wait posts the declaration with the claim's secret, answers the wait the daemon recorded, and tells the host its id", async () => {
+  const recorded = daemonFixture("wait.json");
+  const { ops, posted, told } = waitRuntime(() => Response.json(recorded));
+
+  await expect(
+    executePhaseOp(ops, {
+      op: "declare_wait",
+      waiting_on: "the review of LEGION-207's pull request",
+      wake_at: "2026-11-14T08:00:00Z",
+    })
+  ).resolves.toEqual(recorded);
+  expect(posted).toEqual([
+    {
+      route: "/legion/v1/claims/wait",
+      body: {
+        claimToken: "legion-legion-legion-208-implementer",
+        sessionId: "ses_implementer",
+        secret: "U2VjcmV0",
+        waitingOn: "the review of LEGION-207's pull request",
+        wakeAt: "2026-11-14T08:00:00Z",
+      },
+    },
+  ]);
+  expect(told).toEqual(["3f6c2a9e-8b14-4d7a-9e25-1c0b7f4d2a68"]);
+});
+
+// R2: a declaration the daemon refuses records nothing, and the agent is answered the daemon's
+// code and sentence; the host's reminder is told of no wait.
+test("declare_wait answers a refusal with the daemon's code and sentence, and tells the host nothing", async () => {
+  const sentence =
+    "wakeAt 2026-11-21T09:00:30Z is less than 1 minute after this declaration at " +
+    "2026-11-21T09:00:00Z: name a time at least 1 minute ahead; this declaration recorded nothing";
+  const { ops, posted, told } = waitRuntime(() =>
+    Response.json({ code: "WAIT_TOO_SOON", error: sentence }, { status: 400 })
+  );
+
+  await expect(
+    executePhaseOp(ops, {
+      op: "declare_wait",
+      waiting_on: "CI on the pull request",
+      wake_at: "2026-11-21T09:00:30Z",
+    })
+  ).rejects.toThrow(`POST /legion/v1/claims/wait failed with 400 WAIT_TOO_SOON: ${sentence}`);
+  expect(posted.map((request) => request.route)).toEqual(["/legion/v1/claims/wait"]);
+  expect(told).toEqual([]);
 });
 
 /** The phase-op runtime over `stub`, which is the only thing a `read_build` case needs of a

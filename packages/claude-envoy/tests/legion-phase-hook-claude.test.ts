@@ -2,9 +2,8 @@ import { afterAll, afterEach, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { LegionStateResponse } from "@legion/contracts/legion-api"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
-import { REMINDER } from "@legion/pi-shared/phase-stall"
+import { owedReminder } from "@legion/pi-shared/phase-stall"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { phaseStallFile } from "../src/legion-phase-hook"
 import { FakeNatsServer } from "./fake-nats-server"
@@ -136,13 +135,10 @@ function serveStandin(answer: (url: URL, body: Record<string, unknown>) => Respo
 // model's calls `PostToolUse` fires for. Every other test of this path drives the endpoint
 // directly and would pass just as well if Claude Code armed nothing.
 //
-// LEGION_TEST_CLAUDE names the binary: the one the worker image installs from this branch's
-// `packages/daemon/docker/claude-code/package-lock.json`
-// (`node_modules/@anthropic-ai/claude-code-linux-x64/claude`; the `node_modules/.bin/claude`
-// symlink is a `.exe` shim that does not exec on Linux). A run without one skips the whole file.
-// Unlike `packages/pi-legion/extensions/legion-phase-stall-omp.test.ts`, which also runs on
-// GitHub Actions because CI's pi-envoy job installs the Oh My Pi pin, nothing in CI installs the
-// Claude Code binary, so there is no host where a skip here would hide the only run of the check.
+// LEGION_TEST_CLAUDE names the binary. CI's claude-envoy job installs the release
+// `.claude-code-pin` pins with `bun add` and names its `node_modules/.bin/claude`
+// (`.github/actions/install-claude-code`), so this file runs on every pull request that job
+// selects; a pod installs it the same way under `$TMPDIR`. A run without one skips the whole file.
 //
 // What runs is real: a fresh `scripts/build.ts --out` build of this tree, whose generated `legion/`
 // plugin tree and built `dist/envoy-channel.js` (the pane's `legion` MCP server) are what main's
@@ -162,11 +158,13 @@ const claude = process.env["LEGION_TEST_CLAUDE"]
 /** The pane's session, the form `--session-id` takes (`claudelaunch.NewSessionID`). */
 const SESSION = "6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
 
-/** The claim the stand-in daemon registers: the implementer of the issue whose phase in the
- * daemon's state fixture is `implementing`, so the reminder's record check says this role still
- * works this phase and the `Stop` earns its reminder. */
+/** The claim the stand-in daemon registers: the implementer of the issue the stand-in answers
+ * owes `WORK` (`POST /legion/v1/claims/owed`) once the assignment has been sent, so the
+ * assignment's `Stop` earns its reminder, which names that work. */
 const ISSUE = "LEGION-208"
 const CLAIM_TOKEN = `legion-legion-${ISSUE.toLowerCase()}-implementer`
+const WORK = `the implementing phase of ${ISSUE}`
+const REMINDER = owedReminder(WORK)
 /** The registration secret the stand-in daemon answers, and the boot token the pane starts with. */
 const REGISTRATION_SECRET = fixtureSecret("reg")
 const BOOT_TOKEN = fixtureSecret("boot")
@@ -343,11 +341,15 @@ async function runWorker(options: {
     JSON.parse(
       await readFile(resolve(PACKAGE, "../contracts/fixtures/daemon-api", name), "utf8"),
     ) as Record<string, unknown>
-  // The daemon's own golden answers, so a field the daemon adds to either reaches this stand-in.
+  // The daemon's own golden answer, so a field the daemon adds to it reaches this stand-in.
   const registered = await fixture("register.json")
-  const state = await fixture("state.json")
   const ready = Promise.withResolvers<void>()
   let answered = 0
+  // The seeding turn ends before the assignment is sent, and its `Stop` races the claim boot. The
+  // daemon answers that the claim owes nothing until then, so that `Stop` earns no reminder
+  // whichever wins: a WAITING line buys nothing (dispatch://INFRA-2040), and the seed's reply
+  // would otherwise be continued once the claim had booted.
+  let assigned = false
   const { requests, base } = serveStandin((url, body) => {
     // The stand-in Anthropic API: one scripted reply per model request, the last of them ending
     // the run, so every case ends on its own.
@@ -379,10 +381,8 @@ async function runWorker(options: {
       ready.resolve()
       return new Response(null, { status: 204 })
     }
-    // The reminder's record check reads this issue's record, never the project
-    // (dispatch://INFRA-2694).
-    if (url.pathname === `/legion/v1/issues/${ISSUE}/record`) {
-      return Response.json(LegionStateResponse.parse(state).issues[ISSUE])
+    if (url.pathname === "/legion/v1/claims/owed") {
+      return Response.json(assigned ? { owes: true, work: WORK } : { owes: false, work: "" })
     }
     if (url.pathname === "/legion/v1/claims/activity") return new Response(null, { status: 204 })
     if (url.pathname.startsWith("/legion/")) {
@@ -521,6 +521,7 @@ async function runWorker(options: {
         continue
       }
       await ready.promise
+      assigned = true
       prompt(next)
     }
   }
@@ -583,11 +584,11 @@ test.skipIf(claude === undefined)(
       binary: claude,
       prompts: ["Seed the session.", `Implement ${ISSUE}.`],
       replies: [
-        // The seeding turn settles on a WAITING line, so it earns no reminder whether or not the
-        // claim boot has finished by the time its own hooks run: a settle with no claim yet
-        // answers `{}`, and one with a claim buys the quiet wait instead of a continuation. The
-        // assignment that follows puts the phase back to open with no reminders, either way.
-        [{ type: "text", text: "WAITING on the daemon's assignment." }],
+        // The seeding turn earns no reminder whether or not the claim boot has finished by the
+        // time its own hooks run: a settle with no claim yet answers `{}`, and one with a claim
+        // reads that the claim owes nothing before the assignment (`runWorker`). The assignment
+        // that follows puts the count back to 0, either way.
+        [{ type: "text", text: "Seeded." }],
         [{ type: "text", text: "I have started." }],
         [{ type: "text", text: "Still going." }],
       ],
@@ -638,15 +639,15 @@ test.skipIf(claude === undefined)(
     // notice earned after a relaunch quotes.
     expect(run.hooks.filter(({ event }) => event === "PostToolUse")).toEqual([])
     expect(run.record).toEqual({
-      state: "open",
+      state: "active",
       count: 1,
       reported: false,
       lastMessage: "Still going.",
     })
 
-    // 5. The record check the server wires reads this issue's record and never the whole
-    // project body (dispatch://INFRA-2694).
-    expect(run.daemonPaths).toContain(`/legion/v1/issues/${ISSUE}/record`)
+    // 5. The owed check the server wires asks the daemon what this claim owes and never reads
+    // the whole project body (dispatch://INFRA-2694).
+    expect(run.daemonPaths).toContain("/legion/v1/claims/owed")
     expect(run.daemonPaths).not.toContain("/legion/v1/state")
   },
   180_000,
@@ -660,7 +661,7 @@ test.skipIf(claude === undefined)(
       binary: claude,
       prompts: ["Seed the session.", `Implement ${ISSUE}.`],
       replies: [
-        [{ type: "text", text: "WAITING on the daemon's assignment." }],
+        [{ type: "text", text: "Seeded." }],
         [{ type: "text", text: "I have started." }],
         // The continuation the block bought: the worker works, which is what puts the reminder
         // count back to 0.
@@ -689,7 +690,7 @@ test.skipIf(claude === undefined)(
     // to 1, and the model's tool call in the continuation put it back to 0. The record carries
     // the worker's last words with it, bounded, for a relaunch's architect notice to quote.
     expect(run.record).toEqual({
-      state: "open",
+      state: "active",
       count: 0,
       reported: false,
       lastMessage: "Done for now.",
@@ -704,7 +705,10 @@ test.skipIf(claude === undefined)(
 // that task `"status":"running"` (measured on 2.1.310), the endpoint buys the quiet wait instead
 // of a reminder, and the task's own result starts the next turn with nothing prompting it. Only
 // the real binary shows all three: that the substitution reaches an `mcp_tool` hook's input at
-// all, that the run then ends rather than continuing, and that Claude Code wakes itself.
+// all, that the run then ends rather than continuing, and that Claude Code wakes itself. The
+// quiet lasts while the task runs and no longer: the woken turn leaves nothing running, its phase
+// is still owed and no wait stands, so its end earns the reminder (R6 of dispatch://INFRA-2040,
+// where a WAITING line buys nothing).
 test.skipIf(claude === undefined)(
   "a turn that ends with a background task running earns no reminder, and the task's result starts the next turn",
   async () => {
@@ -716,7 +720,7 @@ test.skipIf(claude === undefined)(
       // open until that third one has ended.
       runs: 3,
       replies: [
-        [{ type: "text", text: "WAITING on the daemon's assignment." }],
+        [{ type: "text", text: "Seeded." }],
         [
           {
             type: "tool_use",
@@ -725,31 +729,39 @@ test.skipIf(claude === undefined)(
           },
         ],
         [{ type: "text", text: "I started the build; I will be woken when it is done." }],
-        [{ type: "text", text: "WAITING on nothing more." }],
+        [{ type: "text", text: "The build is done." }],
+        // The continuation the woken turn's reminder bought.
+        [{ type: "text", text: "Still going." }],
       ],
     })
 
     // 1. The real server read the assignment's settling turn as leaving background work running,
-    // and the woken turn's as leaving none. Only the last two are read: the seed's `Stop` races
-    // the claim boot and records nothing when it wins, as in the cases above.
-    expect(run.backgroundWork.slice(-2)).toEqual([true, false])
-    // 2. No reminder followed: every hook answered with nothing, and no `Stop hook feedback`
-    // message was ever written into the session.
-    expect(run.hooks.map(({ answer }) => answer)).toEqual(run.hooks.map(() => ({})))
-    expect(syntheticMessages(run)).toEqual([])
-    expect(run.stopHookActive.slice(-2)).toEqual(["false", "false"])
+    // and the woken turn's and its continuation's as leaving none. Only the last three are read:
+    // the seed's `Stop` races the claim boot and records nothing when it wins, as in the cases
+    // above.
+    expect(run.backgroundWork.slice(-3)).toEqual([true, false, false])
+    // 2. No reminder followed the turn the task was still running at: every hook answered with
+    // nothing but the woken turn's `Stop`, which carried the reminder into one more turn, and that
+    // continuation's `Stop` was answered with nothing, so the run ended there.
+    const answers = run.hooks.map(({ answer }) => answer)
+    expect(answers.at(-2)).toEqual({ decision: "block", reason: REMINDER })
+    expect(answers.slice(0, -2)).toEqual(answers.slice(0, -2).map(() => ({})))
+    expect(answers.at(-1)).toEqual({})
+    expect(syntheticMessages(run)).toEqual([`Stop hook feedback:\n${REMINDER}`])
+    expect(run.stopHookActive.slice(-3)).toEqual(["false", "false", "true"])
     // 3. The task's result started the next turn: a fourth model request nothing prompted,
-    // carrying the task's own output, after a `system` `init` of its own.
-    expect(run.turns).toHaveLength(4)
+    // carrying the task's own output, after a `system` `init` of its own. The fifth is the
+    // reminder's continuation.
+    expect(run.turns).toHaveLength(5)
     expect(userText(run.turns[3] as Request)).toContain("background-done")
+    expect(userText(run.turns[4] as Request)).toContain(REMINDER)
     expect(run.events.filter((event) => event["subtype"] === "init")).toHaveLength(3)
-    // 4. The phase is still open underneath, waiting: the quiet is a wait the host's waiting
-    // delay ends, never a phase the reminder has forgotten.
+    // 4. The real server's own record: the reminder took the count to 1.
     expect(run.record).toEqual({
-      state: "waiting",
-      count: 0,
+      state: "active",
+      count: 1,
       reported: false,
-      lastMessage: "WAITING on nothing more.",
+      lastMessage: "Still going.",
     })
   },
   180_000,

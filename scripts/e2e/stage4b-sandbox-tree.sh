@@ -1899,7 +1899,7 @@ death_charge() {
 # that answers in seconds, which is how a run lost three ends after their turns.
 hold_end_charged() {
   local claim=$1 charge out
-  local task="Stage 4b proof: your previous process was ended after its task's turn was over, so this is a new task for the same phase. Read what your role says to read, then reply WAITING and wait for the targeted message; before you reply WAITING, whatever your role, run \`sleep 300\` as one bash call (its timeout 600 seconds), so this turn stays open while the proof ends your process. Change nothing."
+  local task="Stage 4b proof: your previous process was ended after its task's turn was over, so this is a new task for the same phase. Read what your role says to read, then declare a wait on the targeted message with the \`legion\` tool's \`declare_wait\`, its \`wake_at\` 23 hours from now, and end your turn. Before you declare the wait, whatever your role, run \`sleep 300\` as one bash call (its timeout 600 seconds), so this turn stays open while the proof ends your process. Change nothing."
   charge=$(death_charge "$claim" "$ended_incarnation") ||
     fail "the daemon log has no death of $claim's process $ended_incarnation, which the proof ended"
   if [ "$charge" != uncharged ]; then
@@ -2730,17 +2730,18 @@ fixture_markers() {
 }
 # completion_verdict reads a phase worker's session (JSONL on stdin) and prints, for every
 # assignment (the daemon's task, a user message) its worker answered with the legion tool's
-# handoff_complete, the calls that got no result, how many results succeeded, and whether the phase
-# stall recorded `closed` after the call that succeeded (the extension records it inside the call,
-# before Oh My Pi writes the result); and how many phase reminders came after the session's
-# last successful completion. It is the 4b.13b acceptance's stall check
-# (stage3-4b13b-acceptance.sh, phase-stall-follow-up) for a pod's session: a worker
-# stopped while its handoff_complete call runs leaves that call with no result and no `closed`
-# (LEGION-283), and a worker resumed from such a session may report the phase again. The reminder
-# comes at the end of every turn a phase stays open through, and none at all once it is closed,
-# which is what the count after the last success reads.
+# handoff_complete, the calls that got no result, how many results succeeded, and how many phase
+# reminders came after the result that succeeded and before the next assignment; and how many
+# phase reminders came after the session's last successful completion. It is the 4b.13b
+# acceptance's stall check (stage3-4b13b-acceptance.sh, phase-stall-follow-up) for a pod's session:
+# a worker stopped while its handoff_complete call runs leaves that call with no result (LEGION-283),
+# and a worker resumed from such a session may report the phase again. The reminder comes at the
+# end of every turn for as long as the daemon answers that the claim owes work, and none at all once
+# the daemon has the completion, which is what the counts after a success read. The reminder is
+# found by a sentence that both of its texts carry (owedReminder and UNREAD_REMINDER in
+# packages/pi-shared/src/phase-stall.ts).
 completion_verdict() {
-  jq -R -s -c --arg followup "Your turn ended with your Legion phase still open" '
+  jq -R -s -c --arg followup "This reminder repeats at the end of every turn" '
     [split("\n")[] | fromjson?] | to_entries
     | [.[] | .key as $i | .value as $e
         | if $e.type == "message" and $e.message.role == "user" then {i: $i, kind: "assignment"}
@@ -2749,7 +2750,6 @@ completion_verdict() {
             | if ($ids | length) > 0 then {i: $i, kind: "call", ids: $ids} else empty end
           elif $e.type == "message" and $e.message.role == "toolResult" and $e.message.toolName == "legion" then
             {i: $i, kind: "result", id: $e.message.toolCallId, ok: ($e.message.isError != true)}
-          elif $e.type == "custom" and $e.customType == "legion-phase-stall" then {i: $i, kind: "stall", state: $e.data.state}
           elif (($e | tostring) | contains($followup)) then {i: $i, kind: "followup"}
           else empty end] as $t
     | [$t[] | select(.kind == "assignment") | .i] as $starts
@@ -2759,21 +2759,20 @@ completion_verdict() {
         | select(($calls | length) > 0)
         | [$seg[] | select(.kind == "result") | select(.id as $id | $calls | index($id) != null)] as $results
         | [$results[] | select(.ok)] as $ok
-        | ([$seg[] | select(.kind == "call" and ($ok[0].id as $id | .ids | index($id) != null)) | .i] | first) as $okcall
         | {assignment: $from, calls: ($calls | length),
            unanswered: [$calls[] | select(. as $id | [$results[].id] | index($id) == null)],
            succeeded: ($ok | length),
-           closed: (($ok | length) == 1 and $okcall != null and any($seg[]; .kind == "stall" and .state == "closed" and .i > $okcall))}] as $segments
+           followups_after_success: (if ($ok | length) == 1 then [$seg[] | select(.kind == "followup" and .i > $ok[0].i)] | length else null end)}] as $segments
     | ([$t[] | select(.kind == "result" and .ok) | .i] | last) as $last
     | {segments: $segments,
        followups_after: (if $last == null then null else [$t[] | select(.kind == "followup" and .i > $last)] | length end)}'
 }
 # completions_answered FILE: every assignment its worker answered with handoff_complete got a
-# result for each call, exactly one success (the report, made once), and `closed` after the call
-# that succeeded, and no phase reminder came after the last success.
+# result for each call, exactly one success (the report, made once), and no phase reminder after
+# that success before the next assignment, and no phase reminder came after the last success.
 completions_answered() {
   completion_verdict <"$1" | jq -e '(.segments | length) > 0
-    and all(.segments[]; (.unanswered | length) == 0 and .succeeded == 1 and .closed)
+    and all(.segments[]; (.unanswered | length) == 0 and .succeeded == 1 and .followups_after_success == 0)
     and .followups_after == 0' >/dev/null
 }
 # cut_at_completion_call FILE prints FILE's session up to and including its last assistant entry that
@@ -3541,12 +3540,14 @@ says: it writes the spec in the issue's own primary document and registers the g
 Apart from that, do not act until
 a targeted human Dispatch message gives the next exact proof operation. A phase worker's first
 message is the daemon's task line (`Continue <title>. Issue: <key>. Phase: <phase>.`): it names your
-phase and is not that message. Read what your role says to read, then reply WAITING and wait for
-the targeted message. An implementer, on the daemon's task line and on a new task for the same
-phase (one that says its previous process was ended), runs `sleep 300` as one bash call (its
-timeout set to 600 seconds) before it replies WAITING: the proof holds a tree by ending an
-implementer's launches while its task is outstanding, an end that lands after the task's turn is
-over charges nothing, and the end takes up to a minute to land on a loaded host, so that turn must
+phase and is not that message. Read what your role says to read, then declare a wait on the
+targeted message with the `legion` tool's `declare_wait`, its `wake_at` 23 hours from now, and end
+your turn. The targeted message ends the wait. When the daemon refuses the wait, end your turn all
+the same. An implementer, on the daemon's task line and on a new task for the same phase (one that
+says its previous process was ended), runs `sleep 300` as one bash call (its timeout set to 600
+seconds) before it declares the wait: the proof holds a tree by ending an implementer's launches
+while its task is outstanding, an end that lands after the task's turn is over charges nothing,
+and the end takes up to a minute to land on a loaded host, so that turn must
 last long enough to be ended inside. A production check's task (its first line `Production check of
 <key>: …`, handed to the tester once the merge closed its issue) is no phase's task line and
 waits for no targeted message, since the proof sends none to it. Run no
@@ -3578,7 +3579,7 @@ parks the others in `backlog`, the last of them while its root waits in `merging
 rest of its tree; each child's planner holds for the driver like every other role. The daemon
 starts a child's own architect with the child's first phase. That architect does not start its
 child from its `catch-up` notice. It reads the catch-up, which names its child and every issue
-under it. Then it replies WAITING and waits for the targeted message. It files no child, writes
+under it. Then it ends its turn and waits for the targeted message. It files no child, writes
 no spec and sends no message until then. A
 `child-closed` or `child-status` notice of this run needs no action from the root architect:
 start, re-run, park or close nothing for it, write nothing about it, and keep waiting for the
@@ -4680,7 +4681,7 @@ begin conflict-no-takeover
 # started it, so the witness file is the proof that the role's work was left alone.
 tester_pod=$(claim_sandbox "$tree1" tester) || fail "tree 1's tester has no Sandbox"
 witness=/tmp/stage4b-conflict-witness control=/tmp/stage4b-conflict-control
-send_agent "$tree1" tester "Stage 4b proof control operation: run exactly this as one bash tool call, with the tool's timeout at least 1800 seconds, and change nothing else: /usr/bin/sleep 20 && date -u +%FT%TZ > $control && echo CONTROL-WRITTEN. Then reply WAITING and wait for the next targeted message."
+send_agent "$tree1" tester "Stage 4b proof control operation: run exactly this as one bash tool call, with the tool's timeout at least 1800 seconds, and change nothing else: /usr/bin/sleep 20 && date -u +%FT%TZ > $control && echo CONTROL-WRITTEN. Then declare a wait on the next targeted message with the legion tool's declare_wait, its wake_at 23 hours from now, and end your turn."
 on_tree "$tree1" until_true 300 "the tester's control command to write $control" pod_file "$tester_pod" tester "$control"
 on_tree "$tree1" until_true 300 "tree 1's tester to go idle after the control" resident_idle "$tree1" tester
 note "the control: the tester's /usr/bin/sleep 20 chain wrote $control in pod $tester_pod"
@@ -5056,9 +5057,10 @@ begin completion-closed
 # from inside its turn ends its assignment, not its process: the turn runs to its end and the worker
 # goes idle in the pod and on the session it first registered with, where it stays until tree 1
 # closes. Its live session answers every handoff_complete call, reports each assignment once, and
-# records the phase stall `closed` after the call that succeeded: the 4b.13b acceptance's stall
-# check (completion_verdict), which a stop inside the call fails. The implementer, handed retro in
-# that same session, is where a session holding an unanswered report would report again.
+# is not reminded again after the call that succeeded, since the daemon then answers that the
+# claim owes nothing: the 4b.13b acceptance's stall check (completion_verdict), which a stop inside
+# the call fails. The implementer, handed retro in that same session, is where a session holding an
+# unanswered report would report again.
 for role in planner implementer tester reviewer; do
   resident_kept "$tree1" "$role" || fail "$role on $tree1 did not stay live in the pod and session it first registered with after its phase: $(resident_lost "$tree1" "$role")"
   on_tree "$tree1" until_true 300 "$role on $tree1 to go idle in the pod and session it first registered with" resident_idle "$tree1" "$role"
@@ -5066,8 +5068,8 @@ for role in planner implementer tester reviewer; do
   claim_session_text "$tree1" "$role" >"$session_copy" || fail "$role on $tree1 has no readable session"
   completion_verdict <"$session_copy" >"$evidence/completion-$role-verdict.json"
   completions_answered "$session_copy" ||
-    fail "$role on $tree1 left a phase completion unanswered, unclosed or repeated: $(cat "$evidence/completion-$role-verdict.json")"
-  note "$role on $tree1, idle in its first pod $(cat "$work/resident-$tree1-$role.json"): $(jq -c '[.segments[] | {calls, succeeded, closed}]' "$evidence/completion-$role-verdict.json")"
+    fail "$role on $tree1 left a phase completion unanswered, reminded after it or repeated: $(cat "$evidence/completion-$role-verdict.json")"
+  note "$role on $tree1, idle in its first pod $(cat "$work/resident-$tree1-$role.json"): $(jq -c '[.segments[] | {calls, succeeded, followups_after_success}]' "$evidence/completion-$role-verdict.json")"
 done
 # The control: the planner's session cut at its handoff_complete call, the transcript a stop inside
 # the call leaves, is refused.

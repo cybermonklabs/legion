@@ -16,20 +16,22 @@ import (
 var silentNow = time.Date(2026, 11, 12, 8, 18, 0, 0, time.UTC)
 
 // silentRun is everything SilentPhaseWorker reads of one phase worker, held together so a row
-// can change exactly one term of the true case and leave the rest as it stands.
+// can change exactly one term of the true case and leave the rest as it stands. row is the role's
+// phases row, which only a claim with a wait row is judged by.
 type silentRun struct {
 	issue record.Issue
 	root  record.Issue
 	gate  record.TreeGate
 	role  claim.Role
 	run   record.RoleRun
+	row   record.PhaseRow
 	bound time.Duration
 	now   time.Time
 }
 
 // answer is the rule's answer for this run.
 func (s silentRun) answer() bool {
-	return SilentPhaseWorker(s.issue, s.root, s.gate, s.role, s.run, s.bound, s.now)
+	return SilentPhaseWorker(s.issue, s.root, s.gate, s.role, s.run, s.row, s.bound, s.now)
 }
 
 // aSilentImplementer is the rule's true case: the implementer of an issue in implementing, of a
@@ -61,6 +63,23 @@ func steppedAt(s *silentRun, at time.Time) {
 // StartFor read of it.
 func inState(s *silentRun, state supervise.ClaimState) {
 	s.run.Claim.State = state
+}
+
+// mergingUnder is the run as the merger of the issue standing in merging, under gate.
+func mergingUnder(s *silentRun, gate record.TreeGate) {
+	s.issue.Phase, s.role, s.gate = phase.Merging, claim.RoleMerger, gate
+}
+
+// waitsOnItsEntry is the run with a wait the claim declared that stands: in the session it runs,
+// at the issue's generation and phase and on the entry its phases row is on, a row recording no
+// completion (WaitStands).
+func waitsOnItsEntry(s *silentRun) {
+	s.run.Claim.Session = "ses_implementer"
+	s.row = record.PhaseRow{Issue: s.issue.Key, Role: s.role, Entry: 2}
+	s.run.Claim.Wait = &record.ClaimWait{ID: "wait-1", Project: "legion", Token: "legion-legion-legion-209-implementer",
+		Issue: s.issue.Key, Role: s.role, Generation: s.issue.Generation, Phase: s.issue.Phase, PhaseEntry: 2, TakenEntry: 2,
+		Session: "ses_implementer", WaitingOn: "the review of the head", WakeAt: silentNow.Add(time.Hour),
+		DeclaredAt: silentNow.Add(-3 * time.Hour)}
 }
 
 // The rule names a phase worker nothing will prompt, and every term of it is load-bearing: the
@@ -177,6 +196,30 @@ func TestASilentPhaseWorkerIsAWorkerUpBetweenTurnsHoldingNoTaskWhoseLastStepPass
 		{
 			name:   "the claim is recorded in another tree, where its turn is live",
 			change: func(s *silentRun) { s.run.Claim.Tree = "LEGION-300" },
+		},
+		{
+			name:   "it is the merger of an issue in merging, and the tree's closed design gate holds it",
+			change: func(s *silentRun) { mergingUnder(s, closedSpecGate(s.root.Key)) },
+		},
+		{
+			name: "it is the merger of an issue in merging, and the only gated step not approved has no row, which holds no merger",
+			change: func(s *silentRun) {
+				mergingUnder(s, record.TreeGate{Steps: []record.DesignStep{record.DesignStepSpec, record.DesignStepDecisions},
+					Rows: map[record.DesignStep]record.DesignGate{record.DesignStepSpec: openSpecGate(s.root.Key).Rows[record.DesignStepSpec]}})
+			},
+			want: true,
+		},
+		{
+			name:   "a wait it declared in this session, on this run, phase and entry, stands",
+			change: func(s *silentRun) { waitsOnItsEntry(s) },
+		},
+		{
+			name: "a wait it declared in a session it no longer runs, which a fresh session does not know",
+			change: func(s *silentRun) {
+				waitsOnItsEntry(s)
+				s.run.Claim.Wait.Session = "ses_before"
+			},
+			want: true,
 		},
 		{
 			name:   "the last step is inside the bound",

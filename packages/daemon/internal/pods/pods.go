@@ -12,14 +12,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// Wake kinds, the vocabulary of a recorded resume's kind: the six ways a released pod comes
+// Wake kinds, the vocabulary of a recorded resume's kind: the eight ways a released pod comes
 // back. WakeDelivery is a delivery the daemon already had for a role of the
 // pod — a phase start, a task, a backward move, a notice, a merge forward's message, a production
 // check's look, a slot resume; WakeChecks is a CI settlement on the head of the issue's pull
 // request; WakeRoleMessage and WakeAgentMessage are what only the Envoy listener sees, a message
 // published to a role topic of the pod and one sent to the agent subject of a released session;
 // WakeBackstop is the stored backstop a release armed; WakePause is the launch a project's pause
-// owed a role it stopped, held until the resume (store's PodRecords.TakePodWake).
+// owed a role it stopped, held until the resume (store's PodRecords.TakePodWake); WakeWaitTime is
+// the time of a wait the released worker declared (dispatch://INFRA-2040 R3); WakeDesignGate is a
+// move of the tree's design gate over a released merger, whose task opens with the gate's state
+// at its send (dispatch://INFRA-2040 R8).
 //
 // They are records rather than the rule's own, because the rule that names a wake (workflow) and
 // the store that files it under this word are different packages, and one vocabulary is what
@@ -30,6 +33,8 @@ const (
 	WakeRoleMessage  = "role_message"
 	WakeAgentMessage = "agent_message"
 	WakeBackstop     = "backstop"
+	WakeWaitTime     = "wait_time"
+	WakeDesignGate   = "design_gate"
 	WakePause        = "pause"
 )
 
@@ -127,6 +132,16 @@ type IdleRoot struct {
 	Answered       bool
 }
 
+// BundleRefusal is the save of an issue's release that found the workspace's unpushed work over
+// the bound a release carries (outbox's bundleIssueWorkspace): the moment the release was marked,
+// and the head of the issue's pull request when the save was refused, "" with no pull request.
+// The idle rule reads it against the claims and the head now (workflow.IdleRelease), and holds
+// the pod until the rule workflow.IdleHoldBundleTooLarge states ends the hold.
+type BundleRefusal struct {
+	At   time.Time
+	Head string
+}
+
 // IdleView is one issue's pod as the idle rule reads it, in one read per issue: every claim of
 // the pod, whether any queued outbox row is addressed to one of its roles, the issue's own place
 // in the workflow and its tree root's. Found is false for an issue the record does not hold under
@@ -158,6 +173,13 @@ type IdleView struct {
 	// again would store a bundle over it, taken from a workspace that never had that work, so
 	// the rule keeps it until the restore is confirmed.
 	BundleUnrestored bool
+	// BundleRefusal is the last save of the issue's release that found the work over the bound,
+	// nil when there is none or a later save stored the work or found none to store (store's
+	// workspace_bundle_refusals). Head is the head of the issue's pull request as the daemon
+	// recorded it, "" with no pull request; it is read only beside a refusal, the one thing
+	// that is compared with it.
+	BundleRefusal *BundleRefusal
+	Head          string
 	// Paused is whether the daemon's project is paused (a project_pauses row of that project
 	// stands open), read by the project's token whatever project the issue's key names (store's
 	// readOpenPauseByToken says why). A paused project's pods stay: the pause starts no release

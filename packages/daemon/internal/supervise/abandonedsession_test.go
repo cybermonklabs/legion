@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 const (
@@ -209,7 +210,7 @@ func TestAnAbandonedSessionsSentenceIsToldAtConfirmation(t *testing.T) {
 	wantSays(t, first.Message, says...)
 	h.wantAbandonedToldBy("", "at the acknowledgement")
 
-	h.must(StreamLateRefusal{Claim: h.token, DeliveryID: first.DeliveryID, Error: busyAnswer})
+	h.must(StreamLateRefusal{Claim: h.token, DeliveryID: first.DeliveryID, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
 	h.wantAbandonedToldBy("", "after the busy answer")
 
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
@@ -219,7 +220,7 @@ func TestAnAbandonedSessionsSentenceIsToldAtConfirmation(t *testing.T) {
 	h.wantAbandonedToldBy(second.DeliveryID, "once the task's turn began")
 
 	// Oh My Pi answers that prompt busy after all: the turn that confirmed it was another input's.
-	h.must(StreamLateRefusal{Claim: h.token, DeliveryID: second.DeliveryID, Error: busyAnswer})
+	h.must(StreamLateRefusal{Claim: h.token, DeliveryID: second.DeliveryID, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
 	if p := h.pending(); !p.ConfirmedAt.IsZero() {
 		t.Fatalf("pending after the late busy answer = %+v, want the confirmation taken back", p)
 	}

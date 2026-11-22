@@ -1466,11 +1466,25 @@ func RecordChangesTold(gate record.DesignGate, version int, reason string, mark 
 	return gate
 }
 
-// ApprovalFollows reports whether the gate records an approval given after a review of version at
-// mark: an approval of a later version, or one of that version the review does not come after
-// (record.EventMark.After). A changes request that such an approval followed was answered by the
-// person's own approval, so nothing of it is left to tell.
-func ApprovalFollows(gate record.DesignGate, version int, mark record.EventMark) bool {
+// ReviewSuperseded is the one answer to "is this recorded review still the person's current
+// word": it reports whether gate records an approval given after a review of version at mark — an
+// approval of a later version, or one of that version the review does not come after
+// (record.EventMark.After). Such an approval is the person's decision in the review's place,
+// whichever approval request carried it, so nothing of the review is left to tell or to act on.
+// Every sender of a task or a notice about a person's review reaches it through one predicate,
+// workflow's SupersedingApproval, asked from the gates as the record holds them at that moment.
+// That predicate's doc lists the guards that choose whether this rule is asked of a review.
+//
+// An approval request the ask mirror holds is asked the same way (workflow's requestStands, the
+// one other caller, since a request is the architect's and no person's decision): the mirror
+// records no version for a request, and Dispatch moves an open request to each new version of its
+// document at that version's own place in the log (ask.edited), so a request whose newest event
+// the approval does not follow asked for no version above the approved one, and is asked at the
+// approved version and that event's mark. So when two requests are made for one version and the
+// approval lands on the second, the first, still open on the mirror, is answered by it. A kept
+// decision records no version either, and is asked the same way, at the approved version and its
+// own place in Dispatch's log, which the daemon keeps from its notice (workflow's SupersedingApproval).
+func ReviewSuperseded(gate record.DesignGate, version int, mark record.EventMark) bool {
 	if gate.ApprovedVersion == nil {
 		return false
 	}

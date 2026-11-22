@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  One policy decides whether a claim's failure charges a budget, over one closed set of outcomes,
+  and every charge site asks it. A prompt refusal, or a prompt result that ran no turn, is busy
+  when its frame carries `code: session_busy`, or when the daemon's own record holds the claim
+  working or the agent's `get_state` says it is streaming; its words are never read. A refusal with
+  no code is logged at warn, so an Oh My Pi that sends only the busy sentence is seen. While the
+  record does not hold the claim working, such an agent is still charged in two cases: it does not
+  answer `get_state` within the RPC bound, or its turn ended between its refusal and the ask, as a
+  notice's turn can when the refusal came during its pre-turn work. Its refusal is then charged as
+  unrecognised, and its prompt's result as a prompt that ran no turn.

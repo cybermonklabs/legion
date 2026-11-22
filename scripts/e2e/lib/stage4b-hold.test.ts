@@ -210,23 +210,27 @@ echo "MISSES $hold_misses"`;
       claim,
       "--task",
     ]);
-    // The deployment instructions let a worker read its role and reply WAITING to any task but a
-    // targeted human message, so the task asks for that reading in the instructions' own words, and
-    // names no tool, since the tools a worker reads with change with its plugin.
-    const reading = "Read what your role says to read, then reply WAITING";
-    expect(script).toContain(`phase and is not that message. ${reading} and wait for`);
+    // The deployment instructions let a worker read its role and declare a wait on the targeted
+    // human message to any task but that message, so the task asks for that reading and that wait
+    // in the instructions' own words. It names no tool to read with, since those change with the
+    // worker's plugin: the one operation it names is the `legion` tool's `declare_wait`, which the
+    // run's own plugin serves. The instructions' sentence wraps across lines of the heredoc, so
+    // the script's whitespace is collapsed before each match.
+    const reading =
+      "Read what your role says to read, then declare a wait on the targeted message with the `legion` tool's `declare_wait`, its `wake_at` 23 hours from now, and end your turn.";
+    const collapsedScript = script.replace(/\s+/g, " ");
+    expect(collapsedScript).toContain(`phase and is not that message. ${reading}`);
     expect(task).toContain(reading);
     expect(task).not.toMatch(/dispatch_\w+|handoff_read/);
     // The hold loops rest on the two `sleep 300` clauses: the kill must land inside a turn, and
     // the turn is held open by that sleep. The delivered task carries one for a relaunch, and the
     // proof's instructions one for the daemon's own task line; both are pinned so a change to
-    // either is a change to this test. The instructions' clause wraps across two lines of the
-    // heredoc, so its whitespace is collapsed before the match.
+    // either is a change to this test.
     expect(task).toContain(
       "run `sleep 300` as one bash call (its timeout 600 seconds), so this turn stays open while the proof ends your process"
     );
-    expect(script.replace(/\s+/g, " ")).toContain(
-      "runs `sleep 300` as one bash call (its timeout set to 600 seconds) before it replies WAITING"
+    expect(collapsedScript).toContain(
+      "runs `sleep 300` as one bash call (its timeout set to 600 seconds) before it declares the wait"
     );
   });
 

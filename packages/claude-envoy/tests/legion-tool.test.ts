@@ -97,6 +97,7 @@ async function daemon(
     "/legion/v1/handoff/complete": await daemonFixture("handoff-complete.json"),
     "/legion/v1/phase/backward": {},
     "/legion/v1/claims/release-records": RELEASE_RECORDS,
+    "/legion/v1/claims/wait": await daemonFixture("wait.json"),
   }
   const requests: Request[] = []
   const stub = (async (input, init) => {
@@ -166,7 +167,7 @@ const grantRequest = {
   },
 }
 
-test("declares the six phase-worker operations under one op, and names the Envoy publish tool as Claude Code shows it", () => {
+test("declares the seven phase-worker operations under one op, and names the Envoy publish tool as Claude Code shows it", () => {
   const definition = legionToolDefinition()
   expect(definition.name).toBe("legion")
   expect(definition.inputSchema).toMatchObject({
@@ -178,6 +179,7 @@ test("declares the six phase-worker operations under one op, and names the Envoy
           "handoff_complete",
           "request_backward_move",
           "ready_for_update",
+          "declare_wait",
           "read_build",
         ],
       },
@@ -190,6 +192,7 @@ test("declares the six phase-worker operations under one op, and names the Envoy
       plan_reason: { type: "string" },
       reason: { type: "string" },
       round: { type: "string" },
+      waiting_on: { type: "string" },
     },
     required: ["op"],
   })
@@ -197,7 +200,7 @@ test("declares the six phase-worker operations under one op, and names the Envoy
     "this tool cannot spawn workers. read_record returns the record of `issue` from the daemon's record route for that issue, your own issue when you leave `issue` out. A held issue names in `heldFrom` the phase the hold took it out of. A failed claim carries `failure`: the `cause` word for what failed it, the `detail` sentence beside that word, `at`, when it failed, and `attempts`, the four counts it failed with. A todo written on a held root releases the hold and starts that phase again, as the architect's retry_or_escalate with retry does. read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: every release, resume and hold the daemon recorded, and over them the counts of releases, of the releases among them that suspended no role, of resumes by wake kind and of holds by reason, the pod-hours released, the share of releases woken again within ten minutes, and the median, 90th percentile and maximum seconds from a wake to the woken role's first turn. A wake that a project pause held is counted as `heldByPause` and left out of those seconds, since its wait measures the pause. A release that suspended no role is woken by nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. handoff_complete",
   )
   expect(definition.description).toContain(
-    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. It also reports the contract the daemon states on its answer to the health route. That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. The two numbers can differ, and the answer shows both. Report the version this call answers, never the one at the plugin's path on the image. In a pod, an Oh My Pi role relaunched onto the daemon's contract loads the build that relaunch installed under the role's own state home, and a Claude Code role installs no plugin: it loads its pod image's own claude-envoy. read_build reads no project state. What a later phase needs",
+    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. declare_wait declares that you wait on something outside your own work: `waiting_on` says what you wait on, and `wake_at` is the RFC 3339 time, from 1 minute to 24 hours ahead, when the daemon wakes you if nothing has. Declare it, then end your turn. While the wait stands, no reminder comes. News ends the wait and wakes you: a message to your role or your session, a person's message, or new work from the daemon; the update round's message does not. A message whose wake is lost waits until the wait's time. A new declaration replaces the standing one, and the answer is the wait the daemon recorded. The daemon refuses an empty `waiting_on` (WAIT_TEXT_REQUIRED), a time too soon or too far ahead (WAIT_TOO_SOON, WAIT_TOO_FAR), a role that does not work its issue's open phase (WAIT_NOT_OPEN_PHASE) and a merger the closed design gate holds (WAIT_HELD_BY_DESIGN_GATE), and records nothing. read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. It also reports the contract the daemon states on its answer to the health route. That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. The two numbers can differ, and the answer shows both. Report the version this call answers, never the one at the plugin's path on the image. In a pod, an Oh My Pi role relaunched onto the daemon's contract loads the build that relaunch installed under the role's own state home, and a Claude Code role installs no plugin: it loads its pod image's own claude-envoy. read_build reads no project state. What a later phase needs",
   )
   expect(definition.description).toContain("with mcp__legion__envoy_publish.")
 })
@@ -449,7 +452,7 @@ test("refuses before the claim registered, an operation a phase worker has not, 
   await expect(
     executeLegionTool(runtime, { op: "set_status", issue: "LEGION-208" }),
   ).rejects.toThrow(
-    "op is one of read_record, read_release_records, handoff_complete, request_backward_move, ready_for_update, read_build",
+    "op is one of read_record, read_release_records, handoff_complete, request_backward_move, ready_for_update, declare_wait, read_build",
   )
   await expect(
     executeLegionTool(runtime, { op: "read_record", issue: "LEGION-208", summary: "x" }),
@@ -458,6 +461,58 @@ test("refuses before the claim registered, an operation a phase worker has not, 
     "handoff_complete requires summary",
   )
   expect(requests).toEqual([])
+})
+
+// dispatch://INFRA-2040: the phase worker declares its wait with its own claim, as its
+// ready_for_update is authenticated, and the tool hands the wait's id to the pane's phase hook
+// (`onWaitDeclared`, which the channel server sets to the hook's `waitDeclared`), so news the
+// channel server writes after the call is reported against that wait. A declaration the tool
+// refuses posts nothing and tells the hook nothing.
+test("declare_wait posts the declaration with the claim's own credential and hands the wait's id to the phase hook", async () => {
+  const { client, requests } = await daemon()
+  const declared: string[] = []
+  const runtime = {
+    daemon: client,
+    claim: () => implementer,
+    handoffReport: async () => ({ commit: "c" }),
+    branchHead: noBranchHead,
+    onWaitDeclared: (waitId: string) => {
+      declared.push(waitId)
+    },
+  }
+
+  for (const [refused, reason] of [
+    [{ op: "declare_wait", wake_at: "2026-11-14T08:00:00Z" }, "declare_wait requires waiting_on"],
+    [
+      { op: "declare_wait", waiting_on: "the review", wake_at: "tomorrow" },
+      "declare_wait's wake_at is an RFC 3339 time, as 2026-11-02T09:00:00Z is",
+    ],
+  ] as const) {
+    await expect(executeLegionTool(runtime, refused)).rejects.toThrow(reason)
+  }
+  expect(requests).toEqual([])
+  expect(declared).toEqual([])
+
+  const answer = await executeLegionTool(runtime, {
+    op: "declare_wait",
+    waiting_on: "the review of LEGION-207's pull request",
+    wake_at: "2026-11-14T08:00:00Z",
+  })
+  expect(answer).toEqual(await daemonFixture("wait.json"))
+  expect(requests).toEqual([
+    {
+      method: "POST",
+      path: "/legion/v1/claims/wait",
+      body: {
+        claimToken: implementer.claimToken,
+        sessionId: implementer.sessionID,
+        secret: implementer.secret,
+        waitingOn: "the review of LEGION-207's pull request",
+        wakeAt: "2026-11-14T08:00:00Z",
+      },
+    },
+  ])
+  expect(declared).toEqual(["3f6c2a9e-8b14-4d7a-9e25-1c0b7f4d2a68"])
 })
 
 // R6: a role reads which plugin build its own process runs. The build is this module's own

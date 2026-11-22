@@ -240,6 +240,13 @@ func recordedContractAtOrBelow(n int) int {
 // of a pod as the state's do. A plain refusal, a claim.Refusal or a Failure, carries no key of
 // that contract and is the identity at every contract.
 //
+// One more row takes keys off, below waitContract, which added `wait` and `hold` to the owed
+// answer as it added them to each claim view of the state and the record: the owed answer's row
+// serves it without the two (withoutOwedWaitAndHold). It follows strip, as every band does. Its
+// caller states its contract in pluginContractHeader, since the answer arrived with its route at
+// repositoryCorrectionContract and every plugin from shapedAnswersContract on states it, so
+// placedByPod does not name it.
+//
 // On the other side, a caller below fixAttemptsContract is served the two keys that contract
 // removed, each as a stand-in (withFixAttempts, withMaxFixAttempts). A settings key no reader
 // types is owed neither a stand-in nor a band, whatever a contract did to it (answers.go's
@@ -249,8 +256,8 @@ func recordedContractAtOrBelow(n int) int {
 //
 // It reports what it took off the body beside the body itself. The state's row fills it on the
 // one application it makes, and every other row reports nothing, the record's, the release
-// records' and the refusal's included: the log holds a line for the state alone
-// (recordShaping), so those routes record nothing.
+// records', the refusal's and the owed answer's included: the log holds a line for the state
+// alone (recordShaping), so those routes record nothing.
 func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 	var took tookOff
 	switch id {
@@ -287,16 +294,27 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		default:
 			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
 		}
+	case AnswerOwed:
+		owed, isOwed := body.(OwedResponse)
+		if !isOwed {
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
+		if strip < waitContract {
+			owed = withoutOwedWaitAndHold(owed)
+		}
+		return owed, took
 	case AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
 		AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
-		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume:
+		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume,
+		AnswerWait, AnswerWaitNews:
 		// The identity, one row each: every contract this daemon serves one of these answers
 		// reads the body it writes. No key has arrived on any of them since that answer arrived.
 		// One key has gone: AnswerHandoffComplete lost its `note` at stateMachineContract, and
 		// no reader from ServingFloor to 85 requires it, so no stand-in is written for it
-		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract, and
-		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, so no older
-		// contract records any of the three at all.
+		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract,
+		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, and
+		// AnswerWait and AnswerWaitNews arrived whole at waitContract, so no older contract
+		// records any of those five at all.
 		return body, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
@@ -558,6 +576,9 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "lowestPluginContract and the claim views' updateState and wake"},
 	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
+	{contract: repositoryCorrectionContract, issue: withoutRepositoryCorrection,
+		dropped: "the issues' repoBefore, repoCorrectedAt, repoChangePending and repoChangeReason"},
+	{contract: waitContract, issue: withoutWaitAndHold, dropped: "the claim views' wait and hold"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -859,6 +880,25 @@ const quietTimeContract = 111
 // (answers.go's AnswerIssueRecord and AnswerHealth).
 const shapedAnswersContract = 193
 
+// waitContract is the daemon contract this change lands under (version.go's 212,
+// dispatch://INFRA-2040), and the contract that added two keys to each claim view: `wait`, the
+// wait the claim's worker declared, while it stands (workflow.WaitStands), and `hold`, the closed
+// design gate that holds a merger, while the hold stands (workflow.HeldByDesignGate). A plugin
+// built before sjawhar/legion#2788 reads the state with a strict schema and would refuse the
+// whole body for either key, and one built after strips a key it does not name, so the band is
+// what keeps the two keys from a caller that did not ask for them rather than what keeps such a
+// caller reading at all: a caller below this contract is served every claim view without them, on
+// the state and on the issue record alike (withoutWaitAndHold). The same two keys arrived on the
+// owed answer at this contract, and a caller below it is served that answer without them
+// (withoutOwedWaitAndHold). The words of `hold.step` arrived with the key at this contract
+// (answers.go's holdSteps), so no value strip is needed.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract these keys arrived at stays where it is. It moves only with
+// this change's own number, as the arrival contracts of this change's two new answers do
+// (answers.go's AnswerWait and AnswerWaitNews).
+const waitContract = 212
+
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
 // line's `kind` (version.go's 132): a started issue that gave its admission slot back to wait on
 // another issue (record.LineWaitingOnIssue). A plugin from 85 up to it reads `kind` with a
@@ -971,9 +1011,29 @@ const pauseContract = 178
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract this block arrived at stays where it is. It moves only
-// with this change's own number, and it is the last number of answers.go's SupportedContracts,
-// which names the constant rather than its number for that reason.
+// with dispatch://INFRA-4401's own number, and answers.go's SupportedContracts names the constant
+// rather than its number for that reason.
 const repositoriesLiveContract = 202
+
+// repositoryCorrectionContract is the daemon contract that added what a correction of an issue's
+// repository left on its record (version.go's 206, dispatch://INFRA-3136): `repoBefore` and
+// `repoCorrectedAt`, the repository the issue left and the moment the daemon applied the
+// correction, and `repoChangePending` and `repoChangeReason`, a repository Dispatch has named that
+// the daemon has not applied and why. A plugin before it is served every issue without the four
+// (withoutRepositoryCorrection): one built before sjawhar/legion#2788 reads the state with a
+// strict schema and would refuse the whole body for a key it does not name, and one built after
+// strips the key instead, so the band keeps the body its own contract's record describes. A pod's
+// reading counts no claim at shapedAnswersContract or above (podContracts), so a caller from
+// shapedAnswersContract to below this contract meets the band by the contract its header states.
+// repositoriesLiveContract stands below it with no row of stateNarrowings between the two, so a
+// caller from repositoriesLiveContract to below this contract is served the live block without
+// the four. The same contract added the claim route `POST /legion/v1/claims/owed` with its answer
+// (answers.go's AnswerOwed), which no contract below it records.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract these keys arrived at stays where it is. It moves only with
+// dispatch://INFRA-3136's own number, and the arrival of the owed answer moves with it.
+const repositoryCorrectionContract = 206
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
@@ -1030,6 +1090,21 @@ func withoutAssignments(issue Issue) (Issue, bool) {
 func withoutEntryTimes(issue Issue) (Issue, bool) {
 	moved := issue.EntryQueuedAt != nil || issue.EntryConfirmedAt != nil || len(issue.ArchitectStalls) > 0
 	issue.EntryQueuedAt, issue.EntryConfirmedAt, issue.ArchitectStalls = nil, nil, nil
+	return issue, moved
+}
+
+// withoutRepositoryCorrection is the issue with no `repoBefore`, `repoCorrectedAt`,
+// `repoChangePending` or `repoChangeReason`, the four fields repositoryCorrectionContract added to
+// the state; nothing else of that contract is a key of this route. `repo` is left as it is: it
+// names the repository the issue works, which every contract since 31 carries. Each pair is
+// written from one value of the record, a correction (record.Issue.RepoCorrection) or a change
+// still to be made (record.Issue.RepoChange), and only where there is one, so the band reports a
+// move only for an issue that carries one of the four.
+func withoutRepositoryCorrection(issue Issue) (Issue, bool) {
+	moved := issue.RepoBefore != "" || issue.RepoCorrectedAt != nil ||
+		issue.RepoChangePending != "" || issue.RepoChangeReason != ""
+	issue.RepoBefore, issue.RepoCorrectedAt = "", nil
+	issue.RepoChangePending, issue.RepoChangeReason = "", ""
 	return issue, moved
 }
 
@@ -1601,6 +1676,23 @@ func withoutClaimRoundReport(issue Issue) (Issue, bool) {
 	})
 }
 
+// withoutWaitAndHold is the issue with no claim view carrying `wait` or `hold`, the two keys
+// waitContract added to the claim views.
+func withoutWaitAndHold(issue Issue) (Issue, bool) {
+	return withEachClaimView(issue, func(view ClaimView) ClaimView {
+		view.Wait, view.Hold = nil, nil
+		return view
+	})
+}
+
+// withoutOwedWaitAndHold is owed with no `wait` and no `hold`, the two keys waitContract added to
+// the owed answer. Both are pointers with `omitempty`, absent wherever the answer holds none, and
+// owed is a value of its own, so the answer the route built is left as it was.
+func withoutOwedWaitAndHold(owed OwedResponse) OwedResponse {
+	owed.Wait, owed.Hold = nil, nil
+	return owed
+}
+
 // withoutLeakCheckCause is the issue with no claim view carrying `leakCheckCause`, the one key
 // leakCheckCauseContract added to this route; nothing else of that contract is on it.
 func withoutLeakCheckCause(issue Issue) (Issue, bool) {
@@ -1751,11 +1843,15 @@ func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID
 // by the claims of its pod: true for the release records and for a refusal whose body is a
 // PauseFailure, and false for every other answer. Those two answers' shapes moved at
 // pauseContract, and their writers answer from no snapshot of their own, so writeAnswer reads the
-// claims for them (placingClaims). Every other answer writeAnswer writes is the identity at every
-// contract, and so is a plain refusal (a claim.Refusal or a Failure), so a read of the claims for
-// one of them would decide nothing. A serving-down added to one of them reaches the caller of a
-// pod only once this answers true for it. The state and the record are no question for it: their
-// routes hand in their own snapshot's claims (writeAnswerFrom).
+// claims for them (placingClaims). Every other answer writeAnswer writes but one is the identity
+// at every contract, and so is a plain refusal (a claim.Refusal or a Failure), so a read of the
+// claims for one of them would decide nothing. A serving-down added to one of them reaches the
+// caller of a pod only once this answers true for it. The one is the owed answer, whose shape
+// moved at waitContract (withoutOwedWaitAndHold): it arrived at repositoryCorrectionContract, and
+// the pod's reading counts no claim at shapedAnswersContract or above (podContracts), so no pod
+// can place a caller below waitContract and only the header it states does. The state and the
+// record are no question for it: their routes hand in their own snapshot's claims
+// (writeAnswerFrom).
 func placedByPod(id AnswerID, body any) bool {
 	switch id {
 	case AnswerReleaseRecords:

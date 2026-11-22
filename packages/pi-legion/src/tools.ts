@@ -19,10 +19,10 @@ import {
   isPhaseOp,
   legionToolDescription,
   mintClaimGrant,
-  PHASE_OP_SENTENCES,
   phaseOpParameters,
   pluginBuildOf,
   readBuild,
+  SHARED_PHASE_OP_SENTENCES,
   unknownFieldsRefusal,
 } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext, ToolResult } from "@legion/pi-shared/pi-types";
@@ -54,9 +54,10 @@ export interface LegionControllerToolSession {
 export type LegionToolSession = LegionClaimToolSession | LegionControllerToolSession;
 
 /** Each session kind's operations, in the order the tool's `op` enum lists them. The phase ops
- * (`@legion/pi-shared/legion-phase-ops`) are an architect's too, and `read_build` is every
- * session's: the controller holds a claim like any other role and reads its own build the same
- * way. An operation two kinds hold is one `op` value, listed once (`toolSchema`). */
+ * (`@legion/pi-shared/legion-phase-ops`) are an architect's too, all but `declare_wait`: a phase
+ * worker alone declares a wait (dispatch://INFRA-2040). `read_build` is every session's: the
+ * controller holds a claim like any other role and reads its own build the same way. An operation
+ * two kinds hold is one `op` value, listed once (`toolSchema`). */
 const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
   architect: [
     "register_gate",
@@ -78,6 +79,7 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "read_release_records",
     "handoff_complete",
     "ready_for_update",
+    "declare_wait",
     "read_build",
   ],
   controller: [
@@ -335,9 +337,15 @@ function toolSchema(pi: PiApi): unknown {
   const z = pi.zod;
   const phaseOp = phaseOpParameters(z);
   return z.object({
-    // `read_build` belongs to the architect's roster and the controller's, and the enum names
-    // every value once, so the two rosters are joined through a set.
-    op: z.enum([...new Set([...OPERATIONS.architect, ...OPERATIONS.controller])]),
+    // `read_build` belongs to every roster and `declare_wait` to the phase worker's alone, and
+    // the enum names every value once, so the three rosters are joined through a set.
+    op: z.enum([
+      ...new Set([
+        ...OPERATIONS.architect,
+        ...OPERATIONS["phase-worker"],
+        ...OPERATIONS.controller,
+      ]),
+    ]),
     issue: phaseOp.issue,
     since: phaseOp.since,
     artifactId: z
@@ -371,10 +379,13 @@ function toolSchema(pi: PiApi): unknown {
     decision: z.enum(["retry", "escalate"]).optional(),
     summary: phaseOp.summary,
     verdict: phaseOp.verdict,
+    // One field for two operations, each an RFC 3339 time: a production check's pending report
+    // names its next look with it (`handoff_complete`), and `declare_wait` names the wait's time.
     wake_at: phaseOp.wake_at,
     plan_rating: phaseOp.plan_rating,
     plan_reason: phaseOp.plan_reason,
     round: phaseOp.round,
+    waiting_on: phaseOp.waiting_on,
     status: z.enum(ISSUE_STATUSES).optional(),
     phase: z.enum([...LEGION_PHASES]).optional(),
     settings: z.boolean().optional(),
@@ -422,11 +433,12 @@ export function createLegionTool(deps: {
   readonly session: (context: SessionContext) => LegionToolSession;
   /** Mints the controller's grant, authenticated by its registration's secret. */
   readonly controllerGrant: (sessionId: string) => Promise<LegionGrant>;
-  /** Told of each `handoff_complete` that succeeded: the session's phase is complete. */
-  readonly onPhaseCompleted: (context: SessionContext) => void;
   /** Told of each `ready_for_update` that succeeded: the session has answered the daemon's
-   * update message on its pod, and its phase stays open. */
+   * update message on its pod, and the turn it answered in is to be continued by no reminder. */
   readonly onUpdateAnswered: (context: SessionContext) => void;
+  /** Told of each `declare_wait` the daemon recorded, with the wait's id: the session's phase
+   * reminder reports news after it, in the declaring turn or a later one, against that wait. */
+  readonly onWaitDeclared: (context: SessionContext, waitId: string) => void;
   /** What a completion by `role` reports beside its summary while the issue stands at `phase`
    * (`findHandoffReport`): for a file-backed phase the role works or, once the issue has moved
    * on, the one it left, the newest Dispatch handoff record of that phase and the head its body
@@ -453,8 +465,8 @@ export function createLegionTool(deps: {
     daemon,
     session,
     controllerGrant,
-    onPhaseCompleted,
     onUpdateAnswered,
+    onWaitDeclared,
     handoffReport,
     branchHead,
     resolveDocument,
@@ -467,21 +479,20 @@ export function createLegionTool(deps: {
     // own issue when the call names none; the shared sentence on read_release_records before
     // handoff_complete's contract, since the records it answers are not read from its name;
     // after that contract the shared sentences on request_backward_move (an architect's names
-    // the issue it returns from accepting) and read_build, then the architect's
-    // retry_or_escalate, its sign_off and the controller's operations: the exact text
-    // tools.test.ts pins, so a change to the shared template cannot reach an Oh My Pi agent
-    // unnoticed. The rules for ending a child are the words of the daemon's record.EndChildRule,
-    // and the sentence after them is the daemon's record.StatusNotTakenYet (both in
-    // packages/daemon/internal/record/project.go). These tests hold the copies together: the
-    // daemon's TestTheEndChildRuleGolden writes both texts to
+    // the issue it returns from accepting), declare_wait (a phase worker's alone) and read_build,
+    // then the architect's retry_or_escalate, its sign_off and the controller's operations: the
+    // exact text tools.test.ts pins, so a change to the shared template cannot reach an Oh My Pi
+    // agent unnoticed. The rules for ending a child are the words of the daemon's
+    // record.EndChildRule, and the sentence after them is the daemon's record.StatusNotTakenYet
+    // (both in packages/daemon/internal/record/project.go). These tests hold the copies together:
+    // the daemon's TestTheEndChildRuleGolden writes both texts to
     // packages/contracts/fixtures/daemon-api/end-child-rule.json, and tools.test.ts holds this
     // description to that file.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
-      before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
+      before: SHARED_PHASE_OP_SENTENCES.before,
       after:
-        PHASE_OP_SENTENCES.requestBackwardMove +
-        PHASE_OP_SENTENCES.readBuild +
+        SHARED_PHASE_OP_SENTENCES.after +
         "retry_or_escalate decides an issue the daemon holds after its worker failed (issue, decision): retry puts the issue " +
         "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +
         "and an optional reason says why you decided as you did: a retry writes it into the restarted worker's task and the " +
@@ -601,20 +612,24 @@ export function createLegionTool(deps: {
         }
         if (active.kind !== "controller" && isPhaseOp(operation)) {
           const answer = await executePhaseOp(
-            { daemon: daemon(), claim: active, build: BUILD, handoffReport, branchHead, restart },
+            {
+              daemon: daemon(),
+              claim: active,
+              build: BUILD,
+              handoffReport,
+              branchHead,
+              restart,
+              // `declare_wait` hands the wait the daemon recorded to the session's phase reminder
+              // before it answers, so news whose `message_start` follows this call's result is
+              // reported against that wait, in this turn and in a later one.
+              onWaitDeclared: (waitId) => onWaitDeclared(context, waitId),
+            },
             parameters
           );
-          // A call that returned without throwing: a completion, and a backward move, which hands
-          // the issue to another phase. Either way this session's phase is no longer open.
-          // `ready_for_update` ends no phase: it answers the pod's update message, and the worker
-          // then waits for its process to be replaced rather than working, so the turn it ends
-          // after answering earns no reminder (the `update-answered` input of
-          // `@legion/pi-shared/phase-stall`).
-          if (operation === "handoff_complete" || operation === "request_backward_move") {
-            onPhaseCompleted(context);
-          } else if (operation === "ready_for_update") {
-            onUpdateAnswered(context);
-          }
+          // `ready_for_update` answers the pod's update message, and the worker then waits for its
+          // process to be replaced rather than working, so the turn it ends after answering earns
+          // no reminder (the `update-answered` input of `@legion/pi-shared/phase-stall`).
+          if (operation === "ready_for_update") onUpdateAnswered(context);
           return jsonSuccess(answer);
         }
         assertOperationInput(parameters, operation);

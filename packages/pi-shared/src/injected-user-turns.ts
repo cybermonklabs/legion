@@ -15,8 +15,9 @@ import { envoyPluginInterface } from "./interface";
  * identity the stream keys it by, its host timestamp and, when the host kept one, its tag (two
  * Sends can be stamped in the same millisecond), so every handler that asks about it gets the same
  * answer whichever asks first: envoy.ts's stream recorder tags its frames, and Legion's
- * phase-stall check (`extensions/legion.ts`) counts it as an inbound event rather than the
- * daemon's assignment.
+ * phase-stall check (`extensions/legion.ts`) counts it as news, which `inboundOf` alone cannot
+ * tell: it reads a user message as a daemon prompt, and a `/skill:` turn's `skill-prompt` as
+ * neither.
  *
  * Every match asks under the session id live when the message arrives, so when an instance moves
  * off a session id it forgets the turns it sent in there (`forgetInjectedUserTurns`): it never asks

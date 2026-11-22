@@ -158,8 +158,8 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 		// another.
 		isCase func(error) bool
 		// sentinel is the one error of sentinels this failure is, nil for a failure that is none
-		// of them, and reason the words the far side refused with — read by the supervisor (Oh
-		// My Pi's busy answer) or carried into its log (the shim's).
+		// of them, and reason the words the far side refused with — carried to the supervisor's
+		// log (Oh My Pi's, the shim's), never read to decide.
 		sentinel error
 		reason   string
 	}{
@@ -276,9 +276,9 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 					t.Fatalf("errors.Is(%v, %s) = %v, want %v", err, sentinel.name, got, want)
 				}
 			}
-			// The far side's own words reach the supervisor: Oh My Pi's, to tell its busy answer
-			// — a turn of its own, charged nothing — from a refusal of the work, and the shim's,
-			// which name the stale lock the adoption failed on, to carry into the log.
+			// The far side's own words reach the supervisor for its log: Oh My Pi's, beside the
+			// outcome minted from the refusal's code, and the shim's, which name the stale lock the
+			// adoption failed on.
 			if test.reason != "" {
 				if reason := runtime.RefusalReason(err); reason != test.reason {
 					t.Fatalf("runtime.RefusalReason(%v) = %q, want the far side's words %q", err, reason, test.reason)
@@ -483,7 +483,7 @@ func TestAPromptResultNamesTheDeliveryItsRequestIDCarries(t *testing.T) {
 	want := []Event{
 		TurnEnd{Claim: testClaim},
 		PromptResult{Claim: testClaim, DeliveryID: "delivery-1", AgentInvoked: true},
-		PromptResult{Claim: testClaim, DeliveryID: "delivery-1", Error: "no model"},
+		PromptResult{Claim: testClaim, DeliveryID: "delivery-1", Error: "no model", Outcome: runtime.OutcomeNoTurnRun},
 	}
 	for _, want := range want {
 		if got := h.next(); got != want {
@@ -567,7 +567,8 @@ func TestALateRefusalIsOneEventCarryingTheDeliveryID(t *testing.T) {
 	p.conn.Close()
 	want := []Event{
 		TurnStart{Claim: testClaim},
-		LateRefusal{Claim: testClaim, DeliveryID: "delivery-1", Error: "Agent is busy", ConnSequence: conn.Sequence()},
+		LateRefusal{Claim: testClaim, DeliveryID: "delivery-1", Error: "Agent is busy", Outcome: runtime.OutcomeUnrecognised,
+			ConnSequence: conn.Sequence()},
 		Closed{Claim: testClaim},
 	}
 	var got []Event
@@ -581,11 +582,12 @@ func TestALateRefusalIsOneEventCarryingTheDeliveryID(t *testing.T) {
 		t.Fatalf("further events = %#v, want none", rest)
 	}
 	logs := h.logs.Lines()
-	if len(logs) != 2 ||
+	if len(logs) != 3 ||
 		!strings.HasPrefix(logs[0], "worker-stream: prompt refused after its acknowledgement") ||
 		!strings.Contains(logs[0], "deliveryId=delivery-1") ||
-		!strings.HasPrefix(logs[1], "worker-stream: refusal for a prompt request this connection is not waiting on") {
-		t.Fatalf("logs = %q, want the late refusal and then the unattributable repeat", logs)
+		!strings.HasPrefix(logs[1], "worker-stream: the agent refused a prompt with no machine-readable code") ||
+		!strings.HasPrefix(logs[2], "worker-stream: refusal for a prompt request this connection is not waiting on") {
+		t.Fatalf("logs = %q, want the late refusal, that it carried no code, and then the unattributable repeat", logs)
 	}
 }
 
@@ -665,7 +667,8 @@ func TestARefusalReplayedOnAReplacementConnectionNamesItsDelivery(t *testing.T) 
 	replacement.send(shimwire.Response{ID: frame.ID, Command: shimwire.TypePrompt, Success: false, Error: "Agent is busy"})
 	replacement.conn.Close()
 	want := []Event{
-		LateRefusal{Claim: testClaim, DeliveryID: "delivery-1", Error: "Agent is busy", Replayed: true, ConnSequence: replaced.Sequence()},
+		LateRefusal{Claim: testClaim, DeliveryID: "delivery-1", Error: "Agent is busy", Outcome: runtime.OutcomeUnrecognised,
+			Replayed: true, ConnSequence: replaced.Sequence()},
 		Closed{Claim: testClaim},
 	}
 	var got []Event
@@ -892,6 +895,78 @@ func TestAdoptWorkingCopyAsksTheShimAndReadsItsResult(t *testing.T) {
 
 	if err := conn.AdoptWorkingCopy(context.Background(), runtime.GitIdentity{}, time.Second); err == nil {
 		t.Fatal("AdoptWorkingCopy sent a frame with no identity")
+	}
+}
+
+// The shim refuses a bundle over the frame's MaxBytes with its size in SizeBytes, and that
+// number is the refusal the release holds the pod on: it reaches the daemon as a
+// runtime.WorkspaceBundleTooLargeError of that size and the bound sent, whatever the words beside
+// it say. A refusal with no size — every other refusal of a shim, the one an older shim's words
+// are all of, and one whose size is not over the bound — is a *RefusedError, which the release
+// tries again on its next tick.
+func TestBundleWorkspaceReadsTheSizeRefusalFromTheSizeAndNotTheWords(t *testing.T) {
+	h := startListener(t, harnessOptions{})
+	p := h.connect(testToken)
+	conn := h.conn()
+	for _, tc := range []struct {
+		name     string
+		answer   func(request shimwire.BundleWorkspace) shimwire.BundleWorkspaceResult
+		tooLarge bool
+	}{
+		{
+			name: "the refusal a shim sends over the bound",
+			answer: func(request shimwire.BundleWorkspace) shimwire.BundleWorkspaceResult {
+				return shimwire.BundleWorkspaceResult{ID: request.ID, SizeBytes: request.MaxBytes + 7,
+					Error: "worker-shim: the workspace's unpushed work is 41943047 bytes, over the 41943040 the release carries"}
+			},
+			tooLarge: true,
+		},
+		{
+			name: "the same size under other words",
+			answer: func(request shimwire.BundleWorkspace) shimwire.BundleWorkspaceResult {
+				return shimwire.BundleWorkspaceResult{ID: request.ID, SizeBytes: request.MaxBytes + 7, Error: "too big"}
+			},
+			tooLarge: true,
+		},
+		{
+			name: "the shim's words with no size",
+			answer: func(request shimwire.BundleWorkspace) shimwire.BundleWorkspaceResult {
+				return shimwire.BundleWorkspaceResult{ID: request.ID,
+					Error: "worker-shim: the workspace's unpushed work is 41943047 bytes, over the 41943040 the release carries"}
+			},
+		},
+		{
+			name: "a size not over the bound",
+			answer: func(request shimwire.BundleWorkspace) shimwire.BundleWorkspaceResult {
+				return shimwire.BundleWorkspaceResult{ID: request.ID, SizeBytes: request.MaxBytes, Error: "jj log exited 1"}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := async(func() error {
+				_, err := conn.BundleWorkspace(context.Background(), "INFRA-945", 3*time.Second)
+				return err
+			})
+			request := p.expect(shimwire.TypeBundleWorkspace).(shimwire.BundleWorkspace)
+			if request.MaxBytes != runtime.MaxWorkspaceBundleBytes {
+				t.Fatalf("bundle-workspace asks for at most %d bytes, want the %d a release carries", request.MaxBytes, runtime.MaxWorkspaceBundleBytes)
+			}
+			answer := tc.answer(request)
+			p.send(answer)
+			err := awaitResult(t, result)
+			var tooLarge runtime.WorkspaceBundleTooLargeError
+			var refused *RefusedError
+			switch {
+			case tc.tooLarge:
+				if !errors.As(err, &tooLarge) || tooLarge != (runtime.WorkspaceBundleTooLargeError{Size: answer.SizeBytes, Max: request.MaxBytes}) {
+					t.Fatalf("BundleWorkspace = %v, want a WorkspaceBundleTooLargeError of %d over %d", err, answer.SizeBytes, request.MaxBytes)
+				}
+			case errors.As(err, &tooLarge):
+				t.Fatalf("BundleWorkspace = %v, a size refusal read from a refusal that names no size over the bound", err)
+			case !errors.As(err, &refused) || refused.Reason != answer.Error:
+				t.Fatalf("BundleWorkspace = %v, want a RefusedError carrying the shim's error", err)
+			}
+		})
 	}
 }
 

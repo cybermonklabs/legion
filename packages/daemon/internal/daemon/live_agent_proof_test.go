@@ -18,7 +18,7 @@
 // retry proof's three stand-ins answer by the provider name each is given in the run's
 // models.yml, the compaction proof's four answer by what the step before them set, a turn's
 // request apart from a compaction's summary request, the late-completion proof's two answer the
-// turn a step armed with a call of the `legion` tool and that tool's result with a WAITING line,
+// turn a step armed with a call of the `legion` tool and that tool's result with plain text,
 // and the busy-relaunch proof's five answer what a step scripted in front of the compaction
 // proof's paneStandin (scriptedStandin). The prompt-rule proof decides nothing by an answer and
 // writes no handler of its own: its two stand-ins are paneStandin at its default, which answers

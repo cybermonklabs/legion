@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  The worker image runs Oh My Pi v18.18.6-sami.20261119-162325 (`.omp-pin`), whose refusal of a
+  prompt sent while the agent is busy carries `code: "session_busy"` on the refusal and on the
+  prompt's result, as every fork release from v18.18.6-sami.20261118-035823 on does. The daemon
+  now reads a busy answer from that code, where the worker stream only kept it before, so such a
+  prompt charges the claim nothing and its task is sent again when the turn ends. A pod on an
+  image before v18.18.6-sami.20261118-035823 moves onto the new image only at its update round,
+  and until then its Oh My Pi sends that refusal with no code: the daemon reads it as busy,
+  charging nothing, when its own record holds the claim working or when the agent's `get_state`
+  says it is streaming. While the record does not hold the claim working, such an agent is still
+  charged in two cases until its pod's update round: it does not answer `get_state` within the RPC
+  bound, or its turn ended between its refusal and the ask, as a notice's turn can when the
+  refusal came during its pre-turn work. Its refusal is then charged as unrecognised, and its
+  prompt's result as a prompt that ran no turn.

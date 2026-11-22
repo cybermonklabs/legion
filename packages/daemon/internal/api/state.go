@@ -715,6 +715,23 @@ type Issue struct {
 	// Both are absent on an issue the workflow does not record (an operator's claim, Unrecorded).
 	Repo          string `json:"repo,omitempty"`
 	DefaultBranch string `json:"defaultBranch,omitempty"`
+	// RepoBefore is the repository the record held before the newest correction of the issue's
+	// repository (record.Issue.RepoCorrection's Before), absent for an issue no correction has
+	// reached. The issue's branch and its pull request are on it, and Repo is the repository the
+	// issue works now.
+	RepoBefore string `json:"repoBefore,omitempty"`
+	// RepoCorrectedAt is the moment the daemon applied that correction
+	// (record.Issue.RepoCorrection's At), absent with RepoBefore: the two are one value of the
+	// record, and a reader takes work saved before it as work of the repository the issue left.
+	RepoCorrectedAt *time.Time `json:"repoCorrectedAt,omitempty"`
+	// RepoChangePending is a repository Dispatch has named that the daemon has not applied to the
+	// record (record.Issue.RepoChange's Pending), absent while nothing waits: Repo still names the
+	// repository the issue works until the daemon applies it.
+	RepoChangePending string `json:"repoChangePending,omitempty"`
+	// RepoChangeReason is why the daemon has not applied that change yet
+	// (record.Issue.RepoChange's Reason), absent with RepoChangePending. It is what tells a reader
+	// of a record that still names the old repository why it does.
+	RepoChangeReason string `json:"repoChangeReason,omitempty"`
 	// HoldReason is why a held issue is held, when its hold has one: `escalated` once its architect
 	// sent it to the controller. Absent otherwise, and absent while the issue's tree lingers or is
 	// closed: the record keeps the reason, and the view shows it again once the tree is re-admitted.
@@ -1023,6 +1040,38 @@ type ClaimView struct {
 	// cause word the launch chooses, and this key says which check refused it, from the first
 	// refused try on.
 	LeakCheckCause string `json:"leakCheckCause,omitempty"`
+	// Wait is the wait the claim's worker declared (POST /legion/v1/claims/wait) while it stands
+	// — its id, what it waits on, when its time comes and when the daemon recorded the
+	// declaration — and is absent for a claim with no wait that stands: one that declared none,
+	// one whose wait ended, and one whose wait row has no end yet but no longer stands, a fresh
+	// session or a phase that moved (workflow.WaitStands). It is no field of the claim record:
+	// the wait is kept apart from the claim's per-launch columns so a relaunch keeps it, and the
+	// state's source judges the project's waits and hands those that stand to the projection.
+	Wait *WaitView `json:"wait,omitempty"`
+	// Hold is the closed design gate that holds this merger's work while the hold stands
+	// (workflow.HeldByDesignGate, the rule the outbox's fence reads): the gated step, its document
+	// and the version of that document that is with its reviewer. It is absent for every other
+	// claim: another role's, a merger whose issue is not in merging, and a merger whose tree's
+	// gated steps stand open or have no registered row. Like the wait it is no field of the claim
+	// record: the state's source judges the hold over the issue and its tree's gate rows and hands
+	// each hold that stands to the projection.
+	Hold *HoldView `json:"hold,omitempty"`
+}
+
+// HoldView is the closed design gate that holds a merger, as a claim view shows it
+// (ClaimView.Hold): the gated step whose row holds the merger, the document registered for that
+// step, and the version of that document that is with its reviewer.
+type HoldView struct {
+	Step       record.DesignStep `json:"step"`
+	ArtifactID string            `json:"artifactId"`
+	Version    int               `json:"version"`
+}
+
+// HoldViewOf is gate, the gate row that holds a merger (workflow.HeldByDesignGate), as a claim
+// view shows it. A row built with no step is the spec's (DesignStep.OrSpec), as the note of the
+// merger's task names it (workflow.MergerGateNote).
+func HoldViewOf(gate record.DesignGate) *HoldView {
+	return &HoldView{Step: gate.Step.OrSpec(), ArtifactID: gate.ArtifactID, Version: gate.LatestVersion}
 }
 
 // ClaimFailureView is the failure record a claim carries as a claim view shows it: Cause is the
@@ -1105,8 +1154,10 @@ func PendingTaskViewOf(d *supervise.Delivery) *PendingTaskView {
 // ClaimViewOf is c as every agent surface shows it: the one place a claim record becomes the
 // view `read_record` and `read_state` carry, so what those surfaces serve of a claim is decided
 // here and nowhere else (ClaimRecordFields names the decision for each field of the record). The
-// capability report is not of the claim — it is what the claim's session last reported — so its
-// caller sets it beside this.
+// capability report is not of the claim — it is what the claim's session last reported — and
+// neither is the wait that stands (WaitViewOf), which is kept apart from the claim record and
+// judged against the issue's, nor the design gate's hold (HoldViewOf), which is judged over the
+// issue and its tree's gate rows, so the caller sets each beside this.
 func ClaimViewOf(c supervise.Claim) ClaimView {
 	return ClaimView{
 		Session:           c.Session,
@@ -1287,7 +1338,12 @@ type HandoffRecordView struct {
 // (dispatch://INFRA-714/spec R1), and GitHub's own merge state is what says whether a check the
 // repository requires holds the head.
 type PullRequestView struct {
-	// Repo is the repository (owner/name) the pull request is in, its issue's.
+	// Repo is the repository (owner/name) the pull request is in, which is the issue's own until
+	// a correction of the issue's repository leaves it behind: the correction moves the issue's
+	// record alone (Issue.RepoBefore), so this keeps the repository the pull request was opened
+	// on. A reader of a record whose Repo and this name two repositories reads work that stands
+	// on a repository the issue has left, and the daemon applies no GitHub event of it to the
+	// issue any more. The issue's next task says the same (daemon's addressingFragment).
 	Repo           string `json:"repo"`
 	Number         int    `json:"number"`
 	Head           string `json:"head"`

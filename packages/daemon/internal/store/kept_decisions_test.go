@@ -141,6 +141,50 @@ func TestADeliveryWrittenBackUnconfirmedHoldsWhatItsConfirmationTold(t *testing.
 	}
 }
 
+// A decision a taken-back confirmation puts back is put back as the delivery named it, with its
+// review's sequence and the document reviewed (record.DecisionMark.Seq and Artifact), so the
+// resend asks it whether a later approval superseded it as the row was asked before the
+// confirmation told it (workflow.SupersedingApproval), of the document the person reviewed.
+func TestADecisionPutBackKeepsItsReviewsSequenceAndDocument(t *testing.T) {
+	r := newKeptRig(t)
+	const tree, ref = "LEGION-320", "dispatch://LEGION-320/spec"
+	r.issue(tree, tree)
+	start := r.startRow(tree)
+	r.exec(`insert into parked_decisions (issue, ref, decision, actor, at, seq, artifact, claimed_by)
+		values ($1, $2, 'design-changes-requested', 'user:alice', $3, 8, 'artifact-1', $4)`, tree, ref, r.at, start)
+	architect := r.architect(tree, start)
+	kept, err := json.Marshal(record.KeptDecisions{Decisions: []record.DecisionMark{{Ref: ref, At: r.at, Issue: tree,
+		Decision: record.DecisionDesignChangesRequested, Actor: "user:alice", Seq: 8, Artifact: "artifact-1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := supervise.Delivery{ID: "outbox:1", Task: "a person requested changes: " + ref, Generation: 1, QueuedAt: r.at, Kept: kept}
+	if err := r.store.PutClaimAndDelivery(r.ctx, architect, d); err != nil {
+		t.Fatalf("queue the task: %v", err)
+	}
+	confirmed := d
+	confirmed.ConfirmedAt = r.at.Add(time.Minute)
+	if err := r.store.PutClaimAndDelivery(r.ctx, architect, confirmed); err != nil {
+		t.Fatalf("confirm the task: %v", err)
+	}
+	if stands, _, _, _ := r.row(ref); stands {
+		t.Fatalf("%s stands after its delivery's confirmation, want it told", ref)
+	}
+	if err := r.store.PutDelivery(r.ctx, architect.Token, d); err != nil {
+		t.Fatalf("write the delivery back unconfirmed: %v", err)
+	}
+	var seq int64
+	var artifact string
+	if err := r.store.Pool().QueryRow(r.ctx, `select coalesce(seq, 0), artifact from parked_decisions where ref = $1`,
+		ref).Scan(&seq, &artifact); err != nil {
+		t.Fatalf("read the decision put back: %v", err)
+	}
+	if seq != 8 || artifact != "artifact-1" {
+		t.Fatalf("%s was put back at sequence %d of document %q, want sequence 8 of artifact-1, as the delivery named it",
+			ref, seq, artifact)
+	}
+}
+
 // A delivery's write takes only the rows it owns: those claimed by a start row whose task this
 // claim queued, or already held by this claim. A decision whose issue moved to another tree, whose
 // start the other tree's architect now holds it under, is that delivery's: a rewrite of the old

@@ -1,0 +1,9 @@
+kind: Removed
+body: |-
+  The phase hook no longer reads a WAITING line at the end of a reply: a turn that ends with one
+  gets the same reminder as a turn without it. Only a background task of the worker's own that
+  still runs at `Stop` buys the quiet wait. A worker that waits declares the wait with the MCP
+  `legion` tool's `declare_wait`.
+time: 2026-11-21T14:35:21Z
+custom:
+    Issue: pr4030
