@@ -694,6 +694,11 @@ func TestSentStatementsCountOnceACopyAnotherMessageEnds(t *testing.T) {
 // query the server is running when a second connection terminates its backend, sent as a simple
 // query and in an extended query. The server answers the query with a FATAL error and closes the
 // connection, and the recorder records the query as refused once, with nothing it could not read.
+//
+// The terminate waits until the backend sleeps in pg_sleep (the wait event PgSleep), which it does
+// only while it runs the query. The server shows an extended query as active, with its text, from
+// the start of its Parse, before its Bind and Execute. So a terminate sent on that alone can end
+// the Parse, Bind or Describe instead, and the recorder rightly records nothing then.
 func TestSentStatementsCountAStatementAFatalErrorEnds(t *testing.T) {
 	ctx := context.Background()
 	database := Open(t)
@@ -721,7 +726,7 @@ func TestSentStatementsCountAStatementAFatalErrorEnds(t *testing.T) {
 			}()
 			for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
 				var running bool
-				if err := database.Pool.QueryRow(ctx, "select exists (select from pg_stat_activity where pid = $1 and state = 'active' and query = $2)",
+				if err := database.Pool.QueryRow(ctx, "select exists (select from pg_stat_activity where pid = $1 and state = 'active' and query = $2 and wait_event_type = 'Timeout' and wait_event = 'PgSleep')",
 					pid, scenario.query).Scan(&running); err != nil {
 					t.Fatalf("read whether the query runs: %v", err)
 				}
@@ -729,7 +734,7 @@ func TestSentStatementsCountAStatementAFatalErrorEnds(t *testing.T) {
 					break
 				}
 				if time.Now().After(deadline) {
-					t.Fatal("the server did not start the query within 30 s")
+					t.Fatal("the server did not run the query to its pg_sleep within 30 s")
 				}
 			}
 			var terminated bool
