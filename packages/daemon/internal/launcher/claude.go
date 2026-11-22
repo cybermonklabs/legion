@@ -145,6 +145,11 @@ type claudeKeeper struct {
 	configDir string
 	session   string
 	conn      *pgx.Conn
+	// tablesOff is whether the generation turned Oh My Pi's table creation off, which its
+	// ompsessions.CreateTableVariable decides as it decides Oh My Pi's (ompsessions.CreatesTables):
+	// a pod whose session login may not create tables is told 0, and then no process of it sends a
+	// CREATE, the keeper included (tables).
+	tablesOff bool
 	// transcript and record are the two kept files: the transcript and the phase-reminder record.
 	transcript, record *keptFile
 	// appendRow and replaceRow write a kept file's row: ompsessions.Append and Replace, which a
@@ -233,6 +238,7 @@ func newClaudeKeeper(env []string, resume, clientURL string, log io.Writer) (*cl
 		return nil, refuse("%v", err)
 	}
 	k := &claudeKeeper{log: log, sessions: sessions, configDir: configDir, session: session,
+		tablesOff: !ompsessions.CreatesTables(envValue(env, ompsessions.CreateTableVariable)),
 		appendRow: ompsessions.Append, replaceRow: ompsessions.Replace, quit: make(chan struct{}), done: make(chan struct{}),
 		transcript: &keptFile{lines: true, marker: resume == "", keptState: keptState{saved: ompsessions.Absent}},
 		record:     &keptFile{path: filepath.Join(configDir, "legion-phase-stall-"+session+".json"), keptState: keptState{saved: ompsessions.Absent}}}
@@ -252,7 +258,8 @@ func newClaudeKeeper(env []string, resume, clientURL string, log io.Writer) (*cl
 
 // open readies the keeper before the child starts, on conn, the connection a resume's lookup made
 // (resumable), or on one it dials as that lookup does (sessionDial.dial) when it has none or conn
-// cannot make Oh My Pi's tables, which open makes where the database has none. A resume, whose
+// cannot ready Oh My Pi's tables (tables), which open makes where the database lacks one and the
+// generation left table creation on. A resume, whose
 // transcript the keeper names from the start, then restores each file from its row (restore), so
 // the child starts on the session the table holds, and the transcript's marker is written: the
 // table already holds what the claim records. parent's end (the container's stop) ends the wait as
@@ -264,13 +271,13 @@ func (k *claudeKeeper) open(parent context.Context, conn *pgx.Conn) error {
 	}
 	ctx, cancel := context.WithTimeout(parent, resumeLookupTimeout)
 	defer cancel()
-	if conn != nil && ompsessions.CreateTables(ctx, conn) != nil {
+	if conn != nil && k.tables(ctx, conn) != nil {
 		closeSessions(conn)
 		conn = nil
 	}
 	if conn == nil {
 		var err error
-		if conn, err = k.sessions.dial(ctx, ompsessions.CreateTables); err != nil {
+		if conn, err = k.sessions.dial(ctx, k.tables); err != nil {
 			return fmt.Errorf("keep Claude Code session %s: %v", k.session, err)
 		}
 	}
@@ -286,7 +293,8 @@ func (k *claudeKeeper) open(parent context.Context, conn *pgx.Conn) error {
 	return writeMarker(k.transcript.path)
 }
 
-// connect opens the keeper's connection when it has none open, and makes Oh My Pi's tables.
+// connect opens the keeper's connection when it has none open, and readies Oh My Pi's tables
+// (tables).
 func (k *claudeKeeper) connect(ctx context.Context) error {
 	if k.conn != nil && !k.conn.IsClosed() {
 		return nil
@@ -295,12 +303,18 @@ func (k *claudeKeeper) connect(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := ompsessions.CreateTables(ctx, conn); err != nil {
+	if err := k.tables(ctx, conn); err != nil {
 		closeSessions(conn)
 		return err
 	}
 	k.conn = conn
 	return nil
+}
+
+// tables readies Oh My Pi's two session tables on conn (ompsessions.EnsureTables), making a missing
+// one only where the generation left table creation on (tablesOff).
+func (k *claudeKeeper) tables(ctx context.Context, conn *pgx.Conn) error {
+	return ompsessions.EnsureTables(ctx, conn, !k.tablesOff)
 }
 
 // restore writes f's row to f's path, making its directories, when the file there is missing or a

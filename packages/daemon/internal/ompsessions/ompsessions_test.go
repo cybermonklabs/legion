@@ -111,8 +111,8 @@ func TestImportIsIdempotentAndRefusesARowWithOtherContent(t *testing.T) {
 func TestImportDropsPartsAPathWithNoRowLeft(t *testing.T) {
 	conn := connect(t)
 	ctx := context.Background()
-	for _, statement := range createTables {
-		if _, err := conn.Exec(ctx, statement); err != nil {
+	for _, table := range sessionTables {
+		if _, err := conn.Exec(ctx, table.create); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -324,10 +324,110 @@ const (
 func connectWithTables(t *testing.T) *pgx.Conn {
 	t.Helper()
 	conn := connect(t)
-	if err := CreateTables(context.Background(), conn); err != nil {
+	if err := EnsureTables(context.Background(), conn, true); err != nil {
 		t.Fatal(err)
 	}
 	return conn
+}
+
+// noCreateLogin makes Oh My Pi's two tables as conn's own login, then a role of its own on conn's
+// server that holds SELECT, INSERT, UPDATE and DELETE on them and no CREATE on schema public, and
+// sets conn's role to it; the role is dropped when the test ends, and its name returned. It stands
+// for the session login of a database whose owner makes the tables and keeps CREATE to itself, as a
+// deployment's database administrator may. A server where that role still holds CREATE on public,
+// as PUBLIC does before PostgreSQL 15, fails the test rather than measuring nothing.
+func noCreateLogin(t *testing.T, conn *pgx.Conn) string {
+	t.Helper()
+	ctx := context.Background()
+	name, err := testdb.RandomName("legion_ompsessions_nocreate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range sessionTables {
+		if _, err := conn.Exec(ctx, table.create); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := conn.Exec(ctx, "CREATE ROLE "+name+" NOLOGIN"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for _, statement := range []string{"RESET ROLE", "DROP OWNED BY " + name, "DROP ROLE " + name} {
+			if _, err := conn.Exec(context.Background(), statement); err != nil {
+				t.Errorf("%s: %v", statement, err)
+			}
+		}
+	})
+	for _, statement := range []string{
+		"GRANT SELECT, INSERT, UPDATE, DELETE ON omp_session_files, omp_session_files_parts TO " + name,
+		"GRANT " + name + " TO CURRENT_USER",
+		"SET ROLE " + name,
+	} {
+		if _, err := conn.Exec(ctx, statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	var creates bool
+	if err := conn.QueryRow(ctx, "SELECT has_schema_privilege('public', 'CREATE')").Scan(&creates); err != nil || creates {
+		t.Fatalf("the role %s holds CREATE on public (%t, %v), so it stands for no login that lacks it", name, creates, err)
+	}
+	return name
+}
+
+// EnsureTables reads which of Oh My Pi's two tables the database holds before it sends any CREATE,
+// so a login that holds rows of the owner's tables and no CREATE on public passes, with table
+// creation on and off alike: PostgreSQL checks CREATE on the schema before CREATE TABLE IF NOT
+// EXISTS reads whether the table is there, and refuses that statement to such a login even for a
+// table that exists.
+func TestEnsureTablesSendsNoCreateWhereBothTablesAreThere(t *testing.T) {
+	conn := connect(t)
+	noCreateLogin(t, conn)
+	for _, create := range []bool{true, false} {
+		if err := EnsureTables(context.Background(), conn, create); err != nil {
+			t.Errorf("EnsureTables(create %t) as a login with no CREATE on public, over the owner's two tables: %v, want nil", create, err)
+		}
+	}
+}
+
+// With table creation off, a missing table is refused by name and none is made, as Oh My Pi's own
+// start refuses with createTable off. The control is the same login with creation on: EnsureTables
+// sends the CREATE, and the server refuses it for want of CREATE on public, which is the refusal
+// the off form keeps a pod from reaching.
+func TestEnsureTablesWithCreationOffNamesAMissingTableAndMakesNone(t *testing.T) {
+	conn := connect(t)
+	ctx := context.Background()
+	name := noCreateLogin(t, conn)
+	for _, statement := range []string{"RESET ROLE", "DROP TABLE omp_session_files_parts", "SET ROLE " + name} {
+		if _, err := conn.Exec(ctx, statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	err := EnsureTables(ctx, conn, false)
+	if err == nil || !strings.Contains(err.Error(), "no omp_session_files_parts") || strings.Contains(err.Error(), "no omp_session_files ") ||
+		!strings.Contains(err.Error(), CreateTableVariable) {
+		t.Errorf("EnsureTables(create false) over a database with no parts table = %v, want a refusal naming omp_session_files_parts alone and %s", err, CreateTableVariable)
+	}
+	var missing bool
+	if err := conn.QueryRow(ctx, "SELECT pg_catalog.to_regclass('omp_session_files_parts') IS NULL").Scan(&missing); err != nil || !missing {
+		t.Errorf("after the refusal the parts table is missing: %t (%v), want it still missing", missing, err)
+	}
+	if err := EnsureTables(ctx, conn, true); err == nil || !strings.Contains(err.Error(), "permission denied for schema public") {
+		t.Errorf("control: EnsureTables(create true) as the same login = %v, want the server's refusal of the CREATE", err)
+	}
+}
+
+// CreatesTables reads Oh My Pi's variable as its own start does (session-storage-config.ts):
+// trimmed and in any case, 0 and false turn table creation off, and anything else, unset included,
+// leaves it on.
+func TestCreatesTablesReadsTheVariableAsOhMyPiDoes(t *testing.T) {
+	for value, want := range map[string]bool{
+		"0": false, "false": false, "FALSE": false, " 0 ": false, "\tFalse\n": false,
+		"": true, "1": true, "true": true, "no": true, "off": true, "00": true,
+	} {
+		if got := CreatesTables(value); got != want {
+			t.Errorf("CreatesTables(%q) = %t, want %t", value, got, want)
+		}
+	}
 }
 
 // partsOf is the parts the table holds under path, by offset.

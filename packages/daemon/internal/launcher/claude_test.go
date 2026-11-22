@@ -57,7 +57,7 @@ func claudeRigOn(t *testing.T, g *rig, dsnFile string) *claudeRig {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
-	if err := ompsessions.CreateTables(context.Background(), conn); err != nil {
+	if err := ompsessions.EnsureTables(context.Background(), conn, true); err != nil {
 		t.Fatal(err)
 	}
 	configDir := t.TempDir()
@@ -572,6 +572,56 @@ func newKeeperRig(t *testing.T, dsnFile string) *keeperRig {
 	return c
 }
 
+// A Claude Code generation told OMP_SESSION_SQL_CREATE_TABLE=0, as every pod of a deployment
+// whose session login may not create tables is told through the operator's pod env, makes no
+// table: on a database that holds neither of Oh My Pi's tables its keeper refuses to open, naming
+// both and the variable, and the database still holds neither. The control is the same generation
+// told nothing, whose keeper makes both, as it always has.
+func TestAClaudeKeeperToldTableCreationOffMakesNoTable(t *testing.T) {
+	shortenResumeLookup(t)
+	for _, c := range []struct {
+		name    string
+		extra   []string
+		refused bool
+	}{
+		{"told OMP_SESSION_SQL_CREATE_TABLE=0", []string{ompsessions.CreateTableVariable + "=0"}, true},
+		{"control: told nothing of it", nil, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := context.Background()
+			_, dsnFile := testdb.DSNFile(t, "legion_launcher_keeper_create_test")
+			conn, err := ompsessions.Connect(ctx, dsnFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = conn.Close(context.Background()) })
+			env := append([]string{"CLAUDE_CONFIG_DIR=" + t.TempDir(), claudelaunch.SessionVariable + "=" + claudeSession,
+				ompsessions.StorageVariable + "=" + ompsessions.SQLStorage, ompsessions.DSNFileVariable + "=" + dsnFile}, c.extra...)
+			k, err := newClaudeKeeper(env, "", "", io.Discard)
+			if err != nil {
+				t.Fatal(err)
+			}
+			opened := k.open(ctx, nil)
+			if opened == nil {
+				t.Cleanup(k.close)
+			}
+			var tables int
+			if err := conn.QueryRow(ctx, "SELECT (pg_catalog.to_regclass('omp_session_files') IS NOT NULL)::int + (pg_catalog.to_regclass('omp_session_files_parts') IS NOT NULL)::int").Scan(&tables); err != nil {
+				t.Fatal(err)
+			}
+			if c.refused {
+				if opened == nil || !strings.Contains(opened.Error(), "no omp_session_files and no omp_session_files_parts") || !strings.Contains(opened.Error(), ompsessions.CreateTableVariable) || tables != 0 {
+					t.Errorf("the keeper's open = %v and the database holds %d of the two tables, want a refusal naming both and %s, and none made", opened, tables, ompsessions.CreateTableVariable)
+				}
+				return
+			}
+			if opened != nil || tables != 2 {
+				t.Errorf("the keeper's open = %v and the database holds %d of the two tables, want both made", opened, tables)
+			}
+		})
+	}
+}
+
 // faulty is write meeting the rig's fault.
 func (c *keeperRig) faulty(write rowWrite) rowWrite {
 	return func(ctx context.Context, conn *pgx.Conn, path string, saved int64, content []byte, mtime time.Time) error {
@@ -730,7 +780,7 @@ func TestAClaudeRestoreAndSaveRefuseAFifoAndReadNoFurtherThanTheRow(t *testing.T
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
-	if err := ompsessions.CreateTables(ctx, conn); err != nil {
+	if err := ompsessions.EnsureTables(ctx, conn, true); err != nil {
 		t.Fatal(err)
 	}
 	k := &claudeKeeper{log: io.Discard, session: claudeSession, conn: conn,

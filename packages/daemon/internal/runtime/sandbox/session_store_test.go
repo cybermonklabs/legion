@@ -190,6 +190,49 @@ func TestASessionDatabaseIsWhereEveryRoleKeepsItsSession(t *testing.T) {
 	}
 }
 
+// TestEveryAgentPodSetsCreateTableOff: a deployment whose session login may not create tables, the
+// tables' owner having made them, sets ompsessions.CreateTableVariable to 0 in the operator's pod
+// env (runtime.kubernetes.pod.env, docs/kubernetes.md), and every generation the runtime starts
+// beside OMP_SESSION_STORAGE, a workflow role's and the controller's, under either database store,
+// carries it, so no Oh My Pi and no Claude Code keeper in the pod sends a CREATE. The name is the
+// operator's: CheckPod admits it, and the runtime sets it nowhere of its own, so a deployment that
+// names nothing keeps Oh My Pi making its tables, as docs/kubernetes.md says a new database needs.
+// The test fails when it finds no generation told OMP_SESSION_STORAGE, so it cannot pass by reading
+// nothing.
+func TestEveryAgentPodSetsCreateTableOff(t *testing.T) {
+	for _, store := range []ompsessions.Store{postgresStore, cloudSQLStore} {
+		for _, told := range []bool{true, false} {
+			opts := testOptions()
+			opts.SessionStore = store
+			if told {
+				opts.Pod.Env = map[string]string{ompsessions.CreateTableVariable: "0"}
+			}
+			r, err := configure(opts)
+			if err != nil {
+				t.Fatalf("%s, the operator's pod env setting %s %t: %v", store.Kind, ompsessions.CreateTableVariable, told, err)
+			}
+			storing := 0
+			for name, spec := range map[string]runtime.SpawnSpec{"a workflow role": workerSpec(t), "the controller": controllerSpec(t)} {
+				env := envOf(workerOf(t, r, spec))
+				if env[ompsessions.StorageVariable] != ompsessions.SQLStorage {
+					continue
+				}
+				storing++
+				got, set := env[ompsessions.CreateTableVariable]
+				switch {
+				case told && got != "0":
+					t.Errorf("%s, %s: the operator's pod env sets %s=0 and the generation carries %q (set %t)", store.Kind, name, ompsessions.CreateTableVariable, got, set)
+				case !told && set:
+					t.Errorf("%s, %s: the operator's pod env names no %s and the generation carries %q: the runtime decided it", store.Kind, name, ompsessions.CreateTableVariable, got)
+				}
+			}
+			if storing != 2 {
+				t.Fatalf("%s: %d of the two generations are told %s=%s, so the test read nothing it holds", store.Kind, storing, ompsessions.StorageVariable, ompsessions.SQLStorage)
+			}
+		}
+	}
+}
+
 // containsSequence reports whether argv carries want as a run of consecutive arguments.
 func containsSequence(argv, want []string) bool {
 	for i := range argv {
