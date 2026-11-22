@@ -211,9 +211,13 @@ exit 5`, "sh", started, finished, released)
 		if took > grace+10*time.Second {
 			t.Errorf("the drain returned after %s, past its %s grace and ten seconds: it did not kill the process it left at the grace the case configured (the launcher's default is 30 s)", took, grace)
 		}
-		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the process the generation left to be ended and reaped", func() bool {
-			return errors.Is(syscall.Kill(left.Process.Pid, 0), syscall.ESRCH)
-		})
+		// The drain kills the process it left and reaps it before it returns, so the process is
+		// gone now, and one read of it says so; a process still there is killed, so it outlives
+		// nothing, and named.
+		if err := syscall.Kill(left.Process.Pid, 0); !errors.Is(err, syscall.ESRCH) {
+			_ = left.Process.Kill()
+			t.Errorf("the process the generation left, %d, was still there after the drain returned (%v): the drain did not end and reap it", left.Process.Pid, err)
+		}
 		if err := left.Wait(); !reapedByAnother(err) {
 			t.Errorf("the process the generation left answered its own wait with %v, want ECHILD or ESRCH: the drain did not end and reap it", err)
 		}
