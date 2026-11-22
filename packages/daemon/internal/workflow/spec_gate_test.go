@@ -665,3 +665,121 @@ func TestAReopenAtANewHeadInMergingQueuesTheEndingRead(t *testing.T) {
 		})
 	}
 }
+
+// endingStepOf is the step every message of the ending condition ends with, for tree.
+func endingStepOf(tree string) string {
+	return "Before each merge and each enqueue, run `dispatch spec-ending --issue " + tree + " --head <head>`, " +
+		"and merge or enqueue only when its first line reads `ready`."
+}
+
+// closedCriteria records the root's criteria step closed: version 2 of its Verification document
+// is with its reviewer, and a person approved version 1.
+func closedCriteria(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	one := 1
+	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc, LatestVersion: 2,
+		ApprovedVersion: &one, EverOpened: true})
+}
+
+// Under a deployment that gates more than one step, a read of the ending condition tells the
+// merger nothing while another gated step is closed (D10, R5): that step's closed gate holds the
+// merge, and the opened message of the ending says the merge is released. The reading is still
+// recorded, so a later turn is told once every gated step stands open again; a read queued because
+// the spec gate turned exempt tells nothing then either, since the opening of the other step gives
+// the merger the ending step.
+func TestAnEndingReadTellsTheMergerNothingWhileAnotherGatedStepIsClosed(t *testing.T) {
+	const head = "1111111111111111111111111111111111111111"
+	pool := migratedPool(t)
+	apply := applyFacts(t, pool, stepsEngine(twoSteps(), nil))
+	mergingExemptRoot(t, pool, head)
+	closedCriteria(t, pool)
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		return record.NewStore().PutSpecEnding(t.Context(), tx, record.SpecEnding{Issue: gatedRoot, Head: head, State: record.SpecEndingWaiting,
+			ReadAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+	})
+
+	apply("ready", intake.SpecEndingRead{Issue: gatedRoot, Head: head, State: record.SpecEndingReady, Version: 4, Cause: record.SpecEndingCauseOutcomes})
+	if got := mergerEndingMessages(t, pool); len(got) != 0 {
+		t.Fatalf("the merger's messages after a ready reading while the criteria step is closed = %q, want none", got)
+	}
+	if ending := specEndingOf(t, pool); ending == nil || ending.Head != head || ending.Waits() {
+		t.Fatalf("the reading = %+v, want it recorded ready at %s", ending, head)
+	}
+	apply("exempted", intake.SpecEndingRead{Issue: gatedRoot, Head: head, State: record.SpecEndingWaiting, Version: 4, Cause: endingExempted,
+		Reasons: []dispatch.EndingReason{{Code: "no_conclusion", Detail: "No conclusion."}}})
+	if got := mergerEndingMessages(t, pool); len(got) != 0 {
+		t.Fatalf("the merger's messages after a read of the turn to exemption while the criteria step is closed = %q, want none", got)
+	}
+}
+
+// An opening by a person's approval while the tree's spec gate stands open by exemption releases
+// the merge on the ending condition alone (D10): the merger's message ends with the sentence that
+// says so and the ending step, since the merger may have heard nothing of the ending while the
+// other step was closed. Every other holder gets the person's opening as it was.
+func TestAnOpeningByAPersonUnderAnExemptSpecGateGivesTheMergerTheEndingStep(t *testing.T) {
+	pool := migratedPool(t)
+	apply := applyFacts(t, pool, stepsEngine(twoSteps(), nil))
+	mergingExemptRoot(t, pool, "1111111111111111111111111111111111111111")
+	closedCriteria(t, pool)
+
+	apply("approve-criteria", stepApproval(gatedRoot, criteriaDoc, 2, record.EventMark{Seq: 20}))
+	opened := gateMovedBody(record.DesignStepCriteria, criteriaDoc, 2, true)
+	merger, architect := treeRoleToken(t, gatedRoot, claim.RoleMerger), treeRoleToken(t, gatedRoot, claim.RoleArchitect)
+	assertRoleMessages(t, pool, gatedRoot, []record.RoleMessage{
+		{Role: merger, Body: opened + " Its change request proposes nothing, so a merge also waits until the ending condition of the change request holds. " +
+			endingStepOf(gatedRoot)},
+		{Role: architect, Body: opened},
+	})
+}
+
+// A read queued because the spec gate turned exempt (record.SpecEndingCauseExempted) is the read
+// that tells a merger already running the ending step, so a head move during the read carries it
+// to the pull request's current head: it is queued again there under the same cause. A read of
+// any other cause that the head moved past queues nothing, since the move queued a read of its own.
+func TestAnExemptedReadOfAHeadMovedPastIsQueuedAgainAtTheCurrentHead(t *testing.T) {
+	const first, second = "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"
+	for _, tc := range []struct {
+		name  string
+		cause record.SpecEndingCause
+		want  []record.SpecEndingRead
+	}{
+		{name: "a read of the turn to exemption", cause: endingExempted, want: []record.SpecEndingRead{{Head: second, Cause: endingExempted}}},
+		{name: "a read of an outcome list", cause: record.SpecEndingCauseOutcomes, want: []record.SpecEndingRead{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			apply := applyFacts(t, pool, specGateEngine())
+			mergingExemptRoot(t, pool, first)
+			movePRHead(t, pool, second)
+			apply("stale", intake.SpecEndingRead{Issue: gatedRoot, Head: first, State: record.SpecEndingReady, Version: 4, Cause: tc.cause})
+			if got := endingReads(t, pool, gatedRoot); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("ending reads after a read of a head moved past = %+v, want %+v", got, tc.want)
+			}
+			if got := mergerEndingMessages(t, pool); len(got) != 0 {
+				t.Fatalf("the merger's messages after a read of a head moved past = %q, want none", got)
+			}
+		})
+	}
+}
+
+// The gate seed's reset of a gate above the version Dispatch holds queues the reads of the ending
+// condition once per merging member: itself for a version it applies, and through the review's
+// own apply for a review (applyArtifact), never both.
+func TestAResetByAReviewQueuesTheEndingReadsOnce(t *testing.T) {
+	const head = "1111111111111111111111111111111111111111"
+	pool := migratedPool(t)
+	apply := applyFacts(t, pool, specGateEngine())
+	mergingExemptRoot(t, pool, head)
+	six := 6
+	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: gateDoc, LatestVersion: 6,
+		Rule: record.GateRuleChangeRequest, ExemptVersion: &six, EverOpened: true})
+	approval := stepApproval(gatedRoot, gateDoc, 5, record.EventMark{Seq: 25})
+	approval.ChangeRequest = readOf(5, true, true)
+	apply("reset", intake.GateAboveDispatch{Generation: 1, Above: 6, Read: approval})
+	if gate := specGateOf(t, pool); gate.LatestVersion != 5 || !record.GateExempt(gate) {
+		t.Fatalf("the reset gate = %+v, want version 5 exempt and approved", gate)
+	}
+	if got, want := endingReads(t, pool, gatedRoot), []record.SpecEndingRead{{Head: head, Cause: record.SpecEndingCauseApproval}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ending reads after a reset by an approval = %+v, want %+v", got, want)
+	}
+}

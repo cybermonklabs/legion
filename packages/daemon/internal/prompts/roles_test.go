@@ -865,6 +865,9 @@ func TestTheMergerReadsTheEndingConditionBeforeEachMergeAndEnqueue(t *testing.T)
 		"When the first line reads `waiting`, merge nothing and enqueue nothing, and do not complete.",
 		"The design gate of <tree> closed: the ending condition of its change request does not hold for head <sha>",
 		"The design gate of <tree> opened: the ending condition of its change request holds for head <sha>",
+		// An opening by a person's approval of another step while the change request proposes
+		// nothing releases the merge on the ending condition alone, and the merger's copy says so.
+		"Its change request proposes nothing, so a merge also waits until the ending condition of the change request holds.",
 	} {
 		if !strings.Contains(merger, want) {
 			t.Errorf("roles/merger.md does not say %q", want)

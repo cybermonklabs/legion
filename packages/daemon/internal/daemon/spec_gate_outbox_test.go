@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -294,6 +295,42 @@ func TestTheSpecEndingReadAppliesWhatDispatchAnswersForItsHead(t *testing.T) {
 	read(specGateNextHead)
 	if reading := r.reading(); reading.Head != specGateHead {
 		t.Fatalf("the reading after an older Dispatch's answer = %+v, want the first kept", reading)
+	}
+}
+
+// A read queued because the spec gate turned exempt (record.SpecEndingCauseExempted) tells a
+// merger already running the ending step, so the outbox reads it at the pull request's current
+// head when the head moved past the row, rather than finish it unread: the read the move queued
+// may find the reading unchanged and tell nothing. A row of any other cause still finishes
+// unread when the head moved past it.
+func TestAnExemptedEndingReadWhoseHeadMovedReadsTheCurrentHead(t *testing.T) {
+	r := newExemptGateRig(t, phase.Merging, record.GateRuleChangeRequest)
+	r.client.ending = &dispatch.SpecEnding{State: "ready", Version: 3}
+	// The reading an earlier time the gate stood exempt left, at the head the pull request moves to.
+	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+		return r.records.PutSpecEnding(context.Background(), tx, record.SpecEnding{Issue: specGateRoot, Head: specGateNextHead,
+			State: record.SpecEndingReady, ReadAt: time.Now()})
+	}); err != nil {
+		t.Fatalf("record the earlier reading: %v", err)
+	}
+	r.moveHead(specGateNextHead)
+	read := func(cause record.SpecEndingCause) {
+		t.Helper()
+		if err := r.runner.execute(context.Background(), mustOutboxRow(t, specGateRoot,
+			record.SpecEndingRead{Head: specGateHead, Cause: cause}, time.Now())); err != nil {
+			t.Fatalf("execute the %s read at %s: %v", cause, specGateHead, err)
+		}
+	}
+	read(record.SpecEndingCauseExempted)
+	if want := []string{specGateRoot + "@" + specGateNextHead}; !slices.Equal(r.client.endingReads, want) {
+		t.Fatalf("Dispatch reads of a read of the turn to exemption whose head moved = %q, want %q", r.client.endingReads, want)
+	}
+	if told := r.count(`kind = 'role_message'`); told != 1 {
+		t.Fatalf("role messages after that read = %d, want the merger told the ending step once", told)
+	}
+	read(record.SpecEndingCauseOutcomes)
+	if len(r.client.endingReads) != 1 {
+		t.Fatalf("Dispatch reads after an outcome list's read whose head moved = %q, want none more", r.client.endingReads)
 	}
 }
 
