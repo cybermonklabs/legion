@@ -83,7 +83,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
   So is a wording nit or any clear fix in a file it touches: a later round costs a CI pass and a review.
   `Fast-follow:` reads `none` or names cleanup in files the pull request does not touch.
 
-- The merge gate follows the task's `Steps:` line: each named step runs in order, then retro and the merger.
+- The merge gate follows the task's `Steps:` line: each named step runs in order, then the retro and merge it names.
   The default task has tester evidence, reviewer approval and architect acceptance.
   With no tester step, the implementer's evidence serves;
   with no reviewer step, no Legion approval is awaited; without `acceptance:owner`, the last step starts retro.

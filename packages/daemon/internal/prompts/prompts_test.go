@@ -1060,3 +1060,59 @@ func TestTheProductionCheckRuleHoldsInEveryPromptPart(t *testing.T) {
 		}
 	}
 }
+
+// An owner gives a plan of several tasks, and names what each task needs in the task's `needs`
+// attribute, one reference to the needed task's block of `plan.md` for each. Both architect
+// compositions, and the reference of skill://legion-architect on the plan, give that form, with
+// the rule that lets this release take such a plan: one agent of each role for an issue, so the
+// steps of one role in several tasks share one key. Where two or more tasks stand at the act an
+// owner's call answers, the call names its task in `task`: `sign_off` and the architect's
+// `request_backward_move` in `accepting`, and `retry_or_escalate` on a held task, each refused
+// `TASK_REQUIRED` with none named and `TASK_NOT_AT_PHASE` for a task that does not stand there. The
+// prompt no longer says an issue runs one task, nor that its plan holds one block. Each rule is held
+// by the terms of the clause that states it, in their order. This shows the text is loaded, never
+// that an owner follows it.
+func TestTheOwnersPromptGivesTheFormOfNeeds(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	form := [][]string{
+		{"`needs`", "dispatch://<KEY>/artifact/plan-md#b-<id>"},
+		{"needs=\"dispatch://<KEY>/artifact/plan-md#b-a dispatch://<KEY>/artifact/plan-md#b-c\""},
+		{"one agent of each role", "same key"},
+	}
+	retired := []string{"This release runs one task for each issue", "with one `plan_task` block", "the issue's one task"}
+	skill, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "skills", "legion-architect", "references", "plan.md"))
+	if err != nil {
+		t.Fatalf("read the plan reference of skill://legion-architect: %v", err)
+	}
+	for _, tc := range []struct {
+		name, text string
+		calls      bool
+	}{
+		{"composed root architect prompt", composedText(t, composer, claim.RoleArchitect, true), true},
+		{"composed sub-architect prompt", composedText(t, composer, claim.RoleArchitect, false), true},
+		{"plan reference of skill://legion-architect", string(skill), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			terms := form
+			if tc.calls {
+				terms = append(slices.Clone(form),
+					[]string{"`sign_off`", "`request_backward_move`", "`retry_or_escalate`", "`task`"},
+					[]string{"names none", "`TASK_REQUIRED`"},
+					[]string{"not at", "`TASK_NOT_AT_PHASE`"})
+			}
+			for _, held := range terms {
+				if !clauseHolds(tc.text, held...) {
+					t.Errorf("no clause of the %s holds %q, in that order", tc.name, held)
+				}
+			}
+			for _, phrase := range retired {
+				if strings.Contains(foldWhitespace(tc.text), phrase) {
+					t.Errorf("the %s still says %q", tc.name, phrase)
+				}
+			}
+		})
+	}
+}

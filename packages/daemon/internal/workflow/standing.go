@@ -86,10 +86,11 @@ func ownersText(text string) string {
 // issue with no plan rows (WorkingCopy), and its task's for one with plan rows (taskWorkingCopy,
 // on the task's branch). An issue with no plan rows names nothing else, so it is told today's task
 // with that one line, and the prompts read a task with no `Task:` line as such an issue's. An
-// issue with plan rows names its one task: a step's worker is told
-// ` Task: <id>. Step <i> of <n>: <role>.`, the task's steps (stepsLine) and the report of each step
-// before its own (reportsBefore), and, last of its task, the text of the task's block inside a
-// fence (ownersText). The retro and the merge run no step of the task, so their worker is told
+// issue with plan rows names the task of the worker's step: a step's worker is told
+// ` Task: <id>. Step <i> of <n>: <role>.`, the task's steps (stepsLine), at the first step of a task
+// that needs other tasks the work it starts from (startsFrom), the report of each step before its
+// own (reportsBefore), and, last of its task, the text of the task's block inside a fence
+// (ownersText). The retro and the merge run no step of the task, so their worker is told
 // ` Task: <id>.` and the task's steps alone: the merger reads from them whether the task has a
 // review step, and each reads the runs of the steps and their reports from Dispatch
 // (`dispatch steps`), which keeps every run, the failed ones too.
@@ -124,23 +125,50 @@ func standingText(issue record.Issue, dir func(record.Issue, string) string, w W
 	}
 	lines := at.lines + fmt.Sprintf(" %s: %s.", planTaskLabel, w.Task)
 	words := plan.Words(namedSteps(w.Steps))
+	// The task merges where its line ends with the retro and the merge after its steps (Walk.steps).
+	merges := len(w.steps()) < len(w.Line)
 	if place.Kind != record.PlaceStep {
-		return Standing{lines: lines + stepsLine(words)}, nil
+		return Standing{lines: lines + stepsLine(words, merges)}, nil
 	}
 	lines += fmt.Sprintf(" Step %d of %d: %s.", place.Position, len(w.Steps), words[place.Position-1])
-	lines += stepsLine(words) + reportsBefore(rows, w, words, place.Position)
+	lines += stepsLine(words, merges)
+	if place.Position == 1 {
+		lines += startsFrom(w.Needs)
+	}
+	lines += reportsBefore(rows, w, words, place.Position)
 	return Standing{lines: lines, owners: ownersText(strings.TrimSpace(w.Text))}, nil
 }
 
-// stepsLine is ` Steps: 1 <role>, 2 <role>, … then Legion's retro and merge.`: each step of a
-// task by its place, words, the steps as its plan writes them (plan.Words), in the order they run,
-// each at its place from 1 (Walk.Steps), then the retro and the merge Legion runs after them.
-func stepsLine(words []string) string {
+// stepsLine is ` Steps: 1 <role>, 2 <role>, ….`: each step of a task by its place, words, the steps
+// as its plan writes them (plan.Words), in the order they run, each at its place from 1
+// (Walk.Steps). Where merges, the task's line ends with Legion's retro and merge after its last
+// step (plan.Line), and so does the steps line: ` Steps: 1 <role>, 2 <role>, … then Legion's retro
+// and merge.` A task that does not merge is done when its last step passes, and its line ends
+// there.
+func stepsLine(words []string, merges bool) string {
 	named := make([]string, len(words))
 	for i, word := range words {
 		named[i] = fmt.Sprintf("%d %s", i+1, word)
 	}
+	if !merges {
+		return fmt.Sprintf(" %s: %s.", stepsLabel, strings.Join(named, ", "))
+	}
 	return fmt.Sprintf(" %s: %s then Legion's retro and merge.", stepsLabel, strings.Join(named, ", "))
+}
+
+// startsFrom is what the first step of a task is told of the tasks the task needs (Walk.Needs),
+// each of which is done before the task starts, and whose work its working copy starts from:
+// ` This task starts from the joined work of tasks <ids>, which are done.` for several, in the
+// order the task's block names them, ` This task starts from the work of task <id>, which is
+// done.` for one, and nothing for a task that needs none.
+func startsFrom(needs []string) string {
+	switch len(needs) {
+	case 0:
+		return ""
+	case 1:
+		return fmt.Sprintf(" This task starts from the work of task %s, which is done.", needs[0])
+	}
+	return fmt.Sprintf(" This task starts from the joined work of tasks %s, which are done.", strings.Join(needs, ", "))
 }
 
 // reportsBefore is one ` Step <j> (<role>) reported: <word> version <v>.` for each step of w's
