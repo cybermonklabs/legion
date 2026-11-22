@@ -173,9 +173,11 @@ if (record !== undefined && record !== "") {
 
   // Every read of the clock the hook's code can make through the process's own clocks: Date.now, a
   // Date made with no argument or Date() called, performance.now, performance.mark and
-  // performance.measure, process.hrtime and its bigint, process.uptime, and Bun.nanoseconds. What
-  // reads time some other way (os.uptime, an Intl format given no date, a file's times) is not
-  // counted: a poll on it shows as the CPU it burns (`cpuMs`) or the timers it arms.
+  // performance.measure, process.hrtime and its bigint, process.uptime, Bun.nanoseconds, and each
+  // function of Temporal.Now (Bun 1.4.4 has six, `instant` to `zonedDateTimeISO`; `timeZoneId`
+  // reads no time, and is counted with them). What reads time some other way (os.uptime, an Intl
+  // format given no date, a file's times) is not counted: a poll on it shows as the CPU it burns
+  // (`cpuMs`) or the timers it arms.
   const RealDate = Date
   const countedNow = (): number => {
     counts.clockReads++
@@ -226,6 +228,16 @@ if (record !== undefined && record !== "") {
       },
     },
   )
+  // Temporal.Now's functions are its own properties, not enumerable ones.
+  const temporalNow = (globalThis as { Temporal?: { Now?: Record<string, unknown> } }).Temporal?.Now
+  for (const name of temporalNow === undefined ? [] : Object.getOwnPropertyNames(temporalNow)) {
+    const read = temporalNow?.[name]
+    if (typeof read !== "function" || temporalNow === undefined) continue
+    temporalNow[name] = (...args: unknown[]) => {
+      counts.clockReads++
+      return Reflect.apply(read, temporalNow, args)
+    }
+  }
   const realNanoseconds = Bun.nanoseconds
   Bun.nanoseconds = () => {
     counts.clockReads++

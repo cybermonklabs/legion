@@ -88,7 +88,7 @@
 
 import { appendFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { deviceLoginFile } from "@legion/cipher-client/device-login-file"
+import { deviceLoginFile, loginLockHeldBy } from "@legion/cipher-client/device-login-file"
 import { scrubProcessStreams } from "@legion/contracts/held-secrets"
 import { urlForText } from "@legion/contracts/log-text"
 import { formatOpenAsksSummary, linkBaseOf } from "@legion/envoy-client/dispatch-execute"
@@ -681,15 +681,16 @@ async function endOnceWritten(): Promise<void> {
     stream.end(() => ended.resolve())
     await ended.promise
   }
-  if (holdsDeviceLoginLock()) return
+  if (await holdsDeviceLoginLock()) return
   process.exit(0)
 }
 
 /** Whether this process holds the machine's device-login lock: `<login>.lock`, beside the login at
  *  the path cipher-client keeps it (`deviceLoginFile`: `AGENT_SECRETS_DEVICE_LOGIN_FILE`, else
- *  `$HOME/.config/legion/device-login.json`), whose first word is its holder's pid
- *  (`device-login-lock.ts`). */
-function holdsDeviceLoginLock(): boolean {
+ *  `$HOME/.config/legion/device-login.json`), whose first word is its holder's pid. cipher-client
+ *  reads it (`loginLockHeldBy`): a named pipe or a link there is read as no lock, at once, so it
+ *  cannot hold the hook open. */
+async function holdsDeviceLoginLock(): Promise<boolean> {
   let login: string
   try {
     login = deviceLoginFile(process.env)
@@ -697,12 +698,7 @@ function holdsDeviceLoginLock(): boolean {
     // Neither the variable nor HOME names a place: this machine keeps no login, so holds no lock.
     return false
   }
-  try {
-    return readFileSync(`${login}.lock`, "utf8").startsWith(`${process.pid} `)
-  } catch {
-    // No lock: no trade of this login is under way.
-    return false
-  }
+  return loginLockHeldBy(login, process.pid)
 }
 
 if (mode === "answers-refresh") {

@@ -408,8 +408,10 @@ export function waitSites(
 
   /** The call's own option `name`: a property of the object literal at `index` (or the last
    *  object literal argument where `index` is undefined), spreads left out. An options argument
-   *  given by the name of a constant holding an object literal (`PS_OPTIONS`) is read as that
-   *  literal. */
+   *  given by the name of a constant whose initializer is an object literal written `as const`
+   *  (`PS_OPTIONS`) is read as that literal: its properties are read-only, so no write elsewhere
+   *  (`O.timeout = 99_999`) can change the bound the scan reads. A constant without `as const` is
+   *  not read, and its call stays an unbounded site. */
   const ownOption = (
     call: ts.CallExpression | ts.NewExpression,
     name: string,
@@ -422,9 +424,20 @@ export function waitSites(
       const node = unwrap(argument)
       if (ts.isObjectLiteralExpression(node)) return node
       if (!ts.isIdentifier(node)) return undefined
-      const initializer = constInitializer(resolvedSymbol(node))
-      const held = initializer === undefined ? undefined : unwrap(initializer)
-      return held !== undefined && ts.isObjectLiteralExpression(held) ? held : undefined
+      let initializer = constInitializer(resolvedSymbol(node))
+      while (initializer !== undefined && ts.isParenthesizedExpression(initializer)) {
+        initializer = initializer.expression
+      }
+      if (
+        initializer === undefined ||
+        !ts.isAsExpression(initializer) ||
+        !ts.isTypeReferenceNode(initializer.type) ||
+        initializer.type.typeName.getText() !== "const"
+      ) {
+        return undefined
+      }
+      const held = unwrap(initializer.expression)
+      return ts.isObjectLiteralExpression(held) ? held : undefined
     }
     const args = [...(call.arguments ?? [])]
     const literal =

@@ -5,8 +5,8 @@
  * The guard, `ROW_GUARD_MS`, is a hang guard and decides no verdict: 120 s, far above any real
  * duration of these rows (the slowest, run with its whole file on one CPU that 200 busy loops
  * share, took 39.7 s), and the value #4924's `HANG_GUARD_MS` holds. Each file that uses this module
- * sets it as its rows' default (`setDefaultTimeout(ROW_GUARD_MS)`, which a row's own limit and the
- * package script's `--timeout` both yield to and from), so the rows state no limit of their own. A
+ * sets it as its rows' default (`setDefaultTimeout(ROW_GUARD_MS)`: a row's own limit wins over it,
+ * and it wins over the package script's `--timeout`), so the rows state no limit of their own. A
  * wait here gives up `NAMED_BEFORE_GUARD_MS` before it, counted from the row's start (`rowStarted`,
  * which each such file calls from a `beforeEach` of its own), ends the child, and fails naming what
  * it waited for and what the child had written. A child that a loaded machine merely slows takes

@@ -828,10 +828,10 @@ const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
 // The rows below run the channel server as a child process of its own, with Bun's transpiler cache
 // off (`./transpiler-cache.ts`), and wait for what it answers or does: one that ends first is
-// named with its exit, and an answer or an exit that never comes fails the row by name before its
-// the hang guard this file sets as its rows' default (`ROW_GUARD_MS`, 120 s, `./row-deadline.ts`). A fixed 20 s decided these rows
-// before: at a load near 1,000 a server that wrote that cache into its empty HOME first had not
-// answered its `initialize` in 20 s.
+// named with its exit, and an answer or an exit that never comes fails the row by name before the
+// hang guard this file sets as its rows' default (`ROW_GUARD_MS`, 120 s, `./row-deadline.ts`). A
+// fixed 20 s decided these rows before: at a load near 1,000 a server that wrote that cache into
+// its empty HOME first had not answered its `initialize` in 20 s.
 beforeEach(rowStarted)
 setDefaultTimeout(ROW_GUARD_MS)
 

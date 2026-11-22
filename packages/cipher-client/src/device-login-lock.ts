@@ -333,6 +333,17 @@ export async function withLoginLock<T>(
   return answer;
 }
 
+/**
+ * Whether process `pid` holds the lock of the device login at `path` (`<path>.lock`, whose first
+ * word is its holder's pid, {@link withLoginLock}). The lock is read as every reader here reads it
+ * ({@link look}): never waiting on a named pipe, never following a link, and never past
+ * {@link DEVICE_LOGIN_MOST_BYTES}. No lock, and one that cannot be read, is held by no process.
+ */
+export async function loginLockHeldBy(path: string, pid: number): Promise<boolean> {
+  const seen = await look(`${path}.lock`, `the lock beside ${path}`).catch(() => null);
+  return seen?.value.startsWith(`${pid} `) === true;
+}
+
 /** Whether `name` is `prefix` and a UUID: a file a caller named with a fresh value of its own. */
 function namedWithUuid(name: string, prefix: string): boolean {
   return name.startsWith(prefix) && /^[0-9a-f-]{36}$/.test(name.slice(prefix.length));
