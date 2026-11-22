@@ -1020,6 +1020,18 @@ RULES = {
     f"{INFRA}/consumernames/mixedbuild_modes_test.go": [
         run(ENVOY, ["./cmd/listener"], "infra/consumernames/mixedbuild_modes_test.go:191 mixedBuildStartOnlyListener builds . in ../../cmd/listener "
             "with an -overlay of ../../internal/bus/session_fresh.go (:177), which that closure holds (root go.work)", mode="build")],
+    # The stores' migrations each harness applies (migratedDatabase os.ReadFile, and the t7 stack's
+    # database), read through `..` from the test's own directory.
+    f"{INFRA}/consumernames/harness_test.go": reads(
+        *[(f"{ENVOY}/internal/dispatch/store/migrations/{name}", "infra/consumernames/harness_test.go:545 dispatchMigrations, read by migratedDatabase (:577)")
+          for name in ("20261101143201_duty_holds.up.sql", "20261121002206_intake_consumers.up.sql")],
+        *[(f"{DAEMON}/internal/store/migrations/{name}", "infra/consumernames/harness_test.go:549 daemonMigrations, read by migratedDatabase (:577)")
+          for name in ("0063_consumer_positions.up.sql", "20261121001600_intake_consumers.up.sql")]),
+    f"{INFRA}/writerhold/t7rows_test.go": reads(
+        *[(f"{ENVOY}/internal/dispatch/store/migrations/{name}", "infra/writerhold/t7rows_test.go:514 dispatchMigrations, read by t7Stack.database (:465)")
+          for name in ("20261101143201_duty_holds.up.sql", "20261121002206_intake_consumers.up.sql")],
+        *[(f"{DAEMON}/internal/store/migrations/{name}", "infra/writerhold/t7rows_test.go:1612 daemonMigrations, read by t7Stack.database (:465)")
+          for name in ("0063_consumer_positions.up.sql", "20261121001600_intake_consumers.up.sql")]),
     f"{INFRA}/host/live_test.go": [run(INFRA, ["./cmd/pulumi-resource-envoy-infra"], "infra/host/live_test.go pulumitest.Plugin -> internal/pulumitest/pulumitest.go:170-171 go build", mode="build")],
     f"{INFRA}/internal/textcheck/core_imports_test.go": [
         run(INFRA, ["./core"], "infra/internal/textcheck/core_imports_test.go:20 moduleDeps, whose go list -deps ./core runs in ../.. (:31-32)", mode="build")],
