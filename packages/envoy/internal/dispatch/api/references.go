@@ -575,9 +575,16 @@ func (s *server) documentMentionExcerpts(ctx context.Context, query refs.Query, 
 	return nil
 }
 
-// getIssueReferences answers an issue's reference closure. ?versions=latest leaves each member's
-// artifact.versions holding only its latest version, under its own ETag; absent, empty or all is
-// the full answer. A repeated versions is refused rather than read by its first value.
+// getIssueReferences answers an issue's references read, one hop in each direction (refs.Closure):
+// links, every node the issue's own content links to, and linked_from, every node that links to
+// the issue or to its own content, each written [] when it has no row and never null. members are
+// the documents of links, each read whole by its ref_key, at depth 1 and with its row's via, and
+// truncated is false, since a read of one hop is never cut: both stay for the clients of the build
+// before, which read them alone. The read runs under referencesClosureBound (boundedClosure);
+// loadIssue before it and loadArtifactsByRefKey after it read by key on the pool, outside the
+// bound. ?versions=latest leaves each member's artifact.versions holding only its latest version,
+// under its own ETag; absent, empty or all is the full answer. A repeated versions is refused
+// rather than read by its first value.
 func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -603,7 +610,7 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	closure, truncated, err := s.boundedClosure(r.Context(), issue.Key)
+	closure, err := s.boundedClosure(r.Context(), issue.Key)
 	if err != nil {
 		if closureBoundHit(err) {
 			s.writeHandlerError(w, errorf(http.StatusServiceUnavailable, "REFERENCES_TIMEOUT",
@@ -613,8 +620,8 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	refKeys := make([]string, len(closure))
-	for index, member := range closure {
+	refKeys := make([]string, len(closure.Members))
+	for index, member := range closure.Members {
 		refKeys[index] = member.RefKey
 	}
 	artifacts, err := s.loadArtifactsByRefKey(r.Context(), s.deps.Store.Pool, refKeys, latestOnly)
@@ -622,8 +629,8 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	members := make([]model.ReferenceMember, 0, len(closure))
-	for _, closureMember := range closure {
+	members := make([]model.ReferenceMember, 0, len(closure.Members))
+	for _, closureMember := range closure.Members {
 		artifact, ok := artifacts[closureMember.RefKey]
 		if !ok {
 			s.writeHandlerError(w, fmt.Errorf("reference target %q disappeared while loading closure", closureMember.RefKey))
@@ -635,50 +642,124 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 			Via:      closureMember.Via,
 		})
 	}
-	etag := referencesETag(issue.LastSeq, members, truncated, latestOnly)
+	etag, err := referencesETag(issue.LastSeq, members, closure.Links, closure.LinkedFrom, latestOnly)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	w.Header().Set("ETag", etag)
 	if r.Header.Get("If-None-Match") == etag {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	WriteJSON(w, http.StatusOK, model.IssueReferences{Members: members, Truncated: truncated})
+	WriteJSON(w, http.StatusOK, model.IssueReferences{
+		Members:    members,
+		Truncated:  false,
+		Links:      closure.Links,
+		LinkedFrom: closure.LinkedFrom,
+	})
 }
 
-// referencesClosureBound bounds refs.Closure's walk for one GET of an issue's references, as the
-// read transaction's statement_timeout and on its context. On 2026-11-20 from 00:27Z the walk held
-// Dispatch's Cloud SQL instance at full CPU: every `dispatch read --issue` and the Artifacts tab
-// ask for it, and Query Insights gave that one statement 31,299 s of execution in 20 minutes, 12
-// times every other statement together. A walk cut at the bound answers 503 REFERENCES_TIMEOUT,
-// which the CLI prints as references unavailable, rather than holding a connection and a CPU for
-// as long as the walk takes. dispatch://INFRA-4704 rewrites the walk.
+// referencesClosureBound is the budget every statement of one GET of an issue's references shares
+// (boundedClosure). A read that reaches it answers 503 REFERENCES_TIMEOUT, which the CLI prints as
+// references unavailable, rather than holding a connection and a CPU for as long as the read
+// takes. On 2026-11-20 from 00:27Z the eight-hop walk this read replaced held Dispatch's Cloud SQL
+// instance at full CPU: every `dispatch read --issue` and the Artifacts tab ask for it, and Query
+// Insights gave that one statement 31,299 s of execution in 20 minutes, 12 times every other
+// statement together (cybermonklabs/legion#4554).
 const referencesClosureBound = 2 * time.Second
 
-// boundedClosure runs refs.Closure in a read transaction of its own under referencesClosureBound.
-// The rollback runs on a context of its own, as the near-copy gate's does (duplicates.go): the
-// read's context has expired exactly when the rollback matters, and pgx answers a rollback on an
-// expired context by destroying the connection instead of returning it to the pool.
-func (s *server) boundedClosure(ctx context.Context, issueKey string) ([]refs.Member, bool, error) {
+// boundedClosure runs refs.Closure in a read transaction of its own, through closureBudget, so
+// that every statement of the read - the out and in statements and each loader that names their
+// nodes - runs under what is left of referencesClosureBound since the read started. One
+// statement_timeout of the whole bound for the transaction would not hold the bound: the read
+// sends several statements, whose sum can pass the context's deadline with none past the bound,
+// and at that deadline pgx closes the connection while the server's statement runs on (its default
+// BuildContextWatcherHandler, as outbox/lease.go records). The context, a second past the bound,
+// stays as the last guard, for a wait no statement_timeout covers, such as the begin's. The
+// rollback runs on a context of its own, as the near-copy gate's does (duplicates.go): the read's
+// context has expired exactly when the rollback matters, and pgx answers a rollback on an expired
+// context by destroying the connection instead of returning it to the pool.
+func (s *server) boundedClosure(ctx context.Context, issueKey string) (refs.References, error) {
+	started := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, referencesClosureBound+time.Second)
 	defer cancel()
 	tx, err := s.begin(ctx)
 	if err != nil {
-		return nil, false, err
+		return refs.References{}, err
 	}
 	defer func() {
 		rollback, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), duplicateGateRollback)
 		defer cancelRollback()
 		_ = tx.Rollback(rollback)
 	}()
-	if _, err := tx.Exec(ctx, fmt.Sprintf("set local statement_timeout = '%dms'", referencesClosureBound.Milliseconds())); err != nil {
-		return nil, false, err
-	}
-	return refs.Closure(ctx, tx, issueKey)
+	return refs.Closure(ctx, closureBudget{tx: tx, started: started}, issueKey)
 }
 
-// closureBoundHit says whether boundedClosure's walk ended at its bound: Postgres cancelled the
-// statement (SQLSTATE 57014) or the context expired first.
+// closureBudget is boundedClosure's transaction tx as refs.Closure reads it (refs.Queryer). Before
+// each statement it passes on, it gives that statement what is left of referencesClosureBound
+// since started, the start of the read (setStatementBudget), so a statement that waits, on a lock
+// or for the CPU, takes its wait out of the time of every statement after it. It answers the
+// budget's refusal in place of a statement it does not send.
+type closureBudget struct {
+	tx      pgx.Tx
+	started time.Time
+}
+
+func (b closureBudget) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	if err := b.spend(ctx); err != nil {
+		return nil, err
+	}
+	return b.tx.Query(ctx, sql, args...)
+}
+
+func (b closureBudget) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	if err := b.spend(ctx); err != nil {
+		return refusedRow{err: err}
+	}
+	return b.tx.QueryRow(ctx, sql, args...)
+}
+
+// spend gives the next statement of the read what is left of referencesClosureBound since
+// started (setStatementBudget).
+func (b closureBudget) spend(ctx context.Context) error {
+	return setStatementBudget(ctx, b.tx, referencesClosureBound-time.Since(b.started))
+}
+
+// refusedRow is the row closureBudget answers for a statement it did not send: its Scan answers
+// the refusal.
+type refusedRow struct{ err error }
+
+func (r refusedRow) Scan(...any) error { return r.err }
+
+// errClosureBudgetSpent is setStatementBudget's answer when less than a millisecond of
+// referencesClosureBound is left before a statement of boundedClosure's read: the read is at its
+// bound, and the route answers it as it answers a statement Postgres cancelled there.
+var errClosureBudgetSpent = errors.New("the reference closure's budget has less than 1ms left")
+
+// setStatementBudget gives the next statement of boundedClosure's transaction tx what is left of
+// referencesClosureBound, left, so that the statements of the read share the one bound rather
+// than each having it whole. It sets statement_timeout for the rest of tx to the whole
+// milliseconds of left, rounded down, 1ms at 1 ms left, with
+// `select set_config('statement_timeout', $1, true)` after refs.ClosureTag, which starts every
+// statement of the read, so that pg_stat_activity names this statement as the read's too. Under
+// 1 ms left it sends no statement and answers errClosureBudgetSpent, which closureBoundHit reads
+// as the bound, because the timeout rounded down would be 0, and a statement_timeout of 0 turns
+// the timeout off.
+func setStatementBudget(ctx context.Context, tx pgx.Tx, left time.Duration) error {
+	milliseconds := left.Milliseconds()
+	if milliseconds < 1 {
+		return errClosureBudgetSpent
+	}
+	_, err := tx.Exec(ctx, refs.ClosureTag+"select set_config('statement_timeout', $1, true)", strconv.FormatInt(milliseconds, 10)+"ms")
+	return err
+}
+
+// closureBoundHit says whether boundedClosure's read ended at its bound: Postgres cancelled a
+// statement at the statement_timeout its budget set (SQLSTATE 57014), the budget had less than a
+// millisecond left for the next statement (errClosureBudgetSpent), or the context expired first.
 func closureBoundHit(err error) bool {
-	if errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errClosureBudgetSpent) {
 		return true
 	}
 	var pgError *pgconn.PgError
@@ -707,19 +788,43 @@ func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, model.ArtifactReferences{Outgoing: outgoing, ReferencedBy: referencedBy})
 }
 
-// referencesETag hashes what an issue references answer depends on. The trimmed answer
+// referencesAnswerForm is the line referencesETag hashes to name the form of the answer this build
+// writes, with links and linked_from beside members and truncated: an issue with no row answers a
+// body of its own on this build and on the build before, which writes neither list, so the two
+// must not share an ETag, and the issue's last_seq alone would give them one.
+const referencesAnswerForm = "form=members,truncated,links,linked_from"
+
+// referencesETag hashes what an issue's references answer depends on: the issue's last_seq,
+// referencesAnswerForm, each member's document at its latest version, and every row of links and
+// of linked_from whole, as its JSON encoding. A row carries its node's name, last change and
+// parent, and another node's new link to the issue adds a row: none of that moves the issue's own
+// last_seq, so the rows are hashed whole for such a change to give a new ETag. The trimmed answer
 // (latestOnly) hashes one more line naming its variant, so the full and trimmed answers of one
 // issue never share an ETag; the full answer hashes no such line.
-func referencesETag(lastSeq int, members []model.ReferenceMember, truncated, latestOnly bool) string {
+func referencesETag(lastSeq int, members []model.ReferenceMember, links, linkedFrom []model.ReferenceLink, latestOnly bool) (string, error) {
 	hash := sha256.New()
-	_, _ = fmt.Fprintf(hash, "%d\n%t\n", lastSeq, truncated)
+	_, _ = fmt.Fprintf(hash, "%d\n%s\n", lastSeq, referencesAnswerForm)
 	if latestOnly {
 		_, _ = io.WriteString(hash, "versions=latest\n")
 	}
 	for _, member := range members {
 		_, _ = fmt.Fprintf(hash, "%s@%d\n", member.Artifact.ID, member.Artifact.Versions[len(member.Artifact.Versions)-1].Number)
 	}
-	return `"` + hex.EncodeToString(hash.Sum(nil)) + `"`
+	// Each list is named with its count of rows, so a row that moves from one list to the other
+	// moves the hash too; the encoder ends each row with a newline.
+	encoder := json.NewEncoder(hash)
+	for _, list := range []struct {
+		name string
+		rows []model.ReferenceLink
+	}{{"links", links}, {"linked_from", linkedFrom}} {
+		_, _ = fmt.Fprintf(hash, "%s %d\n", list.name, len(list.rows))
+		for _, row := range list.rows {
+			if err := encoder.Encode(row); err != nil {
+				return "", fmt.Errorf("hash the %s row of %s %s: %w", list.name, row.Node.Kind, row.Node.ID, err)
+			}
+		}
+	}
+	return `"` + hex.EncodeToString(hash.Sum(nil)) + `"`, nil
 }
 
 // loadArtifactsByRefKey reads the documents refKeys name, each with every version in number

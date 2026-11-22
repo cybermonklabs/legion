@@ -1,0 +1,32 @@
+-- 20261120012547_set_back_observed_seq.up.sql — a set-back carries the Dispatch sequence of the
+-- write it undoes (dispatch://INFRA-3178 R3). The migration changes no table and runs no statement.
+--
+-- A set-back is the status row that writes the daemon's status back over a status that the daemon
+-- does not take (record.ReassertStatusWrite). The daemon queues a set-back in these cases. A
+-- session with a claim in the issue's tree writes a status, other than the owning architect's move
+-- of a child out of the workflow. A session with no claim in the tree writes a status on a root
+-- that runs or that waits on a person. The daemon's own hand-over todo on a child of a closed tree
+-- arrives stale, for example after the root of that tree came back.
+--
+-- The payload of a set-back now carries observedSeq, the Dispatch sequence of the write it undoes.
+-- Before each write, the outbox reads the issue's events after that sequence. When a later event
+-- changed the status and the daemon did not write that event, the row ends and writes nothing, so
+-- a set-back never writes over the owning architect's move or a person's that came after the write
+-- it undoes. A row without observedSeq, which an earlier release queued, writes as that release
+-- wrote it.
+--
+-- The release before this one decodes an outbox payload strictly (record.DecodeOutboxPayload,
+-- DisallowUnknownFields). A set-back that carries observedSeq fails that decode at every attempt,
+-- and that release retries it on its backoff until the roll forward. So a rollback of one project
+-- to an earlier image first removes the key from that project's status rows, with its daemon
+-- stopped. Daemons of several projects can share the database, and each runs only its own
+-- project's rows (split_part(issue, '-', 1)), so one project can roll back while another stays on
+-- this release: the statement names the project, <PROJECT>, which the operator replaces with its
+-- key. The way back is the last paragraph of this header (migrations.WayBack). docs/kubernetes.md
+-- carries the same block under "Rolling back the release that lets the owning architect's status
+-- stand", as the step an operator runs. internal/textcheck's
+-- TestTheSetBackSequenceWayBackIsOneTextInTheHeaderAndTheGuide holds the two to one text, and
+-- internal/store's TestTheSetBackSequenceWayBackLeavesWhatTheReleaseBeforeReads runs this one.
+--
+-- -- The Dispatch sequence that each set-back of one project carries.
+-- update outbox set payload = payload - 'observedSeq' where kind = 'dispatch_status' and payload ? 'observedSeq' and split_part(issue, '-', 1) = '<PROJECT>';

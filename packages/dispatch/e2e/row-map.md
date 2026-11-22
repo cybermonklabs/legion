@@ -273,6 +273,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/issue-page-d.e2e.ts` | each row signs in for real and turns the new page on through that login's stored preference, and the view row's counts are the server's coverage, results and block reads of the seeded issue |
 | `e2e/issue-page-g-view.e2e.ts` | its rows seed long planner replies through the server, three of them taller than the view, and read where the drawn page lays them out as it jumps, on the new page the reader's stored preference turns on |
 | `e2e/issue-page-g.e2e.ts` | the rows draw what the server stored and indexed - a document's blocks, the decisions read, a result, the one batched read of names - on the new page the reader's stored preference turns on |
+| `e2e/issue-page-h.e2e.ts` | the seed's approvals, claim, blockers and pins are the server's own, and one row writes each control's value through Dispatch and reads it back after a reload |
 | `e2e/issue-page-i.e2e.ts` | the server's reads fold the outline; read marks and typed words persist |
 | `e2e/issue-page-k.e2e.ts` | the view orders the plan's blocks and needs the server stored |
 | `e2e/issue-page-look.e2e.ts` | its rows read the Dispatch server's content type for the font file, its /THIRD_PARTY_NOTICES.txt, and the issue.page preference under a real sign-in |
@@ -340,7 +341,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/result-commit.e2e.ts` | the result line is read in the document margin's Pinned tab |
 | `e2e/search-tiers.e2e.ts` | its claim is the number of embeddings the server asks the fake embedder for, counted on the server's own calls |
 | `e2e/search.e2e.ts` | the server's search hits; the server's answer for the query |
-| `e2e/settings.e2e.ts` | mappings, defaults and architecture sources saved, refused and re-read |
+| `e2e/settings.e2e.ts` | project defaults and architecture sources saved, refused and re-read |
 | `e2e/shell.e2e.ts` | the server must revoke the session |
 | `e2e/signins.e2e.ts` | the broker's machine list and a Revoke decided there |
 | `e2e/smoke.e2e.ts` | the reader nobody signed in, where the stubbed layer's page is always signed in because its recording answers /auth/whoami |

@@ -226,10 +226,12 @@ func TestEveryWriterOfTheAPIPortWritesOneRefusalRecord(t *testing.T) {
 		{
 			writer: writerWriteError, name: "a grant's release",
 			drive: func(t *testing.T) answered {
+				// A body carrying the removed github_app is refused before the grant is read, so
+				// the record names no secret.
 				return send(t, http.DefaultClient, ts.sessionCall(t, key, enrollmentID, http.MethodPost, "/v1/grants/"+*worker.GrantID+"/values",
 					map[string]any{"github_app": map[string]any{"owner": "ada", "read_only": true}}, nil))
 			},
-			status: http.StatusBadRequest, code: "NARROWING_NOT_APPLICABLE", route: "POST /v1/grants/{id}/values", secrets: []string{"WORKER_TOKEN"},
+			status: http.StatusBadRequest, code: "GITHUB_APP_FIELD_REMOVED", route: "POST /v1/grants/{id}/values",
 			class: answer.CallerSession, caller: enrollmentID, isJSON: true,
 		},
 		{

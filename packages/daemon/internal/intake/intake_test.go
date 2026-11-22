@@ -1455,13 +1455,19 @@ func TestAnExistingConsumerKeepsItsPosition(t *testing.T) {
 	}
 }
 
+// consumerInfo reads the named consumer's info. A failed read fails the row, so the read waits
+// for the server until the row's hang guards end, the test binary's deadline less 30 s
+// (testwait.Remaining), in place of the five seconds nats.go gives a request whose context has no
+// deadline (its defaultAPITimeout), which would let a NATS server the machine holds decide it.
 func consumerInfo(t *testing.T, stream jetstream.Stream, name string) *jetstream.ConsumerInfo {
 	t.Helper()
-	consumer, err := stream.Consumer(context.Background(), name)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+	defer cancel()
+	consumer, err := stream.Consumer(ctx, name)
 	if err != nil {
 		t.Fatalf("look up consumer %s: %v", name, err)
 	}
-	info, err := consumer.Info(context.Background())
+	info, err := consumer.Info(ctx)
 	if err != nil {
 		t.Fatalf("consumer %s info: %v", name, err)
 	}
@@ -1546,9 +1552,15 @@ func testJetStream(t *testing.T) (jetstream.JetStream, jetstream.Stream) {
 	return js, testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
 }
 
+// publish publishes data on subject and returns its acknowledgement. The publish waits for the
+// server's answer until the row's hang guards end, the test binary's deadline less 30 s
+// (testwait.Remaining), in place of the five seconds nats.go gives a request whose context has no
+// deadline (its defaultAPITimeout), so a NATS server the machine holds is waited out.
 func publish(t *testing.T, js jetstream.JetStream, subject string, data []byte) *jetstream.PubAck {
 	t.Helper()
-	ack, err := js.Publish(context.Background(), subject, data)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+	defer cancel()
+	ack, err := js.Publish(ctx, subject, data)
 	if err != nil {
 		t.Fatalf("publish %s: %v", subject, err)
 	}
@@ -1559,27 +1571,37 @@ func publish(t *testing.T, js jetstream.JetStream, subject string, data []byte) 
 // to the one last names, with none left to deliver. It reads the stream position, not a count of
 // deliveries, because one message can be delivered more than once (the delivery mechanism:
 // ConsumerSpec.HandlerLimit's comment in consume.go). That is at-least-once delivery the consumer
-// deduplicates and which a delivery count would read as more.
+// deduplicates and which a delivery count would read as more. Its reads wait for the server until
+// the row's hang guards end (testwait.Remaining), as assertNoAckPending's do.
 func assertAcknowledgedThrough(t *testing.T, stream jetstream.Stream, consumer string, last *jetstream.PubAck) {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+	defer cancel()
 	testwait.Eventually(t, fmt.Sprintf("%s has acknowledged through stream sequence %d", consumer, last.Sequence), func() bool {
-		item, err := stream.Consumer(context.Background(), consumer)
+		item, err := stream.Consumer(ctx, consumer)
 		if err != nil {
 			return false
 		}
-		info, err := item.Info(context.Background())
+		info, err := item.Info(ctx)
 		return err == nil && info.AckFloor.Stream == last.Sequence && info.NumPending == 0 && info.NumAckPending == 0
 	})
 }
 
+// assertNoAckPending waits for consumer to owe no acknowledgement. Its reads wait for the server
+// until the row's hang guards end (testwait.Remaining), in place of the five seconds nats.go gives
+// a request whose context has no deadline: a read that fails only makes the next poll read again,
+// but each held read spends five seconds of the wait's own bound and the last one it makes decides
+// the row.
 func assertNoAckPending(t *testing.T, stream jetstream.Stream, consumer string) {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+	defer cancel()
 	testwait.Eventually(t, consumer+" has no acknowledgement pending", func() bool {
-		item, err := stream.Consumer(context.Background(), consumer)
+		item, err := stream.Consumer(ctx, consumer)
 		if err != nil {
 			return false
 		}
-		info, err := item.Info(context.Background())
+		info, err := item.Info(ctx)
 		return err == nil && info.NumAckPending == 0
 	})
 }
@@ -2092,8 +2114,8 @@ func TestPrepareArtifactReadiesAReviewEventBeforeItIsApplied(t *testing.T) {
 // said no until its reset. A failure that names no wait is retried after NakDelay. Either way the
 // review of the pull request the daemon records is applied once its read passes.
 func TestARateLimitedPermissionReadWaitsTheTimeGitHubNames(t *testing.T) {
-	// rateLimitWait is far longer than the 25 ms nak delay the other row is retried after, so a
-	// loaded runner's scheduling cannot make one row's wait read as the other's.
+	// rateLimitWait is far longer than the 25 ms nak delay the other row is retried after, so the
+	// delay each row's nak asks for tells the two apart.
 	const rateLimitWait = 2 * time.Second
 	for _, tc := range []struct {
 		name    string
@@ -2108,24 +2130,30 @@ func TestARateLimitedPermissionReadWaitsTheTimeGitHubNames(t *testing.T) {
 			createWrites(t, pool)
 			recordPullRequest(t, pool, "LEGION-208", 42)
 			js, _ := testJetStream(t)
-			spec := consumerSpec(&lockedBuffer{})
+			logs := &lockedBuffer{}
+			spec := consumerSpec(logs)
 			// The permission reads this test counts are the handler's own, so nothing but the
 			// failed read and its retry may read the permission. AckWait bounds each read the
-			// handler makes (resolveReviewPermission), and consumerSpec's 200 ms is the length of
+			// handler makes (recordedPullRequest, resolveReviewPermission), and any fixed window
+			// lets the machine decide whether one is cut: consumerSpec's 200 ms is the length of
 			// this handler's own work on a loaded runner - two pool reads and the fact's
-			// transaction - so this row sets it as a hang guard far above that work, leaving the
-			// failed read and its retry as the only two reads. The margin is what makes the count
-			// of two sound: a third read needs the whole minute to pass before a handling's nak
-			// or acknowledgement reaches the server. The campaign of dispatch://INFRA-1113
-			// measured that trip at 516.8 ms at its largest, under 16 busy loops on 2 CPUs, and
-			// the handler's own work and that trip together, about 717 ms, are a factor of about
-			// 80 below this window. The progress keeper reports nothing here: it ticks
-			// at a third of the window (spec.AckWait/3 in consume.go), so at 20 s, and each
-			// handling of this row ends, in a nak or in an acknowledgement, in about 200 ms, long
-			// before the first tick is due (keepInProgress, ackprogress.go). Where the margin
-			// closes, a third read can be made no earlier than a second delivery of the message
-			// (the delivery mechanism: ConsumerSpec.HandlerLimit's comment in consume.go).
-			spec.AckWait = time.Minute
+			// transaction - and a minute cuts a permission read of 61 s, whose nak brings a third
+			// read. So the window, and the row's wait for the review to be applied, are what is left
+			// of the test binary's deadline less 30 s (testwait.Remaining): a read however
+			// slow is waited out, leaving the failed read and its retry as the only two reads, and
+			// only one that never answers fails the row, by name, before the binary's own timeout.
+			// The window is also what makes the count of two sound: a third read needs the whole
+			// window to pass before a handling's nak or acknowledgement reaches the server. The
+			// campaign of dispatch://INFRA-1113 measured that trip at
+			// 516.8 ms at its largest, under 16 busy loops on 2 CPUs, and the handler's own work and
+			// that trip together, about 717 ms, are far below this window. The progress keeper
+			// reports nothing here: it ticks at a third of the window (spec.AckWait/3 in
+			// consume.go), and each handling of this row ends, in a nak or in an acknowledgement, in
+			// about 200 ms, long before the first tick is due (keepInProgress, ackprogress.go).
+			// Where the margin closes, a third read can be made no earlier than a second delivery
+			// of the message (the delivery mechanism: ConsumerSpec.HandlerLimit's comment in
+			// consume.go).
+			spec.AckWait = testwait.Remaining(t)
 			var mu sync.Mutex
 			var asks []time.Time
 			spec.ReviewPermission = func(context.Context, PullRequestReview) (bool, error) {
@@ -2141,18 +2169,31 @@ func TestARateLimitedPermissionReadWaitsTheTimeGitHubNames(t *testing.T) {
 			defer stop()
 
 			publish(t, js, "notifications.github.sjawhar.legion.pr.42.review", capturedGitHubEnvelope(t, "review.json"))
-			testwait.Eventually(t, "the review applied once its read passed", func() bool { return writeCount(t, pool) == 1 })
+			testwait.WithinPolling(t, testwait.Remaining(t), testwait.Poll, "the review applied once its read passed", func() bool {
+				return writeCount(t, pool) == 1
+			})
 			mu.Lock()
 			defer mu.Unlock()
 			if len(asks) != 2 {
 				t.Fatalf("the permission was read %d times, want twice", len(asks))
 			}
-			gap := asks[1].Sub(asks[0])
-			if tc.limited && gap < rateLimitWait {
-				t.Fatalf("the rate-limited read was made again after %s, want at least the %s GitHub named", gap, rateLimitWait)
+			// What the row holds is the delay the intake asked JetStream for: nakResolve logs it with
+			// the failure, from the value it passes to NakWithDelay. The time between the two
+			// permission reads is no measure of that delay, since it also holds the redelivery's own
+			// handling up to its permission read (the pull-request read among it), which a loaded
+			// machine or a slow store stretches; it is held from below alone, since no redelivery
+			// comes before the delay asked.
+			want := spec.NakDelay
+			if tc.limited {
+				want = rateLimitWait
 			}
-			if !tc.limited && (gap < spec.NakDelay || gap >= rateLimitWait) {
-				t.Fatalf("the failed read was made again after %s, want the %s nak delay", gap, spec.NakDelay)
+			const failed = `msg="read the reviewer's repository permission"`
+			written := logs.String()
+			if naks, line := strings.Count(written, failed), logLine(written, "level=WARN", failed); naks != 1 || !strings.Contains(line, " retry_in="+want.String()+" ") {
+				t.Fatalf("the intake logged %d naks of the failed permission read, the first %q, want one asking a delay of %s:\n%s", naks, line, want, written)
+			}
+			if gap := asks[1].Sub(asks[0]); gap < want {
+				t.Fatalf("the failed read was made again after %s, sooner than the %s its nak asked", gap, want)
 			}
 		})
 	}

@@ -98,11 +98,28 @@ type settlement struct {
 	reconciled     *pmdoc.Node
 	versioned      *pmdoc.Node
 	reconciliation settlementReconciliation
-	// snapshotCursor is the head the version records (doc_update_version), through which every one
-	// of the room's updates it holds is stored.
+	// readHead is the head of the document's stored history this settlement read under the
+	// document's lock, before it stored anything (readLocked). snapshotCursor is the head the
+	// version records (doc_update_version), through which every one of the room's updates it holds
+	// is stored; it equals readHead when the settlement stored no update (savedNothing).
+	readHead       int64
 	snapshotCursor int64
 	// published are the events this settlement appended, published once its transaction commits.
 	published []model.Event
+}
+
+// savedNothing reports whether this settlement wrote nothing that a later move of an approval
+// request reads, given whether it writes a version (versioning): it writes no version, stores no
+// update in the document's history - none of the room's updates, no block-id stamp and no ask- or
+// check-block repair, so the head it leaves is the head it read (readHead) - and lists no author,
+// neither a pending author nor an in-flight credit. A reopen's move reads the latest version and
+// the editor kept for it (FollowClosedIssueVersions); what else such a settlement writes - block
+// events in SettlementActor's name, the settled version's number in their payloads, the recorded
+// author of an unindexed ask block - changes neither. A settlement armed while another one commits,
+// as the resumption's pick of the row that one is about to delete arms it, finds nothing owed and
+// is such a settlement.
+func (st *settlement) savedNothing(versioning bool) bool {
+	return !versioning && st.snapshotCursor == st.readHead && len(st.credit.authors) == 0
 }
 
 // skipUnreadableSettlement reports whether err stops a settlement at a document whose tree it cannot
@@ -763,17 +780,24 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// doc_closed_edit_sources), for the reopen's mark to write back into the row it inserts
 	// (settlementPendingStatement) and the reopen's move to name (FollowClosedIssueVersions). A
 	// settlement on an open issue has named its editor itself, and one on a closed issue that
-	// credits SettlementActor names no editor, as the settlement after the reopen, crediting the
-	// same edits, named none then: each forgets the editor an earlier settlement kept. One on a
-	// closed issue whose credit is only the kept editor (settlementVersionCredit.kept), its version
-	// adding none of their text, keeps that same editor, so the reopen still finds the editor of
-	// the text the closed issue's versions hold. The delete and the keep are queued, as every write
-	// of this settlement is, for its write phase.
+	// credits SettlementActor for the edits it saves names no editor, as the settlement after the
+	// reopen, crediting the same edits, named none then: each forgets the editor an earlier
+	// settlement kept. One on a closed issue whose credit is only the kept editor
+	// (settlementVersionCredit.kept), its version adding none of their text, keeps that same
+	// editor, so the reopen still finds the editor of the text the closed issue's versions hold.
+	// So does one on a closed issue that saved nothing (savedNothing): it credits SettlementActor
+	// only because it found nothing to credit, and its commit deletes the pending row alone,
+	// whatever arming ran it after the settlement that kept the editor. The delete and the keep
+	// are queued, as every write of this settlement is, for its write phase.
 	var kept *model.Actor
 	if st.issueClosed && !st.credit.actor.SameAs(SettlementActor) {
 		kept = &st.credit.actor
 	}
-	if err := clearSettlementPending(ctx, tx, room, kept); err != nil {
+	if st.issueClosed && kept == nil && st.savedNothing(versioning) {
+		if err := clearSettlementPendingRow(ctx, tx, room); err != nil {
+			return settleDone, st.abandon(err)
+		}
+	} else if err := clearSettlementPending(ctx, tx, room, kept); err != nil {
 		return settleDone, st.abandon(err)
 	}
 	if err := st.reconciliation.nameVersion(ctx, tx, room, st.owner, settledVersion); err != nil {

@@ -28,9 +28,12 @@ const TakeoverSubjectPrefix = NotificationTopicPrefix + "envoy.takeover."
 // TakeoverSubject is the subject of one takeover record: role was taken from previous, by the try
 // of a claim write named attempt. Every try of a claim write gets a subject of its own, and every
 // later write of a record goes to that record's own subject, so a record's newest message is the
-// one that stands, and a pass of an older takeover never writes over a newer one. role is a role
-// token (one subject token, roles.PatternString) and previous a session id a session consumer can
-// be named for (SessionConsumerName), so each is one token.
+// one that stands, and a pass of an older takeover never writes over a newer one. role is the
+// role's claim key (contracts.RoleClaimKey): its bare name, one subject token
+// (roles.PatternString), or <project>.<role> for a free-form role claimed under a project, two
+// tokens; previous is a session id a session consumer can be named for (SessionConsumerName) and
+// attempt an id, one token each. So a subject's role is every token before its last two, and
+// contracts.SubjectProject reads its project from that key.
 func TakeoverSubject(role, previous, attempt string) string {
 	return TakeoverSubjectPrefix + role + "." + previous + "." + attempt
 }

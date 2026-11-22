@@ -72,16 +72,19 @@ type referenceDocument struct {
 	createdBy string
 }
 
-// referenceFixtureDocuments is how many documents a referenceFixture's comment cites: production's
-// median closure is 158 members.
+// referenceFixtureDocuments is how many documents a referenceFixture's comment cites, each
+// directly, so the read of one hop answers every one of them as a member. Production's median
+// answer held 158 members while the read walked eight hops, before dispatch://INFRA-4704; the one
+// hop answers fewer, and the fixture keeps that size as the answer an issue whose own content
+// cites that many documents still gets.
 const referenceFixtureDocuments = 160
 
 // referenceAnswerMinVersions is the fewest versions a referenceFixture's full answer must carry
-// across its members: production's median answer carries 2,205 version rows.
+// across its members: production's median answer of the eight-hop walk carried 2,205 version rows.
 const referenceAnswerMinVersions = 2205
 
 // referenceAnswerMinBytes is the smallest a referenceFixture's full answer may be: production's
-// median answer is about 1.02 MB.
+// median answer of the eight-hop walk was about 1.02 MB.
 const referenceAnswerMinBytes = 1_000_000
 
 // referenceFixtureCreators are the creators of a referenceFixture's documents beyond its first three.

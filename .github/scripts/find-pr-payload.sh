@@ -17,7 +17,9 @@
 # Its inputs, from the step's env:
 #   GITHUB_EVENT_NAME  the event, as Actions sets it.
 #   GITHUB_EVENT_PATH  the payload Actions wrote for that event.
-#   GH_TOKEN           the job's github.token. merge_group only: it reads the pull request.
+#   GH_TOKEN           the job's github.token. merge_group only: it reads the pull request,
+#                      through gh-read.sh's gh_wait_reset, which waits out a spent API budget
+#                      within the job's JOB_TIMEOUT_MINUTES and fails by name past it.
 #   GITHUB_REPOSITORY  owner/repo, as Actions sets it. merge_group only.
 #   RUNNER_TEMP        where the payload it writes lands. merge_group only.
 #
@@ -28,6 +30,8 @@
 # Its tests are in find-pr-payload.test.sh, which ci.yaml's test job runs.
 set -euo pipefail
 shopt -s inherit_errexit
+# shellcheck source=.github/scripts/gh-read.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-read.sh"
 
 event=${GITHUB_EVENT_PATH:?GITHUB_EVENT_PATH must name the event payload}
 event_name=${GITHUB_EVENT_NAME:?GITHUB_EVENT_NAME must name the event}
@@ -46,6 +50,6 @@ repository=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must name the repository as ow
 temp=${RUNNER_TEMP:?RUNNER_TEMP must name the temporary directory of the runner}
 pull="$temp/pull-request.json"
 payload="$temp/pull-request-event.json"
-gh api "repos/$repository/pulls/$number" > "$pull"
+gh_wait_reset gh api "repos/$repository/pulls/$number" > "$pull"
 jq --argjson number "$number" '{pull_request: ., number: $number}' "$pull" > "$payload"
 echo "$payload"

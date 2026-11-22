@@ -141,7 +141,9 @@ second time. On top it starts a `cmd/dev-proxy-stands` of its own (the stand-in
 services S and T, the GitHub, Google and Microsoft endpoints and the AWS service,
 and the certificate authority they are signed by), which is a second such process:
 `dev-broker.sh` starts one too, for the GitHub its own `github-app` secrets mint
-at, and this script points nothing at that one. It then writes a rules file and a
+at, and this script points nothing at that one. It then writes a profiles file
+(`BROKER_PROFILES_FILE`, each secret a profile of its own name with a proxy block,
+and `AIRLOCK_PLAIN_GITHUB`, the `github-app` secret's profile with none) and a
 fake Secrets Manager naming each other, starts **two** broker processes on a
 database of their own with the whole `BROKER_AIRLOCK_*` block, puts one TCP front
 over both brokers' API ports and one over both proxy ports (`dev-airlock-stands
@@ -269,7 +271,7 @@ git step reads the proxy from `GIT_CONFIG_*`. Each file is a `<(printf …)` pat
 
 Where a check needs a secret the stack does not hold, the run extends the stack's own
 fake Secrets Manager and makes every broker reread it. A control that needs other
-rules or another proxy setting — `k4`'s, which turns the refusal of a loopback address
+profiles or another proxy setting — `k4`'s, which turns the refusal of a loopback address
 off for one host — is a second broker process on the stack's own database, authority
 and stand-ins with that one setting changed, and the step's `HTTPS_PROXY` pointed at
 it. Every broker the run starts of its own — that control's, `k7`'s and the ones `k8a`
@@ -277,7 +279,7 @@ expects to refuse to start — takes its environment from the running stack brok
 (`/proc/<pid>/environ`) with the few variables it must change put in their place, so
 none of them can be missing a setting `dev-airlock.sh` gave the stack's. `k7` goes
 furthest with that device: its names are the consumers' own and its hosts are the real
-services, so its broker has the stack's whole environment with its rules file, its two
+services, so its broker has the stack's whole environment with its profiles file, its two
 ports and its public URL changed, and both `AGENT_SECRETS_URL` and the grant's proxy
 point at it. `k5`'s control is a second stack under `--keep-values`, `k6`'s a second
 stack under `--no-kind`, and `k9`'s a second stack under `--idle-seconds 60`.
@@ -302,62 +304,61 @@ and `k15` needs `lake` from the Lean toolchain the environment names. Each bound
 listens on one loopback address and port 443, so only one stack runs on a machine at a
 time.
 
-## github-narrowing-check.sh
+## github-profile-check.sh
 
-Runs the four checks of `agent-secrets`' GitHub App narrowing that need a broker, a
-GitHub and a session — `k1`, `k2` and `k4` of dispatch://INFRA-2687's verification
-document, and `k1` of dispatch://INFRA-3099's — end to end on a local stack of its
-own, and prints one `PASS` or `FAIL` line for each property they name, then `all <n>
-assertions passed` when every one passed, so a reader tells a complete run from a
-cut-off one.
+Runs the end-to-end checks of the broker's named GitHub profiles on a local stack of
+its own — `p1`, the profiles file served; `p2`, a GitHub profile's token asked for with
+its permissions cut to what the installation holds; `p3`, a proxied profile's token
+kept in the proxy and sent only where its block allows; and `p4`, a body carrying the
+removed `github_app` field refused `GITHUB_APP_FIELD_REMOVED` — and prints one `PASS`
+or `FAIL` line for each property they name, then `all <n> assertions passed` when every
+one passed, so a reader tells a complete run from a cut-off one.
 
 ```bash
-DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/github-narrowing-check.sh
+DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/github-profile-check.sh
 ```
 
-It starts `dev-broker.sh`, which holds the three `github-app` secrets and the
-stand-in GitHub they are minted against, and enrols one pod session of the service
-that owns two of them, as the Legion daemon enrols a worker pod, so each request for
-one of those is granted without asking. `k1` spends a narrowed token at the stand-in
-and reads back what the narrowed mint asked GitHub for; `k2` sets the stand-in to
-refuse the mint (HTTP 422) and then to answer wider than the narrowing asked, at the
-answer route the stack's banner names (`POST {"mode":
-"ordinary"|"refuse"|"refuse-repository"|"refuse-permissions"|"widen"|"fail-once",
-"repository": "<name>"}`), since one stack drives every answer this check needs;
-`k4` drives the secret whose
-release holds two installations, which no one token can be handed over for; and `k1`
-of INFRA-3099 drives the third secret, the one whose request reaches a person, with
-the stand-in refusing one repository, so that narrowing is refused before the
-approval request is opened: the command does not run, the refusal names the secret,
-that repository and the sentence it carries, its stderr names no page to approve
-anything on, the broker's own `credential_requests` gains no record, and the
-stand-in's records hold the search for the refused part and a revoke for every token
-it minted. Each check runs its own negative control — INFRA-3099's is the same
-request for a repository the stand-in reaches, approved on the broker's page as the
-person does, by `approve_record` and `approve_watch` copied from `airlock-check.sh`
-because each check script here stands alone — and every line names the exit status it
-read, because a property that failed and a command that never ran look alike in a
-transcript that holds neither.
+It starts `dev-broker.sh`, whose profiles file names its three `github-app` secrets and
+the two proxied profiles of `DEMO_GITHUB_APP` (`DEMO_GITHUB_READ` and
+`DEMO_GITHUB_ADMIN_READ`), with `DEV_BROKER_GITHUB_PERMISSIONS`, so the App's
+installations hold less than the profiles ask for, and `DEV_BROKER_PROXIED_GITHUB_IP`,
+so the stand-in GitHub is served over TLS on port 443 of a loopback address
+(`GITHUB_PROFILE_CHECK_GITHUB_IP`, 127.0.0.9 unless set), where the broker's proxy
+reaches it as `api.github.test`. It is the one driver that hands the stand-in an
+installation map (`dev-airlock-stands --installation-permissions`). It enrols one pod
+session of the service that owns the secrets, as the Legion daemon enrols a worker pod.
+`p1` reads the broker's `broker: profiles applied` line, runs `broker profiles check`
+on the stack's file, and adds a `github-app` secret no profile names to the store,
+which is refused `PROFILE_REFUSED` naming `github-app-no-profile`. `p2` reads the token
+request the stand-in recorded, the broker's left-out lines and the values answer's
+`github_left_out`, drives an empty cut (`PROFILE_MINT_REFUSED`, no token request) and a
+token wider than asked (`MINT_FAILED`, given back). `p3` runs a child under each proxied
+profile: its value, sent straight to the stand-in, is refused; its read through the
+proxy reaches the stand-in with a minted token; a `POST`, which the proxy blocks allow
+no profile, is refused by the proxy and reaches nothing; and the stand-in's deploy-key,
+organization-installations and commit-status routes answer by what the cut left in
+each token. `p4` posts a `github_app` body with `curl` to `POST /v1/requests` and
+`POST /v1/grants/{id}/values`.
 
-No line it prints is a credential: the child reads its token out of its own
-environment and prints the repository it asked for and the status it got, and a
-refusal is printed as `agent-secrets` wrote it, which names no part of any token. The
-child's `curl` calls carry no `--cacert` and no `--resolve`: the GitHub stand is
-served over plain http on `127.0.0.1`, because the broker mints a type's value with
-an HTTP client that trusts the host's own roots and nothing else.
+No line it prints is a credential: a child prints the status of each call and no part
+of any answer, a token read back from the stand-in is printed by its length, and a
+refusal is printed as `agent-secrets` wrote it. Every line names the exit or HTTP status
+it read. When the stack does not start, or the session cannot be enrolled, it prints one
+`UNKNOWN` line saying which and exits 3, since no property was read. It exits 0 when
+every property passed, 1 when one did not, and 2 on a usage error; `--keep-stack`
+leaves the stack and the run's work directory up to look at a failure with, and
+`--help` prints the usage.
 
-`--keep-stack` leaves the stack and the run's work directory up to look at a failure
-with, `--help` prints the usage, and a usage error exits 2.
-`DEV_BROKER_POSTGRES_URL` is required: the stack is driven against the server it
-names, and the record property is read from the broker's own database there, whose
-name the script takes from `dev-broker.sh`'s own log and puts in place of that URL's
-path, so no password is ever parsed out of a banner. It needs bash, curl, jq, go,
-psql and setsid, and takes a few minutes once Go's build cache holds the stack's
-binaries. On a cold cache `dev-broker.sh`'s six builds take longer than all the rest,
-so the script waits for them under a bound of their own, up to 30 minutes, and then
-for the stack's start under a short one. The stack runs in a session of its own and
-is stopped as one process group, so a stop during the build — the script's exit, a
-wait that ran out, Ctrl-C — ends that build with the stack.
+Its negative control swaps the broker alone: `DEV_BROKER_BROKER_BIN`, which it passes
+to `dev-broker.sh`, names a broker binary that script starts in place of the one it
+builds, and a broker built before the profile mint and the proxy's profile token fails
+`p2` and `p3`. It needs bash, curl, jq, go and setsid, and a machine that lets this
+user bind port 443 of a loopback address, as a Legion pod does; elsewhere the stand-in
+cannot bind it and the run is `UNKNOWN`. It takes a few minutes once Go's build cache
+holds the stack's binaries; on a cold cache it waits for `dev-broker.sh`'s six builds
+under a bound of their own, up to 30 minutes. The stack runs in a session of its own and
+is stopped as one process group, so a stop during the build ends that build with the
+stack.
 
 ## project-secrets-check.sh
 
@@ -909,9 +910,11 @@ in silence:
   `claude-envoy@legion-plugins` prints `SKIPPED`. A pi-envoy in `~/.omp/plugins` or a profile's
   plugin tree that is not the dotfiles' copy, a claude-envoy recorded in `~/.claude` or another
   `CLAUDE_CONFIG_DIR`, a link that does not resolve, a directory the gate may not search, a
-  marketplace entry it cannot read, and a marketplace that names claude-envoy twice print
-  `UNKNOWN`. A session started before a pin moved still runs the plugin it loaded: the gate reads
-  pins and installs, not processes.
+  marketplace entry it cannot read, a marketplace that names claude-envoy twice, and a profile,
+  `HOME`, dotfiles directory or `CLAUDE_CONFIG_DIR` whose name is not UTF-8 print `UNKNOWN`. The
+  gate hands each path to `python3` and `jq` as an argument, and a launcher that reads its
+  arguments as text (a mise shim) changes a name that is not UTF-8. A session started before a pin
+  moved still runs the plugin it loaded: the gate reads pins and installs, not processes.
 
 It prints a line per pin or surface (`PASS`, `GATE SHUT`, `UNKNOWN`, `SKIPPED`, `VM HUB` or
 `NO VM HUB`) and the verdict on the last: `GATE OPEN` (exit 0) only when every pin it read passed
@@ -943,6 +946,169 @@ it sources; CI runs it in the `envoy-go-checks` job of `.github/workflows/ci.yam
 with it: a copy of the gate whose VM leg reads an absent `listenerImage` as no hub, and one that
 reads pi-envoy alone in an image, must each open on the fixture that exists to catch it.
 
+## legacy-subjects-gate.sh
+
+Says whether any reader or writer of the bus still uses the old form of a name the project rename
+moved: an issue event named by its key alone (`notifications.dispatch.issue.ACME-12.…`), an agent's
+or a role's name with no project (`notifications.agent.<session>`, `notifications.role.<role>`), a
+kept lane with no project, and a failed-delivery report of one. It is the reading a pull request
+quotes before it refuses the old form and deletes the code that reads both forms. One reading
+cannot show that nothing moved, so the gate is read twice, at least the stream's retention apart
+(`ENVOY_NOTIFICATIONS`' `max_age`, 72 hours):
+
+```bash
+packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record first.json [--listener <machine>=<url>]... [--bus-alias <nats-urls>]...
+# at or after the time the first run names:
+packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record second.json --since first.json [--listener <machine>=<url>]... [--bus-alias <nats-urls>]...
+```
+
+A listener outside the cluster is read over `https`; `--insecure` takes an `http://` URL, whose
+answer anyone on the way could read or change. `--bus-alias <nats-urls>` names another `NATS_URLS`
+that reaches the same NATS servers as the listener Deployment's: a listener container that dials
+it is read as one of the bus's. When Service `envoy-hub`, which `envoy-listener` dials, selects a
+hub's pods in the cluster, the hub's own Service `envoy-nats` reaches the same servers, and the
+hub's session listener `envoy-nats-listener` dials that one, so a reading of such a cluster names
+it: `--bus-alias nats://envoy-nats.envoy.svc.cluster.local:4222`. Give the same `--bus-alias` at
+both readings: a listener the first reading read and the second skips prints `UNKNOWN`. Once the
+hub is not static, `--token-file <path>` names where the listener Deployment mounts its projected
+NATS token, which the Job then connects with in place of the seed, and `--inbox-prefix <prefix>`
+the inbox prefix the listener identity's grant subscribes, which every `nats` call of the Job then
+takes.
+
+What it reads, all of it read-only:
+
+- **Every listener's counter**: `envoy_listener_legacy_subjects_total` (every label set: `interest`
+  for a topic a registration named, `role` for a role a claim named, `role_read` for a valid role a
+  publish, the role lane or `GET /v1/roles/<role>` named) and the start-time gauge
+  `envoy_listener_start_time_seconds`, whose one label, `machine`, is the listener's
+  `ENVOY_MACHINE_ID`. The listeners in the cluster are found by what they run, not by name: every
+  container, in any namespace, of an image whose path ends `legion/envoy` that runs the image's own
+  entrypoint (`envoy-listener`), on the bus the reading is about: the `NATS_URLS` of the
+  `envoy-listener` Deployment, or a `NATS_URLS` named with `--bus-alias`. A listener container on
+  another bus (a load-test stack's, on its own NATS) is named (`SKIP`), with its machine and its
+  `NATS_URLS` (any user, password or token in it masked: `user:***@`, `***@`), and not read. Each
+  is read from its pod's log: a listener logs the two metrics, as `/metrics` serves them, on a
+  `listener legacy subjects` line every minute, and the gate takes the newest of the last five
+  minutes, which must be at most three minutes older than
+  the reading. The log and not `/metrics`, because the operator may read every listener pod's log
+  and may not reach Dispatch's listener's `/metrics`: the API server's pod proxy is refused in
+  namespace `dispatch`, and that listener's NetworkPolicy admits its port from Dispatch's own pods
+  alone. A listener outside the cluster, such as a VM hub's, is named with
+  `--listener <machine>=<url>`, the machine being its `ENVOY_MACHINE_ID`, and read at
+  `<url>/metrics`. Each reading is held to the machine it was read as: an outside listener's gauge
+  must name the machine the operator gave, and a pod's must name its container's
+  `ENVOY_MACHINE_ID` when it names one, so a URL serving another listener prints `UNKNOWN` rather
+  than counting for that machine. Every listener with its durable on the bus (`listener-<machine>`),
+  bound now or not, must be one of those: one that is not prints `UNKNOWN` by name, so a listener
+  nobody named, or one offline, asleep or restarting at the reading, is never left out of the count
+  while its durable lasts (7 days unbound); the line says to name it with `--listener` if it runs
+  outside the cluster, or its `NATS_URLS` with `--bus-alias` if it runs in the cluster and dials the
+  bus by another address. A listener container on another bus that serves as the machine of a
+  listener the reading read prints `UNKNOWN`, naming both: that machine's durable can be either's,
+  so the one read does not show what the other counted. So does one whose `ENVOY_MACHINE_ID` is no
+  literal value (set through `valueFrom` or `envFrom`, holding a `$(VAR)` reference Kubernetes
+  expands, or not set), whose machine the gate cannot read; set it as a literal value. A literal
+  machine is read trimmed of white space, as the listener reads it. A listener container that lists
+  `ENVOY_MACHINE_ID` or `NATS_URLS` more than once prints `UNKNOWN`, naming every value: the
+  kubelet takes the last entry of a name, and the gate would read the first.
+- **Over NATS**, from a one-off Job in namespace `envoy` that connects as the in-cluster listener
+  does (`lib/legacy-subjects-gate-nats.sh`): who the server says the connection is
+  (`$SYS.REQ.USER.INFO`, which the in-cluster listener's static grant refuses, so the gate then
+  names the credential: the seed's nkey user, or the token's subject); the stream's info; every
+  consumer of the stream (`$JS.API.CONSUMER.LIST`, which the listener's grant holds, where `nats
+  consumer ls` asks `CONSUMER.NAMES`, which it does not); the stream's subjects under
+  `notifications.dispatch.issue.>`, `notifications.agent.>`,
+  `notifications.envoy.exceptions.notifications.agent.>` and `notifications.envoy.kept.>`; the
+  last message of each of those subjects in an old form (`$JS.API.STREAM.MSG.GET` by
+  `last_by_subj`: its subject, stream sequence and time alone, never its content; at most 1000 of
+  them, the rest counted, since they only name the newest old-form message and decide no verdict);
+  and every record of the interest store `envoy_interests`. A list longer than one answer is read
+  page by page, each page from the last item of the page before, and a refused or empty answer
+  ends that list's reads at once.
+
+The first reading shuts on no old-form name. The stream keeps the old-form messages published
+before every producer moved for its whole retention, and interest records and consumer filters may
+still be in an old form, so the first reading names each it finds (`FOUND`) and records the
+stream's last sequence, the newest old-form message and every old-form counter. The second reading,
+at least the retention later, shuts on any old-form message the stream still holds (one published
+after the first reading's last stream sequence named apart); a listener whose count rose
+under any kind; a consumer one of whose filters only an old-form name matches and whose new form
+the same consumer does not also filter under every project its names carry (a Legion daemon's
+`legion-go-<project>-<kind>` or any other; a session consumer filters both forms of its topics
+until the old form is refused, so its old filter loses nothing; a new form under one project,
+beside an old filter whose names carry any, covers that project alone); an interest record holding
+an old-form topic other than its session's own agent subject, which the listener writes into every
+record itself until the old form is
+refused; a reading named with `--since` that shut the gate; and less than the retention between the
+two, the readings' and each listener's own two reads of its counter. The old form is the gate's own
+rule (`lib/legacy-subjects-gate-forms.jq`, `old_form`, which the gate also hands the Job to choose
+the subjects whose last message it reads), so the gate stays right once the code that reads both
+forms is deleted. It takes as old a filter that matches some old-form name of a family the rename
+moved and no new-form name of it, even where it names no key: `notifications.dispatch.issue.*.comment.created`
+has the old form's length, one token short of every new-form issue event's name, so it hears the
+old form alone; the listener's counter takes it as old too (`contracts.LegacyIssueFilter`). A filter
+that reaches a family through a wildcard in the family's own tokens
+(`notifications.dispatch.*.*.comment.created`, `notifications.*.reviewer`, `*.role.reviewer`,
+`notifications.envoy.kept.*.x`) is held to the same rule; the counter holds an issue filter to it,
+and is narrower on the agent, role and kept families' wildcards.
+
+What it cannot see prints `UNKNOWN`, never `GATE OPEN`: a surface it could not read or that
+answered nothing (no listener, no Legion daemon consumer, no issue or agent subject on the stream,
+no interest record, which a production bus always holds), a refused read named by its request, a
+list whose pages do not join (the server's count changed between them, a page does not start at
+the last item of the one before, or fewer distinct items were read than the server counts), an
+answer that is no JSON object, a listener that is not running or whose newest counter line is
+stale, a build that logs or serves no old-form counter, a reading whose start-time gauge names
+another machine than the one read (or none, outside the cluster), a listener that restarted between
+the readings (its pod's restart count or its start-time gauge moved, or it is a new pod), a
+listener of the first reading that is gone, a listener on another bus that serves as the machine of
+a listener read or whose `ENVOY_MACHINE_ID` is no literal value, a start-time gauge served at one
+reading only, a record that cannot be written,
+and at the second reading: a first reading that did not read every surface, a stream that is not the
+one the first reading read (its `envoy_stream_id` changed), a stream that does not hold the whole
+window (its first message is younger than the window, less an hour: it was purged or made anew),
+and readings further apart than a listener's durable outlives its listener. A listener read at two
+readings is compared only while both readings show it is the one process. A judgement that fails
+on what it was given prints `UNKNOWN` and writes its record too.
+
+The Job takes the ServiceAccount, the NATS URL, and the NATS seed file (or, with `--token-file`,
+the projected token) and the volume holding it from the listener Deployment `envoy/envoy-listener`
+as deployed, runs the nats-box image the deployment pins for its own NATS Jobs as nobody (65534)
+with every capability dropped, no Kubernetes API token mounted and a scratch directory in memory,
+with `backoffLimit: 0`, `activeDeadlineSeconds: 300`, `ttlSecondsAfterFinished: 600`, and labels
+`created-by: legacy-subjects-gate` and `owner: <your login>` (`unknown` for a uid with no name).
+The gate reads the Job's log, deletes it and reads back that no Job or pod of its name is left;
+one it could not delete prints `UNKNOWN` with the command that deletes it, and one it could not
+create is never deleted. The Job's log holds what the gate judges and no more: of an interest
+record, its session id and its topics, never its directory, machine or title; of a stored message,
+its subject, stream sequence and time; of a seed `nsc` could not read, a fixed line. The cluster
+keeps that log in its logging backend after the Job is deleted, as it keeps the listener's own,
+which already logs every topic it delivers, so the Job adds no kind of text the namespace does not
+log.
+
+It prints `IDENTITY` (whom the NATS reads ran as), `READ`, `SKIP` (a listener container on another
+bus, with its machine), `PASS`, `FOUND` (an old-form name a first reading found), `GATE SHUT` or
+`UNKNOWN` per surface, the Job's creation and deletion, and the
+verdict alone on the last line; no line of a reading prints a URL's user, password or token
+(`user:***@`, `***@` in its place), whether a `NATS_URLS` or a `nats` error naming its server holds
+it. The last line is `GATE OPEN` (exit 0) at a clean second reading, `GATE SHUT` (exit
+1), `UNKNOWN` (exit 3), and at a first reading that read every surface `FIRST READING`, naming its
+`FOUND` count, the stream sequence the second reading reads after, and when to read again (exit 4).
+It writes the reading to `--record` in every case, as a new file in a directory that exists when
+the gate starts: a file made at that path meanwhile is left as it is, and the reading prints
+`UNKNOWN`. A second reading that opened is a first reading for the next window. A usage error exits
+2 and reads nothing. It
+needs `kubectl` signed in to the cluster as an account that may list pods in every namespace, read
+the logs of the listener pods in each namespace that runs one, read the listener Deployment, and
+create, read, read the logs of and delete Jobs and pods in `envoy` (a developer box's account: list
+through its `container.viewer` role, the rest through its `edit` role in `envoy` and its `pods/log`
+read in `dispatch`), plus `jq`, `curl` and `base64`.
+
+`legacy-subjects-gate.test.sh` proves every verdict behind a fake `kubectl` and a fake `curl`,
+with the Job's log written in its own format, runs the Job's own script under `sh` behind a fake
+`nats`, and holds the old-form rule row by row; CI runs it in the `envoy-go-checks` job of
+`.github/workflows/ci.yaml`.
+
 ## Measuring search on a copy of the corpus
 
 Three scripts measure a change to Dispatch search against the real corpus rather than a seeded
@@ -961,6 +1127,12 @@ it is restored, whether or not the restore succeeded. `DISPATCH_CORPUS_CONTAINER
 `DISPATCH_CORPUS_DATABASE` (default `dispatch_corpus`) name the copy. Run again while the container
 holds the database, it prints the URL and restores nothing; `docker rm -f -v <container>` deletes the
 copy and its data volume.
+
+`corpus-copy.sh` restores the dump with `restore-dispatch-dump.sh <dump-file> [database-name]`,
+which restores one dump on any server: into a database of its own on the server
+`DISPATCH_ADMIN_URL` names (default: `dispatch-pg`'s), after which it prints that database's
+`DATABASE_URL`. The printed URL leaves out any password `DISPATCH_ADMIN_URL` carries, which its
+operator already holds, and keeps the default's fixed dev password `dispatch`.
 
 `search-smoke.sh` prints what a searcher sees for each query in a file
 (`search-smoke-queries.txt` is one): it starts `envoy-dispatch` against the copy, built from this

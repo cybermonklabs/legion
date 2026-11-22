@@ -310,40 +310,27 @@ func planAskIfOwed(ctx context.Context, q Queryer, askID, serverURL string) (Ite
 	return repair, nil
 }
 
-// askPartLinks is the from and where of a read of the links the current parts of an ask hold,
-// the link row aliased r and the part holding it b, each link sourced as the ask whose part
-// holds it (r.ask_id). An ask's own refs row holds the links of its question alone, so a link
-// written in an option or in the answer is in ask_block_refs and in no edge of the ask's row,
-// where a comment's or a message's row holds every link its blocks hold. A removed part keeps
-// its row with no position, so the links it held drop out until a revision holds the part
-// again. The caller selects its own columns and adds its own conditions with `and`.
-//
-// The from and the test of the part are also held apart, for a caller that joins a relation of
-// its own to each link (closureQuery): a join belongs before the where, so such a caller writes
-// the two around its own (askPartLinksFrom, askPartLinksCurrent).
-const (
-	askPartLinksFrom = `
-		from ask_block_refs r
-		join ask_blocks b on b.ask_id = r.ask_id and b.block_id = r.block_id`
-	askPartLinksCurrent = `
-		where b.position is not null`
-	askPartLinks = askPartLinksFrom + askPartLinksCurrent
-)
-
 // asksCitingTheDocument lists, as the ask itself, every ask holding a current part that cites
 // the document whose ref_key is the numbered parameter param, or one of that document's current
 // blocks: the arms a whole-document "in" read adds (readEdgeRows). Each ask is listed once per
 // target it cites, at the latest time one of its parts took that link; the read's own dedupe
 // (ReferencedBy) keeps it once overall, as it does for a comment citing the document from two
-// blocks.
+// blocks. The arm over the document's blocks reads their ids once and then ask_block_refs by its
+// index of targets for each id, as keyedBlockArm reads every link table.
 func asksCitingTheDocument(param string) string {
 	ask := `'` + string(ItemAsk) + `', r.ask_id::text, max(r.created_at), max(r.source_seq), `
-	return `select r.kind, ` + ask + `null::text` + askPartLinks + `
-		and r.to_kind = 'artifact' and r.to_id = ` + param + `
+	return `select r.kind, ` + ask + `null::text
+		from ` + itemBlockLinks(ItemAsk) + `
+		where ` + itemBlockCurrent + ` and r.to_kind = 'artifact' and r.to_id = ` + param + `
 		group by r.kind, r.ask_id
 		union all
-		select r.kind, ` + ask + `r.to_id` + askPartLinks + `
-		and r.to_kind = 'block' and r.to_id in ` + documentBlockIDs(param) + `
+		select r.kind, ` + ask + `r.to_id
+		from ` + documentBlockIDs(param) + ` k (node_id)
+		cross join lateral (
+			select r.kind, r.ask_id, r.created_at, r.source_seq, r.to_id
+			from ` + itemBlockLinks(ItemAsk) + `
+			where ` + itemBlockCurrent + ` and r.to_kind = 'block' and r.to_id = k.node_id
+		) r
 		group by r.kind, r.ask_id, r.to_id`
 }
 

@@ -4,4 +4,4 @@ Before you change or design anything, read the code that already does the neares
 
 Nothing needed for correctness is deferred. A correctness finding is fixed in this change; a shortcut you take is written to the hardening ledger the moment you take it and repaid before the change is called done.
 
-Give a person no date or time estimate unless it names the work left and what it rests on, a measured rate or a step whose length is known; with nothing measured, say what is left and what decides it, and after an estimate proves wrong, say why it was wrong and what changed, not only a new date.
+Give a person no estimated date or duration: say what work is left and what decides when it ends.

@@ -5,12 +5,13 @@ import { useLocation } from "react-router-dom";
 import { primarySpec } from "../../../api/issue-cache";
 import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type { CheckBlock } from "../../../api/types";
+import { EVENT_FRESH, standsFailed } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
 import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
-import { EVENT_FRESH, standsFailed, useIssueTree } from "../useIssueTree";
+import { useIssueTree } from "../useIssueTree";
 import {
   type FailedRead,
   queryTyped,
