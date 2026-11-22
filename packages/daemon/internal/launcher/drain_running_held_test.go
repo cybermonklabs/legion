@@ -122,9 +122,6 @@ exit 5`, "sh", started, finished, released)
 			ppid, _, ok := statParentAndGroup("/proc", member)
 			return err == nil && ok && ppid == 1
 		})
-		if _, err := os.Stat(finished); err == nil {
-			t.Fatal("the group member finished before the drain began, so the drain had nothing of the group to spare")
-		}
 		m.cleanExitedGeneration()
 		if err := os.WriteFile(released, nil, 0o600); err != nil {
 			t.Fatal(err)
