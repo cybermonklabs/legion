@@ -165,15 +165,19 @@ const (
 // first millisecond at which the verdict changes. A record is attempted exactly when it is due
 // and carries no fresh claim, held exactly when it is unsettled, ready and legacyBacklog holds
 // it, and stuck exactly when it is unsettled, not ready and quiet for heldAfter (heldLineAt); an
-// unsettled record that is not ready waits until then.
+// unsettled record that is not ready waits until then, and so does one given up (verifyStopped)
+// until its backoff runs out.
 func schedule(st State, now int64, debounce time.Duration) (verdict, int64) {
 	if st.SettledEmitted {
 		return verdictIdle, 0
 	}
-	if verifyStopped(st) {
-		// The settlement episode was given up unanswered (giveUp): only a change of the record
-		// starts another.
-		return verdictIdle, 0
+	if verifyStopped(st, now) {
+		// The settlement episode was given up unanswered (giveUp): the next starts once its
+		// backoff runs out, and after a give-up for good only a change of the record starts one.
+		if st.VerifyRetryAt == 0 {
+			return verdictIdle, 0
+		}
+		return verdictWait, st.VerifyRetryAt
 	}
 	if !settlementReady(st) {
 		if at := heldLineAt(st); now < at {

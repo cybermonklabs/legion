@@ -27,28 +27,31 @@ const (
 	// no request takes no lease at all (Verify).
 	VerifyLease = "ci-verify"
 
-	// verifyRetry is how long the verify loop leaves a request it could not answer before it reads
-	// that head again: a repository whose token or read fails fails again at once, and every five
-	// seconds would spend the App's budget on it. A request written again, under a revision of its
-	// own, is read at once.
+	// verifyRetry is how long the verify loop leaves a head after the first failed answer of an
+	// episode before it reads the head again: a repository whose token or read fails fails again
+	// at once, and every five seconds would spend the App's budget on it. A minute rides out a
+	// GitHub error or a NATS reconnect at the cost of one more read.
 	verifyRetry = time.Minute
 
-	// verifyMaxFailures is how many failed answers of one settlement episode of a head the verify
-	// loop makes before it gives the episode up (verifyGivenUp): five reads a minute apart is five
-	// minutes of an outage of GitHub or NATS, inside the ten minutes the listener asks for before
-	// it gives the episode up itself (cistore's verifyMaxAsks), so the two ends stop together. A
-	// failure no later read can mend gives up at once (permanentVerifyFailure).
-	verifyMaxFailures = 5
+	// verifyRetryMax is the longest the verify loop leaves a head it fails to read: the wait after
+	// each failed answer of one episode doubles from verifyRetry up to it (verifyRetryAfter), and
+	// the listener's rewrites of the request do not cut it short, so a GitHub or NATS outage costs
+	// a waiting head reads at 1, 3, 7 and 15 minutes after the first and every 8 minutes from then,
+	// and the head is read at most 8 minutes after the outage ends, or at once in the listener's
+	// next episode. The loop never gives an episode up for such a failure: the listener's own
+	// episode, ten minutes, bounds how long a request is there to read.
+	verifyRetryMax = 8 * time.Minute
 
 	// verifyForget is how long the verify loop remembers a head it failed on after its last
-	// failure: an hour, past the ten minutes a listener asks for one episode, so a request the
-	// listener writes again after the loop gave up is deleted unread rather than read anew.
+	// failure: an hour, past the ten minutes a listener asks for one episode, so a request of an
+	// episode the loop gave up (permanentVerifyFailure) that the listener writes again is
+	// deleted unread rather than read anew.
 	verifyForget = time.Hour
 )
 
 // verifyFailure is what the verify loop remembers of a head it could not answer: the settlement
-// episode and the request revision it failed at, how many answers of that episode failed, when it
-// reads the head again, whether it gave the episode up, and when it last failed.
+// episode and the request revision it failed at, how many answers of that episode failed in a row,
+// when it reads the head again, whether it gave the episode up, and when it last failed.
 type verifyFailure struct {
 	episode  uint64
 	revision uint64
@@ -83,10 +86,12 @@ var errWriteNotLanded = errors.New("the CI store did not take a write of what Gi
 // has not reached left in place; a limit on one installation's budget costs that installation's
 // heads alone.
 //
-// A head the loop cannot answer is read again after verifyRetry, and given up after
-// verifyMaxFailures failed answers of one episode, or at once for a failure no later read mends
-// (verifyGivenUp): the loop logs one ERROR naming the head and why, deletes the request at the
-// revision it read, and deletes every later request of that episode unread.
+// A head the loop cannot answer is read again after verifyRetryAfter, a wait that doubles at each
+// failed answer of its episode up to verifyRetryMax, whether or not the listener writes the request
+// again meanwhile; a new episode of the head is read at once. The loop gives an episode up only for a
+// failure no later read mends (permanentVerifyFailure), at once: it logs one ERROR naming the head
+// and why, deletes the request at the revision it read, and deletes every later request of that
+// episode unread.
 //
 // Verify touches none of what a reconcile pass remembers (heads, rows, the cursor): it reads
 // GitHub with the Reconciler's collaborators alone, so it runs beside a pass. Only its own record
@@ -161,24 +166,28 @@ func (r *Reconciler) verify(ctx context.Context, writer Writer, request contract
 		r.doneVerifying(ctx, writer, request)
 		return true
 	}
-	if held && failed.revision == request.Revision && now.Before(failed.retryAt) {
+	if held && now.Before(failed.retryAt) && (failed.failures > 0 || failed.revision == request.Revision) {
+		// A failed head waits out its backoff, whichever request of the episode asks; a head whose
+		// answer was held (runningSuite) is read at once when its request is written again.
 		return true
 	}
 	fields := []any{"repository", head.Owner + "/" + head.Repo, "pr", head.Number, "sha", head.SHA, "request", request.Revision}
 	fail := func(what string, err error) {
 		failed.episode, failed.revision, failed.at = request.Episode, request.Revision, now
 		failed.failures++
-		failed.retryAt = now.Add(verifyRetry)
-		if verifyGivenUp(failed, err) {
+		if permanentVerifyFailure(err) {
 			failed.gaveUp = true
 			remember(&r.verifyFailed, key, failed)
-			r.Logger.Error("ci verify gave up on a verify request; the head is not announced until a new observation of it",
+			r.Logger.Error("ci verify gave up an episode: no later read of the head mends its failure",
 				append(fields, "reason", what, "failures", failed.failures, "error", err)...)
 			r.doneVerifying(ctx, writer, request)
 			return
 		}
+		retry := verifyRetryAfter(failed.failures)
+		failed.retryAt = now.Add(retry)
 		remember(&r.verifyFailed, key, failed)
-		r.Logger.Warn("ci verify did not answer a verify request: "+what, append(fields, "failures", failed.failures, "error", err)...)
+		r.Logger.Warn("ci verify did not answer a verify request: "+what,
+			append(fields, "failures", failed.failures, "retry_in", retry.String(), "error", err)...)
 	}
 	token, statuses, err := r.GitHub.RepositoryTokenWithStatuses(ctx, head.Owner, head.Repo)
 	if at := stopAt(err, githubapp.AppScope); at != nil {
@@ -256,6 +265,7 @@ func (r *Reconciler) verify(ctx context.Context, writer Writer, request contract
 		// on runs GitHub is about to add to. This is no failure of the read; the head is read
 		// again after verifyRetry, or at once when its request is written again.
 		failed.episode, failed.revision, failed.at = request.Episode, request.Revision, now
+		failed.failures = 0
 		failed.retryAt = now.Add(verifyRetry)
 		remember(&r.verifyFailed, key, failed)
 		r.Logger.Info("ci verify held its answer: GitHub still runs a check suite of the head", append(fields, "suite", suite)...)
@@ -279,22 +289,32 @@ func (r *Reconciler) doneVerifying(ctx context.Context, writer Writer, request c
 	}
 }
 
-// verifyGivenUp reports whether failed, whose latest failure is err, ends its episode: it has
-// failed verifyMaxFailures times, or err is one no later read mends (permanentVerifyFailure).
-func verifyGivenUp(failed verifyFailure, err error) bool {
-	return failed.failures >= verifyMaxFailures || permanentVerifyFailure(err)
+// verifyRetryAfter is how long the verify loop leaves a head after the failures-th failed answer in
+// a row of one episode: verifyRetry, doubled at each failure after the first, up to verifyRetryMax.
+func verifyRetryAfter(failures int) time.Duration {
+	retry := verifyRetry
+	for i := 1; i < failures && retry < verifyRetryMax; i++ {
+		retry *= 2
+	}
+	return min(retry, verifyRetryMax)
 }
 
 // permanentVerifyFailure reports whether err is a failure every later read of the head would
 // meet again: the App is not installed on the repository (deleted, or left by the App, after its
-// webhooks), GitHub answers the repository or the commit 404 or 410, a page past githubapp's
-// response limit, a listing that does not end within maxPages, or a write past the record's bound
-// (bus.ErrTooLarge), which the store refuses at every attempt.
+// webhooks), GitHub answers a read of the repository or the commit 404, or 403 with no rate limit
+// behind it (githubapp.ErrRepositoryUnreadable, which githubapp.CheckRepositoryResponse makes of
+// both, so no *githubapp.StatusError carries them), or 410, a page past githubapp's response
+// limit, a listing that does not end within maxPages, or the bound's refusal of the answer's own
+// write (bus.ErrTooLarge from MarkVerified, where the stamp alone would take the record past its
+// bound, and the store writes it marked Overflowed). A write of what GitHub answered past the
+// record's bound never reaches here: record takes it as written (refused), the store writes the
+// record marked Overflowed, and what ends that episode is the listener letting its claim go on an
+// Overflowed record (cistore's checkVerify).
 func permanentVerifyFailure(err error) bool {
 	var tooLarge *githubapp.ResponseTooLargeError
 	var status *githubapp.StatusError
 	switch {
-	case errors.Is(err, githubapp.ErrNoInstallation), errors.Is(err, errTooManyPages), errors.Is(err, bus.ErrTooLarge), errors.As(err, &tooLarge):
+	case errors.Is(err, githubapp.ErrNoInstallation), errors.Is(err, githubapp.ErrRepositoryUnreadable), errors.Is(err, errTooManyPages), errors.Is(err, bus.ErrTooLarge), errors.As(err, &tooLarge):
 		return true
 	case errors.As(err, &status):
 		return status.Status == http.StatusNotFound || status.Status == http.StatusGone

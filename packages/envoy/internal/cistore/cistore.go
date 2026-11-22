@@ -200,11 +200,19 @@ type State struct {
 	// its next write of the record, as it drops Schema, which costs at most one more verify read.
 	VerifiedRev    uint64 `json:"verified_rev,omitempty"`
 	VerifiedStream int64  `json:"verified_stream,omitempty"`
-	// VerifyStopped is the snapshot (Hash) of a settlement episode the summary loop gave up after
-	// verifyMaxAsks requests Dispatch did not answer (giveUp): while the record still hashes to it,
-	// no listener claims the head (verifyStopped), so the head stays unannounced until a new
-	// observation changes it. A listener of an earlier release drops it at its next write.
+	// VerifyStopped is the snapshot (Hash) of the last settlement episode the summary loop gave up
+	// after verifyMaxAsks requests Dispatch did not answer (giveUp), VerifyStops how many episodes
+	// of that snapshot it gave up in a row, and VerifyRetryAt the millisecond from which a listener
+	// claims the head again: the give-up's backoff, verifyBackoff doubled at each give-up of the
+	// snapshot after its first, up to verifyBackoffMax (verifyBackoffAfter). VerifyRetryAt is zero
+	// for a give-up made once the head's last observation was the bucket's TTL old: that head is
+	// given up for good, and its record expires as an unanswered head's did before the backoff. While
+	// the record still hashes to VerifyStopped and VerifyRetryAt has not come, no listener claims the
+	// head (verifyStopped); a new observation, which moves the snapshot, ends the stop at once. A
+	// listener of an earlier release drops all three at its next write.
 	VerifyStopped string `json:"verify_stopped,omitempty"`
+	VerifyStops   int    `json:"verify_stops,omitempty"`
+	VerifyRetryAt int64  `json:"verify_retry_at,omitempty"`
 }
 
 // recordSchema stamps every record this listener writes.
@@ -242,11 +250,12 @@ func legacyBacklog(st State, now int64, debounce time.Duration) bool {
 	return st.Schema == 0 && now-st.LastEventAt >= (debounce+handoverGrace).Milliseconds()
 }
 
-// due reports whether st is waiting to settle at now: unsettled, ready (settlementReady), quiet for
-// debounce since its last event, and not a head-gated listener's leftover (legacyBacklog).
+// due reports whether st is waiting to settle at now: unsettled, not given up at now
+// (verifyStopped), ready (settlementReady), quiet for debounce since its last event, and not a
+// head-gated listener's leftover (legacyBacklog).
 func due(st State, now int64, debounce time.Duration) bool {
 	return !st.SettledEmitted &&
-		!verifyStopped(st) &&
+		!verifyStopped(st, now) &&
 		settlementReady(st) &&
 		now-st.LastEventAt >= debounce.Milliseconds() &&
 		!legacyBacklog(st, now, debounce)
@@ -389,6 +398,14 @@ type Store struct {
 	// before it publishes the head's settlement (WithVerify, verify.go). Off, it publishes as
 	// soon as it holds the claim, as every listener before ENVOY_CI_VERIFY did.
 	verify bool
+	// ttl is the expiry the store opened the bucket with (WithTTL): a head given up once its last
+	// observation is this old is given up for good (stopVerify). Zero, in a writer's store, which
+	// gives nothing up.
+	ttl time.Duration
+	// now is the clock a claim is stamped by (ClaimSettlement, refreshClaim); nil is time.Now. A
+	// test sets it to drive the summary loop, which is passed the same clock's time, through the
+	// verify timeouts and backoffs without waiting them out.
+	now func() time.Time
 	// casHook, when set, runs in each write attempt after the attempt read the record and before
 	// its compare-and-swap (write): a test makes another write land there, so the attempt loses
 	// its compare-and-swap and retries. Nil in every store but a test's.
@@ -462,6 +479,7 @@ func Open(ctx context.Context, nc *nats.Conn, logger *logging.Logger, opts ...Op
 		changedWake: make(chan struct{}, 1),
 		logger:      logger,
 		verify:      o.verify,
+		ttl:         o.ttl,
 	}
 	s.cache = newCICopy(s)
 	s.watcher = kvwatch.New("cistore", kv, ciCache{s}, kvwatch.WithLogger(logger.Slog()))
@@ -1090,7 +1108,7 @@ func (s *Store) ClaimSettlement(key, expectedHash string, expectedGeneration uin
 		state.Claim = &SettlementClaim{
 			Hash:       expectedHash,
 			Generation: expectedGeneration,
-			ClaimedAt:  time.Now().UnixMilli(),
+			ClaimedAt:  s.clock().UnixMilli(),
 			Verify:     s.verify,
 		}
 		return true, nil

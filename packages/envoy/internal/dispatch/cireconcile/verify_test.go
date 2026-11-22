@@ -305,17 +305,83 @@ func TestAFailedWriteOfTheReadLeavesNoAnswerUntilALaterOneLands(t *testing.T) {
 	}
 }
 
-// The verify loop gives up an episode it fails to answer verifyMaxFailures times: each failure is
-// read again after verifyRetry (the pass's clock is moved past it here), the last logs one ERROR
-// naming the head and why, and the request is deleted at the revision read. A request of the same
-// episode written again is deleted unread. A new observation of the head starts a new episode,
-// which is read afresh and publishes.
-func TestAVerifyEpisodeDispatchFailsToAnswerIsGivenUpUntilANewObservation(t *testing.T) {
+// verifyGaveUp is the verify loop's ERROR line when it gives an episode up (permanentVerifyFailure).
+const verifyGaveUp = "ci verify gave up an episode: no later read of the head mends its failure"
+
+// A GitHub that fails every read of a head for longer than ten minutes, the point at which the
+// verify loop once gave the episode up, does not end it: each failed answer is read again after a
+// wait that doubles from verifyRetry up to verifyRetryMax, so the head is read 0, 1, 3, 7, 15 and
+// 23 minutes after the first read (the pass's clock moves 30 seconds at each pass here, and the
+// listener's request stays), with no ERROR and no answer; and the first read after GitHub answers
+// again, at 31 minutes, writes the answer, and the head is published.
+func TestAVerifyReadFailingPastTenMinutesBacksOffDoublingAndAnswersOnceGitHubDoes(t *testing.T) {
 	h := newVerifyHarness(t, reviewerAppID)
 	h.mapRepository(rowRepository)
 	h.listHead()
 	settlements := h.subscribe()
-	clock := time.Now()
+	start := time.Now()
+	clock := start
+	h.reconciler.now = func() time.Time { return clock }
+	run := checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-22T00:05:00Z")
+	h.github.setCheckRuns(gitHubRepository, headSHA, run)
+	h.post("check_run", webhookBody("check_run", run), "d1")
+	request := h.waitForRequest(0)
+	h.github.answerStatus(checkRunsPath, http.StatusBadGateway)
+
+	// reads is the clock's offset from start at each pass that read the head's check runs.
+	var reads []time.Duration
+	passesUntil := func(offset time.Duration) {
+		for ; clock.Sub(start) <= offset; clock = clock.Add(30 * time.Second) {
+			before := h.github.count()
+			h.verifyPass()
+			if len(h.github.sincePath(before, checkRunsPath)) != 0 {
+				reads = append(reads, clock.Sub(start))
+			}
+		}
+	}
+	const minute = time.Minute
+	passesUntil(25 * minute)
+	if want := []time.Duration{0, minute, 3 * minute, 7 * minute, 15 * minute, 23 * minute}; !slices.Equal(reads, want) {
+		t.Fatalf("with GitHub failing every read, the verify loop read the head at %v; want %v", reads, want)
+	}
+	if lines := h.lines(verifyGaveUp); len(lines) != 0 {
+		t.Fatalf("the verify loop gave up %d times on failures a later read may mend", len(lines))
+	}
+	if !slices.ContainsFunc(h.requests(), func(listed contracts.CIVerifyRequest) bool { return listed.Revision == request.Revision }) {
+		t.Fatalf("the request at revision %d is gone while GitHub failed every read", request.Revision)
+	}
+	if state, _, _ := h.record(); state.VerifiedRev != 0 {
+		t.Fatalf("the record's VerifiedRev is %d while GitHub failed every read, want 0", state.VerifiedRev)
+	}
+	h.noSettlement(settlements, "while GitHub failed every read")
+
+	h.github.answerStatus(checkRunsPath, 0)
+	reads = nil
+	passesUntil(31 * minute)
+	if want := []time.Duration{31 * minute}; !slices.Equal(reads, want) {
+		t.Fatalf("once GitHub answered again, the verify loop read the head at %v; want %v", reads, want)
+	}
+	if state, _, _ := h.record(); state.VerifiedRev != request.Revision {
+		t.Fatalf("the record's VerifiedRev is %d after GitHub answered again, want the request's %d", state.VerifiedRev, request.Revision)
+	}
+	if settled := h.settlement(settlements, "after GitHub answered again"); settled.Passed.Count != 1 {
+		t.Fatalf("settlement = %+v, want ci-ok passed", settled)
+	}
+}
+
+// A failure no later read mends gives its episode up at once, and for good: here GitHub answers
+// the head's check runs 404. The first read logs one ERROR naming the head and deletes the
+// request; the episode's request, written again before every pass for 31 minutes, past each point
+// where a failure a later read may mend is read again, and after GitHub answers again, is deleted
+// unread each time. A new observation of the head starts a new episode, which is read afresh and
+// publishes.
+func TestAPermanentVerifyFailureGivesItsEpisodeUpAtOnceUntilANewEpisode(t *testing.T) {
+	h := newVerifyHarness(t, reviewerAppID)
+	h.mapRepository(rowRepository)
+	h.listHead()
+	settlements := h.subscribe()
+	start := time.Now()
+	clock := start
 	h.reconciler.now = func() time.Time { return clock }
 	run := checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-22T00:05:00Z")
 	h.github.setCheckRuns(gitHubRepository, headSHA, run)
@@ -335,39 +401,40 @@ func TestAVerifyEpisodeDispatchFailsToAnswerIsGivenUpUntilANewObservation(t *tes
 	if err != nil {
 		t.Fatalf("read the request: %v", err)
 	}
-	for range verifyMaxFailures {
-		h.github.failNext(checkRunsPath)
-	}
+	h.github.answerStatus(checkRunsPath, http.StatusNotFound)
 
-	for pass := 1; pass <= verifyMaxFailures; pass++ {
-		h.verifyPass()
-		clock = clock.Add(verifyRetry + time.Second)
-	}
-	const gaveUp = "ci verify gave up on a verify request; the head is not announced until a new observation of it"
-	if lines := h.lines(gaveUp); len(lines) != 1 {
-		t.Fatalf("the verify loop logged %d give-ups after %d failed answers, want 1", len(lines), verifyMaxFailures)
+	h.verifyPass()
+	if lines := h.lines(verifyGaveUp); len(lines) != 1 {
+		t.Fatalf("a read GitHub answered 404 logged %d give-ups, want 1", len(lines))
 	}
 	if slices.ContainsFunc(h.requests(), func(listed contracts.CIVerifyRequest) bool { return listed.Revision == request.Revision }) {
-		t.Fatalf("the request at revision %d is still held after the verify loop gave its episode up", request.Revision)
+		t.Fatalf("the request at revision %d is still held after a failure no read mends", request.Revision)
 	}
-	h.noSettlement(settlements, "after the verify loop gave the episode up")
 	if state, _, _ := h.record(); state.VerifiedRev != 0 {
 		t.Fatalf("the record's VerifiedRev is %d after the episode was given up, want 0", state.VerifiedRev)
 	}
 
-	// The listener writes the same episode's request again: it is deleted unread.
-	rewritten, err := kv.Put(requestKey, asked.Value())
-	if err != nil {
-		t.Fatalf("write the request again: %v", err)
-	}
 	before := h.github.count()
-	h.verifyPass()
+	for clock = clock.Add(30 * time.Second); clock.Sub(start) <= 31*time.Minute; clock = clock.Add(30 * time.Second) {
+		if clock.Sub(start) == 16*time.Minute {
+			h.github.answerStatus(checkRunsPath, 0)
+		}
+		rewritten, err := kv.Put(requestKey, asked.Value())
+		if err != nil {
+			t.Fatalf("write the request again: %v", err)
+		}
+		h.verifyPass()
+		if slices.ContainsFunc(h.requests(), func(listed contracts.CIVerifyRequest) bool { return listed.Revision == rewritten }) {
+			t.Fatalf("the request of the given-up episode written again at revision %d is still held at %v", rewritten, clock.Sub(start))
+		}
+	}
 	if read := h.github.sincePath(before, checkRunsPath); len(read) != 0 {
-		t.Fatalf("the verify loop read the head %d times for a request of an episode it gave up", len(read))
+		t.Fatalf("the verify loop read the head %d times for requests of an episode it gave up", len(read))
 	}
-	if slices.ContainsFunc(h.requests(), func(listed contracts.CIVerifyRequest) bool { return listed.Revision == rewritten }) {
-		t.Fatalf("the rewritten request at revision %d of the given-up episode is still held", rewritten)
+	if lines := h.lines(verifyGaveUp); len(lines) != 1 {
+		t.Fatalf("the given-up episode logged %d give-ups in all, want 1", len(lines))
 	}
+	h.noSettlement(settlements, "after the verify loop gave the episode up")
 
 	// A new observation re-arms the record: the listener's next claim is a new episode.
 	lint := checkRun(2, "lint", "completed", "success", otherApp, "2026-11-22T00:06:00Z")
@@ -401,7 +468,7 @@ func TestAVerifyListingThatDoesNotEndWithinMaxPagesIsGivenUpAtOnce(t *testing.T)
 
 	h.verifyPass()
 
-	if lines := h.lines("ci verify gave up on a verify request; the head is not announced until a new observation of it"); len(lines) != 1 {
+	if lines := h.lines(verifyGaveUp); len(lines) != 1 {
 		t.Fatalf("a listing past %d pages logged %d give-ups, want 1", maxPages, len(lines))
 	}
 	if state, _, _ := h.record(); state.VerifiedRev != 0 {
@@ -422,7 +489,8 @@ func TestPermanentVerifyFailuresAreTheOnesNoLaterReadMends(t *testing.T) {
 		{"the App is not installed", fmt.Errorf("token: %w", githubapp.ErrNoInstallation), true},
 		{"a page past the response limit", &githubapp.ResponseTooLargeError{Limit: 1 << 20}, true},
 		{"a listing past maxPages", errTooManyPages, true},
-		{"a write past the record's bound", fmt.Errorf("record: %w", bus.ErrTooLarge), true},
+		{"the answer's own write past the record's bound", fmt.Errorf("mark verified: %w", bus.ErrTooLarge), true},
+		{"GitHub's 403 or 404 on the head's read", fmt.Errorf("check runs: %w: Acme/Widgets", githubapp.ErrRepositoryUnreadable), true},
 		{"GitHub's 404", &githubapp.StatusError{Status: http.StatusNotFound}, true},
 		{"GitHub's 410", &githubapp.StatusError{Status: http.StatusGone}, true},
 		{"GitHub's 502", &githubapp.StatusError{Status: http.StatusBadGateway}, false},

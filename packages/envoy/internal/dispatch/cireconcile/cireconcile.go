@@ -242,9 +242,9 @@ type Reconciler struct {
 	seenRepositories map[int64]struct{}
 	seenHeads        map[string]struct{}
 	// verifyFailed is the heads the verify loop could not answer, by head (pullHead.key), each
-	// with the episode and revision it failed at, how often that episode failed, when the loop
-	// reads the head again and whether it gave the episode up (Verify, verifyRetry,
-	// verifyMaxFailures). Only Verify touches it, never a pass, and a head is forgotten
+	// with the episode and revision it failed at, how often in a row that episode failed, when the
+	// loop reads the head again and whether it gave the episode up (Verify, verifyRetryAfter,
+	// permanentVerifyFailure). Only Verify touches it, never a pass, and a head is forgotten
 	// verifyForget after its last failure.
 	verifyFailed map[string]verifyFailure
 }

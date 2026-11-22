@@ -43,9 +43,14 @@ import (
 //
 // A wait ends. A head unanswered after verifyMaxAsks requests, ten minutes, is given up: the loop
 // logs one ERROR naming it, deletes its request, lets the claim go and marks the record
-// (VerifyStopped), and the head is not announced until a new observation of it starts a new
-// settlement episode (verifyStopped). Dispatch gives up its own end of an episode it cannot answer
-// the same way (cireconcile's verifyMaxFailures).
+// (VerifyStopped, VerifyStops, VerifyRetryAt). No listener claims the head again until the give-up's
+// backoff runs out (verifyBackoffAfter: 5 minutes, doubled at each give-up of the same snapshot up
+// to 30) or a new observation moves its snapshot, and then a new episode asks again, so a head
+// given up in an outage is published once Dispatch answers, with no new observation of it
+// (verifyStopped). A head given up once its last observation is the bucket's TTL old is given up
+// for good. Dispatch backs off its own reads of a head it fails to read, doubling, and gives an
+// episode up at once only for a failure no later read mends (cireconcile's verifyRetryAfter and
+// permanentVerifyFailure).
 const (
 	// verifyKeyPrefix begins every verify request's key: verifyKeyPrefix, then the head's record
 	// key. A record key always has four tokens (Key), so a request key has five, and no record of
@@ -64,8 +69,19 @@ const (
 	// verifyMaxAsks is how many requests of one settlement episode the summary loop writes
 	// before it gives the episode up: five, one every verifyTimeout, is ten minutes with no
 	// answer, which is Dispatch's reconcile down or a head it cannot read. The give-up logs one
-	// ERROR, and the head stays unannounced until a new observation of it.
+	// ERROR, and the head is asked again after a backoff (verifyBackoffAfter).
 	verifyMaxAsks = 5
+	// verifyBackoff is how long no listener claims a head after the first give-up of its snapshot:
+	// the next episode asks 15 minutes after the first request, so an outage of Dispatch, NATS or
+	// GitHub that ends between the give-up and then delays the head by at most 5 minutes past
+	// its end, and each give-up costs the head one episode: a claim, verifyMaxAsks requests,
+	// four claim refreshes, four WARN lines, one ERROR and the stop, about a dozen KV writes.
+	verifyBackoff = 5 * time.Minute
+	// verifyBackoffMax is the longest backoff, reached at the fourth give-up in a row (5, 10, 20,
+	// then 30 minutes): it bounds how long past the end of an outage of any length a head waits
+	// to be asked again, and holds a head no one answers to one episode each 40 minutes, about
+	// 36 a day, until its last observation is the bucket's TTL old (stopVerify).
+	verifyBackoffMax = 30 * time.Minute
 	// verifyClaimWindow is how long a claim marked Verify lives before another replica may reclaim
 	// it (claimWindow): two verifyTimeouts, so a holder that refreshes its claim at each rewrite
 	// keeps it while it lives, and one that died gives it up within four minutes.
@@ -110,10 +126,30 @@ func claimLive(claim *SettlementClaim, now int64, debounce time.Duration) bool {
 	return claim != nil && claim.ClaimedAt+(claimWindow(claim, debounce)-claimMargin).Milliseconds() > now
 }
 
-// verifyStopped reports whether the summary loop gave up st's settlement episode (VerifyStopped):
-// the record still holds the snapshot it gave up, and no observation has changed it since.
-func verifyStopped(st State) bool {
-	return st.VerifyStopped != "" && st.VerifyStopped == st.Hash()
+// verifyStopped reports whether st's head is given up at now (giveUp): the record still holds the
+// snapshot the summary loop gave up (VerifyStopped), no observation having changed it since, and
+// the give-up's backoff has not run out (VerifyRetryAt), or the give-up is for good (VerifyRetryAt
+// zero).
+func verifyStopped(st State, now int64) bool {
+	return st.VerifyStopped != "" && st.VerifyStopped == st.Hash() && (st.VerifyRetryAt == 0 || now < st.VerifyRetryAt)
+}
+
+// verifyBackoffAfter is how long no listener claims a head after the stops-th give-up in a row of
+// one snapshot: verifyBackoff, doubled at each give-up after the first, up to verifyBackoffMax.
+func verifyBackoffAfter(stops int) time.Duration {
+	backoff := verifyBackoff
+	for i := 1; i < stops && backoff < verifyBackoffMax; i++ {
+		backoff *= 2
+	}
+	return min(backoff, verifyBackoffMax)
+}
+
+// clock is the time a claim is stamped by (Store.now).
+func (s *Store) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }
 
 // verifyRequest is the value of a verify request: the head to read, under the owner and name
@@ -167,27 +203,38 @@ func (s *Store) refreshClaim(key string, generation uint64, hash string) (bool, 
 		if state.Claim == nil || state.Claim.Generation != generation || state.Claim.Hash != hash || state.Generation != generation {
 			return false, nil
 		}
-		state.Claim.ClaimedAt = time.Now().UnixMilli()
+		state.Claim.ClaimedAt = s.clock().UnixMilli()
 		return true, nil
 	})
 	return refreshed, err
 }
 
-// stopVerify gives up the settlement episode of the claim of generation and hash: it lets the
-// claim go and marks the record with the snapshot given up (VerifyStopped), so no replica claims
-// the head again until an observation changes it (verifyStopped). It answers false when the record
-// no longer carries that claim.
-func (s *Store) stopVerify(key string, generation uint64, hash string) (bool, error) {
-	_, stopped, err := s.casState(key, func(state *State) (bool, error) {
+// stopVerify gives up, at now, the settlement episode of the claim of generation and hash: it lets
+// the claim go and marks the record with the snapshot given up (VerifyStopped), how many episodes of
+// that snapshot have been given up in a row (VerifyStops), and when its backoff runs out
+// (VerifyRetryAt, verifyBackoffAfter), so no replica claims the head again before then unless an
+// observation changes it (verifyStopped). Where the head's last observation is the store's TTL old
+// at now, the give-up is for good (VerifyRetryAt zero): restarts would keep writing a record no one
+// observes, which the bucket would otherwise have expired. It answers the record as written, and
+// false when the record no longer carries that claim.
+func (s *Store) stopVerify(key string, generation uint64, hash string, now int64) (State, bool, error) {
+	return s.casState(key, func(state *State) (bool, error) {
 		if state.Claim == nil || state.Claim.Generation != generation || state.Claim.Hash != hash || state.Generation != generation {
 			return false, nil
 		}
 		state.Claim = nil
 		bumpGeneration(state)
-		state.VerifyStopped = hash
+		if state.VerifyStopped == hash {
+			state.VerifyStops++
+		} else {
+			state.VerifyStopped, state.VerifyStops = hash, 1
+		}
+		state.VerifyRetryAt = 0
+		if s.ttl <= 0 || now-state.LastEventAt < s.ttl.Milliseconds() {
+			state.VerifyRetryAt = now + verifyBackoffAfter(state.VerifyStops).Milliseconds()
+		}
 		return true, nil
 	})
-	return stopped, err
 }
 
 // streamIdentity is the identity of the stream kv's bucket is held in: its creation time in Unix
@@ -371,8 +418,9 @@ func (z *summarizer) ask(logger *logging.Logger, key string, st State, now int64
 // fresh once more: ClaimStillHeld); one whose authorization read or publication failed looks again
 // after authorizationRetry with its claim held, and one the fresh read refuses waits on as for no
 // answer. A wait unanswered for verifyTimeout refreshes its claim and writes its request again,
-// with a WARN, until it has written verifyMaxAsks of them; then the episode is given up (giveUp).
-// A dropped wait deletes its own request (dropWait).
+// with a WARN, until it has written verifyMaxAsks of them; then the episode is given up (giveUp),
+// and the head is claimed again once the give-up's backoff runs out. A dropped wait deletes its own
+// request (dropWait).
 func (z *summarizer) checkVerify(pub Publisher, logger *logging.Logger, key string, wait verifyWait, now int64) {
 	st, cached := z.store.cachedState(key)
 	if !cached || !claimHeldFor(st, wait) || !claimLive(st.Claim, now, z.debounce) {
@@ -440,10 +488,12 @@ func (z *summarizer) checkVerify(pub Publisher, logger *logging.Logger, key stri
 
 // giveUp ends the settlement episode of wait, unanswered after verifyMaxAsks requests: it lets the
 // claim go and marks the record (stopVerify), deletes the wait's request, and logs one ERROR naming
-// the head and why. The head is not announced until a new observation of it changes the record.
-// A mark that did not land is tried again after authorizationRetry, with the claim held.
+// the head, why, how many episodes of the snapshot are given up in a row and when the next one
+// asks. The head is claimed again once the backoff runs out, or at once when a new observation of
+// it changes the record. A mark that did not land is tried again after authorizationRetry, with
+// the claim held.
 func (z *summarizer) giveUp(logger *logging.Logger, key string, st State, wait verifyWait, now int64) {
-	stopped, err := z.store.stopVerify(key, wait.generation, wait.hash)
+	stopped, marked, err := z.store.stopVerify(key, wait.generation, wait.hash, now)
 	if err != nil {
 		logger.Warn("checks verify give-up not written", slog.String("sha", st.SHA), slog.String("error", err.Error()))
 		wait.retryAt = now + authorizationRetry.Milliseconds()
@@ -451,10 +501,14 @@ func (z *summarizer) giveUp(logger *logging.Logger, key string, st State, wait v
 		return
 	}
 	z.dropWait(key, wait)
-	if !stopped {
+	if !marked {
 		return
 	}
-	logger.Error("checks verify gave up; the head is not announced until a new observation of it",
+	next := "at its next observation"
+	if stopped.VerifyRetryAt != 0 {
+		next = "in " + (time.Duration(stopped.VerifyRetryAt-now) * time.Millisecond).String() + " or at its next observation"
+	}
+	logger.Error("checks verify gave up; the head is not announced until Dispatch answers a later episode",
 		slog.String("owner", st.Owner),
 		slog.String("repo", st.Repo),
 		slog.String("number", st.Number),
@@ -462,7 +516,9 @@ func (z *summarizer) giveUp(logger *logging.Logger, key string, st State, wait v
 		slog.String("reason", fmt.Sprintf("Dispatch answered none of %d verify requests", wait.asks)),
 		slog.Uint64("request", wait.requested),
 		slog.Uint64("verified", st.VerifiedRev),
-		slog.String("waited", (time.Duration(now-wait.since)*time.Millisecond).String()))
+		slog.String("waited", (time.Duration(now-wait.since)*time.Millisecond).String()),
+		slog.Int("given_up", stopped.VerifyStops),
+		slog.String("next_episode", next))
 }
 
 // keepWait stores wait as key's wait.

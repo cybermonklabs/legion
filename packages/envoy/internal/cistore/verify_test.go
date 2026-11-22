@@ -2,6 +2,7 @@ package cistore
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -26,7 +27,13 @@ var (
 // openVerifyingStore is openStore with ENVOY_CI_VERIFY on.
 func openVerifyingStore(t *testing.T, conn *natsgo.Conn) *Store {
 	t.Helper()
-	st, err := Open(t.Context(), conn, logging.New("test"), WithReplicas(1), WithTTL(time.Hour), WithVerify(true))
+	return openVerifyingStoreWithTTL(t, conn, time.Hour)
+}
+
+// openVerifyingStoreWithTTL is openVerifyingStore with the bucket's expiry ttl.
+func openVerifyingStoreWithTTL(t *testing.T, conn *natsgo.Conn, ttl time.Duration) *Store {
+	t.Helper()
+	st, err := Open(t.Context(), conn, logging.New("test"), WithReplicas(1), WithTTL(ttl), WithVerify(true))
 	if err != nil {
 		t.Fatalf("open cistore: %v", err)
 	}
@@ -359,10 +366,10 @@ func TestTwoListenersShareOneReadAndOnlyTheClaimHolderPublishes(t *testing.T) {
 
 // With verify on and no reconcile answering, nothing is published, and the wait ends: each rewrite
 // of the unanswered request logs a WARN, and after verifyMaxAsks requests the episode is given up,
-// with one ERROR naming the head and why, the request deleted and the claim let go. The head is
-// not announced then, even when an answer to its last request lands, until a new observation of it
-// starts another episode, whose answer publishes.
-func TestAnUnansweredEpisodeIsGivenUpAndOnlyANewObservationAsksAgain(t *testing.T) {
+// with one ERROR naming the head and why, the request deleted, the claim let go and a backoff set.
+// The head is not announced then, even when an answer to its last request lands, and a new
+// observation of it starts another episode at once, within the backoff, whose answer publishes.
+func TestAnUnansweredEpisodeIsGivenUpAndANewObservationAsksAgainAtOnce(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	s := openVerifyingStore(t, conn)
@@ -386,7 +393,7 @@ func TestAnUnansweredEpisodeIsGivenUpAndOnlyANewObservationAsksAgain(t *testing.
 	}
 	const (
 		unanswered = `"msg":"checks verify request unanswered; the head is not announced until Dispatch answers"`
-		gaveUp     = `"msg":"checks verify gave up; the head is not announced until a new observation of it"`
+		gaveUp     = `"msg":"` + verifyGaveUp + `"`
 	)
 	warns, errorsLogged := strings.Count(logs.String(), unanswered), strings.Count(logs.String(), gaveUp)
 	if warns != verifyMaxAsks-1 || errorsLogged != 1 || !strings.Contains(logs.String(), `"level":"ERROR"`) {
@@ -398,8 +405,8 @@ func TestAnUnansweredEpisodeIsGivenUpAndOnlyANewObservationAsksAgain(t *testing.
 	if requests, err := writer.VerifyRequests(context.Background()); err != nil || len(requests) != 0 {
 		t.Fatalf("the requests after the give-up are %+v (%v), want none", requests, err)
 	}
-	if st, _ := recordRunsStored(t, s); st.Claim != nil || st.VerifyStopped != st.Hash() {
-		t.Fatalf("the record after the give-up is %+v, want no claim and the episode marked stopped", st)
+	if st, _ := recordRunsStored(t, s); st.Claim != nil || st.VerifyStopped != st.Hash() || st.VerifyStops != 1 || st.VerifyRetryAt <= time.Now().UnixMilli() {
+		t.Fatalf("the record after the give-up is %+v, want no claim and the episode marked stopped, once, with its backoff ahead", st)
 	}
 
 	answer(t, writer, last, s)
@@ -649,5 +656,116 @@ func TestAnExpiredClaimIsNotPublishedOnTheAnswerToItsOldRequest(t *testing.T) {
 	z.pass(pub, logging.New("test"), time.Now().UnixMilli())
 	if pub.count() != 1 {
 		t.Fatalf("an answer to the new request published %d settlements, want 1", pub.count())
+	}
+}
+
+// verifyGaveUp is the summary loop's ERROR line when it gives an episode up (giveUp).
+const verifyGaveUp = "checks verify gave up; the head is not announced until Dispatch answers a later episode"
+
+// verifyRun drives a summary loop of a store on a clock the test moves, which the store stamps its
+// claims by too (Store.now), so a test runs the loop at the production timeouts and backoffs
+// without waiting them out. It notes the clock's offset from start at each pass that started an
+// episode (a wait under a claim generation it had not seen) and at each that gave one up (one
+// more verifyGaveUp line).
+type verifyRun struct {
+	t             *testing.T
+	z             *summarizer
+	pub           *recPub
+	logs          *logtest.Buffer
+	logger        *logging.Logger
+	start, clock  time.Time
+	seen          map[uint64]bool
+	claims, stops []time.Duration
+}
+
+func newVerifyRun(t *testing.T, s *Store, start time.Time) *verifyRun {
+	run := &verifyRun{t: t, z: testSummarizer(s, 0), pub: &recPub{}, logs: &logtest.Buffer{}, start: start, clock: start, seen: map[uint64]bool{}}
+	run.logger = logging.NewWithWriter("test", run.logs)
+	s.now = func() time.Time { return run.clock }
+	return run
+}
+
+// until runs a pass every 30 seconds of the clock, up to offset past start, and fails the test at
+// any publication.
+func (run *verifyRun) until(offset time.Duration) {
+	run.t.Helper()
+	for ; run.clock.Sub(run.start) <= offset; run.clock = run.clock.Add(30 * time.Second) {
+		stops := strings.Count(run.logs.String(), verifyGaveUp)
+		run.z.pass(run.pub, run.logger, run.clock.UnixMilli())
+		if run.pub.count() != 0 {
+			run.t.Fatalf("published %d settlements at %v with no answer", run.pub.count(), run.clock.Sub(run.start))
+		}
+		if wait, ok := waiting(run.z); ok && !run.seen[wait.generation] {
+			run.seen[wait.generation] = true
+			run.claims = append(run.claims, run.clock.Sub(run.start))
+		}
+		if strings.Count(run.logs.String(), verifyGaveUp) > stops {
+			run.stops = append(run.stops, run.clock.Sub(run.start))
+		}
+	}
+}
+
+// A head Dispatch leaves unanswered for longer than ten minutes, the point at which the listener
+// once gave it up until a new observation, is asked again with no new observation of it and
+// published once Dispatch answers. At the production timeouts (verifyRun), each episode asks five
+// times and is given up ten minutes after it began; the head is claimed again once the give-up's
+// backoff runs out, which doubles at each give-up of the same snapshot up to its cap (5, 10, 20,
+// 30, 30 minutes), so episodes begin at 0, 15, 35, 65, 105 and 145 minutes. The answer to the
+// request of the sixth publishes the head.
+func TestAHeadLeftUnansweredPastTenMinutesIsAskedAgainAfterADoublingBackoffAndPublished(t *testing.T) {
+	conn, cleanup := connectNATS(t)
+	defer cleanup()
+	// A bucket TTL past the run, so no give-up in it is for good (stopVerify).
+	s := openVerifyingStoreWithTTL(t, conn, 24*time.Hour)
+	writer := dispatchWriter(t, conn)
+	readyHead(t, s)
+	run := newVerifyRun(t, s, time.Now())
+
+	run.until(146 * time.Minute)
+
+	const minute = time.Minute
+	wantClaims := []time.Duration{0, 15 * minute, 35 * minute, 65 * minute, 105 * minute, 145 * minute}
+	wantStops := []time.Duration{10 * minute, 25 * minute, 45 * minute, 75 * minute, 115 * minute}
+	if !slices.Equal(run.claims, wantClaims) || !slices.Equal(run.stops, wantStops) {
+		t.Fatalf("with no answer, episodes began at %v and were given up at %v; want %v and %v", run.claims, run.stops, wantClaims, wantStops)
+	}
+	answer(t, writer, asked(t, run.z), s)
+	run.z.pass(run.pub, run.logger, run.clock.UnixMilli())
+	if run.pub.count() != 1 {
+		t.Fatalf("the answer to the episode that began at %v published %d settlements, want 1", run.claims[len(run.claims)-1], run.pub.count())
+	}
+}
+
+// A head given up once its last observation is the bucket's TTL old is given up for good, as every
+// unanswered head was before the backoff, so its record is left to expire: no listener claims it
+// again, however long past every backoff the clock runs, until a new observation of it starts an
+// episode at once, whose answer publishes.
+func TestAHeadGivenUpOnceItsRecordIsATTLOldWaitsForANewObservation(t *testing.T) {
+	conn, cleanup := connectNATS(t)
+	defer cleanup()
+	s := openVerifyingStore(t, conn)
+	writer := dispatchWriter(t, conn)
+	readyHead(t, s)
+	// The bucket's TTL is an hour: the run begins an hour after the head's last observation.
+	run := newVerifyRun(t, s, time.Now().Add(time.Hour))
+
+	run.until(130 * time.Minute)
+
+	if !slices.Equal(run.claims, []time.Duration{0}) || !slices.Equal(run.stops, []time.Duration{10 * time.Minute}) {
+		t.Fatalf("an hour after the head's last observation, episodes began at %v and were given up at %v; want one, given up for good at 10m0s", run.claims, run.stops)
+	}
+	if st, _ := recordRunsStored(t, s); st.Claim != nil || st.VerifyStopped != st.Hash() || st.VerifyRetryAt != 0 {
+		t.Fatalf("the record after a give-up an hour after its last observation is %+v, want no claim and the episode stopped for good", st)
+	}
+
+	if err := s.Record(context.Background(), recordRunsCheck("lint", 2, "completed", "success", "2026-11-22T00:06:00Z")); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	waitCacheChecks(t, s, recordRunsOwner, recordRunsRepo, recordRunsNumber, recordRunsSHA, 2)
+	run.z.pass(run.pub, run.logger, run.clock.UnixMilli())
+	answer(t, writer, asked(t, run.z), s)
+	run.z.pass(run.pub, run.logger, run.clock.UnixMilli())
+	if run.pub.count() != 1 {
+		t.Fatalf("the new observation's episode published %d settlements on its answer, want 1", run.pub.count())
 	}
 }
