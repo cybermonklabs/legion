@@ -464,7 +464,7 @@ export const DISPATCH_BLOCK_POINTER_VALUES: readonly {
  * Go's reader refuses one holding `&`, so the two never read one back alike. Go's twin is
  * `pmdoc.typedBlockIDShortcutExcluded`.
  */
-const TYPED_BLOCK_ID_SHORTCUT_EXCLUDED = "\t\n\r \"#&'.<=>`}";
+export const TYPED_BLOCK_ID_SHORTCUT_EXCLUDED = "\t\n\r \"#&'.<=>`}";
 
 /**
  * How a typed block's opening line writes the block's id, as Go's renderer

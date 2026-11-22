@@ -163,7 +163,7 @@ named after `<n>` rather than after the hub's own name:
 | Deployment `<n>-tailnet` (only with `tailnet`) | `tailnet.replicas` tailnet hosts (see [The tailnet hosts](#the-tailnet-hosts)), rolled with `maxUnavailable: 0` and `maxSurge: 1`. It waits on the Secret, the ConfigMap, the ServiceAccount and the priority class read. |
 | PodDisruptionBudget `<n>-tailnet` (only with `tailnet`) | `maxUnavailable: 1` over the tailnet hosts. |
 | ServiceAccount `<n>-listener` (only with `tailnet`) | The session listener's account, which mounts no token: the listener calls no Kubernetes API. |
-| Deployment `<n>-listener` (only with `tailnet`) | One session listener pod (see [The session listener](#the-session-listener)), rolled with `maxUnavailable: 0` and `maxSurge: 1`. It waits on the ServiceAccount and the priority class read. |
+| Deployment `<n>-listener` (only with `tailnet`) | One session listener pod (see [The session listener](#the-session-listener)), rolled with `maxUnavailable: 0` and `maxSurge: 1`; with `listener.replaceUnderHold: true` or `tailnet.listener.replaceUnderHold: true`, `Recreate` with no `rollingUpdate` block, and `pulumi.com/skipAwait: "true"` ([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)). It waits on the ServiceAccount and the priority class read. |
 | Service `<n>-listener` (only with `tailnet`) | Port 9020 to the listener pod's port 9020. Each tailnet host forwards the Tailscale Service's port 9020 to it. |
 | NetworkPolicy `<n>-listener` (only with `tailnet`) | An Ingress policy on the listener's pods with exactly one rule: TCP 9020 from the tailnet hosts' pods. Every other port of that pod is admitted to nobody. |
 | PodDisruptionBudget `<n>-listener` (only with `tailnet`) | `maxUnavailable: 1` over the one listener pod, so a node drain or an Autopilot upgrade moves it rather than stalling on it. |
@@ -213,12 +213,12 @@ pod starts on them.
 | `metricsNamespaces` | `gmp-system`, `gke-gmp-system` | The namespaces admitted to the exporter's port, 7777, with the same rules: by default Google Managed Prometheus's, whose collectors run in `gmp-system` on a Standard cluster and in `gke-gmp-system` on Autopilot. |
 | `users` | none | The NATS server's nkey users, as `gcp:NatsHub`'s are (see [The hub's users](docs/nats-hub.md#the-hubs-users)). At least one is required unless the hub runs a session listener, which is a user of its own. |
 | `sessionUser` | unset | `name` and `nkey`, the user a client presenting no credential becomes, granted `SessionPermissions()`, as for `gcp:NatsHub`. |
-| `authCallout` | unset | The auth service's callout, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`, each required), as for `gcp:NatsHub` (see [The auth service](docs/nats-hub.md#the-auth-service)). Refused beside `tailnet`, whose listener connects as a user with a stored seed until its service identity, with which it would connect through the auth service, arrives in a later change. Set, `auth.conf` ends with the ping lines ([NATS authorization](#nats-authorization)), and `nats.conf`'s `cluster` block keeps the routes' ping at `ping_interval: "30s"` and `ping_max: 2` ([routes](docs/nats-hub.md#two-ports-guarded-by-the-networkpolicy-alone)). The hub pods' annotation `envoy-infra.sjawhar.dev/auth-callout` is the SHA-256 of `core.Authorization.CalloutLines()`, the `auth_callout` block and the ping lines, so a change to `authCallout`, to the keys of `users` while it is set, or to the ping lines rolls the hub pods ([why](docs/nats-hub.md#a-reload-not-a-replacement)). A change of a user's grant alone does not roll them. Unset, the hub renders exactly what it rendered before callouts existed. |
+| `authCallout` | unset | The auth service's callout, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`, each required), as for `gcp:NatsHub` (see [The auth service](docs/nats-hub.md#the-auth-service)). Refused beside a session listener, `listener` or `tailnet.listener`, and so beside `tailnet`, which always runs one: the listener connects as a user with a stored seed until its service identity, with which it would connect through the auth service, arrives in a later change. Set, `auth.conf` ends with the ping lines ([NATS authorization](#nats-authorization)), and `nats.conf`'s `cluster` block keeps the routes' ping at `ping_interval: "30s"` and `ping_max: 2` ([routes](docs/nats-hub.md#two-ports-guarded-by-the-networkpolicy-alone)). The hub pods' annotation `envoy-infra.sjawhar.dev/auth-callout` is the SHA-256 of `core.Authorization.CalloutLines()`, the `auth_callout` block and the ping lines, so a change to `authCallout`, to the keys of `users` while it is set, or to the ping lines rolls the hub pods ([why](docs/nats-hub.md#a-reload-not-a-replacement)). A change of a user's grant alone does not roll them. Unset, the hub renders exactly what it rendered before callouts existed. |
 | `privateProjects` | `false` | The deployment may make a Dispatch project private, as for `gcp:NatsHub`: refused without `authCallout`, beside `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant, and beside `monitorNamespaces`. |
 | `routeAuthorization` | unset | The routes' credential: `secretName` and `secretKey`, an existing Kubernetes Secret in `namespace` and its key, holding the route password, which the component names by reference and never reads; and `stage`, `env`, `routes` or `authorization`, each one apply after the one before it has finished. `env` gives the nats container `NATS_ROUTE_PASSWORD` and `NATS_ROUTE_URLS` and rolls the pods, `routes` names `$NATS_ROUTE_URLS` as `nats.conf`'s cluster routes, and `authorization` names the user `route` and `$NATS_ROUTE_PASSWORD` as its authorization, each applied by the reloader. The password holds letters and digits only, a letter first, and at least 32 characters. Change `secretKey` only together with `stage: env`. Unset, routes carry no credential, as before. See [Route authorization](docs/nats-hub.md#route-authorization). |
 | `listener` | unset | The session listener the hub runs as a workload of its own, declared beside the tailnet entry rather than inside it (see [The session listener](#the-session-listener)): the fields `tailnet.listener` takes, below. It always requires a credential of its callers: `oidcIssuer`, `oidcAudience` and `oidcAccounts` are required and `allowedHosts` is refused, and its `image` must be `legion-envoy-v30.32.0` or later, the first listener that reads `ENVOY_OIDC_ACCOUNTS`: an older one admits every subject the issuer signs for the audience. With `tailnet` the hosts forward the Service's port 9020 to it, and the hub renders what the same listener renders as `tailnet.listener` but for the listener container's token check; without `tailnet` it is reached inside the cluster alone, so `machineId` and at least one `clientNamespaces` entry are required. Refused beside `tailnet.listener`, since the hub runs one listener, and beside `authCallout`, as `tailnet` is. |
 | `tailnet` | unset | The tailnet entry: `serviceName`, the Tailscale Service's name without `svc:`, under `gcp:NatsHub`'s `hostname` rule (2 to 26 lowercase letters, digits and hyphens, starting with a letter and not ending with a hyphen); `tailnetDnsName`, the tailnet's DNS name, such as `example-tailnet.ts.net`; `tags`, at least one `tag:<name>`, which every host joins with; `replicas`, the number of hosts, 2 by default and at least 2, so a drained host leaves another serving; `tailscaleImage`, pinned by digest; and `listener`, the session listener the hosts forward the Service's port 9020 to, unless the hub's own `listener` declares it. |
-| `tailnet.listener` | required with `tailnet`, unless `listener` is set | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest, and `legion-envoy-v30.32.0` or later wherever the listener requires a credential (with `clientNamespaces`), the first listener that reads `ENVOY_OIDC_ACCOUNTS`; `machineId`, `tailnet.serviceName` by default; `nkey`, the public key of the listener user's seed; `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold that seed and which the component mounts by reference and never reads; `clientNamespaces`, the namespaces whose pods reach the listener at its cluster Service, `<n>-listener.<namespace>.svc.cluster.local:9020`, beside the tailnet hosts, none by default, each a DNS label, none repeated; `oidcIssuer`, `oidcAudience` and `oidcAccounts`, the credential the listener requires of every caller, a projected ServiceAccount token `oidcIssuer` (an https URL with no user, query or fragment, an empty one included, such as the cluster's own `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`) signed for `oidcAudience`, of a subject `oidcAccounts` lists as `system:serviceaccount:<namespace>:<name>`, none repeated, all three required with `clientNamespaces` or as the hub's own `listener` and refused otherwise; `allowedHosts`, any further address a client dials a listener with no credential by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves, refused where the listener requires a credential, since it then serves any `Host`; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. Two more inputs are optional: `senderMessagesPerMinute`, from 1 to 60000, and `senderMessageBurst`, at least 1 and only with a rate, the listener's limit on the messages each agent session sends ([The listener's sender limit](#the-listeners-sender-limit)). |
+| `tailnet.listener` | required with `tailnet`, unless `listener` is set | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest, and `legion-envoy-v30.32.0` or later wherever the listener requires a credential (with `clientNamespaces`), the first listener that reads `ENVOY_OIDC_ACCOUNTS`; `machineId`, `tailnet.serviceName` by default; `nkey`, the public key of the listener user's seed; `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold that seed and which the component mounts by reference and never reads; `clientNamespaces`, the namespaces whose pods reach the listener at its cluster Service, `<n>-listener.<namespace>.svc.cluster.local:9020`, beside the tailnet hosts, none by default, each a DNS label, none repeated; `oidcIssuer`, `oidcAudience` and `oidcAccounts`, the credential the listener requires of every caller, a projected ServiceAccount token `oidcIssuer` (an https URL with no user, query or fragment, an empty one included, such as the cluster's own `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`) signed for `oidcAudience`, of a subject `oidcAccounts` lists as `system:serviceaccount:<namespace>:<name>`, none repeated, all three required with `clientNamespaces` or as the hub's own `listener` and refused otherwise; `allowedHosts`, any further address a client dials a listener with no credential by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves, refused where the listener requires a credential, since it then serves any `Host`; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. Two more inputs are optional: `senderMessagesPerMinute`, from 1 to 60000, and `senderMessageBurst`, at least 1 and only with a rate, the listener's limit on the messages each agent session sends ([The listener's sender limit](#the-listeners-sender-limit)). Two more prepare a replacement under the writer hold: `consumerNames`, `fixed` or `fresh`, and `replaceUnderHold`, `false` by default ([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)). |
 | `tailnetAuthKey` | required with `tailnet` | A secret: the Tailscale auth key the tailnet hosts join with, which [Before the first deployment](#before-the-first-deployment) says how to make. Refused without `tailnet`. May come from another resource or stack. |
 
 Only `kubeconfig` and `tailnetAuthKey` may come from another resource's output. Every other input
@@ -267,8 +267,9 @@ input:
   one that begins with `..`), no `clientNamespaces` without `tailnet` and an entry that is not a DNS label
   or repeats an earlier one, an `allowedHosts` entry refused as `gcp:NatsHub`'s
   `listener.allowedHosts` entries are, a `senderMessagesPerMinute` outside 1 to 60000, a
-  `senderMessageBurst` below 1 or without `senderMessagesPerMinute`, and a `cpu` or `memory` at
-  which Autopilot would not run the listener pod as rendered (see [Sizing](#sizing)); of a listener
+  `senderMessageBurst` below 1 or without `senderMessagesPerMinute`, a `consumerNames` other than
+  `fixed` or `fresh`, and a `cpu` or `memory` at which Autopilot would not run the listener pod as
+  rendered (see [Sizing](#sizing)); of a listener
   that requires a credential (the hub's own `listener`, or a `tailnet.listener` with
   `clientNamespaces`): no `oidcIssuer`, `oidcAudience` or `oidcAccounts`, an `oidcIssuer` that is
   not an https URL with a host and no user, query or fragment, an `oidcAudience` holding whitespace
@@ -334,7 +335,8 @@ one per zone, held hard, with `minDomains` the lesser of `replicas` and 3. With
 ### The session listener
 
 The Deployment `<n>-listener` runs Envoy's session listener as a workload of its own, in one pod,
-rolled with `maxUnavailable: 0` and `maxSurge: 1`. The listener is declared once, as `listener`
+rolled with `maxUnavailable: 0` and `maxSurge: 1`, or recreated with `pulumi.com/skipAwait: "true"`
+under `<l>.replaceUnderHold: true` (below). The listener is declared once, as `listener`
 or as `tailnet.listener`, and the hub renders the same objects either way but for the listener
 container's token check, which a listener declared as `listener` always carries (below); `<l>`
 stands for the path it is declared at. The pod runs under the ServiceAccount
@@ -367,6 +369,10 @@ pod's 33 seconds, its 5-second preStop wait and its 28-second stop, and what has
 new pod's own 135-second bind deadline, counted from its `/v1` open. A new pod that never becomes
 Ready leaves the old one serving while the new one restarts on its bind deadline.
 
+With `<l>.replaceUnderHold` the Deployment is recreated instead, so the old pod stops before the
+new one starts, and the apply does not wait for the new pod
+([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)).
+
 Three more objects carry that pod:
 
 - the Service `<n>-listener`, port 9020 to the pod's port 9020, which each tailnet host's serve
@@ -386,8 +392,10 @@ to NATS at `serviceUrl` with `ENVOY_ALLOW_REMOTE_NATS=1`.
 `streamMaxBytes` are. `ENVOY_SENDER_MESSAGES_PER_MINUTE` and `ENVOY_SENDER_MESSAGE_BURST` are set
 exactly when `<l>.senderMessagesPerMinute` and `<l>.senderMessageBurst`
 are ([The listener's sender limit](#the-listeners-sender-limit)). Setting, changing or removing
-either changes the pod's environment, so the update rolls the pod as above. `NATS_NKEY_SEED_FILE`
-names the mounted seed. There is no `ENVOY_API_TOKEN`.
+either changes the pod's environment, so the update rolls the pod as above. `ENVOY_CONSUMER_NAMES`
+is set exactly when `<l>.consumerNames` is, and a change to it rolls the pod the same way
+([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)).
+`NATS_NKEY_SEED_FILE` names the mounted seed. There is no `ENVOY_API_TOKEN`.
 
 How `/v1` admits a caller depends on who reaches the listener:
 
@@ -414,7 +422,7 @@ How `/v1` admits a caller depends on who reaches the listener:
   background, and answers every projected token 503 with `Retry-After: 1` until it has read it.
   Its pod still needs egress to the issuer, such as GKE's cluster issuer,
   `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`:
-  without it, or with a wrong `<l>.oidcIssuer`, the pod becomes Ready, the rolling update replaces
+  without it, or with a wrong `<l>.oidcIssuer`, the pod becomes Ready, the update replaces
   the old pod, and every `/v1` caller then gets that 503. `/healthz`'s `oidc` field reads `false`
   and `envoy_listener_oidc_issuer_discovered{issuer="cluster"}` reads `0` while the listener has
   not read the issuer. None of the probes below reads either, and this component renders no scrape
@@ -434,7 +442,8 @@ Three probes read the pod's own loopback, two routes between them:
   served; the pattern matches that line and never the gauge's `# HELP` or `# TYPE` line, which
   every scrape carries. The kubelet runs neither of the other two probes, and the pod is not
   Ready, until this one has passed, so a new pod stays out of the Service until its `/v1`
-  serves, and the rolling update keeps the old pod serving until then. `/v1` opens without
+  serves, and the rolling update keeps the old pod serving until then (under
+  `<l>.replaceUnderHold` the Deployment is recreated instead). `/v1` opens without
   waiting for the durable consumer, which the old pod holds until it stops, so the gate cannot
   wait on the old pod. The listener writes the sample this way since `legion-envoy-v29.15.0`; an
   older listener writes it from its first answer, so there the probe passes at that answer, as
@@ -724,7 +733,7 @@ resources each of those is, the sandbox and the public origin in the paragraph u
 | ServiceAccount `<hostname>-tailnet`, Role and RoleBinding `<hostname>-tailnet-tls` | The front door's pods run as an account of their own, which the Role lets `get` and `patch` the one Secret `<hostname>-tailnet-tls` and nothing else (no `create`, since the component creates it, and no `update`, since the pods send merge patches), so neither the app nor the listener, nor the account `serviceAccountSubject` names, can write the certificate. The pod does not automount the account's token: only `cert-publish`, which calls the API server, mounts it, so the tailnet-facing `tailscale` and `advertiser` containers hold no credential for the Secret. The RoleBinding names the Role by an output that waits on the Role's ID, so a preview that creates the Role leaves the name unknown and pulumi-kubernetes sends no server-side dry run of the binding, which an account without the `bind` verb would see refused as "not found" while the Role does not exist. | Not built |
 | Secret `<hostname>-tailnet-tls` | The Tailscale Service's certificate, its key and the ACME account key (keys `tls.crt`, `tls.key` and `acme-account.key.pem`), which the front door's pods publish and seed from ([The front door](#the-front-door)). The component declares it with no data and ignores its contents, so a later preview never plans to undo what the pods wrote, and no pod template carries its checksum, so a renewed certificate rolls no pod. | Not built |
 | Three ClusterIP Services and three NetworkPolicies (two Services with `natsInCluster`) | Dispatch's API on port 8766, to the `allowedNamespaces` and the front door; the front door's SOCKS5 proxy on port 1055, to the app and the listener, neither the Service nor that rule rendered with `natsInCluster`, which leaves the front door's policy admitting nothing; the listener's API on port 9020, to the app. Each policy admits those sources alone among pods (Kubernetes still admits each pod's own node). | Not built |
-| Three Deployments | The app at `replicas` pods, the front door at `frontDoorReplicas` (2 by default) and the listener at `listenerReplicas` (1 by default), each `Recreate` at one pod and `RollingUpdate` (`maxUnavailable: 0`, `maxSurge: 1`) above one, by its own count. Every pod carries required pod anti-affinity on `kubernetes.io/hostname` and a `topology.kubernetes.io/zone` spread with `minDomains: 2`, both over its own Deployment's pods, and every serving container a startup and a liveness probe ([The pods](#the-pods)). The app and the listener each have a five-second pre-stop wait and the stop each is built for, and their termination grace periods differ: the app 35 seconds, the listener 40. The front door has 60 seconds, for its drain ([The front door](#the-front-door)). Every container has equal requests and limits. A pod template whose Deployment has no PodDisruptionBudget carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`; one whose Deployment has a budget does not. | Not built |
+| Three Deployments | The app at `replicas` pods, the front door at `frontDoorReplicas` (2 by default) and the listener at `listenerReplicas` (1 by default), each `Recreate` at one pod and `RollingUpdate` (`maxUnavailable: 0`, `maxSurge: 1`) above one, by its own count. With `replaceUnderHold: true`, the app and the listener are `Recreate` at any count, with no `rollingUpdate` block, and carry `pulumi.com/skipAwait: "true"`; the front door keeps its strategy ([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)). Every pod carries required pod anti-affinity on `kubernetes.io/hostname` and a `topology.kubernetes.io/zone` spread with `minDomains: 2`, both over its own Deployment's pods, and every serving container a startup and a liveness probe ([The pods](#the-pods)). The app and the listener each have a five-second pre-stop wait and the stop each is built for, and their termination grace periods differ: the app 35 seconds, the listener 40. The front door has 60 seconds, for its drain ([The front door](#the-front-door)). Every container has equal requests and limits. A pod template whose Deployment has no PodDisruptionBudget carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`; one whose Deployment has a budget does not. | Not built |
 | Up to three PodDisruptionBudgets | `<hostname>` with `appPdbMinAvailable`, `<hostname>-tailnet` with `frontDoorPdbMinAvailable` and `<hostname>-listener` with `listenerPdbMinAvailable`, each over its own Deployment's pods (`app=<name>`) alone, with that `minAvailable` and Kubernetes' default `unhealthyPodEvictionPolicy`, so a drain cannot take that workload below that many ready pods. | Not built |
 
 Three inputs change what the first four rows register:
@@ -765,8 +774,11 @@ RoleBinding `<hostname>-tailnet-tls`, and no `<hostname>-serve` ConfigMap. Two D
 remain, the app and the listener, each with its Service, its NetworkPolicy and the budget its own
 input turns on, and the app's policy admits the `allowedNamespaces` alone. The Secret
 `<hostname>-dispatch` holds `DATABASE_URL`, `DISPATCH_AGENT_TOKEN` and `DISPATCH_SIGNING_KEY`
-alone, since the mode takes no sign-in input. A Dispatch at `publicOrigin` builds exactly what the
-sandbox builds, and its Secret adds `DISPATCH_SIGNIN_CLIENT_SECRET` with the sign-in inputs.
+alone, since the mode takes no sign-in input. A Dispatch at `publicOrigin` builds what the sandbox
+builds but for its entrance's two inputs: with `networkEndpointGroupName` the app's Service carries
+the `cloud.google.com/neg` annotation, and with `loadBalancerSourceRanges` the app's policy carries
+a rule that admits those ranges to port 8766 ([Inputs](#inputs-1)). Its Secret adds
+`DISPATCH_SIGNIN_CLIENT_SECRET` with the sign-in inputs.
 
 ### A cluster and a database instance the component does not make
 
@@ -1267,8 +1279,9 @@ instance waits for nothing of the consumer's.
 
 `replicas`, `frontDoorReplicas` and `listenerReplicas` are the pod counts of the app, the front
 door and the listener: 1, 2 and 1 by default, each refused by name below 1 before the component
-registers a resource. Each Deployment takes its update strategy from its own count ([The
-pods](#the-pods)). The front door runs two by default, since with one pod every node drain,
+registers a resource. Each Deployment takes its update strategy from its own count, but for the
+app's and the listener's while `replaceUnderHold` is `true` ([The pods](#the-pods)). The front door
+runs two by default, since with one pod every node drain,
 upgrade or scale-down that moves it takes Dispatch off the tailnet until its replacement is ready.
 Raise `replicas` above 1 only on an envoy image that meets "Running more than one process" in
 `packages/envoy/cmd/dispatch/README.md` (below). Raise `listenerReplicas` above 1 only on an envoy
@@ -1318,6 +1331,15 @@ equals the rate. Each of the `listenerReplicas` pods keeps its own count for eac
 session whose requests reach more than one pod can send more than the rate in all. The component
 refuses a rate outside 1 to 60000, a burst below 1 and a burst with no rate, each by name, before
 it registers a resource, and `clusterOnly` refuses both inputs by name.
+
+`consumerNames` and `replaceUnderHold` prepare a replacement under the writer hold
+([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)):
+`consumerNames`, `fixed` or `fresh`, is `ENVOY_CONSUMER_NAMES` on the app's `envoy-dispatch` and
+the listener's `envoy-listener`, the two containers that create JetStream consumers, rendered only
+when it is set. `replaceUnderHold`, `false` by default, recreates the app's and the listener's
+Deployments at any replica count and lets the apply finish without waiting for them; the front door
+keeps its own strategy. The component refuses a `consumerNames` other than `fixed` or `fresh` by
+name before it registers a resource, and `clusterOnly` refuses both inputs by name.
 
 `signingKeyGenerations`, `[0]` by default, is the ordered key set `DISPATCH_SIGNING_KEY` holds:
 the first generation in the list signs every new session cookie and seals every new refresh
@@ -1580,8 +1602,9 @@ namespaces, allowed namespaces, an `appCpu`, `appMemory`, `proxyCpu`, `proxyMemo
 Autopilot's bounds for the app pod (above), a `pprofPort` outside 1-65535 or on a port the app pod
 already binds (above), a `replicas`, `frontDoorReplicas` or `listenerReplicas` below 1, a
 `natsReplicas` outside 1 to 5 or a `streamMaxBytes` below 1, a `senderMessagesPerMinute` outside
-1 to 60000, a `senderMessageBurst` below 1 or without `senderMessagesPerMinute`, a
-`priorityClassName` that is empty, not a DNS subdomain or a `system-` class, an
+1 to 60000, a `senderMessageBurst` below 1 or without `senderMessagesPerMinute`, a `consumerNames`
+other than `fixed` or `fresh`, a `priorityClassName` that is empty, not a DNS subdomain or a
+`system-` class, an
 `appPdbMinAvailable`, `frontDoorPdbMinAvailable` or `listenerPdbMinAvailable` outside 1 to its
 Deployment's replica count, a `databaseAvailabilityType` other than `ZONAL` or `REGIONAL`, a
 negative `signingKeyGenerations` entry, which names no resource, or a repeated one, which would
@@ -1719,15 +1742,19 @@ Azure form, which `azureChatEndpoint` takes too, the projected token at
 `/var/run/secrets/azure-federation/token`; and with `chatTokenSecret`, the answerer's bearer token
 at `/var/run/secrets/chat-token/token`.
 
-Each Deployment takes its update strategy from its own replica count. At one pod it is recreated,
-stopping the old pod before the new one starts: a roll would run the outgoing and the incoming
-builds together, which is safe only once the outgoing build follows the rules for two builds
-running side by side and keeps its assets in the shared store, and a one-pod release cannot know
-that of the build it replaces. Above one pod it rolls, with `maxUnavailable: 0` and `maxSurge: 1`,
-so a new pod is ready before any old one goes down: an operator who runs a workload above one pod
-runs such builds and wants no gap in service. There is no strategy or surge input, since the safe
-strategy follows from the count. So at one replica an input or image update recreates that
-workload's one pod, which is a brief outage, and the front door, at its default of two, rolls.
+With `replaceUnderHold` unset or false, each Deployment takes its update strategy from its own
+replica count. At one pod it is recreated, stopping the old pod before the new one starts: a roll
+would run the outgoing and the incoming builds together, which is safe only once the outgoing
+build follows the rules for two builds running side by side and keeps its assets in the shared
+store, and a one-pod release cannot know that of the build it replaces. Above one pod it rolls,
+with `maxUnavailable: 0` and `maxSurge: 1`, so a new pod is ready before any old one goes down: an
+operator who runs a workload above one pod runs such builds and wants no gap in service. So at one
+replica an input or image update recreates that workload's one pod, which is a brief outage, and
+the front door, at its default of two, rolls. The one input that sets a strategy is
+`replaceUnderHold`: with `true`, the app and the listener are recreated at any count and carry
+`pulumi.com/skipAwait: "true"`, for a replacement under the writer hold, and the front door keeps
+the strategy its count gives it
+([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)).
 
 Every pod carries two rules over its own Deployment's pods, at any replica count. Required pod
 anti-affinity on `kubernetes.io/hostname` puts at most one of them on a node, so a node's loss
@@ -2321,8 +2348,10 @@ every request that needs a person answers `401 NO_IDENTITY`, one carrying a `dse
 a stack that ran sign-in before included.
 
 A stack behind the IAP door sets no tailnet input and no Google client, and sets `publicOrigin`,
-the origin its own load balancer serves, `iapAudience`, the audience of that load balancer's
-backend service, and `signInDomain`, the domain whose accounts may use Dispatch:
+the origin its own load balancer serves, `loadBalancerSourceRanges`, the ranges that load
+balancer's proxies and health checks reach the app's pods from, `networkEndpointGroupName`, the
+group its backend service takes as its backend, `iapAudience`, the audience of that backend
+service, and `signInDomain`, the domain whose accounts may use Dispatch:
 
 ```yaml
 resources:
@@ -2341,6 +2370,8 @@ resources:
       natsInCluster: true
       natsSeedSecret: projects/example-project/secrets/example-nats-seed
       publicOrigin: https://dispatch.example.com
+      loadBalancerSourceRanges: [35.191.0.0/16, 130.211.0.0/22]
+      networkEndpointGroupName: example-dispatch
       iapAudience: /projects/<project number>/global/backendServices/${backendService.generatedId}
       signInDomain: example.com
       allowedNamespaces: [example-agents]
@@ -2352,8 +2383,37 @@ resources:
 
 Its `url` output is `https://dispatch.example.com`, and its app carries `DISPATCH_IDENTITY=iap`,
 `DISPATCH_IAP_AUDIENCE` and `DISPATCH_SIGNIN_DOMAIN=example.com` and no other `DISPATCH_SIGNIN_*`
-setting. The load balancer, its backend service with IAP on, its certificate and the
-NetworkPolicy that admits its ranges to the app's port 8766 are the stack's own ([Inputs](#inputs-1)).
+setting. The app's NetworkPolicy admits the two ranges to port 8766 beside the pods of
+`example-agents`, and the app's Service carries the `cloud.google.com/neg` annotation that has GKE
+make the group `example-dispatch` in each zone of the cluster's region. The load balancer, its
+backend service with IAP on, whose backends are that group in each zone, and its certificate are
+the stack's own ([Inputs](#inputs-1)).
+
+One `pulumi up` cannot build all of this. Pulumi registers a component only once each of its
+inputs resolves, so Dispatch waits for the backend service whose id `iapAudience` holds. The
+backend service's backends are the group in each zone, which GKE makes only once Dispatch's
+Service carries the annotation, within a few minutes of it, and Compute Engine answers a reference
+to a group that does not exist with
+`Error 404: The resource '…/networkEndpointGroups/<name>' was not found`. A backend that waits for
+Dispatch instead closes a dependency cycle. So the stack applies twice:
+
+1. The first `pulumi up` creates the backend service with no backend yet, and then Dispatch with
+   the inputs above. GKE then makes the group `example-dispatch` in each zone of the cluster's
+   region. Until the second apply no request through the load balancer reaches Dispatch, since its
+   backend service has no backend.
+2. Once `gcloud compute network-endpoint-groups list --filter=name=example-dispatch` lists the
+   group in every zone of the region, add one backend per zone to the backend service in the
+   stack, and run `pulumi up` again. Each backend names its zone's group by URL in `group`,
+   `projects/<project>/zones/<zone>/networkEndpointGroups/example-dispatch`, and sets
+   `balancingMode: RATE` and a `maxRatePerEndpoint`, since a network endpoint group does not take
+   the provider's default mode, `UTILIZATION`
+   ([Utilization balancing mode](https://cloud.google.com/load-balancing/docs/backend-service#utilization_balancing_mode)).
+   Dispatch's inputs do not change, so this apply leaves Dispatch as it is.
+
+Do not create the groups in the stack instead: GKE syncs no endpoint into a group of that name
+that it did not make itself
+([NEG is not synced with Service](https://cloud.google.com/kubernetes-engine/docs/how-to/standalone-neg#neg_is_not_synced_with_service)).
+
 A stack that runs Google sign-in at its own origin instead sets the sign-in group in place of
 `iapAudience`, and its Google client lists `https://dispatch.example.com/auth/callback`.
 
@@ -3304,6 +3364,46 @@ forward may have stored the message. A repeat that finds the count at 0 is refus
 message is. The listener's own two settings are on the documentation site's
 [Envoy page](https://cybermonklabs.github.io/legion/dispatch/envoy/#the-sender-limit).
 
+## The consumer-name mode and the writer hold's update rule
+
+Two optional inputs prepare a deployment for a replacement under the writer hold, which refuses
+every NATS client but the operator's. `gcp:ClusteredNatsHub` takes them under `listener` or
+`tailnet.listener`, and `gcp:Dispatch` takes them as its own inputs. The components that take
+them render something only where an input is set, so a deployment that sets neither renders
+exactly what it rendered before.
+
+`consumerNames` is how each consumer creator names the JetStream consumers it creates: `fixed`,
+one name for each consumer, or `fresh`, a new physical name at each creation behind a selection
+record. The component renders it as `ENVOY_CONSUMER_NAMES` on each creator: the hub's listener
+container, and Dispatch's `envoy-dispatch` and `envoy-listener` containers. Dispatch's front door
+creates no consumer and gets nothing. Unset, the component renders nothing, and a creator runs
+`fixed`. A creator reads the setting only at its start, so a change rolls its pod; a creator built
+before the setting existed reads no such variable and runs as it always did. The component refuses
+any other value before it registers anything, with an error that names the input and quotes the
+value, as `tailnet.listener.consumerNames "Fresh" must be "fixed" or "fresh"
+(ENVOY_CONSUMER_NAMES); leave it unset for fixed`. Case and surrounding whitespace count.
+
+`replaceUnderHold`, `false` by default, is the update rule of each creator's Deployment for that
+replacement. Under the hold a new pod cannot connect to NATS, so it does not become ready: the hub
+listener's startup probe passes only once its `/v1` serves, and a rolling update keeps the old pod
+beside a new pod that never becomes ready. With `true`:
+
+- each creator's Deployment uses `strategy: {type: Recreate}`, with no `rollingUpdate` block, at
+  any replica count, so every old pod stops before a new one starts;
+- each creator's Deployment carries the annotation `pulumi.com/skipAwait: "true"` on its own
+  metadata, so the apply does not wait for its rollout. A check of the running pods, not the
+  apply, shows the replacement.
+
+The creators are the hub's listener, `<n>-listener`, and Dispatch's app, `<hostname>`, and
+listener, `<hostname>-listener`. The pod template does not change, so the rule by itself rolls no
+pod. Dispatch's front door keeps the strategy its replica count gives it. With `false` every
+Deployment renders exactly as before: the hub's listener rolls with `maxSurge: 1` and
+`maxUnavailable: 0`, and each Dispatch Deployment is recreated at one replica and rolls with those
+bounds above one. Each of those rolling strategies writes its bounds itself, so the component's
+field manager owns `rollingUpdate`, and server-side apply removes it when `true` stops rendering
+it. Set `replaceUnderHold` back to `false` once the hold is released: under Recreate every later
+release stops every pod before its replacement serves.
+
 ## NATS seeds
 
 A NATS client authenticates as an nkey user with that user's seed, and the server knows the user
@@ -4018,9 +4118,9 @@ session's consumer); `notifications.envoy.resume.>` (where a deleted session con
 report, and an unheld role's refusal). So a direct publish of the edge's reaches no Dispatch,
 GitHub, Slack, team or Legion event, no other project's role lane and no role lane in the form
 that names no project, nothing on the kept role lane `notifications.envoy.kept.>` and no other
-exception lane. A message on a role lane of its own project that
-names a role of another project is the shared listeners' role lane to refuse, which it does once
-the edge mode of #4810 is in. It holds no `$JS.API.STREAM.CREATE` or `UPDATE` of
+exception lane. A message on a role lane of its own project that names a role of another project
+is the shared listeners' role lane to refuse, which it does with the edge mode of #4810
+(`roleLaneProjectError`). It holds no `$JS.API.STREAM.CREATE` or `UPDATE` of
 `ENVOY_NOTIFICATIONS` or of any bucket's stream (`KV_<bucket>`), and no `$JS.API.DIRECT.GET` of any
 bucket, so it can change no stream's subjects, limits or republish:
 
