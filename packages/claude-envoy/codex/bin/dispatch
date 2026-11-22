@@ -11,7 +11,7 @@ while [ -L "$self" ]; do
     *) self=$(dirname "$self")/$link ;;
   esac
 done
-here=$(cd -P "$(dirname "$self")" && pwd -P)
+here=$(CDPATH='' cd -P "$(dirname "$self")" && pwd -P)
 cli="$here/../dist/dispatch.js"
 [ -f "$cli" ] || { echo "dispatch: $cli is missing; the published @sjawhar/codex-envoy carries it, or build a copy with bun scripts/build.ts --codex-out <dir>" >&2; exit 2; }
 exec bun "$cli" "$@"
