@@ -52,14 +52,15 @@ const ghPinnedCheckPortSHA256 = "2e9049bfe5969e039878ae88d72dbc844a843f2d7a48191
 // two arguments whose first is a mode word exits 2, as a pre-push hook's call (a remote's name and
 // its URL), and a `--` right after the mode word is taken out. The guard calls `gh-guard --
 // <argv>`, and `gh-guard` alone for a call of no words (leakguard's ghGuard), so neither changes
-// what is read: main() takes out the one `--` it wrote, and gh_guard reads argv exactly, a first
-// word `--` of argv's own among it; a call of no words returns 0 in main() before gh_guard, as
-// leak-check-v31's did, and this reads it as is_read reads an empty first word. The old shapes,
-// `gh-guard WORD` and `gh-guard --`, now exit 2 before gh_guard, a refusal and no lookup. And from
-// leak-check-v31 to leak-check-v33 no definition the read reaches changed: of the ones gh_guard,
-// is_read, READ_ALL, READ_TWO, collect and api_read reach, by name, only LEAK_CODE changed in
-// source, written as two parts whose join is the same pattern, and scan_records and optin_scan,
-// which the scan after the read is decided runs, changed to read a Rocq source file's comments.
+// what is read: main() takes out the `--` the guard wrote, and gh_guard reads argv exactly, a
+// first word `--` of argv's own among it; a call of no words returns 0 in main() before gh_guard,
+// as leak-check-v31's did, and this reads it as is_read reads an empty first word. The old
+// shapes, `gh-guard WORD` and `gh-guard --`, now exit 2 before gh_guard, a refusal and no lookup.
+// And from leak-check-v31 to leak-check-v33 no definition the read decides by changed. Of the
+// definitions gh_guard, is_read, READ_ALL, READ_TWO, collect and api_read reach by name, three
+// changed in source: LEAK_CODE, now written as two parts whose join is the same pattern, and
+// scan_records and optin_scan, which only the scan after the read is decided runs, and which now
+// read a Rocq source file's lines by their code, a field no record of a gh call carries.
 func ghPinnedCheckReads(argv []string) bool {
 	first := ""
 	if len(argv) > 0 {
