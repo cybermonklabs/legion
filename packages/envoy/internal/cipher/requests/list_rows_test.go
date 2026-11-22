@@ -35,7 +35,8 @@ const (
 
 // hiddenMidQuestion is a projectaccess.Access that answers HIDE as a private project the reader is
 // not on only once a question about SHARED has arrived, and holds each question about SHARED until
-// release is closed or its caller's context ends. asked counts the questions by project.
+// release is closed; either question ends with its caller's context, answering its error. asked
+// counts the questions by project.
 type hiddenMidQuestion struct {
 	sharedArrived chan struct{}
 	arrivedOnce   sync.Once
@@ -50,7 +51,11 @@ func (h *hiddenMidQuestion) Access(ctx context.Context, project, _ string) (proj
 	h.mu.Unlock()
 	switch project {
 	case hidingProject:
-		<-h.sharedArrived
+		select {
+		case <-h.sharedArrived:
+		case <-ctx.Done():
+			return projectaccess.Answer{}, ctx.Err()
+		}
 		return projectaccess.Answer{Project: project, Visibility: projectaccess.VisibilityPrivate, AskedAt: time.Now()}, nil
 	case sharedProject:
 		h.arrivedOnce.Do(func() { close(h.sharedArrived) })
@@ -79,11 +84,14 @@ func (h *hiddenMidQuestion) States(context.Context, []string) (map[string]projec
 // then reads SHARED. The question runs on the list's clock, not the first row's context, so it goes
 // on, and the second row takes its answer: Dispatch is asked about SHARED once, and the second row
 // is shown. On the first row's context the question ends with that row, and the second row asks it
-// again.
+// again. Every wait here ends with the list's clock, so a maySee that asks its projects one after
+// another, HIDE first, fails here rather than holding the test: it never asks SHARED while HIDE waits.
 func TestAQuestionAHiddenRowAskedIsAskedOnceForTheList(t *testing.T) {
 	dispatch := &hiddenMidQuestion{sharedArrived: make(chan struct{}), release: make(chan struct{}), asked: map[string]int{}}
 	m := &Machine{Projects: dispatch}
-	list := withAccessMemo(t.Context())
+	clock, cancel := context.WithTimeout(t.Context(), listOwnRowsBound)
+	defer cancel()
+	list := withAccessMemo(clock)
 	type seen struct {
 		shown bool
 		err   error
@@ -93,7 +101,11 @@ func TestAQuestionAHiddenRowAskedIsAskedOnceForTheList(t *testing.T) {
 		shown, _, err := m.maySee(list, outsider, nil, hidingProject+"-1 and "+sharedProject+"-1: rotate the deploy key")
 		hidden <- seen{shown, err}
 	}()
-	<-dispatch.sharedArrived
+	select {
+	case <-dispatch.sharedArrived:
+	case <-clock.Done():
+		t.Fatal("the row naming HIDE and SHARED did not ask about SHARED before the list's clock ended: it must ask both at once")
+	}
 	other := make(chan seen, 1)
 	go func() {
 		shown, _, err := m.maySee(list, outsider, nil, sharedProject+"-2: rotate the wiki key")
@@ -233,6 +245,18 @@ func (publicAnswers) States(context.Context, []string) (map[string]projectaccess
 	return nil, errors.New("the stand-in answers no state question")
 }
 
+// listMemo is the memo withAccessMemo put on list, and fails the test when there is none, as a
+// withAccessMemo that answers its context unchanged would leave it: the test then fails with a
+// message rather than panicking on a nil memo.
+func listMemo(t *testing.T, list context.Context) *accessMemo {
+	t.Helper()
+	memo, ok := list.Value(accessMemoKey{}).(*accessMemo)
+	if !ok || memo == nil {
+		t.Fatal("withAccessMemo put no memo on the list's context: a list's rows share no question")
+	}
+	return memo
+}
+
 // TestARowWaitingOnAnotherRowsQuestionHoldsNoSlot: on one list's memo, under its 3 s clock, 20
 // rows name SLOW, which Dispatch holds until the clock ends. The first row asks it, in one of the
 // list's MaySeeAtOnce (16) slots, and the others wait on its question. Once the question has
@@ -252,7 +276,7 @@ func TestARowWaitingOnAnotherRowsQuestionHoldsNoSlot(t *testing.T) {
 	// that find the question cut short each join again as they ask afresh, more often than any
 	// buffer counts, and a blocked hook would hold its row, and this test, for good.
 	joined := make(chan struct{}, 32)
-	list.Value(accessMemoKey{}).(*accessMemo).joined = func() {
+	listMemo(t, list).joined = func() {
 		select {
 		case joined <- struct{}{}:
 		default:
@@ -326,7 +350,7 @@ func TestNoQuestionIsAskedOnceTheListsClockHasEnded(t *testing.T) {
 	m := &Machine{Projects: dispatch}
 	clock, cancel := context.WithCancel(t.Context())
 	list := withAccessMemo(clock)
-	memo := list.Value(accessMemoKey{}).(*accessMemo)
+	memo := listMemo(t, list)
 	first := make(chan struct{})
 	go func() {
 		defer close(first)
