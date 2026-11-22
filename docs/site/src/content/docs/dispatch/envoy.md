@@ -61,10 +61,12 @@ receives it, so the copies two Apps installed on one repository deliver are stor
 
 The listener logs one `github published` line for each topic of each delivery it publishes, with
 the delivery's GUID, its event and action, the topic, the key, the hook target's id
-(`X-GitHub-Hook-Installation-Target-ID`, an App's id for an App's webhook) and `result=stored` or
-`result=duplicate`, the stream's answer. A comment or a review also logs a `github sender` line,
-which names the sender and the hook target's type and id. Both lines write the two hook-target
-headers quoted (`target_id="5341240"`), since the body's signature does not cover them.
+(`X-GitHub-Hook-Installation-Target-ID`, an App's id for an App's webhook), `result=stored` or
+`result=duplicate`, the stream's answer, and `resent=true` where that answer came to the bus's
+resend after the connection closed under its first send, which counts as `stored` since the first
+send may have stored that copy. A comment or a review also logs a `github sender` line, which
+names the sender and the hook target's type and id. Both lines write the two hook-target headers
+quoted (`target_id="5341240"`), since the body's signature does not cover them.
 
 When a repository has been renamed, the listener publishes each of its events a second time under
 the former name, for every pair `ENVOY_GITHUB_REPOSITORY_RENAMES` configures as

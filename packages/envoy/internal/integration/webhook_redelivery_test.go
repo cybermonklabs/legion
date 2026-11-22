@@ -308,7 +308,7 @@ type failAfter struct {
 	published int
 }
 
-func (p *failAfter) PublishEachWithin(ctx context.Context, item contracts.Envelope, published func(topic string, duplicate bool)) error {
+func (p *failAfter) PublishEachWithin(ctx context.Context, item contracts.Envelope, published func(topic string, duplicate, resent bool)) error {
 	if p.published >= p.after {
 		return fmt.Errorf("publish refused after %d envelopes", p.after)
 	}

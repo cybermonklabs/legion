@@ -206,12 +206,13 @@ func githubHandler(secret, mentionTrigger, reviewerAppID, verdictAppID string, p
 			}
 			// One line for each topic the publisher put the envelope on, its copy under a renamed
 			// repository's former name included: which App's webhook delivered which event under
-			// which key, and whether the stream stored it or already held that key, so the copies
-			// two Apps deliver of one event can be told apart and counted. A topic published before
-			// a later one failed is logged too.
-			err := publisher.PublishEachWithin(answer, item, func(topic string, duplicate bool) {
-				log.Printf("github published delivery=%s event=%s action=%s topic=%s key=%s target_id=%q result=%s",
-					delivery, event, action, topic, item.DedupeKey, targetID, publishResult(duplicate))
+			// which key, and whether the stream stored it or already held that key, read from the
+			// stream's acknowledgement with whether it answers a resend, so the copies two Apps
+			// deliver of one event can be told apart and counted. A topic published before a later
+			// one failed is logged too.
+			err := publisher.PublishEachWithin(answer, item, func(topic string, duplicate, resent bool) {
+				log.Printf("github published delivery=%s event=%s action=%s topic=%s key=%s target_id=%q result=%s resent=%t",
+					delivery, event, action, topic, item.DedupeKey, targetID, publishResult(duplicate, resent), resent)
 			})
 			if err != nil {
 				failures.deliveryFailed(w, delivery, "github publish", err)
@@ -226,9 +227,14 @@ func githubHandler(secret, mentionTrigger, reviewerAppID, verdictAppID string, p
 	}
 }
 
-// publishResult is how a `github published` line names the stream's answer to one publish.
-func publishResult(duplicate bool) string {
-	if duplicate {
+// publishResult is how a `github published` line names the stream's answer to one publish:
+// duplicate when the stream already held the message from an earlier publish, and stored
+// otherwise. A duplicate that answers the bus's resend after the connection closed under its first
+// send (bus.StoredAck.Resent) may name the copy that first send stored, so it is this publish's
+// own copy and stored, as the listener's sender limit reads it (cmd/listener's
+// senderCharge.published).
+func publishResult(duplicate, resent bool) string {
+	if duplicate && !resent {
 		return "duplicate"
 	}
 	return "stored"

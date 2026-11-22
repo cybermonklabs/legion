@@ -11,12 +11,11 @@ import (
 // Bus is what the publisher publishes through. *bus.Client satisfies it. It is declared here, and
 // not imported from internal/bus, so that this package stays free of the bus and of everything the
 // bus pulls in: a rename is a fact about subjects, and the one thing it needs of a bus is that it
-// takes an envelope. Publish serves cistore.Publisher (the CI summary loop), and
-// PublishReportingDuplicateWithin serves webhook.Publisher (PublishEachWithin, the webhook
-// handlers), so one *Publisher satisfies both.
+// takes an envelope. Publish serves cistore.Publisher (the CI summary loop), and PublishEachWithin
+// serves webhook.Publisher (the webhook handlers), so one *Publisher satisfies both.
 type Bus interface {
 	Publish(contracts.Envelope) error
-	PublishReportingDuplicateWithin(context.Context, contracts.Envelope) (bool, error)
+	PublishEachWithin(ctx context.Context, item contracts.Envelope, published func(topic string, duplicate, resent bool)) error
 }
 
 // Publisher publishes each GitHub envelope a second time under the former name of the repository
@@ -74,13 +73,13 @@ func (p *Publisher) Publish(item contracts.Envelope) error {
 
 // PublishEachWithin publishes item, then its copy under the former name, each within ctx, and
 // calls published, when it is not nil, once for each of the two as it is published, with that
-// topic and the stream's own answer for it: the copy is a message of its own under its own
-// Nats-Msg-Id, so the stream can hold one and not the other. It is webhook.Publisher.
+// topic and the stream's own acknowledgement for it: the copy is a message of its own under its
+// own Nats-Msg-Id, so the stream can hold one and not the other. It is webhook.Publisher.
 //
 // A copy that fails to publish fails the publish, and its error is the one returned, after the
 // envelope's own topic was reported published: see Publish for why that failure is not swallowed.
-func (p *Publisher) PublishEachWithin(ctx context.Context, item contracts.Envelope, published func(topic string, duplicate bool)) error {
-	if err := p.publishReporting(ctx, item, published); err != nil {
+func (p *Publisher) PublishEachWithin(ctx context.Context, item contracts.Envelope, published func(topic string, duplicate, resent bool)) error {
+	if err := p.bus.PublishEachWithin(ctx, item, published); err != nil {
 		return err
 	}
 	former, ok := p.formerTopic(item.Topic)
@@ -88,19 +87,7 @@ func (p *Publisher) PublishEachWithin(ctx context.Context, item contracts.Envelo
 		return nil
 	}
 	item.Topic = former
-	return p.publishReporting(ctx, item, published)
-}
-
-// publishReporting publishes item on its own topic within ctx and reports it to published.
-func (p *Publisher) publishReporting(ctx context.Context, item contracts.Envelope, published func(topic string, duplicate bool)) error {
-	duplicate, err := p.bus.PublishReportingDuplicateWithin(ctx, item)
-	if err != nil {
-		return err
-	}
-	if published != nil {
-		published(item.Topic, duplicate)
-	}
-	return nil
+	return p.bus.PublishEachWithin(ctx, item, published)
 }
 
 // formerTopic is topic under the former name of the repository it names, and whether there is such

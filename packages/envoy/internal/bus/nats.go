@@ -1935,18 +1935,20 @@ func (c *Client) PublishReportingDuplicateWithin(ctx context.Context, item contr
 	return ack.Duplicate, err
 }
 
-// PublishEachWithin publishes item on its own topic as PublishReportingDuplicateWithin does, and
-// once the publish succeeds calls published, when it is not nil, with that topic and the
-// duplicate verdict. It is the webhook handlers' publisher (webhook.Publisher), which a publisher
-// that also puts copies on other topics implements by calling published once for each topic it
-// published on (ghrename.Publisher).
-func (c *Client) PublishEachWithin(ctx context.Context, item contracts.Envelope, published func(topic string, duplicate bool)) error {
-	duplicate, err := c.PublishReportingDuplicateWithin(ctx, item)
+// PublishEachWithin publishes item on its own topic as PublishAckWithin does, and once the
+// publish succeeds calls published, when it is not nil, with that topic and the stream's
+// acknowledgement: its duplicate verdict, and whether the verdict answers a resend
+// (StoredAck.Resent), which can make a duplicate this call's own first copy. It is the webhook
+// handlers' publisher (webhook.Publisher), which a publisher that also puts copies on other
+// topics implements by calling published once for each topic it published on
+// (ghrename.Publisher).
+func (c *Client) PublishEachWithin(ctx context.Context, item contracts.Envelope, published func(topic string, duplicate, resent bool)) error {
+	ack, err := c.PublishAckWithin(ctx, item)
 	if err != nil {
 		return err
 	}
 	if published != nil {
-		published(item.Topic, duplicate)
+		published(item.Topic, ack.Duplicate, ack.Resent)
 	}
 	return nil
 }

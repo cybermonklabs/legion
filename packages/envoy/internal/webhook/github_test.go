@@ -751,7 +751,7 @@ func TestAGitHubDeliveryTheFullStreamRefusedIsStoredOnARedeliveryOnceTheStreamHa
 		t.Fatalf("purge the stream: %v", err)
 	}
 	if status, lines = post("d-room", "stored"); status != http.StatusOK || len(lines) != 1 ||
-		!strings.HasPrefix(lines[0], "github published delivery=d-room ") || !strings.HasSuffix(lines[0], " result=stored") {
+		!strings.HasPrefix(lines[0], "github published delivery=d-room ") || !strings.HasSuffix(lines[0], " result=stored resent=false") {
 		t.Fatalf("after the purge, the redelivery answered %d and logged %v, want 200 and its one github published line, stored", status, lines)
 	}
 	info, err := js.StreamInfo(bus.Stream)

@@ -36,8 +36,14 @@ func (b *recordingBus) publish(item contracts.Envelope) error {
 
 func (b *recordingBus) Publish(item contracts.Envelope) error { return b.publish(item) }
 
-func (b *recordingBus) PublishReportingDuplicateWithin(_ context.Context, item contracts.Envelope) (bool, error) {
-	return false, b.publish(item)
+func (b *recordingBus) PublishEachWithin(_ context.Context, item contracts.Envelope, published func(topic string, duplicate, resent bool)) error {
+	if err := b.publish(item); err != nil {
+		return err
+	}
+	if published != nil {
+		published(item.Topic, false, false)
+	}
+	return nil
 }
 
 // topics are the topics the bus was handed, in order, which is what a fan-out case states.
@@ -99,51 +105,59 @@ func mustParse(t *testing.T, value string) Renames {
 }
 
 // duplicateBus answers every publish to the topics in held as a duplicate, as a stream that holds
-// their message id already does.
+// their message id already does, and every publish to the topics in resent as the answer to the
+// bus's resend after a closed connection.
 type duplicateBus struct {
 	recordingBus
-	held []string
+	held, resent []string
 }
 
-func (b *duplicateBus) PublishReportingDuplicateWithin(ctx context.Context, item contracts.Envelope) (bool, error) {
-	if _, err := b.recordingBus.PublishReportingDuplicateWithin(ctx, item); err != nil {
-		return false, err
+func (b *duplicateBus) PublishEachWithin(_ context.Context, item contracts.Envelope, published func(topic string, duplicate, resent bool)) error {
+	if err := b.publish(item); err != nil {
+		return err
 	}
-	return slices.Contains(b.held, item.Topic), nil
+	if published != nil {
+		published(item.Topic, slices.Contains(b.held, item.Topic), slices.Contains(b.resent, item.Topic))
+	}
+	return nil
 }
 
 // The webhook logs one line for each topic a delivery is published on, so the publisher reports
-// each topic it published, the copy under the former name included, with the stream's own answer
-// for that topic: the copy is a message of its own, which the stream can hold while it stores the
-// envelope, or the other way round. A copy that fails is not reported, and the envelope before it
-// is.
+// each topic it published, the copy under the former name included, with the stream's own
+// acknowledgement for that topic: the copy is a message of its own, which the stream can hold
+// while it stores the envelope, or the other way round, and either can be the answer to a resend.
+// A copy that fails is not reported, and the envelope before it is.
 func TestPublisherReportsEachTopicWithItsOwnAnswer(t *testing.T) {
 	const (
 		current = "notifications.github.cybermonklabs.legion.pr.7706"
 		former  = "notifications.github.sjawhar.legion.pr.7706"
 	)
 	for _, c := range []struct {
-		name   string
-		held   []string
-		failOn int
-		want   []string
+		name         string
+		held, resent []string
+		failOn       int
+		want         []string
 	}{
 		{name: "neither held", want: []string{current + " stored", former + " stored"}},
 		{name: "the envelope held", held: []string{current}, want: []string{current + " duplicate", former + " stored"}},
 		{name: "only the copy held", held: []string{former}, want: []string{current + " stored", former + " duplicate"}},
+		{name: "the copy's resend held", held: []string{former}, resent: []string{former}, want: []string{current + " stored", former + " duplicate resent"}},
 		{name: "the copy fails", failOn: 2, want: []string{current + " stored"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			bus := &duplicateBus{held: c.held}
+			bus := &duplicateBus{held: c.held, resent: c.resent}
 			bus.failOn, bus.failWith = c.failOn, errors.New("refused")
 			p := Publishing(bus, mustParse(t, "sjawhar/legion=cybermonklabs/legion"), nil)
 			var reported []string
-			err := p.PublishEachWithin(context.Background(), testEnvelope(current), func(topic string, duplicate bool) {
-				result := "stored"
+			err := p.PublishEachWithin(context.Background(), testEnvelope(current), func(topic string, duplicate, resent bool) {
+				answer := topic + " stored"
 				if duplicate {
-					result = "duplicate"
+					answer = topic + " duplicate"
 				}
-				reported = append(reported, topic+" "+result)
+				if resent {
+					answer += " resent"
+				}
+				reported = append(reported, answer)
 			})
 			if (err != nil) != (c.failOn != 0) {
 				t.Fatalf("PublishEachWithin = %v, want an error only when the copy fails", err)

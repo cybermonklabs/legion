@@ -15,12 +15,12 @@ type mockPublisher struct {
 	err       error
 }
 
-func (m *mockPublisher) PublishEachWithin(_ context.Context, item contracts.Envelope, published func(topic string, duplicate bool)) error {
+func (m *mockPublisher) PublishEachWithin(_ context.Context, item contracts.Envelope, published func(topic string, duplicate, resent bool)) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.published = append(m.published, item)
 	if m.err == nil && published != nil {
-		published(item.Topic, false)
+		published(item.Topic, false, false)
 	}
 	return m.err
 }

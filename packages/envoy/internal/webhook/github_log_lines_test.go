@@ -10,16 +10,92 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ghrename"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // publishedLine is the github published line of a push of sharedDelivery on topic, from the App
-// targetID, with the stream's answer result. The hook target's id is logged quoted (%q).
+// targetID, with the stream's answer result to a publish that was not sent again. The hook
+// target's id is logged quoted (%q).
 func publishedLine(topic, targetID, result string) string {
-	return fmt.Sprintf("github published delivery=%s event=push action= topic=%s key=github.%s target_id=%q result=%s",
+	return fmt.Sprintf("github published delivery=%s event=push action= topic=%s key=github.%s target_id=%q result=%s resent=false",
 		sharedDelivery, topic, sharedDelivery, targetID, result)
+}
+
+// A publish whose connection closes under it after its first send reached the stream is sent
+// again on the connection the bus dials in its place, and the stream answers the resend as a
+// duplicate of the copy that first send stored (bus.StoredAck.Resent). The github published line
+// reads the stored acknowledgement, so it logs that copy as this delivery's own: result=stored,
+// with resent=true beside it (a real NATS server, its replies held by a proxy).
+func TestAResendWhoseFirstTryWasStoredLogsStored(t *testing.T) {
+	logged := captureLog(t)
+	_, uri := testnats.Start(t)
+	direct, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(direct.Close)
+	proxy := testnats.StartProxy(t, uri)
+	reconnecting, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("connect through the reply gate: %v", err)
+	}
+	t.Cleanup(reconnecting.Close)
+	const topic = "notifications.github.example-org.example-repo.push.branch.main"
+	stored := func() uint64 {
+		info, err := direct.JS().StreamInfo(bus.Stream, &nats.StreamInfoRequest{SubjectsFilter: topic})
+		if err != nil {
+			t.Fatalf("read what the stream holds on %s: %v", topic, err)
+		}
+		return info.State.Subjects[topic]
+	}
+
+	handler := GitHubHandler("s", "@legion", "", "", reconnecting, &mockRecorder{})
+	body := withInstallation(t, githubFixture(t, "push"), 1001)
+	before := reconnecting.Connection().Stats().OutMsgs
+	proxy.FreezeServerReplies()
+	answered := make(chan int, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/webhook/github", bytes.NewReader(body))
+		req.Header.Set("X-GitHub-Delivery", sharedDelivery)
+		req.Header.Set("X-GitHub-Event", "push")
+		req.Header.Set("X-Hub-Signature-256", githubSign("s", body))
+		for name, value := range appDelivery("5341240") {
+			req.Header.Set(name, value)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		answered <- rec.Code
+	}()
+	testwait.WithinPolling(t, 5*time.Second, time.Millisecond, "the publish to reach the stream before its answer",
+		func() bool { return reconnecting.Connection().Stats().OutMsgs > before && stored() == 1 })
+	if err := reconnecting.Connection().ForceReconnect(); err != nil {
+		t.Fatalf("force reconnect: %v", err)
+	}
+	proxy.Restore()
+	select {
+	case code := <-answered:
+		if code != http.StatusOK {
+			t.Fatalf("the delivery answered %d, want 200", code)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the delivery whose publish was sent again did not answer")
+	}
+	want := []string{fmt.Sprintf("github published delivery=%s event=push action= topic=%s key=github.%s target_id=%q result=stored resent=true",
+		sharedDelivery, topic, sharedDelivery, "5341240")}
+	if got := linesStarting(logged.String(), "github published "); !slices.Equal(got, want) {
+		t.Fatalf("the resent publish logged\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if n := stored(); n != 1 {
+		t.Fatalf("the stream holds %d messages on %s, want the one copy of the publish sent twice", n, topic)
+	}
 }
 
 // A repository GitHub renamed is published a second time under its former name, through the
@@ -254,7 +330,7 @@ func TestGitHubPublishedLineNamesKeyTargetAndResult(t *testing.T) {
 			want := func(targetID, result string) []string {
 				var lines []string
 				for _, topic := range topics {
-					lines = append(lines, fmt.Sprintf("github published delivery=%s event=%s action=%s topic=%s key=github.%s target_id=%q result=%s",
+					lines = append(lines, fmt.Sprintf("github published delivery=%s event=%s action=%s topic=%s key=github.%s target_id=%q result=%s resent=false",
 						sharedDelivery, row.event, action, topic, sharedDelivery, targetID, result))
 				}
 				return lines
