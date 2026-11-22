@@ -15,15 +15,11 @@ When what you measure or read makes the plan build something differently from th
 ## Workspace restrictions
 
 Before your turn's first commit, run `jj -R "$LEGION_WORKSPACE" log -r @ --no-graph -T 'empty'`.
-Then follow the turn-start rule of the daemon part below. When your issue moved back from
-implementing, skip the daemon part's `jj new @-`: first read the change ids of `@` and `@-` with
-`jj -R "$LEGION_WORKSPACE" log -r '@ | @-' --no-graph -T 'change_id.short() ++ " "'`, then start on
-the remote tip as `skill://legion-worker` says, `jj -R "$LEGION_WORKSPACE" new legion/<KEY>@origin`,
-so you push no local commit of the implementer's, and tell the architect both ids. Never
-`jj describe` or `jj split` the working-copy commit you found at the turn's start. Do not move a
-bookmark you do not own. Put only your logical paths in
-`jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`. Push any commits you make as the daemon
-part below says; your handoff is never a commit.
+Then follow the turn-start rule of the daemon part below; when your issue moved back from
+implementing, start on the remote tip as `skill://legion-worker` says instead. Never `jj describe`
+or `jj split` the working-copy commit you found at the turn's start. Do not move a bookmark you do
+not own. Put only your logical paths in `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
+Push any commits you make as the daemon part below says; your handoff is never a commit.
 
 ## Two checks on the plan
 

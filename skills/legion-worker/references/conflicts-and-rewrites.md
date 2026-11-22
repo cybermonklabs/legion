@@ -4,28 +4,19 @@ Read it when GitHub reports the pull request `CONFLICTING`, the daemon's merge-f
 
 ## Reintegrating the base
 
-The implementer merges the base into the issue branch only when GitHub reports it `CONFLICTING`, the daemon's merge-forward message asks it (*The daemon's ask*, below), the controller asks because of a conflict, the architect's backward move names a parent's last round, the change needs something only the base has, or the pull request was retargeted. Never to refresh CI or pick up the default branch: each merge is a new head that reruns CI and can void a review. Never by rebasing the branch, which rewrites pushed commits (*A wrong pushed commit*, below).
+The implementer merges the base into the issue branch only when GitHub reports it `CONFLICTING`, the daemon's merge-forward message asks it (*The daemon's ask*, below), the controller asks because of a conflict, the architect's backward move names a parent's last round, the change needs something only the base has, or the pull request was retargeted. Never to refresh CI or pick up the default branch: each merge is a new head that reruns CI and can void a review. Never with `jj rebase`, which rewrites pushed commits (*A wrong pushed commit*, below).
 
 Before you race another tree's pull request on shared files, `envoy_publish` to its implementer's role topic, ask when its next push lands, and merge once, after it.
 
-1. Merge the bookmark, never `@`, with the base, in one new commit beside `@`, and put `@` on top of it. `base` is the pull request's base branch, JSON-quoted so jj reads it as a string literal:
+1. Merge the bookmark, never `@`, with the base, in one new commit. `base` is the pull request's base branch, JSON-quoted so jj reads it as a string literal:
 
    ```bash
    base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && \
-     jj -R "$LEGION_WORKSPACE" new --no-edit legion/<KEY> "${base}@origin" -m "<message>"
-   jj -R "$LEGION_WORKSPACE" rebase -r @ -o <merge>
+     jj -R "$LEGION_WORKSPACE" new legion/<KEY> "${base}@origin" -m "<message>"
    ```
-
-   `jj new --no-edit` prints `<merge>`, its id.
 
    Write `<message>` in the repository's own commit convention (its commit-lint configuration, else its recent commits on the base), such as `chore(<scope>): merge <base> into <branch>`, or `Merge <base> into <branch>` where none shows. `@` after a split is an empty commit with no description, which `jj git push` refuses.
-2. Resolve the merge's conflicts in `@`, then move your resolutions into the merge:
-
-   ```bash
-   jj -R "$LEGION_WORKSPACE" squash --into @- <your resolution paths…>
-   ```
-
-   Skip it when there is nothing to resolve.
+2. Resolve any conflict in that one commit, then `jj -R "$LEGION_WORKSPACE" new` to move off it.
 3. A merge brings instances from the base that the branch's own diff never shows, so before you push the merge search its head for the class of every finding of every earlier review round.
 4. Push the merge as any code push, build the branch, and record the issue's checks again at the merge head, each check with no `ci_check` (a check carrying one is read again from its CI run), even with no text conflict.
 5. Post one PR comment with the Legion footer: `forward merge <old-tip-sha> → <new-tip-sha>; <the condition it meets>`, with each class search beside it. In a parent's last round, end it with `parent's last round: full test round`.

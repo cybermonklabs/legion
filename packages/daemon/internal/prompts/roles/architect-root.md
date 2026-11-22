@@ -99,8 +99,6 @@ version they approved with no decision block in it decided since, such as an acc
 undone exactly: Dispatch records an `approved` review in their name at that version, the daemon
 reopens the gate and sends `design-approved`, and you request nothing. When the spec does not
 read Approved at such a version, request approval as after any change.
-After a close and a reopen, your root's re-admission cleared its gate: register each step as at
-any start.
 Each step records its own document: the `spec` step the issue's primary document, the `criteria`
 step its Verification document, and the `decisions` step its decisions document. So
 `register_gate` names the step and that step's own document, by id and version, one call for each
