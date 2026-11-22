@@ -51,6 +51,10 @@ type HandshakeHold struct {
 	// dials counts the connections the hold has accepted while a hold was in force: each is a
 	// handshake attempt that has dialed, its CONNECT counted in attempts or still on its way.
 	dials atomic.Int64
+	// ended counts the connections the hold has finished with, under a hold or not: join adds one
+	// as the last thing it does for a connection, once the direction to the client has returned,
+	// so whatever the hold counts for a connection it has counted by then.
+	ended atomic.Int64
 }
 
 // StartHandshakeHold relays to the NATS server at target, a client URL such as Start returns,
@@ -294,10 +298,12 @@ func (h *HandshakeHold) serve() {
 }
 
 // join relays client, a connection the proxy made for one of its clients, to the server, under the
-// hold when one is in force as client arrives, until either side ends; then it closes both. The
+// hold when one is in force as client arrives, until either side ends; then it closes both, waits
+// for the direction to the client to return, and counts the connection as ended, last. The
 // client's stream is read as NATS protocol (protocolStream) to find its CONNECT, which may come in
 // pieces.
 func (h *HandshakeHold) join(client net.Conn) {
+	defer h.ended.Add(1)
 	defer client.Close()
 	h.mu.Lock()
 	release, held, heldOnce := h.release, h.held, h.heldOnce
@@ -309,10 +315,15 @@ func (h *HandshakeHold) join(client net.Conn) {
 	if err != nil {
 		return
 	}
-	defer server.Close()
-	gone := make(chan struct{})
-	defer close(gone)
+	gone, relayed := make(chan struct{}), make(chan struct{})
+	defer func() {
+		close(gone)
+		_ = server.Close()
+		_ = client.Close()
+		<-relayed
+	}()
 	go func() {
+		defer close(relayed)
 		defer client.Close()
 		defer server.Close()
 		answers := bufio.NewReader(server)
