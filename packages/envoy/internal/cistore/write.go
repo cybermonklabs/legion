@@ -17,12 +17,14 @@ import (
 // maxRecordBytes and maxSettlementBytes bound a head's record and the settlement published from
 // it, each of which goes to NATS whole. GitHub allows 50,000 check runs in one check suite, so the
 // number of check names a head collects has no bound of GitHub's own. The record is kept well under
-// the server's 1 MiB default, since it is written whole on every observation; about 1,300 checks of
-// ordinary names fit. The settlement needs its own bound, because a name costs more there: a
-// failing check is named three times to the record's two, inside a JSON string in the envelope's
-// JSON, so a `"` costs 12 bytes a character in the settlement against 4 in the record. Its bound
-// is 64 KiB under the 1 MiB default, room for what a later settlement of the same record adds (a
-// longer generation, `superseded_settlement`).
+// the server's 1 MiB default, since it is written whole on every observation; about 1,200 checks of
+// ordinary names fit (1,224 of 32-character names, each with a job's URL, its suite and its App,
+// measured on 2026-11-21; 1,413 fit before a check carried its suite and its App). The settlement
+// needs its own bound, because a name costs more there: a failing check is named three times to
+// the record's two, inside a JSON string in the envelope's JSON, so a `"` costs 12 bytes a
+// character in the settlement against 4 in the record. Its bound is 64 KiB under the 1 MiB
+// default, room for what a later settlement of the same record adds (a longer generation,
+// `superseded_settlement`).
 const (
 	maxRecordBytes     = 384 << 10
 	maxSettlementBytes = 1<<20 - 64<<10
@@ -194,13 +196,23 @@ type boundWrite struct {
 	// bound, zero where it dropped none, and droppedFor the refusal they were dropped for.
 	dropped    int
 	droppedFor error
+	// droppedWaiting is how many waiting check runs (State.Waiting) that could no longer stand the
+	// record dropped to keep a check within its bound, zero where it dropped none, and
+	// droppedWaitingFor the refusal they were dropped for.
+	droppedWaiting    int
+	droppedWaitingFor error
+	// droppedSuperseded is how many superseded check runs (State.Superseded) the record dropped
+	// to keep a check within its bound, keeping the newest of each name, zero where it dropped
+	// none, and droppedSupersededFor the refusal they were dropped for.
+	droppedSuperseded    int
+	droppedSupersededFor error
 }
 
 // warn logs what gave way at the bound, each line naming head: one WARN line for each of the
 // batch's statuses that gave way, and one line for the record's own statuses it dropped, with
 // how many. write calls it once the write lands, or at once when there is nothing to write.
 func (w boundWrite) warn(logger *logging.Logger, head State) {
-	if len(w.refusedStatuses) == 0 && w.dropped == 0 {
+	if len(w.refusedStatuses) == 0 && w.dropped == 0 && w.droppedWaiting == 0 && w.droppedSuperseded == 0 {
 		return
 	}
 	attrs := []slog.Attr{
@@ -217,6 +229,14 @@ func (w boundWrite) warn(logger *logging.Logger, head State) {
 		logger.Warn("ci record dropped its commit statuses to keep a check within its bound",
 			append(attrs, slog.Int("statuses", w.dropped), slog.String("error", w.droppedFor.Error()))...)
 	}
+	if w.droppedWaiting > 0 {
+		logger.Warn("ci record dropped waiting check runs that can no longer stand to keep a check within its bound",
+			append(attrs, slog.Int("waiting", w.droppedWaiting), slog.String("error", w.droppedWaitingFor.Error()))...)
+	}
+	if w.droppedSuperseded > 0 {
+		logger.Warn("ci record dropped all but the newest superseded check run of each name to keep a check within its bound",
+			append(attrs, slog.Int("superseded", w.droppedSuperseded), slog.String("error", w.droppedSupersededFor.Error()))...)
+	}
 }
 
 // atBounds is the write of b to key's record when the record it would write, b applied whole,
@@ -230,6 +250,25 @@ func (w boundWrite) warn(logger *logging.Logger, head State) {
 //   - Where the rest still passes a bound and the record holds statuses, the rest is applied once
 //     more, to the record without its statuses: where that fits it is written so, the record's
 //     statuses dropped, with one WARN line naming the head and how many it dropped.
+//   - Where that still passes a bound and the record, the batch applied, holds check runs waiting
+//     to stand for a name (State.Waiting) that can no longer stand, it is applied once more and
+//     written without them (trimWaiting), its statuses dropped as above, where that fits, with one
+//     WARN line naming the head and how many waiting runs it dropped. Such a run is older than a
+//     counted run waiting for the same name, which stands for good once it stands. Every other
+//     waiting run may still stand for its name if the runs standing and waiting before it turn out
+//     uncounted (standInstead): a pull_request run's failure behind a dispatched run whose event is
+//     not known yet. So it never gives way, and a record that does not fit with it is written as
+//     one with nothing more to give way, below: dropping it could leave its name with no check, and
+//     the daemon then drops the name's failure.
+//   - Where that still passes a bound and the record holds more than one superseded run of a
+//     name (State.Superseded), it is applied once more and written with only the newest
+//     superseded run of each name (trimSuperseded), the waiting runs that can no longer stand and
+//     the statuses dropped as above, where that fits, with one WARN line naming the head and how
+//     many superseded runs it dropped. A superseded run is kept so the correction can name it if
+//     its suite turns out uncounted, for a consumer that missed the settlements after it; the
+//     newest of a name is the one a consumer that missed only the last of them holds, so it is
+//     kept, and a record that does not fit with it is written as one with nothing more to give
+//     way, below.
 //   - Otherwise the record is written as it was, marked Overflowed, as a record with no status to
 //     give way always was (one already Overflowed is not written again), and the write answers the
 //     refusal.
@@ -241,25 +280,35 @@ func (w boundWrite) warn(logger *logging.Logger, head State) {
 func (s *Store) atBounds(key string, stored func() (State, error), existing bool, b *batch, refused error) (boundWrite, error) {
 	bounded := boundWrite{refusedStatuses: b.statuses(), refusedFor: refused}
 	// fit applies b, without the statuses it carries, to the record as read, the record's own
-	// statuses dropped first when drop is set. It answers the record to write, nil where b then
-	// changes nothing, or the bound's refusal (bus.ErrTooLarge) where the result still passes a
-	// bound.
-	fit := func(drop bool) ([]byte, error) {
+	// statuses dropped first when drop is set, the result's waiting runs that can no longer stand
+	// dropped when trimWaiting is set, and all but its newest superseded run of each name dropped
+	// when trimSuperseded is set. It answers the record to write, nil where b then changes nothing,
+	// how many waiting and superseded runs it dropped, or the bound's refusal (bus.ErrTooLarge)
+	// where the result still passes a bound.
+	fit := func(drop, trimWaiting, trimSuperseded bool) ([]byte, int, int, error) {
 		st, err := stored()
 		if err != nil {
-			return nil, err
+			return nil, 0, 0, err
 		}
 		hash, generation := st.Hash(), st.Generation
 		if drop {
 			st.Statuses = nil
 		}
 		if !b.apply(&st, false) {
-			return nil, nil
+			return nil, 0, 0, nil
 		}
-		return sealRecord(key, &st, existing, hash, generation)
+		waiting, superseded := 0, 0
+		if trimWaiting {
+			waiting = st.trimWaiting()
+		}
+		if trimSuperseded {
+			superseded = st.trimSuperseded()
+		}
+		buf, err := sealRecord(key, &st, existing, hash, generation)
+		return buf, waiting, superseded, err
 	}
 	if len(bounded.refusedStatuses) > 0 {
-		buf, err := fit(false)
+		buf, _, _, err := fit(false, false, false)
 		if err == nil {
 			bounded.buf = buf
 			return bounded, nil
@@ -273,8 +322,9 @@ func (s *Store) atBounds(key string, stored func() (State, error), existing bool
 	if err != nil {
 		return boundWrite{}, err
 	}
-	if held := len(st.Statuses); held > 0 {
-		buf, err := fit(true)
+	held := len(st.Statuses)
+	if held > 0 {
+		buf, _, _, err := fit(true, false, false)
 		if err == nil {
 			if buf != nil {
 				bounded.dropped, bounded.droppedFor = held, refused
@@ -286,6 +336,27 @@ func (s *Store) atBounds(key string, stored func() (State, error), existing bool
 			return boundWrite{}, err
 		}
 		refused = err
+	}
+	for _, trimSuperseded := range []bool{false, true} {
+		buf, waiting, superseded, err := fit(held > 0, true, trimSuperseded)
+		switch {
+		case err == nil && (waiting > 0 || superseded > 0):
+			if held > 0 && buf != nil {
+				bounded.dropped, bounded.droppedFor = held, refused
+			}
+			bounded.buf = buf
+			if waiting > 0 {
+				bounded.droppedWaiting, bounded.droppedWaitingFor = waiting, refused
+			}
+			if superseded > 0 {
+				bounded.droppedSuperseded, bounded.droppedSupersededFor = superseded, refused
+			}
+			return bounded, nil
+		case err != nil && !errors.Is(err, bus.ErrTooLarge):
+			return boundWrite{}, err
+		case err != nil:
+			refused = err
+		}
 	}
 	bounded.refused = refused
 	if st.Overflowed {

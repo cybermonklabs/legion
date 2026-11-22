@@ -859,6 +859,17 @@ type PullRequest struct {
 	// reopen step of a head run, Store.ClearGeneration). A move of the head leaves it stamped with
 	// the head it was of, so no text names it for the new head (workflow's headChecks).
 	Statuses []CommitStatus
+	// ExcludedRuns are the check runs, by name and id, that the settlements applied for the checked
+	// head named excluded (classify.SettlementCandidate.Excluded): runs the listener had counted
+	// and then took out of its record of the head, because GitHub does not count their workflow
+	// run for the pull request. Each is dropped from CheckRuns, so a lower id that stands in its
+	// place is taken and a name with no run left keeps no failure of it, and each is kept here so
+	// a settlement published before the exclusion and delivered after it brings no excluded run
+	// back (classify.ApplySettlement). An exclusion never ends, since a workflow run's event never
+	// changes, so the list only grows while the head stays checked. A settlement of a new checked
+	// head, a reopen and a new generation clear it with the check runs (classify.SettlementFor, the
+	// reopen step of a head run, Store.ClearGeneration).
+	ExcludedRuns []AttemptRun
 	// Pushes are the branch's pushes the daemon still reads: every push whose own move, its two
 	// heads, the record has not made (Moves) - a push still on its way from the head, a link of a
 	// chain still to complete, or one that returns the branch to a commit it held before
@@ -1168,10 +1179,13 @@ type Judgement struct {
 	Snapshot    string       `json:"snapshot,omitempty"`
 	// omitempty, so a run anchored before the field reads as it did, and one anchored on a record
 	// that keeps no status writes the same bytes as before it.
-	Statuses     []CommitStatus `json:"statuses,omitempty"`
-	Moves        []Move         `json:"moves,omitempty"`
-	Mergeability Mergeability   `json:"mergeability,omitempty"`
-	MergeState   MergeState     `json:"mergeState,omitempty"`
+	Statuses []CommitStatus `json:"statuses,omitempty"`
+	// omitempty, as Statuses: a run anchored before the field, or on a record that excluded no
+	// run, reads and writes as before it (PullRequest.ExcludedRuns).
+	ExcludedRuns []AttemptRun `json:"excludedRuns,omitempty"`
+	Moves        []Move       `json:"moves,omitempty"`
+	Mergeability Mergeability `json:"mergeability,omitempty"`
+	MergeState   MergeState   `json:"mergeState,omitempty"`
 	// omitzero, as HeadRun.Since and Named.At are: omitempty leaves a zero time in the JSON. A run
 	// anchored before any read answered carries none, and so does one anchored before migration
 	// 20261112070503 (PullRequest.StateReadAt says what that means).
@@ -1217,7 +1231,9 @@ type RunStep struct {
 // Settlement is a CI settlement of Head as the listener reported it (classify.SettlementFor).
 // Statuses are the commit statuses it named, in context order and with no stamp of their own
 // (CommitStatus.Head); omitempty, so a step stored before the field reads as naming none,
-// and a step of a settlement that names none is the same bytes as before it.
+// and a step of a settlement that names none is the same bytes as before it. Excluded are the
+// check runs it named excluded (classify.SettlementCandidate.Excluded), omitempty for the same
+// reason.
 type Settlement struct {
 	Head       string         `json:"head"`
 	CheckRuns  []AttemptRun   `json:"checkRuns"`
@@ -1226,6 +1242,7 @@ type Settlement struct {
 	Failing    []string       `json:"failing"`
 	Cancelled  []string       `json:"cancelled"`
 	Statuses   []CommitStatus `json:"statuses,omitempty"`
+	Excluded   []AttemptRun   `json:"excluded,omitempty"`
 }
 
 // PullRequestState is whether a pull request is open, merged, or closed unmerged.

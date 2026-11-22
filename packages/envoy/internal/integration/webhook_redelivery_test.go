@@ -153,6 +153,10 @@ func (r refusingRecorder) RecordSuite(context.Context, contracts.CIObservation) 
 	return r.refuse("suite")
 }
 
+func (r refusingRecorder) RecordRunEvent(context.Context, contracts.CIObservation) error {
+	return r.refuse("workflow run event")
+}
+
 func postGitHub(t *testing.T, handler http.Handler, event, delivery, body string) {
 	t.Helper()
 	postGitHubExpecting(t, handler, event, delivery, body, http.StatusOK)

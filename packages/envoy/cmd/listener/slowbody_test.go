@@ -36,8 +36,9 @@ func (p *slowBodyPublisher) PublishWithin(_ context.Context, e contracts.Envelop
 
 type noCI struct{}
 
-func (noCI) Record(context.Context, contracts.CIObservation) error      { return nil }
-func (noCI) RecordSuite(context.Context, contracts.CIObservation) error { return nil }
+func (noCI) Record(context.Context, contracts.CIObservation) error         { return nil }
+func (noCI) RecordSuite(context.Context, contracts.CIObservation) error    { return nil }
+func (noCI) RecordRunEvent(context.Context, contracts.CIObservation) error { return nil }
 
 // serveWebhook serves handler at path the way main does: the outer mux sends the path to an open
 // webhook startingGate, whose mux holds the handler, all on the listener's own HTTP server

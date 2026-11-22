@@ -1,0 +1,42 @@
+kind: Fixed
+body: |-
+  The listener's CI store now counts a pull request head's check runs as GitHub's own rollup of
+  the pull request counts them. A check run of a GitHub Actions workflow run counts only when the
+  event that started the run is one GitHub documents as evaluated for a pull request (`push`,
+  `pull_request`, `pull_request_review`, `pull_request_target`, `deployment`, `deployment_status`),
+  `merge_group`, which the same documentation names for merge queues, or `dynamic`, the suite of a
+  CodeQL default setup, which the rollup was measured to count. A run of any other event, a
+  `workflow_dispatch` run of the pull request's branch among them, is no longer one of the head's
+  checks, no longer replaces the pull request run's check of the same name when its id is higher,
+  and no longer holds the head unsettled, moves its snapshot or shows in its settlement. Before, a
+  dispatched run's passing `ci-ok` replaced the pull request run's failing `ci-ok`, so a settlement
+  could say CI passed where GitHub refused the merge. The store learns each run's event from the
+  `workflow_run` webhook and from Dispatch's CI reconcile, whose query now asks each check suite
+  for `workflowRun { event }`, and the result does not depend on the order the check runs and the
+  events arrive in. A run the store counted before it learned its event leaves the record, and
+  every later settlement names it in the new field `excluded_check_runs`, which the daemon
+  applies. A suite whose event neither gives is counted as before. The reconcile pass now also
+  records the event of a suite that is still running, and of each suite of a head it reads over
+  REST that its query answered. It names, once for each head it writes, the GitHub Actions suites
+  the record then holds no event for: at WARN (`ci reconcile counts check suites whose workflow
+  run event neither GitHub's answer nor the CI record holds`) where GitHub's GraphQL answered
+  `workflowRun` null, and at INFO (`ci reconcile counts check suites of a head read over REST
+  whose workflow run event the CI record does not hold`) for a head read over REST. A record
+  written before is corrected at the next pass that reads its head's events. A re-run of a counted
+  run still replaces its check. A settled head that only a check suite's entry held, until its
+  event showed GitHub does not count it (its webhook before its run's `workflow_run`), is not
+  settled again: the record keeps what its last published settlement said (`settled_snapshot`),
+  and the write that takes that suite out and brings the record back to it publishes nothing. A
+  release or a reclaim of a claim forgets it, since that publication may have landed. At the
+  record's 384 KiB bound the runs the record keeps while their suites' events are unknown give
+  way only where they can: the waiting runs that can no longer stand, logged at WARN as `ci record
+  dropped waiting check runs that can no longer stand to keep a check within its bound`, and then
+  all but the newest superseded run of each name, logged at WARN as `ci record dropped all but the
+  newest superseded check run of each name to keep a check within its bound`. Deploy every daemon
+  first, then the listener, then Dispatch right after it: a daemon of the earlier release ignores
+  `excluded_check_runs`, and a correction it ignored is not published again once its head has
+  settled, so the listener's pins move only once `scripts/daemon-release-gate.sh` prints
+  `GATE OPEN` for the commit that brought the field to the daemon.
+time: 2026-11-21T07:16:21Z
+custom:
+    Issue: ci-store-counted

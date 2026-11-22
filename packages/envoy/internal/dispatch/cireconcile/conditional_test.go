@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -28,7 +29,7 @@ type failingWriter struct {
 	records int
 }
 
-func (w *failingWriter) Record(ctx context.Context, observation contracts.CIObservation) (bool, error) {
+func (w *failingWriter) Record(ctx context.Context, observation contracts.CIObservation) (cistore.Recorded, error) {
 	w.mu.Lock()
 	failing := w.records > 0
 	if failing {
@@ -36,7 +37,7 @@ func (w *failingWriter) Record(ctx context.Context, observation contracts.CIObse
 	}
 	w.mu.Unlock()
 	if failing {
-		return false, errors.New("the CI record store refused the write")
+		return cistore.Recorded{}, errors.New("the CI record store refused the write")
 	}
 	return w.Writer.Record(ctx, observation)
 }
@@ -68,9 +69,9 @@ type refusingWriter struct {
 	check string
 }
 
-func (w *refusingWriter) Record(ctx context.Context, observation contracts.CIObservation) (bool, error) {
+func (w *refusingWriter) Record(ctx context.Context, observation contracts.CIObservation) (cistore.Recorded, error) {
 	if observation.CheckName == w.check {
-		return false, fmt.Errorf("record: %w", bus.ErrTooLarge)
+		return cistore.Recorded{}, fmt.Errorf("record: %w", bus.ErrTooLarge)
 	}
 	return w.Writer.Record(ctx, observation)
 }

@@ -16,9 +16,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 )
 
-// todaysHeadsQuery is the query a pass sent every repository before it read commit statuses,
-// written out byte for byte: what a repository whose token holds no Commit statuses is still
-// sent (headsQuery).
+// todaysHeadsQuery is the query a pass sends a repository whose token holds no Commit statuses,
+// written out byte for byte (headsQuery): the query a pass sent every repository before it read
+// commit statuses, with the one field the pass has asked of each check suite since the CI store
+// reads the event that started its workflow run, `workflowRun { event }`, and no status field.
 const todaysHeadsQuery = `query($owner: String!, $name: String!, $after: String) {
   rateLimit { cost }
   repository(owner: $owner, name: $name) {
@@ -38,6 +39,7 @@ const todaysHeadsQuery = `query($owner: String!, $name: String!, $after: String)
                   status
                   conclusion
                   updatedAt
+                  workflowRun { event }
                   checkRuns(first: 60, filterBy: {checkType: ALL}) {
                     pageInfo { hasNextPage }
                     nodes {
@@ -508,8 +510,10 @@ func TestReconcileKeepsAHeadsChecksWhenItsStatusesAreRefused(t *testing.T) {
 
 // An errors entry against a head commit's status field, or against a field under it, costs the
 // head its statuses alone (refusedPulls): the entry is kept for the node, to be named at WARN. An
-// entry against any other field of the node refuses the head's Checks, a status field of a check
-// suite included, and an entry that names no pull request node refuses the page whole.
+// entry against a check suite's workflowRun field, or a field under it, costs that suite its event
+// alone and refuses nothing: the suite answers workflowRun null and is counted. An entry against
+// any other field of the node refuses the head's Checks, a status field of a check suite included,
+// and an entry that names no pull request node refuses the page whole.
 func TestARefusedStatusFieldIsToldFromTheRestOfAHead(t *testing.T) {
 	const commit = `"repository","pullRequests","nodes",3,"commits","nodes",0,"commit"`
 	for _, c := range []struct {
@@ -521,6 +525,9 @@ func TestARefusedStatusFieldIsToldFromTheRestOfAHead(t *testing.T) {
 		{name: "a field under the status field", path: `[` + commit + `,"status","contexts",0,"targetUrl"]`, statuses: true},
 		{name: "the check suites", path: `[` + commit + `,"checkSuites"]`, refused: true},
 		{name: "a check suite's status", path: `[` + commit + `,"checkSuites","nodes",0,"status"]`, refused: true},
+		{name: "a check suite's workflow run", path: `[` + commit + `,"checkSuites","nodes",4,"workflowRun"]`},
+		{name: "a check suite's workflow run's event", path: `[` + commit + `,"checkSuites","nodes",4,"workflowRun","event"]`},
+		{name: "the check suites' workflow run, with no suite index", path: `[` + commit + `,"checkSuites","nodes","workflowRun"]`, refused: true},
 		{name: "no path", whole: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -550,8 +557,9 @@ func TestARefusedStatusFieldIsToldFromTheRestOfAHead(t *testing.T) {
 }
 
 // R5: where the token the pass holds names no Commit statuses, the pass asks GitHub for no status
-// at all: each repository is sent the query of before, byte for byte, no status listing is read
-// over REST, and every route is sent what it was sent before the pass read statuses.
+// at all: each repository is sent the query with no status field, byte for byte (todaysHeadsQuery),
+// no status listing is read over REST, and every route is sent what it was sent before the pass
+// read statuses.
 func TestReconcileReadsNoStatusWhereTheInstallationHoldsNone(t *testing.T) {
 	if headsQuery != todaysHeadsQuery {
 		t.Fatalf("the query a repository without Commit statuses is sent is no longer the query of before:\n%s", headsQuery)

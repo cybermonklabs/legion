@@ -380,16 +380,22 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		// the daemon tells a head read a minute ago from one nothing has read for a day by is
 		// carried by the write and the read rather than lost between them.
 		StateReadAt: updatedAt.Add(3 * time.Minute),
+		// The check runs the listener excluded read back by name and id, in their order, beside the
+		// fence they were taken out of; the run's anchor and its settlement step carry theirs
+		// through the JSON of the head run.
+		ExcludedRuns: []AttemptRun{{Name: "ci-ok", ID: 88}, {Name: "ci-ok", ID: 89}, {Name: "lint", ID: 87}},
 		// A run's anchor keeps a settlement never made apart from an empty one, and so do its steps.
 		Run: &HeadRun{
 			Anchor: Judgement{HeadSHA: "a0b1c2", CheckedHead: "a0b1c2", Failing: []string{"unit"},
 				CheckRuns: []AttemptRun{{Name: "unit", ID: 90}}, Generation: 3, Snapshot: "snapshot-3",
-				Statuses: []CommitStatus{{Context: "test", State: CommitStatusFailure, CreatedAt: updatedAt.Add(-3 * time.Minute), Head: "a0b1c2"}}},
+				Statuses:     []CommitStatus{{Context: "test", State: CommitStatusFailure, CreatedAt: updatedAt.Add(-3 * time.Minute), Head: "a0b1c2"}},
+				ExcludedRuns: []AttemptRun{{Name: "ci-ok", ID: 88}}},
 			Pushes: pushes[:1],
 			Steps: []RunStep{{Head: "b1c2d3", Before: "a0b1c2"}, {Settlement: &Settlement{Head: "b1c2d3", CheckRuns: []AttemptRun{{Name: "unit", ID: 91}}, Generation: 4,
 				Snapshot: "snapshot-4", Failing: []string{"unit"}, Cancelled: []string{"e2e"},
 				Statuses: []CommitStatus{{Context: "ci/license", State: CommitStatusError, CreatedAt: updatedAt.Add(-time.Minute)},
-					{Context: "test", State: CommitStatusSuccess, CreatedAt: updatedAt.Add(-2 * time.Minute)}}}},
+					{Context: "test", State: CommitStatusSuccess, CreatedAt: updatedAt.Add(-2 * time.Minute)}},
+				Excluded: []AttemptRun{{Name: "ci-ok", ID: 88}, {Name: "ci-ok", ID: 89}, {Name: "lint", ID: 87}}}},
 				{Reopened: true}},
 		},
 	}
@@ -847,7 +853,7 @@ func samePullRequest(got, want PullRequest) bool {
 		reflect.DeepEqual(append([]string{}, got.Cancelled...), append([]string{}, want.Cancelled...)) &&
 		reflect.DeepEqual(got.CheckRuns, want.CheckRuns) &&
 		got.Generation == want.Generation && got.Snapshot == want.Snapshot &&
-		reflect.DeepEqual(got.Statuses, want.Statuses) &&
+		reflect.DeepEqual(got.Statuses, want.Statuses) && reflect.DeepEqual(got.ExcludedRuns, want.ExcludedRuns) &&
 		reflect.DeepEqual(got.Pushes, want.Pushes) && reflect.DeepEqual(got.Moves, want.Moves) &&
 		reflect.DeepEqual(got.Run, want.Run) && got.MergeSHA == want.MergeSHA &&
 		got.ReviewSeen.ID == want.ReviewSeen.ID && got.ReviewSeen.SubmittedAt.Equal(want.ReviewSeen.SubmittedAt) &&
@@ -954,9 +960,10 @@ func sameInstant(got, want *time.Time) bool {
 
 // A new generation keeps an open pull request but none of the old generation's reading of its CI:
 // the settlement it recorded is of a head nobody has judged since, with the commit statuses it
-// named, and its head run would replay the old generation's judgement. The old run's ask to merge
-// the base forward goes with it, and a first conflicting read still waiting for its second stays:
-// that is GitHub's answer about the head and the base, which the new generation does not change.
+// named and the check runs it excluded, and its head run would replay the old generation's
+// judgement. The old run's ask to merge the base forward goes with it, and a first conflicting
+// read still waiting for its second stays: that is GitHub's answer about the head and the base,
+// which the new generation does not change.
 func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -967,6 +974,7 @@ func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
 		HeadSHA: "red-tests", HeadUpdatedAt: time.Date(2026, 9, 25, 21, 0, 0, 0, time.UTC),
 		CheckedHead: "red-tests", Failing: []string{"test"}, CheckRuns: []AttemptRun{},
 		Statuses:     []CommitStatus{{Context: "ci", State: CommitStatusFailure, CreatedAt: time.Date(2026, 9, 25, 20, 59, 0, 0, time.UTC), Head: "red-tests"}},
+		ExcludedRuns: []AttemptRun{{Name: "ci-ok", ID: 20}},
 		Run:          &HeadRun{Anchor: Judgement{HeadSHA: "fix"}, Steps: []RunStep{{Head: "red-tests"}}},
 		State:        PullRequestOpen,
 		ConflictRead: &ConflictRead{Head: "red-tests", Base: "main", At: time.Date(2026, 9, 25, 21, 1, 0, 0, time.UTC)},
@@ -984,9 +992,9 @@ func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
 		if got == nil {
 			t.Fatal("the open pull request is gone, want it kept")
 		}
-		if got.CheckedHead != "" || len(got.Failing) != 0 || len(got.Statuses) != 0 || got.Run != nil {
-			t.Fatalf("after ClearGeneration: checkedHead=%q failing=%v statuses=%v run=%+v, want \"\", none, none and nil",
-				got.CheckedHead, got.Failing, got.Statuses, got.Run)
+		if got.CheckedHead != "" || len(got.Failing) != 0 || len(got.Statuses) != 0 || got.ExcludedRuns != nil || got.Run != nil {
+			t.Fatalf("after ClearGeneration: checkedHead=%q failing=%v statuses=%v excluded=%+v run=%+v, want \"\", none, none, none and nil",
+				got.CheckedHead, got.Failing, got.Statuses, got.ExcludedRuns, got.Run)
 		}
 		if got.MergeForward != nil {
 			t.Fatalf("after ClearGeneration: the ask to merge forward = %+v, want none: it was the old run's", *got.MergeForward)
@@ -2339,7 +2347,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",
 			"moved_at", "tree_stalled_told_at", "released_for_wait_at"},
 		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "handoff_record", "handoff_version", "reviewed_head"},
-		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
+		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward", "excluded_runs"},
 		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome"},
 		"design_gates":      {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened"},
 		"root_asks":         {"issue", "ask", "kind", "artifact", "open", "seq", "waiting_on", "waiting_on_seq", "closed_by", "closed_seq", "by_tree", "person_seq", "person_answer_seq", "declined", "declined_note", "declined_words"},

@@ -178,7 +178,7 @@ type holdingWriter struct {
 	hold func(ctx context.Context)
 }
 
-func (w *holdingWriter) Record(ctx context.Context, observation contracts.CIObservation) (bool, error) {
+func (w *holdingWriter) Record(ctx context.Context, observation contracts.CIObservation) (cistore.Recorded, error) {
 	w.hold(ctx)
 	return w.Writer.Record(ctx, observation)
 }

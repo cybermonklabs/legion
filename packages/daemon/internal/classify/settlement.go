@@ -40,7 +40,9 @@ const (
 // sweep with no cursor) or by the check's next run. Nothing on the Go path corrects the rest: a
 // check_run with no pull_requests yields no observation, a deleted check's failure stands for the
 // life of the head, and a rerun whose completion is never observed holds the last verdict until
-// the check runs again.
+// the check runs again. The one run a settlement takes back out of the fence is a run the listener
+// counted and then excluded, because GitHub does not count its workflow run for the pull request
+// (Excluded).
 type SettlementCandidate struct {
 	// Head is the commit the settlement is for, which need not be the pull request's head
 	// (SettlementFor).
@@ -60,6 +62,17 @@ type SettlementCandidate struct {
 	// (ApplySettlement). They are no check runs and decide nothing of the fence or what fails in
 	// it.
 	Statuses []record.CommitStatus `json:"statuses,omitempty"`
+	// Excluded are the check runs, by name and id, that the listener once counted for Head and
+	// then took out of its record, because GitHub does not count their workflow run for the pull
+	// request (intake.PullRequestChecks.Excluded). None of them is in CheckRuns or in the lists. A
+	// later settlement of Head names every run an earlier one named, since a workflow run's event
+	// never changes. Each is no run of Head here: it is dropped from the fence and from the
+	// settlement's runs before they are compared or merged, so the lower id that stands in its
+	// place in CheckRuns is taken, and a name with no run left keeps no failure of it
+	// (ClassifySettlement, EffectiveOutcome, ApplySettlement). The pull request keeps them
+	// (record.PullRequest.ExcludedRuns), so a settlement published before the exclusion and
+	// delivered after it brings no excluded run back.
+	Excluded []record.AttemptRun `json:"excluded,omitempty"`
 }
 
 // CiOutcome is the effective result of a partial listener settlement combined with the stored
@@ -99,16 +112,33 @@ type CiOutcome struct {
 // status it names is stale, and one of the same attempt set, generation and snapshot that names
 // no newer status is the same observation delivered again.
 //
+// A check run the settlement names excluded, or the pull request keeps as excluded
+// (record.PullRequest.ExcludedRuns), is no run of the head: the listener counted it and then took
+// it out, because GitHub does not count its workflow run for the pull request
+// (SettlementCandidate.Excluded). Both attempt sets are compared without such runs (excludedIDs,
+// withoutExcluded), so the lower id that stands in an excluded run's place is newer for its name,
+// and the settlement published before the exclusion and delivered after it, which still names the
+// excluded run, is no newer than the fence for that name and is stale as any older view is. A
+// settlement that excludes a run the fence holds is newer whatever else it says: it corrects the
+// fence, which no settlement the fence was merged from could (excludesFenced).
+//
 // The order of the statuses is read only where the attempt set and the generation leave the
 // answer open, so a settlement either of them already makes newer builds no map of the kept
 // statuses.
 func ClassifySettlement(pr record.PullRequest, in SettlementCandidate) SettlementClassification {
+	return classifySettlement(pr, in, excludedIDs(pr, in))
+}
+
+// classifySettlement is ClassifySettlement with the ids of the excluded runs already read
+// (excludedIDs), which ApplySettlement reads once for the order, the outcome and the fence.
+func classifySettlement(pr record.PullRequest, in SettlementCandidate, excluded map[int64]struct{}) SettlementClassification {
 	if pr.CheckRuns == nil {
 		return SettlementNewer
 	}
 
-	order := CompareAttemptSets(pr.CheckRuns, in.CheckRuns)
-	if order == AttemptSetNewer || order == AttemptSetMixed || (order == AttemptSetEqual && in.Generation > pr.Generation) {
+	order := CompareAttemptSets(withoutExcluded(pr.CheckRuns, excluded), withoutExcluded(in.CheckRuns, excluded))
+	if order == AttemptSetNewer || order == AttemptSetMixed || (order == AttemptSetEqual && in.Generation > pr.Generation) ||
+		excludesFenced(pr.CheckRuns, in.Excluded) {
 		return SettlementNewer
 	}
 	if statusNews(pr, in) {
@@ -121,6 +151,26 @@ func ClassifySettlement(pr record.PullRequest, in SettlementCandidate) Settlemen
 		return SettlementDuplicate
 	}
 	return SettlementConflict
+}
+
+// excludesFenced says whether excluded names a run the fence holds, by the same name and id.
+func excludesFenced(fence, excluded []record.AttemptRun) bool {
+	for _, gone := range excluded {
+		if holdsRun(fence, gone, true) {
+			return true
+		}
+	}
+	return false
+}
+
+// holdsRun says whether runs holds a run of run's id, and of its name too where byName is set.
+func holdsRun(runs []record.AttemptRun, run record.AttemptRun, byName bool) bool {
+	for _, held := range runs {
+		if held.ID == run.ID && (!byName || held.Name == run.Name) {
+			return true
+		}
+	}
+	return false
 }
 
 // statusNews says whether in names a commit status the pull request does not hold yet for
@@ -159,26 +209,142 @@ func statusNews(pr record.PullRequest, in SettlementCandidate) bool {
 // GitHub started nothing - and no run means no conclusion to read, so what the lists say is all
 // there is for such a name. Keeping it apart also keeps it the one place that rule lives, which
 // the recorded contract fixtures replay by name (contracts/fixtures/classification).
+//
+// A run the listener excluded (excludedIDs) reports nothing of its name: the listener counted it
+// and then took it out, because GitHub does not count its workflow run for the pull request. A
+// name whose run in the fence or in the settlement is excluded, and which no other run of the
+// settlement reports, is dropped from the settlement's lists and from the stored ones alike, since
+// what they say of it was said of the excluded run, the one run the listener ever counted for it
+// there. A name the fence still holds a run for then comes to what that run concluded
+// (concludedBy). With no run excluded this is the rule above, unchanged.
 func EffectiveOutcome(pr record.PullRequest, in SettlementCandidate) CiOutcome {
+	return effectiveOutcome(pr, in, excludedIDs(pr, in))
+}
+
+// effectiveOutcome is EffectiveOutcome with the ids of the excluded runs already read
+// (excludedIDs).
+func effectiveOutcome(pr record.PullRequest, in SettlementCandidate, excluded map[int64]struct{}) CiOutcome {
 	reported := make(map[string]struct{}, len(in.CheckRuns)+len(in.Failing)+len(in.Cancelled))
 	for _, run := range in.CheckRuns {
-		reported[run.Name] = struct{}{}
+		if _, out := excluded[run.ID]; !out {
+			reported[run.Name] = struct{}{}
+		}
 	}
 	for _, names := range [][]string{in.Failing, in.Cancelled} {
 		for _, name := range names {
 			reported[name] = struct{}{}
 		}
 	}
+	gone := goneNames(pr, in, excluded)
 	kept := func(incoming, stored []string) []string {
-		names := append(make([]string, 0, len(incoming)+len(stored)), incoming...)
+		names := make([]string, 0, len(incoming)+len(stored))
+		for _, name := range incoming {
+			if _, out := gone[name]; !out {
+				names = append(names, name)
+			}
+		}
 		for _, name := range stored {
-			if _, found := reported[name]; !found {
+			_, found := reported[name]
+			if _, out := gone[name]; !found && !out {
 				names = append(names, name)
 			}
 		}
 		return names
 	}
 	return CiOutcome{Failing: kept(in.Failing, pr.Failing), Cancelled: kept(in.Cancelled, pr.Cancelled)}
+}
+
+// goneNames is the names of the runs of pr's fence and of in whose id excluded holds, less each
+// name a run of in that is not excluded reports: the check names the listener no longer counts a
+// run of. It is nil where none is.
+func goneNames(pr record.PullRequest, in SettlementCandidate, excluded map[int64]struct{}) map[string]struct{} {
+	if len(excluded) == 0 {
+		return nil
+	}
+	var gone map[string]struct{}
+	for _, runs := range [][]record.AttemptRun{pr.CheckRuns, in.CheckRuns} {
+		for _, run := range runs {
+			if _, out := excluded[run.ID]; out {
+				if gone == nil {
+					gone = map[string]struct{}{}
+				}
+				gone[run.Name] = struct{}{}
+			}
+		}
+	}
+	if gone == nil {
+		return nil
+	}
+	for _, run := range in.CheckRuns {
+		if _, out := excluded[run.ID]; !out {
+			delete(gone, run.Name)
+		}
+	}
+	return gone
+}
+
+// excludedIDs is the set of the ids of the check runs pr keeps as excluded
+// (record.PullRequest.ExcludedRuns) and in names excluded (SettlementCandidate.Excluded), nil when
+// there are none. A run id is GitHub's own and names one run of one commit, so the id alone says
+// whether a run is one of them.
+func excludedIDs(pr record.PullRequest, in SettlementCandidate) map[int64]struct{} {
+	if len(pr.ExcludedRuns) == 0 && len(in.Excluded) == 0 {
+		return nil
+	}
+	ids := make(map[int64]struct{}, len(pr.ExcludedRuns)+len(in.Excluded))
+	for _, set := range [][]record.AttemptRun{pr.ExcludedRuns, in.Excluded} {
+		for _, run := range set {
+			ids[run.ID] = struct{}{}
+		}
+	}
+	return ids
+}
+
+// withoutExcluded is runs less each run whose id excluded holds (excludedIDs). It is runs itself,
+// with no copy, where excluded is empty or holds none of their ids, and a copy otherwise, so runs
+// is never changed.
+func withoutExcluded(runs []record.AttemptRun, excluded map[int64]struct{}) []record.AttemptRun {
+	if len(excluded) == 0 {
+		return runs
+	}
+	for i, run := range runs {
+		if _, out := excluded[run.ID]; !out {
+			continue
+		}
+		kept := append(make([]record.AttemptRun, 0, len(runs)-1), runs[:i]...)
+		for _, run := range runs[i+1:] {
+			if _, out := excluded[run.ID]; !out {
+				kept = append(kept, run)
+			}
+		}
+		return kept
+	}
+	return runs
+}
+
+// unionExcluded is kept, the excluded runs the pull request keeps, with each run of named whose id
+// it does not hold yet, each by its name and id alone, sorted by name and then id
+// (record.PullRequest.ExcludedRuns). It is kept itself where named adds nothing, and nil where
+// neither holds a run.
+func unionExcluded(kept, named []record.AttemptRun) []record.AttemptRun {
+	var added []record.AttemptRun
+	for _, run := range named {
+		if !holdsRun(kept, run, false) && !holdsRun(added, run, false) {
+			added = append(added, record.AttemptRun{Name: run.Name, ID: run.ID})
+		}
+	}
+	if len(added) == 0 {
+		if len(kept) == 0 {
+			return nil
+		}
+		return kept
+	}
+	union := append(append(make([]record.AttemptRun, 0, len(kept)+len(added)), kept...), added...)
+	sort.Slice(union, func(i, j int) bool {
+		a, b := union[i], union[j]
+		return a.Name < b.Name || (a.Name == b.Name && a.ID < b.ID)
+	})
+	return union
 }
 
 // stampedRuns is in's check runs with the two facts the listener's report leaves implicit: the

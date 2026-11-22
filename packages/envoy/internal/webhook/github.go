@@ -42,10 +42,12 @@ func githubSenderField(payload map[string]any, field string) string {
 	return s
 }
 
-// CIRecorder folds check-run and check-suite observations into CI state, each within ctx.
+// CIRecorder folds check-run and check-suite observations, and the event that started a workflow
+// run of a pull request, into CI state, each within ctx.
 type CIRecorder interface {
 	Record(context.Context, contracts.CIObservation) error
 	RecordSuite(context.Context, contracts.CIObservation) error
+	RecordRunEvent(context.Context, contracts.CIObservation) error
 }
 
 // githubMaxBody is the largest webhook body the handler reads: GitHub's documented payload cap,
@@ -150,9 +152,17 @@ func githubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publi
 		// A pull request's CI events only update durable state. The summary loop publishes one
 		// settled checks envelope for each commit whose suites and check runs are done. A finished
 		// Actions job on the default branch, of a run with no pull request, records nothing and is
-		// published below.
+		// published below. A workflow run of a pull request records the event that started it, which
+		// decides whether GitHub counts its check runs for the pull request.
 		if obs := contracts.GithubCIObservations(event, payload); len(obs) > 0 {
 			for _, o := range obs {
+				if event == "workflow_run" {
+					if err := ci.RecordRunEvent(answer, o); err != nil {
+						failures.deliveryFailed(w, delivery, "github ci run event record", err)
+						return
+					}
+					continue
+				}
 				if o.CheckName == "" {
 					if err := ci.RecordSuite(answer, o); err != nil {
 						failures.deliveryFailed(w, delivery, "github ci suite record", err)

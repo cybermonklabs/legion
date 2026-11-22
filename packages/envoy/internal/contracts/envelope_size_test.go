@@ -39,6 +39,11 @@ func (c noCI) RecordSuite(context.Context, contracts.CIObservation) error {
 	return nil
 }
 
+func (c noCI) RecordRunEvent(context.Context, contracts.CIObservation) error {
+	c.t.Error("a pull request, review, push or workflow run with no pull request recorded a workflow run event")
+	return nil
+}
+
 // The listener publishes each envelope to NATS whole, and the server refuses a message past its max
 // payload, 1 MiB by default, which would lose the event on every delivery. The normalizer bounds
 // every text an envelope copies from its webhook at MaxEnvelopeTextRunes. Each kind of event the

@@ -709,7 +709,8 @@ func HeadRuns(pr record.PullRequest) []record.AttemptRun {
 // current head, and returns the pull request ready to apply it. It may only when candidate.Head is
 // the current head: every other settlement - an earlier head's, a head a force push left - stands
 // for nothing. A settlement of a head other than the recorded one starts that head's fence afresh,
-// since check runs, generations, snapshots and commit statuses are each head's own.
+// since check runs, the runs excluded from them, generations, snapshots and commit statuses are
+// each head's own.
 func SettlementFor(pr record.PullRequest, candidate SettlementCandidate) (record.PullRequest, bool) {
 	head := candidate.Head
 	if head != pr.HeadSHA {
@@ -725,6 +726,7 @@ func SettlementFor(pr record.PullRequest, candidate SettlementCandidate) (record
 	pr.Generation = 0
 	pr.Snapshot = ""
 	pr.Statuses = nil
+	pr.ExcludedRuns = nil
 	return pr, true
 }
 
@@ -1020,18 +1022,29 @@ func boundedPushes(pushes []record.ClassifiedPush, head string) ([]record.Classi
 // and cancelled names, the generation and the snapshot stay as the newer settlements left them,
 // so the newer settlement delivered again is the duplicate it was before (ClassifySettlement says
 // why).
+//
+// A run the candidate names excluded, or the pull request keeps as excluded (excludedIDs), is
+// taken out of the fence and of the candidate's runs before they are merged, so the lower id that
+// stands in its place is the name's newest run, and a name with no run left has none in the fence
+// and keeps no failure or cancellation of it (EffectiveOutcome). The pull request keeps the excluded
+// runs of both, by name and id and sorted by name and then id (record.PullRequest.ExcludedRuns),
+// wherever this applies the candidate, whole or for its statuses alone, so a settlement published
+// before an exclusion and delivered after it brings no excluded run back.
 func ApplySettlement(pr record.PullRequest, candidate SettlementCandidate) (record.PullRequest, bool) {
-	classified := ClassifySettlement(pr, candidate)
+	excluded := excludedIDs(pr, candidate)
+	classified := classifySettlement(pr, candidate, excluded)
 	if classified == SettlementStatusesOnly && candidate.Head == pr.CheckedHead {
 		pr.Statuses = mergedStatuses(pr, candidate, SettlementStatusesOnly)
+		pr.ExcludedRuns = unionExcluded(pr.ExcludedRuns, candidate.Excluded)
 		return pr, true
 	}
 	if classified != SettlementNewer {
 		return pr, false
 	}
-	fence := mergeAttemptSets(pr.CheckRuns, stampedRuns(candidate))
-	outcome := concludedBy(fence, EffectiveOutcome(pr, candidate))
+	fence := mergeAttemptSets(withoutExcluded(pr.CheckRuns, excluded), withoutExcluded(stampedRuns(candidate), excluded))
+	outcome := concludedBy(fence, effectiveOutcome(pr, candidate, excluded))
 	pr.CheckRuns = fence
+	pr.ExcludedRuns = unionExcluded(pr.ExcludedRuns, candidate.Excluded)
 	if candidate.Head == pr.CheckedHead {
 		pr.Generation = candidate.Generation
 		pr.Snapshot = candidate.Snapshot
