@@ -173,7 +173,9 @@ func codelessBusy() mintedRefusal {
 // saying it is streaming when asked. Either way nothing is charged, the task goes back unconfirmed
 // and unread, a ready claim is recorded working, and the turn's end sends the task again. Where
 // neither fact holds — the agent says it is in no turn, or does not answer get_state — the answer
-// is charged as the stream minted it, and a result that ran no turn keeps the task's read mark.
+// is read as the stream minted it: the agent's answer all the same, charged nothing, the task
+// counted as one failed send and left for the next sweep, and a result that ran no turn keeps the
+// task's read mark.
 func TestACodelessBusyAnswerIsBusyWhereTheRecordOrTheAgentSaysSo(t *testing.T) {
 	paths := []struct {
 		name string
@@ -181,7 +183,7 @@ func TestACodelessBusyAnswerIsBusyWhereTheRecordOrTheAgentSaysSo(t *testing.T) {
 		// code-less busy answer by this path, after a turn of the agent's own started under the
 		// prompt where turnSeen. It returns the connection the task's sends go through.
 		answer func(t *testing.T, h *harness, turnSeen bool) *fake.Conn
-		// read is whether a charged answer leaves the task's read mark standing.
+		// read is whether an answer read as a refusal leaves the task's read mark standing.
 		read bool
 	}{
 		{name: "the send refused", answer: func(t *testing.T, h *harness, turnSeen bool) *fake.Conn {
@@ -258,10 +260,13 @@ func TestACodelessBusyAnswerIsBusyWhereTheRecordOrTheAgentSaysSo(t *testing.T) {
 					t.Fatalf("pending after the answer = %+v, want it unconfirmed", p)
 				}
 				if !row.busy {
-					h.wantBudgets(Budgets{PromptFailures: 1})
+					h.wantBudgets(Budgets{})
 					h.wantState(StateReady)
+					if p.SendFailures != 1 {
+						t.Fatalf("pending after the answer read as a refusal = %+v, want it counted as one failed send", p)
+					}
 					if read := !p.DeliveredAt.IsZero(); read != path.read {
-						t.Fatalf("pending after the charged answer = %+v, read %t; want read %t", p, read, path.read)
+						t.Fatalf("pending after the answer read as a refusal = %+v, read %t; want read %t", p, read, path.read)
 					}
 					return
 				}
@@ -328,7 +333,9 @@ func TestABusyAnswerToAWaitedOutPromptHoldsTheTaskUntilTheTurnEnds(t *testing.T)
 			t.Fatalf("sends into the turn = %d (%+v), want the %d made before the busy answer", len(sent), sent, sends)
 		}
 		h.wantState(StateWorking)
-		h.wantBudgets(Budgets{PromptFailures: 1})
+		// The busy answer is the agent's answer, so it ends the run of silent charges the bound
+		// began: the agent is live.
+		h.wantBudgets(Budgets{})
 	}
 
 	for _, tc := range []struct {

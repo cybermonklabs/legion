@@ -1379,6 +1379,13 @@ type Deps struct {
 	// tells nobody, as it does for TaskConfirmed above. It is called inside the machine's
 	// decision, so it returns at once.
 	ProviderErrorRunReached func(c Claim, reason string)
+	// PromptAnswersReached is told of a pending task whose sends the far side has answered with a
+	// failure Limits.PromptFailures times in a row, once per task (answeredFailure), with the
+	// reason the issue's architect is given: the claim, the task and the last answer's text. The
+	// worker is not stopped for those answers, so this is the escalation a retirement and a
+	// failed claim once gave. nil tells nobody. It is called inside the machine's decision, so it
+	// returns at once.
+	PromptAnswersReached func(c Claim, reason string)
 	// Paused is the daemon's project pause flag (decision 18 of dispatch://INFRA-3759's plan):
 	// the id of the open pause and true while the project is paused, 0 and false while it runs.
 	// The daemon hands the pause service's method value (internal/pause's Service.Paused), which
@@ -1777,16 +1784,22 @@ type Machine struct {
 	// the behaviour it had before the set: a turn that starts is taken for the task by askFirst,
 	// and credits the delivery's own copy (Delivery.Carried).
 	outstanding awaitedPrompts
-	// answeredBusy is the id of the pending delivery whose acknowledged prompt the agent said,
-	// while the wait for its turn was armed, it could not take because it is in a turn of its
-	// own: a refusal the one rule of the refusal paths read as OutcomeAgentBusy
-	// (agentRefusalOutcome), which left the wait running (refusedElsewhere — the shim's replay of
-	// what Oh My Pi answered an earlier send of this same task). The wait's running out reads it
-	// (noTurn): the agent said it was in a turn, so the wait ended on that turn rather than on an
-	// agent that took the prompt and never turned. A delivery taken back clears it
-	// (takeBackPending), and so does the wait's end that sends a held prompt again under its id
-	// (noTurn), so it names no task after its wait. It is memory only, as the wait is.
-	answeredBusy string
+	// answeredFailures counts the sends of the pending task the far side answered with a failure
+	// (answeredFailure) since that task was queued, keyed by its QueuedAt (answeredTask), or since
+	// a turn took it (confirmCarrying). It is memory only: a daemon restart starts the count again.
+	answeredFailures int
+	answeredTask     time.Time
+	// waitAnswer is the agent's answer to the pending delivery's acknowledged prompt that came
+	// while the wait for that prompt's turn was armed and left the wait running: a refusal the
+	// shim replayed of what Oh My Pi answered an earlier send of this same task
+	// (refusedElsewhere), with its outcome as the one rule of the refusal paths read it
+	// (agentRefusalOutcome). The wait's running out reads it (noTurn): the agent answered, so the
+	// wait ended on that answer rather than on an agent that took the prompt and never turned or
+	// answered — on the turn the agent said it is in, for OutcomeAgentBusy, and on its refusal of
+	// the work for any other outcome, which is no silence and charges nothing. A delivery taken
+	// back clears it (takeBackPending), and so does the wait's end that sends a held prompt again
+	// under its id (noTurn), so it names no task after its wait. It is memory only, as the wait is.
+	waitAnswer keptAnswer
 	// resulted is the delivery id of the last prompt whose result promptResulted took, a turn
 	// that ran or one that ended in a provider error. A result of a prompt whose task still holds
 	// that id prevents sendPending from sending it again under the same id after the take-back's
@@ -2192,6 +2205,14 @@ func (p awaitedPrompts) ids() []string {
 
 // LogValue logs the prompts by their ids: what each carried of news is the delivery's to show.
 func (p awaitedPrompts) LogValue() slog.Value { return slog.AnyValue(p.ids()) }
+
+// keptAnswer is an answer a wait for a prompt's turn keeps for its end (Machine.waitAnswer): the id
+// of the pending delivery it answered, its outcome, and the far side's words.
+type keptAnswer struct {
+	id      string
+	outcome runtime.Outcome
+	why     string
+}
 
 // armed is one scheduled timer: its arming's sequence and delivery, how to cancel it, and when it
 // fires (due), so a later arming can tell whether it would fire sooner. TimerPodStart's is no

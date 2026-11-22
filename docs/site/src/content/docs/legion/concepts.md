@@ -787,8 +787,9 @@ from its architect.
 ## Supervision
 
 The daemon counts what goes wrong with each agent: launches that fail, deaths while it had work
-outstanding, prompts it acknowledged without taking a turn, and the times it was relaunched for
-that. When a budget runs out (`launch_failure_limit`, `prompt_failure_limit` and
+outstanding, prompts it acknowledged without taking a turn or answering, and the times it was
+relaunched for that. A prompt the agent or its shim answered is not counted: the agent is live.
+When a budget runs out (`launch_failure_limit`, `prompt_failure_limit` and
 `prompt_retire_limit` in the configuration) the daemon stops relaunching that agent and **holds**
 the issue. A held phase worker is its architect's to retry or escalate to the controller. A root's
 architect that runs out goes to the controller, which restarts a running tree when it finds no

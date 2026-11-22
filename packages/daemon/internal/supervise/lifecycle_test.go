@@ -144,19 +144,12 @@ func (r *unansweredSuspend) Suspend(ctx context.Context, loc runtime.Locator) er
 	return r.Runtime.Suspend(ctx, loc)
 }
 
-// refuseLate is the agent answering its acknowledged prompt a failure with no turn of its own
-// running, which charges the prompt (lateRefused).
-func refuseLate(h *harness) error {
-	h.t.Helper()
-	return h.handle(StreamLateRefusal{Claim: h.token, DeliveryID: h.pending().ID, Error: "No API key found for anthropic."})
-}
-
 // A retirement whose relaunch the tree lifecycle refuses — the registration deadline's, or a prompt
-// retirement's, whichever of the prompt's outcomes reached the limit: a turn that never started, a
-// refusal of the prompt, or a late refusal of it — never leaves a live claim with no process for the
-// rows that act on one. A lifecycle that already refuses retires nothing: the claim keeps its process
-// and is charged nothing more. One that begins to refuse while the stop waits out its grace refuses
-// a relaunch whose process is gone: the claim is left suspended by the daemon, running nothing.
+// retirement's, which only prompts that started no turn and drew no answer reach — never leaves a
+// live claim with no process for the rows that act on one. A lifecycle that already refuses
+// retires nothing: the claim keeps its process and is charged nothing more. One that begins to
+// refuse while the stop waits out its grace refuses a relaunch whose process is gone: the claim is
+// left suspended by the daemon, running nothing.
 // Either way the operator's suspend, the root's exit, and a stale plugin found once launches are
 // allowed again are handled as on any claim in that state.
 func TestARetirementWhoseRelaunchTheTreeLifecycleRefusesLeavesNoLiveClaimWithoutAProcess(t *testing.T) {
@@ -187,36 +180,6 @@ func TestARetirementWhoseRelaunchTheTreeLifecycleRefusesLeavesNoLiveClaimWithout
 			},
 			retire: func(h *harness) { h.advance(testRPC) },
 			state:  StateReady, kept: Budgets{PromptFailures: 2}, retired: Budgets{PromptRetires: 1},
-		},
-		{
-			name: "a refused prompt's retirement",
-			reach: func(h *harness) {
-				h.reach(StateReady)
-				h.conn.RefusePrompt("the model provider refused the request")
-				h.must(RequestDeliver{Claim: h.token, Task: "the task"})
-				h.observe(runtime.Alive)
-			},
-			retire: func(h *harness) { h.observe(runtime.Alive) },
-			state:  StateReady, kept: Budgets{PromptFailures: 2}, retired: Budgets{PromptRetires: 1},
-		},
-		{
-			name: "a late refusal's retirement",
-			reach: func(h *harness) {
-				h.reach(StateReady)
-				h.must(RequestDeliver{Claim: h.token, Task: "the task"})
-				for range testLimits().PromptFailures - 1 {
-					if err := refuseLate(h); err != nil {
-						h.t.Fatalf("refuse the acknowledged prompt: %v", err)
-					}
-					h.observe(runtime.Alive)
-				}
-			},
-			retire: func(h *harness) {
-				if err := refuseLate(h); err != nil && strings.Contains(err.Error(), "outside") {
-					h.t.Errorf("the late refusal's retirement: %v", err)
-				}
-			},
-			state: StateReady, kept: Budgets{PromptFailures: 2}, retired: Budgets{PromptRetires: 1},
 		},
 	}
 	refusals := []struct {

@@ -187,9 +187,9 @@ func TestATasksTurnRetiresItOnceWhicheverOfItsEndAndItsResultComesFirst(t *testi
 }
 
 // A prompt Oh My Pi took and ran no turn for at all is the definitive form of what the wait for
-// the turn otherwise only times out on: the task goes back to waiting, keeping its read mark,
-// and the prompt is charged like any other that came to nothing.
-func TestAPromptThatRanNoTurnIsChargedWhenItsResultSaysSo(t *testing.T) {
+// the turn otherwise only times out on: the task goes back to waiting, keeping its read mark. The
+// result is an answer, so the agent is live and the prompt is charged nothing.
+func TestAPromptThatRanNoTurnIsChargedNothingWhenItsResultSaysSo(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Generation: 7})
@@ -198,7 +198,7 @@ func TestAPromptThatRanNoTurnIsChargedWhenItsResultSaysSo(t *testing.T) {
 	h.must(StreamPromptResult{Claim: testToken, DeliveryID: first, AgentInvoked: false, Error: "the command ran locally",
 		Outcome: runtime.OutcomeNoTurnRun})
 
-	h.wantBudgets(Budgets{PromptFailures: 1})
+	h.wantBudgets(Budgets{})
 	p := h.pending()
 	if p.ID == first {
 		t.Fatal("the task kept the id of the prompt that ran no turn; a retry under it is an echo the shim answers")
@@ -260,34 +260,27 @@ func TestABusyResultOfAnAcknowledgedPromptIsChargedNothingAndItsTurnsEndSendsThe
 	h.wantCalls("Suspend", 0)
 }
 
-// The control: an agent that answers nothing at all is still retired. Its results run no turn
-// and name no turn of its own — a prompt answered locally, a provider that refused before any
-// turn began — so each is charged, and the budget ends in the retirement and the relaunch it
-// always did.
-func TestAnAgentWhoseResultsRunNoTurnAndNameNoTurnOfItsOwnIsStillRetired(t *testing.T) {
+// An agent whose results run no turn and name no turn of its own — a prompt answered locally, a
+// provider that refused before any turn began — is still answering every prompt, so it is live,
+// and a live worker is not stopped for prompt failures: each result is charged nothing and the
+// sweep sends the task again, however many come back.
+func TestAnAgentWhoseResultsRunNoTurnAndNameNoTurnOfItsOwnIsNotStopped(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
-	unresponsive := h.locator()
 	h.must(RequestDeliver{Claim: testToken, Task: "the catch-up", Generation: 7})
 	base := len(h.prompts()) - 1
 
-	for sent := 1; sent <= 3; sent++ {
+	for sent := 1; sent <= 7; sent++ {
 		prompt := h.wantPrompts(base + sent)[base+sent-1]
 		h.must(StreamPromptResult{Claim: testToken, DeliveryID: prompt.DeliveryID, AgentInvoked: false,
 			Error: "No API key found for provider anthropic", Outcome: runtime.OutcomeNoTurnRun})
-		if sent < 3 {
-			h.wantBudgets(Budgets{PromptFailures: sent})
-			h.wantCalls("Suspend", 0)
-			h.observe(runtime.Alive) // the sweep re-sends it
-		}
+		h.wantBudgets(Budgets{})
+		h.wantCalls("Suspend", 0)
+		h.observe(runtime.Alive) // the sweep re-sends it
 	}
 
-	if suspend := h.wantCalls("Suspend", 1)[0]; suspend.Locator != unresponsive {
-		t.Errorf("suspended %+v, want the unresponsive process", suspend.Locator)
-	}
-	h.wantCalls("Resume", 1)
-	h.wantBudgets(Budgets{PromptRetires: 1})
-	h.wantState(StateLaunching)
+	h.wantCalls("Resume", 0)
+	h.wantState(StateReady)
 }
 
 // A turn whose work ended in a provider error is still that prompt's turn: Oh My Pi reports the

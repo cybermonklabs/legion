@@ -534,9 +534,9 @@ func TestTheRealShimReadsItsProjectedTokenAgainForTheRealListener(t *testing.T) 
 // jj on the workspace its pod gave it, and a working copy jj cannot write is answered `ok:false`
 // rather than by taking the agent down: a stale `.git/index.lock` another role's container left
 // behind wedges every jj in that workspace until the pod is replaced. The daemon side reads that
-// answer as the typed refusal the supervisor charges a prompt budget for, carrying the shim's own
-// words — which name the lock's path and its age — so the claim walks to failed with the reason
-// on its record instead of re-sending for ever (INFRA-1480).
+// answer as the typed refusal the supervisor records on the pending task, carrying the shim's own
+// words — which name the lock's path and its age — so the reason is on the claim's record rather
+// than only in a log line inside the pod (INFRA-1480).
 func TestTheRealShimRefusesAnAdoptionAStaleLockWedges(t *testing.T) {
 	legion := buildLegion(t)
 	jj := fixturegit.CompiledJJ(t)

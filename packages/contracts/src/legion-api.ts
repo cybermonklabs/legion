@@ -2226,13 +2226,13 @@ const legionDeliveryView = z.object({
   deliveredAt: timestamp.optional(),
   confirmedAt: timestamp.optional(),
   interrupted: z.literal(true).optional(),
-  /** How many sends of this task came back without reaching a turn, when the last of them failed
-   * and the error it failed with. The three are a diagnosis record, not a budget: the budget is
-   * `budgets.promptFailures` and `budgets.promptRetires`, which only a charged failure spends,
-   * while these count every send that failed that way, charged or not — a send lost to the
-   * transport costs nothing and is retried for ever, which is the stall they exist to name. A
-   * prompt the agent acknowledged and then refused is charged and read in the budget instead. A
-   * send that reaches a turn clears all three, so a task no send has failed for carries none. */
+  /** How many sends of this task came to nothing without reaching a turn — lost, refused, or
+   * acknowledged and then answered a failure — when the last of them failed and the error it
+   * failed with. The three are a diagnosis record, not a budget: the budget is
+   * `budgets.promptFailures` and `budgets.promptRetires`, which only a prompt the agent
+   * acknowledged and never answered spends, while these count every such failure, none of them
+   * charged and each retried for ever, which is the stall they exist to name. A send that
+   * reaches a turn clears all three, so a task no send has failed for carries none. */
   sendFailures: z.number().int().nonnegative().optional(),
   lastSendFailureAt: timestamp.optional(),
   lastSendError: nonEmptyString.optional(),

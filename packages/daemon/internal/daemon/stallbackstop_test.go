@@ -1562,3 +1562,19 @@ func rigClaim() supervise.Claim {
 	return supervise.Claim{Token: "legion-legion-legion-225-implementer", Project: "legion", Tree: "LEGION-225",
 		Issue: "LEGION-225", Role: claim.RoleImplementer, State: supervise.StateWorking}
 }
+
+// A pending task whose sends keep failing with an answer is told to the architect that owns the
+// claim's notices as a `worker-stalled` notice carrying the machine's reason, through the stall
+// notice's own rows (promptAnswersReached, enqueueStallNotice).
+func TestATaskThatKeepsFailingWithAnAnswerIsToldAsAWorkerStalledNotice(t *testing.T) {
+	rig := newBackstopRig(t)
+	c := rig.claim(claim.RoleImplementer, "LEGION-219", time.Minute, false)
+	const reason = "The implementer claim did not get its task: 3 sends in a row failed with an answer."
+
+	rig.s.promptAnswersReached(c, reason)
+
+	notices := rig.awaitNotices("LEGION-219", 1)
+	if n := notices[0]; n.Kind != stallBackstopNotice || n.Role != claim.RoleImplementer || n.Reason != reason {
+		t.Fatalf("notice = %+v, want one %s notice of the implementer carrying the machine's reason", n, stallBackstopNotice)
+	}
+}

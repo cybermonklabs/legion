@@ -3504,7 +3504,11 @@ func designReview(decision DecisionKind) bool {
 // the stalled process still running until the launch's turn, which the notice names. The notice
 // says what became of that stalled process as well, where the end let it go: that it was
 // stopped, or that the runtime did not confirm the stop and it may be running still
-// (internal/daemon's stallBackstopEnds, stallStopClause).
+// (internal/daemon's stallBackstopEnds, stallStopClause). It is also the notice of a worker whose
+// pending task keeps failing with an answer — the shim refusing the adoption, the agent refusing
+// the prompt or running no turn for it — which the daemon keeps and sends the task to again:
+// written once per task, at the prompt-failure limit of such answers in a row (supervise's
+// answeredFailure, internal/daemon's promptAnswersReached).
 //
 // `worker-silent` is the worker that stopped between turns rather than inside one: its process
 // is up, it holds no task, and its agent has not stepped for longer than the bound the

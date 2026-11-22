@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
@@ -785,6 +786,169 @@ func TestAStartedTurnResetsBothPromptBudgets(t *testing.T) {
 	h.wantBudgets(Budgets{})
 	if got := h.store.load(testToken).Budgets; got != (Budgets{}) {
 		t.Errorf("stored budgets %+v, want the reset persisted", got)
+	}
+}
+
+// An answer is no silence. A refusal that lands after two silent charges ends their run, so the
+// worker is not stopped; and the control: three silent charges in a row after the answer still
+// retire the process and relaunch the session, as they did before it. An answer from the
+// relaunched process ends its run of silent charges but not the retirement's count, so a claim
+// whose silent runs answers interrupt still reaches the bound by those runs, and the next run of
+// three fails it at the old limit (INFRA-1480's bound).
+func TestAnAnswerEndsTheRunOfSilentPromptFailures(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+	h.advance(testRPC)
+	h.observe(runtime.Alive)
+	h.advance(testRPC)
+	h.wantBudgets(Budgets{PromptFailures: 2})
+
+	h.conn.RefusePrompt("the model provider refused the request")
+	h.observe(runtime.Alive) // the re-send, which the agent refuses: an answer
+
+	h.wantBudgets(Budgets{})
+	h.wantCalls("Suspend", 0)
+	h.wantState(StateReady)
+
+	h.conn.FailPrompt(nil)
+	h.observe(runtime.Alive) // a re-send the agent acknowledges and starts no turn for
+	h.advance(testRPC)
+	h.observe(runtime.Alive)
+	h.advance(testRPC)
+	h.observe(runtime.Alive)
+	h.wantBudgets(Budgets{PromptFailures: 2})
+	h.wantCalls("Suspend", 0)
+
+	h.advance(testRPC) // the third silent charge in a row
+
+	h.wantCalls("Suspend", 1)
+	h.wantBudgets(Budgets{PromptRetires: 1})
+	h.wantState(StateLaunching)
+
+	h.relaunched()
+	h.advance(testRPC) // the relaunched session's first prompt starts no turn either
+	h.wantBudgets(Budgets{PromptFailures: 1, PromptRetires: 1})
+	h.conn.RefusePrompt("the model provider refused the request")
+	h.observe(runtime.Alive)
+	h.wantBudgets(Budgets{PromptRetires: 1})
+
+	h.conn.FailPrompt(nil)
+	for range 2 {
+		h.observe(runtime.Alive)
+		h.advance(testRPC)
+	}
+	h.observe(runtime.Alive)
+	h.advance(testRPC)
+
+	h.wantCalls("Suspend", 2)
+	h.wantCalls("Resume", 1)
+	h.wantBudgets(Budgets{PromptFailures: 3, PromptRetires: 2})
+	h.wantState(StateFailed)
+}
+
+// A turn the agent starts ends the run of silent charges and the retirements they cost, whoever's
+// input began it: a turn that takes the task clears them where it confirms it
+// (TestAStartedTurnResetsBothPromptBudgets), and so does a turn of the agent's own that takes no
+// task.
+func TestATurnOfTheAgentsOwnResetsTheRetirementCount(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+	for range 2 {
+		h.advance(testRPC)
+		h.observe(runtime.Alive)
+	}
+	h.advance(testRPC)
+	h.wantBudgets(Budgets{PromptRetires: 1})
+	// The relaunched session's send is refused, so no prompt of the task is on its way, and the
+	// turn that starts next is the agent's own.
+	h.conn.RefusePrompt("the model provider refused the request")
+	h.relaunched()
+	h.wantBudgets(Budgets{PromptRetires: 1})
+
+	h.must(StreamTurnStart{Claim: testToken})
+
+	if p := h.pending(); !p.ConfirmedAt.IsZero() {
+		t.Fatalf("pending %+v, want the task unconfirmed by a turn of the agent's own", p)
+	}
+	h.wantBudgets(Budgets{})
+	if got := h.store.load(testToken).Budgets; got != (Budgets{}) {
+		t.Errorf("stored budgets %+v, want the reset persisted", got)
+	}
+}
+
+// Every answer to a prompt that reached no turn ends the run of silent charges, whichever path it
+// comes by and whatever outcome it carries: a refusal of the send by the agent or by the shim's
+// adoption, the agent's refusal after its acknowledgement, a result that ran no turn, the busy form
+// of each, a late answer to a prompt whose wait already ran out, and a refusal that carries no code
+// at all, which is runtime.OutcomeUnrecognised and which the policy would charge were it asked
+// (Charges): no answer site asks it. Each row's outcome is the one the stream mints for that answer.
+func TestEveryAnswerEndsTheRunOfSilentPromptFailures(t *testing.T) {
+	const timedOut = "Command timed out after 300 s (ran 300.1 s): jj log --no-graph -T commit_id"
+	for _, tc := range []struct {
+		name string
+		// answer answers after two silent charges; first is the id of the task's first prompt.
+		answer func(h *harness, first string)
+	}{
+		{name: "the agent refuses the re-send", answer: func(h *harness, _ string) {
+			h.conn.FailPrompt(outcomeRefusal(runtime.OutcomePromptRefused))
+			h.observe(runtime.Alive)
+		}},
+		{name: "the agent refuses the re-send with no code", answer: func(h *harness, _ string) {
+			h.conn.RefusePrompt("the model provider refused the request")
+			h.observe(runtime.Alive)
+		}},
+		{name: "the shim refuses the re-send's adoption", answer: func(h *harness, _ string) {
+			h.rt.FailAdoptWorkingCopy(adoptRefusal(timedOut))
+			h.observe(runtime.Alive)
+		}},
+		{name: "the agent refuses the re-send busy", answer: func(h *harness, _ string) {
+			h.conn.FailPrompt(busyRefusal())
+			h.observe(runtime.Alive)
+		}},
+		{name: "the agent refuses the acknowledged re-send with no turn of its own", answer: func(h *harness, _ string) {
+			h.observe(runtime.Alive)
+			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: h.pending().ID, Error: "No API key found for anthropic.",
+				Outcome: runtime.OutcomePromptRefused, ConnSequence: h.conn.Sequence()})
+		}},
+		{name: "the agent refuses the acknowledged re-send busy", answer: func(h *harness, _ string) {
+			h.observe(runtime.Alive)
+			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: h.pending().ID, Error: busyWords,
+				Outcome: runtime.OutcomeAgentBusy, ConnSequence: h.conn.Sequence()})
+		}},
+		{name: "Oh My Pi runs no turn for the re-send", answer: func(h *harness, _ string) {
+			h.observe(runtime.Alive)
+			h.must(StreamPromptResult{Claim: testToken, DeliveryID: h.pending().ID, AgentInvoked: false, Error: "the command ran locally",
+				Outcome: runtime.OutcomeNoTurnRun})
+		}},
+		{name: "Oh My Pi runs no turn for the re-send, busy", answer: func(h *harness, _ string) {
+			h.observe(runtime.Alive)
+			h.must(StreamPromptResult{Claim: testToken, DeliveryID: h.pending().ID, AgentInvoked: false, Error: busyWords,
+				Outcome: runtime.OutcomeAgentBusy})
+		}},
+		{name: "a late answer to the prompt whose wait ran out first", answer: func(h *harness, first string) {
+			h.must(StreamPromptResult{Claim: testToken, DeliveryID: first, AgentInvoked: false, Error: "the command ran locally",
+				Outcome: runtime.OutcomeNoTurnRun})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := adoptingHarness(t)
+			h.must(RequestDeliver{Claim: testToken, Task: "the task", Phase: phase.Implementing})
+			first := h.wantPrompts(1)[0].DeliveryID
+			h.advance(testRPC)
+			h.observe(runtime.Alive)
+			h.advance(testRPC)
+			h.wantBudgets(Budgets{PromptFailures: 2})
+
+			tc.answer(h, first)
+
+			h.wantBudgets(Budgets{})
+			if stored := h.store.load(testToken).Budgets; stored != (Budgets{}) {
+				t.Errorf("stored budgets %+v, want the end of the run persisted", stored)
+			}
+			h.wantCalls("Suspend", 0)
+		})
 	}
 }
 

@@ -137,8 +137,8 @@ func TestAReplayedRefusalOnlyClearsTheMarkItsPromptSet(t *testing.T) {
 
 // Oh My Pi answers a delivery's prompt once, and the shim fans that answer out to every request
 // of the delivery: the re-send this connection is waiting on, and the earlier request whose send
-// was lost in transit, which the shim replays. The re-send's refusal charges the prompt; the
-// replayed copy of the same answer charges nothing more.
+// was lost in transit, which the shim replays. The re-send's refusal is the answer; the replayed
+// copy of the same answer changes nothing more.
 func TestAReplayedCopyOfAnAnsweredRefusalChargesNothing(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -150,13 +150,13 @@ func TestAReplayedCopyOfAnAnsweredRefusalChargesNothing(t *testing.T) {
 	if second := h.wantPrompts(2)[1]; second.DeliveryID != first.DeliveryID {
 		t.Fatalf("the re-send went under %s, want the lost send's %s", second.DeliveryID, first.DeliveryID)
 	}
-	charged := h.claim().Budgets
+	before := h.claim().Budgets
 
 	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: first.DeliveryID, Error: "the model provider refused the request", Replayed: true,
 		ConnSequence: h.conn.Sequence()})
 
-	if got := h.claim().Budgets; got != charged {
-		t.Fatalf("budgets after the replayed copy = %+v, want %+v: one refusal is one charge", got, charged)
+	if got := h.claim().Budgets; got != before {
+		t.Fatalf("budgets after the replayed copy = %+v, want %+v: one answer moves the budget once", got, before)
 	}
 }
 
@@ -614,13 +614,12 @@ func TestALateAcknowledgementOfARetiredTaskRecordsNothing(t *testing.T) {
 // A replayed refusal of a prompt no turn confirmed takes nothing back, even from a connection that
 // has not prompted the task: the prompt was acknowledged, so its turn wait is armed and keeps the
 // hello from re-sending, and the refusal clears the mark it set. The task keeps its id and its
-// wait. When that wait runs out, the prompt is charged as any acknowledged prompt that started no
-// turn is (OutcomeNoTurnStarted) — unless the replayed refusal was the agent's answer that it is
-// in a turn of its own, which is the one thing a wait that carries no words can learn of the
-// agent's turn (noTurn, answeredBusy): that wait ended on the agent's turn, and is charged
-// nothing. The answer is read by the one rule of the refusal paths (agentRefusalOutcome), so the
-// earlier pin's busy refusal, which carries no code, is that answer too when the agent says it is
-// streaming when asked.
+// wait. The refusal is the agent's answer all the same, which is no silence, so the wait's end
+// charges nothing whatever the answer said (noTurn, Machine.waitAnswer): a refusal of the work
+// takes the task back and counts it on the task as an answered failure, and the agent's answer
+// that it is in a turn of its own takes it back for that turn. The answer is read by the one rule
+// of the refusal paths (agentRefusalOutcome), so the earlier pin's busy refusal, which carries no
+// code, is the busy answer when the agent says it is streaming when asked.
 func TestAReplayedRefusalOfAnUnconfirmedTaskKeepsItsWait(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -628,12 +627,14 @@ func TestAReplayedRefusalOfAnUnconfirmedTaskKeepsItsWait(t *testing.T) {
 		outcome runtime.Outcome
 		// streaming is what the agent answers get_state with when the refusal arrives.
 		streaming bool
-		charged   int
+		// counted is how many failed sends the wait's end records on the task.
+		counted int
 	}{
-		{name: "the agent refused the work", refusal: "the model provider refused the request", outcome: runtime.OutcomePromptRefused, charged: 1},
-		{name: "the agent is in a turn of its own", refusal: busyWords, outcome: runtime.OutcomeAgentBusy, charged: 0},
+		{name: "the agent refused the work", refusal: "the model provider refused the request", outcome: runtime.OutcomePromptRefused, counted: 1},
+		{name: "the agent refused the work with no code", refusal: "the model provider refused the request", outcome: runtime.OutcomeUnrecognised, counted: 1},
+		{name: "the agent is in a turn of its own", refusal: busyWords, outcome: runtime.OutcomeAgentBusy},
 		{name: "the agent is in a turn of its own, its refusal carrying no code and the agent streaming when asked",
-			refusal: busyWords, outcome: runtime.OutcomeUnrecognised, streaming: true, charged: 0},
+			refusal: busyWords, outcome: runtime.OutcomeUnrecognised, streaming: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
@@ -654,8 +655,11 @@ func TestAReplayedRefusalOfAnUnconfirmedTaskKeepsItsWait(t *testing.T) {
 					p, h.claim().Budgets, d)
 			}
 			h.advance(2 * testRPC)
-			if got := h.claim().Budgets.PromptFailures; got != charged.PromptFailures+tc.charged {
-				t.Fatalf("after the turn wait: %d prompt failures, want %d", got, charged.PromptFailures+tc.charged)
+			if got := h.claim().Budgets; got != charged {
+				t.Fatalf("after the turn wait: budgets %+v, want %+v: an answered prompt is charged nothing", got, charged)
+			}
+			if p := h.pending(); p.ID == d || !p.DeliveredAt.IsZero() || p.SendFailures != tc.counted {
+				t.Fatalf("after the turn wait: pending %+v, want the task back unread under a new id with %d failed sends recorded", p, tc.counted)
 			}
 		})
 	}

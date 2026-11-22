@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+    A live worker is no longer stopped for prompt failures. A prompt that failed with an answer is
+    charged nothing and ends the claim's run of silent prompt failures: the shim refusing to adopt
+    the working copy, its own command timeout included, the agent refusing the prompt before or
+    after acknowledging it, Oh My Pi running no turn for it, and the busy form of each. Only a
+    prompt the agent acknowledged and then started no turn for and never answered is charged. The
+    count of retirements counts those silent runs and resets only when a turn starts, so a claim
+    whose silent runs reach the prompt-retire limit is still failed, answers between them or not.
+    A worker whose adoption keeps timing out on a large working copy keeps its process and its
+    background jobs, and its task is sent again at each sweep. Every answered failure is counted
+    on the pending task (`sendFailures`, `lastSendError`), and at the prompt-failure limit of
+    them in a row on one task the issue's architect gets one `worker-stalled` notice naming the
+    claim, the task and the last answer.
+time: 2026-11-22T07:50:14Z
+custom:
+    Issue: prompt-failures-stop-only-silence

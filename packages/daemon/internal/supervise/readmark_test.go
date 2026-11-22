@@ -92,13 +92,13 @@ func TestARefusalAfterTheBoundStillTakesTheTaskBackUnread(t *testing.T) {
 		t.Fatalf("pending after the late refusal = %+v, want the delivered mark gone", after)
 	}
 	// The bound already charged this prompt and already re-queued the task: the refusal changes
-	// what the daemon knows about the task, not its id and not its budget. Charging it again would
-	// make one slow-then-refused prompt cost one or two depending only on when the answer landed.
+	// what the daemon knows about the task, not its id. It is the agent's answer, so it ends the
+	// run of silent charges the bound began rather than adding a second charge for one prompt.
 	if after.ID != queued.ID {
 		t.Fatalf("pending id = %s after the late refusal, want the id the bound queued, %s", after.ID, queued.ID)
 	}
-	if budgets := h.claim().Budgets; budgets.PromptFailures != 1 {
-		t.Fatalf("prompt failures = %d after the late refusal, want the bound's one", budgets.PromptFailures)
+	if budgets := h.claim().Budgets; budgets != (Budgets{}) {
+		t.Fatalf("budgets = %+v after the late refusal, want the bound's charge ended by the answer", budgets)
 	}
 }
 
@@ -308,8 +308,8 @@ func TestAnAnswerToAGivenUpPromptNeitherMovesNorChargesTheTask(t *testing.T) {
 	if p := h.pending(); p.ID != resent.ID {
 		t.Fatalf("pending id = %s after the old prompt's refusal, want the send in flight's %s", p.ID, resent.ID)
 	}
-	if budgets := h.claim().Budgets; budgets.PromptFailures != 1 {
-		t.Fatalf("prompt failures = %d, want the one the bound charged", budgets.PromptFailures)
+	if budgets := h.claim().Budgets; budgets != (Budgets{}) {
+		t.Fatalf("budgets = %+v, want the bound's charge ended by the answer and nothing charged for it", budgets)
 	}
 }
 

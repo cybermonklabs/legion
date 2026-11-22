@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/wait"
@@ -117,24 +118,22 @@ type Delivery struct {
 	// workflow wrote it.
 	OutOfMemory bool
 	// SendFailures, LastSendFailureAt and LastSendError are the diagnosis record of this task's
-	// sends that came back from their own send goroutine without reaching a turn (table.go's
-	// refused): how many of them failed, when the last one failed by the machine's clock, and
-	// the error it failed with. They are a record of what happened, not a budget. The budget is
-	// the claim's (Claim.Budgets.PromptFailures and PromptRetires), which only the failures
-	// charged as the far side's answer about this workspace spend; this counts every send that
-	// failed there, charged or not, and that difference is the point of recording it. A send
-	// lost to the transport is charged nothing and waits for the next hello, sweep, turn end or
-	// ready — for ever, by design — so a claim can sit for days with its budget untouched and
-	// nothing on it saying why, and that is the case an operator most needs named (INFRA-1480:
+	// sends that came to nothing without reaching a turn: those that came back from their own send
+	// goroutine (table.go's refused), and the prompts Oh My Pi acknowledged and then answered a
+	// failure with no turn of its own (promptAnswered). They are how many of them failed, when the
+	// last one failed by the machine's clock, and the error it failed with: a record of what
+	// happened, not a budget. The budget is the claim's (Claim.Budgets.PromptFailures and
+	// PromptRetires), which only a prompt the agent acknowledged and never answered spends; none
+	// of the failures counted here is charged. A send lost to the transport and every answered
+	// failure wait for the next hello, sweep, turn end or ready — for ever, by design — so a claim
+	// can sit for days with its budget untouched, and this record is what names why (INFRA-1480:
 	// two planning tasks held 31 and 33 hours, whose only record of each failed send was a log
 	// line inside the pod, so diagnosing the stall took a person and a hand-run check in there).
-	// A prompt the agent acknowledged and then refused is not counted here: it comes back as a
-	// late refusal of its own (lateRefused), which charges the budget, so it bounds itself and
-	// is read there rather than in this record of the silent ones. All three are written
-	// together on every send that fails in refused, and cleared together where the budgets are
-	// cleared (confirmCarrying), so a task that got through carries zeroes. LastSendError is the
-	// far side's text as the daemon keeps any far side's error text (storetext.FarSideError), set
-	// so in memory as well as in the store, and the whole text is in the log (table.go's refused).
+	// All three are written together on every such failure, and cleared together where the
+	// budgets are cleared (confirmCarrying), so a task that got through carries zeroes.
+	// LastSendError is the far side's text as the daemon keeps any far side's error text
+	// (storetext.FarSideError), set so in memory as well as in the store, and the whole text is in
+	// the log.
 	SendFailures      int
 	LastSendFailureAt time.Time
 	LastSendError     string
@@ -1840,6 +1839,7 @@ func (m *Machine) confirmCarrying(ctx context.Context, news []byte) error {
 	m.disarm(TimerTurn)
 	m.askFirst = false
 	m.claim.Budgets.PromptFailures, m.claim.Budgets.PromptRetires = 0, 0
+	m.answeredFailures = 0
 	p.SendFailures, p.LastSendFailureAt, p.LastSendError = 0, time.Time{}, ""
 	if a := &m.claim.Abandoned; m.carried.abandoned && a.Tells() {
 		a.Told, a.ToldBy = true, p.ID
@@ -1895,7 +1895,7 @@ func (m *Machine) confirmCarrying(ctx context.Context, news []byte) error {
 //   - A send whose answer has come (sending.resulted) is read as no send at all, under any id, so
 //     a turn that starts after that answer is the task's only by the bullet below. The answer has
 //     said what became of the prompt: a result that ran a turn says which turn that was
-//     (promptResulted), and a no-turn answer takes the task back under a new id (promptFailed,
+//     (promptResulted), and a no-turn answer takes the task back under a new id (promptAnswered,
 //     takeBackPending) or, where that write fails, leaves it under the send's own id with its
 //     confirmation cleared, so the pending task's own send is read by its answer too, not by its
 //     id alone. Taken for the task's, such a turn would confirm a task with nothing left to come
@@ -1993,23 +1993,41 @@ func (m *Machine) sendUnproven() bool {
 	return m.awaitsResult() || m.send.id == m.claim.Pending.ID
 }
 
-// promptFailed is a prompt that was acknowledged and then came to nothing: the wait for its turn
-// ran out, Oh My Pi answered it a failure, or its result ran no turn. The task goes back to
-// waiting and the prompt's outcome is handed to the prompt budget, which charges it where the
-// policy says so (chargePrompt, Charges), so an agent that never takes one walks its budget to the
-// relaunch and the retirement. read says whether the agent may have read it, and is the caller's
-// to answer, not the policy's: a turn that has not started may still be this task's, and a prompt
-// the agent answered a failure, or answered that it is in a turn of its own, never ran.
+// promptFailed is a prompt that was acknowledged and then came to nothing with no answer: the wait
+// for its turn ran out (noTurn). It is the one site that hands a prompt's outcome to the prompt
+// budget, which charges it where the policy says so (chargePrompt, Charges), so an agent that
+// never takes one and never answers walks its budget to the relaunch and the retirement. The task
+// goes back to waiting. read says whether the agent may have read it, and is the caller's to
+// answer, not the policy's: a turn that has not started may still be this task's, and a prompt
+// the agent said within the wait it could not take, being in a turn of its own, never ran
+// (Machine.waitAnswer). A prompt the far side answered goes through promptAnswered instead, which
+// charges nothing.
 //
-// The caller has already dropped from the task's outstanding prompts the one its answer names,
-// where it names one (Machine.outstanding); the wait that ran out names none, and its prompt
-// stays outstanding, since its turn at the pin is still the session's next. Whatever stays
-// outstanding is what the take-back reads (takeBackPending).
+// The wait that ran out names no prompt, and its prompt stays outstanding, since its turn at the
+// pin is still the session's next (Machine.outstanding). Whatever stays outstanding is what the
+// take-back reads (takeBackPending).
 func (m *Machine) promptFailed(ctx context.Context, o runtime.Outcome, read bool) error {
 	if err := m.takeBackPending(ctx, read); err != nil {
 		return err
 	}
 	return m.chargePrompt(ctx, o)
+}
+
+// promptAnswered is a prompt Oh My Pi acknowledged and then answered a failure with no turn of its
+// own running: it ran no turn for it, or refused it. The task goes back to waiting and nothing is
+// charged, since an agent that answers is live. The answer is recorded on the pending task as a
+// failed send, as refused records the answers to a send (Delivery.SendFailures), and is counted
+// for the issue's architect (answeredFailure). read says whether the agent may have read it: a
+// result that ran no turn may have been, and a refusal never was. why is the far side's text. The
+// caller has already dropped from the task's outstanding prompts the one its answer names
+// (Machine.outstanding).
+func (m *Machine) promptAnswered(ctx context.Context, read bool, why string) error {
+	p := m.claim.Pending
+	p.SendFailures++
+	p.LastSendFailureAt = m.deps.Clock.Now()
+	p.LastSendError = storetext.FarSideError(why)
+	// The take-back's write carries the record, since the delivery it writes is this one.
+	return errors.Join(m.takeBackPending(ctx, read), m.answeredFailure(ctx, p.LastSendError))
 }
 
 // interruptedTask begins a task taken back from a turn its process could no longer finish
@@ -2439,7 +2457,7 @@ func (m *Machine) turnNews() []byte {
 // first write the store takes and no failure is handled any other way.
 func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
 	m.disarm(TimerTurn)
-	m.answeredBusy = ""
+	m.waitAnswer = keptAnswer{}
 	p := m.claim.Pending
 	id, kept := rotateTaskID(p.ID), m.awaitsResult()
 	var moved, handshakeMoved bool
@@ -2510,8 +2528,8 @@ func (m *Machine) takeBackConfirmation(p *Delivery) bool {
 //     (putClaimAndPending) when this reports true.
 //   - takeBackPending, a prompt that came to nothing: a late busy answer, refusal or result that
 //     ran no turn (lateRefused, refusedElsewhere, refusedUnprompted, waitedOutAnswer,
-//     promptResulted), a wait for a turn that ran out (noTurn; it and the answers that charge the
-//     prompt go through promptFailed) and a provider error (providerErrored). With no prompt of
+//     promptResulted), a wait for a turn that ran out (noTurn, through promptFailed, and the
+//     answers through promptAnswered) and a provider error (providerErrored). With no prompt of
 //     the task left outstanding it takes the telling back; with one outstanding it keeps the
 //     confirmation and moves the telling to the new id. Either way it writes the claim with the
 //     delivery (putClaimAndDelivery) when this reports true.

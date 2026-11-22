@@ -37,17 +37,20 @@ const unknownOutcome runtime.Outcome = "a word no release of the daemon has mint
 
 // The rows of the charge policy: whether each member of the set charges the budget its site counts.
 // Every member listed by Outcomes must have a row here, so a member added without a decision
-// fails this test by name.
+// fails this test by name. The three answers to a prompt that reached no turn — the agent's
+// refusal, the shim's refused adoption, a result that ran no turn — charge nothing: an agent that
+// answers is live, and a live worker is not stopped for prompt failures. The agent's silence
+// (OutcomeNoTurnStarted) and the launch and death outcomes are charged.
 func TestChargesDecidesEveryOutcome(t *testing.T) {
 	want := map[runtime.Outcome]bool{
 		runtime.OutcomeUnrecognised:               true,
 		runtime.OutcomeAgentBusy:                  false,
-		runtime.OutcomePromptRefused:              true,
-		runtime.OutcomeAdoptionRefused:            true,
+		runtime.OutcomePromptRefused:              false,
+		runtime.OutcomeAdoptionRefused:            false,
 		runtime.OutcomeIdentityUnavailable:        false,
 		runtime.OutcomeTransportLost:              false,
 		runtime.OutcomeNoTurnStarted:              true,
-		runtime.OutcomeNoTurnRun:                  true,
+		runtime.OutcomeNoTurnRun:                  false,
 		runtime.OutcomeProviderError:              false,
 		runtime.OutcomeProcessDied:                true,
 		runtime.OutcomeLaunchFailed:               true,
@@ -84,29 +87,45 @@ func TestAnOutcomeThePolicyDoesNotKnowIsCharged(t *testing.T) {
 		}
 	}
 
-	// And a send refused under it is charged by the prompt budget, as a refusal is.
+	// A send refused under it is still the far side's answer, and no site that handles an answer
+	// asks the policy anything (refused): the refusal charges nothing.
 	h := newHarness(t)
 	h.reach(StateReady)
 	h.conn.FailPrompt(outcomeRefusal(unknownOutcome))
 	h.must(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
-	h.wantBudgets(Budgets{PromptFailures: 1})
+	h.wantBudgets(Budgets{})
 }
 
-// The prompt budget asks the policy: a send refused under each outcome charges one prompt
-// failure exactly where Charges says it does, and nothing where it says not. The outcome is the
-// one the error carries (sendOutcome), so the site decides nothing.
+// The prompt budget asks the policy: a charge of each outcome counts one prompt failure exactly
+// where Charges says it does, and nothing where it says not. The one site that charges it is the
+// wait for an acknowledged prompt's turn running out (noTurn), which names the outcome; a send
+// refused under any outcome is the far side's answer, which is charged nothing whatever the
+// policy says of that outcome, and leaves the task waiting unread.
 func TestThePromptBudgetChargesWhatTheOutcomePolicySays(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	for _, o := range append(runtime.Outcomes(), unknownOutcome) {
+		h.m.mu.Lock()
+		err := h.m.chargePrompt(h.ctx, o)
+		charged := h.m.claim.Budgets.PromptFailures
+		h.m.claim.Budgets.PromptFailures = 0
+		h.m.mu.Unlock()
+		want := 0
+		if Charges(o) {
+			want = 1
+		}
+		if err != nil || charged != want {
+			t.Errorf("chargePrompt(%q) counted %d prompt failures (error %v), want %d", o, charged, err, want)
+		}
+	}
+
 	for _, o := range append(runtime.Outcomes(), unknownOutcome) {
 		t.Run(string(o), func(t *testing.T) {
 			h := newHarness(t)
 			h.reach(StateReady)
 			h.conn.FailPrompt(outcomeRefusal(o))
 			h.must(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
-			want := Budgets{}
-			if Charges(o) {
-				want.PromptFailures = 1
-			}
-			h.wantBudgets(want)
+			h.wantBudgets(Budgets{})
 			if p := h.pending(); !p.DeliveredAt.IsZero() || !p.ConfirmedAt.IsZero() {
 				t.Fatalf("after a refused send the task is %+v, want it waiting unread", p)
 			}

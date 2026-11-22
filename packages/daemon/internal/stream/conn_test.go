@@ -129,8 +129,8 @@ func TestPromptHonoursItsContextAndTheRPCTimeout(t *testing.T) {
 	}
 }
 
-// The supervisor charges a prompt the agent refused and an adoption the shim refused, and
-// re-sends at no charge what the transport lost, telling them apart by runtime.ErrPromptRefused
+// The supervisor reads a prompt the agent refused and an adoption the shim refused as answers,
+// and a failure the transport lost as no answer, telling them apart by runtime.ErrPromptRefused
 // and runtime.ErrAdoptRefused alone (LEGION-60, INFRA-1480). So a refusal is the sentinel of the
 // command it refused and of no other: OMP's `{success:false}` for the prompt itself is
 // ErrPromptRefused, the shim's `ok:false` for the adoption — and the refusal an older shim's
@@ -1022,7 +1022,7 @@ func TestATokenRequestTheShimCannotAnswerIsRefused(t *testing.T) {
 // A shim built before the workspace read forwards the frame to Oh My Pi, which refuses it as an
 // unknown command. The read is then a refusal that carries Oh My Pi's words, which the caller
 // reads as a failed read: never as a workspace with no work, and never as a refused prompt, which
-// the supervisor would charge to the claim's prompt budget.
+// the supervisor would read as the agent's answer to a prompt.
 func TestWorkspaceWorkOfAnOlderShimIsARefusal(t *testing.T) {
 	h := startListener(t, harnessOptions{})
 	p := h.connect(testToken)

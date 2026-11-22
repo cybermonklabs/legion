@@ -1474,7 +1474,7 @@ A search that finds no line for a time before the first line does not show that 
   `inTurn` names the claim whose turn holds it.
 
 - `supervise: the shim refused to adopt the working copy; the prompt was never sent` is an adoption that failed, with the shim's own words.
-  The task stays queued, and the refusal counts against the prompt budget of the claim.
+  The task stays queued and is sent again at the next sweep. The refusal costs the claim no prompt budget, because the shim answered, and the pending task counts it in `sendFailures`.
 
 - `supervise: the prompt was lost to the transport; the delivery waits` is a send that got no answer.
   When its `error` starts `adopt <claim>'s working copy for <identity>`, the daemon asked over the claim's connection, and the call did not succeed.
@@ -1593,10 +1593,8 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   agent never registered` for an agent that never registered). A prompt retirement waits the same
   way, its error `retire <claim> after <n> prompt failures: launch claim <claim>: bind work of tree
   <tree>: tree cleanup is reserved`, on the Error line of the prompt failure that reached the limit:
-  `supervise: timer` with `timer=turn` for a prompt that started no turn, `supervise: prompt
-  outcome` for a prompt the agent refused, and `supervise: an event failed` with
-  `event=supervise.StreamLateRefusal` for a late refusal. Nothing to do: the lines stop once the
-  tree has closed.
+  `supervise: timer` with `timer=turn`, a prompt that started no turn and drew no answer, the one
+  prompt failure that is charged. Nothing to do: the lines stop once the tree has closed.
 - **`supervise: the tree's cleanup is reserved and the retired process is stopped; suspending the
   claim for the tree's close`** means the tree's cleanup was reserved while a retirement was
   stopping the process. The claim is suspended by the daemon with no process, and the tree's close

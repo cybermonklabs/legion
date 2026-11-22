@@ -237,6 +237,8 @@ var chargeFunctions = []string{"chargePrompt", "chargeDeath", "relaunchAfterFail
 // what a budget measures, which is no event the policy is asked about.
 var budgetResets = map[string]string{
 	"confirmCarrying": "a started turn of the task resets the prompt failures and the prompt retirements (Budgets, PromptFailures and PromptRetires)",
+	"beginTurn":       "a turn the agent starts, whoever's input began it, resets the prompt failures and the prompt retirements, since it is no silence (Budgets, PromptFailures and PromptRetires)",
+	"answeredLive":    "the far side's answer to a prompt that reached no turn ends the run of silent prompt failures and keeps the retirements (Budgets, PromptFailures)",
 	"ready":           "the agent's ready resets the launch failures, since the launch it measured came up (Budgets, LaunchFailures)",
 	"turnEnded":       "a turn that ends normally resets the deaths, since the agent got through the work they were charged against (Budgets, Deaths)",
 	"retirePending":   "the task's retirement resets the deaths charged against it, in the same write (Budgets, Deaths)",

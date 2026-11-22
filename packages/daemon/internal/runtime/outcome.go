@@ -22,8 +22,10 @@ const (
 	// hold. A prompt refusal that carries no code is this, as internal/stream mints it
 	// (stream.PromptRefusalOutcome) — Oh My Pi's busy sentence with no code among them, since its
 	// words are not read — and so is a prompt refusal whose error carries no minted member
-	// (supervise's sendOutcome). Such a refusal is charged unless the supervisor reads it as the
-	// agent's busy answer from what it knows besides the words (supervise's agentRefusalOutcome).
+	// (supervise's sendOutcome). No answer site charges a refusal, whatever outcome it carries,
+	// a refusal with no code among them (supervise's Budgets); the policy still charges this zero
+	// value where a charge site asks it, so an unrecognised event no answer site handled stays
+	// charged (supervise's Charges).
 	OutcomeUnrecognised Outcome = ""
 	// OutcomeAgentBusy is the agent answering that it is in a turn of its own, which it says by the
 	// code its answer carries (shimwire.CodeSessionBusy): Oh My Pi's refusal, and the Claude Code
