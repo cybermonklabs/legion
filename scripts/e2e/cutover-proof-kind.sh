@@ -130,7 +130,7 @@ connections() {
 # connects with it through the run's port-forward and, on a server it has provisioned already,
 # changes nothing (bustest.Provision), so it is a connection and nothing else.
 admits() {
-  "$work/image/fixturebuckets" -url "nats://$1:$2@127.0.0.1:$port" >/dev/null 2>&1
+  "$work/fixturebuckets" -url "nats://$1:$2@127.0.0.1:$port" >/dev/null 2>&1
 }
 
 # set_hold held|released swaps the server's configuration and reloads it, then waits until the
@@ -228,8 +228,8 @@ set_listener() {
   note "the Deployment is set to ENVOY_CONSUMER_NAMES=$1 with strategy $2"
 }
 
-# only_current_pods waits up to 180 s until every pod of the Deployment is of its current
-# ReplicaSet and one pod runs, and fails naming what is left otherwise.
+# only_current_pods waits up to 180 s until the Deployment lists at least one pod and every pod it
+# lists is of its current ReplicaSet, and fails naming what is left otherwise.
 only_current_pods() {
   local hash pods deadline=$((SECONDS + 180))
   while :; do
@@ -275,7 +275,7 @@ begin image
 mkdir -p "$work/image"
 (cd "$root/packages/envoy" &&
   CGO_ENABLED=0 go build -o "$work/image/envoy-listener" ./cmd/listener &&
-  CGO_ENABLED=0 go build -o "$work/image/fixturebuckets" ./internal/testnats/cmd/fixturebuckets &&
+  CGO_ENABLED=0 go build -o "$work/fixturebuckets" ./internal/testnats/cmd/fixturebuckets &&
   CGO_ENABLED=0 go build -o "$work/image/nats-server" github.com/nats-io/nats-server/v2) ||
   fail "go build of the listener, fixturebuckets or nats-server failed"
 cat >"$work/image/Dockerfile" <<'EOF'
@@ -335,7 +335,7 @@ until port=$(sed -n 's/^Forwarding from 127\.0\.0\.1:\([0-9]*\) -> 4222$/\1/p' "
   [ $SECONDS -lt $deadline ] || fail "the port-forward to the NATS server never listened: $(cat "$work/port-forward.log")"
   sleep 1
 done
-"$work/image/fixturebuckets" -url "nats://operator:$operator_password@127.0.0.1:$port" ||
+"$work/fixturebuckets" -url "nats://operator:$operator_password@127.0.0.1:$port" ||
   fail "fixturebuckets could not provision the NATS server"
 note "the NATS server holds the buckets a listener copies"
 pass

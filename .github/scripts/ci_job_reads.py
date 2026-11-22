@@ -1018,8 +1018,8 @@ RULES = {
     f"{INFRA}/consumernames/mixedbuild_harness_test.go": [
         run(ENVOY, ["./cmd/listener"], "infra/consumernames/mixedbuild_harness_test.go:94 mixedBuildCurrentListener builds . in ../../cmd/listener (root go.work)", mode="build")],
     f"{INFRA}/consumernames/mixedbuild_modes_test.go": [
-        run(ENVOY, ["./cmd/listener"], "infra/consumernames/mixedbuild_modes_test.go:191 mixedBuildStartOnlyListener builds . in ../../cmd/listener "
-            "with an -overlay of ../../internal/bus/session_fresh.go (:177), which that closure holds (root go.work)", mode="build")],
+        run(ENVOY, ["./cmd/listener"], "infra/consumernames/mixedbuild_modes_test.go:194 mixedBuildStartOnlyListener builds . in ../../cmd/listener "
+            "with an -overlay of ../../cmd/listener/consumer_naming.go (:181, read at :182), which that closure holds (root go.work)", mode="build")],
     # The stores' migrations each harness applies (migratedDatabase os.ReadFile, and the t7 stack's
     # database), read through `..` from the test's own directory.
     f"{INFRA}/consumernames/harness_test.go": reads(

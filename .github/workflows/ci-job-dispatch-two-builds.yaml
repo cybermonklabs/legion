@@ -186,11 +186,13 @@ jobs:
           pattern=$(../../.github/scripts/go-tagged-tests.sh twobuild ./cmd/dispatch)
           go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
-      # The consumer-names cutover's mixed-build rows (packages/envoy/infra/consumernames,
-      # mixedbuild_*_test.go): the previous build's envoy-listener, which build-dispatch-build.sh
-      # builds beside its server, on the writer hold's stack, whose broker routes need
-      # BROKER_TEST_DATABASE_URL (holdtest). Only what the twobuild tag adds there, by the same
-      # lister as the step above. go test reports a skipped test as a pass, so a row that skipped
+      # The consumer-names cutover's mixed-build rows (packages/envoy/infra/consumernames, the test
+      # files whose constraint is `twobuild` alone: mixedbuild_*_test.go but the untagged
+      # mixedbuild_stack_test.go, and restore_previous_build_test.go): the previous build's
+      # envoy-listener, which build-dispatch-build.sh builds beside its server, on the writer hold's
+      # stack, whose broker routes need BROKER_TEST_DATABASE_URL (holdtest). Only what the twobuild
+      # tag adds there, by the same lister as the step above. go test reports a skipped test as a
+      # pass, so a row that skipped
       # (an unset variable, a build without the listener) fails the step by name. A step that names
       # no shell runs as `bash -e`, with no pipefail, so `set -o pipefail` is what makes a failed
       # go test fail the step through its `tee`.
