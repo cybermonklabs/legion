@@ -352,8 +352,19 @@ func listedNames(t *testing.T, dir string) []string {
 }
 
 // removeWhileFilling removes held's entry while a writer creates names in filling, a directory
-// under it, as fast as it can, and answers the removal. A removal that has not answered within
-// the bound fails the case.
+// under it, as fast as it can, and answers the removal. The writer runs until the removal answers:
+// the question is whether the removal ends while something keeps writing, and its passes are
+// finite, so the answer must not ride on a span its share of a loaded machine's CPUs decides (a
+// fixed 30 s once failed a correct removal under 32 pinned hogs). The wait for the answer is a hang
+// guard, beforeDeadline: a removal with no bound on its passes chases the writer until it ends,
+// and fails the case there, on a line that names the guard.
+//
+// Once the guard has fired and the writer stopped, the removal still has to delete what the writer
+// got ahead by before it can answer, which grows with the time the writer ran. The case waits for
+// that until cleanupBeforeDeadline at most, then fails, so its line comes before the binary's
+// alarm however long the writer ran. The removal works on a descriptor of its own, a duplicate of
+// held's that it closes when it answers, so a removal still running after the case has closed held
+// reaches no descriptor the number is reused for.
 func removeWhileFilling(t *testing.T, held *os.File, filling string) error {
 	t.Helper()
 	// The writer creates names until it is told to stop, as fast as it can: a removal that read
@@ -378,23 +389,38 @@ func removeWhileFilling(t *testing.T, held *os.File, filling string) error {
 		return err == nil && len(names) >= 100
 	})
 
+	fd, err := unix.Dup(int(held.Fd()))
+	if err != nil {
+		close(stop)
+		<-stopped
+		t.Fatalf("a descriptor of the removal's own on the entry's directory: %v", err)
+	}
+	own := os.NewFile(uintptr(fd), held.Name())
 	answered := make(chan error, 1)
-	go func() { answered <- removeEntryAt(held, "entry", make([]byte, volumeRemovalNamesBytes)) }()
-	// 30 s is part of the claim, not a hang guard: it is how long the writer runs, so a removal
-	// that never stops its passes fails here with this line (beforeDeadline).
-	bound := testwait.Bounded(t, 30*time.Second, 5*time.Second)
+	go func() {
+		removal := removeEntryAt(own, "entry", make([]byte, volumeRemovalNamesBytes))
+		_ = own.Close()
+		answered <- removal
+	}()
+	guard := beforeDeadline(t)
 	select {
 	case removal := <-answered:
 		close(stop)
 		<-stopped
 		return removal
-	case <-time.After(bound):
-		close(stop)
-		<-stopped
-		<-answered // the writer has stopped, so the removal now runs out of names
-		t.Fatalf("the removal had not answered %v after it began, with a writer still creating names in the directory it was emptying", bound)
-		return nil
+	case <-time.After(guard):
 	}
+	close(stop)
+	<-stopped
+	began := time.Now()
+	drained := "had not answered when the case gave up on it, at cleanupBeforeDeadline"
+	select {
+	case removal := <-answered:
+		drained = fmt.Sprintf("answered %v %v after the writer stopped", removal, time.Since(began).Round(time.Millisecond))
+	case <-time.After(cleanupBeforeDeadline(t)):
+	}
+	t.Fatalf("the removal had not answered %v after it began, to 30 s before the test binary's deadline, with a writer still creating names in the directory it was emptying: a removal with no bound on its passes; it %s", guard.Round(time.Second), drained)
+	return nil
 }
 
 // A removal that fails deep in a tree answers an error that names the entry, the name that

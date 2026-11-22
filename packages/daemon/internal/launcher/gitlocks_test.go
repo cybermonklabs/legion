@@ -281,12 +281,12 @@ func newGatedProc(t *testing.T, pids ...int) *gatedProc {
 //
 // Not hang guards, so not bounded by it: a span that is part of a case's claim, or an answer a
 // re-entered process prints and then goes on from. These are the race cases' two-minute search
-// budget (raceSwaps); the racer's 30 s (raceTheSwap's deadline) and removeWhileFilling's 30 s, each
-// of which also sets how long a load generator runs, so a removal that never stops its passes fails
-// with the case's own line rather than at the binary's timeout; the role-drain bounds handed to
-// role-init (roleDrainStaysBound); and the role's minute for a detached process, to report its trap
-// to the agent and to be gone for the stage (detachedGoneWithin), whose answers must leave the stage
-// its time for the generations after it.
+// budget (raceSwaps); the racer's 30 s (raceTheSwap's deadline), which also sets how long the racer
+// keeps swapping; the role-drain bounds handed to role-init (roleDrainStaysBound); and the role's
+// minute for a detached process, to report its trap to the agent and to be gone for the stage
+// (detachedGoneWithin), whose answers must leave the stage its time for the generations after it.
+// removeWhileFilling's writer is no span at all: it runs until the removal answers, and only the
+// wait for that answer is bounded, by beforeDeadline.
 func beforeDeadline(t *testing.T) time.Duration {
 	t.Helper()
 	return testwait.Remaining(t)
