@@ -8,7 +8,7 @@ import (
 
 // ENVOY_VERDICT_APP_ID leaves out of the CI record the check suites of that App alone, in any
 // state: another App's suite reaches the CI recorder whether it is queued or failed, so it holds
-// the head or fails it as before, and with the setting unset every suite does.
+// the head until it completes, as before, and with the setting unset every suite does.
 func TestTheVerdictAppSettingLeavesOutOnlyThatAppsSuites(t *testing.T) {
 	suite := func(id, app int, status, conclusion string) []byte {
 		return fmt.Appendf(nil, `{
