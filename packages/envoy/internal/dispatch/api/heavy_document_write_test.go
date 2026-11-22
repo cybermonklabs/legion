@@ -43,7 +43,7 @@ func heavyWrites() []heavyWrite {
 // holding each to a second of wall clock as well (heavy-document-writes.e2e.ts,
 // nested-directive.e2e.ts). Nothing here reads a clock: two wall times a shared CI runner took
 // cannot separate a regression from the runner's own noise (INFRA-1013, INFRA-985). What the
-// bodies cost is counted in pmdoc's steps of its own work and the bytes its parse allocates
+// bodies cost is counted in the statements pmdoc's parse executes and the bytes it allocates
 // (TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinTheirStepsAndBytesPerCharacter) and
 // measured by BenchmarkHeavyDocumentWrite beside this file; what a writer is answered is gated
 // here.

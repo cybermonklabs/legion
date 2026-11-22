@@ -1,9 +1,14 @@
 package pmdoc
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -28,19 +33,23 @@ import (
 // this package cannot be imported (INFRA-1404).
 //
 // Each shape is asserted four ways: the verdict a write of it gets; the work the parse does on it,
-// no more than a bound for each of its characters (parseStepsPerCharacter, parseBytesPerCharacter);
-// and, for every stored shape, growth of that work in proportion to its length, counted at an
-// eighth of what it grows to and then at the whole of it (workGrowsLinearly, below) - of the parse
-// alone, and of the parse, the write of the document a write makes of the body and its encode
-// together.
+// no more than a bound for each of its characters (parseStatementsPerCharacter,
+// parseBytesPerCharacter); and, for every stored shape, growth of that work in proportion to its
+// length, counted at an eighth of what it grows to and then at the whole of it
+// (workGrowsLinearly, below) - of the parse alone, and of the parse, the write of the document a
+// write makes of the body and its encode together.
 //
 // The work is two counts, which no load on the machine, no race detector and no collection moves:
-// the steps the parse and the write take (ParseWork and UpdateWork, work.go), each a line, a
-// character, a run, a node, an event or a fragment item they read, and the bytes the call
-// allocates on the heap (workOf). The parse costs that grew with the square of a body's length
-// before grew in the steps (linear_test.go holds the shapes that did), and a call that allocates
-// without bound grows the bytes wherever in the call it does so, ygo's encode and goldmark's own
-// code included, which count no steps.
+//
+//   - The statements the call executes in this package, in ygo and in goldmark's parser, text,
+//     util and ast packages (countedPackages): each counted by the coverage counters `go test
+//     -cover` puts in those packages, in a build of this package's tests that runs one call
+//     (countedRun). Every loop of those packages counts each of its turns, and every walk each of
+//     its nodes, so work that grows with the square of a body's length grows here wherever in
+//     them it is done: goldmark's walk of a link label for a link inside it as much as pmdoc's
+//     own reading of list spreads or ygo's walk of a fragment to an index.
+//   - The bytes the call allocates on the heap (workOf), which reach allocation anywhere in the
+//     call, the packages no counter is built into among them.
 //
 // The Playwright spec that wrote eight of these nine shapes through the API held each write to a
 // second and to nothing about its growth: a ratio between two wall times a shared CI runner took,
@@ -57,25 +66,24 @@ import (
 //
 // What the counts do not hold:
 //
-//   - CPU time that grows with no step counted and no byte allocated. The tab-indentation check
-//     each open block runs on each line (tabIndented) is such a cost: asked of the whole source
-//     each time rather than read from the parse's context (tabFree), it took the 49-deep shapes
-//     1.7 s of CPU time each at the cap against 0.3 to 0.4 s, which the one-second budget this
-//     file held failed and these counts pass. So would a read of the kernel's randomness for each
-//     block id (blockIDEntropy), or any scan by code that counts no step.
-//   - The run of brackets in its steps: goldmark's link parser reads it, and counts none (17 for
-//     the whole run). Its bytes hold it here, and the walk of it that once grew with the square of
-//     the run is held by its nodes (TestARunOfBracketsTheirClosersTurnBackIntoTextIsOneText).
+//   - Work inside a call into a package no counter is built into, which counts as the one
+//     statement that calls it: the standard library (a bytes.IndexByte over the whole source is
+//     one statement), and goldmark's extension package, whose counters change what it reads (with
+//     them, 22 more of the fixture texts are refused and one read panics in lazyTableRows). The
+//     one scan of the whole source a parse makes, whether it holds a tab, is read in runs of 64
+//     bytes for that reason (holdsTab, lines.go).
 //   - Bytes that grow with the square of a body while they are still few beside the parse's own:
 //     the parse allocates hundreds to thousands of bytes a character, so a growth past linearSlack
 //     shows only once such bytes at an eighth of the cap pass about two fifths of the parse's own
 //     there (countGrowthVerdict's bound), and past parseBytesPerCharacter only once they pass it.
+//
+// The counted build reads the packages it counts from their files on disk: a coverage build does
+// not apply -overlay to the packages it puts counters in (go 1.27.3), so a change made through an
+// overlay reaches the verdicts and the bytes here and not the statements. Make it in the tree.
 
-// Every shape at the block bound is stored or refused as it is, and the parse of it takes no more
-// than parseStepsPerCharacter steps and allocates no more than parseBytesPerCharacter bytes for
-// each of its characters: counts linear in the body. A parse that walked a list's events back to
-// its start for each item it opened took the plain list 192 million steps, 30 times its bound, and
-// one that copied them for each item allocated 6.3 GB, 3 times its bound.
+// Every shape at the block bound is stored or refused as it is, and the parse of it executes no
+// more than parseStatementsPerCharacter statements and allocates no more than
+// parseBytesPerCharacter bytes for each of its characters: counts linear in the body.
 func TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinTheirStepsAndBytesPerCharacter(t *testing.T) {
 	// The shapes spell their refusals with heavybodies.MaxNesting, which is this package's own
 	// maxNesting copied: heavybodies may not import pmdoc, since this test is in-package, so the
@@ -83,47 +91,45 @@ func TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinTheirStepsAndBytesPerCh
 	if heavybodies.MaxNesting != maxNesting {
 		t.Fatalf("heavybodies.MaxNesting = %d, want pmdoc's maxNesting %d", heavybodies.MaxNesting, maxNesting)
 	}
+	counted := newCountedRun(t)
 	for _, shape := range heavybodies.Shapes() {
 		t.Run(shape.Name, func(t *testing.T) {
-			body := shape.Grow()
-			if len(body) > heavybodies.BlockCap {
-				t.Fatalf("%s is %d characters, past the %d one block may hold", shape.Name, len(body), heavybodies.BlockCap)
+			if len(shape.Grow()) > heavybodies.BlockCap {
+				t.Fatalf("%s is %d characters, past the %d one block may hold", shape.Name, len(shape.Grow()), heavybodies.BlockCap)
 			}
-			var err error
-			work := workOf(t, "parsing "+shape.Name, func() { _, err = ParseForWrite(body, nil) })
+			op := heavyOp{mode: "parse", shape: shape.Name, size: shape.Grown}
+			work, outcome := counted.work(t, op)
 			if shape.Refusal == "" {
-				if err != nil {
-					t.Fatalf("%s: %v, want it stored", shape.Name, err)
+				if outcome.err != nil {
+					t.Fatalf("%s: %v, want it stored", shape.Name, outcome.err)
 				}
-			} else if !errors.Is(err, ErrSchema) || !strings.Contains(err.Error(), shape.Refusal) {
-				t.Fatalf("%s: %v, want ErrSchema saying %q", shape.Name, err, shape.Refusal)
+			} else if !errors.Is(outcome.err, ErrSchema) || !strings.Contains(outcome.err.Error(), shape.Refusal) {
+				t.Fatalf("%s: %v, want ErrSchema saying %q", shape.Name, outcome.err, shape.Refusal)
 			}
-			characters := uint64(len(body))
-			steps, bytes := parseStepsPerCharacter*characters, parseBytesPerCharacter*characters
-			t.Logf("%s: %d characters in %d steps of the parse (at most %d) and %d bytes allocated (at most %d)",
-				shape.Name, len(body), work.steps, steps, work.bytes, bytes)
-			if work.steps > steps {
-				t.Errorf("%s: the parse took %d steps for a body of %d characters, past the %d allowed (%d a character) to a parse linear in its body",
-					shape.Name, work.steps, len(body), steps, parseStepsPerCharacter)
+			characters := uint64(outcome.characters)
+			statements, bytes := parseStatementsPerCharacter*characters, parseBytesPerCharacter*characters
+			t.Logf("%s: %d characters in %d statements of the parse (at most %d) and %d bytes allocated (at most %d)",
+				shape.Name, outcome.characters, work.steps, statements, work.bytes, bytes)
+			if work.steps > statements {
+				t.Errorf("%s: the parse executed %d statements for a body of %d characters, past the %d allowed (%d a character) to a parse linear in its body",
+					shape.Name, work.steps, outcome.characters, statements, parseStatementsPerCharacter)
 			}
 			if work.bytes > bytes {
 				t.Errorf("%s: the parse allocated %d bytes for a body of %d characters, past the %d allowed (%d a character) to a parse linear in its body",
-					shape.Name, work.bytes, len(body), bytes, parseBytesPerCharacter)
+					shape.Name, work.bytes, outcome.characters, bytes, parseBytesPerCharacter)
 			}
 		})
 	}
 }
 
-// parseStepsPerCharacter is how many steps (ParseWork) the parse may take for each character of a
-// heavy body. Every step is a line, a character or a run the parse reads, or a node or an event
-// it walks, and a parse that reads each once takes a few for each character for each of the
-// containers open around it, which maxNesting bounds: a list's spread is read over the events of
-// every list it holds as well as its own (prepareList). At the cap the shapes that leave 49 lists
-// open over thousands of blank lines took 93 and 100 steps a character, the plain list 7, the
-// quote and the list item followed by unmarked lines 4.5 and 5.5, and the run of brackets and the
-// three refused shapes 2 or fewer. A parse that read a body's lines again for each line it read
-// would take thousands a character at these lengths.
-const parseStepsPerCharacter = 2 * maxNesting
+// parseStatementsPerCharacter is how many statements (countedRun) the parse may execute for each
+// character of a heavy body. A parse that reads each piece of its input a few times executes some
+// tens of statements for it for each of the containers open around it, which maxNesting bounds:
+// at the cap the shapes that leave 49 lists open over thousands of blank lines executed 8,855 and
+// 9,514 statements a character, the 100 items nested the same way 5,730 before their refusal,
+// the run of brackets 2,480, the plain list 1,510, and the others 673 or fewer. 200 for each
+// container maxNesting allows is about twice the most.
+const parseStatementsPerCharacter = 200 * maxNesting
 
 // parseBytesPerCharacter is how many bytes the parse may allocate on the heap for each character
 // of a heavy body (workOf). At the cap the shapes that leave 49 lists open over thousands of blank
@@ -137,10 +143,11 @@ const parseStepsPerCharacter = 2 * maxNesting
 const parseBytesPerCharacter = 64 << 10
 
 // Every shape a write stores parses in work proportional to its length, counted at an eighth of
-// what the shape grows and then at the whole of it: a shape whose steps or allocations grew with
-// the square of its length would grow growthStep² times where a linear one may grow
+// what the shape grows and then at the whole of it: a shape whose statements or allocations grew
+// with the square of its length would grow growthStep² times where a linear one may grow
 // linearSlack*growthStep (growthStep, linear_test.go).
 func TestHeavyBodiesAtTheBlockCapParseInWorkProportionalToTheirLength(t *testing.T) {
+	counted := newCountedRun(t)
 	for _, shape := range heavybodies.Shapes() {
 		if shape.Refusal != "" {
 			continue
@@ -148,11 +155,9 @@ func TestHeavyBodiesAtTheBlockCapParseInWorkProportionalToTheirLength(t *testing
 		t.Run(shape.Name, func(t *testing.T) {
 			sizes := []int{shape.Grown / growthStep, shape.Grown}
 			workGrowsLinearly(t, "parsing "+shape.Name, sizes, linearSlack, func(size int) callWork {
-				body := shape.Body(size)
-				var err error
-				work := workOf(t, "parsing "+shape.Name, func() { _, err = ParseForWrite(body, nil) })
-				if err != nil {
-					t.Fatalf("parsing %d characters of %s: %v", size, shape.Name, err)
+				work, outcome := counted.work(t, heavyOp{mode: "parse", shape: shape.Name, size: size})
+				if outcome.err != nil {
+					t.Fatalf("parsing %d characters of %s: %v", size, shape.Name, outcome.err)
 				}
 				return work
 			})
@@ -167,12 +172,9 @@ func TestHeavyBodiesAtTheBlockCapParseInWorkProportionalToTheirLength(t *testing
 // (parseReplacing and encodeDocumentTree, internal/dispatch/docs/tree.go). The parse is the part
 // that has grown quadratically before (linear_test.go holds the shapes that did), and the write and
 // the encode are counted beside it because they are the rest of what an API write does with a
-// body, which the end-to-end bound this test replaced used to cover (INFRA-985): the write in its
-// steps (UpdateWork) and its bytes, the encode, which is ygo's and counts no steps, in its bytes.
-//
-// Each size gets a document of its own, since a write changes the document it writes into, and
-// the body it writes and the document are built before the count starts.
+// body, which the end-to-end bound this test replaced used to cover (INFRA-985).
 func TestHeavyBodiesAtTheBodyCapParseAndEncodeInWorkProportionalToTheirLength(t *testing.T) {
+	counted := newCountedRun(t)
 	for _, shape := range heavybodies.Shapes() {
 		if shape.Refusal != "" {
 			continue
@@ -180,30 +182,11 @@ func TestHeavyBodiesAtTheBodyCapParseAndEncodeInWorkProportionalToTheirLength(t 
 		t.Run(shape.Name, func(t *testing.T) {
 			sizes := []int{shape.Grown / growthStep, shape.Grown}
 			workGrowsLinearly(t, "writing "+shape.Name, sizes, linearSlack, func(size int) callWork {
-				body := shape.Body(size)
-				// "prosemirror" is the fragment the document service writes a document's blocks
-				// into (fragmentName, internal/dispatch/docs/tree.go).
-				doc := crdt.New()
-				fragment := doc.GetXmlFragment("prosemirror")
-				var err error
-				var update []byte
-				work := workOf(t, "writing "+shape.Name, func() {
-					tree, parseErr := ParseForWrite(body, nil)
-					if parseErr != nil {
-						err = parseErr
-						return
-					}
-					if err = doc.TransactE(func(txn *crdt.Transaction) error {
-						return Update(txn, fragment, tree)
-					}); err != nil {
-						return
-					}
-					update = crdt.EncodeStateAsUpdateV1(doc, nil)
-				})
-				if err != nil {
-					t.Fatalf("writing %d characters of %s: %v", size, shape.Name, err)
+				work, outcome := counted.work(t, heavyOp{mode: "write", shape: shape.Name, size: size})
+				if outcome.err != nil {
+					t.Fatalf("writing %d characters of %s: %v", size, shape.Name, outcome.err)
 				}
-				if len(update) == 0 {
+				if outcome.encoded == 0 {
 					t.Fatalf("writing %d characters of %s encoded no update", size, shape.Name)
 				}
 				return work
@@ -212,22 +195,233 @@ func TestHeavyBodiesAtTheBodyCapParseAndEncodeInWorkProportionalToTheirLength(t 
 	}
 }
 
+// heavyOp is one call the rows count: the parse a write makes of a shape at a size ("parse"), that
+// parse and the write of its tree into a fresh document, encoded ("write"), or nothing ("none"),
+// the count of which is what a run of the counted build costs before any call.
+type heavyOp struct {
+	mode, shape string
+	size        int
+}
+
+// String is how an op is handed to the counted build's helper (countedHelperEnv).
+func (op heavyOp) String() string { return fmt.Sprintf("%s|%s|%d", op.mode, op.shape, op.size) }
+
+func parseHeavyOp(text string) (heavyOp, error) {
+	parts := strings.Split(text, "|")
+	if len(parts) != 3 {
+		return heavyOp{}, fmt.Errorf("%q is not mode|shape|size", text)
+	}
+	size, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return heavyOp{}, fmt.Errorf("%q: %w", text, err)
+	}
+	return heavyOp{mode: parts[0], shape: parts[1], size: size}, nil
+}
+
+// heavyOutcome is what a call answered: the parse's error, the characters it read, and the length
+// of the update a write encoded.
+type heavyOutcome struct {
+	err        error
+	characters int
+	encoded    int
+}
+
+// prepare builds op's input - the body, and for a write the document it writes into - and returns
+// the call itself, so that a count taken around the call takes none of its input.
+func (op heavyOp) prepare() (call func() heavyOutcome, err error) {
+	if op.mode == "none" {
+		return func() heavyOutcome { return heavyOutcome{} }, nil
+	}
+	var body string
+	for _, shape := range heavybodies.Shapes() {
+		if shape.Name == op.shape {
+			body = shape.Body(op.size)
+		}
+	}
+	if body == "" {
+		return nil, fmt.Errorf("no shape %q", op.shape)
+	}
+	switch op.mode {
+	case "parse":
+		return func() heavyOutcome {
+			_, err := ParseForWrite(body, nil)
+			return heavyOutcome{err: err, characters: len(body)}
+		}, nil
+	case "write":
+		// "prosemirror" is the fragment the document service writes a document's blocks into
+		// (fragmentName, internal/dispatch/docs/tree.go).
+		doc := crdt.New()
+		fragment := doc.GetXmlFragment("prosemirror")
+		return func() heavyOutcome {
+			outcome := heavyOutcome{characters: len(body)}
+			tree, err := ParseForWrite(body, nil)
+			if err == nil {
+				err = doc.TransactE(func(txn *crdt.Transaction) error { return Update(txn, fragment, tree) })
+			}
+			if outcome.err = err; err == nil {
+				outcome.encoded = len(crdt.EncodeStateAsUpdateV1(doc, nil))
+			}
+			return outcome
+		}, nil
+	}
+	return nil, fmt.Errorf("no mode %q", op.mode)
+}
+
+// countedPackages are the packages whose statements the rows count: this one, ygo, which writes
+// and encodes the document, and the goldmark packages the parse runs in. goldmark's extension
+// package is left out: built with counters, it reads differently (the header has the measure).
+var countedPackages = []string{
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc",
+	"github.com/reearth/ygo/...",
+	"github.com/yuin/goldmark",
+	"github.com/yuin/goldmark/ast",
+	"github.com/yuin/goldmark/parser",
+	"github.com/yuin/goldmark/text",
+	"github.com/yuin/goldmark/util",
+}
+
+const (
+	// countedHelperEnv hands the counted build's helper the op it runs (heavyOp.String).
+	countedHelperEnv = "PMDOC_HEAVY_COUNTED_OP"
+	// countedHelperRan is what the helper logs once it has run its op, so a run of the build that
+	// ran no op is refused rather than read as one that executed nothing.
+	countedHelperRan = "counted op ran: "
+)
+
+// countedRun is a build of this package's tests with coverage counters in countedPackages
+// (`go test -c -cover`), made once for a test, and the statements a run of it executes before any
+// op (baseline): the package's initialisation, which every run repeats.
+type countedRun struct {
+	binary, dir string
+	baseline    uint64
+}
+
+// newCountedRun builds the counted binary into t's temporary directory and counts its baseline.
+// The build reads the same packages this package's own test build does, with counters in some.
+func newCountedRun(t *testing.T) *countedRun {
+	t.Helper()
+	dir := t.TempDir()
+	run := &countedRun{binary: filepath.Join(dir, "counted.test"), dir: dir}
+	build := exec.Command("go", "test", "-c", "-o", run.binary, "-covermode=count",
+		"-coverpkg="+strings.Join(countedPackages, ","), ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building this package's tests with coverage counters: %v\n%s", err, out)
+	}
+	run.baseline = run.statements(t, heavyOp{mode: "none"})
+	if run.baseline == 0 {
+		t.Fatal("the counted build executed no statement before any op: its counters count nothing, so no count from it says anything")
+	}
+	return run
+}
+
+// statements is how many statements of countedPackages one run of op executes in the counted
+// build, less the baseline: the run's coverage profile, each block's statements times its count.
+func (r *countedRun) statements(t *testing.T, op heavyOp) uint64 {
+	t.Helper()
+	profile, err := os.CreateTemp(r.dir, "profile-*.out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = profile.Close()
+	child := exec.Command(r.binary, "-test.run", "^TestHeavyBodiesCountedHelper$", "-test.count=1", "-test.v",
+		"-test.coverprofile="+profile.Name())
+	child.Env = append(os.Environ(), countedHelperEnv+"="+op.String())
+	out, err := child.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), countedHelperRan+op.String()) {
+		t.Fatalf("the counted build did not run %s (%v):\n%s", op, err, out)
+	}
+	total, err := profileStatements(profile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.mode == "none" {
+		return total
+	}
+	if total < r.baseline {
+		t.Fatalf("%s executed %d statements, fewer than the %d every run executes before its op", op, total, r.baseline)
+	}
+	return total - r.baseline
+}
+
+// profileStatements is the statements a coverage profile counts: each block's statements times
+// the times it ran.
+func profileStatements(path string) (uint64, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+	var total uint64
+	lines := bufio.NewScanner(file)
+	for lines.Scan() {
+		line := lines.Text()
+		if strings.HasPrefix(line, "mode:") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 3 {
+			return 0, fmt.Errorf("%s: a line of three fields wanted, got %q", path, line)
+		}
+		statements, err := strconv.ParseUint(fields[1], 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("%s: %q: %w", path, line, err)
+		}
+		count, err := strconv.ParseUint(fields[2], 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("%s: %q: %w", path, line, err)
+		}
+		total += statements * count
+	}
+	return total, lines.Err()
+}
+
+// work is op's two counts: its statements in the counted build, and the bytes it allocates here,
+// run here once more for its outcome.
+func (r *countedRun) work(t *testing.T, op heavyOp) (callWork, heavyOutcome) {
+	t.Helper()
+	call, err := op.prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outcome heavyOutcome
+	work := workOf(t, op.String(), func() { outcome = call() })
+	work.steps = r.statements(t, op)
+	return work, outcome
+}
+
+// TestHeavyBodiesCountedHelper is the run of the counted build the rows count: it prepares the op
+// countedHelperEnv names, runs it once, and logs countedHelperRan with it.
+func TestHeavyBodiesCountedHelper(t *testing.T) {
+	text := os.Getenv(countedHelperEnv)
+	if text == "" {
+		t.Skip("the child process the heavy-bodies rows count statements in")
+	}
+	op, err := parseHeavyOp(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call, err := op.prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	call()
+	t.Log(countedHelperRan + op.String())
+}
+
 // callWork is what one call costs in the two counts this file holds a parse and a write to: the
-// steps the package counts of its own work (ParseWork and UpdateWork, work.go) and the bytes the
-// call allocates on the heap.
+// statements it executes in countedPackages and the bytes it allocates on the heap.
 type callWork struct {
 	steps, bytes uint64
 }
 
-// workOf is the work op does, labelled what: the steps ParseWork and UpdateWork count and the bytes
-// runtime.MemStats.TotalAlloc counts between a reading before op and one after it. ReadMemStats
-// stops the world and flushes every processor's cache of spans before it reads, so the bytes are
-// every allocation made between the two readings, whether or not a collection ran between them.
-// The steps are the same in every run of a body. The bytes are too but for what sync.Pool hands
-// back: a collection empties it, and a race build drops a quarter of what is put back, so a pooled
-// object is made again (parseBytesPerCharacter has the measure).
+// workOf is the bytes op allocates, labelled what: runtime.MemStats.TotalAlloc between a reading
+// before op and one after it. ReadMemStats stops the world and flushes every processor's cache of
+// spans before it reads, so the bytes are every allocation made between the two readings, whether
+// or not a collection ran between them. They are the same in every run of a call but for what
+// sync.Pool hands back: a collection empties it, and a race build drops a quarter of what is put
+// back, so a pooled object is made again (parseBytesPerCharacter has the measure).
 //
-// Both counts are the process's, so nothing else may run beside op: no test in this package calls
+// The bytes are the process's, so nothing else may run beside op: no test in this package calls
 // t.Parallel, and a timed call of linear_test.go still running past its deadline (leakedCallGuard)
 // fails t before op runs.
 func workOf(t *testing.T, what string, op func()) callWork {
@@ -236,15 +430,14 @@ func workOf(t *testing.T, what string, op func()) callWork {
 		t.Fatal(leaking)
 	}
 	var before, after runtime.MemStats
-	steps := ParseWork() + UpdateWork()
 	runtime.ReadMemStats(&before)
 	op()
 	runtime.ReadMemStats(&after)
-	return callWork{steps: ParseWork() + UpdateWork() - steps, bytes: after.TotalAlloc - before.TotalAlloc}
+	return callWork{bytes: after.TotalAlloc - before.TotalAlloc}
 }
 
 // workGrowsLinearly counts the work measure does at each of sizes in turn, once each, since a
-// count is the work itself and needs no sample, and fails t at the first size whose steps or
+// count is the work itself and needs no sample, and fails t at the first size whose statements or
 // whose bytes grew more than allowance times faster than the size did (countGrowthVerdict).
 func workGrowsLinearly(t *testing.T, what string, sizes []int, allowance int, measure func(size int) callWork) {
 	t.Helper()
@@ -256,7 +449,7 @@ func workGrowsLinearly(t *testing.T, what string, sizes []int, allowance int, me
 		unit string
 		of   func(callWork) uint64
 	}{
-		{"steps", func(w callWork) uint64 { return w.steps }},
+		{"statements", func(w callWork) uint64 { return w.steps }},
 		{"bytes allocated", func(w callWork) uint64 { return w.bytes }},
 	} {
 		counts := make([]uint64, len(works))
@@ -321,7 +514,7 @@ func TestCountGrowthVerdictCatchesQuadraticWorkAndRefusesACountOfNone(t *testing
 		{"quadratic work", []uint64{quadratic(sizes[0]), quadratic(sizes[1])}, 0},
 		{"no work counted", []uint64{0, linear(sizes[1])}, 0},
 	} {
-		failedStep, lines := countGrowthVerdict(sizes, test.counts, linearSlack, "steps")
+		failedStep, lines := countGrowthVerdict(sizes, test.counts, linearSlack, "statements")
 		if failedStep != test.failAt {
 			t.Errorf("%s: failed at step %d, want %d (%s)", test.name, failedStep, test.failAt, strings.Join(lines, "; "))
 		}
