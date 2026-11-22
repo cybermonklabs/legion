@@ -80,6 +80,10 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestArchitectUnchangedByItsCompletionAtAdmitted", "TestADeploymentRoleReportsWithAVerdictAndACommit"}},
 	{file: "internal/api/operator.go", fn: "server.worksPhase"}: {calls: 1, tests: []string{
 		"TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine", "TestTheOperatorRetriesADeploymentRolesClaim"}},
+	// Whether the task the per-issue read judges stands in implementing, for a plan of several tasks:
+	// a running step of that task at implementing, which no step at admitted is.
+	{file: "internal/daemon/issue_reads.go", fn: "issueRecords.implementing"}: {calls: 1, tests: []string{
+		"TestAMissingPullRequestIsOfTheCompletingTask", "TestThePerIssueReadTellsTheArchitectOfAMissingPullRequest"}},
 	{file: "internal/intake/facts.go", fn: "EntryFence"}: {calls: 1, tests: []string{
 		"TestArchitectUnchangedByItsCompletionAtAdmitted", "TestADeploymentRoleReportsWithAVerdictAndACommit",
 		"TestACompletionOfALeftPhaseOfAnEntryRaisedSinceIsRefused"}},

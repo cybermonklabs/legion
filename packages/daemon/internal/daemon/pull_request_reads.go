@@ -87,13 +87,13 @@ func (w *workflowRuntime) followHead(ctx context.Context, github githubrest.Clie
 	return w.openRecord(ctx, pr)
 }
 
-// openRecord is pr's issue's pull request record as it stands now, which must still be pr's and
-// open.
+// openRecord is the pull request record of pr's task (record.PullRequest.Task) as it stands now,
+// which must still be pr's and open.
 func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest) (record.PullRequest, error) {
 	var current *record.PullRequest
 	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
 		var err error
-		current, err = w.records.PullRequest(ctx, tx, pr.Issue)
+		current, err = w.records.PullRequestOfTask(ctx, tx, pr.Issue, pr.Task)
 		return err
 	}); err != nil {
 		return pr, fmt.Errorf("read the pull request record of %s: %w", pr.Issue, err)
