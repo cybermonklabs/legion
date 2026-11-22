@@ -260,13 +260,23 @@ EOF
 # spec under the npm configuration the case sets; that file with `.raw` added is answered as it is,
 # as an npm that answers garbage would. With `--registry=<url>`, each is read from
 # FAKE_ROOT/npm-registries/<url with / and : as _>/ instead. It fails as npm does (E404) when no
-# file names a version, and as an unreachable registry when FAKE_NPM_DOWN=1. `npm exec` (the gate's
-# parse of the marketplace's spec with the npm-package-arg npm ships), and `npm pack` when
-# FAKE_NPM_REAL_PACK=1, run the real npm the harness found when it started, so a case sees what
+# file names a version, and as an unreachable registry when FAKE_NPM_DOWN=1. `npm pack` with
+# FAKE_NPM_REAL_PACK=1 runs the real npm the harness found when it started, so a case sees what
 # the real npm does with a spec. It records each call, the directory it runs in as an `npm-cwd
 # <dir>` line, and each npm_config_ variable it runs with as an `npm-config <name>=<value>` line,
 # so a case sees where the gate runs npm and the configuration it leaves npm; it refuses any other
 # command, and a pack without --dry-run, which would write the tarball.
+#
+# `npm exec --offline --yes=false -c <command>`, the gate's parse of the marketplace's spec, runs
+# <command> through a shell with npm_node_execpath and npm_execpath set to the node npm runs on
+# and npm's own npm-cli.js (@npmcli/config lib/set-envs.js), which is all that command reads of
+# npm: it runs that node on the npm-package-arg npm ships, resolved from npm_execpath's directory,
+# so the parse is npm's own either way. Starting npm's CLI again for two paths the harness already
+# found costs 0.34 u + 0.19 s of CPU a call against 0.05 u + 0.03 s for the command alone
+# (measured on a developer box, npm 10.9.7 on node 22.22.2), about a fifth of a --clients case, so
+# the fake runs the command itself. The harness runs the real `npm exec`, with these same flags,
+# once when it starts: an npm that no longer takes them fails the suite there. A call of any other
+# shape is refused rather than emulated.
 cat >"${temporary_dir}/bin/npm" <<'EOF'
 #!/usr/bin/env bash
 printf 'npm %s\n' "$*" >>"${FAKE_CALLS:?}"
@@ -274,7 +284,12 @@ printf 'npm-cwd %s\n' "$PWD" >>"$FAKE_CALLS"
 env | grep '^npm_config_' | sort | sed 's/^/npm-config /' >>"$FAKE_CALLS"
 if [ "$1" = exec ] || { [ "$1" = pack ] && [ "${FAKE_NPM_REAL_PACK:-0}" = 1 ]; }; then
   mapfile -t real_npm <"$(dirname "$0")/../real-npm"
-  exec "${real_npm[0]}" "${real_npm[1]}" "$@"
+  if [ "$1" != exec ]; then
+    exec "${real_npm[0]}" "${real_npm[1]}" "$@"
+  fi
+  [ "$#" -eq 5 ] && [ "$2" = --offline ] && [ "$3" = --yes=false ] && [ "$4" = -c ] ||
+    { echo "fake npm: unexpected exec: $*" >&2; exit 2; }
+  exec env npm_node_execpath="${real_npm[0]}" npm_execpath="${real_npm[1]}" sh -c "$5"
 fi
 registry=""
 words=()
