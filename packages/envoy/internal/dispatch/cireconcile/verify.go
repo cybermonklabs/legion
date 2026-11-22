@@ -2,9 +2,15 @@ package cireconcile
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 )
 
@@ -14,10 +20,11 @@ const (
 	// before its settlement is published.
 	VerifyInterval = 5 * time.Second
 
-	// VerifyLease names the lease each verify pass runs under, apart from Lease, so a reconcile
-	// pass that takes minutes never holds a verify back. Two processes answering one request would
-	// both be safe -- every write is a compare-and-swap of what GitHub holds, and an answer only
-	// raises VerifiedRev -- but each would read the head from GitHub.
+	// VerifyLease names the lease a verify pass answers its requests under, apart from Lease, so a
+	// reconcile pass that takes minutes never holds a verify back. Two processes answering one
+	// request would both be safe -- every write is a compare-and-swap of what GitHub holds, and an
+	// answer only raises VerifiedRev -- but each would read the head from GitHub. A pass that lists
+	// no request takes no lease at all (Verify).
 	VerifyLease = "ci-verify"
 
 	// verifyRetry is how long the verify loop leaves a request it could not answer before it reads
@@ -25,27 +32,61 @@ const (
 	// seconds would spend the App's budget on it. A request written again, under a revision of its
 	// own, is read at once.
 	verifyRetry = time.Minute
+
+	// verifyMaxFailures is how many failed answers of one settlement episode of a head the verify
+	// loop makes before it gives the episode up (verifyGivenUp): five reads a minute apart is five
+	// minutes of an outage of GitHub or NATS, inside the ten minutes the listener asks for before
+	// it gives the episode up itself (cistore's verifyMaxAsks), so the two ends stop together. A
+	// failure no later read can mend gives up at once (permanentVerifyFailure).
+	verifyMaxFailures = 5
+
+	// verifyForget is how long the verify loop remembers a head it failed on after its last
+	// failure: an hour, past the ten minutes a listener asks for one episode, so a request the
+	// listener writes again after the loop gave up is deleted unread rather than read anew.
+	verifyForget = time.Hour
 )
 
-// verifyFailure is a request the verify loop could not answer, and when it reads that head again.
+// verifyFailure is what the verify loop remembers of a head it could not answer: the settlement
+// episode and the request revision it failed at, how many answers of that episode failed, when it
+// reads the head again, whether it gave the episode up, and when it last failed.
 type verifyFailure struct {
+	episode  uint64
 	revision uint64
+	failures int
 	retryAt  time.Time
+	gaveUp   bool
+	at       time.Time
 }
 
+// errWriteNotLanded is the failure of a verify read whose write of what GitHub answered did not
+// land: record logs the write's own error.
+var errWriteNotLanded = errors.New("the CI store did not take a write of what GitHub answered")
+
 // Verify is one pass of the verify loop (duty.WokenLoop.Pass), and answers when the next is due.
-// It lists the verify requests the CI store holds, each at the revision it holds it (V0), and
-// answers each in turn: it reads the head from GitHub whole -- every page of its check runs and its
-// check suites, and of its commit statuses where the token holds Commit statuses, unconditionally,
-// as the walk reads a head over REST -- writes what it read by the walk's own rules (record), and
-// then writes V0 as the record's VerifiedRev (cistore.Writer.MarkVerified). V0 is read before the
-// GitHub read and is never read again after it, whatever the request's key holds by then, so an
-// answer reaches only requests written before the read began. A read that fails, a listing that
-// does not end within maxPages, and a write that does not land leave VerifiedRev as it was: only a
-// complete answer counts, an empty one included. An answered request is deleted only where the key
-// still holds it at V0 (cistore.Writer.DoneVerifying), so a newer request written meanwhile stays
-// for the next pass. A limit in force on the App's budget, or on the installation's, ends the pass
-// with the requests it has not reached left in place.
+// It lists the verify requests the CI store holds, each at the revision it holds it (V0), with no
+// lease: a pass that lists none takes no lease connection, logs nothing and is done, which is what
+// every pass is while no listener runs with ENVOY_CI_VERIFY on. A pass that lists some answers them
+// under VerifyLease (VerifyLeases; a Reconciler with none, a test's, answers them with no lease).
+//
+// Each answer reads the head from GitHub whole -- every page of its check runs and its check
+// suites, and of its commit statuses where the token holds Commit statuses, unconditionally, as the
+// walk reads a head over REST -- writes what it read by the walk's own rules (record), and then
+// writes V0 as the record's VerifiedRev (cistore.Writer.MarkVerified). V0 is read before the GitHub
+// read and is never read again after it, whatever the request's key holds by then, so an answer
+// reaches only requests written before the read began. A read that fails, a listing that does not
+// end within maxPages, and a write that does not land leave VerifiedRev as it was: only a complete
+// answer counts, an empty one included. A status listing GitHub refuses costs the answer the
+// head's statuses alone, as it costs the walk. A head GitHub still runs a check suite of with runs
+// in it is written but not answered (runningSuite). An answered request is deleted only where the
+// key still holds it at V0 (cistore.Writer.DoneVerifying), so a newer request written meanwhile
+// stays for the next pass. A limit in force on the App's budget ends the pass with the requests it
+// has not reached left in place; a limit on one installation's budget costs that installation's
+// heads alone.
+//
+// A head the loop cannot answer is read again after verifyRetry, and given up after
+// verifyMaxFailures failed answers of one episode, or at once for a failure no later read mends
+// (verifyGivenUp): the loop logs one ERROR naming the head and why, deletes the request at the
+// revision it read, and deletes every later request of that episode unread.
 //
 // Verify touches none of what a reconcile pass remembers (heads, rows, the cursor): it reads
 // GitHub with the Reconciler's collaborators alone, so it runs beside a pass. Only its own record
@@ -63,27 +104,42 @@ func (r *Reconciler) Verify(ctx context.Context) time.Time {
 		r.Logger.Warn("ci verify did not list the verify requests", "error", err)
 		return next
 	}
-	listed := make(map[string]struct{}, len(requests))
-	for _, request := range requests {
-		listed[verifyHeadKey(request.Head)] = struct{}{}
+	r.forgetVerifyFailures()
+	if len(requests) == 0 {
+		return next
 	}
-	for key := range r.verifyFailed {
-		if _, still := listed[key]; !still {
+	answer := func(ctx context.Context) { r.answer(ctx, writer, requests) }
+	if r.VerifyLeases == nil {
+		answer(ctx)
+		return next
+	}
+	duty.Exclusive(ctx, r.VerifyLeases, VerifyLease, time.Time{}, 0, answer)
+	return next
+}
+
+// forgetVerifyFailures drops every failed head whose last failure is verifyForget old.
+func (r *Reconciler) forgetVerifyFailures() {
+	cutoff := r.clock().Add(-verifyForget)
+	for key, failed := range r.verifyFailed {
+		if failed.at.Before(cutoff) {
 			delete(r.verifyFailed, key)
 		}
 	}
+}
+
+// answer answers requests in turn (verify), until the pass's end or a limit on the App's budget.
+func (r *Reconciler) answer(ctx context.Context, writer Writer, requests []contracts.CIVerifyRequest) {
 	for _, request := range requests {
 		if ctx.Err() != nil {
-			return next
+			return
 		}
 		if at := r.limited(ctx, githubapp.AppScope); at != nil {
-			return next
+			return
 		}
 		if !r.verify(ctx, writer, request) {
-			return next
+			return
 		}
 	}
-	return next
 }
 
 // verifyHeadKey is the key a pass remembers head under (pullHead.key).
@@ -92,20 +148,41 @@ func verifyHeadKey(head contracts.CIHead) string {
 }
 
 // verify answers one request (Verify), and reports whether the pass goes on to the next: false
-// when a rate limit stopped it.
+// when a limit on the App's budget stopped it, or the pass ended.
 func (r *Reconciler) verify(ctx context.Context, writer Writer, request contracts.CIVerifyRequest) bool {
 	head, key := request.Head, verifyHeadKey(request.Head)
-	if failed, held := r.verifyFailed[key]; held && failed.revision == request.Revision && time.Now().Before(failed.retryAt) {
+	now := r.clock()
+	failed, held := r.verifyFailed[key]
+	if held && failed.episode != request.Episode {
+		// A new settlement episode of the head is asked afresh, whatever the last one met.
+		held, failed = false, verifyFailure{}
+	}
+	if held && failed.gaveUp {
+		r.doneVerifying(ctx, writer, request)
 		return true
 	}
+	if held && failed.revision == request.Revision && now.Before(failed.retryAt) {
+		return true
+	}
+	fields := []any{"repository", head.Owner + "/" + head.Repo, "pr", head.Number, "sha", head.SHA, "request", request.Revision}
 	fail := func(what string, err error) {
-		remember(&r.verifyFailed, key, verifyFailure{revision: request.Revision, retryAt: time.Now().Add(verifyRetry)})
-		r.Logger.Warn("ci verify did not answer a verify request: "+what,
-			"repository", head.Owner+"/"+head.Repo, "pr", head.Number, "sha", head.SHA, "request", request.Revision, "error", err)
+		failed.episode, failed.revision, failed.at = request.Episode, request.Revision, now
+		failed.failures++
+		failed.retryAt = now.Add(verifyRetry)
+		if verifyGivenUp(failed, err) {
+			failed.gaveUp = true
+			remember(&r.verifyFailed, key, failed)
+			r.Logger.Error("ci verify gave up on a verify request; the head is not announced until a new observation of it",
+				append(fields, "reason", what, "failures", failed.failures, "error", err)...)
+			r.doneVerifying(ctx, writer, request)
+			return
+		}
+		remember(&r.verifyFailed, key, failed)
+		r.Logger.Warn("ci verify did not answer a verify request: "+what, append(fields, "failures", failed.failures, "error", err)...)
 	}
 	token, statuses, err := r.GitHub.RepositoryTokenWithStatuses(ctx, head.Owner, head.Repo)
-	if stopAt(err, githubapp.AppScope) != nil {
-		return false
+	if at := stopAt(err, githubapp.AppScope); at != nil {
+		return at.scope != githubapp.AppScope
 	}
 	if err != nil {
 		fail("no token for the repository", err)
@@ -113,7 +190,7 @@ func (r *Reconciler) verify(ctx context.Context, writer Writer, request contract
 	}
 	scope := r.GitHub.TokenScope(token)
 	if at := r.limited(ctx, scopes(scope)...); at != nil {
-		return false
+		return at.scope != githubapp.AppScope
 	}
 	pull := pullHead{token: token, scope: scope, owner: head.Owner, repo: head.Repo, number: head.Number, sha: head.SHA, statuses: statuses}
 	// A count of the verify's own: the pass's pace and its line are no part of it, and a count
@@ -123,39 +200,16 @@ func (r *Reconciler) verify(ctx context.Context, writer Writer, request contract
 		answer, err := r.GitHub.CommitCheckRuns(ctx, token, pull.owner, pull.repo, pull.sha, page, etag)
 		return objectPage(answer), err
 	})
+	var suites []pageOf[object]
 	if err == nil {
-		var suites []pageOf[object]
 		suites, err = readPages(ctx, r, &c, &c.headRequests, nil, func(ctx context.Context, page int, etag string) (conditionalPage[object], error) {
 			answer, err := r.GitHub.CommitCheckSuites(ctx, token, pull.owner, pull.repo, pull.sha, page, etag)
 			return objectPage(answer), err
 		})
-		var listedStatuses []pageOf[object]
-		if err == nil && statuses {
-			listedStatuses, err = readPages(ctx, r, &c, &c.headRequests, nil, func(ctx context.Context, page int, etag string) (conditionalPage[object], error) {
-				answer, err := r.GitHub.CommitStatuses(ctx, token, pull.owner, pull.repo, pull.sha, page, etag)
-				return objectPage(answer), err
-			})
-		}
-		if err == nil {
-			// The answer is two writes in this order, never one: what GitHub answered (record, by
-			// the walk's rules, the runs in one compare-and-swap), and then V0 as the record's
-			// verified_rev (MarkVerified), written only once the first landed whole. Two ordered
-			// writes are as safe as one: the listener judges readiness on the merged record, the
-			// observations of a complete read are durable before the stamp, any write between or
-			// after only adds observations (which re-arm the record and take the claim's snapshot
-			// away when they change it), and a new settlement episode writes a new request, which
-			// V0 is below. One compare-and-swap conditioned on the record's revision before the
-			// GitHub read would lose to every write of a waiting head, its own claim's refresh
-			// included, and a busy head could wait for ever.
-			if _, _, ok := r.record(ctx, writer, pull, runs, suites, listedStatuses); !ok {
-				fail("a write of what GitHub answered did not land", nil)
-				return true
-			}
-		}
 	}
 	if err != nil {
-		if stopAt(err, scope) != nil {
-			return false
+		if at := stopAt(err, scope); at != nil {
+			return at.scope != githubapp.AppScope
 		}
 		if ctx.Err() != nil {
 			return false
@@ -163,14 +217,116 @@ func (r *Reconciler) verify(ctx context.Context, writer Writer, request contract
 		fail("GitHub's answer for the head was not read whole", err)
 		return true
 	}
-	if _, err := writer.MarkVerified(ctx, head, request.Revision); err != nil {
+	var listedStatuses []pageOf[object]
+	if statuses {
+		listedStatuses, err = readPages(ctx, r, &c, &c.headRequests, nil, func(ctx context.Context, page int, etag string) (conditionalPage[object], error) {
+			answer, err := r.GitHub.CommitStatuses(ctx, token, pull.owner, pull.repo, pull.sha, page, etag)
+			return objectPage(answer), err
+		})
+		if err != nil {
+			if at := stopAt(err, scope); at != nil {
+				return at.scope != githubapp.AppScope
+			}
+			if ctx.Err() != nil {
+				return false
+			}
+			// As in the walk (readStatuses), a status listing GitHub refuses costs the head its
+			// statuses alone: a commit status takes no part in whether a head is ready to settle.
+			r.statusesUnread(ctx, pull, err)
+			listedStatuses = nil
+		}
+	}
+	// The answer is two writes in this order, never one: what GitHub answered (record, by the
+	// walk's rules, the runs in one compare-and-swap), and then V0 as the record's verified_rev
+	// (MarkVerified), written only once the first landed whole. Two ordered writes are as safe as
+	// one: the listener judges readiness on the merged record, the observations of a complete read
+	// are durable before the stamp, any write between or after only adds observations (which
+	// re-arm the record and take the claim's snapshot away when they change it), and a new
+	// settlement episode writes a new request, which V0 is below. One compare-and-swap conditioned
+	// on the record's revision before the GitHub read would lose to every write of a waiting head,
+	// its own claim's refresh included, and a busy head could wait for ever.
+	if _, _, ok := r.record(ctx, writer, pull, runs, suites, listedStatuses); !ok {
+		fail("a write of what GitHub answered did not land", errWriteNotLanded)
+		return true
+	}
+	if suite := runningSuite(suites); suite != "" {
+		// GitHub is still filling the head: a suite with runs in it has not completed, as an
+		// Actions workflow between one job's end and its dependants' runs, which GitHub creates a
+		// moment later. The runs read are written, and no answer is, so the head is not announced
+		// on runs GitHub is about to add to. This is no failure of the read; the head is read
+		// again after verifyRetry, or at once when its request is written again.
+		failed.episode, failed.revision, failed.at = request.Episode, request.Revision, now
+		failed.retryAt = now.Add(verifyRetry)
+		remember(&r.verifyFailed, key, failed)
+		r.Logger.Info("ci verify held its answer: GitHub still runs a check suite of the head", append(fields, "suite", suite)...)
+		return true
+	}
+	if _, err := writer.MarkVerified(ctx, head, request.Revision, request.Stream); err != nil {
 		fail("the answer was not written", err)
 		return true
 	}
 	delete(r.verifyFailed, key)
+	r.doneVerifying(ctx, writer, request)
+	return true
+}
+
+// doneVerifying deletes request where the key still holds it at its revision.
+func (r *Reconciler) doneVerifying(ctx context.Context, writer Writer, request contracts.CIVerifyRequest) {
+	head := request.Head
 	if err := writer.DoneVerifying(ctx, head, request.Revision); err != nil {
-		r.Logger.Warn("ci verify did not delete an answered verify request",
+		r.Logger.Warn("ci verify did not delete a verify request",
 			"repository", head.Owner+"/"+head.Repo, "pr", head.Number, "sha", head.SHA, "request", request.Revision, "error", err)
 	}
-	return true
+}
+
+// verifyGivenUp reports whether failed, whose latest failure is err, ends its episode: it has
+// failed verifyMaxFailures times, or err is one no later read mends (permanentVerifyFailure).
+func verifyGivenUp(failed verifyFailure, err error) bool {
+	return failed.failures >= verifyMaxFailures || permanentVerifyFailure(err)
+}
+
+// permanentVerifyFailure reports whether err is a failure every later read of the head would
+// meet again: the App is not installed on the repository (deleted, or left by the App, after its
+// webhooks), GitHub answers the repository or the commit 404 or 410, a page past githubapp's
+// response limit, a listing that does not end within maxPages, or a write past the record's bound
+// (bus.ErrTooLarge), which the store refuses at every attempt.
+func permanentVerifyFailure(err error) bool {
+	var tooLarge *githubapp.ResponseTooLargeError
+	var status *githubapp.StatusError
+	switch {
+	case errors.Is(err, githubapp.ErrNoInstallation), errors.Is(err, errTooManyPages), errors.Is(err, bus.ErrTooLarge), errors.As(err, &tooLarge):
+		return true
+	case errors.As(err, &status):
+		return status.Status == http.StatusNotFound || status.Status == http.StatusGone
+	}
+	return false
+}
+
+// runningSuite names a check suite of pages that has not completed and has runs in it
+// (latest_check_runs_count above zero), and answers "" when there is none. A suite another App
+// leaves queued with no run of its own holds nothing, as it holds nothing in the walk.
+func runningSuite(pages []pageOf[object]) string {
+	for _, page := range pages {
+		for _, raw := range page.items {
+			if status, _ := raw["status"].(string); status == "" || status == "completed" {
+				continue
+			}
+			if count, ok := jsonCount(raw["latest_check_runs_count"]); ok && count > 0 {
+				return fmt.Sprint(raw["id"])
+			}
+		}
+	}
+	return ""
+}
+
+// jsonCount is a JSON number as a decoded object carries it.
+func jsonCount(value any) (float64, bool) {
+	switch n := value.(type) {
+	case float64:
+		return n, true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	}
+	return 0, false
 }

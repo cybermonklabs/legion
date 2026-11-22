@@ -95,6 +95,7 @@ import (
 	"maps"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
@@ -185,6 +186,11 @@ type Reconciler struct {
 	// repo_projects (resolve). It is a field because that reading inverts api's readers of the
 	// route's path, and package api imports this one. Nil names no repairs.
 	MappingRepairs func(ctx context.Context, row string) []any
+	// VerifyLeases is the lease-pool reservation the verify loop answers its requests under
+	// (Verify, VerifyLease): one of its own, apart from the one the reconcile pass holds its lease
+	// on, since both can be inside a lease at once. Nil answers with no lease, which is a test's
+	// Reconciler.
+	VerifyLeases duty.Leases
 	// now is the clock the answers held in absent are timed by, and time.Now when it is nil,
 	// which is every Reconciler but a test's: a test of how long an answer is held moves its
 	// own clock rather than waiting out AbsentAppRecheck.
@@ -235,10 +241,11 @@ type Reconciler struct {
 	seenRows         map[string]struct{}
 	seenRepositories map[int64]struct{}
 	seenHeads        map[string]struct{}
-	// verifyFailed is the verify requests the verify loop could not answer, by head
-	// (pullHead.key), each with the revision it failed at and when the loop reads that head again
-	// (Verify, verifyRetry). Only Verify touches it, never a pass, and a request the store no
-	// longer lists is forgotten.
+	// verifyFailed is the heads the verify loop could not answer, by head (pullHead.key), each
+	// with the episode and revision it failed at, how often that episode failed, when the loop
+	// reads the head again and whether it gave the episode up (Verify, verifyRetry,
+	// verifyMaxFailures). Only Verify touches it, never a pass, and a head is forgotten
+	// verifyForget after its last failure.
 	verifyFailed map[string]verifyFailure
 }
 

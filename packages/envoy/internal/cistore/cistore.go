@@ -205,11 +205,19 @@ type State struct {
 	// VerifiedRev is the newest revision of this head's verify request (verifyKey) that Dispatch's
 	// CI reconcile answered: it read the request at that revision, then read the head from GitHub
 	// whole, wrote what it read into this record, and then wrote VerifiedRev (Writer.MarkVerified).
-	// It only grows. A listener that asked with ENVOY_CI_VERIFY on publishes only once it is at or
-	// past the revision of its own request (verify.go). Hash takes none of it: an answer moves no
-	// snapshot. A listener of an earlier release drops it at its next write of the record, as it
-	// drops Schema, which costs at most one more verify read.
-	VerifiedRev uint64 `json:"verified_rev,omitempty"`
+	// VerifiedStream is the identity of the bucket's stream that revision is of (streamIdentity),
+	// since a bucket deleted and created again numbers its revisions from 1 again. Within one
+	// stream VerifiedRev only grows. A listener that asked with ENVOY_CI_VERIFY on publishes only
+	// once both answer its own request in the stream the bucket is held in (ClaimStillHeld). Hash
+	// takes neither: an answer moves no snapshot. A listener of an earlier release drops both at
+	// its next write of the record, as it drops Schema, which costs at most one more verify read.
+	VerifiedRev    uint64 `json:"verified_rev,omitempty"`
+	VerifiedStream int64  `json:"verified_stream,omitempty"`
+	// VerifyStopped is the snapshot (Hash) of a settlement episode the summary loop gave up after
+	// verifyMaxAsks requests Dispatch did not answer (giveUp): while the record still hashes to it,
+	// no listener claims the head (verifyStopped), so the head stays unannounced until a new
+	// observation changes it. A listener of an earlier release drops it at its next write.
+	VerifyStopped string `json:"verify_stopped,omitempty"`
 }
 
 // recordSchema stamps every record this listener writes.
@@ -251,6 +259,7 @@ func legacyBacklog(st State, now int64, debounce time.Duration) bool {
 // debounce since its last event, and not a head-gated listener's leftover (legacyBacklog).
 func due(st State, now int64, debounce time.Duration) bool {
 	return !st.SettledEmitted &&
+		!verifyStopped(st) &&
 		settlementReady(st) &&
 		now-st.LastEventAt >= debounce.Milliseconds() &&
 		!legacyBacklog(st, now, debounce)
@@ -1121,12 +1130,15 @@ func (s *Store) ClaimSettlement(key, expectedHash string, expectedGeneration uin
 // request also needs the claim live at now, with more than claimMargin of its life left
 // (claimLive), so an answer for a claim that has run out authorizes nothing whether or not a
 // replica has reclaimed it yet.
-// It also needs the record's
-// VerifiedRev at or past requested, so Dispatch read the head from GitHub after the request, and
-// the record still ready to settle (settlementReady) on what that read merged into it. A webhook
-// the listener fails to write after this read, and a run GitHub creates after it, come after the
-// settlement, as a run created after a settlement always did: their observation re-arms the
-// record when it lands, and the head settles again, superseding this one.
+// It also needs the record's VerifiedRev at or past requested and its VerifiedStream the identity
+// of the stream the bucket is held in now (read fresh, streamIdentity), so Dispatch read the head
+// from GitHub after the request, in the stream the request is of; VerifiedRev below the record's
+// own revision, which holds of every answer of the record's stream, since the answer's write lands
+// after the request it answers; and the record still ready to settle (settlementReady) on what
+// that read merged into it. A webhook the listener fails to write after this read, and a run
+// GitHub creates after it, come after the settlement, as a run created after a settlement always
+// did: their observation re-arms the record when it lands, and the head settles again,
+// superseding this one.
 func (s *Store) ClaimStillHeld(key string, generation uint64, hash string, requested uint64, now int64, debounce time.Duration) (bool, error) {
 	kv := s.kv()
 	entry, err := kv.Get(key)
@@ -1146,7 +1158,16 @@ func (s *Store) ClaimStillHeld(key string, generation uint64, hash string, reque
 	if requested == 0 {
 		return held, nil
 	}
-	return held && claimLive(state.Claim, now, debounce) && state.VerifiedRev >= requested && settlementReady(state), nil
+	if !held || !claimLive(state.Claim, now, debounce) || state.VerifiedRev < requested || state.VerifiedRev >= entry.Revision() || !settlementReady(state) {
+		return false, nil
+	}
+	read, cancel := context.WithTimeout(context.Background(), recordWait)
+	defer cancel()
+	stream, err := streamIdentity(read, kv)
+	if err != nil {
+		return false, err
+	}
+	return state.VerifiedStream == stream, nil
 }
 
 // ReclaimSettlement releases a claim from a replica that died before publish.

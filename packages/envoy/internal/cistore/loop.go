@@ -171,6 +171,11 @@ func schedule(st State, now int64, debounce time.Duration) (verdict, int64) {
 	if st.SettledEmitted {
 		return verdictIdle, 0
 	}
+	if verifyStopped(st) {
+		// The settlement episode was given up unanswered (giveUp): only a change of the record
+		// starts another.
+		return verdictIdle, 0
+	}
 	if !settlementReady(st) {
 		if at := heldLineAt(st); now < at {
 			return verdictWait, at
@@ -275,9 +280,10 @@ type summarizer struct {
 	// publishes or its claim is gone. Every wait goes when the cache is emptied for a recreated
 	// bucket, whose records hold none of the claims.
 	verifying map[string]verifyWait
-	// verifyTimeout and verifyAlarm are verify.go's verifyTimeout and verifyAlarm, which a test
-	// shortens.
-	verifyTimeout, verifyAlarm time.Duration
+	// verifyTimeout and verifyMaxAsks are verify.go's verifyTimeout and verifyMaxAsks, which a
+	// test shortens.
+	verifyTimeout time.Duration
+	verifyMaxAsks int
 }
 
 // heldMark is what a held line was logged for (logHeldLocked): the record's snapshot (State.Hash)
@@ -297,7 +303,7 @@ func newSummarizer(store *Store, debounce time.Duration) *summarizer {
 		heldLogged:    map[string]heldMark{},
 		verifying:     map[string]verifyWait{},
 		verifyTimeout: verifyTimeout,
-		verifyAlarm:   verifyAlarm,
+		verifyMaxAsks: verifyMaxAsks,
 	}
 }
 
@@ -518,36 +524,48 @@ func (z *summarizer) settle(pub Publisher, logger *logging.Logger, key string, c
 	z.publish(pub, logger, key, state, 0, now)
 }
 
+// publishOutcome is how a publication ended (publish): it ended for good -- published, or refused
+// or failed in a way that lets the claim go or never settles the head (publishEnded); the
+// authorization point could not read the record, and the claim is still held (publishUnread); or
+// the authorization point refused it on a fresh read of the record (publishRefused).
+type publishOutcome int
+
+const (
+	publishEnded publishOutcome = iota
+	publishUnread
+	publishRefused
+)
+
 // publish publishes the settlement of state, whose claim this loop holds, and marks it, releasing
-// the claim when the publication fails. requested is the revision of the claim's verify request,
-// zero where verify is off; the authorization point (ClaimStillHeld) reads the record fresh and
-// refuses unless it still holds the claim and, for a request, its answer. A publication that
-// succeeded logs `checks settlement published`, one INFO line naming the head, the generation and
-// snapshot it settled, whether it superseded an earlier settlement of the record, and the verify
-// request it was published on, so a settlement that never became a role message is shown to have
-// left the listener; a publication refused or failed logs no such line.
-func (z *summarizer) publish(pub Publisher, logger *logging.Logger, key string, state State, requested uint64, now int64) {
+// the claim when the publication fails, and answers how it ended. requested is the revision of
+// the claim's verify request, zero where verify is off; the authorization point (ClaimStillHeld)
+// reads the record fresh and refuses unless it still holds the claim and, for a request, its
+// answer. A publication that succeeded logs `checks settlement published`, one INFO line naming
+// the head, the generation and snapshot it settled, whether it superseded an earlier settlement of
+// the record, and the verify request it was published on, so a settlement that never became a role
+// message is shown to have left the listener; a publication refused or failed logs no such line.
+func (z *summarizer) publish(pub Publisher, logger *logging.Logger, key string, state State, requested uint64, now int64) publishOutcome {
 	store := z.store
 	env, err := settlementEnvelope(state, contracts.NowMillis())
 	if err != nil {
 		logger.Error("checks payload failed", slog.String("error", err.Error()))
-		return
+		return publishEnded
 	}
 	if err := env.Validate(); err != nil {
 		logger.Error("checks invalid envelope", slog.String("error", err.Error()))
 		if _, releaseErr := store.ReleaseClaim(key, state.Generation); releaseErr != nil {
 			logger.Warn("checks release failed", slog.String("error", releaseErr.Error()), slog.String("sha", state.SHA))
 		}
-		return
+		return publishEnded
 	}
 	snapshot := state.Hash()
 	held, err := store.ClaimStillHeld(key, state.Generation, snapshot, requested, now, z.debounce)
 	if err != nil {
 		logger.Warn("checks claim verification failed", slog.String("error", err.Error()), slog.String("sha", state.SHA))
-		return
+		return publishUnread
 	}
 	if !held {
-		return
+		return publishRefused
 	}
 	if err := pub.Publish(env); err != nil {
 		if errors.Is(err, bus.ErrRefused) {
@@ -561,7 +579,7 @@ func (z *summarizer) publish(pub Publisher, logger *logging.Logger, key string, 
 			if err := store.markOverflowed(key); err != nil {
 				logger.Warn("checks overflow not recorded", slog.String("error", err.Error()), slog.String("sha", state.SHA))
 			}
-			return
+			return publishEnded
 		}
 		logger.Warn("checks publish failed",
 			slog.String("error", err.Error()),
@@ -571,7 +589,7 @@ func (z *summarizer) publish(pub Publisher, logger *logging.Logger, key string, 
 		if _, releaseErr := store.ReleaseClaim(key, state.Generation); releaseErr != nil {
 			logger.Warn("checks release failed", slog.String("error", releaseErr.Error()), slog.String("sha", state.SHA))
 		}
-		return
+		return publishEnded
 	}
 	logger.Info("checks settlement published",
 		slog.String("owner", state.Owner),
@@ -586,6 +604,7 @@ func (z *summarizer) publish(pub Publisher, logger *logging.Logger, key string, 
 	if _, err := store.MarkSettled(key, state.Generation); err != nil {
 		logger.Warn("checks mark-settled failed", slog.String("error", err.Error()))
 	}
+	return publishEnded
 }
 
 // settlementEnvelope is the checks envelope that settles state, issued at issuedAt.

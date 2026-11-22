@@ -9,9 +9,11 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // verifyHead is the head every test below writes (record_runs_test.go's) as the verify calls name
@@ -84,13 +86,24 @@ func asked(t *testing.T, z *summarizer) uint64 {
 }
 
 // answer writes revision as the head's VerifiedRev through writer, as the reconcile does once it
-// has read the head, and waits until each store's cache holds the answer.
+// has read the head, in the stream the bucket is held in now, and waits until each store's cache
+// holds the answer.
 func answer(t *testing.T, writer *Writer, revision uint64, caches ...*Store) {
 	t.Helper()
-	if _, err := writer.MarkVerified(context.Background(), verifyHead, revision); err != nil {
+	if _, err := writer.MarkVerified(context.Background(), verifyHead, revision, streamOf(t, writer)); err != nil {
 		t.Fatalf("mark verified at %d: %v", revision, err)
 	}
 	waitHeadCached(t, func(st State) bool { return st.VerifiedRev >= revision }, caches...)
+}
+
+// streamOf is the identity of the stream the bucket writer writes is held in now.
+func streamOf(t *testing.T, writer *Writer) int64 {
+	t.Helper()
+	stream, err := streamIdentity(context.Background(), writer.store.kv())
+	if err != nil {
+		t.Fatalf("read the bucket's stream: %v", err)
+	}
+	return stream
 }
 
 // waitHeadCached polls each store's cached record of recordRunsHead until done holds of it.
@@ -170,7 +183,7 @@ func TestARetriedAnswerKeepsTheRevisionItReadFirst(t *testing.T) {
 			z.verifyTimeout = verifyTimeout
 		})
 	}
-	if _, err := writer.MarkVerified(context.Background(), verifyHead, read); err != nil {
+	if _, err := writer.MarkVerified(context.Background(), verifyHead, read, streamOf(t, writer)); err != nil {
 		t.Fatalf("mark verified: %v", err)
 	}
 	writer.store.casHook = nil
@@ -242,11 +255,11 @@ func TestDoneVerifyingLeavesANewerRequest(t *testing.T) {
 	writer := dispatchWriter(t, conn)
 	readyHead(t, s)
 	st, _ := recordRunsStored(t, s)
-	answered, err := s.requestVerify(context.Background(), st)
+	answered, err := s.requestVerify(context.Background(), st, st.Generation)
 	if err != nil {
 		t.Fatalf("write the request: %v", err)
 	}
-	newer, err := s.requestVerify(context.Background(), st)
+	newer, err := s.requestVerify(context.Background(), st, st.Generation)
 	if err != nil {
 		t.Fatalf("write the newer request: %v", err)
 	}
@@ -344,48 +357,251 @@ func TestTwoListenersShareOneReadAndOnlyTheClaimHolderPublishes(t *testing.T) {
 	}
 }
 
-// With verify on and no reconcile answering, nothing is published: each rewrite of the unanswered
-// request logs a WARN, and an ERROR once the wait passes the alarm. The answer, when it comes,
-// publishes.
-func TestWithNoAnswerNothingIsPublishedTheWaitIsLoggedAndAnAnswerPublishes(t *testing.T) {
+// With verify on and no reconcile answering, nothing is published, and the wait ends: each rewrite
+// of the unanswered request logs a WARN, and after verifyMaxAsks requests the episode is given up,
+// with one ERROR naming the head and why, the request deleted and the claim let go. The head is
+// not announced then, even when an answer to its last request lands, until a new observation of it
+// starts another episode, whose answer publishes.
+func TestAnUnansweredEpisodeIsGivenUpAndOnlyANewObservationAsksAgain(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	s := openVerifyingStore(t, conn)
 	writer := dispatchWriter(t, conn)
 	readyHead(t, s)
 	z, pub := testSummarizer(s, 0), &recPub{}
-	z.verifyTimeout, z.verifyAlarm = 50*time.Millisecond, 150*time.Millisecond
+	z.verifyTimeout = 50 * time.Millisecond
 	logs := &logtest.Buffer{}
 	logger := logging.NewWithWriter("test", logs)
 
 	start := time.Now()
-	for _, after := range []time.Duration{0, 60 * time.Millisecond, 120 * time.Millisecond, 180 * time.Millisecond, 240 * time.Millisecond} {
-		z.pass(pub, logger, start.Add(after).UnixMilli())
+	var last uint64
+	for i := 0; i <= verifyMaxAsks; i++ {
+		z.pass(pub, logger, start.Add(time.Duration(i)*60*time.Millisecond).UnixMilli())
 		if pub.count() != 0 {
-			t.Fatalf("published %d settlements %s after the request with no answer", pub.count(), after)
+			t.Fatalf("published %d settlements at pass %d with no answer", pub.count(), i)
+		}
+		if wait, ok := waiting(z); ok {
+			last = wait.requested
 		}
 	}
-	const unanswered = `"msg":"checks verify request unanswered; the head is not announced until Dispatch answers"`
-	var warns, errorsLogged int
-	for _, line := range strings.Split(logs.String(), "\n") {
-		if !strings.Contains(line, unanswered) {
-			continue
-		}
-		switch {
-		case strings.Contains(line, `"level":"WARN"`):
-			warns++
-		case strings.Contains(line, `"level":"ERROR"`):
-			errorsLogged++
-		}
+	const (
+		unanswered = `"msg":"checks verify request unanswered; the head is not announced until Dispatch answers"`
+		gaveUp     = `"msg":"checks verify gave up; the head is not announced until a new observation of it"`
+	)
+	warns, errorsLogged := strings.Count(logs.String(), unanswered), strings.Count(logs.String(), gaveUp)
+	if warns != verifyMaxAsks-1 || errorsLogged != 1 || !strings.Contains(logs.String(), `"level":"ERROR"`) {
+		t.Fatalf("the unanswered episode logged %d WARN lines and %d give-ups, want %d and 1:\n%s", warns, errorsLogged, verifyMaxAsks-1, logs.String())
 	}
-	if warns == 0 || errorsLogged == 0 {
-		t.Fatalf("the unanswered wait logged %d WARN and %d ERROR lines, want both:\n%s", warns, errorsLogged, logs.String())
+	if _, ok := waiting(z); ok {
+		t.Fatal("the summary loop still waits on an episode it gave up")
+	}
+	if requests, err := writer.VerifyRequests(context.Background()); err != nil || len(requests) != 0 {
+		t.Fatalf("the requests after the give-up are %+v (%v), want none", requests, err)
+	}
+	if st, _ := recordRunsStored(t, s); st.Claim != nil || st.VerifyStopped != st.Hash() {
+		t.Fatalf("the record after the give-up is %+v, want no claim and the episode marked stopped", st)
 	}
 
-	answer(t, writer, asked(t, z), s)
-	z.pass(pub, logger, start.Add(250*time.Millisecond).UnixMilli())
+	answer(t, writer, last, s)
+	z.pass(pub, logger, time.Now().UnixMilli())
+	if pub.count() != 0 {
+		t.Fatalf("an answer to the given-up episode's last request published %d settlements", pub.count())
+	}
+	if wait, ok := waiting(z); ok {
+		t.Fatalf("the summary loop claimed the given-up episode again and waits on request %d", wait.requested)
+	}
+	if st, _ := recordRunsStored(t, s); st.Claim != nil {
+		t.Fatalf("the given-up episode was claimed again: %+v", st.Claim)
+	}
+
+	// A new observation of the head starts a new episode: a new claim, a new request, and its
+	// answer publishes.
+	if err := s.Record(context.Background(), recordRunsCheck("lint", 2, "completed", "success", "2026-11-22T00:06:00Z")); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	waitCacheChecks(t, s, recordRunsOwner, recordRunsRepo, recordRunsNumber, recordRunsSHA, 2)
+	z.pass(pub, logger, time.Now().UnixMilli())
+	renewed := asked(t, z)
+	if renewed <= last {
+		t.Fatalf("the new episode asked at %d, not past the given-up one's last request at %d", renewed, last)
+	}
+	answer(t, writer, renewed, s)
+	z.pass(pub, logger, time.Now().UnixMilli())
 	if pub.count() != 1 {
-		t.Fatalf("the answer published %d settlements, want 1", pub.count())
+		t.Fatalf("the new episode's answer published %d settlements, want 1", pub.count())
+	}
+}
+
+// A wait whose authorization read failed, with its claim still held, is kept and looked at again
+// after authorizationRetry rather than at its request's timeout: here the listener's own
+// connection closes after the answer reached its cache, so the fresh read at the authorization
+// point fails. Nothing is published, and the claim is kept, so no replica's claim is lost to it.
+func TestAFailedAuthorizationReadKeepsTheWaitDueWithinASecond(t *testing.T) {
+	url := testnats.URL(t)
+	writerConn := testnats.Connect(t, url)
+	defer writerConn.Close()
+	storeConn := testnats.Connect(t, url)
+	defer storeConn.Close()
+	s := openVerifyingStore(t, storeConn)
+	writer := dispatchWriter(t, writerConn)
+	readyHead(t, s)
+	z, pub := testSummarizer(s, 0), &recPub{}
+	z.pass(pub, logging.New("test"), time.Now().UnixMilli())
+	answer(t, writer, asked(t, z), s)
+	storeConn.Close()
+
+	now := time.Now().UnixMilli()
+	z.pass(pub, logging.New("test"), now)
+	if pub.count() != 0 {
+		t.Fatalf("published %d settlements on an authorization read that failed", pub.count())
+	}
+	wait, ok := waiting(z)
+	if !ok {
+		t.Fatal("the summary loop dropped its wait on an authorization read that failed")
+	}
+	if want := now + authorizationRetry.Milliseconds(); wait.retryAt != want || wait.dueAt(z.verifyTimeout) != want {
+		t.Fatalf("the wait is due at %d (retry %d), want %d, a second after the failed read", wait.dueAt(z.verifyTimeout), wait.retryAt, want)
+	}
+	if st, cached := s.cachedState(verifyRecordKey); !cached || st.Claim == nil {
+		t.Fatalf("the claim is gone after an authorization read that failed: %+v", st)
+	}
+}
+
+// A record's VerifiedRev compares only with revisions of the stream of the bucket it was read in.
+// A verify pass lists a request in the old bucket, at a revision past the requests the new bucket
+// will number; the bucket is deleted and created again, the head recorded and claimed again, and
+// the listener asks at a small revision. The old pass's answer is refused (MarkVerified's stream
+// check). Two stamps that land anyway -- a recreate between an answer's stream read and its write
+// -- are each refused at the authorization point by one guard alone: the old bucket's revision
+// under the new bucket's identity by its revision past the record's own, and the new request's
+// revision under the old bucket's identity by its stream. At the request's timeout the listener
+// asks again rather than publishing, and an answer read in the new bucket publishes.
+func TestAStampReadInABucketSinceCreatedAgainAuthorizesNothing(t *testing.T) {
+	conn, cleanup := connectNATS(t)
+	defer cleanup()
+	ctx := context.Background()
+	s := openVerifyingStore(t, conn)
+	writer := dispatchWriter(t, conn)
+	for i := range 40 {
+		// Another head, its run still queued, so it never becomes ready and asks for nothing:
+		// its writes only move the old bucket's revisions on.
+		other := recordRunsCheck("lint", uint64(i+1), "queued", "", "2026-11-22T00:05:00Z")
+		other.SHA = "1111111111111111111111111111111111111111"
+		if err := s.Record(ctx, other); err != nil {
+			t.Fatalf("record another head: %v", err)
+		}
+	}
+	readyHead(t, s)
+	z, pub := testSummarizer(s, 0), &recPub{}
+	logger := logging.New("test")
+	z.pass(pub, logger, time.Now().UnixMilli())
+	requests, err := writer.VerifyRequests(ctx)
+	if err != nil || len(requests) != 1 {
+		t.Fatalf("the old bucket's requests are %+v (%v), want the head's one", requests, err)
+	}
+	stale := requests[0]
+
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	if err := js.DeleteKeyValue(bus.CIStateBucket); err != nil {
+		t.Fatalf("delete the bucket: %v", err)
+	}
+	testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: bus.CIStateBucket, Replicas: 1, Storage: natsgo.FileStorage, TTL: time.Hour})
+	if err := s.Rewatch(ctx, conn); err != nil {
+		t.Fatalf("rewatch: %v", err)
+	}
+	readyHead(t, s)
+	z.pass(pub, logger, time.Now().UnixMilli())
+	fresh := asked(t, z)
+	if stale.Revision <= fresh {
+		t.Fatalf("the old bucket's request is at %d, not past the new bucket's at %d: the test needs it past", stale.Revision, fresh)
+	}
+	current := streamOf(t, writer)
+	if current == stale.Stream {
+		t.Fatalf("the recreated bucket kept the old stream's identity %d", current)
+	}
+
+	if _, err := writer.MarkVerified(ctx, verifyHead, stale.Revision, stale.Stream); err == nil {
+		t.Fatalf("an answer read at %d in the old bucket was written into the new one", stale.Revision)
+	}
+	if st, _ := recordRunsStored(t, s); st.VerifiedRev != 0 {
+		t.Fatalf("the new bucket's record holds VerifiedRev %d after a refused answer", st.VerifiedRev)
+	}
+
+	for _, stamp := range []struct {
+		name     string
+		revision uint64
+		stream   int64
+	}{
+		{name: "the old bucket's revision under the new bucket's identity", revision: stale.Revision, stream: current},
+		{name: "the new request's revision under the old bucket's identity", revision: fresh, stream: stale.Stream},
+	} {
+		if _, err := s.update(ctx, recordRunsOwner, recordRunsRepo, recordRunsNumber, recordRunsSHA, "", func(st *State) bool {
+			st.VerifiedRev, st.VerifiedStream = stamp.revision, stamp.stream
+			return true
+		}); err != nil {
+			t.Fatalf("%s: land the stamp: %v", stamp.name, err)
+		}
+		waitHeadCached(t, func(st State) bool { return st.VerifiedRev == stamp.revision && st.VerifiedStream == stamp.stream }, s)
+		stamped, _ := recordRunsStored(t, s)
+		if held, err := s.ClaimStillHeld(verifyRecordKey, stamped.Generation, stamped.Hash(), fresh, time.Now().UnixMilli(), 0); err != nil || held {
+			t.Fatalf("%s: the authorization point accepted request %d on stamp %d of stream %d: %v, %v", stamp.name, fresh, stamp.revision, stamp.stream, held, err)
+		}
+	}
+	z.verifyTimeout = 50 * time.Millisecond
+	z.pass(pub, logger, time.Now().Add(time.Second).UnixMilli())
+	if pub.count() != 0 {
+		t.Fatalf("a stamp of the old bucket published %d settlements for request %d", pub.count(), fresh)
+	}
+	again := asked(t, z)
+	if again <= fresh {
+		t.Fatalf("at its timeout the listener asked at %d, not past %d", again, fresh)
+	}
+
+	answer(t, writer, again, s)
+	z.pass(pub, logger, time.Now().Add(time.Second).UnixMilli())
+	if pub.count() != 1 {
+		t.Fatalf("an answer read in the new bucket published %d settlements, want 1", pub.count())
+	}
+}
+
+// A batch of a head's runs that loses its compare-and-swap to a write landing between its read
+// and its write applies every rule again to the record it reads anew: a newer run of a name that
+// landed meanwhile is not replaced by the batch's older one, and the batch's other runs land.
+func TestRecordRunsAppliesEveryRuleAgainAfterLosingItsCompareAndSwap(t *testing.T) {
+	conn, cleanup := connectNATS(t)
+	defer cleanup()
+	ctx := context.Background()
+	s := openStore(t, conn)
+	writer := dispatchWriter(t, conn)
+	if err := s.Record(ctx, recordRunsCheck("ci-ok", 5, "completed", "failure", "2026-11-22T00:05:00Z")); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	attempts := 0
+	writer.store.casHook = func(string) {
+		attempts++
+		if attempts == 1 {
+			if err := s.Record(ctx, recordRunsCheck("ci-ok", 9, "completed", "success", "2026-11-22T00:09:00Z")); err != nil {
+				t.Errorf("the write that lands between the batch's read and its write: %v", err)
+			}
+		}
+	}
+	_, err := writer.RecordRuns(ctx, []contracts.CIObservation{
+		recordRunsCheck("ci-ok", 7, "queued", "", "2026-11-22T00:07:00Z"),
+		recordRunsCheck("lint", 11, "completed", "success", "2026-11-22T00:07:30Z"),
+	})
+	writer.store.casHook = nil
+	if err != nil || attempts < 2 {
+		t.Fatalf("RecordRuns = %v in %d attempts; want it written after losing its first compare-and-swap", err, attempts)
+	}
+	st, _ := recordRunsStored(t, s)
+	if got := st.Checks["ci-ok"]; got.CheckRunID != 9 || got.Status != "completed" {
+		t.Fatalf("ci-ok is %+v, want run 9 completed: the retried batch's older run replaced the newer one", got)
+	}
+	if got := st.Checks["lint"]; got.CheckRunID != 11 {
+		t.Fatalf("lint is %+v, want run 11: the retried batch lost a run", got)
 	}
 }
 
