@@ -1154,10 +1154,13 @@ func TestAClockPassKeepsALockAProcessHoldsOpen(t *testing.T) {
 		log := &lockedBuffer{}
 		s := c.sweep(log, procRoot(t, os.Getpid()))
 		// An hour's recheck this pass must never reach: a lock the first read found a holder
-		// for is decided there and never read again, where a lock that reaches the second read
-		// would hold the pass for that hour, far past the hang guard awaitPass waits under. A row
-		// that gave the sweep its usual millisecond would read the same keep line whichever of
-		// the two reads wrote it.
+		// for is decided there and never read again. A lock that reached the second read would
+		// hold the pass for that hour, which fails the row at the hang guard awaitPass waits
+		// under only when that guard ends inside the hour: when the binary's -timeout is under
+		// about an hour, as CI's 30 minutes is. Under a longer -timeout, or none, such a pass
+		// returns after the hour with the same keep line, and the row passes it. A row that gave
+		// the sweep its usual millisecond would read the same keep line whichever of the two
+		// reads wrote it, under any -timeout.
 		s.recheck = time.Hour
 		done := make(chan struct{})
 		go func() { defer close(done); s.pass(context.Background(), false) }()
