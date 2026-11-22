@@ -686,6 +686,58 @@ func TestTokenModeAppLoginReadsTheViewerAndChecksTheAppID(t *testing.T) {
 	}
 }
 
+// A login read in token mode that failed after it took its release (GitHub's 502 on the viewer
+// read) reads again under the same release, so the command, each run of which asks the secrets
+// broker for a release that may wait on a person's approval, runs once for it. The release is
+// kept while more than twenty minutes of it are left (refreshWindow), as a lease is served; past
+// that the next read runs the command again.
+func TestTokenModeAppLoginKeepsItsReleaseUntilItReadsTheLogin(t *testing.T) {
+	now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	broker := newFakeBroker(t, []string{"sjawhar"}, now.Add(time.Hour))
+	github := &fakeTokenGitHub{slug: "legion-reviewer", appID: "67890", viewerErr: http.StatusBadGateway}
+	var stderr bytes.Buffer
+	tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
+	defer tokens.Close()
+	viewer := func(status int) {
+		github.mu.Lock()
+		github.viewerErr = status
+		github.mu.Unlock()
+	}
+	var transient *TransientError
+	if _, err := tokens.AppLogin(context.Background(), Review); !errors.As(err, &transient) {
+		t.Fatalf("AppLogin on GitHub's 502 = %v, want a transient error", err)
+	}
+	viewer(0)
+	if login, err := tokens.AppLogin(context.Background(), Review); err != nil || login != "legion-reviewer[bot]" {
+		t.Fatalf("AppLogin after the 502 = %q, %v; want legion-reviewer[bot]", login, err)
+	}
+	if got := broker.runs(t); len(got) != 1 {
+		t.Fatalf("the command ran %d times for a login read GitHub answered 502 and the read after it (%q), want once: the read after the 502 ran the command again", len(got), got)
+	}
+
+	// A new read takes a new release and keeps it: 21 minutes of it left, it is read under again.
+	viewer(http.StatusBadGateway)
+	if _, err := tokens.AppLogin(context.Background(), Review); !errors.As(err, &transient) {
+		t.Fatalf("AppLogin on GitHub's 502 = %v, want a transient error", err)
+	}
+	now = now.Add(39 * time.Minute)
+	if _, err := tokens.AppLogin(context.Background(), Review); !errors.As(err, &transient) {
+		t.Fatalf("AppLogin on GitHub's 502 = %v, want a transient error", err)
+	}
+	if got := broker.runs(t); len(got) != 2 {
+		t.Fatalf("the command ran %d times (%q), want 2: the release kept with 21 minutes left was not read under", len(got), got)
+	}
+	// 19 minutes left: the next read runs the command again.
+	now = now.Add(2 * time.Minute)
+	viewer(0)
+	if login, err := tokens.AppLogin(context.Background(), Review); err != nil || login != "legion-reviewer[bot]" {
+		t.Fatalf("AppLogin with the kept release near its expiry = %q, %v; want legion-reviewer[bot]", login, err)
+	}
+	if got := broker.runs(t); len(got) != 3 {
+		t.Fatalf("the command ran %d times (%q), want 3: a release kept within twenty minutes of its expiry was read under", len(got), got)
+	}
+}
+
 // InstalledOn in token mode reads the owner's installation's repositories: a repository it lists
 // is installed, one it does not list, or an owner with no installation, is not; GitHub's trouble is
 // transient. An installation token reads any public repository, so GET /repos/{owner}/{repo} could
