@@ -73,34 +73,45 @@ export function StageSlot({
   // The following of the address whose first call from the view the stage took, which takes no
   // other call in it, and the following for which the view said its tree draws no node the
   // address names (`ViewSlotProps.onAddressDrawn`): the body is drawn in the view's place for the
-  // rest of that following.
+  // rest of that following. With it, whether the focus was the view's as the view said so: in the
+  // box the view is drawn in (`viewBox`), or held by nothing, as where the view's Retry left the
+  // page with its line in the render in which the read it asked again answered.
   const told = useRef<string | undefined>(undefined);
-  const [undrawn, setUndrawn] = useState<string | undefined>(undefined);
+  const [undrawn, setUndrawn] = useState<{ focused: boolean; following: string }>();
+  const viewBox = useRef<HTMLDivElement>(null);
   const onAddressDrawn = useCallback(
     (drawn: boolean) => {
       if (!beside || told.current === following) return;
       told.current = following;
-      if (!drawn) setUndrawn(following);
+      const box = viewBox.current;
+      const focused = focusIsLoose(box) || box?.contains(document.activeElement) === true;
+      if (!drawn) setUndrawn({ focused, following });
     },
     [beside, following]
   );
   // The reader's acts since the address was followed (`ReaderActsWatch`), watched from the
   // following's drawing whichever slot is drawn and handed to the body, so a body drawn in the
   // view's place reads an act made while the view was drawn, as one made before its row drew
-  // (`IssueTree`'s `addressActs`, `BodySlot`'s `takesFocus`).
+  // (`IssueTree`'s `addressActs`, `BodySlot`'s `takesFocus`): a control pressed outside the stage
+  // keeps the focus. Where the focus was the view's, nothing outside the view holds it once the
+  // body is drawn: the stage hands that body none, and it watches from its own first draw, so it
+  // lands as it does where the reader made no act.
   const acts = useRef<AbortController | undefined>(undefined);
-  const outline = beside && (!filled[preset] || undrawn === following);
+  const swapped = undrawn?.following === following;
+  const outline = beside && (!filled[preset] || swapped);
   const View = outline ? undefined : views[preset];
   return (
     <DocumentStages>
       <ReaderActsWatch into={acts} key={following} />
       {View === undefined ? (
         <StageBox>
-          <BodySlot {...props} acts={acts} />
+          <BodySlot {...props} acts={swapped && undrawn.focused ? undefined : acts} />
         </StageBox>
       ) : (
         <ViewStage key={preset}>
-          <View {...props} onAddressDrawn={onAddressDrawn} />
+          <div className="contents" ref={viewBox}>
+            <View {...props} onAddressDrawn={onAddressDrawn} />
+          </div>
         </ViewStage>
       )}
     </DocumentStages>

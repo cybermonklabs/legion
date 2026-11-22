@@ -13,7 +13,7 @@ import {
   referenceTargetsQuery,
   whoAmIQuery,
 } from "../../../api/queries";
-import type { IssueAskRow } from "../../../api/types";
+import type { Comment, IssueAskRow, IssueDecisions } from "../../../api/types";
 import { type EventFreshness, useIsHuman } from "../../../hooks/useIsHuman";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { answeredAsk } from "../../inbox/ask-card-fixture";
@@ -24,6 +24,7 @@ import { presetPath } from "../issue-address";
 import { framesByHand, TWO_THREADS, waitInAct } from "../outline-fixtures";
 import { type ThreadMark, ThreadReadMark } from "../outline-thread-read";
 import { EMPTY_STATE_LINES, STATE_LINES } from "../page-words";
+import { FAILED_READ_RETRY } from "../slots/failed-read-line";
 import {
   drawAtBrowserEntry,
   drawnSlot,
@@ -312,6 +313,94 @@ test("a press while the view is drawn keeps the focus on the control pressed, wh
     ).toHaveFocus();
   } finally {
     frames.restore();
+  }
+});
+
+/** The Decisions view's row of the ask `id`. */
+function askRow(id: string): string {
+  return `[data-decisions-body] [data-node-row][data-node-id="${id}"]`;
+}
+
+/** The comment's own read, answering that no comment has the id it is asked for. */
+function commentGone(): { mockRestore(): void } {
+  return spyOn(api, "getComment").mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: "no such comment" })
+  );
+}
+
+/** Waits for the outline's line that the issue holds no comment of the address's id, drawn in
+ *  the Decisions view's place, to hold the focus, saying what `what` left where it does not. */
+async function goneLineTakesFocus(view: RenderResult, what: string): Promise<void> {
+  await waitFor(() =>
+    expect(
+      view.queryByRole("heading", { name: "Comment not found" }),
+      `${what} left the focus on ${focusedRow() ?? document.activeElement?.tagName}; the stage drew ${drawnSlot(view)}`
+    ).toHaveFocus()
+  );
+}
+
+// A key pressed on a row of the view is an act of the following too, but the row that holds the
+// focus leaves the page with the view where the view then draws no node the address names. The
+// outline drawn in the view's place lands as it does where the reader pressed nothing: with the
+// comments read out the view draws the questions, `j` is pressed on the first one's row, and once
+// the comments answer, the outline's line that the issue holds no such comment takes the focus.
+test("`j` on a row of the Decisions view, before it draws the outline's line for a comment the issue holds none of in its place, leaves the focus on that line", async () => {
+  spyOn(api, "listIssueAsks").mockResolvedValue([...ASKED]);
+  const commentsOut = Promise.withResolvers<Comment[]>();
+  spyOn(api, "listComments").mockReturnValue(commentsOut.promise);
+  const read = commentGone();
+  try {
+    const view = drawStage(`?comment=${GONE_COMMENT}`);
+    await rowTakesFocus(view, askRow("ask-open"), "the Decisions view with the comments out");
+    act(() => {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, key: "j" })
+      );
+    });
+    expect(
+      view.container.querySelector(askRow("ask-open")),
+      `the focus left the first question's row at \`j\` for ${focusedRow() ?? document.activeElement?.tagName}`
+    ).toHaveFocus();
+    await act(async () => commentsOut.resolve([]));
+    await goneLineTakesFocus(view, "the comments answering after `j`");
+  } finally {
+    read.mockRestore();
+  }
+});
+
+// Enter on the Retry of a read the view draws its own line for is an act of the following too,
+// and it comes before that read answers. Where the view then draws no node the address names,
+// the Retry left the page with its line, and the outline drawn in the view's place lands as it
+// does where the reader pressed nothing: its line that the issue holds no such comment takes the
+// focus.
+test("Enter on the Retry of the Decisions view's refused decisions read, before it draws the outline's line for a comment the issue holds none of in its place, leaves the focus on that line", async () => {
+  const decisionsOut = Promise.withResolvers<IssueDecisions>();
+  spyOn(api, "getIssueDecisions")
+    .mockRejectedValueOnce(REFUSED)
+    .mockReturnValueOnce(decisionsOut.promise);
+  const read = commentGone();
+  try {
+    const view = drawStage(`?comment=${GONE_COMMENT}`);
+    const retry = await waitFor(() => {
+      const drawn = view.container.querySelector<HTMLElement>(
+        `[data-decisions-body] ${FAILED_READ_RETRY}`
+      );
+      expect(
+        drawn,
+        `the view's Retry does not hold the focus; the stage drew ${drawnSlot(view)}`
+      ).toHaveFocus();
+      return drawn as HTMLElement;
+    });
+    // Enter on a button: its keydown, then the press it makes.
+    act(() => {
+      retry.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+      retry.click();
+    });
+    await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
+    await act(async () => decisionsOut.resolve(decisionsRead([decision("d1")])));
+    await goneLineTakesFocus(view, "the decisions read answering after Enter on its Retry");
+  } finally {
+    read.mockRestore();
   }
 });
 

@@ -147,6 +147,30 @@ test("a comment of the issue, named on the Plan view's address, draws the outlin
   ).toBeNull();
 });
 
+// A key pressed on the Plan view's step is an act of the following too, but the step it leaves the
+// focus on leaves the page with the view where the view then draws no node the address names.
+// The outline drawn in the view's place lands as it does where the reader pressed nothing: with
+// the comments read out the view draws the task's step with the focus, `j` is pressed there, and
+// once the comments answer, the outline lands on the comment's row.
+test("`j` on the Plan view's step, before it draws the outline in its place for a comment of the issue named on its address, leaves the focus on the comment's row", async () => {
+  answerVerificationReads();
+  const commentsOut = Promise.withResolvers<Comment[]>();
+  spyOn(api, "listComments").mockReturnValue(commentsOut.promise);
+  const view = drawStage("?comment=head-b", { issue: verifiedIssue(), preset: "plan" });
+  await rowTakesFocus(view, TASK_STEP, "the Plan view with the comments out");
+  act(() => {
+    document.activeElement?.dispatchEvent(
+      new KeyboardEvent("keydown", { bubbles: true, key: "j" })
+    );
+  });
+  await act(async () => commentsOut.resolve([...TWO_THREADS]));
+  await rowTakesFocus(
+    view,
+    '[data-issue-body] [data-node-row][data-node-id="head-b"]',
+    "the comments answering after `j`"
+  );
+});
+
 // Every entry the browser makes has the key "default", so each fragment it changes under the Plan
 // view's address is a following of its own though the key stays one. The task keeps the view;
 // the statement draws the outline in the view's place, which lands on the statement's row; and
