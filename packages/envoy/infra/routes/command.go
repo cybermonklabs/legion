@@ -33,7 +33,8 @@ const usageText = `usage: envoy-infra routes record --namespace <ns> --statefuls
     password as read, cut its reach, rotate the password, then record and check again); 2 when it
     could not read all it needs, or the record is of another cluster, when authorization is not in
     force, left no line of the reload that loaded it, or loaded within 10 s of a pod's start, when
-    the mesh is not whole or the servers do not hold one password, when a route connection from
+    the mesh is not whole or the servers do not hold one password, when a pod's /routez still lists
+    a route it has closed, with no address, after the check's reads, when a route connection from
     another address named no server or was still open when the log was read, when the log holds no
     hangup that began the reload that loaded authorization, when the log holds a line in the
     server's form the server did not write, or when a pod changed during the check; and it refuses,

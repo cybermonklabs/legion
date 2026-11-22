@@ -326,7 +326,9 @@ type server struct {
 //     sends (route.go:820), which every route port's INFO shows of its server, so it counts only
 //     from the IP of the pod whose server answers it. It never trusts a route's remote_name, which
 //     the peer chooses: nats-server refuses an accepted route's name only when it equals the
-//     accepting server's own (route.go:745-751).
+//     accepting server's own (route.go:745-751). A route with no ip is one nats-server has closed
+//     and not yet removed (closedRoute), so a read that lists one is read again; one the last read
+//     still lists is Unknown.
 //   - its route port: its INFO has auth_required, and it refuses a route login with no user and
 //     one with the route user and no password, so authorization is in force with a password.
 //   - its log, by the lines the server wrote (serversLines: in the logger's form, with the start
@@ -481,19 +483,59 @@ func checkUnchanged(ctx context.Context, r *Report, src Source, before []Pod) ma
 	return changed
 }
 
-// checkRoutes judges s's /routez: every route's ip a pod IP and, when ids holds every pod's server
-// id, its remote_id another pod's, from that pod's own IP, and a route to each of s's peers. It
-// returns whether s's routes are known not to reach all its peers.
-func checkRoutes(ctx context.Context, r *Report, src Source, s server, ips map[string]bool, ids map[string]server, peerCount int) bool {
-	body, err := src.Monitor(ctx, s.pod.Name, "/routez")
-	if err != nil {
-		r.add(s.pod.Name, Unknown, "its /routez could not be read: %v", err)
+// closedRouteReads bounds the reads of a pod's /routez while a read lists a route nats-server has
+// closed (closedRoute): the first read and up to five more, the wait before each doubling from
+// closedRouteWait, 620 ms in all.
+const (
+	closedRouteReads = 6
+	closedRouteWait  = 20 * time.Millisecond
+)
+
+// closedRoute is whether route is one nats-server has closed and not yet removed from /routez.
+// /routez gives a route's ip and port from its socket as it is read (monitor.go:916-921); closing a
+// route drops the socket (client.go:6153-6165) before the server removes the route from the list
+// /routez reads (client.go:6333-6335, server.go:3795-3796), so for that time a route keeps its
+// remote_id and remote_name and has no address. A route the server holds always has one: a
+// route's connection is TCP or TLS. Such a route is no route from an address the check can judge,
+// and the next read no longer lists it; a peer that held it since the reload that loaded
+// authorization is in the log, which the log rule reads.
+func closedRoute(route Route) bool { return route.IP == "" }
+
+// pause waits d, and reports false when ctx ends first.
+func pause(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
 		return false
 	}
-	routez, err := ParseRoutez(body)
-	if err != nil {
-		r.add(s.pod.Name, Unknown, "%v", err)
-		return false
+}
+
+// checkRoutes judges s's /routez: every route's ip a pod IP and, when ids holds every pod's server
+// id, its remote_id another pod's, from that pod's own IP, and a route to each of s's peers. A read
+// that lists a route nats-server has closed (closedRoute) is read again, up to closedRouteReads
+// reads, and the last read is judged: a closed route still in it has no address to judge, which
+// is Unknown, never PasswordRead. It returns whether s's routes are known not to reach all its
+// peers.
+func checkRoutes(ctx context.Context, r *Report, src Source, s server, ips map[string]bool, ids map[string]server, peerCount int) bool {
+	var routez Routez
+	reads := 0
+	for wait := closedRouteWait; ; wait *= 2 {
+		reads++
+		body, err := src.Monitor(ctx, s.pod.Name, "/routez")
+		if err != nil {
+			r.add(s.pod.Name, Unknown, "its /routez could not be read: %v", err)
+			return false
+		}
+		if routez, err = ParseRoutez(body); err != nil {
+			r.add(s.pod.Name, Unknown, "%v", err)
+			return false
+		}
+		if !slices.ContainsFunc(routez.Routes, closedRoute) || reads == closedRouteReads || !pause(ctx, wait) {
+			break
+		}
 	}
 	if s.id != "" && routez.ServerID != s.id {
 		r.add(s.pod.Name, Unknown, "its /routez answered for the server %s, and its /varz for %s", routez.ServerID, s.id)
@@ -501,6 +543,12 @@ func checkRoutes(ctx context.Context, r *Report, src Source, s server, ips map[s
 	}
 	peers := map[string]bool{}
 	for _, route := range routez.Routes {
+		if closedRoute(route) {
+			r.add(s.pod.Name, Unknown, "its /routez listed a route with no address (remote_id %q, remote_name %q), and so did each of the "+
+				"%d read(s) the check made of it: nats-server lists a route it has closed, with no address, until it removes it, so the check "+
+				"cannot judge it; check again", route.RemoteID, route.RemoteName, reads)
+			continue
+		}
 		// A route's remote_id and remote_name are what its peer sent (route.go:820), so each is
 		// quoted: a peer can put a newline or a terminal escape in either. A route's ip is the
 		// TCP peer's address, which the peer does not choose, so a remote_id counts only from the

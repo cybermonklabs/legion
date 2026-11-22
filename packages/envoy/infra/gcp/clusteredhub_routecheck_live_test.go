@@ -335,8 +335,13 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		report := routes.Check(ctx, h, rec)
 		require.Equal(t, routes.PasswordRead, report.Verdict(), "findings: %v", report.Findings)
 		require.True(t, findingNames(report, routes.PasswordRead, "", "ip 127.0.0.1", `remote_id "`+impostor+`"`), "findings: %v", report.Findings)
+		// envoy-nats-1 refuses each route of the impostor, which shares its name, and the impostor
+		// redials, so its /routez can list a route it has closed and not yet removed, with no ip
+		// (routes.go's closedRoute). The check reads past it: no such route is a route from an
+		// address that is no pod of the hub, and none is left for it to call unjudged.
 		for _, f := range report.Findings {
 			require.NotContains(t, f.Detail, "no pod of the hub", "only remote_id tells the impostor apart: %v", f)
+			require.NotContains(t, f.Detail, "a route with no address", "the check reads past a route nats-server has closed: %v", f)
 		}
 	})
 

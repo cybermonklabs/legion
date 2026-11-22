@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  `envoy-infra routes check` no longer reports a route that nats-server is closing as a route
+  from an address that is no pod of the hub (exit 1, `password read`). nats-server's `/routez`
+  lists a route it has closed, with no `ip`, until it removes the route, so a check that read the
+  `/routez` of a pod refusing a peer's routes could call the hub's password read. The check now
+  reads that `/routez` again, up to six reads in 620 ms, and judges the last read. A route with no
+  address that is still in the last read is exit 2, naming its `remote_id` and `remote_name`.
+time: 2026-11-22T21:10:24Z
+custom:
+    Issue: routes-check-closed-route
