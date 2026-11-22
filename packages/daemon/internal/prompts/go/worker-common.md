@@ -28,18 +28,17 @@ Read a piped command's status with `${PIPESTATUS[0]}`, or with `set -o pipefail`
 Make your own scratch with `mktemp -d` and delete only the paths you made, each by its exact path. Never delete by a glob in a shared directory: every role of this issue writes into the same `$TMPDIR` on the issue's volume, so a sweep like `rm -rf "$TMPDIR"/tmp.*` deletes directories another role has open.
 
 Before your turn's first commit, run `jj -R "$LEGION_WORKSPACE" log -r @ --no-graph -T 'empty'`. If
-it prints `true`, run `jj -R "$LEGION_WORKSPACE" new @-`. If it prints `false`, `@` can hold another
-role's edits, since a role whose phase ends leaves them there: read its change id with
+it prints `true`, run `jj -R "$LEGION_WORKSPACE" new @-`. If it prints `false`, `@` holds your own
+resumed edits, so run `jj -R "$LEGION_WORKSPACE" new`, unless step 2 of `skill://legion-worker`
+listed in it a path you did not write: once your own paths are split out as that step's reference
+says, `@` holds another role's edits, so read its change id with
 `jj -R "$LEGION_WORKSPACE" log -r @ --no-graph -T 'change_id.short()'`, run
-`jj -R "$LEGION_WORKSPACE" new @-` too, which sets that change aside, and point a bookmark at it,
+`jj -R "$LEGION_WORKSPACE" new @-`, which sets that change aside, and point a bookmark at it,
 `jj -R "$LEGION_WORKSPACE" bookmark set aside/<change id> -r <change id>`, since a pod update's read
-of unpushed work counts the change only while a bookmark points at it. Take back a path whose every
-edit in that change is yours with
-`jj -R "$LEGION_WORKSPACE" squash --from <change id> --into @ <path>`, and tell the architect the
-change id and every path you leave in it. Never `jj describe` or `jj split` the working-copy commit
-you found at the turn's start: it can hold another role's edits, which a `jj describe` would put
-under your trailers. Every role of an issue shares the workspace, so every commit you push must be
-one you made in this turn.
+of unpushed work counts the change only while a bookmark points at it. Never `jj describe` or
+`jj split` the working-copy commit you found at the turn's start: it can hold another role's edits,
+which a `jj describe` would put under your trailers. Every role of an issue shares the workspace, so
+every commit you push must be one you made in this turn.
 
 Push the issue branch yourself, with the plain `jj` of your pane (`git`, like `gh`, acts as your role's App from `GH_CONFIG_DIR`; `<issue>` is your `LEGION_ISSUE`): `cd -- "$LEGION_WORKSPACE" && jj -R "$LEGION_WORKSPACE" bookmark set legion/<issue> -r @- && jj -R "$LEGION_WORKSPACE" git push --bookmark legion/<issue>`. Only work goes to the branch — code, red tests, a forward merge, and the empty commit that carries the pull request onto the commit you pushed (below) — and never a handoff, which is a record on the Dispatch issue (below). No commit message carries a line or keyword that stops GitHub's workflows, such as GitHub's bracket keywords (`[skip ci]`, `[ci skip]`, `[no ci]`, `[skip actions]`, `[actions skip]`), which start no workflow wherever they stand: every head you push needs its checks, and a base that requires a check will not merge a head whose checks never ran. `jj git push` refuses a remote branch that moved because another role pushed: report the refusal to the architect with its output, and never force. A pushed commit is never rewritten: answer a wrong one with a follow-up commit or a line in the pull request body (`skill://legion-worker/references/conflicts-and-rewrites.md`, "A wrong pushed commit").
 
