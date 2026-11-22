@@ -555,6 +555,9 @@ var mintedShapes = map[string]struct {
 	sha256                 string
 	servesNone, servesList bool
 }{
+	// A token the minter asked for with no repositories, of an installation on every repository:
+	// repository_selection "all", and no list.
+	"installation-all.json": {"f4e0a5a429f6cd9b70db330dd20acb07e79b959f738ce38f596d5afc9770338b", true, false},
 	// A token the minter asked for with no repositories, of an installation on selected
 	// repositories: its own list and the installation's, equal.
 	"installation-list.json": {"3fcbe6dc6fdc123bffa0498e045c0d40764b7c41bdbd0d5ef54d8e1a938c511d", true, true},
@@ -612,7 +615,8 @@ func oneEntry(t *testing.T, value string) fixtureEntry {
 }
 
 // TestTheFixturesOfTheMintersShapesAreReadAndServedAsEachShapeSays reads each file of
-// testdata/minted-shapes/, held to its sha256 pin, and serves it as its shape says: the
+// testdata/minted-shapes/, held to its sha256 pin, and serves it as its shape says: a token of
+// every repository to a profile naming no repositories, and not to one naming some; the
 // installation's own list to a profile naming no repositories and to one naming that list; a
 // profile's own list to a profile naming it, and not to one naming none; the all-except-protected
 // token to a profile naming no repositories, and not to one naming some. The directory must hold
