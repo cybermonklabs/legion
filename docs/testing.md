@@ -644,6 +644,30 @@ Two scratch tests checked it, each with the 10 s clock and with this wait:
 - 24 rooms whose appends were each held 4 s on their connection settled in about 12 s. The clock failed 8 of the rooms in each of 2 runs, and this wait passed 3 of 3 with the 9 s bound and 1 of 1 with the 16 s one.
 - An append that another transaction's hold on the document's lock kept from landing failed both: the clock at 10 s, and this wait at 9.1 s with the 9 s bound and at 16.0 and 16.2 s with the 16 s one, naming the stall and the room's counts.
 
+## A test that reads a model request's messages
+
+Oh My Pi sends its date/cwd reminder (`<system-reminder>\nToday: …`) with a model request: ahead
+of a user turn that is new since the session's previous request, or, when the local date or the
+working directory has changed since then and the request holds no such turn, as a message of its
+own after the request's newest message, where it stays in every later request. A run that crosses
+midnight therefore sends requests that a run within one day does not, and a test that takes a
+request's last message for the one that started its turn, or reads a message by its place or its
+exact text, fails for the date alone. The stall watch's restart row did, in merge-group run
+44963211024, whose case ran across midnight UTC: the turn ran, and its request ended with the
+reminder.
+
+- Read a stand-in's requests through `ownMessages` and `newestMessage`
+  (`packages/pi-shared/test/omp-harness.ts`), which give the messages as the session sent them,
+  without the reminder in either form, and tell a side turn with `isSelfCheck`, which reads the
+  newest of them. The daemon's live proofs skip the reminder message with `isDateCwdReminder`
+  (`packages/daemon/internal/daemon/claim_compaction_live_test.go`).
+- A plugin's own context hook needs neither: it runs before the provider transform that adds the
+  reminder (`agent-loop.ts` of the pinned Oh My Pi).
+- Prove such a read with the date moved inside the host: start omp with `TZ=Etc/GMT+12`, and set
+  `process.env.TZ = "Etc/GMT-14"` from an extension of the pane at the moment the row needs. The
+  two zones are 26 hours apart, so the local date moves on whatever the time of day, and Bun
+  applies a TZ set at run time.
+
 ## A writer a test holds
 
 A test that needs a live socket's writer held, so that frames queue behind it while the test
