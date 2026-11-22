@@ -508,7 +508,7 @@ func (w *workflowRuntime) catchUpWindow(ctx context.Context, root catchUpRoot, f
 		// root's spec gate holds under the rule of a change request carries the change request read
 		// at that version (changeRequestOfGate). A read that fails is read again at the next boot.
 		if version, ok := fact.(intake.DispatchArtifact); ok && version.Kind == intake.DispatchArtifactVersion {
-			read, err := changeRequestOfGate(ctx, w.pool, w.records, w.dispatch, version.Key, version.ArtifactID, version.Version)
+			read, err := changeRequestOfGate(ctx, w.log, w.pool, w.records, w.dispatch, version.Key, version.ArtifactID, version.Version)
 			if err != nil {
 				if ctx.Err() != nil {
 					return 0, 0, err

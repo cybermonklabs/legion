@@ -2522,7 +2522,7 @@ func (w *workflowRuntime) labelSetter(ctx context.Context, key string) (string, 
 // which queues nothing.
 func (w *workflowRuntime) prepareArtifact(ctx context.Context, fact intake.DispatchArtifact) (intake.DispatchArtifact, error) {
 	if fact.Kind == intake.DispatchArtifactVersion {
-		read, err := changeRequestOfGate(ctx, w.pool, w.records, w.dispatch, fact.Key, fact.ArtifactID, fact.Version)
+		read, err := changeRequestOfGate(ctx, w.log, w.pool, w.records, w.dispatch, fact.Key, fact.ArtifactID, fact.Version)
 		if err != nil {
 			return fact, fmt.Errorf("prepare version %d of %s's document %s: %w", fact.Version, fact.Key, fact.ArtifactID, err)
 		}

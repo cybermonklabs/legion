@@ -3751,7 +3751,7 @@ func (r *outbox) seedGate(ctx context.Context, row record.OutboxRow, payload rec
 	// reads of that version, so a version that proposes nothing keeps the gate open, or opens it,
 	// with no person (R23); the reset of a gate above Dispatch reads it the same way.
 	if fact.Kind == intake.DispatchArtifactVersion {
-		read, err := changeRequestOfGate(ctx, r.pool, r.records, r.dispatch, row.Issue, payload.ArtifactID, fact.Version)
+		read, err := changeRequestOfGate(ctx, r.log, r.pool, r.records, r.dispatch, row.Issue, payload.ArtifactID, fact.Version)
 		if err != nil {
 			return err
 		}

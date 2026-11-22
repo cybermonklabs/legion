@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -20,12 +21,16 @@ import (
 // changeRequestOfGate is what a version of key's document artifactID carries of key's change
 // request at version, read before the version is applied, since the workflow performs no I/O: the
 // read when key's spec gate holds that document under the rule of a change request (R23), and nil
-// for every other document and gate, and for a Dispatch older than the route (dispatch.NoRoute),
-// whose version then closes the gate as a version always has. A read Dispatch fails is an error,
-// so the caller reads again rather than apply the version unread. The live event's preparation,
-// the gate seed and the boot catch-up all read through it, so every path that applies a version
-// of such a document reads it the same way.
-func changeRequestOfGate(ctx context.Context, pool *store.Pool, records record.Store, client dispatch.Client, key, artifactID string, version int) (*intake.ChangeRequestRead, error) {
+// for every other document and gate. It is nil too for a Dispatch older than the route
+// (dispatch.NoRoute), and for a read Dispatch refuses for good (dispatch.PermanentRefusal: a
+// version whose text does not parse, CHANGE_REQUEST_UNREADABLE, or one Dispatch does not hold,
+// VERSION_NOT_FOUND), which is logged: no later read of that version answers otherwise, so the
+// version closes the gate as a version always has, rather than wait unapplied while the gate
+// stays open at an older version. Any other read Dispatch fails is an error, so the caller reads
+// again rather than apply the version unread. The live event's preparation, the gate seed and the
+// boot catch-up all read through it, so every path that applies a version of such a document
+// reads it the same way.
+func changeRequestOfGate(ctx context.Context, log *slog.Logger, pool *store.Pool, records record.Store, client dispatch.Client, key, artifactID string, version int) (*intake.ChangeRequestRead, error) {
 	var gate *record.DesignGate
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		gates, err := records.GatesOf(ctx, tx, key)
@@ -39,6 +44,11 @@ func changeRequestOfGate(ctx context.Context, pool *store.Pool, records record.S
 	}
 	read, err := client.ChangeRequest(ctx, key, version)
 	if dispatch.NoRoute(err) {
+		return nil, nil
+	}
+	if refusal, permanent := dispatch.PermanentRefusal(err); permanent {
+		log.Warn("the change request of a version is refused by Dispatch for good; the version is applied unread and closes the gate",
+			"issue", key, "artifact", artifactID, "version", version, "status", refusal.Status, "code", refusal.Code, "error", err)
 		return nil, nil
 	}
 	if err != nil {
