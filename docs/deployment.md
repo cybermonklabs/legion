@@ -162,8 +162,8 @@ command it cannot read for certain (an option the leaf's
 help does not list or names a repository with in a way it does not know, a subcommand gh does not
 know, a first word gh's own help does not list, anything before the command but `-R` and
 `--help`, an argument the leaf's usage has no place for or names in a way it does not know, a
-search qualifier gh or GitHub could read otherwise, a gh alias or an extension, run or named as
-`gh help`'s target, whose help it never reads since reading it runs them, `gh copilot` and `gh
+search qualifier gh or GitHub could read otherwise, a gh alias or an extension other than `gh
+stack` below, run or named as `gh help`'s target, whose help it never reads since reading it runs them, `gh copilot` and `gh
 extension exec`), one whose repositories route to two directories (two owners' repositories, an
 option or a second repository naming one owner while gh acts on another's, a workspace whose
 remotes name two but for the marked `origin` above, or a repository a configured rename moved
@@ -177,6 +177,31 @@ Legion's wrapper (a script
 that execs `legion gh` by its absolute path), and every command under a `GH_HOST` other than
 `github.com` or a set `GH_TOKEN` or `GITHUB_TOKEN` are refused with exit 2, naming the argument,
 and send nothing.
+`gh stack`, the github/gh-stack extension the worker image ships, is the one extension it runs,
+with nothing before `stack`, and with its command's name first: before the name, gh-stack's
+parser reads a flag as taking the next word, so only `gh stack --help` or `--version` alone may
+stand there, and a help given a value, which can turn it off, is refused. It runs the image's
+copy itself, not through gh, and only where `/opt/legion/gh-extensions/gh-stack/gh-stack` is a
+regular executable file that is root's, in directories that are root's, none writable by
+another, so a pane, which has none, refuses it.
+gh-stack acts on the one repository go-gh resolves, `GH_REPO` where set and otherwise one of the
+working directory's `github.com` remotes or a `gh-resolved` setting's repository, and none of its
+arguments names another (a pull request URL is read for its number); its git pushes to and
+fetches from the working directory's remotes. So it runs with the directory `GH_REPO` and every
+remote line and setting of the working directory route to, and is refused where those route to
+two. gh-stack hands `--remote`, branches and other values to `git fetch` and `git push`, where
+one that starts with `-` is an option of git's own (`--upload-pack=<command>` runs that
+command), so every flag is read against the pinned release's, and an unknown flag or command,
+`--`, a value that starts with `-` and a `--remote` that names no listed remote are refused.
+`submit` without `--auto` is refused, since its editor writes pull request text no guard reads,
+and so are `alias` and `feedback`. `submit` and `link` must find one repository, the one their
+pushes went to, and hand the guard the pull request template they would post. Its update check,
+which reads github/gh-stack's releases with the call's token, is off for every call.
+This reads the call, not the repository: the wrapper is a routing and correctness tool, not a
+boundary against the pod's own agent. A party that can write the pod's `.git` (its
+configuration, hooks, remotes or gh-stack's stack files) can already read the pod's tokens, so
+what gh-stack's git does with such state is out of its scope; the Cipher airlock is to replace
+`legion gh`.
 A read that names only owners the bundle holds no directory for runs, rather than being refused,
 with the token of `GH_CONFIG_DIR`, the directory a command naming no owner runs with
 (`selectors.dir`): a call `ghWritesNothing` admits, or `gh api graphql` in the one form

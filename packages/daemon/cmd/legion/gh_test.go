@@ -506,8 +506,10 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"-R", "sjawhar/legion", "--version", "hello"}, help: ghWithAnExtensionAndANestedAlias, err: `"--version" comes before the command's name`},
 		{argv: []string{"--help", "--version"}, err: `"--version" comes before the command's name`},
 		// A first word gh's own help does not list, whose help gh may answer by installing an
-		// extension, and the commands that run another program on gh's token.
-		{argv: []string{"stack", "view"}, err: `"stack" is no command gh's own help lists`},
+		// extension, and the commands that run another program on gh's token. `stack`, the one
+		// extension this runs, reads every flag against the pinned gh-stack's (ghStackCommands).
+		{argv: []string{"stack", "view", "--bogus"}, err: `has no flag "--bogus"`},
+		{argv: []string{"poi", "list"}, err: `"poi" is no command gh's own help lists`},
 		{argv: []string{"ext", "exec", "hello"}, err: `"ext" is no command gh's own help lists`},
 		{argv: []string{"extension", "exec", "hello"}, err: "`gh extension exec` runs another program"},
 		{argv: []string{"help", "extension", "exec"}, err: "`gh extension exec` runs another program"},

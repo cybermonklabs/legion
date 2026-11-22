@@ -295,14 +295,15 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{nil, []string{"issue", "edit", "https://github.com/sjawhar/legion/issues/1", "https://github.com/sjawhar/legion/issues/2", "--title", "capture"}, "sjawhar", ""},
 		{nil, []string{"issue", "edit", "https://github.com/sjawhar/legion/issues/1", "https://github.com/acme/widgets/issues/2", "--title", "capture"}, "", "more than one owner"},
 		// The final gates' at 96e1672cd: --version before a word gh runs as an alias or an
-		// extension; `gh extension exec`; a first word gh's help does not list, an official
-		// extension's stub gh installs under CI; an option naming a repository; gh api's colon
-		// placeholders, filled from GH_REPO.
+		// extension; `gh extension exec`; an official extension's stub gh installs under CI, which
+		// `legion gh` never reaches, since `gh stack` runs the image's gh-stack and is refused where
+		// there is none, as here; an
+		// option naming a repository; gh api's colon placeholders, filled from GH_REPO.
 		{nil, []string{"--version", "hello"}, "", `"--version" comes before the command's name`},
 		{nil, []string{"--version", "shx"}, "", `"--version" comes before the command's name`},
 		{nil, []string{"-R", "sjawhar/legion", "--version", "hello"}, "", `"--version" comes before the command's name`},
 		{nil, []string{"extension", "exec", "hello"}, "", "`gh extension exec` runs another program"},
-		{[]string{"CI=1"}, []string{"stack"}, "", `"stack" is no command gh's own help lists`},
+		{[]string{"CI=1"}, []string{"stack"}, "", "runs the image's gh-stack"},
 		{nil, []string{"repo", "sync", "acme/widgets", "--source", "sjawhar/legion"}, "", "more than one owner"},
 		{[]string{"GH_REPO=sjawhar/legion"}, []string{"api", "graphql", "-F", "o=:owner", "-F", "r=:repo", "-f", "query=query($o:String!,$r:String!){repository(owner:$o,name:$r){id}}"}, "sjawhar", ""},
 		// Controls: the issue owner's repository, a command naming none, and an option the leaf's

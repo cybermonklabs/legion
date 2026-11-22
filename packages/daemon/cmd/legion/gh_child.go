@@ -43,7 +43,11 @@ func ghChildEnviron(environ []string, set map[string]string) []string {
 // holds, beside the GH_CONFIG_DIR, GH_PATH and GH_PAGER runGh sets per call:
 //
 //   - GH_NO_UPDATE_NOTIFIER and GH_PROMPT_DISABLED, so gh asks no question and checks for no
-//     update, which a TTY would otherwise reach;
+//     update, which a TTY would otherwise reach, and GH_STACK_NO_UPDATE_NOTIFIER, so the image's
+//     gh-stack makes no update check either, which would read github/gh-stack's latest release
+//     with the token of the call's directory on every command but help (gh-stack v0.3.0
+//     internal/update/update.go, Enabled and Check); it reads the release it runs from a
+//     manifest.yml beside it, which the image installs none of, so this is a second stop;
 //   - GH_EDITOR, ghNoEditor, so an editor gh starts fails before it writes anything;
 //   - GH_TELEMETRY=0, which gh reads ahead of DO_NOT_TRACK and its config and takes as off
 //     (cli/cli v2.104.0 internal/telemetry/telemetry.go:90,104-129);
@@ -55,12 +59,13 @@ func ghChildEnviron(environ []string, set map[string]string) []string {
 //     (ghRepoGitConfigRefusal), and the command line ghChildGitConfig and withGitHubUseHTTPPath
 //     give it.
 var ghChildForced = map[string]string{
-	"GH_NO_UPDATE_NOTIFIER": "1",
-	"GH_PROMPT_DISABLED":    "1",
-	"GH_EDITOR":             ghNoEditor,
-	"GH_TELEMETRY":          "0",
-	"GIT_CONFIG_GLOBAL":     "/dev/null",
-	"GIT_CONFIG_NOSYSTEM":   "1",
+	"GH_NO_UPDATE_NOTIFIER":       "1",
+	"GH_STACK_NO_UPDATE_NOTIFIER": "1",
+	"GH_PROMPT_DISABLED":          "1",
+	"GH_EDITOR":                   ghNoEditor,
+	"GH_TELEMETRY":                "0",
+	"GIT_CONFIG_GLOBAL":           "/dev/null",
+	"GIT_CONFIG_NOSYSTEM":         "1",
 }
 
 // ghChildTestEnviron is what this package's tests hand gh on top of its environment, set by their

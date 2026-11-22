@@ -236,6 +236,10 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 			return status
 		}
 	}
+	if err == nil && target.command == "stack" {
+		// `gh stack` runs the image's gh-stack itself, not through gh (gh_stack.go).
+		err = ghStackBinaryIsTheImages()
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "legion gh: %v\n", err)
 		return 2
@@ -337,6 +341,14 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		return 2
 	}
 	set := map[string]string{"GH_CONFIG_DIR": dir, "GH_PATH": wrapper, leakguard.RunByRealGhVar: gh}
+	program, programArgs := gh, args
+	if target.command == "stack" {
+		// The image's gh-stack, with what gh would hand it: its arguments after `stack`, and
+		// GH_EXTENSION=1, which tells it gh ran it (cli/cli v2.98.0 pkg/cmd/extension/manager.go,
+		// Dispatch).
+		program, programArgs = ghStackBinary, args[1:]
+		set["GH_EXTENSION"], set[leakguard.RunByRealGhVar] = "1", ghStackBinary
+	}
 	// A call no private-name pass read runs no pager program: such a program runs with this call's
 	// token directory and could write what that pass never read. Its pager is cat, which gh reads
 	// as no pager (GH_PAGER outranks gh's config `pager`; gh starts a pager only when its standard
@@ -359,7 +371,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	if status, ok := signalled(beforeGh); ok {
 		return status
 	}
-	return runGhChild(ctx, gh, args, childEnv, buffered, stderr)
+	return runGhChild(ctx, program, programArgs, childEnv, buffered, stderr)
 }
 
 // ghCallMode is what runGh does with a call before gh runs it, decided once per call
@@ -901,6 +913,12 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 		case strings.HasPrefix(arg, "-"):
 			return ghTarget{}, cannotPlace(arg, "comes before the command's name, and only -R/--repo and --help may", false)
 		default:
+			if len(walk.path) == 0 && arg == "stack" {
+				if len(rest) > 0 {
+					return ghTarget{}, cannotPlace(rest[0], "comes before `stack`, the image's gh-stack extension, which takes nothing before its name", false)
+				}
+				return ghStackTarget(argv[i+1:], env, remotes, dirFor)
+			}
 			if err := walk.check(arg); err != nil {
 				return ghTarget{}, err
 			}

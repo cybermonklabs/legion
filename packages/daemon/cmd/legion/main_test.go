@@ -58,6 +58,12 @@ func TestMain(m *testing.M) {
 		if curl := os.Getenv(testCurlEnv); curl != "" {
 			leakguardCurl = curl
 		}
+		// A test's stand-in gh-stack, which the test owns, for the image's root-owned copy at
+		// /opt/legion/gh-extensions. Only this test binary reads the variable; the legion binary
+		// runs the image's copy alone (ghStackBinary).
+		if stack := os.Getenv(testGhStackEnv); stack != "" {
+			ghStackBinary, ghStackOwner = stack, os.Getuid()
+		}
 		// The environment these tests hand gh beside ghChildEnviron's allowlist
 		// (testGhChildEnviron); the legion binary has no such hook.
 		ghChildTestEnviron = testGhChildEnviron(os.Environ())

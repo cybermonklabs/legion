@@ -1,0 +1,19 @@
+kind: Added
+body: |-
+    `legion gh stack …` runs the worker image's gh-stack, the one gh extension the pod's `gh`
+    wrapper runs, with the token of the owner of the repository it acts on: GH_REPO where set
+    and the working directory's github.com remotes, refused where they name two owners. It runs
+    the image's root-owned copy at /opt/legion/gh-extensions/gh-stack directly, so no other
+    program named gh-stack and no gh alias gets the token. Every flag is read against gh-stack
+    0.3.0's own, with its command's name first, because gh-stack hands --remote, branches and
+    other values to `git fetch` and `git push`, where a value that starts with `-` would run a
+    command: such a value, an unknown flag or command, a flag before the command's name, a help
+    given a value, `--`, and a --remote that names no listed remote are refused. `gh stack
+    submit` needs --auto, since its editor writes pull request text no guard reads, and the pull
+    request template `submit` and `link` post goes to the leak guard. `gh stack alias` and
+    `gh stack feedback` are refused. It reads the call, not the repository's own state, which a
+    party that can write the pod's `.git` controls and that party can already read the pod's
+    tokens.
+time: 2026-11-22T08:34:40Z
+custom:
+    Issue: pr4975
