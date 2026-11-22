@@ -338,14 +338,17 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 	backlog := seedKeywordBacklog(t, server.database, server.deps.Events, 4000)
 	last := backlog[len(backlog)-1].ID
 	issue := createInteractionIssue(t, server.handler, "TEST", "Rotate the signing keys", "# Rotation\n")
-	// The fill is held back at its cursor (textversions.HoldFillBack) from before it starts until
-	// the answers read below has turned slow, so its first batch waits at the cursor row until
-	// then. Let run from the start, a fill on a fast machine writes the whole backlog in less than
-	// the 800 ms an answers read needs to turn slow (sessionanswers.SlowRead), and is caught up,
-	// with nothing left to pause, before the read is slow.
+	// The fill is held back at its cursor from before it starts until the answers read below has
+	// turned slow, so its first batch waits at the cursor row until then. Let run from the start, a
+	// fill on a fast machine writes the whole backlog in less than the 800 ms an answers read needs
+	// to turn slow (sessionanswers.SlowRead), and is caught up, with nothing left to pause, before
+	// the read is slow. The hold is the cursor table's lock in exclusive mode, which a batch's take
+	// of the cursor row (`for update`) waits behind and which takes no transaction id: a row lock
+	// would take one, and the event horizon the fill reads before each batch then stays unproven
+	// until the hold ends, so the fill would wait there instead of at the cursor.
 	fillHold, _ := textversionstest.BeginTransaction(t, server.database)
 	defer func() { _ = fillHold.Rollback(context.Background()) }()
-	if err := textversions.HoldFillBack(t.Context(), fillHold); err != nil {
+	if _, err := fillHold.Exec(t.Context(), `lock table search_text_versions_fill in exclusive mode`); err != nil {
 		t.Fatalf("hold the fill back at its cursor: %v", err)
 	}
 	fill := startKeywordFill(t, server)
