@@ -218,10 +218,13 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The socket's admission lives on a request context of its own: the answer to the Hocuspocus
 	// token this socket sends is that admission and no other's (authorizeSchemaVersion), since two
 	// sockets of one room can present one token, and cancelling that context with errSchemaRevoked
-	// is how a re-check closes the socket (RunSchemaAdmission).
+	// is how a re-check closes the socket (RunSchemaAdmission). That cancel, or the request's own
+	// end (the API ends a socket whose credential has ended), ends the socket on its connection
+	// before it returns: nothing more of the room goes out, and nothing the page sends comes in
+	// (socket_end.go).
 	ctx, cancel := context.WithCancelCause(r.Context())
 	defer cancel(nil)
-	connection := &connectionState{actor: actor, issue: issue, admission: &schemaAdmission{cancel: cancel}}
+	connection := &connectionState{actor: actor, issue: issue, admission: &schemaAdmission{cancel: cancel, end: newSocketEnd(ctx, r.Context())}}
 	defer func() {
 		s.schemaAdmissions.remove(connection.admission)
 		s.releaseRoom(room)
@@ -253,8 +256,9 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	connection.admission.documentSince = documentSince
 	ctx = context.WithValue(ctx, connectionContextKey{}, connection)
 	// The awareness clients the socket's peer may announce are bounded before ygo reads its
-	// frames (awareness_limit.go).
-	s.srv.ServeHTTP(&awarenessLimitWriter{ResponseWriter: w, room: room}, r.WithContext(ctx))
+	// frames (awareness_limit.go), and the socket's end is kept on the same connection, in both
+	// directions (socket_end.go).
+	s.srv.ServeHTTP(&awarenessLimitWriter{ResponseWriter: w, room: room, end: connection.admission.end}, r.WithContext(ctx))
 }
 
 // ProcessHeader names, on every answer to a document socket's request and on its upgrade above

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -580,11 +581,15 @@ const (
 	revokedServerEndBound = ygoCloseFrameTimeout + 1500*time.Millisecond
 )
 
-// postRevokeMarker is the word the edit made straight after the revoke writes into every
-// paragraph, so that edit is told apart from the seeded text in both places it matters: the bytes
-// the server writes to the revoked socket, where it must never appear, and the document the
-// page's reconnect syncs, where it must.
-const postRevokeMarker = "afterrevoke"
+// newPostRevokeMark is a word no document of the test holds and no other edit writes: the edit
+// made straight after the revoke writes it into every paragraph, so that edit is told apart from
+// everything else in both places it matters - the bytes the server writes to the revoked socket,
+// where it must never appear, and the document the page's reconnect syncs, where it must. A
+// fixed word would also be told apart from the seeded text, but not from another edit of the same
+// test; one per edit is.
+func newPostRevokeMark() string {
+	return fmt.Sprintf("afterrevoke%016x", rand.Uint64())
+}
 
 // A page on a slow link takes nothing from its socket for longer than the revoked close waits, so
 // it reads the connection's end as 1006 rather than 4412 and loses nothing by it; the rule is in
@@ -602,10 +607,12 @@ const postRevokeMarker = "afterrevoke"
 //   - the server closes its side of that socket, and its ServeHTTP returns, within
 //     revokedServerEndBound of the revoke;
 //   - no document byte reaches that socket after the revoke: one more edit goes into the room
-//     straight after it, and no write that began after the revoke carries a byte that is not the
-//     admission-revoked close frame, nor does any write carry a byte once the socket is closed. A
-//     write that began before the revoke and returned after it is the message already in flight,
-//     which the close waits for;
+//     straight after it, and of the frames the socket carries past those its connection had let
+//     out when the revoke came (socketEnd), each is the rest of the message going out then, which
+//     the close waits for, or the admission-revoked close frame; and that edit's own mark is in
+//     no byte the socket carries. That boundary is the connection's own count, taken under the
+//     lock every frame is decided under, so the verdict is the order of the revoke and the frames
+//     and no clock's;
 //   - the bytes the server wrote to that socket are whole websocket frames throughout, and end
 //     either on that close frame or at a cut the page reads as 1006 - never a frame cut in half
 //     and resumed, never another close code, and never a byte after a close;
@@ -694,8 +701,8 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 
 	// One more edit, straight after the revoke. The room broadcasts each update to every socket it
 	// still serves, so a revoke that has not ended this one sends this edit down it too.
-	editAsBrowser(t, service, artifactID, writer,
-		strings.ReplaceAll(markdown, "document ", postRevokeMarker+" "))
+	mark := newPostRevokeMark()
+	editAsBrowser(t, service, artifactID, writer, strings.ReplaceAll(markdown, "document ", mark+" "))
 
 	// The revoke's own work, and all of it: the server has closed that socket and its ServeHTTP
 	// has returned. Within revokedServerEndBound of the revoke this is the revoke's doing, since
@@ -708,11 +715,19 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	if took := closedAt.Sub(revokedAt); took > revokedServerEndBound {
 		t.Fatalf("the server closed its side of the revoked page's socket %v after the revoke, past %v", took, revokedServerEndBound)
 	}
-	requireNothingWrittenAfterTheRevoke(t, writes, revokedAt, closedAt)
+	framesBefore, ended := revoked[0].end.framesWrittenBeforeEnd()
+	if !ended {
+		t.Fatal("the revoke cancelled the slow page's socket without its connection seeing the end")
+	}
+	requireNothingAfterTheRevoke(t, writes, framesBefore)
+	stream := streamOf(writes)
+	if at := bytes.Index(stream, []byte(mark)); at >= 0 {
+		t.Fatalf("the edit made after the revoke reached the revoked page's socket: its mark %q is %d bytes into what the server wrote there", mark, at)
+	}
 
 	// What the page reads, read off the bytes the server wrote to it: TCP delivers exactly these,
 	// in this order, and then the connection's end.
-	read, err := readServerStream(streamOf(writes))
+	read, err := readServerStream(stream)
 	if err != nil {
 		t.Fatalf("the bytes the server wrote to the revoked page are not an end its provider reconnects on: %v", err)
 	}
@@ -726,8 +741,8 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the server's document: %v", err)
 	}
-	if !strings.Contains(want, postRevokeMarker) {
-		t.Fatalf("the server's document does not hold the edit made after the revoke (%q), so the reconnect below would prove nothing about it", postRevokeMarker)
+	if !strings.Contains(want, mark) {
+		t.Fatalf("the server's document does not hold the edit made after the revoke (%q), so neither the check of the revoked socket's bytes above nor the reconnect below proves anything about it", mark)
 	}
 	// The reconnect is that page on a new socket of the same room, read-only now: the fleet that
 	// revoked it admits it no other way. What it syncs must be the whole document.
@@ -783,34 +798,54 @@ func requireRevokedSocketEnded(t *testing.T, admissions *schemaAdmissions, admis
 	}
 }
 
-// requireNothingWrittenAfterTheRevoke fails unless every write to a revoked socket that began
-// after revokedAt carried nothing but, at most, one admission-revoked close frame, and no write at
-// all carried a byte once the server had closed the socket at closedAt. A write that began before
-// the revoke and returned after it is the message the close waits for, and is left alone. A write
-// with no bytes recorded was still running when the record was taken, which cannot happen here:
-// the caller reads the record once ServeHTTP has returned and the connection is closed.
-func requireNothingWrittenAfterTheRevoke(t *testing.T, writes []socketWrite, revokedAt, closedAt time.Time) {
+// requireNothingAfterTheRevoke fails unless, of the frames a revoked socket's writes carried,
+// every one past the first framesBefore - those its connection had let out when the revoke came -
+// is the next frame of the data message going out then, which the close waits for, or the one
+// admission-revoked close frame, and no write carried a byte once the server had closed the
+// socket.
+func requireNothingAfterTheRevoke(t *testing.T, writes []socketWrite, framesBefore int) {
 	t.Helper()
-	closes := 0
 	for i, write := range writes {
-		if len(write.bytes) == 0 {
-			continue
+		if write.afterClose && len(write.bytes) > 0 {
+			t.Fatalf("write %d of %d to the revoked page's socket carried %d bytes, having begun once the server had closed that socket",
+				i+1, len(writes), len(write.bytes))
 		}
-		if write.startedAt.After(closedAt) {
-			t.Fatalf("write %d of %d to the revoked page's socket carried %d bytes, having begun %v after the server closed that socket",
-				i+1, len(writes), len(write.bytes), write.startedAt.Sub(closedAt))
+	}
+	stream := streamOf(writes)
+	head := bytes.Index(stream, []byte("\r\n\r\n"))
+	if head < 0 {
+		t.Fatalf("the %d bytes the server wrote to the revoked page hold no whole HTTP response head", len(stream))
+	}
+	inMessage, closes := false, 0
+	for i, rest := 0, stream[head+4:]; len(rest) > 0; i++ {
+		frame, after, err := nextServerFrame(rest)
+		if err != nil {
+			t.Fatalf("frame %d of the revoked page's stream: %v", i+1, err)
 		}
-		if !write.startedAt.After(revokedAt) {
-			continue
+		if i >= framesBefore {
+			switch {
+			case frame.opcode == opcodeContinuation && inMessage:
+			case frame.opcode == opcodeClose && len(frame.payload) >= 2:
+				if code := int(binary.BigEndian.Uint16(frame.payload)); code != contracts.DocumentAdmissionRevokedCloseCode {
+					t.Fatalf("frame %d of the revoked page's stream, after the revoke, closes with code %d, want the admission-revoked %d",
+						i+1, code, contracts.DocumentAdmissionRevokedCloseCode)
+				}
+				if closes++; closes > 1 {
+					t.Fatalf("the server wrote %d close frames to the revoked page's socket after the revoke, want at most one", closes)
+				}
+			default:
+				t.Fatalf("frame %d of the revoked page's stream came after the revoke (its connection had let out %d frames when the revoke came) and is a frame of opcode %#x carrying %d bytes, neither the rest of the message going out then nor the admission-revoked close: the revoke must end that socket before the room's next update reaches it",
+					i+1, framesBefore, frame.opcode, frame.length)
+			}
 		}
-		code, isClose := closeFrameCode(write.bytes)
-		if !isClose || code != contracts.DocumentAdmissionRevokedCloseCode {
-			t.Fatalf("write %d of %d to the revoked page's socket began %v after the revoke and carried %d bytes that are not the admission-revoked close frame (first bytes %x): the revoke must end that socket before the room's next update reaches it",
-				i+1, len(writes), write.startedAt.Sub(revokedAt), len(write.bytes), write.bytes[:min(len(write.bytes), 16)])
+		switch frame.opcode {
+		case opcodeText, opcodeBinary, opcodeContinuation:
+			inMessage = !frame.final
 		}
-		if closes++; closes > 1 {
-			t.Fatalf("the server wrote %d close frames to the revoked page's socket after the revoke, want at most one", closes)
+		if !frame.whole {
+			break
 		}
+		rest = after
 	}
 }
 
@@ -1046,13 +1081,13 @@ func (l *recordingListener) find(remote string) *serverSocket {
 	return nil
 }
 
-// socketWrite is one Write to a server socket: when it began, whether it has returned, and the
-// bytes the connection accepted of it - the n it returned - which are the bytes that went on the
-// wire.
+// socketWrite is one Write to a server socket: whether it began once the server had closed the
+// socket, whether it has returned, and the bytes the connection accepted of it - the n it
+// returned - which are the bytes that went on the wire.
 type socketWrite struct {
-	startedAt time.Time
-	returned  bool
-	bytes     []byte
+	afterClose bool
+	returned   bool
+	bytes      []byte
 }
 
 // serverSocket is the server's end of one accepted connection, recording every write and when
@@ -1069,7 +1104,7 @@ type serverSocket struct {
 func (s *serverSocket) Write(payload []byte) (int, error) {
 	s.mu.Lock()
 	at := len(s.writes)
-	s.writes = append(s.writes, socketWrite{startedAt: time.Now()})
+	s.writes = append(s.writes, socketWrite{afterClose: !s.closedAt.IsZero()})
 	s.mu.Unlock()
 	n, err := s.Conn.Write(payload)
 	s.mu.Lock()
@@ -1118,12 +1153,14 @@ const (
 	opcodePong         byte = 0xa
 )
 
-// websocketFrame is one frame at the head of a server's byte stream: its opcode, the payload
-// bytes the stream holds of it, the payload length its header declares - which is what the server
-// wrote, whole or part way out - and whether the stream held the whole frame. A frame whose
-// header is itself cut short declares nothing, so its length is the bytes it holds.
+// websocketFrame is one frame at the head of a server's byte stream: its opcode, whether it ends
+// its message, the payload bytes the stream holds of it, the payload length its header declares -
+// which is what the server wrote, whole or part way out - and whether the stream held the whole
+// frame. A frame whose header is itself cut short declares nothing, so its length is the bytes it
+// holds.
 type websocketFrame struct {
 	opcode  byte
+	final   bool
 	payload []byte
 	length  int
 	whole   bool
@@ -1172,20 +1209,9 @@ func nextServerFrame(stream []byte) (websocketFrame, []byte, error) {
 	}
 	body := stream[header:]
 	if length > uint64(len(body)) {
-		return websocketFrame{opcode: opcode, payload: body, length: int(length)}, nil, nil
+		return websocketFrame{opcode: opcode, final: stream[0]&0x80 != 0, payload: body, length: int(length)}, nil, nil
 	}
-	return websocketFrame{opcode: opcode, payload: body[:length], length: int(length), whole: true}, body[length:], nil
-}
-
-// closeFrameCode reads payload as one whole close frame of a server's and returns the code it
-// carries. Anything else - a data frame, a frame cut short, a frame with bytes after it, a close
-// with no code - is not one.
-func closeFrameCode(payload []byte) (int, bool) {
-	frame, after, err := nextServerFrame(payload)
-	if err != nil || !frame.whole || frame.opcode != opcodeClose || len(after) > 0 || len(frame.payload) < 2 {
-		return 0, false
-	}
-	return int(binary.BigEndian.Uint16(frame.payload)), true
+	return websocketFrame{opcode: opcode, final: stream[0]&0x80 != 0, payload: body[:length], length: int(length), whole: true}, body[length:], nil
 }
 
 // serverStreamEnd is how the bytes a server wrote to one socket end, which is the end its page

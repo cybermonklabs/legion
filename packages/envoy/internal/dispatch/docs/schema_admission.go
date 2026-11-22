@@ -88,10 +88,10 @@ type schemaAdmissionKey struct {
 }
 
 // schemaAdmission is one document socket's admission: what its page presented, the documentSince
-// it was admitted against, whether it was admitted writable, and the cancel of the request context
-// ygo serves that socket on. revoked is set once a re-check has closed the socket (revokeUnless).
-// It travels on the socket's own request context (connectionState), which is how the answer to
-// that socket's token finds it and no other's.
+// it was admitted against, whether it was admitted writable, the cancel of the request context
+// ygo serves that socket on, and what that socket's connection writes. revoked is set once a
+// re-check has closed the socket (revokeUnless). It travels on the socket's own request context
+// (connectionState), which is how the answer to that socket's token finds it and no other's.
 type schemaAdmission struct {
 	key           schemaAdmissionKey
 	page          schemaPage
@@ -102,6 +102,10 @@ type schemaAdmission struct {
 	// the peer that cause's close frame and close the connection (sjawhar/ygo
 	// provider/websocket/server.go, ServeHTTP's context watcher).
 	cancel context.CancelCauseFunc
+	// end is the socket's end as its connection keeps it (socket_end.go): once the socket's
+	// context or its request's has ended, the connection lets out only the message going out and
+	// the close, and the page's messages reach ygo as nothing, whenever the watcher runs.
+	end *socketEnd
 }
 
 // schemaAdmissions is the admission of every document socket this process serves, from authorize
@@ -146,9 +150,13 @@ func (a *schemaAdmissions) writable(admission *schemaAdmission, room, token stri
 
 // revokeUnless closes every writable socket that fleet no longer admits: it cancels the socket's
 // request context with errSchemaRevoked, on which ygo sends the peer that close frame and closes
-// the connection. The admission stays here, marked revoked, until its own ServeHTTP removes it, so
-// its token is answered read-only from then on and a later pass leaves it as it is: its connection
-// is closing. It returns the sockets it closed.
+// the connection. The cancel ends the socket's connection to every frame but the message already
+// going out and the close frame, and to every message the page sends, before it returns
+// (socketEnd), so no room update ygo writes once this has returned reaches a revoked socket, and no
+// edit its page sends after it reaches the room, however late ygo's context watcher runs. The
+// admission stays here, marked revoked, until its own ServeHTTP removes it, so its token is
+// answered read-only from then on and a later pass leaves it as it is: its connection is closing.
+// It returns the sockets it closed.
 func (a *schemaAdmissions) revokeUnless(fleet schemaFleet) []*schemaAdmission {
 	a.mu.Lock()
 	defer a.mu.Unlock()

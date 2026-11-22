@@ -19,7 +19,7 @@ const limitRoom = "0c4b4f2e-9b1f-4f9a-9c3a-1f6a2b5d7e80"
 
 // scriptedSocket is the connection a document socket's filter reads: it hands out the frames a
 // test wrote for it and then ends, and discards what ygo writes back.
-type scriptedSocket struct{ frames *bytes.Reader }
+type scriptedSocket struct{ frames io.Reader }
 
 func (s *scriptedSocket) Read(p []byte) (int, error)       { return s.frames.Read(p) }
 func (s *scriptedSocket) Write(p []byte) (int, error)      { return len(p), nil }
@@ -32,7 +32,7 @@ func (s *scriptedSocket) SetWriteDeadline(time.Time) error { return nil }
 
 // socketSending is the filter over a socket sending frames.
 func socketSending(frames ...[]byte) *awarenessLimitConn {
-	return newAwarenessLimitConn(&scriptedSocket{frames: bytes.NewReader(bytes.Join(frames, nil))}, limitRoom, nil)
+	return newAwarenessLimitConn(&scriptedSocket{frames: bytes.NewReader(bytes.Join(frames, nil))}, limitRoom, nil, nil)
 }
 
 // clientFrame is one websocket frame as a browser sends it (RFC 6455 section 5.2): masked, with

@@ -5,24 +5,31 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	gws "github.com/gorilla/websocket"
 	"github.com/reearth/ygo/crdt"
+	ygsync "github.com/reearth/ygo/sync"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // iapSocketAudience is the audience IAP signs for the test's load balancer backend service.
@@ -178,13 +185,42 @@ func TestALiveSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *testing
 
 // iapDocumentRig is a Dispatch behind IAP serving document sockets: the API and the document
 // service share one IAP identity, as cmd/dispatch hands them one, which a test may swap
-// (switched), and the sockets re-check their caller every heartbeat.
+// (switched), and the sockets re-check their caller every heartbeat. The document service the API
+// mounts records the request context it serves each socket on (servedDocuments).
 type iapDocumentRig struct {
 	iap        iapSocketKeys
 	switched   *switchedIdentity
 	server     *httptest.Server
 	sockets    *servedSockets
+	documents  *servedDocuments
 	artifactID string
+}
+
+// servedDocuments is the document service as the API mounts it, recording the request context of
+// each document socket it serves, in the order they arrive: the context the API's heartbeat ends
+// (whileCallerResolves), as the document service receives it.
+type servedDocuments struct {
+	*docs.Service
+	mu       sync.Mutex
+	contexts []context.Context
+}
+
+func (d *servedDocuments) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	d.mu.Lock()
+	d.contexts = append(d.contexts, r.Context())
+	d.mu.Unlock()
+	d.Service.ServeHTTP(w, r)
+}
+
+// served is the request context of the index-th document socket served, counting from 0.
+func (d *servedDocuments) served(t *testing.T, index int) context.Context {
+	t.Helper()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if index >= len(d.contexts) {
+		t.Fatalf("the document service has served %d sockets, not a %d-th", len(d.contexts), index+1)
+	}
+	return d.contexts[index]
 }
 
 func newIAPDocumentRig(t *testing.T, heartbeat time.Duration) *iapDocumentRig {
@@ -195,9 +231,10 @@ func newIAPDocumentRig(t *testing.T, heartbeat time.Duration) *iapDocumentRig {
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker, Identity: rig.switched, Settle: time.Hour})
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+	rig.documents = &servedDocuments{Service: documents}
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: rig.switched, AgentTokens: sharedAgentTokens(t, "agent-token"),
-		ServerURL: testServerURL, Docs: documents, Events: broker, StreamHeartbeat: heartbeat,
+		ServerURL: testServerURL, Docs: rig.documents, Events: broker, StreamHeartbeat: heartbeat,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -328,4 +365,94 @@ func TestOnlyAnExpiredCredentialRotatesASocket(t *testing.T) {
 			}
 		})
 	}
+}
+
+// iapDocumentEnd opens two document sockets of the rig's document through IAP, behind the API's
+// real mount: short, whose upgrade's assertion expires in three seconds, and long, on a nine-minute
+// one. It returns them once the API's heartbeat has ended short's request - the context the
+// document service received for short is done - so whatever a test does next comes after that end.
+// The wait's only bound is the test binary's deadline (testwait.Receive).
+func iapDocumentEnd(t *testing.T) (rig *iapDocumentRig, short, long *syncedPeer) {
+	t.Helper()
+	rig = newIAPDocumentRig(t, 250*time.Millisecond)
+	short = rig.openDocument(t, rig.iap.expiring(t, 3*time.Second))
+	ended := rig.documents.served(t, 0)
+	long = rig.openDocument(t, rig.iap.assertion(t, time.Now().Add(9*time.Minute)))
+	testwait.Receive(t, "the API's end of the request of the document socket whose upgrade's assertion expired", ended.Done())
+	if cause := context.Cause(ended); !errors.Is(cause, errCredentialExpired) {
+		t.Fatalf("the request of the document socket whose upgrade's assertion expired ended with %v, want the API's %v", cause, errCredentialExpired)
+	}
+	return rig, short, long
+}
+
+// awaitDocumentSocketEnded waits for peer's socket to end, bounded only by the test binary's
+// deadline (testwait.Receive), and fails unless it ended with the code the provider reconnects on.
+func awaitDocumentSocketEnded(t *testing.T, peer *syncedPeer) {
+	t.Helper()
+	testwait.Receive(t, "the end of the document socket whose upgrade's assertion expired", peer.connection().Ended)
+	if code := peer.connection().CloseCode(); code != contracts.DocumentAdmissionRevokedCloseCode {
+		t.Fatalf("the document socket whose upgrade's assertion expired closed with %d, want %d", code, contracts.DocumentAdmissionRevokedCloseCode)
+	}
+}
+
+// newEditMark is a word no document of the test holds and no other edit writes.
+func newEditMark() string {
+	return fmt.Sprintf("afterend%016x", rand.Uint64())
+}
+
+// From the end of a document socket's request on - here the API's, when the assertion its upgrade
+// carried expires - the socket carries no room update, however late the document server acts on
+// the end (docs/socket_end.go). The row runs behind the API's real mount, so the end reaches the
+// document service through every layer production puts between them. An edit made on the other
+// socket once short's request has ended must not reach short's page: its document never holds that
+// edit's mark, though the room does. The order is the test's own: the edit is made after it has
+// seen the end.
+func TestADocumentSocketWhoseAssertionExpiredGetsNoRoomUpdateAfterItsEnd(t *testing.T) {
+	_, short, long := iapDocumentEnd(t)
+	mark := newEditMark()
+	long.appendParagraph(t, mark)
+	long.barrier(t)
+	awaitDocumentSocketEnded(t, short)
+	short.assertTextLacks(t, mark)
+	if got := renderDocument(t, long.doc); !strings.Contains(got, mark) {
+		t.Fatalf("the room never took the edit made after the end (%q), so its absence from the ended socket proves nothing: the other socket's document is %q", mark, got)
+	}
+}
+
+// From the same end on, the room takes nothing more from the socket either: an edit short's page
+// sends once its request has ended never reaches the room, so the other socket, which holds every
+// update the room makes once its barrier returns, never holds that edit's mark. The page sends it
+// as a page does that has not yet read the server's close (docstest.Peer.WriteBeforeItsClose);
+// when the server has closed the connection by then, nothing of it reaches the room either, which
+// is what the row asks, and the row says so.
+func TestADocumentSocketWhoseAssertionExpiredGivesTheRoomNoEditAfterItsEnd(t *testing.T) {
+	_, short, long := iapDocumentEnd(t)
+	mark := newEditMark()
+	typed, err := pmdoc.Parse(mark)
+	if err != nil {
+		t.Fatalf("parse the edit: %v", err)
+	}
+	// The fragment is taken before the transaction, as syncedPeer.editDocument does: taking it
+	// inside one takes the document's lock that transaction holds.
+	fragment := short.doc.GetXmlFragment("prosemirror")
+	update := docstest.Transact(short.doc, func(txn *crdt.Transaction) {
+		tree, err := pmdoc.ReadInTransaction(txn, fragment)
+		if err == nil {
+			tree.Children = append(tree.Children, typed.Children...)
+			err = pmdoc.Update(txn, fragment, tree)
+		}
+		if err != nil {
+			t.Errorf("type the edit: %v", err)
+		}
+	})
+	if update == nil {
+		t.Fatal("the edit made no update")
+	}
+	if err := short.connection().WriteBeforeItsClose(ygsync.EncodeUpdate(update)); err != nil {
+		t.Logf("the page's edit after the end did not leave it: the server had closed the connection (%v)", err)
+	}
+	awaitDocumentSocketEnded(t, short)
+	long.appendParagraph(t, newEditMark())
+	long.barrier(t)
+	long.assertTextLacks(t, mark)
 }

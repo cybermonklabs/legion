@@ -7,6 +7,7 @@ package docstest
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -161,6 +162,37 @@ func (p *Peer) writeFrame(kind uint64, body func(*encoding.Encoder)) error {
 	p.writes.Lock()
 	defer p.writes.Unlock()
 	return p.connection.WriteMessage(gws.BinaryMessage, frame)
+}
+
+// WriteBeforeItsClose sends syncMessage as Write does, as one masked binary frame written straight
+// on the connection, past gorilla's own state. A page whose provider has not yet read the server's
+// close still sends what its editor types; this peer's own reader may already have read that close
+// and answered it, after which gorilla refuses every write, so this writes beneath it. A write the
+// connection itself refuses - the server has closed it - is returned as an error.
+func (p *Peer) WriteBeforeItsClose(syncMessage []byte) error {
+	payload := encoding.EncodeBytes(func(encoder *encoding.Encoder) {
+		encoder.WriteVarString(p.artifactID)
+		encoder.WriteVarUint(messageSync)
+		encoder.WriteRaw(syncMessage)
+	})
+	frame := []byte{0x80 | gws.BinaryMessage}
+	switch n := len(payload); {
+	case n < 126:
+		frame = append(frame, 0x80|byte(n))
+	case n <= 0xffff:
+		frame = binary.BigEndian.AppendUint16(append(frame, 0x80|126), uint16(n))
+	default:
+		frame = binary.BigEndian.AppendUint64(append(frame, 0x80|127), uint64(n))
+	}
+	key := [4]byte{0x5a, 0x17, 0xc3, 0x9e}
+	frame = append(frame, key[:]...)
+	for i, b := range payload {
+		frame = append(frame, b^key[i%4])
+	}
+	p.writes.Lock()
+	defer p.writes.Unlock()
+	_, err := p.connection.UnderlyingConn().Write(frame)
+	return err
 }
 
 // Send runs change in one transaction on Doc and sends the room the update it made, as a keystroke

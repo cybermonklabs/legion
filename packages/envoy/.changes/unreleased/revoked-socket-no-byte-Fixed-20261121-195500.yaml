@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  Dispatch's document socket, once a schema re-check revokes it, its IAP assertion expires or its caller no longer resolves, carries nothing more of the room but the rest of the message already going out and the close, and the room takes no message the page completes after that end, whenever the message began: the socket's connection holds back both directions from the moment the cancel returns until ygo closes it. Before, ygo kept writing room updates to the socket and applying the page's edits until the goroutine that acts on the end ran, so a page could get an edit made after its revoke, and the room could take one the page sent after it.
