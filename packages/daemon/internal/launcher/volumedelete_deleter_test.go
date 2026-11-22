@@ -380,7 +380,9 @@ func removeWhileFilling(t *testing.T, held *os.File, filling string) error {
 
 	answered := make(chan error, 1)
 	go func() { answered <- removeEntryAt(held, "entry", make([]byte, volumeRemovalNamesBytes)) }()
-	bound := beforeDeadline(t)
+	// 30 s is part of the claim, not a hang guard: it is how long the writer runs, so a removal
+	// that never stops its passes fails here with this line (beforeDeadline).
+	bound := testwait.Bounded(t, 30*time.Second, 5*time.Second)
 	select {
 	case removal := <-answered:
 		close(stop)

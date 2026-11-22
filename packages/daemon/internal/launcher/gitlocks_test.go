@@ -263,6 +263,12 @@ func newGatedProc(t *testing.T, pids ...int) *gatedProc {
 // testwait's minute (testwait.Eventually, testwait.Bounded of a minute). That process is started
 // with no -test.timeout, so it has no deadline, and beforeDeadline there would be 36 years; the
 // minute is what ends its wait for something that never comes.
+//
+// Not hang guards, so not bounded by it: a span that is part of a case's claim. These are the race
+// cases' two-minute search budget (raceSwaps); the racer's 30 s (raceTheSwap's deadline) and
+// removeWhileFilling's 30 s, each of which also sets how long a load generator runs, so a removal
+// that never stops its passes fails with the case's own line rather than at the binary's timeout;
+// and the role-drain bounds handed to role-init (roleDrainStaysBound).
 func beforeDeadline(t *testing.T) time.Duration {
 	return testwait.Bounded(t, 1<<60, 30*time.Second)
 }

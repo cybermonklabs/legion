@@ -632,7 +632,9 @@ func raceSwaps(t *testing.T, victim, target string, enough, tries int, at time.T
 		trials++
 		buildRacedEntry(t, victim, sub, at)
 		swapped := make(chan bool, 1)
-		go raceTheSwap(sub, target, time.Now().Add(beforeDeadline(t)), swapped)
+		// The racer's 30 s is part of the claim, not a hang guard: it is how long the racer keeps
+		// swapping (beforeDeadline).
+		go raceTheSwap(sub, target, time.Now().Add(testwait.Bounded(t, 30*time.Second, time.Second)), swapped)
 		if trial(trials, swapped) {
 			landed++
 		}
