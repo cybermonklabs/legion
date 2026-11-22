@@ -45,7 +45,7 @@ func TestLauncherTermDialer(t *testing.T) {
 	if err := os.Rename(resultFile+".tmp", resultFile); err != nil {
 		os.Exit(4)
 	}
-	os.Exit(0)
+	exitHelper(t)
 }
 
 // A generation's session database is the generation's until its child exits, however the stop

@@ -77,17 +77,19 @@ func TestMain(m *testing.M) {
 // -timeout 0 this process has no deadline, and the child is given none either.
 //
 // A child that would get less than reentryMargin is still started, with that, so it ends at once,
-// and t fails on a line that names the deadline: what fails is the time the starter had left,
-// not whatever the child was too short to finish. t.Errorf rather than t.Fatalf, because a
-// launcher may call this from a goroutine of its own (roleInitHelperLaunch).
+// and t fails on the line reentryUntil writes, which names the deadline: what fails is the time the
+// starter had left, not whatever the child was too short to finish. reentryUntil writes the line to
+// standard error as well, because the starter may be a re-entered process itself, the role stage
+// say, whose parent prints what it wrote, while t's own report of the line comes only once its
+// test returns, which a helper that ends by os.Exit never does (exitHelper). So in the test
+// process the line shows twice. t.Error rather than t.Fatal, because a launcher may call this from
+// a goroutine of its own (roleInitHelperLaunch).
 func reentry(t *testing.T, helper string) []string {
-	end := reentryEnd(t)
-	if !end.IsZero() && time.Until(end) < reentryMargin {
-		deadline, _ := t.Deadline()
-		t.Errorf("%s started with %s of the test binary's deadline (%s) left, less %s kept back for this process: less than the %s a child needs",
-			helper, time.Until(deadline).Round(time.Millisecond), deadline.Format(time.RFC3339), reentryMargin, reentryMargin)
+	args, short := reentryUntil(reentryEnd(t), helper)
+	if short != "" {
+		t.Error(short)
 	}
-	return reentryUntil(end, helper)
+	return args
 }
 
 // reentryMargin is how much of its deadline a test keeps back from a child it re-enters: the time
@@ -112,13 +114,34 @@ func reentryEnd(t *testing.T) time.Time {
 // reentryUntil is reentry for a child that must end by end, the zero time for no end. The timeout
 // is whole seconds, so no command line of the package's gains digits a test reads /proc for (the
 // role stage's detached sleep), and one second at least, so a child started at or after end ends
-// at once rather than with no deadline, which a -test.timeout of 0 would be.
-func reentryUntil(end time.Time, helper string) []string {
+// at once rather than with no deadline, which a -test.timeout of 0 would be. When the child would
+// get less than reentryMargin, it also answers the line that names the deadline, which it has
+// written to standard error; otherwise "". The session peer's shim calls it with the end its plan
+// carries, so a short agent of the shim's is named there too.
+func reentryUntil(end time.Time, helper string) ([]string, string) {
 	args := []string{"-test.run=^" + helper + "$"}
 	if end.IsZero() {
-		return args
+		return args, ""
 	}
-	return append(args, "-test.timeout="+max(time.Until(end).Truncate(time.Second), time.Second).String())
+	left := time.Until(end)
+	var short string
+	if left < reentryMargin {
+		deadline := end.Add(reentryMargin)
+		short = fmt.Sprintf("%s started %s before the test binary's deadline (%s): after the %s its starter keeps back, less than the %s a child needs",
+			helper, time.Until(deadline).Round(time.Millisecond), deadline.Format(time.RFC3339), reentryMargin, reentryMargin)
+		fmt.Fprintln(os.Stderr, short)
+	}
+	return append(args, "-test.timeout="+max(left.Truncate(time.Second), time.Second).String()), short
+}
+
+// exitHelper ends a helper test that runs as a process of its own and ends by os.Exit: with 0, or
+// with 1 when t has failed. os.Exit never returns to the test framework, so without it a failure t
+// recorded there, as reentry records a child it started with too little time, would end as a pass.
+func exitHelper(t *testing.T) {
+	if t.Failed() {
+		os.Exit(1)
+	}
+	os.Exit(0)
 }
 
 // No test of this package can reach the workspace of the pod it runs in. The first two cases fail

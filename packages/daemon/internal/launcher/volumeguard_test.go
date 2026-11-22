@@ -939,7 +939,7 @@ func TestVolumeGuardNamespaceHelper(t *testing.T) {
 		}
 	}
 	time.Sleep(guardHold)
-	os.Exit(0)
+	exitHelper(t)
 }
 
 // TestVolumeGuardProcessHelper is one process inside those namespaces: it takes hold of the one
@@ -1004,7 +1004,7 @@ func TestVolumeGuardProcessHelper(t *testing.T) {
 		fail(err)
 	}
 	time.Sleep(guardHold)
-	os.Exit(0)
+	exitHelper(t)
 }
 
 // A process whose working directory is a reclaimable root is not a hold on the root: the spec

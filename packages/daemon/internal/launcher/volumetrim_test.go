@@ -2941,7 +2941,7 @@ func TestVolumeTrimHandleHelper(t *testing.T) {
 		os.Exit(2)
 	}
 	time.Sleep(trimHandleHold)
-	os.Exit(0)
+	exitHelper(t)
 }
 
 // A root another process holds open is left alone whole: the rendered install scripts take a

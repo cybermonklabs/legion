@@ -87,7 +87,7 @@ func TestRoleNamespaceProbeHelper(t *testing.T) {
 		fmt.Fprintln(os.Stderr, "probe:", err)
 		os.Exit(1)
 	}
-	os.Exit(0)
+	exitHelper(t)
 }
 
 // Every start of a role runs in namespaces of its own. The role reads its own gh bundle and its
@@ -318,7 +318,7 @@ func TestRoleInitStageHelper(t *testing.T) {
 		fmt.Println("stage error:", err)
 		os.Exit(1)
 	}
-	os.Exit(0)
+	exitHelper(t)
 }
 
 // runStage is the stage's whole run, in the stage's own test binary t, whose deadline the case set
@@ -847,7 +847,7 @@ func TestRoleInitAgentHelper(t *testing.T) {
 	}
 	_ = os.Remove(trapped)
 	say("done", "yes")
-	os.Exit(0)
+	exitHelper(t)
 }
 
 // readable is what the role gets when it tries to read path: `refused` where the kernel denies
@@ -980,7 +980,7 @@ func TestTheUncoverProbeReportsAnUnlockedCoverRemoved(t *testing.T) {
 		}
 		fmt.Printf("control locked=%s\n", uncover(roles, "b", syscall.CLONE_NEWUSER|syscall.CLONE_NEWNS))
 		fmt.Printf("control unlocked=%s\n", uncover(roles, "b", syscall.CLONE_NEWNS))
-		os.Exit(0)
+		exitHelper(t)
 	}
 	requireRoleNamespaces(t)
 	self, err := os.Executable()
@@ -1130,7 +1130,7 @@ func TestTheRoleNamespaceCheckRunsARoleGeneration(t *testing.T) {
 		}
 		fmt.Printf("check clean=%s\n", answer(CheckRoleNamespaces(filepath.Join(dir, "clean"), "/bin/true")))
 		fmt.Printf("check failing=%s\n", answer(CheckRoleNamespaces(filepath.Join(dir, "failing"), "/bin/false")))
-		os.Exit(0)
+		exitHelper(t)
 	}
 	requireRoleNamespaces(t)
 	self, err := os.Executable()
@@ -1572,7 +1572,7 @@ func TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills(t *testing.T) {
 			fmt.Println("drain error:", err)
 			os.Exit(1)
 		}
-		os.Exit(0)
+		exitHelper(t)
 	}
 	requireRoleNamespaces(t)
 	mount := stageMountPoint(t)

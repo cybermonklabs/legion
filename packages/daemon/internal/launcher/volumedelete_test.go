@@ -168,7 +168,7 @@ func TestVolumeTrimDeleteHelper(t *testing.T) {
 		fmt.Fprintln(os.Stderr, "volume-trim-delete:", err)
 		os.Exit(2)
 	}
-	os.Exit(0)
+	exitHelper(t)
 }
 
 // baitFile is one file a sweep that escaped would delete, with what it held.

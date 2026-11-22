@@ -186,5 +186,5 @@ func TestRoleInitHelper(t *testing.T) {
 		fmt.Fprintln(os.Stderr, "role-init:", err)
 		os.Exit(RoleInitSetupFailedExit)
 	}
-	os.Exit(0)
+	exitHelper(t)
 }

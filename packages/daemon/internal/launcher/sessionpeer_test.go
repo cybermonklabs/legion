@@ -652,7 +652,10 @@ func sessionPeerShim() int {
 		fmt.Fprintln(os.Stderr, "shim stand-in:", err)
 		return 1
 	}
-	agent := exec.Command(self, reentryUntil(plan.End, "TestSessionPeerStandInHelper")...)
+	// A short end's line is already on the shim's standard error, in the launcher's log the case
+	// prints.
+	args, _ := reentryUntil(plan.End, "TestSessionPeerStandInHelper")
+	agent := exec.Command(self, args...)
 	agent.Env = append(os.Environ(), peerStandInEnv+"=agent")
 	agent.Stdout, agent.Stderr = os.Stdout, os.Stderr
 	if err := agent.Run(); err != nil {
@@ -695,7 +698,7 @@ func TestSessionPeerStandInHelper(t *testing.T) {
 		}
 		for {
 			if _, err := os.Stat(filepath.Join("/tmp", peerRelease)); err == nil {
-				os.Exit(0)
+				exitHelper(t)
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
@@ -727,7 +730,7 @@ func TestSessionPeerStandInHelper(t *testing.T) {
 		fail(err)
 	}
 	_ = child.Wait()
-	os.Exit(0)
+	exitHelper(t)
 }
 
 // peerSocket is the socket the URL file at path names, as Oh My Pi's client reads it: the

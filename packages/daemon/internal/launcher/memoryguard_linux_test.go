@@ -54,7 +54,7 @@ func TestMemoryGuardOnRealRoleNamespaces(t *testing.T) {
 	case "init":
 		memoryGuardRoleInit(t)
 	case "hold":
-		memoryGuardHold()
+		memoryGuardHold(t)
 	}
 	requireRoleNamespaces(t)
 	self, err := os.Executable()
@@ -238,13 +238,13 @@ func memoryGuardRoleInit(t *testing.T) {
 	_ = hold.Wait()
 	ws, _ := hold.ProcessState.Sys().(syscall.WaitStatus)
 	fmt.Fprintf(status, "%d\n", uint32(ws))
-	os.Exit(0)
+	exitHelper(t)
 }
 
 // memoryGuardHold is the holder: it writes every page of memoryGuardHeld bytes, says so on the
 // ready pipe, and keeps them until it is killed, or for two minutes, so a test that fails before
 // the kill leaves nothing behind for long.
-func memoryGuardHold() {
+func memoryGuardHold(t *testing.T) {
 	held := make([]byte, memoryGuardHeld)
 	for i := 0; i < len(held); i += os.Getpagesize() {
 		held[i] = 1
@@ -254,7 +254,7 @@ func memoryGuardHold() {
 	_ = ready.Close()
 	time.Sleep(2 * time.Minute)
 	runtime.KeepAlive(held)
-	os.Exit(0)
+	exitHelper(t)
 }
 
 func writeTestFile(t *testing.T, path, content string) {
