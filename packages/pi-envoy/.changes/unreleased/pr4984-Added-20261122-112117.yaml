@@ -1,0 +1,5 @@
+kind: Added
+body: 'The bundled `dispatch` command gains `dispatch outcomes`, which records and reads the lists of outcomes of a pull request head, and `dispatch spec-ending`, which tells whether the change request of an issue may land at a head.'
+time: 2026-11-22T11:21:17.607697368Z
+custom:
+    Issue: pr4984

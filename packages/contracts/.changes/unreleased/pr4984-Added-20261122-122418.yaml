@@ -1,0 +1,15 @@
+kind: Added
+body: |-
+  The contracts add the event `spec.outcomes_recorded` and its payload, the tools
+  `dispatch_outcomes` and `dispatch_spec_ending`, and the parser of the outcome line form
+  (`parseOutcomeLine`, `parseOutcomeLines`, `outcomeLine`). An outcome line is
+  `(requires <statement-id>) <text>`, `(restored) <text>` or `<text>`.
+
+  Daemon API contract 222. The state's `designGate` gains `exemptVersion` (number or null) and
+  `rule` (`approval` or `change_request`). Each gated step gains `exemptVersion` and the status
+  `exempt`: a spec-source root's step that a version proposing nothing opened with no person. The
+  fixtures declare contract 222 (`version.json`, and `state.json`'s `contract`), and
+  `contract-shapes.json` records the new keys and the new value at 222.
+time: 2026-11-22T12:24:18Z
+custom:
+    Issue: pr4984

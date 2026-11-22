@@ -1,0 +1,39 @@
+kind: Added
+body: |-
+  The design gate of a root whose repository is a spec source opens with no person when its change
+  request proposes nothing. At the registration of the `spec` step, the daemon reads the issue's
+  change request from Dispatch. The first registration of a generation fixes the gate's rule:
+  `change_request` for a spec source, `approval` otherwise, and a later registration keeps it. Under
+  `change_request`, a version that proposes no statement, component or interface and changes no
+  approved check opens the gate, recorded as its exempt version and never as an approval. The
+  architect is told in a `design-approved` notice that names nobody. Each later version of that spec
+  is read the same way before it is applied, by the live event, the gate seed, the boot catch-up and
+  the reset above Dispatch. A version that proposes nothing keeps the gate open; one that proposes
+  something closes it as before. A Dispatch older than the route keeps today's gate.
+
+  A tree whose gate opened with no person lands nothing until Dispatch's ending condition holds at
+  the head that would land. The merger's start waits while it waits. A head move in merging, a
+  recorded outcome list (`spec.outcomes_recorded`), and a version or an approval of the root's spec
+  each read it again. The running merger is told when the gate closes or opens for its head, and its
+  start task says to run `dispatch spec-ending` before each merge and each enqueue. The root's
+  architect gets one `spec-ending-waits` notice per reason per head. A released merger is not woken
+  while the recorded reading waits. A refused approval of a stale change request
+  (`spec.request_stale`) now reaches the root's architect in one `spec-request-stale` notice, or
+  the controller, which names an owner, when no architect holds the tree.
+
+  The role prompts change with it. The implementer records the author's outcome list at each head
+  it hands to review. The reviewer records its own outcome list, then reads the author's list, then
+  records its final list at the head it reviewed. The merger runs `dispatch spec-ending` for the
+  head before each merge and each enqueue, and merges or enqueues only on `ready`. The root
+  architect reads the change request before it registers the `spec` step and requests no approval
+  of a version that proposes nothing. Such a root keeps its own acceptance checks, ends its spec in
+  a `conclusion` block, and is told what the two new notices ask.
+
+  Daemon API contract 222: `GET /legion/v1/state` gains `designGate.exemptVersion`,
+  `designGate.rule`, each gated step's `exemptVersion` and the gated-step status `exempt`, all left
+  off for a caller below 222. Migration `20261122104755_spec_gate_exemption` adds the two gate
+  columns, the table `spec_endings` and the outbox kind `spec_ending_read`. Its header carries the way
+  back, which deletes the queued rows no earlier release decodes.
+time: 2026-11-22T11:36:03Z
+custom:
+    Issue: pr4984

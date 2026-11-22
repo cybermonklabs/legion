@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The plugin declares daemon API contract 222 in `package.json`'s `legion.daemonApiVersion`. The
+  controller's `read_state` summary names the version that opened a gate with no person
+  (`gate 3 approved none exempt 3`).
+time: 2026-11-22T11:36:03Z
+custom:
+    Issue: pr4984
