@@ -146,7 +146,7 @@ var listsUnderTest = []listUnderTest{
 		row: func(t *testing.T, m *Machine, runtime, reason string) string {
 			t.Helper()
 			pod, key := everyonesPod(t, m, runtime, "")
-			req, err := m.Create(t.Context(), pod, signRequest(t, m, key, reason, "SHARED_KEY"), "", nil)
+			req, err := m.Create(t.Context(), pod, signRequest(t, m, key, reason, "SHARED_KEY"), "")
 			if err != nil || req.RecordID == nil {
 				t.Fatalf("Create(SHARED_KEY, %q) = %+v, %v; want it pending", reason, req, err)
 			}
@@ -160,7 +160,7 @@ var listsUnderTest = []listUnderTest{
 		row: func(t *testing.T, m *Machine, runtime, reason string) string {
 			t.Helper()
 			pod, key := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, runtime)
-			req, err := m.Create(t.Context(), pod, signRequest(t, m, key, reason, "SERVICE_KEY"), "", nil)
+			req, err := m.Create(t.Context(), pod, signRequest(t, m, key, reason, "SERVICE_KEY"), "")
 			if err != nil || req.GrantID == nil {
 				t.Fatalf("Create(SERVICE_KEY, %q) = %+v, %v; want it granted at once", reason, req, err)
 			}
@@ -572,11 +572,11 @@ func TestAReadThatPanicsFailsItsRowClosedAndTheListGoesOn(t *testing.T) {
 	t.Run("a row's own read on the pending list", func(t *testing.T) {
 		m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 		pod, key := privatePod(t, m)
-		plain, err := m.Create(t.Context(), pod, signRequest(t, m, key, "rotate the vendor key", "SHARED_KEY"), "", nil)
+		plain, err := m.Create(t.Context(), pod, signRequest(t, m, key, "rotate the vendor key", "SHARED_KEY"), "")
 		if err != nil || plain.RecordID == nil {
 			t.Fatalf("PRIV's pod: Create(SHARED_KEY) = %+v, %v; want pending", plain, err)
 		}
-		tagged, err := m.Create(t.Context(), pod, signRequest(t, m, key, "deploy", "PRIV_HUMAN"), "", nil)
+		tagged, err := m.Create(t.Context(), pod, signRequest(t, m, key, "deploy", "PRIV_HUMAN"), "")
 		if err != nil || tagged.RecordID == nil {
 			t.Fatalf("PRIV's pod: Create(PRIV_HUMAN) = %+v, %v; want pending", tagged, err)
 		}
@@ -603,11 +603,11 @@ func TestAReadThatPanicsFailsItsRowClosedAndTheListGoesOn(t *testing.T) {
 	t.Run("a row's own read on the grant list", func(t *testing.T) {
 		m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 		pod, key := privatePod(t, m)
-		plain, err := m.Create(t.Context(), pod, signRequest(t, m, key, "rotate the service key", "SERVICE_KEY"), "", nil)
+		plain, err := m.Create(t.Context(), pod, signRequest(t, m, key, "rotate the service key", "SERVICE_KEY"), "")
 		if err != nil || plain.GrantID == nil {
 			t.Fatalf("PRIV's pod: Create(SERVICE_KEY) = %+v, %v; want it granted at once", plain, err)
 		}
-		tagged, err := m.Create(t.Context(), pod, signRequest(t, m, key, "deploy", "PRIV_KEY"), "", nil)
+		tagged, err := m.Create(t.Context(), pod, signRequest(t, m, key, "deploy", "PRIV_KEY"), "")
 		if err != nil || tagged.GrantID == nil {
 			t.Fatalf("PRIV's pod: Create(PRIV_KEY) = %+v, %v; want it granted at once", tagged, err)
 		}

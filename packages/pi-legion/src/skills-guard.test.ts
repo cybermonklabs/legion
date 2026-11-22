@@ -392,8 +392,7 @@ function countedOncePerFile(rule: string, relativePaths: string[]) {
 
 // R3: a forward merge brings instances from the base that the branch's own diff never shows, so a
 // merge can bring a new instance of a class the branch already answered. The implementer's merge
-// procedure carries the class search; the tester's prompt carries its own, which roles_test.go
-// pins.
+// procedure carries the class search.
 test("a forward merge searches the new head for each earlier finding's class", () => {
   expect(
     collapsed(path.join(staged, "legion-worker", "references", "conflicts-and-rewrites.md"))
@@ -557,7 +556,7 @@ test("the worker prompt tells a role to read the pull request's head after its o
     "about ten seconds after your push, again about ten seconds later, and a last time about thirty seconds after that, with a read that gives the pushed commit ending the step there and only the last read deciding a mismatch",
     "This read is of the pull request's own head and of no check, so the wait it makes is not a wait on CI",
     "an empty one when your work is complete",
-    "A new head is a different commit, so record each `before_merge` check again at the new head. A check carrying `ci_check` is CI's, so skip it.",
+    "The empty commit changes no file, so record each `before_merge` check again at the new head as carried from the commit before it (`skill://legion-worker/references/pr-body.md#what-a-result-is`), and run none of them again. A check carrying `ci_check` is CI's, so skip it.",
     "tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
     "The push you make to answer an update message is the exception: that message has you push, let your subagents and background jobs finish or stop them, push what they made, answer the daemon and end the turn, so make this read in your next turn, before your phase completes.",
     "The merger pushes nothing, so this step never falls to it; it reports a mismatch it sees to the architect.",
@@ -578,7 +577,7 @@ test("the worker prompt tells a role to read the pull request's head after its o
     '`jj -R "$LEGION_WORKSPACE" log -r legion/<issue>@origin --no-graph -T commit_id`',
     workerPrompt
   );
-  countedOncePerFile("Create no commit and push nothing, a prose fix included", [
+  countedOncePerFile("Create no commit and push nothing", [
     "packages/daemon/internal/prompts/roles/reviewer.md",
   ]);
 });

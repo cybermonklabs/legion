@@ -107,7 +107,7 @@ func TestAListReadsAStoredReasonOfEightyProjectsWellInsideDispatchsWindow(t *tes
 				stored = append(stored, *req.RecordID)
 			}
 			plainPod, plainKey := everyonesPod(t, m, "pod-eighty-plain", "")
-			plain, err := m.Create(t.Context(), plainPod, signRequest(t, m, plainKey, "rotate the wiki key", "SHARED_KEY"), "", nil)
+			plain, err := m.Create(t.Context(), plainPod, signRequest(t, m, plainKey, "rotate the wiki key", "SHARED_KEY"), "")
 			if err != nil || plain.RecordID == nil {
 				t.Fatalf("Create(SHARED_KEY, a reason naming no issue) = %+v, %v; want it pending", plain, err)
 			}

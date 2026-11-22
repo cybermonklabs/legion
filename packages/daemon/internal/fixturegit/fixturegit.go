@@ -19,10 +19,14 @@
 package fixturegit
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
@@ -31,10 +35,12 @@ import (
 // Runner runs a fixture's git or jj commands under one environment. Env is the whole environment
 // of each child, as exec.Cmd takes it, so a fixture that hands its commands a handful of variables
 // of its own passes them as they are. There is no binary: argv[0] names it, so a fixture that runs
-// a pinned git or jj passes that path itself.
+// a pinned git or jj passes that path itself. Ctx, when set, bounds each command: the command is
+// killed when Ctx ends, and its failure names Ctx's cause (context.Cause) before what was run.
 type Runner struct {
 	TB  testing.TB
 	Env []string
+	Ctx context.Context
 }
 
 // Isolated is a Runner whose commands run under fixtureenv.Isolated of home, which is the
@@ -82,7 +88,7 @@ func (r Runner) Raw(dir string, argv ...string) string {
 	r.TB.Helper()
 	output, err := r.command(dir, argv).CombinedOutput()
 	if err != nil {
-		r.TB.Fatalf("%s in %s: %v\n%s", strings.Join(argv, " "), dir, err, output)
+		r.TB.Fatalf("%s%s in %s: %v\n%s", r.cause(), strings.Join(argv, " "), dir, err, output)
 	}
 	return string(output)
 }
@@ -97,7 +103,7 @@ func (r Runner) Out(dir string, argv ...string) string {
 	command.Stderr = &stderr
 	output, err := command.Output()
 	if err != nil {
-		r.TB.Fatalf("%s in %s: %v\n%s", strings.Join(argv, " "), dir, err, stderr.String())
+		r.TB.Fatalf("%s%s in %s: %v\n%s", r.cause(), strings.Join(argv, " "), dir, err, stderr.String())
 	}
 	return string(output)
 }
@@ -111,12 +117,29 @@ func (r Runner) Try(dir string, argv ...string) (string, error) {
 	return string(output), err
 }
 
-// command is argv in dir under the runner's environment.
+// command is argv in dir under the runner's environment. With Ctx set the command leads a process
+// group of its own, and when Ctx ends the whole group is killed, so no child the command started
+// (a git that a jj runs, say) outlives it; a child that still holds the output then is cut off a
+// second later (WaitDelay), so the wait ends too.
 func (r Runner) command(dir string, argv []string) *exec.Cmd {
 	command := exec.Command(argv[0], argv[1:]...)
+	if r.Ctx != nil {
+		command = exec.CommandContext(r.Ctx, argv[0], argv[1:]...)
+		command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		command.Cancel = func() error { return syscall.Kill(-command.Process.Pid, syscall.SIGKILL) }
+		command.WaitDelay = time.Second
+	}
 	command.Dir = dir
 	command.Env = r.Env
 	return command
+}
+
+// cause is Ctx's cause and a separator once Ctx has ended, and nothing before.
+func (r Runner) cause() string {
+	if r.Ctx == nil || r.Ctx.Err() == nil {
+		return ""
+	}
+	return fmt.Sprintf("%v: ", context.Cause(r.Ctx))
 }
 
 // InitBare is the argv of a bare git repository in dir, which is what a fixture's remote is: a

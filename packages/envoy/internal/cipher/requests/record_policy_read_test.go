@@ -58,7 +58,7 @@ func (r *retagOnAsk) States(ctx context.Context, projects []string) (map[string]
 func TestARecordIsReadOnThePolicyItsPersonRuleChecked(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	pod, podKey := everyonesPod(t, m, "pod-policy-read", "")
-	pending, err := m.Create(t.Context(), pod, signRequest(t, m, podKey, "work for "+teamProject+"-1", "SHARED_KEY"), "", nil)
+	pending, err := m.Create(t.Context(), pod, signRequest(t, m, podKey, "work for "+teamProject+"-1", "SHARED_KEY"), "")
 	if err != nil || pending.RecordID == nil {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending", pending, err)
 	}
@@ -96,7 +96,7 @@ func TestARecordIsReadOnThePolicyItsPersonRuleChecked(t *testing.T) {
 func TestAPersonsRecordIsJudgedOnTheFactsHideUnseenReads(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	nameProjects(t, m, enr, teamProject)
-	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, teamProject+"-1: rotate the deploy key", "DEEL_API_KEY"), "", nil)
+	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, teamProject+"-1: rotate the deploy key", "DEEL_API_KEY"), "")
 	if err != nil || pending.RecordID == nil {
 		t.Fatalf("Create(DEEL_API_KEY) = %+v, %v; want it pending", pending, err)
 	}

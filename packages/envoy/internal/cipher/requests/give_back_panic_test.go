@@ -24,7 +24,7 @@ func TestAGiveBackThatPanicsLeavesItsValueToLapseAndGoesOn(t *testing.T) {
 	logtest.SetDefault(t, capture)
 	var mu sync.Mutex
 	var gaveBack []string
-	m := &Machine{GiveBacks: map[string]GiveBack{"github-app": func(_ context.Context, name, value string) {
+	m := &Machine{GiveBacks: map[string]GiveBack{"github-app": func(_ context.Context, name, value, _ string) {
 		if name == "FIRST_KEY" {
 			panic(fmt.Sprintf("the revoke of %s failed", value))
 		}

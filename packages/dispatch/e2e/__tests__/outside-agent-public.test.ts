@@ -15,7 +15,6 @@ import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { rowLimit, runBounded } from "./bounded-subprocess";
 import {
-  closedPort,
   copyLeg,
   type LegRun,
   publicLeg,
@@ -24,6 +23,7 @@ import {
   textToolPath,
   verdictsOf,
 } from "./outside-agent-fixture";
+import { closedPort } from "./outside-path-reach-fixtures";
 
 // On tmpfs: the afterEach that removes a row's directories has Bun's 5 s for a hook, and on the
 // shared disk one removal of a row's ~30 entries was measured at up to 17.5 s (median 2 ms, 30
@@ -173,7 +173,7 @@ exit 0
     join(bin, "t5-browser"),
     `#!/bin/sh\ncat '${rowsFile}' >"$OUTSIDE_T5_TSV"\n`
   );
-  const origin = `http://127.0.0.1:${closedPort()}`;
+  const origin = `http://127.0.0.1:${await closedPort()}`;
   const { code, stdout, stderr } = await runBounded({
     argv: ["bash", leg],
     bound: "short",

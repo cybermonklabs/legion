@@ -83,7 +83,7 @@ func TestARoleLookupAnswersAnUnreadableClaimRecordAsAServerError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			state, registry := openUnreadableRoleClaim(t, role, tc.record)
 			recorder := httptest.NewRecorder()
-			roleGetHandler(state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
+			roleGetHandler(state, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
 			assertUnreadableRoleClaimAnswer(t, recorder, registry, role, tc.record, tc.detail)
 		})
 	}
@@ -183,7 +183,7 @@ func TestARoleLookupReadsAClaimRecordThatNamesNoProcessAndNoRenewal(t *testing.T
 				t.Fatalf("store the claim record %q: %v", older.record, err)
 			}
 			recorder := httptest.NewRecorder()
-			roleGetHandler(state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+older.role, nil))
+			roleGetHandler(state, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+older.role, nil))
 			if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"holder":"`+older.holder+`"`) {
 				t.Fatalf("GET /v1/roles/%s on the record %q: status %d %s, want 200 naming %s", older.role, older.record, recorder.Code, recorder.Body.String(), older.holder)
 			}

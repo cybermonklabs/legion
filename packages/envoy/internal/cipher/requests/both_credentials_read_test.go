@@ -23,7 +23,7 @@ func TestEveryReaderReadsTheProjectsOfBothCredentials(t *testing.T) {
 		// reads it (everyonesPod).
 		m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 		pod, podKey := everyonesPod(t, m, "pod-r-shared", "")
-		req, err := m.Create(t.Context(), pod, signRequest(t, m, podKey, "rotate the shared key", "SHARED_KEY"), "", nil)
+		req, err := m.Create(t.Context(), pod, signRequest(t, m, podKey, "rotate the shared key", "SHARED_KEY"), "")
 		if err != nil || req.RecordID == nil {
 			t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending for anyone to decide", req, err)
 		}

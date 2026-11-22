@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/citebody"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -44,7 +46,8 @@ func seedAttributionIssues(t *testing.T, ctx context.Context, pool *store.Pool, 
 
 func resolvedKey(t *testing.T, ctx context.Context, pool *store.Pool, facts attributionFacts) (string, attributionSource) {
 	t.Helper()
-	key, source, err := resolveStoredIssueKey(ctx, pool, facts.Repo, facts.URL, attributionInputsFrom(facts))
+	attributor := unrenamed()
+	key, source, err := attributor.resolveStoredIssueKey(ctx, pool, facts.Repo, facts.URL, attributor.attributionInputsFrom(facts))
 	if err != nil {
 		t.Fatalf("resolveStoredIssueKey(%+v): %v", facts, err)
 	}
@@ -233,34 +236,52 @@ func TestCitedIssuesCreditsTheURLsOwnPath(t *testing.T) {
 		{"a host-byte run longer than a host name", strings.Repeat("a", 300) + ".github.com/acme/widgets/issues/7", nil},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			if got := citedIssues("acme/widgets", row.body); !slices.Equal(got, row.want) {
+			if got := citedIssues(refs.Renames{}, "acme/widgets", citebody.New(row.body, nil)); !slices.Equal(got, row.want) {
 				t.Errorf("citedIssues(%q) = %v, want %v", row.body, got, row.want)
 			}
 		})
 	}
 }
 
-// TestCitedIssuesCostsNoMoreThanTheBodyIsLong holds that the reading is linear in the body: the
-// finder walks it once, and each match reads at most a host name's length of digits and host
-// bytes before its path. The body is 1 MiB with no whitespace in it and an issue path every
-// thirteen bytes, which is the shape a reading that walks back to the nearest space pays the
-// square of: such a walk costs about 1.5 s at 64 KiB and so about 380 s at 1 MiB, where this one
-// costs about a third of a second, nearly all of it the finder's own pass. The deadline is some
-// thirty times that, so a loaded machine stays green and a walking reader cannot pass.
+// A body that cites an issue under the old name of a rename pair, in any case, cites it under
+// the new name, and a citation of one issue under both names is one URL, at the first place it is
+// cited. A bare #N in a pull request stored under the old name names an issue under the new name.
+// A citation of a repository that only begins like the old name keeps its name.
+func TestCitedIssuesNameARenamedRepositoryByItsNewName(t *testing.T) {
+	renames := refs.NewRenames([]store.RepoRename{{From: "sjawhar/legion", To: "cybermonklabs/legion"}})
+	body := "Fixes https://github.com/SJawhar/Legion/issues/5 and github.com/cybermonklabs/legion/issues/5, " +
+		"see https://github.com/sjawhar/legion-smoke/issues/599 and #12."
+	want := []string{
+		"https://github.com/cybermonklabs/legion/issues/5",
+		"https://github.com/sjawhar/legion-smoke/issues/599",
+		"https://github.com/cybermonklabs/legion/issues/12",
+	}
+	if got := citedIssues(renames, "sjawhar/legion", citebody.New(body, nil)); !slices.Equal(got, want) {
+		t.Errorf("citedIssues(%q) = %v, want %v", body, got, want)
+	}
+}
+
+// TestCitedIssuesCostsNoMoreThanTheBodyIsLong holds that the reading is linear in the body. It
+// reaches the body only through citebody's counted reads, and the row holds those counts
+// (holdToTheReader): one pass over the body for each finder, at most four spans for each issue
+// path and one for each bare reference, and no span longer than citationReach and the longest
+// path, so how busy the machine is decides nothing. The body is 1 MiB with no whitespace in it and
+// an issue path every thirteen bytes, which is the shape a reading that walks back to the nearest
+// space pays the square of: such a reading needs the body back to its start at every path.
 func TestCitedIssuesCostsNoMoreThanTheBodyIsLong(t *testing.T) {
 	const cited = "https://github.com/acme/widgets/issues/7"
-	const deadline = 10 * time.Second
 	body := strings.Repeat("/a/b/issues/1", 1<<20/13) + ",github.com/acme/widgets/issues/7"
-	began := time.Now()
-	got := citedIssues("acme/widgets", body)
-	if took := time.Since(began); took > deadline {
-		t.Errorf("citedIssues over %d bytes took %s, want under %s", len(body), took, deadline)
+	var reads citebody.Reads
+	got := citedIssues(refs.Renames{}, "acme/widgets", citebody.New(body, &reads))
+	t.Logf("a body of %d bytes: %+v", len(body), reads)
+	for _, problem := range holdToTheReader("a body of "+strconv.Itoa(len(body))+" bytes", body, reads) {
+		t.Error(problem)
 	}
 	if !slices.Equal(got, []string{cited}) {
 		t.Fatalf("a body of %d bytes cites %v, want %s and nothing else", len(body), got, cited)
 	}
 	whole := "https://github.com/acme/widgets/issues/7" + strings.Repeat("x", 4096)
-	if got := citedIssues("acme/widgets", whole); len(got) != 0 {
+	if got := citedIssues(refs.Renames{}, "acme/widgets", citebody.New(whole, nil)); len(got) != 0 {
 		t.Fatalf("a path running past the issue number cites %v, want nothing", got)
 	}
 }
@@ -455,7 +476,7 @@ func TestReconcileBackfillsAttributionInputsOnce(t *testing.T) {
 	})
 	noRuns(t, fake)
 
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 	reconcile.runOnce(ctx)
 
@@ -523,7 +544,7 @@ func TestCompletingAPullRequestWhoseCommitsFailLeavesItPartial(t *testing.T) {
 	})
 	noRuns(t, fake)
 
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 	first, err := ScanPullRequest(pool.QueryRow(ctx, `select `+PullRequestColumns+` from delivery_pull_requests where number = 180`))
 	if err != nil {
@@ -568,13 +589,13 @@ func TestAttributingStoredPullRequestsWalksTheTableInBatches(t *testing.T) {
 		}
 		return n
 	}
-	if _, err := AttributePullRequests(ctx, pool, 2); err != nil {
+	if _, err := unrenamed().AttributePullRequests(ctx, pool, 2); err != nil {
 		t.Fatalf("first pass: %v", err)
 	}
 	if n := checked(); n != 2 {
 		t.Fatalf("after one pass of 2: %d rows checked, want 2", n)
 	}
-	if _, err := AttributePullRequests(ctx, pool, 2); err != nil {
+	if _, err := unrenamed().AttributePullRequests(ctx, pool, 2); err != nil {
 		t.Fatalf("second pass: %v", err)
 	}
 	if n := checked(); n != 4 {
@@ -585,7 +606,7 @@ func TestAttributingStoredPullRequestsWalksTheTableInBatches(t *testing.T) {
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-191"}, map[string][]string{
 		"ATTR-191": {"https://github.com/acme/widgets/pull/194"},
 	})
-	changed, err := AttributePullRequests(ctx, pool, 2)
+	changed, err := unrenamed().AttributePullRequests(ctx, pool, 2)
 	if err != nil {
 		t.Fatalf("third pass: %v", err)
 	}
@@ -622,7 +643,7 @@ func TestReconcileCreditsAPullRequestAnIssueLinksLater(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 	})
 	noRuns(t, fake)
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 
 	reconcile.runOnce(ctx)
 	issueOf := func() *string {

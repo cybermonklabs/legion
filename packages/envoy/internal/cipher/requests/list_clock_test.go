@@ -86,7 +86,7 @@ func TestAStalledProjectLeavesOffOnlyTheRowsNamingIt(t *testing.T) {
 				var ids []string
 				for i, reason := range reasons {
 					pod, key := everyonesPod(t, m, fmt.Sprintf("pod-stall-%d", i), "")
-					req, err := m.Create(t.Context(), pod, signRequest(t, m, key, reason, "SHARED_KEY"), "", nil)
+					req, err := m.Create(t.Context(), pod, signRequest(t, m, key, reason, "SHARED_KEY"), "")
 					if err != nil || req.RecordID == nil {
 						t.Fatalf("Create(SHARED_KEY, %q) = %+v, %v; want it pending", reason, req, err)
 					}
@@ -103,7 +103,7 @@ func TestAStalledProjectLeavesOffOnlyTheRowsNamingIt(t *testing.T) {
 				var ids []string
 				for i, reason := range reasons {
 					pod, key := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, fmt.Sprintf("pod-stall-grant-%d", i))
-					req, err := m.Create(t.Context(), pod, signRequest(t, m, key, reason, "SERVICE_KEY"), "", nil)
+					req, err := m.Create(t.Context(), pod, signRequest(t, m, key, reason, "SERVICE_KEY"), "")
 					if err != nil || req.GrantID == nil {
 						t.Fatalf("Create(SERVICE_KEY, %q) = %+v, %v; want it granted at once", reason, req, err)
 					}

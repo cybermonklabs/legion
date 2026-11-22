@@ -39,7 +39,7 @@ func storedBeforeTheCap(t *testing.T, m *Machine, enrollmentID string, key *ecds
 	if err != nil {
 		t.Fatalf("read the enrollment: %v", err)
 	}
-	req, err := m.createChecked(t.Context(), enr, enrollmentID, "", obj, names, nil)
+	req, err := m.createChecked(t.Context(), enr, enrollmentID, "", obj, names)
 	if err != nil {
 		t.Fatalf("createChecked(%v): %v", names, err)
 	}
@@ -85,7 +85,7 @@ func approverGrants(t *testing.T, m *Machine, login string) []string {
 func TestANewRequestsReasonNamingMoreThanSixteenProjectsIsRefused(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 
-	refused, err := m.Create(t.Context(), enr, signRequest(t, m, key, reasonNaming(record.MaxReasonProjects+1), "DEEL_API_KEY"), "", nil)
+	refused, err := m.Create(t.Context(), enr, signRequest(t, m, key, reasonNaming(record.MaxReasonProjects+1), "DEEL_API_KEY"), "")
 	if !errors.Is(err, record.ErrRequestInvalid) || !strings.Contains(err.Error(), fmt.Sprintf("at most %d", record.MaxReasonProjects)) {
 		t.Fatalf("Create(a reason naming %d projects) = %+v, %v; want ErrRequestInvalid naming the bound of %d", record.MaxReasonProjects+1, refused, err, record.MaxReasonProjects)
 	}
@@ -94,7 +94,7 @@ func TestANewRequestsReasonNamingMoreThanSixteenProjectsIsRefused(t *testing.T) 
 		t.Fatalf("requests written by the refused Create = %d, %v; want none", written, err)
 	}
 
-	retry, err := m.Create(t.Context(), enr, signRequest(t, m, key, "INFRA-12: rotate the deploy key", "DEEL_API_KEY"), "", nil)
+	retry, err := m.Create(t.Context(), enr, signRequest(t, m, key, "INFRA-12: rotate the deploy key", "DEEL_API_KEY"), "")
 	if err != nil || retry.State != "pending" || retry.RecordID == nil || retry.Coalesced {
 		t.Fatalf("the corrected retry = %+v, %v; want a pending request of its own", retry, err)
 	}
@@ -102,7 +102,7 @@ func TestANewRequestsReasonNamingMoreThanSixteenProjectsIsRefused(t *testing.T) 
 		t.Errorf("PendingForApprover(%s) = %v; want the retry %s", fixtureOperator, listed, *retry.RecordID)
 	}
 
-	atTheCap, err := m.Create(t.Context(), enr, signRequest(t, m, key, reasonNaming(record.MaxReasonProjects), "AUTO_TOKEN"), "", nil)
+	atTheCap, err := m.Create(t.Context(), enr, signRequest(t, m, key, reasonNaming(record.MaxReasonProjects), "AUTO_TOKEN"), "")
 	if err != nil || atTheCap.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN, a reason naming %d projects) = %+v, %v; want granted at once", record.MaxReasonProjects, atTheCap, err)
 	}
@@ -119,11 +119,11 @@ func TestANewRequestsReasonNamingMoreThanSixteenProjectsIsRefused(t *testing.T) 
 func TestABrokerWithNoProjectAccessTakesAReasonNamingAnyNumberOfProjects(t *testing.T) {
 	m, enr, key, approver := newFixture(t)
 	over := reasonNaming(record.MaxReasonProjects + 1)
-	granted, err := m.Create(t.Context(), enr, signRequest(t, m, key, over, "AUTO_TOKEN"), "", nil)
+	granted, err := m.Create(t.Context(), enr, signRequest(t, m, key, over, "AUTO_TOKEN"), "")
 	if err != nil || granted.State != "granted" || granted.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN, a reason naming %d projects) with no project-access client = %+v, %v; want granted at once, as before the bound", record.MaxReasonProjects+1, granted, err)
 	}
-	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, over, "DEEL_API_KEY"), "", nil)
+	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, over, "DEEL_API_KEY"), "")
 	if err != nil || pending.State != "pending" || pending.RecordID == nil {
 		t.Fatalf("Create(DEEL_API_KEY, a reason naming %d projects) with no project-access client = %+v, %v; want pending", record.MaxReasonProjects+1, pending, err)
 	}
