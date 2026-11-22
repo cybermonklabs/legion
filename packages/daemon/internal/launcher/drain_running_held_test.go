@@ -164,13 +164,13 @@ exit 5`, "sh", started, finished, released)
 	// drain's SIGTERM, is killed at the end of the grace and is reaped, while the held child beside
 	// it runs to its own exit. The held child exits once the case releases it, after the drain, so
 	// it runs beside the drain however loaded the machine is (it once lived by `sleep 2`, which a
-	// slow machine let end before the drain began). The left process outlives any wait of the
-	// case, so the drain returns only by killing it, and it must kill it at the grace configured:
-	// the drain returns no sooner than the grace and before underTheDefaultGrace, so a kill at the
-	// launcher's default grace of 30 s fails, and one a few seconds late on a loaded machine
-	// passes. The wait for the return runs under the test's hang guard, for a drain that never
-	// kills, and the bounds are read after it; the left process's reap is waited for under the
-	// guard too.
+	// slow machine let end before the drain began). The left process sleeps an hour, so the drain
+	// returns before that only by killing it, and it must kill it at the grace configured: the
+	// drain returns no sooner than the grace and no later than the grace and ten seconds, so a kill
+	// at the launcher's default grace of 30 s fails; on a machine with every CPU busy the drain
+	// returns about half a second after it began. The wait for the return runs under
+	// the test's hang guard, for a drain that never returns, and the bounds are read after it; the
+	// left process's reap is waited for under the guard too.
 	t.Run("what the generation left is ended around a held child", func(t *testing.T) {
 		grace := 500 * time.Millisecond
 		guard := &pidGuard{}
@@ -202,14 +202,14 @@ exit 5`, "sh", started, finished, released)
 		select {
 		case took = <-drained:
 		case <-time.After(beforeDeadline(t)):
-			t.Fatal("the drain had not returned under the test's hang guard: it did not kill the process the generation left, which ignores SIGTERM and outlives the guard")
+			t.Fatal("the drain had not returned under the test's hang guard: it did not kill the process the generation left, which ignores SIGTERM and sleeps an hour")
 		}
 		t.Logf("the drain returned after %s", took.Round(time.Millisecond))
 		if took < grace {
 			t.Errorf("the drain returned after %s, want past its %s grace: the process it left ignores SIGTERM", took, grace)
 		}
-		if took >= underTheDefaultGrace {
-			t.Errorf("the drain returned after %s, not before %s: it killed the process it left at the launcher's default grace of 30 s, not at the %s the case configured", took, underTheDefaultGrace, grace)
+		if took > grace+10*time.Second {
+			t.Errorf("the drain returned after %s, past its %s grace and ten seconds: it did not kill the process it left at the grace the case configured (the launcher's default is 30 s)", took, grace)
 		}
 		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the process the generation left to be ended and reaped", func() bool {
 			return errors.Is(syscall.Kill(left.Process.Pid, 0), syscall.ESRCH)
