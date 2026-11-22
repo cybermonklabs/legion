@@ -1027,7 +1027,8 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
   test(
     "a first-run menu that draws each move late is answered with the entry it names, never one past it",
     async () => {
-      const run = await codexStandInRun({ slowScreens: true });
+      // The leg's own default start window, 90 s: four screens drawn 2.5 s late are no start held.
+      const run = await codexStandInRun({ slowScreens: true, startSeconds: 90 });
       expect({ verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
         verdicts: Object.fromEntries(codexRows.map((name) => [name, "PASS"])),
       });
@@ -1399,6 +1400,75 @@ describe("the Codex leg's provenance reads", () => {
     },
     // The four reads, one after another, each a bounded child under the short bound.
     rowLimit("short", "short", "short", "short")
+  );
+});
+
+describe.skipIf(skipWithout("bash"))("the leg's waits, on a clock only `sleep` moves", () => {
+  /** The leg's own `screen_text`, `answer_screen` and `drive`, cut from the leg as they stand, run
+   *  in bash on a clock that only `sleep` moves: `pane` and `tools` are bash commands that read
+   *  `$clock`, the pane's text and the stand-in model's tools line at that moment. Answers the
+   *  call's status and its `drive_problem`. */
+  const onFakeClock = async (call: string, pane: string, tools = ":") => {
+    const file = join(scratch("fake-clock"), "harness.sh");
+    writeFileSync(
+      file,
+      `set -u
+here=${JSON.stringify(join(import.meta.dir, "..", "acceptance"))}
+. "$here/outside-agent-lib.sh"
+for name in screen_text answer_screen drive; do
+  body=$(awk -v name="$name" 'index($0, name "() {") == 1 {found = 1} found {print} found && $0 == "}" {exit}' "$here/outside-agent-codex.sh")
+  [ -n "$body" ] || { echo "the leg holds no $name"; exit 3; }
+  eval "$body"
+done
+clock=0
+now() { printf '%s\\n' "$clock"; }
+sleep() { clock=$((clock + $1)); }
+codex_pane() { ${pane}; }
+logged() { ${tools}; }
+codex_alive() { return 0; }
+choose() { return 0; }
+screens='' hooks_choice='Trust all and continue' model_choice='Use existing model'
+drive_problem=''
+${call}
+printf 'status %s; %s\\n' "$?" "\${drive_problem:-no problem}"
+`
+    );
+    const ran = await runBounded({
+      argv: ["bash", file],
+      bound: "short",
+      env: { PATH: process.env.PATH ?? "" },
+      from: import.meta.url,
+    });
+    return ran.stdout.trim();
+  };
+  const menu = "printf '%s\\n' '  Meet GPT-6 Sol' '› 1. Try new model' '  2. Use existing model'";
+  const working = "printf '%s\\n' '› outside-e2e codex-run main n1' '' '• Working'";
+
+  test(
+    "a screen that goes, or a turn that begins, in a window's last second is read as gone or begun, never as held",
+    async () => {
+      // The menu goes as the 2 s window closes: answered, not a screen that stayed.
+      const went = await onFakeClock(
+        "answer_screen main 2",
+        `if [ "$clock" -lt 2 ]; then ${menu}; else ${working}; fi`
+      );
+      // The control: a menu that never goes stays, and says so.
+      const stayed = await onFakeClock("answer_screen main 2", menu);
+      // The turn's tools line comes as the 2 s start window closes: the turn began.
+      const began = await onFakeClock(
+        "drive main 2",
+        working,
+        `[ "$clock" -lt 2 ] || printf '%s' '{"run":"main","step":"tools"}'`
+      );
+      expect({ went, stayed, began }).toEqual({
+        went: "status 0; no problem",
+        stayed:
+          "status 1; the screen 'Meet GPT-6 Sol' stayed after 'Use existing model' was taken:   Meet GPT-6 Sol / › 1. Try new model /   2. Use existing model",
+        began: "status 0; no problem",
+      });
+    },
+    // The three runs, one after another, each a bounded child under the short bound.
+    rowLimit("short", "short", "short")
   );
 });
 

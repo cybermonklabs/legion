@@ -708,7 +708,7 @@ EOF
 # answered one, 2 when the pane shows none of them, and 1, with `drive_problem` naming the screen,
 # when the entry is not taken or the screen does not go by DEADLINE.
 answer_screen() {
-  local run=$1 mark title choice
+  local run=$1 mark title choice pane
   case $(codex_pane "$run") in
     *'Trust this folder?'*) mark='Trust this folder?' title='Folder access' choice='Trust and continue' ;;
     *'Hooks need review'*) mark='Hooks need review' title=$mark choice=$hooks_choice ;;
@@ -726,7 +726,11 @@ answer_screen() {
   while [ "$(now)" -lt "$2" ]; do
     case $(codex_pane "$run") in *"$mark"*) sleep 1 ;; *) return 0 ;; esac
   done
-  drive_problem="the screen '$title' stayed after '$choice' was taken: $(screen_text "$(codex_pane "$run")")"
+  # One more read once the window has closed: a screen that went during the last sleep went, and
+  # the problem quotes the very read it judges.
+  pane=$(codex_pane "$run")
+  case $pane in *"$mark"*) ;; *) return 0 ;; esac
+  drive_problem="the screen '$title' stayed after '$choice' was taken: $(screen_text "$pane")"
   return 1
 }
 # drive RUN SECONDS: waits up to SECONDS for RUN's turn to begin (the stand-in model logs the tools
@@ -748,6 +752,8 @@ drive() {
     [ "$?" -ne 1 ] || return 1
     sleep 1
   done
+  # One more read once the window has closed: a turn that began during the last sleep began.
+  [ -z "$(logged "$run" tools)" ] || return 0
   drive_problem="Codex's turn did not begin within $2 s, held by a screen this leg does not expect: $(screen_text "$(codex_pane "$run")")"
   return 1
 }
