@@ -1261,9 +1261,10 @@ function Chip({
  *  Enter follows it. A parent its author deleted is drawn as the deleted line, as its own row
  *  draws it (`DeletedLine`), and one its author edited says ` · edited` after its line
  *  (`EditedMark`), so the line holds both marks wherever the parent's own row is not drawn
- *  (INFRA-1523, R2 and R3). The outline's row draws it, and so does the Verification view's
+ *  (INFRA-1523, R2 and R3). The outline's row draws it; so does the Verification view's
  *  parent line (`VerificationFilterBody.tsx`'s `ParentLine`), with `tabStops`, since no tree's
- *  keys reach a link there. */
+ *  keys reach a link there; and so does the Decisions view's parent line of a parent with words
+ *  (`DecisionsRow.tsx`), without `tabStops`, since that view's keys reach a link in its row. */
 export function ParentLink({ line, tabStops }: { line: ParentLine; tabStops: boolean }): ReactNode {
   const route = line.reference === undefined ? undefined : parseNodeReference(line.reference);
   const deleted = postDeletion({ deleted_at: line.deletedAt, deleted_by: line.deletedBy });

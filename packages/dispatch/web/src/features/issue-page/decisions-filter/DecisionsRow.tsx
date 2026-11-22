@@ -92,7 +92,9 @@ interface RowPerson {
  * its words (`DeletedLine`), from the delete and never from its text, which names the actor as
  * no registry knows it and the time as stored; an edited one says ` · edited` after its time in
  * the margin (`RowMargin`), outside its words. The model holds both marks on a comment or a
- * message alone (`TreeNode.deletedAt`, `editedAt`), so no other row draws either.
+ * message alone (`TreeNode.deletedAt`, `editedAt`), so no other kind of node carries either
+ * mark on its own row. A decision's row draws two marks of other nodes: its parent's, on the
+ * parent line, and its Change's ` · edited`, after the Change's words.
  *
  * The focus opens the row's body, for a decision as for an ask: who made the node where the
  * margin does not say it whole, and the control that keeps the body open.
@@ -270,14 +272,15 @@ export function DecisionsRow({
             <Changed by={person(entry.change.by)} change={entry.change} />
           )}
           {/* The node's parent in the conversation, as one line: its kind's word and its first
-              line (R2, R1's first-line rule), drawn by the outline's own `ParentLink`: the link
-              a reader follows to the parent where the model gives it an address, out of the tab
-              order as everything inside a row is, which the row's own keys reach. A parent its
+              line (R2, R1's first-line rule). A parent with words is drawn by the outline's own
+              `ParentLink`: its line is the link a reader follows to the parent where the model
+              gives it an address, out of the tab order as everything inside a row is, which the
+              row's own keys reach. A parent its
               author deleted is drawn as the deleted line, and one its author edited says
               ` · edited` after its line, as the outline's parent line draws them (INFRA-1523,
-              R2 and R3). A parent with no words of its own is named by its kind's word once,
-              which is the line G gives it, and never by its id (R7); an edited one says
-              ` · edited` after that word. */}
+              R2 and R3). A parent with no words of its own is named by its kind's word once, as
+              plain text with no link, which is the line G gives it, and never by its id (R7); an
+              edited one says ` · edited` after that word. */}
           {entry.parent === undefined ? null : (
             <p
               className={`flex min-w-0 items-baseline gap-1 text-xs leading-5 ${pageQuietText}`}

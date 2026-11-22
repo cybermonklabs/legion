@@ -408,8 +408,8 @@ export function placements(root: TreeNode): ReadonlyMap<string, Placement> {
               parent: {
                 id: above.id,
                 line: lineOf(above),
-                // The parent's own address, which makes its line the link a reader follows to
-                // it (R18).
+                // The parent's own address, which makes a parent's line with words the link a
+                // reader follows to it (R18); a wordless parent is its kind word, with no link.
                 ...(above.reference === undefined ? {} : { reference: above.reference }),
                 // A comment's or a message's marks, which its child's row draws with the line
                 // (INFRA-1523, R2 and R3).
