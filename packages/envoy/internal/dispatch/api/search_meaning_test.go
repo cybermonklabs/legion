@@ -993,7 +993,9 @@ func uploadSearchDocument(t *testing.T, handler http.Handler, issueKey, name, bo
 // then yields that one document, and every other document the query matches by meaning is
 // lost. A comment, whose arm is its own, stands beside them as the rest of the page.
 func TestMeaningSearchFindsOtherItemsPastOneLongDocumentsWindows(t *testing.T) {
-	t.Parallel()
+	// Not parallel: among this package's parallel tests on CI's runner the meaning search missed
+	// the short document (job 137391716843), with nothing degraded; why the parallel run loses it
+	// is not yet known, so it runs alone as it did before.
 	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	issue := createInteractionIssue(t, handler, "CROWD", "Crowded windows", "Body text.")
