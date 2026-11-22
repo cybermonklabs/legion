@@ -139,6 +139,13 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 		// each prints on one line (redact.OneLine) and the line keeps its three tab-separated
 		// fields.
 		fmt.Fprintf(stdout, "%s\t%s\t%s\n", redact.OneLine(resp.RuntimeID), redact.OneLine(resp.EnrollmentID), redact.OneLine(resp.State))
+		// A refusal no retry mends (the broker enrolls no session of a restricted member's
+		// machine login): the helper asks no more, so the command says so and fails whether or
+		// not it was asked to wait.
+		if resp.State == "refused" {
+			fmt.Fprintf(stderr, "agent-secrets register: the broker refuses to enroll this session, and the helper asks no more: %s\n", resp.Error)
+			return 1
+		}
 		if *wait > 0 && resp.State != "enrolled" {
 			fmt.Fprintf(stderr, "agent-secrets register: not enrolled yet: %s\n", resp.Error)
 			return 1
@@ -153,6 +160,8 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 	switch {
 	case err != nil:
 		fmt.Fprintf(stderr, "agent-secrets: helper at %s unreachable (%v); this session has no secrets access until it is relaunched with the helper running\n", sock, err)
+	case resp.State == "refused":
+		fmt.Fprintf(stderr, "agent-secrets register: the broker refuses to enroll this session, and the helper asks no more (%s); launching anyway, with no secrets access\n", resp.Error)
 	case *wait > 0 && resp.State != "enrolled" && resp.Code == helper.CodeNoCredential && resp.EnrollmentID != "":
 		// A session that came back to an identity its record kept holds that enrollment and
 		// can sign with it, and the renew that confirms it is signed by that same key, so a

@@ -230,7 +230,7 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 	}
 	s.record.refuseRoleHolder(s.w, s.role, result)
 	// The 404 is written; the refusal's own bus signal goes out behind it (publishRefusalException).
-	publishRefusalException(s.d.client, s.d.delivery.logger, s.item, result)
+	publishRefusalException(s.d.client, s.d.delivery.logger, s.d.delivery.edge, s.item, result)
 	outcome := sendHolderLapsed
 	if result.State == roles.Unclaimed {
 		outcome = sendUnclaimed
@@ -330,6 +330,31 @@ func (s *roleSend) timedOut() {
 	s.settle(sendDeliveryFailed)
 }
 
+// endedInProcess answers a send whose window ended after its last forward ended while an earlier
+// forward under the same Nats-Msg-Id was still in process (earlierAttemptInProcess, err): the
+// stream may yet store that earlier forward for the holder, so the send is not told nothing was
+// stored. It is the 503 with Retry-After and listenerwire.CodeMaybeStored the send and publish
+// routes give a request that ends so (writeBusUnavailable), under earlierAttemptInProcessPrefix
+// and recorded earlier_attempt_in_process, where a send whose window ends otherwise is the 504
+// (timedOut). It costs its sender one, as the 504 does: the forward that ended in process marked
+// the charge (sendToRole).
+func (s *roleSend) endedInProcess(err error) {
+	s.record.holder = s.holder
+	s.record.refuseBusUnavailable(s.w, err)
+	s.settle(sendDeliveryFailed)
+}
+
+// windowEnded answers a send whose window ended with no forward the stream stored for its holder:
+// endedInProcess when its last forward ended in process (inProcess, that forward's error), and the
+// 504 (timedOut) otherwise.
+func (s *roleSend) windowEnded(inProcess error) {
+	if inProcess != nil {
+		s.endedInProcess(inProcess)
+		return
+	}
+	s.timedOut()
+}
+
 // settledBeforeForward judges the message to a holder the send has not checked yet, whose session
 // entry is entry, by beforeForward, the rules the role lane applies before it forwards, and reports
 // whether it answered: an echo (the source session holds the role) or a holder this route already
@@ -386,10 +411,11 @@ func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
 // the send's 200, since the holder answers nothing and reads the stored copy from its session
 // consumer (startRoleForward). The stream, which captures agent subjects, therefore keeps one copy
 // of the forward however many attempts there are. Every read takes ctx, the send's window, so
-// none outlasts it: a send whose window ends is answered 504. expectsReply is the expects_reply
-// its answers write (expectsReplyAnswer, api.go), the request's own dialect; the envelope this
-// send forwards and keeps carries the envelope's own value. warnings is what its 200 and 202 name
-// of the topic's old form.
+// none outlasts it: a send whose window ends is answered 504, unless its last forward ended while
+// an earlier forward under its Nats-Msg-Id was still in process, which is the 503 maybe_stored
+// (windowEnded). expectsReply is the expects_reply its answers write (expectsReplyAnswer, api.go),
+// the request's own dialect; the envelope this send forwards and keeps carries the envelope's own
+// value. warnings is what its 200 and 202 name of the topic's old form.
 func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply json.RawMessage, role string, keep bool, arrived time.Time, warnings []string) {
 	send := &roleSend{w: w, record: record, d: d, item: item, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived, warnings: warnings}
 	// The sender is stamped before the holder is resolved, so the copy a keep stores carries the
@@ -418,6 +444,9 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 	forwarded := send.item
 	forwarded.DedupeKey = roleForwardDedupePrefix + item.DedupeKey
 	resolved := first
+	// inProcess is the error of the send's last forward when that forward ended while an earlier
+	// forward under its Nats-Msg-Id was still in process, and nil otherwise (windowEnded).
+	var inProcess error
 	for pass := 0; ; pass++ {
 		if pass > 0 || !sessionIsLive(first.HolderState) || roles.ResolutionTooOld(resolvedAt, d.delivery.now()) {
 			resolvedAt = d.delivery.now()
@@ -446,7 +475,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 			}
 			window := forwardWindow(ctx)
 			if window <= 0 {
-				send.timedOut()
+				send.windowEnded(inProcess)
 				return
 			}
 			send.attempts++
@@ -468,6 +497,10 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 			// A forward that failed with no refusal may have been stored for its holder, so it
 			// costs its sender one whatever this send answers next.
 			send.record.charge.stored()
+			inProcess = nil
+			if earlierAttemptInProcess(err) {
+				inProcess = err
+			}
 		}
 		// Any resolution not answered above (a holder past the live window, which keeps its
 		// claim, or a read that failed) fails this attempt only.
@@ -475,5 +508,5 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 			break
 		}
 	}
-	send.timedOut()
+	send.windowEnded(inProcess)
 }
