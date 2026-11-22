@@ -40,9 +40,12 @@ with a WAITING line naming the defect and the answer you wait on.
      read. Send a name that no run answers (`absent`) to the architect as a finding, since the
      check's words are wrong, and the same for a check whose `run` is a whole test suite. Neither
      wait nor that finding moves the issue back.
+   - A `ci_check` check whose derived result is a fail is the merger's: the change is accepted,
+     and the merger decides at the merge whether the base or the change broke it. Name it in your
+     retro message and complete.
    - Any other check with no pass standing, or a check with no `ci_check` whose only evidence is a
-     unit suite: `request_backward_move` with `to: implementing` for the implementer's result or a
-     `ci_check` check, or `to: testing` for the tester's, its `reason` naming the check's block id.
+     unit suite: `request_backward_move` with `to: implementing` for the implementer's result, or
+     `to: testing` for the tester's, its `reason` naming the check's block id.
 2. **Get a second reading.** First list in your session the constraints the issue did not state,
    choices between two working options, abandoned approaches and reusable code. Then run
    `task(agent="oracle")` with the issue, the pull request body and the diff, asking for reusable

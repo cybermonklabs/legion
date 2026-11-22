@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 func TestGetDeliverySettingsWithoutAnyIsNull(t *testing.T) {
@@ -253,5 +255,35 @@ func TestAgentPutsDeliverySettingsWithItsActor(t *testing.T) {
 	}
 	if actorID != "agent-delivery-put" {
 		t.Fatalf("delivery settings actor = %q, want agent-delivery-put", actorID)
+	}
+}
+
+// The deploy repository and each excluded repository, given under the old name of a rename pair
+// in any case, are stored under its new name, and the access check reads the deploy repository by
+// that name. An excluded repository that only begins like the old name is stored as given, and
+// the excluded repositories keep their order.
+func TestPutDeliverySettingsStoresARenamedRepositoryUnderItsNewName(t *testing.T) {
+	fake := &fakeGitHubApp{installations: map[string]string{"cybermonklabs/legion": "read"}}
+	handler, database := newRenamingArchitectureSourceServer(t, fake,
+		refs.NewRenames([]store.RepoRename{{From: "sjawhar/legion", To: "cybermonklabs/legion"}}))
+
+	response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/delivery", map[string]any{
+		"deploy_repo":             "SJawhar/Legion",
+		"deploy_workflow_path":    ".github/workflows/deploy.yml",
+		"production_job_names":    []string{"release"},
+		"pr_checks_workflow_path": ".github/workflows/pr-checks.yml",
+		"population_authors":      []string{"octocat"},
+		"excluded_repos":          []string{"sjawhar/legion-smoke", "SJawhar/Legion"},
+	}, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("put delivery settings: status=%d body=%s", response.Code, response.Body.String())
+	}
+	stored, err := delivery.GetSettings(t.Context(), database.Pool)
+	if err != nil {
+		t.Fatalf("GetSettings: %v", err)
+	}
+	if stored.DeployRepo != "cybermonklabs/legion" || !slices.Equal(stored.ExcludedRepos, []string{"sjawhar/legion-smoke", "cybermonklabs/legion"}) {
+		t.Fatalf("stored deploy_repo %q and excluded_repos %q, want cybermonklabs/legion and [sjawhar/legion-smoke cybermonklabs/legion]",
+			stored.DeployRepo, stored.ExcludedRepos)
 	}
 }

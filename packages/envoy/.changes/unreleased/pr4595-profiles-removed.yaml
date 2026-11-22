@@ -1,0 +1,12 @@
+kind: Removed
+body: |-
+  The airlock's rules file and its setting `BROKER_AIRLOCK_RULES_FILE` (the boot refuses it,
+  naming `BROKER_PROFILES_FILE`), and `envoy-broker airlock-check` (exits 2 naming
+  `envoy-broker profiles check`). A proxy entry with no host, the judge-only key, is refused.
+  The request field `github_app` on `POST /v1/requests` and `POST /v1/grants/{id}/values` is
+  refused `GITHUB_APP_FIELD_REMOVED`, so an `agent-secrets` of this release or an earlier one
+  that passes `--github-owner`, `--github-repo`, `--github-read-only` or `--github-token` runs
+  nothing; the values answer no longer carries `github_app`. The codes `INVALID_NARROWING`
+  (a values body the route cannot read now answers `INVALID_RELEASE`), `NARROWING_REFUSED`,
+  `NARROWING_NOT_APPLICABLE`, `NARROWING_OWNER_NOT_LISTED` and `NARROWING_BEHIND_AIRLOCK` are
+  gone, with the broker's fixed read-only permission set.
