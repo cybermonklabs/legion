@@ -950,13 +950,17 @@ moved: an issue event named by its key alone (`notifications.dispatch.issue.ACME
 or a role's name with no project (`notifications.agent.<session>`, `notifications.role.<role>`), a
 kept lane with no project, and a failed-delivery report of one. It is the reading a pull request
 quotes before it refuses the old form and deletes the code that reads both forms. One reading
-cannot show that nothing moved, so the gate is read twice, at least the stream's retention apart
-(`ENVOY_NOTIFICATIONS`' `max_age`, 72 hours):
+cannot show that nothing moved, so the gate is read twice, the second no sooner than 180 s after
+the first, so each listener's counter line at the second is newer than the one the first read:
 
 ```bash
 packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record first.json [--listener <machine>=<url>]... [--bus-alias <nats-urls>]...
 # at or after the time the first run names:
-packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record second.json --since first.json [--listener <machine>=<url>]... [--bus-alias <nats-urls>]...
+packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record second.json --since first.json [--listener <machine>=<url>]... [--bus-alias <nats-urls>]... \
+  --deployment <owner/repo> --new-form-commit <commit> --hub-statefulset <name> [--hub-server <name>]...
+# once the second reading prints (a1), (a2) and (b) true and (c) false:
+packages/envoy/scripts/legacy-subjects-purge.sh --context <kube-context> --reading second.json
+# then a new pair of readings, which opens only when (c) is true too
 ```
 
 A listener outside the cluster is read over `https`; `--insecure` takes an `http://` URL, whose
@@ -971,6 +975,72 @@ hub is not static, `--token-file <path>` names where the listener Deployment mou
 NATS token, which the Job then connects with in place of the seed, and `--inbox-prefix <prefix>`
 the inbox prefix the listener identity's grant subscribes, which every `nats` call of the Job then
 takes.
+
+### The four facts
+
+The second reading opens only when the fleet is clean (below) and four facts read true. Each is
+printed on lines that name it first, `(a1) the pins`, `(a2) the running clients`,
+`(b) the consumers`, `(c) the stream`, and kept in the record's `facts` as `true`, `false` or
+`unknown`; a fact the gate cannot read, and a census that enumerated nothing, is `unknown`, never
+`true`.
+
+- **(a1) The pins**, for the clients that start later: `daemon-release-gate.sh --deployment
+  <owner/repo> --clients [--dotfiles <dir>] <commit>`, run beside the gate, where `<commit>` is
+  `--new-form-commit`, the full commit from which every client writes only new-form names. It is
+  true when that gate prints `GATE OPEN` having read at least one pin, false on any of its
+  `GATE SHUT` lines, and unknown otherwise.
+- **(a2) The running clients**: every connection of every hub server, read with
+  `$SYS.REQ.SERVER.PING.CONNZ`, page by page, from a Job of its own
+  (`lib/legacy-subjects-gate-census.sh`) as the `legacy-cutover` user, under a connection name the
+  reading draws and leaves out. Each server answers for the account that user sits in, the
+  clients' own (`$G` on a hub with no private project). Every server `--hub-statefulset` names
+  (its pods, `<name>-<ordinal>`, as each server names itself) and every `--hub-server` must answer
+  every page, and no other server may. Each connection must end its name with its build:
+  `legion@<commit>`, judged by GitHub's compare of `--new-form-commit` with that commit, or
+  `@sjawhar/<plugin>@<version>`, judged by its release tag (`pi-envoy-v<version>`;
+  `claude-envoy-v<version>` for claude-envoy and codex-envoy). A build behind or beside the commit
+  makes it false; a connection that names no build, a server that does not answer, a census that
+  moved between its pages and one with no connection but its own make it unknown. It never reads
+  port 8222.
+- **(b) The consumers**: each consumer of the stream has acknowledged the newest message of the
+  old-form subjects its filters match: its ack floor's stream sequence equal to that message's
+  holds, since the floor's own message is acknowledged, and one below it shuts. An empty consumer
+  list is unknown.
+- **(c) The stream** holds no old-form message, under any of the four families.
+
+Every Envoy client names its build after its connection name: the listener, Dispatch and the
+broker by the commit the envoy image stamps (`internal/buildversion`), the daemon by the commit
+`legion version` prints, and pi-envoy and claude-envoy by the `dist/build-commit` stamp the
+worker image writes beside their bundles, else a release's version.
+
+**The `legacy-cutover` user.** The census and the purge run as one temporary static NATS user of
+the hub, which the deployment adds for the cutover and removes before any project is private (a
+hub with a private project refuses every static client user). It publishes exactly
+`$SYS.REQ.SERVER.PING.CONNZ`, `$JS.API.STREAM.PURGE.ENVOY_NOTIFICATIONS`,
+`$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS`, `$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS` and
+`$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS`, and subscribes `_INBOX_legacy_cutover.>` alone.
+Its Jobs run in `envoy` as the ServiceAccount `legacy-cutover`, mount its nkey seed through the
+SecretProviderClass `legacy-cutover-nats-seed` as the file `nats-seed`, and take the inbox prefix
+`_INBOX_legacy_cutover`; the deployment grants that ServiceAccount alone the read of the seed,
+and no developer box reads it.
+
+### legacy-subjects-purge.sh
+
+`legacy-subjects-purge.sh --context <kube-context> --reading <record>` makes fact (c) true in place
+of waiting out the stream's retention. It refuses (`REFUSED`, exit 1), calling nothing, unless the
+record is a second reading of that cluster whose (a1), (a2) and (b) are `true`. It then runs one
+Job as the `legacy-cutover` user (`lib/legacy-subjects-purge-nats.sh`) that purges nothing when the
+stream is not the reading's (its `envoy_stream_id`), when its subjects cannot be read whole, or when
+an old-form subject holds a message after the newest one the reading found; otherwise it purges
+each old-form subject by itself (`$JS.API.STREAM.PURGE.ENVOY_NOTIFICATIONS` with that literal
+subject as the filter, so no new-form message goes) and reads the subjects back. It prints a
+`PURGED` line per subject and `PURGED` (exit 0) when the read-back holds no old-form subject, or
+`UNKNOWN` (exit 3). Its Job is created, deleted and read back as the gate's are, labelled
+`created-by: legacy-subjects-purge`. `legacy-subjects-purge.test.sh` proves each verdict against
+a fake `nats` that keeps the stream's messages, so each case reads what the stream holds after the
+driver ran; CI runs it beside the gate's test.
+
+### What the gate reads
 
 What it reads, all of it read-only:
 
@@ -1024,11 +1094,11 @@ What it reads, all of it read-only:
   ends that list's reads at once.
 
 The first reading shuts on no old-form name. The stream keeps the old-form messages published
-before every producer moved for its whole retention, and interest records and consumer filters may
-still be in an old form, so the first reading names each it finds (`FOUND`) and records the
-stream's last sequence, the newest old-form message and every old-form counter. The second reading,
-at least the retention later, shuts on any old-form message the stream still holds (one published
-after the first reading's last stream sequence named apart); a listener whose count rose
+before every producer moved, and interest records and consumer filters may still be in an old
+form, so the first reading names each it finds (`FOUND`) and records the stream's last sequence,
+the newest old-form message and every old-form counter. The second reading shuts on any old-form
+message the stream still holds (one published after the first reading's last stream sequence named
+apart); a listener whose count rose
 under any kind; a consumer one of whose filters only an old-form name matches and whose new form
 the same consumer does not also filter under every project its names carry (a Legion daemon's
 `legion-go-<project>-<kind>` or any other; a session consumer filters both forms of its topics
@@ -1036,8 +1106,9 @@ until the old form is refused, so its old filter loses nothing; a new form under
 beside an old filter whose names carry any, covers that project alone); an interest record holding
 an old-form topic other than its session's own agent subject, which the listener writes into every
 record itself until the old form is
-refused; a reading named with `--since` that shut the gate; and less than the retention between the
-two, the readings' and each listener's own two reads of its counter. The old form is the gate's own
+refused; a reading named with `--since` that shut the gate; less than 180 s between the two, or a
+listener whose counter line is no newer than the one the first reading read; and a fact read false.
+The old form is the gate's own
 rule (`lib/legacy-subjects-gate-forms.jq`, `old_form`, which the gate also hands the Job to choose
 the subjects whose last message it reads), so the gate stays right once the code that reads both
 forms is deleted. It takes as old a filter that matches some old-form name of a family the rename
@@ -1062,9 +1133,8 @@ listener of the first reading that is gone, a listener on another bus that serve
 a listener read or whose `ENVOY_MACHINE_ID` is no literal value, a start-time gauge served at one
 reading only, a record that cannot be written,
 and at the second reading: a first reading that did not read every surface, a stream that is not the
-one the first reading read (its `envoy_stream_id` changed), a stream that does not hold the whole
-window (its first message is younger than the window, less an hour: it was purged or made anew),
-and readings further apart than a listener's durable outlives its listener. A listener read at two
+one the first reading read (its `envoy_stream_id` changed), readings further apart than a
+listener's durable outlives its listener, and a fact it could not read. A listener read at two
 readings is compared only while both readings show it is the one process. A judgement that fails
 on what it was given prints `UNKNOWN` and writes its record too.
 
@@ -1093,18 +1163,20 @@ it. The last line is `GATE OPEN` (exit 0) at a clean second reading, `GATE SHUT`
 `FOUND` count, the stream sequence the second reading reads after, and when to read again (exit 4).
 It writes the reading to `--record` in every case, as a new file in a directory that exists when
 the gate starts: a file made at that path meanwhile is left as it is, and the reading prints
-`UNKNOWN`. A second reading that opened is a first reading for the next window. A usage error exits
+`UNKNOWN`. A second reading that opened is a first reading for the next one. A usage error exits
 2 and reads nothing. It
 needs `kubectl` signed in to the cluster as an account that may list pods in every namespace, read
 the logs of the listener pods in each namespace that runs one, read the listener Deployment, and
 create, read, read the logs of and delete Jobs and pods in `envoy` (a developer box's account: list
 through its `container.viewer` role, the rest through its `edit` role in `envoy` and its `pods/log`
-read in `dispatch`), plus `jq`, `curl` and `base64`.
+read in `dispatch`), plus `jq`, `curl` and `base64`; at a second reading, `gh` (read access to
+cybermonklabs/legion), read of the hub StatefulSet in `envoy`, and what `daemon-release-gate.sh`
+needs.
 
-`legacy-subjects-gate.test.sh` proves every verdict behind a fake `kubectl` and a fake `curl`,
-with the Job's log written in its own format, runs the Job's own script under `sh` behind a fake
-`nats`, and holds the old-form rule row by row; CI runs it in the `envoy-go-checks` job of
-`.github/workflows/ci.yaml`.
+`legacy-subjects-gate.test.sh` proves every verdict behind a fake `kubectl`, a fake `curl`, a fake
+`gh` and a fake `daemon-release-gate.sh`, with each Job's log written in its own format, runs the
+Job's own script under `sh` behind a fake `nats`, and holds the old-form rule row by row; CI runs
+it in the `envoy-go-checks` job of `.github/workflows/ci.yaml`.
 
 ## Measuring search on a copy of the corpus
 

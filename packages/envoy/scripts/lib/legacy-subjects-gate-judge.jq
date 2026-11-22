@@ -3,10 +3,12 @@
 # The judgement of legacy-subjects-gate.sh, which runs this program with jq over one document of
 # what it read: the listener pods it found and what each one's log last said of its counter, each
 # listener named outside the cluster and its /metrics, the lines the NATS Job printed
-# (lib/legacy-subjects-gate-nats.sh), the times the reading began and ended, and the earlier
-# reading it is compared with, or null. It reads nothing itself and answers {verdict, window, lines,
-# record}: `shut`, `unknown`, `clean` or `open`, the seconds a second reading must come after the
-# first, the lines the gate prints, and the record it writes.
+# (lib/legacy-subjects-gate-nats.sh), the times the reading began and ended, the earlier reading it
+# is compared with, or null, and, at a second reading, what it read for the four facts (facts: the
+# release gate's census of pinned builds, the hub servers that must answer the census of
+# connections, the census connection's own name, and the verdict on each build a connection
+# names). It reads nothing itself and answers {verdict, lines, record}: `shut`, `unknown`, `clean`
+# or `open`, the lines the gate prints, and the record it writes.
 
 include "legacy-subjects-gate-forms";
 
@@ -15,10 +17,24 @@ include "legacy-subjects-gate-forms";
 # listener that stopped logging it.
 def log_line_bound: 180;
 
-# How much later than the window's start the stream's first message may be at a second reading:
-# the stream expires each message at its max_age, so its first message is the first published
-# after that moment, which on a production bus is moments later; an hour allows a quiet hour.
-def first_message_slack: 3600;
+# The facts a second reading reads beside the three surfaces, each one `true`, `false` or
+# `unknown` in the record, and each line of it naming the fact first:
+#   (a1) the pins: the release gate's census of pinned builds (daemon-release-gate.sh --clients)
+#        shows every pin at or after the commit from which every client writes only new-form names;
+#   (a2) the running clients: every connection the census of every hub server lists names its
+#        build in its connection name (forms' build_token), at or after that commit;
+#   (b)  every consumer of the stream has acknowledged the last old-form message it takes;
+#   (c)  the stream holds no old-form message.
+def fact_names: {a1: "(a1) the pins", a2: "(a2) the running clients", b: "(b) the consumers", c: "(c) the stream"};
+
+# subject_matches($filter) says whether a subject is one a NATS filter matches: `*` matches one
+# token, a last `>` one token or more, any other token itself.
+def subject_matches($filter):
+  split(".") as $s
+  | ($filter | split(".")) as $f
+  | if ($f | last) == ">" then ($s | length) >= ($f | length) and all(range(0; ($f | length) - 1); $f[.] == "*" or $f[.] == $s[.])
+    else ($s | length) == ($f | length) and all(range(0; $f | length); $f[.] == "*" or $f[.] == $s[.])
+    end;
 
 # metrics reads a listener's metrics text: whether it declares the old-form counter, the counter's
 # sample per label set, the start-time gauge's samples with the machine each names (its one label,
@@ -69,6 +85,7 @@ def read_name:
     | "the request $JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS for the subjects under \($a[0] | printable) at offset \($a[1] // "?" | printable)"
   elif .leg == "old_last" then "the request $JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS for the last message of \(.arg | printable)"
   elif .leg == "user_info" then "the request $SYS.REQ.USER.INFO"
+  elif .leg == "census" then "the request $SYS.REQ.SERVER.PING.CONNZ at offset \(.arg | printable)"
   elif .leg == "interest_keys" then "nats kv ls envoy_interests"
   else .leg | printable
   end;
@@ -167,9 +184,6 @@ def old_filters:
   ([.config.filter_subject // empty] + (.config.filter_subjects // [])) as $filters
   | [$filters[] | select(type == "string") | select(old_form) | select(has_twin($filters) | not)];
 
-# rfc3339 is a JetStream time (RFC 3339, nanoseconds or none) in Unix seconds, or null.
-def rfc3339: if type == "string" then (sub("\\.[0-9]+"; "") | try fromdateiso8601 catch null) else null end;
-
 . as $in
 | ($in.job.lines // []) as $jl
 | ($jl | map(select(.leg == "end")) | length > 0) as $whole
@@ -243,13 +257,11 @@ def rfc3339: if type == "string" then (sub("\\.[0-9]+"; "") | try fromdateiso860
           end))
    end) as $identity
 
-# --- the stream's window ------------------------------------------------------------------------
+# --- the stream -----------------------------------------------------------------------------------
 | ($stream.value.config.max_age // null) as $maxagens
 | (if $maxagens == null then null else ($maxagens / 1000000000 | floor) end) as $maxage
-| ([259200, ($maxage // 0), ($in.earlier.stream.max_age_seconds // 0)] | max) as $window
 | ($stream.value.config.metadata.envoy_stream_id // null) as $streamid
 | ($stream.value.state.first_ts // null) as $firstts
-| ($firstts | rfc3339) as $first
 | ([$consumers[] | select(.name | startswith("listener-")) | .config.inactive_threshold // 0 | select(type == "number" and . > 0)] | min) as $lapsens
 | ($stream.value.state.last_seq // null) as $lastseq
 # The last message of each old-form subject, as the Job read it by last_by_subj: {seq, time}, gone
@@ -434,15 +446,13 @@ def rfc3339: if type == "string" then (sub("\\.[0-9]+"; "") | try fromdateiso860
          elif $e.verdict != "complete" then {unknown: "the first reading, taken \($e.read_at), did not read every surface; take a new first reading"}
          elif ($e.stream.last_seq | type) != "number" then {unknown: "the first reading recorded no last stream sequence, so the old-form messages published after it cannot be told; take a new first reading"}
          else empty end,
-         if $gap < $window then {shut: "\($gap | hours) h passed between the first reading's end (\($e.finished_at | todate)) and this one; the stream keeps \($window | hours) h, so read again at or after \(($e.finished_at + $window + log_line_bound) | todate)"} else empty end,
-         # The stream must be the one the first reading read, and hold the whole window now, or
-         # an old-form name published before it was made anew or purged cannot be seen.
+         # The second reading's log lines must all be later than the first's: a listener logs its
+         # counter every minute, and the gate takes a line up to log_line_bound old.
+         if $gap < log_line_bound then {shut: "\($gap) s passed between the first reading's end (\($e.finished_at | todate)) and this one, less than the \(log_line_bound) s a listener's counter line may be old, so this reading may read a first reading's own line; read again at or after \(($e.finished_at + log_line_bound) | todate)"} else empty end,
+         # The stream must be the one the first reading read, or an old-form name published before
+         # it was made anew cannot be seen.
          if $streamid != null and ($e.stream.id // null) == null then {unknown: "the first reading recorded no identity of the stream (envoy_stream_id), so this reading is not shown to read the same stream; take a new first reading"}
          elif $streamid != null and $e.stream.id != $streamid then {unknown: "the stream is not the one the first reading read: its envoy_stream_id was \($e.stream.id | printable) and is \($streamid | printable), so it was made anew between the readings and what it held then is gone; take a new first reading"}
-         else empty end,
-         if $stream.value == null then empty
-         elif $first == null or $first <= 0 then {unknown: "the stream's first message time (state.first_ts \($firstts | tostring | printable)) is no time, so whether it holds the whole \($window | hours) h window cannot be read"}
-         elif $first > $in.started_at - $window + first_message_slack then {unknown: "the stream holds messages only since \($first | todate), \(($in.started_at - $first) | hours) h before this reading, not the \($window | hours) h it keeps: it was purged or made anew within the window, so an old-form name published before then cannot be seen; read again at or after \(($first + $window - first_message_slack) | todate)"}
          else empty end,
          # A listener's durable outlives its listener for its inactive_threshold alone: past it, a
          # listener that served between the readings and then stopped may have left no durable to
@@ -450,11 +460,11 @@ def rfc3339: if type == "string" then (sub("\\.[0-9]+"; "") | try fromdateiso860
          if $lapsens != null and $gap > ($lapsens / 1000000000) then {unknown: "\($gap | hours) h passed between the readings, longer than a listener's durable outlives its listener (\($lapsens / 1000000000 | hours) h unbound, its inactive_threshold): a listener that served between them and stopped may have left no durable to name it; take a new first reading and read again sooner"} else empty end,
          ($listeners[] | select(.unknown | not) | . as $now
            | ($e.listeners // [] | map(select(same_listener($now))) | first // null) as $then
-           | if $then == null then {unknown: "\($now.id) was not read at the first reading: it started after it, so its counter covers only part of the window"}
+           | if $then == null then {unknown: "\($now.id) was not read at the first reading: it started after it, so its counter covers only part of the time between the readings"}
              elif $now.kind == "pod" and $then.restarts != $now.restarts then {unknown: "\($now.id) restarted between the readings (restart count \($then.restarts) then \($now.restarts)): its counter covers only the time since"}
              elif $now.start != null and $then.start != null and $now.start != $then.start then {unknown: "\($now.id) restarted between the readings: its start-time gauge read \($then.start) then \($now.start), so its counter covers only the time since \($now.start | todate)"}
              elif ($now.start == null) != ($then.start == null) then {unknown: "\($now.id) served a start-time gauge at one reading and not the other, so the two counts are not shown to be one process's"}
-             elif ($now.read_at | type) == "number" and ($then.read_at | type) == "number" and $now.read_at - $then.read_at < $window then {shut: "\($now.id)'s counter was read \(($now.read_at - $then.read_at) | hours) h apart, at \($then.read_at | todate) and \($now.read_at | todate), less than the \($window | hours) h window; read again at or after \(($then.read_at + $window) | todate)"}
+             elif ($now.read_at | type) == "number" and ($then.read_at | type) == "number" and $now.read_at <= $then.read_at then {shut: "\($now.id)'s counter line at this reading was logged at \($now.read_at | todate), no later than the line the first reading read (\($then.read_at | todate)), so nothing is shown between the readings; read again at or after \(($then.read_at + log_line_bound) | todate)"}
              else
                ((($now.counts | keys) + ($then.counts | keys)) | unique) as $labels
                | [$labels[] | . as $l | {label: $l, then: ($then.counts[$l] // 0), now: ($now.counts[$l] // 0)}] as $diff
@@ -469,14 +479,133 @@ def rfc3339: if type == "string" then (sub("\\.[0-9]+"; "") | try fromdateiso860
        ]
    end) as $compared
 
-| ($found + $compared) as $all
+# --- the four facts, at a second reading ------------------------------------------------------
+# Each entry names its fact (fact); a fact is false where any of its entries shuts, unknown where
+# none shuts and any cannot be read, and true otherwise. A census that enumerates nothing (no pin,
+# no connection, no consumer) is unknown, never true.
+| ($in.facts // {}) as $fi
+| ($fi.new_form_commit // null) as $commit
+# What the stream holds now, family by family: each family whole (every page read, joined, and as
+# many subjects as the server counts) or not, and its subjects.
+| ([["notifications.dispatch.issue.>", "notifications.agent.>", "notifications.envoy.exceptions.notifications.agent.>", "notifications.envoy.kept.>"][]
+    | . as $family
+    | ($subjectpages | map(select(.family == $family))) as $pages
+    | (($pages | length) > 0 and all($pages[]; .page.value)) as $read
+    | (if $read then [$pages[] | .page.value.state.subjects // {} | keys[]] | unique else [] end) as $subjects
+    | {family: $family, subjects: $subjects,
+       whole: ($read and ([$pages[] | .page.value] | paging_problem([.state.subjects // {} | keys[]])) == null
+         and ($subjects | length) == ($pages | last | .page.value.total))}]) as $families
+| ([$families[] | .subjects[] | select(old_form)] | unique) as $oldnow
+| (if $in.earlier == null then [] else [
+    # (a1) the pins: the release gate's census, as daemon-release-gate.sh --clients printed it.
+    ($fi.a1 // {}) as $a
+    | ([$a.lines // [] | .[] | strings]) as $l
+    | ([$l[] | select(startswith("PASS"))]) as $pass
+    | ([$l[] | select(startswith("GATE SHUT:"))]) as $shutlines
+    | ([$l[] | select(startswith("UNKNOWN:"))]) as $unklines
+    | ($l | last // "") as $last
+    | (if ($a.missing // []) | length > 0 then {fact: "a1", unknown: "\(fact_names.a1): the census of pinned builds was not read: name \($a.missing | join(" and "))"}
+       elif $a.error then {fact: "a1", unknown: "\(fact_names.a1): daemon-release-gate.sh --clients could not be run: \($a.error | printable)"}
+       elif $last == "GATE SHUT" or ($shutlines | length) > 0 then {fact: "a1", shut: "\(fact_names.a1): daemon-release-gate.sh --clients \($commit) shut: \($shutlines[:5] | map(ltrimstr("GATE SHUT: ") | printable) | join("; "))\(if ($shutlines | length) > 5 then "; …" else "" end)"}
+       elif $last == "GATE OPEN" and $a.rc == 0 and ($unklines | length) == 0 and ($pass | length) > 0 then {fact: "a1", pass: "\(fact_names.a1): daemon-release-gate.sh --clients \($commit) read \($pass | length) pin(s) and client(s), each at or after it"}
+       elif ($pass | length) == 0 and ($unklines | length) == 0 then {fact: "a1", unknown: "\(fact_names.a1): daemon-release-gate.sh --clients \($commit) enumerated no pin (its verdict \($last | printable), exit \($a.rc // "?")), and a census that read nothing passes nothing"}
+       else {fact: "a1", unknown: "\(fact_names.a1): daemon-release-gate.sh --clients \($commit) did not read every pin (exit \($a.rc // "?")): \(($unklines | if length > 0 then .[:3] | map(ltrimstr("UNKNOWN: ")) | join("; ") else "its last line is \($last)" end) | printable)"}
+       end),
+
+    # (a2) the running clients: every connection of every hub server, by the census of
+    # connections ($SYS.REQ.SERVER.PING.CONNZ, which each server answers for the account the census
+    # connection sits in), each of whose names must end with its build.
+    ($fi.census // {}) as $census
+    | ($fi.hub // {}) as $hub
+    | ($census.lines // [] | map(select(.leg == "census"))) as $clines
+    | ([$clines[] | {offset: .arg, line: ., replies: (.out | split("\n") | map(select(length > 0) | try fromjson catch "no JSON"))}]) as $cpages
+    | ($hub.servers // []) as $expected
+    | (if ($census.missing // []) | length > 0 then [{fact: "a2", unknown: "\(fact_names.a2): no census of the hub's connections was read: name \($census.missing | join(" and "))"}]
+       elif $census.error then [{fact: "a2", unknown: "\(fact_names.a2): the census of the hub's connections, as the legacy-cutover user: \($census.error | printable)"}]
+       elif $hub.error then [{fact: "a2", unknown: "\(fact_names.a2): the hub servers that must each answer the census could not be read: \($hub.error | printable)"}]
+       elif ($expected | length) == 0 then [{fact: "a2", unknown: "\(fact_names.a2): no hub server was named (--hub-statefulset, --hub-server), so a census that one server did not answer could not be told from a whole one"}]
+       elif ($clines | length) == 0 then [{fact: "a2", unknown: "\(fact_names.a2): the census Job printed no census of the hub's connections"}]
+       else
+         ([$cpages[] | .line as $line | .offset as $o
+           | if $line.rc != 0 then "\($line | read_name): \($line | cli_failure)"
+             elif ($line.err | test("(?i)violation")) then "\($line | read_name): \($line.err | last_line | printable)"
+             elif any(.replies[]; type != "object") then "\($line | read_name): an answer is no JSON object"
+             elif any(.replies[]; (.error | type) == "object") then "\($line | read_name): a server answered \([.replies[] | select((.error | type) == "object") | .error.description // .error.code // "?"] | first | printable)"
+             elif any(.replies[]; (.server.name | type) != "string" or (.data.total | type) != "number" or (.data.connections // [] | type) != "array") then "\($line | read_name): an answer is no census of connections"
+             else
+               ([.replies[] | .server.name]) as $answered
+               | ([$expected[] | select(. as $e | $answered | index($e) | not)]) as $silent
+               | ([$answered[] | select(. as $a | $expected | index($a) | not)] | unique) as $strangers
+               | (if ($silent | length) > 0 then "hub server(s) \($silent | map(printable) | join(", ")) did not answer \($line | read_name)" else empty end),
+                 (if ($strangers | length) > 0 then "server(s) \($strangers | map(printable) | join(", ")), which no --hub-statefulset or --hub-server names, answered \($line | read_name): the hub is not the one named" else empty end),
+                 (if ($answered | length) != ($answered | unique | length) then "a hub server answered \($line | read_name) twice" else empty end)
+             end]) as $problems
+         | ([$cpages[] | .replies[] | objects | {server: .server.name, total: .data.total}] | group_by(.server)
+            | map(select((map(.total) | unique | length) > 1) | "hub server \(.[0].server | printable) counted \(map(.total | tostring) | unique | join(" then ")) connections between the census's pages, so the list moved while it was read; read again")) as $moved
+         | if ($problems + $moved | length) > 0 then [($problems + $moved)[] | {fact: "a2", unknown: "\(fact_names.a2): \(.)"}]
+           else
+             ([$cpages[] | .replies[] | .server.name as $server | .data.connections[] | objects | . + {server: $server}] | unique_by([.server, .cid])) as $conns
+             | ([$cpages[] | .replies[] | {server: .server.name, end: (.data.offset + (.data.connections | length)), total: .data.total}]
+                | group_by(.server) | map(select((map(.end) | max) < .[0].total) | .[0].server)) as $unpaged
+             | ([$conns[] | select(.name != $census.name)]) as $clients
+             | ([$clients[] | select((.name | build_token) == null)]) as $unnamed
+             | ([$clients[] | select((.name | build_token) != null) | . + {build: (.name | build_token)}] | group_by(.build)) as $bybuild
+             | (def who: "\(.name // "" | printable) (server \(.server | printable), cid \(.cid)\(if .authorized_user then ", user \(.authorized_user | printable)" else "" end))";
+               if ($unpaged | length) > 0 then [{fact: "a2", unknown: "\(fact_names.a2): the census of hub server(s) \($unpaged | map(printable) | join(", ")) was not read to its end"}]
+               elif ($clients | length) == 0 then [{fact: "a2", unknown: "\(fact_names.a2): the census of \($expected | length) hub server(s) (\($expected | map(printable) | join(", "))) enumerated no connection but its own, and a census that read nothing passes nothing"}]
+               else
+                 (if ($unnamed | length) > 0 then [{fact: "a2", unknown: "\(fact_names.a2): \($unnamed | length) connection(s) name no build: \($unnamed[:5] | map(who) | join("; "))\(if ($unnamed | length) > 5 then "; …" else "" end)"}] else [] end)
+                 + [$bybuild[] | .[0].build as $b | ($fi.builds[$b] // {verdict: "unknown", detail: "its build was not judged"}) as $v
+                     | if $v.verdict == "pass" then empty
+                       elif $v.verdict == "shut" then {fact: "a2", shut: "\(fact_names.a2): \(length) connection(s) run \($b | printable), \($v.detail | printable): \(.[:3] | map(who) | join("; "))\(if length > 3 then "; …" else "" end)"}
+                       else {fact: "a2", unknown: "\(fact_names.a2): \(length) connection(s) run \($b | printable), which could not be judged against \($commit // "?"): \($v.detail | printable)"}
+                       end]
+                 | if length == 0 then [{fact: "a2", pass: "\(fact_names.a2): every one of the \($clients | length) connection(s) on the \($expected | length) hub server(s) (\($expected | map(printable) | join(", "))) names a build at or after \($commit), \($bybuild | length) build(s): \($bybuild | map(.[0].build | printable) | join(", "))"}] else . end
+               end)
+           end
+       end)[],
+
+    # (b) the consumers: each consumer of the stream has acknowledged the last old-form message it
+    # takes, the newest message of the old-form subjects its filters match (its ack floor's stream
+    # sequence at or after it): one that has not would still be handed an old-form message once
+    # the code that reads the old form is gone. A stream that holds no old-form message hands none.
+    ([$oldnow[] | {subject: ., last: $oldlast[.]}]) as $oldlasts
+    | (if ($consumerpages | length) == 0 or ($consumersread | not) or $consumerpaging then {fact: "b", unknown: "\(fact_names.b): the stream's consumers were not read whole"}
+       elif ($consumers | length) == 0 then {fact: "b", unknown: "\(fact_names.b): the stream lists no consumer, and a census that read nothing passes nothing"}
+       elif ($families | all(.whole) | not) then {fact: "b", unknown: "\(fact_names.b): the stream's subjects were not read whole, so its old-form messages are not known"}
+       elif any($oldlasts[]; (.last.seq | type) != "number" and (.last.gone | not)) then {fact: "b", unknown: "\(fact_names.b): the last message of \([$oldlasts[] | select((.last.seq | type) != "number" and (.last.gone | not))] | length) old-form subject(s) was not read, so the last old-form message a consumer takes is not known"}
+       else
+         [$consumers[] | . as $c
+           | ([$c.config.filter_subject // empty] + ($c.config.filter_subjects // []) | map(strings | select(length > 0)) | if length == 0 then [">"] else . end) as $filters
+           | ([$oldlasts[] | select(.last.seq) | . as $o | select(any($filters[]; . as $f | $o.subject | subject_matches($f)))] | max_by(.last.seq)) as $takes
+           | select($takes != null)
+           | ($c.ack_floor.stream_seq // null) as $floor
+           | if ($floor | type) != "number" then {fact: "b", unknown: "\(fact_names.b): consumer \($c.name | printable) reports no ack floor, and takes the old-form message \($takes.subject | printable) at stream sequence \($takes.last.seq)"}
+             elif $floor < $takes.last.seq then {fact: "b", shut: "\(fact_names.b): consumer \($c.name | printable) has acknowledged up to stream sequence \($floor), before the last old-form message it takes, \($takes.subject | printable) at stream sequence \($takes.last.seq)"}
+             else empty end]
+         | if length > 0 then .[]
+           else {fact: "b", pass: "\(fact_names.b): each of the stream's \($consumers | length) consumer(s) has acknowledged every old-form message it takes (\($oldnow | length) old-form subject(s) on the stream\(if ($oldlasts | map(.last.seq | numbers) | length) > 0 then ", the last at stream sequence \($oldlasts | map(.last.seq | numbers) | max)" else "" end))"}
+           end
+       end),
+
+    # (c) the stream: it holds no old-form message, under any family the rename moved. The
+    # families' own lines above name each old-form subject; this one states the fact.
+    (if ($families | all(.whole) | not) then {fact: "c", unknown: "\(fact_names.c): the stream's subjects were not read whole"}
+     elif ($oldnow | length) > 0 then {fact: "c", shut: "\(fact_names.c): the stream holds \($oldnow | length) old-form subject(s); once (a1), (a2) and (b) read true, legacy-subjects-purge.sh purges them"}
+     else {fact: "c", pass: "\(fact_names.c): the stream holds no old-form message under \($families | map(.family) | join(", "))"}
+     end)
+  ] end) as $facts
+| ({a1: null, a2: null, b: null, c: null} | with_entries(.key as $k
+    | .value = ([$facts[] | select(.fact == $k)] | if length == 0 then null elif any(.[]; .shut) then "false" elif any(.[]; .unknown) then "unknown" else "true" end))) as $factverdicts
+| ([$oldnow[] | $oldlast[.].seq | numbers] | max) as $lastoldseq
+
+| ($found + $compared + $facts) as $all
 | ($all | map(select(.shut))) as $shut
 | ($all | map(select(.unknown))) as $unknown
 | (if ($shut | length) > 0 then "shut" elif ($unknown | length) > 0 then "unknown" elif $in.earlier == null then "clean" else "open" end) as $verdict
 | ([$all[] | select(.found) | .found]) as $foundlines
 | {
     verdict: $verdict,
-    window: $window,
     lines: (
       [if $identity then "IDENTITY: " + $identity else empty end]
       + [$listeners[] | select(.unknown | not) | "READ: \(.id): \(if .counts == {} then "no old-form name counted" else (.counts | to_entries | map("\(.key | printable) \(.value)") | join(", ")) end) since its start \(if .start then (.start | todate) else "(no start-time gauge)" end)"]
@@ -495,10 +624,9 @@ def rfc3339: if type == "string" then (sub("\\.[0-9]+"; "") | try fromdateiso860
     ),
     found: ($foundlines | length),
     last_seq: $lastseq,
-    # When to read again: the window after this reading's end, and the age a listener's newest
-    # counter line may have besides (log_line_bound), so that each listener's own two reads, the
-    # first at or before this reading's end, are a window apart by then however old its line.
-    again: ($in.finished_at + $window + log_line_bound),
+    # When to read again: past the age a listener's newest counter line may have (log_line_bound),
+    # so that each listener's line at the second reading comes after the one this reading read.
+    again: ($in.finished_at + log_line_bound),
     record: {
       gate: "legacy-subjects-gate",
       version: 3,
@@ -507,7 +635,7 @@ def rfc3339: if type == "string" then (sub("\\.[0-9]+"; "") | try fromdateiso860
       finished_at: $in.finished_at,
       read_at: ($in.started_at | todate),
       # A first reading that read every surface, and a second that opened, are each a complete
-      # reading: the next window's first reading.
+      # reading: the next first reading.
       verdict: (if $verdict == "open" or $verdict == "clean" then "complete" else $verdict end),
       compared_with: (if $in.earlier == null then null else $in.earlier.read_at end),
       identity: {said: $said, credential: $credential},
@@ -519,6 +647,10 @@ def rfc3339: if type == "string" then (sub("\\.[0-9]+"; "") | try fromdateiso860
       subjects_old: [$found[] | select(.subjects) | .subjects[]],
       interests_old: [$found[] | select(.record) | .record],
       shut: [$shut[] | .shut],
-      unknown: [$unknown[] | .unknown]
+      unknown: [$unknown[] | .unknown],
+      # What each fact read at a second reading, which legacy-subjects-purge.sh reads before it
+      # purges anything; null at a first reading.
+      facts: (if $in.earlier == null then null
+        else $factverdicts + {new_form_commit: $commit, last_old_seq: $lastoldseq, census_name: ($fi.census.name // null)} end)
     }
   }
