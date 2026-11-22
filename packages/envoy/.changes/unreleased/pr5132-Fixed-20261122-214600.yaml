@@ -11,4 +11,4 @@ body: |-
   `checks settlement not marked` at WARN instead of nothing.
 time: 2026-11-22T21:46:00Z
 custom:
-    Issue: settlement-mark-reads-the-leader
+    Issue: pr5132

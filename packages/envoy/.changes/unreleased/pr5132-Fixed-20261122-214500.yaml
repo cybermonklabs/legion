@@ -10,4 +10,4 @@ body: |-
   sequence it is stored at.
 time: 2026-11-22T21:45:00Z
 custom:
-    Issue: delete-reads-the-leader
+    Issue: pr5132
