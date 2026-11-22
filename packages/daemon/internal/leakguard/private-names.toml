@@ -1,9 +1,10 @@
 # This repository's own leak rules, ported one for one from .github/scripts/check-private-names.sh
-# (its patterns are that file's lines 148-178, its labels lines 180-183, and the way they are
-# applied to a line and to a path its `search` and `search_paths`). The four classes are the private
-# repository Legion is deployed from, the company that runs it, a private host of its own network,
-# and a Tailscale MagicDNS host. No [extend] section: gitleaks' own default rule set is deliberately
-# never loaded, so these rules are the whole of what this file detects.
+# (its patterns are that file's variables from `encoded_byte` to `allowed_tailnet_host`, its labels
+# `repository_label` to `tailnet_host_label`, and the way they are applied to a line and to a path
+# its `search` and `search_paths`). The four classes are the private repository Legion is deployed
+# from, the company that runs it, a private host of its own network, and a Tailscale MagicDNS
+# host. No [extend] section: gitleaks' own default rule set is deliberately never loaded, so these
+# rules are the whole of what this file detects.
 #
 # Each class appears twice where the script reads a file's path as well as its text: once as a
 # content rule (`regex`, no `path`) and once as a path rule (`path`, no `regex`), whose description
@@ -15,9 +16,10 @@
 # file passes the check it is a port of, and why no line of it may be "simplified" by dropping those
 # brackets.
 #
-# The two case-insensitive flags differ by design, exactly as the script's -i flags do (its lines
-# 525-532): four classes are matched in any case, the proper noun is matched case-sensitively, and
-# so are the two Lean names the host rule allows, whose case is their shape.
+# The two case-insensitive flags differ by design, exactly as the script's -i flags do (the
+# `search` and `search_paths` calls of its `names` run): four classes are matched in any case, the
+# proper noun is matched case-sensitively, and so are the two Lean names the host rule allows,
+# whose case is their shape.
 title = "Legion private names"
 
 # 1. The deployment repository: the two letters as a token of their own, with at most one separator

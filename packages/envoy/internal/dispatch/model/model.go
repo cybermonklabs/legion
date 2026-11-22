@@ -301,15 +301,22 @@ var GatedStepsKnown = []string{GatedStepDecisions, GatedStepCriteria, GatedStepS
 // State is `live` or `gone` — a delete writes `gone` and removes no row, so a reader of a
 // priority somebody deleted is told that rather than told nothing. MadeAt and MadeBy stay as
 // the first write left them however often the priority is written again.
+//
+// DescriptionTree is the ProseMirror tree Description is shown as, present only for a caller
+// that sent `Dispatch-Trees: 1` and only for a description that is not empty. It stands on this
+// row rather than on a read shape of the api package's own (display_trees.go), because no event
+// payload carries a priority: `priority.updated` names the id and the change alone
+// (PriorityEventPayload).
 type Priority struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	Owner       string    `json:"owner"`
-	Rank        string    `json:"rank"`
-	State       string    `json:"state"`
-	MadeAt      time.Time `json:"made_at"`
-	MadeBy      Actor     `json:"made_by"`
+	ID              string      `json:"id"`
+	Title           string      `json:"title"`
+	Description     string      `json:"description"`
+	DescriptionTree DisplayTree `json:"description_tree,omitempty"`
+	Owner           string      `json:"owner"`
+	Rank            string      `json:"rank"`
+	State           string      `json:"state"`
+	MadeAt          time.Time   `json:"made_at"`
+	MadeBy          Actor       `json:"made_by"`
 }
 
 // PriorityAct is one act of a priority's own history, as GET /api/v1/priorities/{id}/history
@@ -3477,17 +3484,37 @@ type ReferenceVia struct {
 	ID   string `json:"id"`
 }
 
-// ReferenceMember is one artifact in an issue's reference closure.
+// ReferenceMember is one document of an issue's references read: a document its own content
+// links to, always at depth 1. It stays for the clients that read members, beside Links.
 type ReferenceMember struct {
 	Artifact Artifact     `json:"artifact"`
 	Depth    int          `json:"depth"`
 	Via      ReferenceVia `json:"via"`
 }
 
-// IssueReferences is an issue's artifact reference closure.
+// IssueReferences is an issue's references read, one hop in each direction: Links and LinkedFrom,
+// with Members, the documents of Links, and Truncated, always false, kept for the clients that
+// read them.
 type IssueReferences struct {
 	Members   []ReferenceMember `json:"members"`
 	Truncated bool              `json:"truncated"`
+	// Links is every node the issue's own content links to, one hop out. This build writes []
+	// when there is none, never null.
+	Links []ReferenceLink `json:"links"`
+	// LinkedFrom is every node that links to the issue or to its own content, one hop in. This
+	// build writes [] when there is none, never null.
+	LinkedFrom []ReferenceLink `json:"linked_from"`
+}
+
+// ReferenceLink is one node at the other end of a link of an issue's references read: the node as
+// the graph read names it; its name, the words the graph read shows for it (a document's name, an
+// issue's title, the head of an item's text); the distinct kinds of its links, in order; and its
+// via, the lowest of the issue's nodes at the near end of those links.
+type ReferenceLink struct {
+	Node  GraphNode    `json:"node"`
+	Name  string       `json:"name"`
+	Kinds []string     `json:"kinds"`
+	Via   ReferenceVia `json:"via"`
 }
 
 // OutgoingReference is a target edge from an artifact.

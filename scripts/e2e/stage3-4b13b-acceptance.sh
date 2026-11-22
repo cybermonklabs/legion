@@ -8,7 +8,8 @@
 #   - the refused root stop naming `legion claims close` only for a tree no workflow issue backs;
 #   - the phase reminder: a planner whose turn ends with its phase open is reminded, and the
 #     tool's handoff_complete closes the phase, with no reminder after it;
-#   - park_child / rerun_child with their refusals, and the Dispatch writes' actor;
+#   - the architect's own backlog in Dispatch, set back on the root and standing on a child, and
+#     rerun_child with its refusal, and the Dispatch writes' actor;
 #   - phase-finished carrying the worker's summary and verdict;
 #   - the merger merging its own pull request, under the squash message it writes itself, and a
 #     design gate re-closed in merging holding nothing;
@@ -258,7 +259,7 @@ start_dispatch() {
 # three roots hold a row each from their admission on, through the wait on the person at their
 # gates and on to their reviews, and the two children of root 1
 # run beside them at rerun-a-closed-child, where all three roots are still short of their
-# reviews: the parked child, rerun into planning, and the closed
+# reviews: the child in backlog, rerun into planning, and the closed
 # child, reopened into it. 3 + 2 = 5. A cap of three, which this lane set while a waiting root
 # gave its row back, now leaves the first child waiting at the gates checkpoint, where the three
 # roots alone fill it.
@@ -913,13 +914,13 @@ wait_for_phase_at_least "$root2" implementing 900
 wait_for_phase_at_least "$root3" implementing 900
 pass
 
-# ---- 4. park_child / rerun_child ----------------------------------------------------------------------
-begin park-child
+# ---- 4. the architect's backlog / rerun_child ------------------------------------------------------------
+begin backlog-child
 child_planner_before=$(daemon_state | jq -c --arg c "$child" '.issues[$c] | {generation, phase, planner: .workers.planner.claim.state}')
-send_agent "$root1" architect "Acceptance child operations, one legion tool call at a time, reporting each result verbatim before the next. (1) Call park_child with issue $root1. (2) Call rerun_child with issue $child. (3) Now take child $child out of the workflow, with the legion operation your instructions name for that. Then wait."
+send_agent "$root1" architect "Acceptance child operations, one at a time, reporting each result verbatim before the next. (1) Write backlog on the tree root $root1 in Dispatch: dispatch issue-update --issue $root1 --status backlog. This proof expects the daemon to set it back. (2) Call rerun_child with issue $child. (3) Now take child $child out of the workflow to backlog, as your instructions say. Then wait."
 until_true 600 "$child to be backlog in Dispatch" dispatch_status_is "$child" backlog
 until_true 300 "$child to leave the workflow" issue_phase "$child" "done"
-# The park suspends the child's planner once its turn ends and names no deadline
+# The backlog suspends the child's planner once its turn ends and names no deadline
 # (packages/daemon/internal/supervise/suspend.go, holdSuspension), so the wait is the proof's turn
 # budget, phase_seconds (lib/workflow.sh); a timeout prints the planner's claim as legion claims shows it.
 child_planner_unsuspended() {
@@ -931,20 +932,25 @@ until_true "$phase_seconds" "$child's planner to be suspended" issue_worker_stat
 # shellcheck disable=SC2034
 timeout_hook=''
 until_true 300 "the child-status notice for $child" notice_delivered "$root1" architect "$(notice_needle child-status "$child")"
-state_file park-child
-dispatch_events "$child" >"$evidence/child-events-after-park.json"
+state_file backlog-child
+architect_session=$(claims list --json | jq -r --arg i "$root1" '[.claims[] | select(.issue == $i and .role == "architect") | .session // empty | select(. != "")] | last // ""')
+dispatch_events "$root1" >"$evidence/root-events-after-backlog.json"
+dispatch_events "$child" >"$evidence/child-events-after-backlog.json"
+# The root: a backlog the architect's session wrote and, after it, a status the daemon wrote that
+# is not backlog. That second write is the daemon's set-back of the first.
+jq -e --arg s "$architect_session" --arg d "legion-daemon:$project" '
+  (map(.type == "issue.updated" and .payload.status == "backlog" and .actor.id == $s) | index(true)) as $wrote
+  | $wrote != null and any(.[$wrote + 1:][]; .type == "issue.updated" and .actor.id == $d and .payload.status != "backlog")' \
+  "$evidence/root-events-after-backlog.json" >/dev/null ||
+  soft "$root1's backlog by the architect's session $architect_session was not set back by legion-daemon:$project: $(jq -c '[.[] | select(.type == "issue.updated") | {seq, actor: .actor.id, status: .payload.status}]' "$evidence/root-events-after-backlog.json")"
 f=$(root1_architect_file)
-tool_outcomes "$f" | jq -c '[.[] | select(.tool == "legion" and (.call.arguments.op | IN("park_child", "rerun_child")))]' >"$evidence/architect-child-ops.json"
-jq -e --arg r "$root1" 'any(.[]; .call.arguments.op == "park_child" and .call.arguments.issue == $r and .isError and (.text | contains("CHILD_REQUIRED") or contains("tree root")))' "$evidence/architect-child-ops.json" >/dev/null ||
-  soft "park_child on the root was not refused as CHILD_REQUIRED: $(cat "$evidence/architect-child-ops.json")"
-jq -e --arg c "$child" 'any(.[]; .call.arguments.op == "rerun_child" and .call.arguments.issue == $c and .isError and (.text | contains("CHILD_RUNNING") or contains("park_child takes it out")))' "$evidence/architect-child-ops.json" >/dev/null ||
-  soft "rerun_child on the running child was not refused as CHILD_RUNNING: $(cat "$evidence/architect-child-ops.json")"
-jq -e --arg c "$child" 'any(.[]; .call.arguments.op == "park_child" and .call.arguments.issue == $c and (.isError | not))' "$evidence/architect-child-ops.json" >/dev/null ||
-  soft "the architect did not choose park_child for 'take the child out of the workflow'"
-park_actor=$(jq -r '[.[] | select(.type == "issue.updated" and .payload.status == "backlog")] | last | .actor.id' "$evidence/child-events-after-park.json")
-[ "$park_actor" = "legion-daemon:$project" ] || soft "the backlog write's actor is $park_actor, want legion-daemon:$project"
+tool_outcomes "$f" | jq -c '[.[] | select(.tool == "legion" and .call.arguments.op == "rerun_child")]' >"$evidence/architect-child-ops.json"
+jq -e --arg c "$child" 'any(.[]; .call.arguments.op == "rerun_child" and .call.arguments.issue == $c and .isError and (.text | contains("CHILD_RUNNING")) and (.text | contains("Write backlog on \($c) first")))' "$evidence/architect-child-ops.json" >/dev/null ||
+  soft "rerun_child on the running child was not refused as CHILD_RUNNING with the text that says to write backlog first: $(cat "$evidence/architect-child-ops.json")"
+backlog_actor=$(jq -r '[.[] | select(.type == "issue.updated" and .payload.status == "backlog")] | last | .actor.id' "$evidence/child-events-after-backlog.json")
+[ "$backlog_actor" = "$architect_session" ] || soft "the backlog write's actor is $backlog_actor, want the architect's session $architect_session"
 note "architect refusals: $(jq -r '[.[] | select(.isError) | "\(.call.arguments.op) \(.call.arguments.issue): \(.text | .[0:110])"] | join(" | ")' "$evidence/architect-child-ops.json")"
-note "park: $child backlog in Dispatch by $park_actor, phase done, planner suspended (before: $child_planner_before); child-status reached $root1's architect"
+note "backlog: $child backlog in Dispatch by $backlog_actor, phase done, planner suspended (before: $child_planner_before); $root1's backlog by the same session set back by legion-daemon:$project, now $(dispatch_get "issues/$root1" | jq -r .status); child-status reached $root1's architect"
 sleep 20
 dispatch_status_is "$child" backlog >/dev/null || soft "$child's backlog was undone"
 pass
@@ -962,7 +968,7 @@ dispatch_events "$child" >"$evidence/child-events-after-rerun.json"
 rerun_actor=$(jq -r '[.[] | select(.type == "issue.updated" and .payload.status == "todo")] | last | .actor.id' "$evidence/child-events-after-rerun.json")
 [ "$rerun_actor" = "legion-daemon:$project" ] || soft "the todo write's actor is $rerun_actor, want legion-daemon:$project"
 f=$(root1_architect_file)
-tool_outcomes "$f" | jq -c '[.[] | select(.tool == "legion" and (.call.arguments.op | IN("park_child", "rerun_child")))]' >"$evidence/architect-child-ops.json"
+tool_outcomes "$f" | jq -c '[.[] | select(.tool == "legion" and .call.arguments.op == "rerun_child")]' >"$evidence/architect-child-ops.json"
 jq -e --arg c "$child" '[.[] | select(.call.arguments.op == "rerun_child" and .call.arguments.issue == $c and (.isError | not))] | length >= 1' "$evidence/architect-child-ops.json" >/dev/null ||
   soft "the architect did not choose rerun_child for 'run the child again'"
 state_file rerun-child
@@ -975,7 +981,7 @@ printf '%s\n' "$child2" >>"$work/instructor-issues"
 set_status "$child2" todo
 wait_for_phase "$child2" planning
 wait_for_worker "$child2" planner
-# The proof human closes the child: the workflow's leave parks it as the merge's close does (phase done,
+# The proof human closes the child: the workflow's leave takes it out as the merge's close does (phase done,
 # Dispatch status done), and rerun_child must reopen a closed Dispatch issue.
 set_status "$child2" "done"
 until_true 300 "$child2 to leave the workflow" issue_phase "$child2" "done"
@@ -991,13 +997,13 @@ dispatch_events "$child2" >"$evidence/closed-child-events.json"
 rerun_actor=$(jq -r '[.[] | select(.type == "issue.updated" and .payload.status == "todo")] | last | .actor.id' "$evidence/closed-child-events.json")
 [ "$rerun_actor" = "legion-daemon:$project" ] || soft "the reopening todo write's actor is $rerun_actor, want legion-daemon:$project"
 f=$(root1_architect_file)
-tool_outcomes "$f" | jq -c '[.[] | select(.tool == "legion" and (.call.arguments.op | IN("park_child", "rerun_child")))]' >"$evidence/architect-child-ops-closed.json"
+tool_outcomes "$f" | jq -c '[.[] | select(.tool == "legion" and .call.arguments.op == "rerun_child")]' >"$evidence/architect-child-ops-closed.json"
 jq -e --arg c "$child2" 'any(.[]; .call.arguments.op == "rerun_child" and .call.arguments.issue == $c and (.isError | not))' "$evidence/architect-child-ops-closed.json" >/dev/null ||
   soft "the architect did not rerun the closed child with rerun_child"
 state_file closed-child-rerun
 note "closed $child2 (done) → child-closed → the architect's rerun_child reopened it: todo by $rerun_actor, generation $gen_before → $gen_after, planning with its planner live"
 set_status "$child2" backlog
-note "the proof human parked $child2 (backlog) so it takes no further turns"
+note "the proof human moved $child2 to backlog so it takes no further turns"
 pass
 
 # ---- 5. implementation, the closed-unmerged PR, testing ------------------------------------------------
@@ -1026,7 +1032,7 @@ n=$(notice_deliveries "$child" architect "$(notice_needle pr-closed-unmerged "$c
 notice_line "$child" architect "$(notice_needle pr-closed-unmerged "$child")" | head -1 >"$evidence/notice-pr-closed-unmerged.jsonl"
 note "closed $repo#${pr_of[$child]} unmerged; $child's own architect got pr-closed-unmerged for $child $n time(s)"
 set_status "$child" backlog
-note "the proof human parked $child (backlog) so it takes no further turns"
+note "the proof human moved $child to backlog so it takes no further turns"
 pass
 
 begin testers

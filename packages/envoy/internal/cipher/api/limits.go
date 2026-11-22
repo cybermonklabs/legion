@@ -4,11 +4,13 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/netaddr"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -18,27 +20,33 @@ import (
 // so does every person a machine login's login_hint names and every account a verified token login
 // proves (PerLogin). A token login spends its address's bucket before its token is verified, since
 // a refused token signature makes the verifier fetch the issuer's keys again, and its account's
-// only after; a device login spends its address's bucket before the provider does any work, then
-// verifies its request object locally to read the person its bucket is keyed on and spends that.
-// So a flood from one address cannot keep the broker verifying tokens or writing machine logins, a
-// flood naming one operator cannot bury that operator's pending machine logins, and one account
-// cannot log in faster than its bucket allows. A token login whose token verified and that the
-// broker then could not complete (5xx, such as one the database was away for) spends neither
-// bucket: the Legion daemon retries such a login every few seconds through a database outage, and
-// the broker decided nothing about its request, so there is nothing to slow, while a refused
-// credential (any 4xx) still spends every bucket it reached, since the limit exists to slow
-// guessing, and a token that does not verify always keeps its address's request, since that bucket
-// guards the verifier's fetches of the issuer's keys. A daemon behind an address others
-// share is held to that address's bucket too: BROKER_TRUSTED_PROXY_HEADER keys the bucket on the
-// caller's own address behind a proxy, and the daemon renews its credential halfway through its
-// life, which carries it through brief contention for that bucket, not through a caller that keeps
-// it drained until the credential expires.
+// only after; a device login spends its address's bucket before the provider does any work, and
+// the bucket of the person its request object names only once the broker has verified the request
+// and opened the login, so a request it refuses costs that person nothing.
+// So a flood from one address cannot keep the broker verifying tokens or writing machine logins,
+// a flood naming one operator on the broker's own address cannot bury that operator's pending
+// machine logins, and one account cannot log in faster than its bucket allows. At the edge a
+// person's bucket is keyed per caller address (server.loginKeyByAddress), so a caller with N
+// addresses can open up to N times PerLogin's burst of logins naming one outside person, capped
+// for every caller together by the edge's shared device bucket (DefaultEdgeDeviceLimit); the
+// approval still needs the user code each login shows its own machine. A token login whose token
+// verified and that the broker then could not complete (5xx, such as one the database was away
+// for) spends neither bucket: the Legion daemon retries such a login every few seconds through a
+// database outage, and the broker decided nothing about its request, so there is nothing to slow,
+// while a refused credential (any 4xx) still spends every bucket it reached, since the limit
+// exists to slow guessing, and a token that does not verify always keeps its address's request,
+// since that bucket guards the verifier's fetches of the issuer's keys. A daemon behind an address
+// others share is held to that address's bucket too: BROKER_TRUSTED_PROXY_HEADER keys the bucket
+// on the caller's own address behind a proxy, and the daemon renews its credential halfway through
+// its life, which carries it through brief contention for that bucket, not through a caller that
+// keeps it drained until the credential expires.
 //
 // The per-login bucket, keyed on the request object's own claims rather than the caller's
-// address, is unaffected by trustedProxyHeader and remains a smaller, accepted risk. A person's
-// machine login spends its own person:<login> bucket, so an attacker naming a specific victim
-// operator repeatedly can lock out that operator's machine logins at a low rate. This is inherent
-// to a per-login limit on an unauthenticated route.
+// address, is unaffected by trustedProxyHeader and remains a smaller, accepted risk on the
+// broker's own address, which only callers on the private network reach: a caller there naming a
+// specific operator repeatedly can lock out that operator's machine logins at a low rate. At the
+// edge, where anyone on the internet can name a person, the bucket is the person's at the caller's
+// address (server.loginKeyByAddress), so such a caller spends its own address's bucket alone.
 type LauncherLimits struct {
 	PerAddress ratelimit.Limit
 	PerLogin   ratelimit.Limit
@@ -368,19 +376,45 @@ func (r *RereadRate) SetReplicas(n int) {
 
 type launcherLimiter struct {
 	perAddress, perLogin *ratelimit.Keyed
-	// trustedProxyHeader is BROKER_TRUSTED_PROXY_HEADER: empty means every caller reaches the
-	// broker directly, so perAddress keys on r.RemoteAddr. Set only behind a trusted reverse
-	// proxy that itself sets this header on every forwarded request (see clientAddress).
-	trustedProxyHeader string
+	// address is the source address perAddress keys on: the server's own (server.address), so
+	// that every per-address bucket of one listener keys on the one rule that listener reads a
+	// caller's address by (clientAddress on the broker's own address, edgeClientAddress at its
+	// edge).
+	address func(*http.Request) string
+	// overall is the one bucket every caller of a device authorization shares beside its own
+	// address's (DefaultEdgeDeviceLimit), at the edge alone, under the one key overallKey; nil on
+	// the broker's own address. Who spends it, and when, is deviceAuthorization's.
+	overall *ratelimit.Keyed
 }
 
-func newLauncherLimiter(limits LauncherLimits, trustedProxyHeader string) *launcherLimiter {
+func newLauncherLimiter(limits LauncherLimits, address func(*http.Request) string) *launcherLimiter {
 	return &launcherLimiter{
-		perAddress:         ratelimit.NewKeyed(limits.PerAddress),
-		perLogin:           ratelimit.NewKeyed(limits.PerLogin),
-		trustedProxyHeader: trustedProxyHeader,
+		perAddress: ratelimit.NewKeyed(limits.PerAddress),
+		perLogin:   ratelimit.NewKeyed(limits.PerLogin),
+		address:    address,
 	}
 }
+
+// overallKey is the one key of launcherLimiter.overall.
+const overallKey = "edge"
+
+// DefaultEdgeDeviceLimit bounds the device authorizations the broker's edge takes from every
+// caller together, per process, beside each address's own bucket: a burst of 30 and one every
+// two seconds. Each login the edge opens writes a device code, a machine login and the jti of its
+// request object, and each stays until the login's PendingTTL (15 minutes by default), so one pod
+// holds at most about 30 + 900/2 = 480 pending edge logins, three rows each, whatever the number of
+// addresses a flood comes from. An outside collaborator opens a few logins a day, so the limit is
+// far above any real use. Who spends it, and when, is deviceAuthorization's.
+//
+// Its cost: it caps new device logins at the edge for every outside person together. A caller
+// who sends valid device authorizations from about 15 addresses (each within its own address
+// bucket, two a minute) holds the bucket empty on every pod, and every outside person's new
+// device login at the edge is refused 429 until the flood stops; the burst refills in a minute
+// after that. Refresh, device-code polls and trades at the edge, and everything on the broker's
+// own address, do not spend it. It is a constant: cmd/cipherd passes no api.Edge.DeviceLimit, so
+// changing it takes a release. Per-address rules in front of the load balancer, once the
+// deployment applies them, refuse a single address's flood before it reaches a pod.
+var DefaultEdgeDeviceLimit = ratelimit.Limit{Every: 2 * time.Second, Burst: 30}
 
 // clientAddress resolves the source address every per-address bucket keys on. With no trusted
 // proxy header configured (the default, e.g. local/dev use or a broker reached directly) it is
@@ -391,10 +425,21 @@ func newLauncherLimiter(limits LauncherLimits, trustedProxyHeader string) *launc
 // forwarding header (e.g. X-Forwarded-For) lets this read the last entry — the hop the trusted
 // proxy itself appended — rather than an earlier, client-supplied entry a caller could forge to
 // pick its own bucket.
+//
+// The entry read is the last of the header's last line. That is the proxy's own entry for a proxy
+// that folds every line the client sent into one line ending in its own (Go's
+// httputil.ReverseProxy joins them so), appends its entry to the last line, or adds a line of its
+// own after the client's. It is not for a proxy that appends to the first line and passes a line
+// the client sent after it: there the last line is the client's own text, and the caller picks its
+// bucket. BROKER_TRUSTED_PROXY_HEADER assumes the proxy is not of that kind; one that sends a
+// single line, as a proxy that folds or overwrites the header does, is never. Reading the first
+// line, as this did before, let a caller that sent a line of its own before the proxy's pick its
+// bucket by that line's last entry. A last line holding no entry keys on r.RemoteAddr, as a request
+// with no header does.
 func clientAddress(r *http.Request, trustedProxyHeader string) string {
 	if trustedProxyHeader != "" {
-		if raw := r.Header.Get(trustedProxyHeader); raw != "" {
-			hops := strings.Split(raw, ",")
+		if lines := r.Header.Values(trustedProxyHeader); len(lines) > 0 {
+			hops := strings.Split(lines[len(lines)-1], ",")
 			if candidate := strings.TrimSpace(hops[len(hops)-1]); candidate != "" {
 				return candidate
 			}
@@ -407,13 +452,58 @@ func clientAddress(r *http.Request, trustedProxyHeader string) string {
 	return address
 }
 
+// edgeForwardedFor is the header the public load balancer in front of the broker's edge appends
+// to: Google's external Application Load Balancer writes X-Forwarded-For as
+// [<what the client sent>,]<client address>,<load balancer address>.
+const edgeForwardedFor = "X-Forwarded-For"
+
+// edgeClientAddress is the source address every bucket of the broker's edge keys on, and whether
+// r carries one: the second-to-last entry of the one X-Forwarded-For line, which is the client
+// address the load balancer appends before its own. A request carrying the header as more than
+// one line answers false: Google documents the header as one line, and which of several lines it
+// appends to is not documented, so a balancer that appends to the first line and passes a line the
+// client sent after it would hand the client the line read here, and with it the choice of its
+// bucket. The last entry is the balancer's own address, the same for every caller, so keying on it
+// as clientAddress does would put every internet caller in one bucket; anything before the
+// second-to-last is the caller's own text, which it could change to pick a bucket of its choice.
+// An entry that is no IP address, or a line of fewer than two entries, is a request that did not
+// come through the balancer as it writes the header, and answers false too. The address answered
+// is its bucket key (edgeAddressKey): an IPv4 address, or the /64 an IPv6 address is in.
+func edgeClientAddress(r *http.Request) (string, bool) {
+	lines := r.Header.Values(edgeForwardedFor)
+	if len(lines) != 1 {
+		return "", false
+	}
+	hops := strings.Split(lines[0], ",")
+	if len(hops) < 2 {
+		return "", false
+	}
+	addr, err := netip.ParseAddr(strings.TrimSpace(hops[len(hops)-2]))
+	if err != nil {
+		return "", false
+	}
+	return edgeAddressKey(addr), true
+}
+
+// edgeAddressKey is the bucket key of a caller the edge reads at addr: the IPv4 address it is, an
+// IPv4 address written as IPv6 (::ffff:a.b.c.d) included, and for IPv6 the /64 holding it
+// (2001:db8:1:2::/64), since one host or one site holds a whole /64 and could take a fresh bucket
+// from each of its addresses otherwise.
+func edgeAddressKey(addr netip.Addr) string {
+	addr = netaddr.Canonical(addr)
+	if addr.Is6() {
+		return netip.PrefixFrom(addr, 64).Masked().String()
+	}
+	return addr.String()
+}
+
 // refuseAddress writes 429 RATE_LIMITED and reports refused when r's source address has no request
 // left in its bucket: POST /v1/launcher-credentials/token's first limit, spent before the token is
 // verified. Otherwise it answers giveBack, which returns the request to the bucket at the time it
 // is called: tokenLogin calls it only for a login whose token verified and that the broker then
 // could not complete (5xx); a token that does not verify always keeps the request it spent.
 func (l *launcherLimiter) refuseAddress(w http.ResponseWriter, r *http.Request) (giveBack func(), refused bool) {
-	giveBackAt, ok := l.perAddress.TakeAt(clientAddress(r, l.trustedProxyHeader), time.Now())
+	giveBackAt, ok := l.perAddress.TakeAt(l.address(r), time.Now())
 	if ok {
 		return func() { giveBackAt(time.Now()) }, false
 	}
@@ -440,13 +530,19 @@ func (l *launcherLimiter) refuseAccount(w http.ResponseWriter, subject string) (
 
 // addressAllows spends one request of r's source address's bucket, reporting whether it had one.
 func (l *launcherLimiter) addressAllows(r *http.Request) bool {
-	return l.perAddress.AllowAt(clientAddress(r, l.trustedProxyHeader), time.Now())
+	return l.perAddress.AllowAt(l.address(r), time.Now())
+}
+
+// overallAllows spends one request of the bucket every caller shares (overall), reporting whether
+// it had one; true where there is none (the broker's own address).
+func (l *launcherLimiter) overallAllows() bool {
+	return l.overall == nil || l.overall.AllowAt(overallKey, time.Now())
 }
 
 // tokenAllows spends one request of r's source address's token-endpoint bucket, reporting
 // whether it had one.
 func (s *server) tokenAllows(r *http.Request) bool {
-	return s.tokenLimiter.AllowAt(clientAddress(r, s.deps.TrustedProxyHeader), time.Now())
+	return s.tokenLimiter.AllowAt(s.address(r), time.Now())
 }
 
 // accountAddressAllows spends one request of r's source address's bucket, the one the routes a
@@ -454,7 +550,7 @@ func (s *server) tokenAllows(r *http.Request) bool {
 // share (DefaultAccountLimit), reporting whether it had one. The spend is here and the refusal
 // is each caller's own, so the three classes answer one bucket's refusal in three shapes.
 func (s *server) accountAddressAllows(r *http.Request) bool {
-	return s.accountLimiter.AllowAt(clientAddress(r, s.deps.TrustedProxyHeader), time.Now())
+	return s.accountLimiter.AllowAt(s.address(r), time.Now())
 }
 
 // refuseAccountAddress writes 429 RATE_LIMITED and reports true when r's source address has no
@@ -479,7 +575,7 @@ func (s *server) refuseAccountAddress(w http.ResponseWriter, r *http.Request) bo
 // caller, and a reread the broker-wide bucket refuses spends nothing of its address's own, so a
 // caller retrying through a flood is not then refused by its own limit after the flood stops.
 func (s *server) refuseReread(w http.ResponseWriter, r *http.Request) bool {
-	refused, ok := s.rereadLimiter.AllowBothAt(clientAddress(r, s.deps.TrustedProxyHeader), s.rereadOverall, time.Now())
+	refused, ok := s.rereadLimiter.AllowBothAt(s.address(r), s.rereadOverall, time.Now())
 	if ok {
 		return false
 	}

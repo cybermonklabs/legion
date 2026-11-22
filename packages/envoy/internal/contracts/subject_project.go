@@ -10,7 +10,9 @@ import (
 // an issue's events, an agent's messages and a role's lane each gained the project as a token of
 // their own (DispatchIssueSubject, AgentSubject, RoleSubject). Every reader takes both forms
 // until the old one is refused. These are the hand-written twins of packages/contracts'
-// subject-project.ts, and packages/contracts/fixtures/subject-project.json is one table both run.
+// subject-project.ts, and packages/contracts/fixtures/subject-project.json is one table both run,
+// save LegacyIssueFilter, which only the listener's count of old-form names reads and which has no
+// twin there.
 
 const (
 	exceptionPrefix = "notifications.envoy.exceptions."
@@ -247,6 +249,77 @@ func CanonicalTopic(topic string) (canonical string, legacy bool) {
 	}
 	return topic, false
 }
+
+// LegacyIssueFilter reads a filter that reaches the issue family, which CanonicalTopic reads as its
+// own new form, and reports it old when its first token after the family's names an issue key, or
+// when it matches some old-form issue event's name (the key, then the event's type) and no new-form
+// one (the key's project, the key, then the type), with its new form: the issue family's own, any
+// project first. So notifications.dispatch.issue.*.comment.created hears old-form names alone,
+// since the new form of an event has one token more, and its new form is
+// notifications.dispatch.issue.*.*.comment.created. A filter reaches the family when each of its
+// first three tokens is the family's (notifications, dispatch, issue) or a wildcard, none of them
+// `>`: notifications.dispatch.*.*.comment.created is such a filter, and old as surely, and its new
+// form is the issue family's notifications.dispatch.issue.*.*.comment.created, since its own
+// tokens widened by a project token would hear other families' names too (a document event has
+// seven tokens). A failed-delivery report of one follows the filter it carries.
+// A filter that hears both forms (notifications.dispatch.issue.*.*.>, notifications.dispatch.*.>)
+// is not old, nor is one that hears the new form alone (notifications.dispatch.issue.*.INFRA-12.>).
+// An event's type is read as two tokens or more: every Dispatch event type is a noun and a verb
+// or longer (comment.created, settings.repo_project.updated). The listener's count of old-form
+// names reads it beside CanonicalTopic (store.LegacyTopicWarnings, store.CountStoredLegacyTopics),
+// and it is the rule packages/envoy/scripts/legacy-subjects-gate.sh holds a filter to (old_form in
+// lib/legacy-subjects-gate-forms.jq), so the gate and the count see the same filters. It is not one
+// of TopicForms' forms: what a session's consumer filters is unchanged. Until the old form is
+// refused only.
+func LegacyIssueFilter(topic string) (canonical string, legacy bool) {
+	if wrapped, found := strings.CutPrefix(topic, exceptionPrefix); found {
+		if canonical, legacy := LegacyIssueFilter(wrapped); legacy {
+			return exceptionPrefix + canonical, true
+		}
+		return "", false
+	}
+	tokens := strings.Split(topic, ".")
+	if len(tokens) < 4 || !familyToken(tokens[0], "notifications") || !familyToken(tokens[1], "dispatch") || !familyToken(tokens[2], "issue") {
+		return "", false
+	}
+	rest := tokens[3:]
+	if issueKeyToken(rest[0]) || (issueFilterMatches(rest, issueKeyToken) && !issueFilterMatches(rest, projectKey.MatchString, issueKeyToken)) {
+		return DispatchIssueTopicPrefix + "*." + strings.Join(rest, "."), true
+	}
+	return "", false
+}
+
+// familyToken reports whether a filter's token reaches a family's token name: it is that name, or
+// a wildcard over one token.
+func familyToken(token, name string) bool { return token == name || token == "*" }
+
+// issueFilterMatches reports whether an issue filter's tokens after the family's prefix match some
+// name of lead's classes followed by an event type of two tokens or more: a wildcard matches any
+// token, `>` as the last token one token or more, and a literal what its class takes.
+func issueFilterMatches(tokens []string, lead ...func(string) bool) bool {
+	fixed, open := tokens, false
+	if len(tokens) > 0 && tokens[len(tokens)-1] == ">" {
+		fixed, open = tokens[:len(tokens)-1], true
+	}
+	if !open && len(fixed) < len(lead)+2 {
+		return false
+	}
+	for i, token := range fixed {
+		class := issueTypeToken
+		if i < len(lead) {
+			class = lead[i]
+		}
+		if token != "*" && !class(token) {
+			return false
+		}
+	}
+	return true
+}
+
+// An issue event name's key token holds a hyphen, which no project key and no event type's token
+// does, and an event type's token holds none.
+func issueKeyToken(token string) bool  { return strings.Contains(token, "-") }
+func issueTypeToken(token string) bool { return !strings.Contains(token, "-") }
 
 // isProjectPosition reports whether token may stand in a new-form name's project position for a
 // twin: a project key, NoProject, or a wildcard over every project.
