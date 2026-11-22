@@ -360,7 +360,7 @@ type guardedWorkspace struct {
 // maybe_migrate_legacy_config; automatic until jj 0.49). Those are a workspace's
 // `.jj/workspace-config.toml` beside `.jj/workspace-config-id`, and its repository's
 // `config.toml` beside `config-id`. Removing the legacy file leaves jj to open an empty
-// configuration of its own, never one a tree agent wrote. The worker image's jj is 0.45; the tmux
+// configuration of its own, never one a tree agent wrote. The worker image's jj is 0.46; the tmux
 // daemon refuses a host jj older than 0.38 (internal/daemon's resolveTools).
 //
 // A workspace with no `.jj` is refused when requireJJ and clone are set: it was provisioned with
@@ -544,11 +544,11 @@ func sharedRepository(jjDir, clone string) (string, error) {
 }
 
 // workspaceRepository is the path jj opens as the repository of the workspace whose `.jj` is
-// jjDir, built as jj 0.45's DefaultWorkspaceLoader builds it (lib/src/workspace.rs): `.jj/repo`
-// itself unless it is a regular file, else the path that file holds, appended to `.jj` unless it
-// is absolute. It is never cleaned: jj canonicalizes it physically, each symlink resolved before a
-// `..` after it, and filepath.Join would cancel `link/..` before anything resolved `link`, naming
-// a different directory than the one jj opens.
+// jjDir, built as jj's DefaultWorkspaceLoader builds it (lib/src/workspace.rs, verified against
+// jj 0.46.0-sami): `.jj/repo` itself unless it is a regular file, else the path that file holds,
+// appended to `.jj` unless it is absolute. It is never cleaned: jj canonicalizes it physically,
+// each symlink resolved before a `..` after it, and filepath.Join would cancel `link/..` before
+// anything resolved `link`, naming a different directory than the one jj opens.
 //
 // The pointer file is read through readGitdir, the bounded read of a pointer file a role can
 // write, with no link followed and no wait: a tree agent can write it, and this read runs under
@@ -943,6 +943,67 @@ func configureCloneReads(ctx context.Context, run Runner, cloneDir string) error
 	argv := []string{"git", "--git-dir=" + cloneDir + "/.git", "config", "core.warnAmbiguousRefs", "false"}
 	_, err := RunChecked(ctx, run, argv, nil, cloneDir)
 	return err
+}
+
+// packWindowConfig is the git configuration that bounds how much of a repository's packs one git
+// process holds in memory: pack data mapped 32 MiB at a time (core.packedGitWindowSize) and 256 MiB
+// at most at once (core.packedGitLimit), 64 MiB for the delta search window of pack-objects
+// (pack.windowMemory) and 64 MiB of cached delta bases (core.deltaBaseCacheLimit). git 2.47's
+// defaults on a 64-bit machine map 1 GiB windows up to 32 TiB, and gVisor, which runs every issue
+// pod and repository cache, counts the whole of each window a process has touched as the pod's
+// memory. On one pack of 5.94 GB or 12.3 GB, `git log`, `git status`, a push and a fetch in an issue
+// pod reached 5.2 GiB to 8.8 GB with the defaults, and two pods were killed at their 8 GiB limit
+// (2026-11-16 and 2026-11-18); with these four, that push peaked at 760 MB. In a gVisor Job of
+// 2026-11-19, `git log --first-parent -- <file>` on firefox's one 5.86 GB pack peaked at
+// 6,778,128 KiB with the defaults and at 1,283,352 KiB with these. The first two settings do not
+// bound the pack-objects a push runs, which is why the last two are here. A pack's .idx is mapped
+// whole whatever these say.
+//
+// Every git of an issue pod and of a repository cache gets them, the cache's repack apart, from four
+// places, each for gits the others miss: the role environment's GIT_CONFIG pairs (sandbox's
+// gitConfigPairs, through PackWindowConfig), for every role's git and the git jj runs for a push or
+// a fetch; the worker image's /etc/gitconfig (packages/daemon/docker/worker.Dockerfile), for
+// provisioning's git, whose runner removes the role's pairs (execRunner.Run); the shared clone's own
+// configuration (configurePackWindows), for the shared public leak check's git; and `-c` on the git
+// of Fetch, FeedGit and FeedGitWithin (feedGit), which reads no system file (isolatedGitConfig).
+// The Dockerfile cannot read this list, so it writes the four values out twice: its `git config
+// --system` writes, and the smoke list its build holds /etc/gitconfig to. What holds both copies to
+// this list in CI is TestTheWorkerImageWritesPackWindowConfig (sharedclone_test.go), which reads
+// them out of the Dockerfile and requires each, in order, to equal this list. The pack-memory
+// measurement Job (scripts/e2e/pack-memory-job.sh) measures the built image itself: its
+// `c-pack-window-config system <key>` rows hold the image's `git config --system` to the probe's
+// copy of the four values, and its `c-git-rows role scope <key>` rows hold the pairs rolegitconfig
+// prints from this list to that same copy. A value changed here is changed in the Dockerfile, which
+// that test requires, and in that probe too.
+var packWindowConfig = [][2]string{
+	{"core.packedGitWindowSize", "32m"},
+	{"core.packedGitLimit", "256m"},
+	{"pack.windowMemory", "64m"},
+	{"core.deltaBaseCacheLimit", "64m"},
+}
+
+// PackWindowConfig is packWindowConfig, for the role environment's pairs (sandbox's
+// gitConfigPairs), which carry it after their own.
+func PackWindowConfig() [][2]string { return slices.Clone(packWindowConfig) }
+
+// configurePackWindows sets packWindowConfig in the shared clone's own configuration, which
+// every workspace of the clone reads too, for the one git of a pod that reads nothing else: the
+// shared public leak check's, which every push runs with every GIT_CONFIG variable removed and
+// GIT_CONFIG_NOSYSTEM set, so neither the role environment's pairs nor the image's /etc/gitconfig
+// reach it. Every other git of a pod's clone reads this file beside one of those two, which hold the
+// same values. Every provision writes it, so every shared clone takes them, a host clone of the tmux
+// runtime too (the daemon's Provision with FromGitHub), where they only bound git's pack windows; a
+// clone made before the setting existed, or one whose file a role changed, takes it at its next
+// provision. --replace-all leaves one line of each key whatever the file held, a key a role set
+// twice included. The feed does not take them, for the reason configureCloneReads gives.
+func configurePackWindows(ctx context.Context, run Runner, cloneDir string) error {
+	for _, pair := range packWindowConfig {
+		argv := []string{"git", "--git-dir=" + cloneDir + "/.git", "config", "--replace-all", pair[0], pair[1]}
+		if _, err := RunChecked(ctx, run, argv, nil, cloneDir); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // configureCloneDefaultRepository marks origin as gh's default repository in the shared clone's

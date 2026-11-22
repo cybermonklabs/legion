@@ -63,6 +63,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      JOB_TIMEOUT_MINUTES: 120 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
@@ -80,6 +81,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # go-envoy-test: this job builds and runs the test binary of every package of the envoy
       # module, a set no other job builds, so it keeps a family of its own.

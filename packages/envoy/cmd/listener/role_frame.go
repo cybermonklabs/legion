@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/store"
 )
 
 // utf8BOM is the byte order mark a writer may put before a frame's JSON. The plugins' shared
@@ -37,13 +38,13 @@ type roleFrame struct {
 // its role from two fields alone, each by its exact key, as the plugins' transport reads them: a
 // message whose topic is a role's topic (roleOfLaneTopic) is a role message of that role whatever
 // else it carries, and one whose topic names no role is a role message of the role its role mark
-// names, in either form (contracts.CanonicalRole). A reader that matched keys without regard to
-// case, as encoding/json does into a struct, would take a later "TOPIC" key as the topic; one that
-// decoded the whole envelope would refuse a message for a field that tells no role, such as an
-// event id written as a number; and one with encoding/json's limit on nesting would refuse a
-// message with a value nested deeper than 10,000, which JSON.parse reads. Each would hand a role
-// message to a session that does not hold the role. A null field is an absent one. The answer is
-// errRoleFrameUnreadable for a message no read can tell a role message or not.
+// names, in either form, keyed as its claim is (store.RoleClaimKeyOf). A reader that matched keys
+// without regard to case, as encoding/json does into a struct, would take a later "TOPIC" key as
+// the topic; one that decoded the whole envelope would refuse a message for a field that tells no
+// role, such as an event id written as a number; and one with encoding/json's limit on nesting
+// would refuse a message with a value nested deeper than 10,000, which JSON.parse reads. Each
+// would hand a role message to a session that does not hold the role. A null field is an absent
+// one. The answer is errRoleFrameUnreadable for a message no read can tell a role message or not.
 func readRoleFrame(data []byte) (roleFrame, error) {
 	fields, err := topLevelFields(bytes.TrimPrefix(data, utf8BOM))
 	if err != nil {
@@ -57,7 +58,7 @@ func readRoleFrame(data []byte) (roleFrame, error) {
 		return frame, nil
 	}
 	if mark != "" {
-		_, frame.role, _ = contracts.CanonicalRole(mark)
+		frame.role = store.RoleClaimKeyOf(mark)
 		if frame.role != "" {
 			return frame, nil
 		}
