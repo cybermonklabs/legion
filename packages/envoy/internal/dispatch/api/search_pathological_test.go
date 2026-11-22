@@ -109,22 +109,32 @@ func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 	// clock needs to resolve their time (cputest.MeasureThread); each replacement's base is read
 	// before the window opens.
 	//
+	// Every rung holds more blocks than a write indexes in its own request (docs'
+	// deferBlockIndexBlocks, 2,000; the quote is a block of its own), so each rung's replacement
+	// leaves its blocks to the block-index reconciliation and every window does the same kinds of
+	// work. A first rung of 682 blocks indexed its blocks in the request where the larger rungs did
+	// not, so it timed work they left out, and the bound on them, a multiple of its time, was
+	// looser by that work. The first rung is a tenth of the largest, so the ladder grows 5 and 10
+	// times: a save linear in its blocks grows at most that much, inside bounds of 20 and 40, and a
+	// quadratic one 25 and 100 times.
+	//
 	// The clock is the request's own thread's (cputest.OnThread), not the process's: the handler
 	// serves each request on this test's goroutine and the save does its work there, so the thread
 	// clock counts the save and leaves out the garbage collector's mark workers. Those mark the
 	// whole process's heap, which in a package run holds whatever earlier tests left live, and a
 	// collection lands in a window when it falls due, not because of what the window's save does.
-	// On the process clock this ladder read 26 ms at 3 KiB against 6.33 s at 127 KiB at a load of
-	// about 1,060, where the same test alone at that load read 21 ms against 968 ms. With 6 GiB
-	// kept live beside it and GOGC=5, so that a collection of that heap fell due in nearly every
-	// large window, the process clock failed 10 runs of 10, reading up to 19.6 s at 127 KiB, and
-	// the thread clock passed 10 of 10, reading 0.49-1.19 s there against 12-23 ms at 3 KiB. A
-	// quadratic step planted in pmdoc's Update or in the docs service's replacement still fails
-	// it. No test in this package calls t.Parallel.
+	// On the process clock the ladder's earlier rungs, 682 to 21,844 blocks, read 26 ms at 3 KiB
+	// against 6.33 s at 127 KiB at a load of about 1,060, where the same test alone at that load
+	// read 21 ms against 968 ms. With 6 GiB kept live beside it and GOGC=5, so that a collection
+	// of that heap fell due in nearly every large window, the process clock failed those rungs 10
+	// runs of 10, reading up to 19.6 s at 127 KiB, and the thread clock passed 10 of 10, reading
+	// 0.49-1.19 s there against 12-23 ms at 3 KiB. A quadratic step planted in pmdoc's Update or in
+	// the docs service's replacement still fails the ladder. No test in this package calls
+	// t.Parallel.
 	t.Run("replacing many blocks", func(t *testing.T) {
 		const from, to = "> #\n", "> ***\n"
 		owner := "/api/v1/issues/" + issue.Key + "/artifacts"
-		growsLinearly(t, "replacing a quote of headings with a quote of rules", []int{682 * len(to), 5_461 * len(to), 21_844 * len(to)}, func(size int) time.Duration {
+		growsLinearly(t, "replacing a quote of headings with a quote of rules", []int{2_184 * len(to), 10_922 * len(to), 21_844 * len(to)}, func(size int) time.Duration {
 			blocks := size / len(to)
 			headings, rules := []byte(strings.Repeat(from, blocks)), []byte(strings.Repeat(to, blocks))
 			upload := func(fields map[string]string, body []byte) {
