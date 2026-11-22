@@ -160,11 +160,13 @@ func (js *interleavedJetStream) UpdateStream(cfg *nats.StreamConfig, opts ...nat
 // func it returns runs, which a test runs once its own update of what those keepers restore has
 // been read back (testnats.UpdateStream): a keeper that put the update back before a read of it
 // came back would leave no read that ever shows it, and the read-back would fail the test at its
-// deadline. A keeper reads the update before it writes over it, so it waits about as long as that
-// read, far inside its step's hang guard (startHangGuard). A pass takes its client's JetStream
-// context once, as it starts (keepPass), so this waits for one whole pass after the swap: every
-// pass that reads the update holds the gated context. The hold ends on every way out of the test,
-// before a client's close waits for its keeper.
+// deadline. The keeper waits inside a step of its pass for as long as the read-back takes, which a
+// loaded machine can make longer than a start's step guard (startHangGuard, 36 s): each keeper
+// passed here is started with heldKeeperStepGuard, so its step's guard is the test's deadline and
+// not that. A pass takes its client's JetStream context once, as it starts (keepPass), so this
+// waits for one whole pass after the swap: every pass that reads the update holds the gated
+// context. The hold ends on every way out of the test, before a client's close waits for its
+// keeper.
 func holdKeeperUpdates(t *testing.T, keepers ...*Client) func() {
 	t.Helper()
 	gate := make(chan struct{})
@@ -177,6 +179,14 @@ func holdKeeperUpdates(t *testing.T, keepers ...*Client) func() {
 	}
 	keeperPasses(t, keepers, 1)
 	return open
+}
+
+// heldKeeperStepGuard is the step guard of a keeper whose update holdKeeperUpdates holds: what is
+// left of the test binary's deadline less testwait's 30 s margin as the keeper starts
+// (withKeeperStepGuard). A step that outlasts the test is ended by the client's close at the test's
+// end, after the test's own read-back has failed it by name.
+func heldKeeperStepGuard(t *testing.T) ConnectOption {
+	return withKeeperStepGuard(testwait.Remaining(t, 30*time.Second))
 }
 
 // awaitRestoredLog waits until the keeper's restore lines name every one of wants. The keeper logs
@@ -413,7 +423,7 @@ func TestTwoKeepersWithDifferentSubjectListsNeverSwitchTheStream(t *testing.T) {
 func TestTheKeeperRestoresWhatAnOperatorTookAwayAndKeepsAForeignSubject(t *testing.T) {
 	cluster, js := startClusterJetStream(t)
 	logs := captureLogs(t)
-	keeper := startOnCluster(t, cluster, WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval))
+	keeper := startOnCluster(t, cluster, WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval), heldKeeperStepGuard(t))
 	info := testnats.AwaitSettledStream(t, js, Stream)
 	const removed = "notifications.legion.>"
 
@@ -466,7 +476,7 @@ func TestTheKeeperRestoresWhatAnOperatorTookAwayAndKeepsAForeignSubject(t *testi
 func TestTheKeeperKeepsAnOperatorsRaiseOfTheByteLimitAndRaisesALowerOne(t *testing.T) {
 	cluster, js := startClusterJetStream(t)
 	logs := captureLogs(t)
-	settings := []ConnectOption{WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval)}
+	settings := []ConnectOption{WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval), heldKeeperStepGuard(t)}
 	first := startOnCluster(t, cluster, settings...)
 	info := testnats.AwaitSettledStream(t, js, Stream)
 
@@ -525,7 +535,7 @@ func TestTheKeeperRaisesTheBucketsItsProgramNamesBackToTheirCopies(t *testing.T)
 		t.Fatalf("flush the watch: %v", err)
 	}
 
-	client := startOnCluster(t, cluster, WithReplicas(3), WithKeptBuckets(listed, missing), WithKeepInterval(testKeepInterval))
+	client := startOnCluster(t, cluster, WithReplicas(3), WithKeptBuckets(listed, missing), WithKeepInterval(testKeepInterval), heldKeeperStepGuard(t))
 	// Each lowering is read back (testnats.UpdateStream): a replica change on a loaded cluster was
 	// answered after jetStreamWait, or never, and failed the row as "context deadline exceeded".
 	// The buckets are opened on the client's own context, which holdKeeperUpdates does not hold.

@@ -2,10 +2,12 @@ package testnats
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
 	"reflect"
 	"slices"
 	"strings"
@@ -87,17 +89,47 @@ func (c *Cluster) CreateStream(t testing.TB, config natsgo.StreamConfig) {
 }
 
 const (
-	// updateReadWait bounds each read of the stream UpdateStream makes while it waits for its
-	// update to show. A read sent while the stream's group elects a leader can draw no answer, as
-	// the update can, so a read cut short is sent again rather than waited out.
-	updateReadWait = 500 * time.Millisecond
+	// firstUpdateReadWait is how long UpdateStream waits for the answer to its first read of the
+	// stream before it takes the read as lost and reads again. A read sent while the stream's group
+	// elects a leader can draw no answer, as the update can, so a read cut short is sent again
+	// rather than waited out; each later read's wait follows what the reads before it came to
+	// (updateReadLimit).
+	firstUpdateReadWait = 500 * time.Millisecond
 	// updateReadInterval is the pause between those reads.
 	updateReadInterval = 10 * time.Millisecond
 	// updateMargin is what UpdateStream leaves of the test binary's deadline when it gives up on
-	// an update that never shows, so the test fails by name rather than at go test's own timeout,
-	// which names no test.
-	updateMargin = 10 * time.Second
+	// an update that never shows: the margin testwait's waits leave (testwait.Until), so this
+	// wait gives up where the test's other waits do, and the test fails by name rather than at go
+	// test's own timeout, which names no test.
+	updateMargin = 30 * time.Second
 )
+
+// updateReadLimit is the wait of UpdateStream's next read of the stream, set as the bus sets a
+// start's reads (readLimit, internal/bus/start_wait.go): a read the server leaves unanswered, or
+// answers with a 503 while it knows no leader, doubles it, up to jetStreamWait, and a read it
+// answers sets it to three times that read's own time, never under firstUpdateReadWait. So a
+// member that answers later than the first wait is waited for after a few reads, not read again
+// at that wait for as long as it stays slow.
+type updateReadLimit struct{ limit time.Duration }
+
+func (r *updateReadLimit) lost() { r.limit = min(2*r.limit, jetStreamWait) }
+
+func (r *updateReadLimit) answered(took time.Duration) {
+	r.limit = min(max(firstUpdateReadWait, 3*took), jetStreamWait)
+}
+
+// leaderUnknown reports whether err is the server's 503, which a member answers while it knows no
+// leader of the JetStream metadata group (NewJSClusterNotAvailError).
+func leaderUnknown(err error) bool {
+	var answer natsgo.JetStreamError
+	return errors.As(err, &answer) && answer.APIError() != nil && answer.APIError().Code == http.StatusServiceUnavailable
+}
+
+// readLost reports whether a read of the stream came to nothing UpdateStream can use: no answer
+// within its wait, or the server's 503 (leaderUnknown).
+func readLost(err error) bool {
+	return errors.Is(err, natsgo.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) || leaderUnknown(err)
+}
 
 // LeaderlessStream is a three-copy stream after HoldStreamWithoutLeader stopped its leader and
 // one peer, and a copy that answered a read with no leader. Restart starts those members again.
@@ -166,9 +198,9 @@ func HoldStreamWithoutLeader(t testing.TB, cluster *Cluster, stream string, read
 
 // UpdateStream is a test's own update of a stream: a change an operator or another program makes
 // for the code under test to find. config is a read of the stream with the test's changes made to
-// it. UpdateStream sends config once through js, and returns the stream's info as soon as the
-// update is answered or a read of the stream holds every setting of config. It fails the test at
-// once when the server refuses the update, with the server's answer.
+// it. UpdateStream sends config through js, and returns the stream's info as soon as the update is
+// answered or a read of the stream holds every setting of config. It fails the test at once when
+// the server refuses the update, with the server's answer.
 //
 // The answer may never come. nats-server answers an update only from the member that leads the
 // stream's group when it applies the update (processClusterUpdateStream, nats-server v2.15.1). So
@@ -176,14 +208,25 @@ func HoldStreamWithoutLeader(t testing.TB, cluster *Cluster, stream string, read
 // answer, although every member applies it. UpdateStream therefore reads the stream from the
 // moment it sends, and does not wait out js's own wait first. Reading at once also finds the
 // change before a keeper of the code under test puts back what the change took away (keepStream,
-// whose period these tests set to 250 ms).
+// whose period these tests set to 250 ms). Each read waits as long as the reads before it showed
+// the server needs (updateReadLimit).
 //
 // It reads until the test binary's deadline, less updateMargin, and has no bound of its own. When
 // no read holds config by then, it fails the test naming the stream and each setting the last read
-// held otherwise. It never sends the update again. An update replaces the whole configuration
+// held otherwise.
+//
+// It sends the update again only after a 503: a member answers that while it knows no leader of
+// the metadata group, before anything is proposed (jsStreamUpdateRequest, nats-server v2.15.1
+// jetstream_api.go:1673-1676), so that send was not applied. The next send waits one read wait
+// after the 503, so a cluster electing its leader is not sent the update a hundred times a second.
+// Any other answer, and no answer, is never sent again: an update replaces the whole configuration
 // with no compare, and nats-server has no conditional update (the corrected rule on a stream
-// update), so a second send of config could write over a change that the code under test made
-// after the first send landed.
+// update), so a second send could write over a change that the code under test made after the
+// first send landed. A 503 can come from a member that has not yet heard of a leader another member
+// just became, which may apply that send; the second send carries the same configuration, so it
+// writes over nothing but a change the code under test made between the two, and a caller whose
+// code under test restores what the update takes away holds it until the update is read back
+// (holdKeeperUpdates, internal/bus/keeper_test.go).
 //
 // The server's own metadata, the keys under "_nats.", is not compared: the server sets those keys
 // itself.
@@ -195,27 +238,47 @@ func UpdateStream(t testing.TB, js natsgo.JetStreamContext, config natsgo.Stream
 		err  error
 	}
 	answered := make(chan answer, 1)
-	sent := config
-	go func() {
-		info, err := js.UpdateStream(&sent)
-		answered <- answer{info, err}
-	}()
+	send := func() {
+		sent := config
+		go func() {
+			info, err := js.UpdateStream(&sent)
+			answered <- answer{info, err}
+		}()
+	}
+	send()
+	limit := &updateReadLimit{limit: firstUpdateReadWait}
 	var unanswered, lostRead error
 	var last *natsgo.StreamInfo
+	var sendAgainAt time.Time
 	for {
 		select {
 		case got := <-answered:
-			if got.err == nil {
+			switch {
+			case got.err == nil:
 				return got.info
-			}
-			var refusal natsgo.JetStreamError
-			if errors.As(got.err, &refusal) && refusal.APIError() != nil {
-				t.Fatalf("the server refused the update of stream %s: %v", config.Name, got.err)
+			case leaderUnknown(got.err):
+				t.Logf("the update of stream %s drew %v: no member applied it; it is sent again", config.Name, got.err)
+				sendAgainAt = time.Now().Add(limit.limit)
+			default:
+				var refusal natsgo.JetStreamError
+				if errors.As(got.err, &refusal) && refusal.APIError() != nil {
+					t.Fatalf("the server refused the update of stream %s: %v", config.Name, got.err)
+				}
 			}
 			unanswered = got.err
 		default:
 		}
-		read, err := js.StreamInfo(config.Name, natsgo.MaxWait(updateReadWait))
+		if !sendAgainAt.IsZero() && !time.Now().Before(sendAgainAt) {
+			sendAgainAt = time.Time{}
+			send()
+		}
+		readSent := time.Now()
+		read, err := js.StreamInfo(config.Name, natsgo.MaxWait(limit.limit))
+		if readLost(err) {
+			limit.lost()
+		} else {
+			limit.answered(time.Since(readSent))
+		}
 		switch {
 		case err != nil:
 			lostRead = err

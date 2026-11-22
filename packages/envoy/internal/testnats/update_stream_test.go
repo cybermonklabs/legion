@@ -1,7 +1,10 @@
 package testnats
 
 import (
+	"context"
+	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,7 +16,8 @@ import (
 // No member answers an update while the group has no leader, so a helper that waits for the
 // update's answer, before its read-back or after it, takes jetStreamWait or more, and one that
 // reads from its send returns at the first read of the copy left running that holds the update, a
-// read cut at updateReadWait; the bound sits far from both, and well below the fixed wait the row
+// read cut at firstUpdateReadWait or at what that copy's answers set (updateReadLimit); the bound
+// sits far from both, and well below the fixed wait the row
 // exists to exclude.
 const updateReturnBound = jetStreamWait / 2
 
@@ -29,7 +33,7 @@ func TestAnUpdateSentWhileTheStreamElectsItsLeaderIsFoundByARead(t *testing.T) {
 	const stream = "ELECTING"
 	cluster := StartCluster(t, 5)
 	cluster.CreateStream(t, natsgo.StreamConfig{Name: stream, Subjects: []string{"electing.>"}, Replicas: 3, Storage: natsgo.FileStorage})
-	held := HoldStreamWithoutLeader(t, cluster, stream, updateReadWait)
+	held := HoldStreamWithoutLeader(t, cluster, stream, firstUpdateReadWait)
 
 	config := held.Info.Config
 	config.MaxAge = time.Hour
@@ -177,5 +181,147 @@ func TestUpdateStreamReturnsTheAnswerAndFailsOnARefusal(t *testing.T) {
 	<-done
 	if took := time.Since(began); took > refusalWait || !strings.Contains(recorder.message, "refused the update of stream MISSING") || !strings.Contains(recorder.message, "stream not found") {
 		t.Fatalf("an update of a stream that does not exist failed after %s with %q, want within %s with the server's refusal", took.Round(time.Millisecond), recorder.message, refusalWait)
+	}
+}
+
+// leaderlessUpdates answers the first update of a stream with the 503 a member answers while it
+// knows no leader of the metadata group (NewJSClusterNotAvailError), sending nothing; every later
+// update, and every other request, is js's own.
+type leaderlessUpdates struct {
+	natsgo.JetStreamContext
+	sends atomic.Int32
+}
+
+func (l *leaderlessUpdates) UpdateStream(cfg *natsgo.StreamConfig, opts ...natsgo.JSOpt) (*natsgo.StreamInfo, error) {
+	if l.sends.Add(1) == 1 {
+		return nil, &natsgo.APIError{Code: http.StatusServiceUnavailable, ErrorCode: 10008, Description: "JetStream system temporarily unavailable"}
+	}
+	return l.JetStreamContext.UpdateStream(cfg, opts...)
+}
+
+// resentWait is how long TestAnUpdateAnsweredWithA503IsSentAgainAndLands gives UpdateStream before
+// its recorder's deadline less updateMargin: a helper that took the 503 as a refusal fails at once,
+// and one that never sent the update again gives up on its read-back here, so the row fails by
+// name either way.
+const resentWait = 10 * time.Second
+
+// An update answered with a 503, which no member applied, is sent again, one read wait later, and
+// lands; every other refusal still fails at once (TestUpdateStreamReturnsTheAnswerAndFailsOnARefusal).
+func TestAnUpdateAnsweredWithA503IsSentAgainAndLands(t *testing.T) {
+	conn := Connect(t, URL(t))
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := js.AddStream(&natsgo.StreamConfig{Name: "LEADERLESS", Subjects: []string{"leaderless.>"}})
+	if err != nil {
+		t.Fatalf("add stream: %v", err)
+	}
+	config := info.Config
+	config.MaxAge = time.Hour
+	leaderless := &leaderlessUpdates{JetStreamContext: js}
+	recorder := deadlineRecorder{fatalRecorder: &fatalRecorder{TB: t}, deadline: time.Now().Add(updateMargin + resentWait)}
+	var got *natsgo.StreamInfo
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		got = UpdateStream(recorder, leaderless, config)
+	}()
+	<-done
+	if recorder.message != "" || got == nil || got.Config.MaxAge != time.Hour {
+		t.Fatalf("an update first answered with a 503 failed with %q and returned %+v, want it sent again and returned with age 1h0m0s", recorder.message, got)
+	}
+	if sends := leaderless.sends.Load(); sends != 2 {
+		t.Fatalf("the update first answered with a 503 was sent %d times, want twice", sends)
+	}
+}
+
+// A read the server leaves unanswered, or answers with a 503, doubles the next read's wait, up to
+// jetStreamWait; a read it answers sets the next to three times that read's own time, never under
+// firstUpdateReadWait.
+func TestUpdateStreamsReadWaitDoublesAfterALostReadAndFollowsAnAnsweredOne(t *testing.T) {
+	limit := &updateReadLimit{limit: firstUpdateReadWait}
+	limit.lost()
+	if limit.limit != 2*firstUpdateReadWait {
+		t.Fatalf("after one lost read the next waits %s, want %s", limit.limit, 2*firstUpdateReadWait)
+	}
+	for range 10 {
+		limit.lost()
+	}
+	if limit.limit != jetStreamWait {
+		t.Fatalf("after eleven lost reads the next waits %s, want jetStreamWait %s", limit.limit, jetStreamWait)
+	}
+	limit.answered(100 * time.Millisecond)
+	if limit.limit != firstUpdateReadWait {
+		t.Fatalf("after a read answered in 100ms the next waits %s, want firstUpdateReadWait %s", limit.limit, firstUpdateReadWait)
+	}
+	limit.answered(time.Second)
+	if limit.limit != 3*time.Second {
+		t.Fatalf("after a read answered in 1s the next waits %s, want 3s", limit.limit)
+	}
+	for _, lost := range []error{natsgo.ErrTimeout, context.DeadlineExceeded, &natsgo.APIError{Code: http.StatusServiceUnavailable, ErrorCode: 10008}} {
+		if !readLost(lost) {
+			t.Fatalf("readLost(%v) = false, want a read that came to nothing", lost)
+		}
+	}
+	if readLost(natsgo.ErrStreamNotFound) {
+		t.Fatalf("readLost(%v) = true, want an answer", natsgo.ErrStreamNotFound)
+	}
+}
+
+// answerLost sends each update and drops its answer, as an update applied whose answer never came.
+type answerLost struct{ natsgo.JetStreamContext }
+
+func (a answerLost) UpdateStream(cfg *natsgo.StreamConfig, opts ...natsgo.JSOpt) (*natsgo.StreamInfo, error) {
+	_, _ = a.JetStreamContext.UpdateStream(cfg, opts...)
+	return nil, natsgo.ErrTimeout
+}
+
+// slowLinkWait is how long TestAReadBackOverALinkSlowerThanTheFirstReadWaitFindsTheUpdate gives
+// UpdateStream before its recorder's deadline less updateMargin: a read-back whose wait never grows
+// past the link's round trip reads nothing for that long and fails the row by name.
+const slowLinkWait = 40 * time.Second
+
+// Every round trip through the link takes 1.2 s, longer than UpdateStream's first read wait, and the
+// update's answer is lost, so only a read-back whose wait grows past 1.2 s after its lost reads
+// (updateReadLimit) finds the update. A read-back that keeps firstUpdateReadWait cuts every read
+// before its answer and gives up at slowLinkWait.
+func TestAReadBackOverALinkSlowerThanTheFirstReadWaitFindsTheUpdate(t *testing.T) {
+	uri := URL(t)
+	direct := Connect(t, uri)
+	t.Cleanup(direct.Close)
+	directJS, err := direct.JetStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := directJS.AddStream(&natsgo.StreamConfig{Name: "SLOWLINK", Subjects: []string{"slowlink.>"}})
+	if err != nil {
+		t.Fatalf("add stream: %v", err)
+	}
+	proxy := StartProxy(t, uri, ProxyLatency(1200*time.Millisecond))
+	conn, err := natsgo.Connect(proxy.URL(), natsgo.Timeout(30*time.Second), natsgo.NoReconnect())
+	if err != nil {
+		t.Fatalf("connect through the slow link: %v", err)
+	}
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream(natsgo.MaxWait(30 * time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := info.Config
+	config.MaxAge = time.Hour
+	recorder := deadlineRecorder{fatalRecorder: &fatalRecorder{TB: t}, deadline: time.Now().Add(updateMargin + slowLinkWait)}
+	var got *natsgo.StreamInfo
+	began := time.Now()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		got = UpdateStream(recorder, answerLost{js}, config)
+	}()
+	<-done
+	t.Logf("UpdateStream returned %s after its call over the 1.2s link", time.Since(began).Round(time.Millisecond))
+	if recorder.message != "" || got == nil || got.Config.MaxAge != time.Hour {
+		t.Fatalf("an update whose answer was lost, read back over a 1.2s link, failed with %q and returned %+v, want it found with age 1h0m0s", recorder.message, got)
 	}
 }

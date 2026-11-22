@@ -348,37 +348,32 @@ func TestSessionConsumerAcksAFrameOnlyOnDone(t *testing.T) {
 	awaitAcked(t, rig.consumers, sessionID, seq)
 }
 
-// awaitAcked waits up to 5 s for sessionID's consumer to hold nothing for an ack with every message
-// through seq acked.
+// awaitAcked waits for sessionID's consumer to hold nothing for an ack with every message through
+// seq acked (awaitAckState).
 func awaitAcked(t *testing.T, consumers *bus.SessionConsumers, sessionID string, seq uint64) {
 	t.Helper()
 	awaitAckState(t, consumers, sessionID, 0, seq)
 }
 
-// awaitAckState waits up to 5 s for sessionID's consumer to hold pending messages for an ack with
-// every message through floor acked. A consumer that does not exist yet is waited for within the
-// same bound: a registration with a new epoch restarts the session's relay, which deletes its
-// consumer and creates it again at the floor, and a read between the two finds none.
+// awaitAckState waits for sessionID's consumer to hold pending messages for an ack with every
+// message through floor acked. A consumer that does not exist yet is waited for the same way: a
+// registration with a new epoch restarts the session's relay, which deletes its consumer and
+// creates it again at the floor, and a read between the two finds none. The wait ends on that
+// state, bounded only by the test binary's deadline (testwait.Until): an ack is the session's
+// answer reaching the relay, and a loaded machine delays it without anything being wrong, so a
+// fixed span (5 s, before) failed rows whose session answered late.
 func awaitAckState(t *testing.T, consumers *bus.SessionConsumers, sessionID string, pending int, floor uint64) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.Until(t, fmt.Sprintf("the consumer of %s to hold %d pending ack with everything through %d acked", sessionID, pending, floor), func() (string, bool) {
 		info, err := consumers.Info(context.Background(), sessionID)
-		if errors.Is(err, bus.ErrSessionConsumerNotFound) && time.Now().Before(deadline) {
-			time.Sleep(20 * time.Millisecond)
-			continue
+		if errors.Is(err, bus.ErrSessionConsumerNotFound) {
+			return "no consumer yet", false
 		}
 		if err != nil {
 			t.Fatalf("read the consumer of %s: %v", sessionID, err)
 		}
-		if info.NumAckPending == pending && info.AckFloor.Stream >= floor {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the consumer of %s has %d pending ack, ack floor %d; want %d pending and everything through %d acked", sessionID, info.NumAckPending, info.AckFloor.Stream, pending, floor)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return fmt.Sprintf("%d pending ack, ack floor %d", info.NumAckPending, info.AckFloor.Stream), info.NumAckPending == pending && info.AckFloor.Stream >= floor
+	})
 }
 
 // A frame the session holds unwritten (received and progress, no done, as a side question held
