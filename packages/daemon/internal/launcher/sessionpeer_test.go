@@ -422,7 +422,7 @@ func roleExecutable(t *testing.T, dir string) string {
 // runs. Each reaches the session table through the fake dialer, and the proxy logs no refusal. An
 // Oh My Pi generation and a Claude Code one admit the launcher alike.
 func TestTheLaunchersOwnSessionConnectionsPassTheWriterCheck(t *testing.T) {
-	database, dialer := sessionDatabaseAt(t, testdb.Database(t, "legion_launcher_writer_test"))
+	database, dialer := sessionDatabaseAt(t, testdb.PlainDatabase(t, "legion_launcher_writer_test"))
 	database.ImpersonateServiceAccount, database.WriterAudience = testServiceAccount, testWriterAudience
 	shortenResumeLookup(t)
 	useTraceScope(t, "1\n")

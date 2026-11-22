@@ -78,13 +78,23 @@ func rawInterestBucket(t *testing.T, conn *natsgo.Conn) (natsgo.JetStreamContext
 	return js, kv
 }
 
+// liveRowUpdatedAt is the update time each row these cases store names. A row the registry writes
+// names its key, a machine and the time of its write (boundInterest), so every reader takes it as
+// its key's row; no case here reads a row's age.
+const liveRowUpdatedAt = "1700000000000"
+
+// liveRow is the row stored under key for a session these cases seed, as the registry writes it.
+func liveRow(key string) string {
+	return `{"session_id":"` + key + `","machine_id":"m1","updated_at":` + liveRowUpdatedAt + `}`
+}
+
 // seedMarkers leaves count delete markers in kv, one per key that no longer exists: what the
 // interest reaper leaves behind for every session that ever died.
 func seedMarkers(t *testing.T, kv natsgo.KeyValue, count int) {
 	t.Helper()
 	for i := range count {
 		key := fmt.Sprintf("ses_gone_%03d", i)
-		if _, err := kv.Put(key, []byte(`{"session_id":"`+key+`"}`)); err != nil {
+		if _, err := kv.Put(key, []byte(liveRow(key))); err != nil {
 			t.Fatalf("put %s: %v", key, err)
 		}
 		if err := kv.Delete(key); err != nil {
@@ -93,13 +103,13 @@ func seedMarkers(t *testing.T, kv natsgo.KeyValue, count int) {
 	}
 }
 
-// seedLive puts count live interests in kv and returns each key's revision.
+// seedLive puts count live interests in kv (liveRow) and returns each key's revision.
 func seedLive(t *testing.T, kv natsgo.KeyValue, count int) map[string]uint64 {
 	t.Helper()
 	revisions := map[string]uint64{}
 	for i := range count {
 		key := fmt.Sprintf("ses_live_%03d", i)
-		revision, err := kv.Put(key, []byte(`{"session_id":"`+key+`","machine_id":"m1"}`))
+		revision, err := kv.Put(key, []byte(liveRow(key)))
 		if err != nil {
 			t.Fatalf("put %s: %v", key, err)
 		}
@@ -199,7 +209,7 @@ func TestAPassCollectsTheDeleteMarkersAndKeepsEveryLiveKey(t *testing.T) {
 		if entry.Revision() != revision {
 			t.Fatalf("live key %s is at revision %d after the pass, want its stored %d", key, entry.Revision(), revision)
 		}
-		if want := `{"session_id":"` + key + `","machine_id":"m1"}`; string(entry.Value()) != want {
+		if want := liveRow(key); string(entry.Value()) != want {
 			t.Fatalf("live key %s reads %q after the pass, want %q", key, entry.Value(), want)
 		}
 	}
@@ -244,7 +254,7 @@ func TestWritesBetweenTheScanAndThePurgeSurvive(t *testing.T) {
 
 	var added uint64
 	purged, err := collectorOf(registry).pass(js, func(pass *interestPass) {
-		revision, err := kv.Put("ses_arrived", []byte(`{"session_id":"ses_arrived","machine_id":"m1"}`))
+		revision, err := kv.Put("ses_arrived", []byte(liveRow("ses_arrived")))
 		if err != nil {
 			t.Fatalf("put ses_arrived between the scan and the purge: %v", err)
 		}

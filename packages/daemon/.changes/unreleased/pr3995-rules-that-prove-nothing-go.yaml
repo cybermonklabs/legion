@@ -1,0 +1,24 @@
+kind: Changed
+custom:
+  Issue: pr3995
+body: |-
+  Role-prompt rules that made a role do work that proves nothing are deleted, or cut to one
+  sentence of guidance. The reviewer's prompt no longer asks for a `Security:` line in every review
+  body: the reviewer answers the rows of the Security Guidelines the diff touches. It writes a risk
+  on the pull request body's `Not proven / risk` line where one stands, and no longer refills the
+  line each round. A prose defect (a false statement, a contradiction, or an instruction a role
+  would follow wrongly) is a finding like any other and requests changes, and the implementer's fix
+  for it carries every pass it cannot affect; a wording preference is not a finding and is not
+  raised. Any clear fix in a file the pull request touches is a finding that requests changes,
+  where before the reviewer named a wording nit or a clear fix inline and approved all the same.
+  The implementer's and the tester's prompts no longer search every head for the class of every
+  earlier review finding, and their handoffs no longer carry `classSearch`. The implementer's
+  simplify pass skips a docs-only change. The root architect's prompt runs the gap review and the
+  claim review as guidance for a large or changed spec. The architect prompts read each version of
+  a child's spec against the parent's own spec and use a reader (`plan-reviewer`,
+  `plan-gap-analyst`) where the reading needs one, where before a fresh `plan-reviewer` read every
+  version; the sub-architect's prompt no longer sends each child it files through a red-team check.
+
+  The prompts of every role give a person no estimated date or duration: they say what work is
+  left and what decides when it ends. Before, an estimate was allowed where a measured rate or a
+  step of known length stood behind it.

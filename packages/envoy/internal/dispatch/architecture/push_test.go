@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -459,7 +460,7 @@ func startPushBus(t *testing.T, importer *Importer, database *store.Store) *push
 	ctx, cancel := context.WithCancel(t.Context())
 	stop, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, database.Pool, leases, importer.github, events.NewBroker(), nil, importer)
+	}, database.Pool, leases, importer.github, events.NewBroker(), nil, importer, delivery.NewAttributor(refs.Renames{}))
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)

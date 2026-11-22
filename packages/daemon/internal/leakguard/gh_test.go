@@ -33,22 +33,31 @@ func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 	const repo = "invented-org/invented-repo"
 	args := []string{"search", "code", theHost}
 	proven := hexSHA256(theProgram)
-	call := func(t *testing.T, ctx context.Context, check, program string, writesNothing bool) ([]string, GhAnswer, error) {
+	// guardFor is a guard under check, with program beside it, and the destinations its
+	// visibility was asked of; call is its GhCall under ctx.
+	guardFor := func(t *testing.T, check, program string) (*Guard, *[]string) {
 		t.Helper()
-		var asked []string
+		asked := new([]string)
 		script := leakguardtest.Write(t, t.TempDir(), check)
 		if program != "" {
 			if err := os.WriteFile(filepath.Join(filepath.Dir(script), checkProgram), []byte(program), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}
-		guard := New(Options{
+		return New(Options{
 			Check:      script,
-			Visibility: answers(Public, &asked),
+			Visibility: answers(Public, asked),
 			Env:        fixtureenv.Isolated(t.TempDir()),
-		})
-		answer, err := guard.GhCall(ctx, GhRequest{Args: args, Repo: repo, Files: []GhFile{}, WritesNothing: writesNothing, ProvenCheck: proven})
-		return asked, answer, err
+		}), asked
+	}
+	ghCall := func(guard *Guard, ctx context.Context, writesNothing bool) (GhAnswer, error) {
+		return guard.GhCall(ctx, GhRequest{Args: args, Repo: repo, Files: []GhFile{}, WritesNothing: writesNothing, ProvenCheck: proven})
+	}
+	call := func(t *testing.T, ctx context.Context, check, program string, writesNothing bool) ([]string, GhAnswer, error) {
+		t.Helper()
+		guard, asked := guardFor(t, check, program)
+		answer, err := ghCall(guard, ctx, writesNothing)
+		return *asked, answer, err
 	}
 	t.Run("a read the check clears", func(t *testing.T) {
 		if asked, answer, err := call(t, bound(t), passes, theProgram, true); err != nil || len(asked) != 0 || !answer.CheckedOnly {
@@ -68,11 +77,12 @@ func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 	})
 	t.Run("a read whose check runs past its bound", func(t *testing.T) {
 		const theBound = 2 * time.Second
+		guard, asked := guardFor(t, "cat >/dev/null 2>&1\nexec sleep 86400\n", theProgram)
 		ctx, cancel := context.WithTimeout(context.Background(), theBound)
 		defer cancel()
+		var err error
 		started := time.Now()
-		asked, _, err := call(t, ctx, "cat >/dev/null 2>&1\nsleep 30\n", theProgram, true)
-		answeredWithin10s(t, started)
+		answered(t, "the read whose check never answers", func() { _, err = ghCall(guard, ctx, true) })
 		// The stop is the caller's own deadline, not a bound of the guard's shorter than it: a
 		// bound the guard set itself would end the check, and the call, while ctx is still alive,
 		// and stoppedByItsBound would read its shorter seconds as a late start.
@@ -81,8 +91,8 @@ func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 				time.Since(started).Round(time.Millisecond), theBound)
 		}
 		stoppedByItsBound(t, setupFailure(t, err), theBound)
-		if len(asked) != 0 {
-			t.Fatalf("visibility asked of %q for a read whose check was stopped", asked)
+		if len(*asked) != 0 {
+			t.Fatalf("visibility asked of %q for a read whose check was stopped", *asked)
 		}
 	})
 	for _, tc := range []struct {

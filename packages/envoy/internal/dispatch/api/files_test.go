@@ -245,24 +245,30 @@ func TestAClearedRowIsAnsweredByWhatTheStoreSays(t *testing.T) {
 // DISPATCH_FILE_STORE_BUCKET, or one of a build that predates the fleet columns, which registers
 // no file_store - an upload to a process with a bucket keeps its bytes in its row as well as in the
 // bucket, so the bucketless process serves it. A live process with a bucket, or a bucketless one
-// whose row has lapsed, leaves the bytes in the bucket alone.
+// whose row has lapsed, leaves the bytes in the bucket alone. Each row but the earlier build's is
+// this build's process, so it names this build's owner lock protocol ($1), as processes.Register
+// writes it. The other process registers before the issue is filed: the earlier build's insert
+// takes the owner lock gate and waits, at most 5 s, for every transaction holding it, and before
+// the issue there is no document whose settlement could hold it.
 func TestAnUploadBesideABucketlessProcessKeepsItsBytesInTheRow(t *testing.T) {
+	thisBuild := []any{store.OwnerLockProtocol}
 	for _, tc := range []struct {
 		name, insert string
+		args         []any
 		keepsBytes   bool
 	}{
-		{"bucketless process", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store) values (gen_random_uuid(), '{fingerprint}', 1, 1, false)`, true},
-		{"process that predates the fleet columns", `insert into server_processes (instance, signing_keys) values (gen_random_uuid(), '{fingerprint}')`, true},
-		{"process with a bucket", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store) values (gen_random_uuid(), '{fingerprint}', 1, 1, true)`, false},
-		{"lapsed bucketless process", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, heartbeat_at) values (gen_random_uuid(), '{fingerprint}', 1, 1, false, now() - interval '1 hour')`, false},
+		{"bucketless process", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, owner_lock_protocol) values (gen_random_uuid(), '{fingerprint}', 1, 1, false, $1)`, thisBuild, true},
+		{"process that predates the fleet columns", `insert into server_processes (instance, signing_keys) values (gen_random_uuid(), '{fingerprint}')`, nil, true},
+		{"process with a bucket", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, owner_lock_protocol) values (gen_random_uuid(), '{fingerprint}', 1, 1, true, $1)`, thisBuild, false},
+		{"lapsed bucketless process", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, heartbeat_at, owner_lock_protocol) values (gen_random_uuid(), '{fingerprint}', 1, 1, false, now() - interval '1 hour', $1)`, thisBuild, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			memory := filestest.NewMemory()
 			handler, database, _ := newTestServer(t, testServerOptions{files: memory})
-			issue := fileIssue(t, handler)
-			if _, err := database.Pool.Exec(context.Background(), tc.insert); err != nil {
+			if _, err := database.Pool.Exec(context.Background(), tc.insert, tc.args...); err != nil {
 				t.Fatalf("add the other server process: %v", err)
 			}
+			issue := fileIssue(t, handler)
 			image := pngBytes("both places")
 			response := multipartRequest(t, handler, "/api/v1/issues/"+issue+"/artifacts", map[string]string{"name": "shot.png"}, "shot.png", "image/png", image, "alice")
 			if response.Code != http.StatusCreated {
@@ -320,13 +326,16 @@ func (h heldPut) Put(ctx context.Context, sha, mime string, body []byte) error {
 // cannot name is reported as a failure rather than a hang.
 const uploadLockProbeWindow = 20 * time.Second
 
-// issueOwnerLockKey is the pg_locks predicate for an issue's owner lock (store.LockOwner): a
-// two-key advisory lock, the owner namespace as its classid and the hashtext of the owner's lock
-// key as its objid, both read as the unsigned 32-bit values that view carries. The two keys are
-// passed in from store rather than spelled again here (store.OwnerLockNamespace,
-// store.Owner.LockKey), so a change to either reaches this read instead of leaving it looking for
-// a lock nothing takes any more.
+// issueOwnerLockKey is the pg_locks predicate for an issue's owner lock (store.LockOwner) in the
+// test's own database: a two-key advisory lock, the owner namespace as its classid and the hashtext
+// of the owner's lock key as its objid, both read as the unsigned 32-bit values that view carries.
+// pg_locks spans the whole server, and an advisory lock is the database's own, so the same two
+// keys held in another database (another test's, or postgres) are no lock of this issue and must
+// not be named as its holder. The two keys are passed in from store rather than spelled again here
+// (store.OwnerLockNamespace, store.Owner.LockKey), so a change to either reaches this read instead
+// of leaving it looking for a lock nothing takes any more.
 const issueOwnerLockKey = `l.locktype = 'advisory' and l.objsubid = 2
+			and l.database = (select oid from pg_database where datname = current_database())
 			and l.classid = ($2::bigint & 4294967295)::oid
 			and l.objid = (hashtext($1)::bigint & 4294967295)::oid`
 

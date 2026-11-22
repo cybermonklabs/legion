@@ -430,7 +430,7 @@ func settleReturnedAskBlockWhileClosed(t *testing.T) (*Service, string, model.Ac
 		t.Fatalf("the seeded ask block's ask reads %s, want open", ask.State)
 	}
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
-	editAsConnectedPeer(t, service, artifactID, 1, alice, withoutAskBlocks)
+	editAsConnectedPeer(t, service, artifactID, 1, alice, WithoutAskBlocks)
 	settleCurrentGeneration(t, service, artifactID)
 	if ask := blockAskOn(t, service, artifactID, "returning-ask"); !settlementRetracted(ask) {
 		t.Fatalf("the ask whose block alice deleted reads %s %+v, want the settlement's retraction", ask.State, ask.Resolution)

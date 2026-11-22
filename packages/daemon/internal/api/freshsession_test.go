@@ -650,6 +650,50 @@ func TestAFreshSessionOfAWorkerHoldingOnlyARelaunchDeliveryRestartsItsPhase(t *t
 	}
 }
 
+// A phase worker that holds only a task of news of the approved design alone owes no task of its
+// phase either: such a task asks the worker to read what changed, and holds no work of the claim's
+// (supervise.HoldsWork). So its fresh session restarts its issue's phase as for a worker holding
+// nothing, and the restart's task, which carries the entry its row names, then takes the untaken
+// news task's place and carries that news itself (supervise's Machine.supersedes;
+// dispatch://INFRA-175's census, item 10). Both doors are held to it, since the effect behind them
+// is one.
+func TestAFreshSessionOfAWorkerHoldingOnlyANewsTaskRestartsItsPhase(t *testing.T) {
+	for _, door := range freshSessionDoors() {
+		t.Run(door.name, func(t *testing.T) {
+			facts := &phaseRestarter{}
+			h := freshSessionHarness(t, facts)
+			token := readyImplementer(t, h)
+			m, _ := h.supervisor.Machine(token)
+			// A news-only start reached the worker between turns. No shim is connected, so the
+			// task waits unsent.
+			news := []byte(`{"items":[{"issue":"LEGION-209","audience":"holder","step":"spec","artifact":"artifact-spec","from":3,"to":5}]}`)
+			if err := m.Handle(h.ctx, supervise.RequestDeliver{Claim: token, ID: "outbox:91", Task: "The approved design changed.",
+				Phase: phase.Implementing, Generation: h.stored(token).Generation, News: news, NewsOnly: true}); err != nil {
+				t.Fatalf("queue the news task: %v", err)
+			}
+			if held := h.stored(token).Pending; held == nil || !held.NewsOnly {
+				t.Fatalf("the worker holds %+v, want the task of news alone", held)
+			}
+
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
+
+			if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
+				t.Fatalf("the fresh session = %d, want 200 or 202; body %s", recorder.Code, recorder.Body)
+			}
+			if note := freshSessionNote(t, recorder); note != "" {
+				t.Errorf("the answer says %q, want nothing: the phase was restarted", note)
+			}
+			applied := facts.recorded()
+			if len(applied) != 1 {
+				t.Fatalf("the fresh session applied %#v, want the phase's restart alone: a task of news alone is no task of the phase", applied)
+			}
+			if fact, ok := applied[0].(intake.RestartPhase); !ok || fact.Issue != "LEGION-209" || fact.Role != claim.RoleImplementer {
+				t.Errorf("the fresh session applied %#v, want RestartPhase{LEGION-209, implementer}", applied[0])
+			}
+		})
+	}
+}
+
 // A claim in a turn is refused through either door, word for word: suspending it would cut the
 // turn off, and that turn may be the one that ends the run of provider errors. The claim is left
 // exactly as it was, its session included.

@@ -90,6 +90,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      JOB_TIMEOUT_MINUTES: 70 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # One service for all three: the Go daemon's unit tests' Postgres, the broker rig its
       # cipher contract tests drive (ciphertest.NewRig skips without
       # BROKER_TEST_DATABASE_URL), and the Stage 1 script's. Setting LEGION_E2E_PG_DSN is what tells
@@ -120,6 +121,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
 
       # go-daemon, shared with typecheck and pi-legion.
@@ -144,8 +147,7 @@ jobs:
 
       # internal/podsafety's baseline test and the pod agent's argv test run the Oh My Pi the worker
       # image ships, and refuse on GitHub Actions without one. The pin is read from
-      # .omp-pin, the repository's one copy of it, installed through the mise above
-      # (.github/actions/install-omp).
+      # .omp-pin, the repository's one copy of it (.github/actions/install-omp).
       - uses: ./.github/actions/install-omp
 
       # internal/runtime/sandbox's uv link-mode test installs a wheel with the uv the worker image

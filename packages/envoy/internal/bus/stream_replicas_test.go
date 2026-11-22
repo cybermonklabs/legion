@@ -698,11 +698,6 @@ func (js *countingJetStream) UpdateStream(cfg *nats.StreamConfig, opts ...nats.J
 	return js.JetStreamContext.UpdateStream(cfg, opts...)
 }
 
-func (js *countingJetStream) CreateKeyValue(cfg *nats.KeyValueConfig) (nats.KeyValue, error) {
-	js.record("create bucket " + cfg.Bucket)
-	return js.JetStreamContext.CreateKeyValue(cfg)
-}
-
 // The reconcile owns the consumer cap as it owns the byte limit, with one question put to the
 // server it writes to. A deployed cap that is positive and below the one this binary compiles is
 // raised on every server, since such a cap bounds the stream's consumers wherever it runs. A
