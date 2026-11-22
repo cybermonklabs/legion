@@ -197,6 +197,7 @@ func hangsUnder(gate *pluginGate, plan []string, attempts int) {
 // or pin change that broke only that lane would otherwise pass the probe whose job is to refuse
 // such an image, and every pod would start without the Legion tool.
 func TestProbeImageLoadsThePluginTheWayAPodDoes(t *testing.T) {
+	t.Parallel()
 	f := newImageOmp(t, []string{"available"}, []string{"yes"}, []string{"refuses"})
 	home := imageHome(t, contractCurrent)
 	root, envoyRoot := legionRootOf(home), envoyRootOf(home)
@@ -248,6 +249,7 @@ func TestProbeImageLoadsThePluginTheWayAPodDoes(t *testing.T) {
 // Without the references of the role prompts a pod is handed, the image probe would resolve the
 // plugin's names alone, so it is refused before any probe runs.
 func TestTheImageProbeRequiresTheRolePromptsReferences(t *testing.T) {
+	t.Parallel()
 	f := newImageOmp(t, []string{"available"}, []string{"yes"}, []string{"refuses"})
 	home := imageHome(t, contractCurrent)
 
@@ -291,6 +293,7 @@ func TestTheImageProbeResolvesARelativePluginRoot(t *testing.T) {
 // published twice — the profile linking it beside the explicit root, which a pod with discovery on
 // loads once by each path — is refused naming every copy and the root.
 func TestTheImageProbesRefusalsNameThePluginRootAPodLoads(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name, legion string
 		load         []string
@@ -344,6 +347,7 @@ func TestTheImageProbesRefusalsNameThePluginRootAPodLoads(t *testing.T) {
 // the contract, the session-storage setting — each as a pod runs Oh My Pi, under the image's own
 // environment, and leaves no probe file behind.
 func TestProbeImageRunsTheThreeProbesUnderTheImagesEnvironment(t *testing.T) {
+	t.Parallel()
 	f := newImageOmp(t, []string{"available"}, []string{"yes"}, []string{"refuses"})
 	home := imageHome(t, contractCurrent)
 	env := imageEnv(home)
@@ -387,6 +391,7 @@ func TestProbeImageRunsTheThreeProbesUnderTheImagesEnvironment(t *testing.T) {
 // The image's plugin is held to the contract the caller names — the daemon's, passed to the probe
 // Sandbox's pod — and refused naming both numbers before the plugin load is probed.
 func TestTheImageProbeHoldsThePluginToTheContractItIsGiven(t *testing.T) {
+	t.Parallel()
 	f := newImageOmp(t, []string{"available"}, []string{"yes"}, []string{"refuses"})
 	gate, _ := imageGateUnder(t, f, contractPrevious, 0)
 	gate.contract = 2
@@ -412,6 +417,7 @@ func TestTheImageProbeHoldsThePluginToTheContractItIsGiven(t *testing.T) {
 // off before it answered (TestTheImageProbeGivesUpAfterItsAttempts). A pass slower than a second
 // or two passes on the first attempt that answers, as it does on a loaded machine.
 func TestTheAgentsProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		plan     []string
 		attempts int
@@ -456,6 +462,7 @@ func TestTheAgentsProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 // naming the variable; a clean start is a build that predates the setting, refused; any other
 // failure is the launch dying before the setting's resolver ran, waited out.
 func TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		plan     []string
 		attempts int
@@ -494,6 +501,7 @@ func TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 // The image probe's retry is bounded: an image build has no supervisor, so a probe that never
 // answers ends the build naming the budget and what the last attempt said.
 func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name                  string
 		agents, session, want []string

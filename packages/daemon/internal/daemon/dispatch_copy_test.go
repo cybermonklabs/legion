@@ -33,6 +33,7 @@ import (
 // re-read through the turn itself, the last three read over HTTP by the daemon's own Dispatch
 // client from a board whose JSON names each field as Dispatch's own model does.
 func TestTheCopyHoldsLabelsAndRank(t *testing.T) {
+	t.Parallel()
 	const key = "CAPTURE-3"
 	labels, rank := []string{"design", "urgent"}, "a3"
 	t.Run("an issue event", func(t *testing.T) {
@@ -101,6 +102,7 @@ func TestTheCopyHoldsLabelsAndRank(t *testing.T) {
 // on nothing, takes no slot, which is the tick's admission pass reading B's row as that reading
 // wrote it.
 func TestEachReadingKindWritesItsBlockers(t *testing.T) {
+	t.Parallel()
 	const waiter, blocker, other = "CAPTURE-3", "CAPTURE-7", "CAPTURE-8"
 	t.Run("an issue event", func(t *testing.T) {
 		pool := isolatedOutboxPool(t)
@@ -205,6 +207,7 @@ func TestEachReadingKindWritesItsBlockers(t *testing.T) {
 // wait ended in that pass and not at a later fact. With the mirror after admission in the handler
 // list, P would still wait after the event, so the test holds the order of the handlers.
 func TestAnEventsParentIsInTheCopyBeforeItsDecisions(t *testing.T) {
+	t.Parallel()
 	const root, child, elsewhere = "CAPTURE-1", "CAPTURE-3", "CAPTURE-9"
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)

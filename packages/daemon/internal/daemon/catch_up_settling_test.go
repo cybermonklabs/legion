@@ -200,6 +200,7 @@ func keepDecision(t *testing.T, pool *store.Pool, records record.Store, issue, r
 // decisions is left for its own ending to settle — here the publish, which forgets exactly what it
 // named — and the fresh catch-up names only what nobody claims.
 func TestAReadyLeavesTheCatchUpThatIsPublishingWhatItNamed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -259,6 +260,7 @@ func TestAReadyLeavesTheCatchUpThatIsPublishingWhatItNamed(t *testing.T) {
 // a fresh catch-up while the root has an architect to tell. Left to the row's deletion, those
 // decisions would wait unclaimed with nothing to name them while the architect worked the tree.
 func TestAReceiptTimeoutOnASupersededCatchUpHandsOverWhatItNamed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -322,6 +324,7 @@ func TestAReceiptTimeoutOnASupersededCatchUpHandsOverWhatItNamed(t *testing.T) {
 // confirms a delivery. Left to the row's deletion, the decision would wait unclaimed with nothing
 // to name it while the architect worked the tree.
 func TestACatchUpWhoseReholdsAreSpentHandsOverWhatItNamed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -373,6 +376,7 @@ func TestACatchUpWhoseReholdsAreSpentHandsOverWhatItNamed(t *testing.T) {
 // architect to hear it, and waits KEPT, with nothing written, while it has none — a lingering
 // root's next start or ready names it.
 func TestALateReportOfASpentCatchUpNamesWhatItsRowReleased(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		lingers bool

@@ -257,6 +257,7 @@ type upgradeShape struct {
 // role level at zero is owed nothing — which is all workflow.OwedEntry answers and all admit's
 // owedEntryRoles selects.
 func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := preEntryStore(t)
 	pool := st.Pool()

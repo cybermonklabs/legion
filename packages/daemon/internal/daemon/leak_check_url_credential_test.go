@@ -36,6 +36,7 @@ const leakCheckRedirectToken = "plantedRedirectToken4k"
 // state serves it (api.ClaimViewOf), and the lines the daemon's logger wrote through a JSON handler
 // built as `legion start` builds it (redact.HandlerOptions).
 func TestALeakCheckRedirectTokenReachesNoClaimStoreStateOrLog(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	github := provisioningStandIn(t, provisioningInstallation{id: "78", owner: leakCheckSetting.Repository.Owner(), granted: leakCheckGrant,
 		answer: func(w http.ResponseWriter, permissions map[string]string) {

@@ -93,6 +93,7 @@ func appliedMemoryGuardKills(t *testing.T, pool *store.Pool, eventID string) int
 // published once, to the role topic of the role whose connection reported the kill, and to no
 // other topic.
 func TestMemoryGuardAKillReportedTwiceIsOneNoteOnTheReportingRolesTopic(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool, kills, token := boundMemoryGuardKills(t)
 	report := memoryGuardKill()
@@ -146,6 +147,7 @@ func TestMemoryGuardAKillReportedTwiceIsOneNoteOnTheReportingRolesTopic(t *testi
 // applied once under the same identity a guard's kill is, memory-guard-kill:<guard>:<sequence>,
 // and the role is told the kernel's note rather than the guard's.
 func TestMemoryGuardAKernelKillReachesIntakeWithItsCauseUnderTheSameEventID(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool, kills, token := boundMemoryGuardKills(t)
 	report := memoryGuardKill()
@@ -176,6 +178,7 @@ func TestMemoryGuardAKernelKillReachesIntakeWithItsCauseUnderTheSameEventID(t *t
 // A holder the boot never bound has no fact path, and says so to the launcher session, which logs
 // the report it drops: a boot that skipped the bind shows in the log rather than nowhere.
 func TestMemoryGuardAnUnboundHolderRefusesEveryKill(t *testing.T) {
+	t.Parallel()
 	err := (&memoryGuardKills{}).killed(context.Background(), memoryGuardIssue, "legion-legion-legion-209-tester", "pod-209", memoryGuardKill())
 	if !errors.Is(err, errMemoryGuardKillsUnbound) {
 		t.Fatalf("killed = %v, want errMemoryGuardKillsUnbound", err)
@@ -185,6 +188,7 @@ func TestMemoryGuardAnUnboundHolderRefusesEveryKill(t *testing.T) {
 // runtime.kubernetes.memory_guard.issue_pods reaches sandbox.Options as the settings an issue pod's
 // launcher is handed, and none at all when the deployment turned the guard off.
 func TestMemoryGuardTheIssuePodsSettingsReachTheSandboxRuntime(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{Project: "TEST", Projects: map[string]config.Project{"TEST": {}}}
 	k := config.Kubernetes{
 		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),

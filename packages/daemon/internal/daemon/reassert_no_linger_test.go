@@ -26,6 +26,7 @@ import (
 )
 
 func TestAReassertLeavesItsRecordedIssueInTheWorkflow(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())
@@ -88,6 +89,7 @@ func TestAReassertLeavesItsRecordedIssueInTheWorkflow(t *testing.T) {
 // row's read does not — then takes the issue out of the workflow. Nothing the refused write left
 // behind stands in that event's way, which is the half neither test covers alone.
 func TestTheCloseEventTakesTheIssueOutAfterItsWriteWasRefused(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories,

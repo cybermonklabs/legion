@@ -213,6 +213,7 @@ func recordedIssue(t *testing.T, w *workflowRuntime, key string) *record.Issue {
 // whole heard set again (republishHeard) and across a restart, so a person moving it back to todo
 // re-admits it on a repository whose pull request facts still arrive.
 func TestAClosedTreesRepositoryStaysHeardAcrossARepublicationAndARestart(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	w, _, _, stream := repositoryRig(t, map[string]bool{})
 	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
@@ -257,6 +258,7 @@ func TestAClosedTreesRepositoryStaysHeardAcrossARepublicationAndARestart(t *test
 // a record on a repository no preparation read is heard under the GitHub spelling its record keeps,
 // with no read of GitHub.
 func TestGitHubIntakeHearsEachRepositoryAsGitHubSpellsIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	w, _, _, _ := repositoryRig(t, map[string]bool{})
 	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
@@ -291,6 +293,7 @@ func TestGitHubIntakeHearsEachRepositoryAsGitHubSpellsIt(t *testing.T) {
 // daemon saying why on it. Once the App is installed, the issue's next hand-over reads the
 // installation again and records the issue on the repository, which GitHub intake hears.
 func TestAProjectServingNoRepositoryStartsServingOnceItsAppIsInstalled(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	w, client, installs, stream := repositoryRig(t, map[string]bool{"review acme/widgets": true, "review zeta/tools": true})
 	client.issue = dispatch.Issue{Key: "LEGION-301", Status: "todo", HandedOver: true, ResolvedRepo: "acme/widgets", LastSeq: 2}
@@ -341,6 +344,7 @@ func TestAProjectServingNoRepositoryStartsServingOnceItsAppIsInstalled(t *testin
 // ancestor's or the project's default changed), it is recorded on the one it resolves to now. The
 // repository is heard from the record that names it (R5).
 func TestAnIssueOnARepositoryNoRecordNamesIsAdmittedAsDispatchNowShowsIt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		now    dispatch.Issue
@@ -386,6 +390,7 @@ func TestAnIssueOnARepositoryNoRecordNamesIsAdmittedAsDispatchNowShowsIt(t *test
 // Dispatch now shows the issue: a person who withdrew it meanwhile is not overruled, and one still
 // handed over is recorded, on a repository no record names as on one a record names.
 func TestAnAdmissionWhosePreparationFailedIsPreparedAsDispatchNowShowsIt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		now      dispatch.Issue
@@ -430,6 +435,7 @@ func TestAnAdmissionWhosePreparationFailedIsPreparedAsDispatchNowShowsIt(t *test
 // the issue. It is prepared as Dispatch now shows the issue, as a redelivered one is: the
 // withdrawal stands.
 func TestALateFirstDeliveryOfAnAdmissionEventIsPreparedAsDispatchNowShowsIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	w, client, _, _ := repositoryRig(t, map[string]bool{})
 	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, Steps: config.DesignGateOff.Steps()}, quietLogger())
@@ -461,6 +467,7 @@ func TestALateFirstDeliveryOfAnAdmissionEventIsPreparedAsDispatchNowShowsIt(t *t
 // record), and release_children's, prepared in place of no event, applies nothing. Either way the
 // record stays as it was, and the issue's later events, each with its own actor, carry it on.
 func TestAViewPreparedBeforeTheIssueWasRecordedNeverAppliesToItsRecord(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name          string
 		releasedFirst bool
@@ -637,6 +644,7 @@ func TestARepositoryWhoseInstallationReadFailedIsServedOnceARetryReadsIt(t *test
 // refusal is nothing an issue is held to, though: the next preparation of an admission on it
 // reads the installation again, so an App installed since admits the issue with no restart (R4).
 func TestANotInstalledRepositoryIsReadAgainAtTheNextPreparation(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	installs := &installations{missing: map[string]bool{"review acme/widgets": true}}
 	installs.setFailing(&appauth.TransientError{Err: errors.New("GitHub answered 502")}, "review zeta/tools")
@@ -1772,6 +1780,7 @@ func TestARecoveryWhoseNoticeFailsPastItsBoundWaitsItsBackoff(t *testing.T) {
 // nothing (INFRA-4401 P5), and dispatch://INFRA-3532's own change deletes that route's case, with
 // the rename pass.
 func TestTheBootHearsTheRecordsRepositoriesAndCachesTheLiveOnes(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	var settings atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

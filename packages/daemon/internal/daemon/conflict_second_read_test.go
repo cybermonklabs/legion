@@ -120,6 +120,7 @@ func appliedRead(t *testing.T, pool *store.Pool, api, base string, mergeable boo
 // why. A base whose name holds `#` and `/` reads its own rules, each segment escaped. A read that
 // finds the head mergeable reads no rules at all.
 func TestAConflictSecondReadCarriesTheBaseRules(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	const (
 		rules    = "/repos/acme/widgets/rules/branches/main"
@@ -356,6 +357,7 @@ var (
 // the first read, so the next conflicting read starts the two reads again. A row whose head the
 // record has left, or whose first read a later read already released, reads nothing.
 func TestAConflictSecondReadRowReadsTheHeadAgain(t *testing.T) {
+	t.Parallel()
 	// The record keeps the times to the microsecond.
 	first := time.Now().UTC().Truncate(time.Microsecond)
 
@@ -480,6 +482,7 @@ func TestAConflictSecondReadRowReadsTheHeadAgain(t *testing.T) {
 // nor the release its last attempt applies is about that first read. The newer first read's own
 // row reads GitHub a minute after it, and GitHub's CONFLICTING then confirms the conflict.
 func TestAConflictSecondReadOfAReleasedFirstReadLeavesTheNewerFirstReadStanding(t *testing.T) {
+	t.Parallel()
 	// The reads are timed below the microsecond, as the daemon's clock times them: the row and the
 	// record keep a first read's time in jsonb, whole, so the newer first read's own row still
 	// finds the record holding its first read.

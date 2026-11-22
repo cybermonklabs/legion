@@ -30,6 +30,7 @@ import (
 // resume launches each session that the pause held something for, once). The spawn's task, which
 // its agent never took, is delivered at the launch's ready.
 func TestTheResumeLaunchesAnOperatorsSpawnThePauseStoppedOwingALaunch(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, nil)
 	r.boot()
 	issue := r.issue(7)
@@ -116,6 +117,7 @@ func TestTheResumeLaunchesAnOperatorsSpawnThePauseStoppedOwingALaunch(t *testing
 // (workflow's wakeReleased): it takes no resume of the role, which would refuse every later wake
 // of it, and queues no start keyed by the other project's issue.
 func TestTheResumeLaunchesAClaimOfAnotherProjectsIssueOnlyForTheWorkThePauseHeld(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// recorded seeds another project's record of each spawned issue.
@@ -269,6 +271,7 @@ func TestTheResumeLaunchesAClaimOfAnotherProjectsIssueOnlyForTheWorkThePauseHeld
 // pause held, so did the third case's, whose wake read the pause that stood at the row's due time
 // and found none.
 func TestARoundsBoundCountsTheHeldPodOnToTheLetOutOfItsLastHeldLaunch(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// hook is whether P's worker is woken by a held hook's prompt rather than a held wake.
@@ -408,6 +411,7 @@ func TestARoundsBoundCountsTheHeldPodOnToTheLetOutOfItsLastHeldLaunch(t *testing
 // release's; before the second, the wake of a notice due before the pause still was, since the
 // wake read the pause that stood at the row's due time.
 func TestANoticeThePauseHeldWakesItsArchitectWithThatPause(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// dueBefore is how long before the pause began the notice was due, 0 for a notice that fell
@@ -469,6 +473,7 @@ func TestANoticeThePauseHeldWakesItsArchitectWithThatPause(t *testing.T) {
 // release. Before the second the outbox took a delivery's wake of the role for the held message
 // and resumed it with no task, and the listener's report then took no wake.
 func TestAListenersWakeAfterTheResumeOfARoleThePauseStoppedIsThatPausesHeldWake(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, nil)
 	issue := r.issue(1)
 	worker := r.token(issue, claim.RoleImplementer)
@@ -533,6 +538,7 @@ func TestAListenersWakeAfterTheResumeOfARoleThePauseStoppedIsThatPausesHeldWake(
 // The negative control is the wait counted whatever the claim's state: the row waits for a role
 // that is not coming back, and the test fails where it waits for the row to end.
 func TestAHeldRoleMessageForARoleAnOperatorSuspendedDuringThePauseEndsUndelivered(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, nil)
 	issue := r.issue(1)
 	worker := r.token(issue, claim.RoleImplementer)
@@ -579,6 +585,7 @@ func TestAHeldRoleMessageForARoleAnOperatorSuspendedDuringThePauseEndsUndelivere
 // delivery wake read its row's mark alone, found none, and was recorded as the wake of the release
 // from before the pause.
 func TestANoticeQueuedAfterTheResumeWakesAnArchitectThePauseStoppedWithThatPause(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, nil)
 	issue := r.issue(1)
 	architect := r.token(issue, claim.RoleArchitect)
@@ -621,6 +628,7 @@ func TestANoticeQueuedAfterTheResumeWakesAnArchitectThePauseStoppedWithThatPause
 // daemon's own. So after the resume the relaunched spawn's ready queues no row keyed by the other
 // project's issue and deletes none of that daemon's rows.
 func TestTheResumedSpawnOfAnotherProjectsRootArchitectTouchesNoRowOfThatProjectAtItsReady(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, nil)
 	r.boot()
 	const issue = "OTHERPROJECT-9"
@@ -733,6 +741,7 @@ func TestTheResumedSpawnOfAnotherProjectsRootArchitectTouchesNoRowOfThatProjectA
 // one, so its failure is one that would tell the tree's architect and the controller were the
 // record this daemon's.
 func TestAFactOfTheResumedSpawnOfAnotherProjectsIssueTouchesNoRowOfThatProject(t *testing.T) {
+	t.Parallel()
 	const issue = "OTHERPROJECT-9"
 	const role = claim.RoleArchitect
 	for _, tc := range []struct {
@@ -840,6 +849,7 @@ func TestAFactOfTheResumedSpawnOfAnotherProjectsIssueTouchesNoRowOfThatProject(t
 // pause is a claim write that changes the role's holder (the store's putClaim), so it is where the
 // pause meets this row.
 func TestThePausesStopOfASpawnOfAnotherProjectsIssueTouchesNoRoleHoldersRowOfThatProject(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, nil)
 	r.boot()
 	const issue = "OTHERPROJECT-9"

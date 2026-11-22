@@ -63,6 +63,7 @@ func handedOver(key, resolved string, seq int64) (dispatch.Issue, intake.Dispatc
 // GitHub whether Legion can work it (R4). Nothing is said on the issue, and the reads are the
 // preparation's own.
 func TestAnIssueOnARepositoryNoRecordNamesIsRecordedWithGitHubsSpellingAndAdmitted(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	w, client, installs, _ := preparationRig(t, &installations{})
 	engine, admission := rigHandlers(w)
@@ -100,6 +101,7 @@ func TestAnIssueOnARepositoryNoRecordNamesIsRecordedWithGitHubsSpellingAndAdmitt
 // GitHub's spelling and the default branch, so the second issue's preparation reads neither
 // installation nor the repository again.
 func TestTwoIssuesOnOneRecordedRepositoryMakeOneSetOfReads(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	var named atomic.Int64
 	github := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
@@ -197,6 +199,7 @@ func TestAnIssueWaitsWhileGitHubHasNotAnsweredForItsRepositoryAndIsAdmittedWhenI
 // listing. The answer dropped the marker alone before, which took the repository out of every
 // recovery, so the issue stood unadmitted until the next boot.
 func TestAnIssueLeftUnreadIsAdmittedWhenAnotherIssuesPreparationGetsGitHubsAnswer(t *testing.T) {
+	t.Parallel()
 	failing := &installations{}
 	failing.setFailing(errors.New("GitHub answered 502"), "implement "+strangerRepo)
 	// The refresher's own read is never due in this test, so a recovery runs only where a read
@@ -402,6 +405,7 @@ func TestLettingARepositoryGoTellsTheArchitectOfTheChildrenNothingWillRecord(t *
 // where one did, and told a child that was todo all along to be released again once it is todo,
 // which did nothing while its parent was unrecorded.
 func TestALetGoNoticeSaysWhyTheRepositoryWasLetGoAndWhatToReleaseFirst(t *testing.T) {
+	t.Parallel()
 	const tree, parent, child = "LEGION-985", "LEGION-986", "LEGION-987"
 	noTodo := "the daemon no longer waits for GitHub to answer for " + strangerRepo + ", because no todo issue labelled for Legion or under a parent names it now"
 	elsewhere := "the daemon no longer waits for GitHub to answer for " + strangerRepo + ", because a read GitHub answered for it at another issue's preparation answers for it now"
@@ -455,6 +459,7 @@ func TestALetGoNoticeSaysWhyTheRepositoryWasLetGoAndWhatToReleaseFirst(t *testin
 // answering for the repository neither as installed nor as present is one answer, so the note
 // says both, since the name may be a person's typo.
 func TestARepositoryARoleAppIsNotInstalledOnIsRefusedAndAdmittedAtTheNextPreparation(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	w, client, installs, _ := preparationRig(t, &installations{missing: map[string]bool{"review " + strangerRepo: true}})
 	engine, admission := rigHandlers(w)
@@ -502,6 +507,7 @@ func TestARepositoryARoleAppIsNotInstalledOnIsRefusedAndAdmittedAtTheNextPrepara
 // repository from the same moment (R6). Control (dispatch://INFRA-4401 check a-go, item 3b): with
 // the record-driven path deleted (hearRecorded), the repository stays unheard.
 func TestRecordingAnIssueOnANewRepositoryHearsItInTheSamePass(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	w, client, _, stream := preparationRig(t, &installations{})
 	engine, admission := rigHandlers(w)
@@ -548,6 +554,7 @@ func TestRecordingAnIssueOnANewRepositoryHearsItInTheSamePass(t *testing.T) {
 // neither cached nor heard. The done record is written through the bare store, so no read of the
 // live records it would ask for replaces the cache set the launch adds to.
 func TestALaunchAddsItsRepositoryToTheCacheSetAndTheHeardSet(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	w, _, installs, stream := preparationRig(t, &installations{})
 	putOutboxIssue(t, w.pool, w.records.(projectRecords).Store, doneOn("LEGION-942", "LEGION", strangerNamed, "trunk"))
@@ -577,6 +584,7 @@ func TestALaunchAddsItsRepositoryToTheCacheSetAndTheHeardSet(t *testing.T) {
 // restart empties, so the repository stood in neither of its lists until an issue on it was
 // prepared again.
 func TestTheStateListsARepositoryOnlyALiveRecordNamesAfterARestart(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	w, _, _, _ := preparationRig(t, &installations{})
 	put := func(at phase.Phase, status string) {
@@ -607,6 +615,7 @@ func TestTheStateListsARepositoryOnlyALiveRecordNamesAfterARestart(t *testing.T)
 // The state listed every repository a preparation had kept a read of before, so it named a
 // repository no tree of the project works in.
 func TestTheStateListsNoRepositoryOfAnIssueLegionNeverRecords(t *testing.T) {
+	t.Parallel()
 	w, client, installs, _ := preparationRig(t, &installations{})
 	const key, parent = "LEGION-969", "LEGION-970"
 	deliver(t, w, client, issue(key, strangerRepo, "todo", false, parent, 1))
@@ -631,6 +640,7 @@ func TestTheStateListsNoRepositoryOfAnIssueLegionNeverRecords(t *testing.T) {
 // Apps' installations and the repository's name at every event of the issue before, since no
 // refusal is kept, each read up to installReadAttempt long.
 func TestAPersonsOwnTodoIssueOnARepositoryNoRecordNamesAsksGitHubNothing(t *testing.T) {
+	t.Parallel()
 	var named atomic.Int64
 	github := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		path := strings.ToLower(strings.TrimPrefix(r.URL.Path, "/repos/"))
@@ -699,6 +709,7 @@ func (i *bootCountedInstallations) InstalledUnder(ctx context.Context, role appa
 // boot reads the repository once and admits the issue on GitHub's answer, with nothing said on
 // it. A person's own todo issue on another such repository is read for by neither.
 func TestTheBootsListingAsksGitHubNothingForARepositoryNoRecordNamesAndItsRecoveryAdmitsIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	installs := &bootCountedInstallations{installations: &installations{}}
 	w, client, _, _, _ := bootingRepositoryRig(t, installs.installations, preparationGitHub(t), func(w *workflowRuntime) { w.installs = installs })
@@ -739,6 +750,7 @@ func TestTheBootsListingAsksGitHubNothingForARepositoryNoRecordNamesAndItsRecove
 // is repaired like any other (R5). The read mints on that repository's owner account, which is
 // what lets it reach that repository.
 func TestThePerIssueReadLooksUpARepositoryOnlyARecordNames(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	var listed []string
 	var mu atomic.Pointer[[]string]

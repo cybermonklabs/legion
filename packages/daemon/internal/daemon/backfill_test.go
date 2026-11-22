@@ -34,6 +34,7 @@ func (d *listingDispatch) ListIssues(context.Context, string, []string) ([]dispa
 // refresher's backfill to have GitHub intake hear it (backfillLater), and that a record is left,
 // for the refresher to try it again.
 func TestTheBootFillsRecordsWithNoRepository(t *testing.T) {
+	t.Parallel()
 	seed := func(t *testing.T) *workflowRuntime {
 		t.Helper()
 		pool := isolatedOutboxPool(t)

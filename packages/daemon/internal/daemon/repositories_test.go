@@ -338,6 +338,7 @@ func TestAnAdmissionsReadOfANameGitHubNeverAnswersIsBounded(t *testing.T) {
 // refresher's second job reads such a repository (view, badLive). Control: with the line logged
 // as a live repository's whatever the live set holds, naming a retry, it fails.
 func TestTheBootsPreparationRecordsOnTheRepositoriesWhoseInstallationReadsAnswer(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main", "acme/gadgets": "acme/gadgets@main"})
 	pool := isolatedOutboxPool(t)
@@ -577,6 +578,7 @@ func TestAFailedWebhookAppCheckIsNamedAndCheckedAgainWhileTheRepositoryIsWorked(
 // A Dispatch older than the webhook App check answers its route 404: the state names every
 // repository a live record names with that, and works each.
 func TestAnOlderDispatchWithoutTheWebhookAppRouteIsNamed(t *testing.T) {
+	t.Parallel()
 	standIn := newWebhookDispatch(t, false, nil)
 	w, _, _, _ := repositoryRigWith(t, &installations{}, standIn.serve)
 	if !recordsOn(w, "acme/widgets") || !recordsOn(w, "zeta/tools") {
@@ -627,6 +629,7 @@ func TestARepositoryOnlyARecordNamesWithoutTheWebhookAppIsWorkedAndNamed(t *test
 // repository a record names (prepareAtStart, INFRA-4401 D10): no preparation of an issue's event
 // is needed for it, so the gap stands on what the restarted process read itself.
 func TestARepositoryALiveRecordNamesIsNamedWithoutTheWebhookAppAfterARestart(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	w, _, installs, _ := preparationRig(t, &installations{}, withoutWebhookAppFor, func(w *workflowRuntime) {
 		// The tree an earlier process recorded, which this one boots over.
@@ -735,6 +738,7 @@ func newNamedGitHub(t *testing.T, repos map[string]string) *namedGitHub {
 // live record names is listed apart with when the sweep retires it; a repository with no cache
 // carries none.
 func TestTheStatesViewCarriesTheRepositoryCaches(t *testing.T) {
+	t.Parallel()
 	repos := newRepositories("LEGION", ghrepo.Renames{})
 	repos.fill(ghrepo.MustParse("Acme/Widgets"), ghrepo.MustParse("zeta/tools"))
 	fetched := time.Date(2026, 10, 16, 19, 20, 30, 0, time.UTC)
@@ -766,6 +770,7 @@ func TestTheStatesViewCarriesTheRepositoryCaches(t *testing.T) {
 // not answered. A read a preparation kept for a repository no live record names puts nothing in
 // the state: the preparation of a person's own todo issue keeps one, and no tree works there.
 func TestTheStatesRepositoriesAreTheOnesTheLiveRecordsName(t *testing.T) {
+	t.Parallel()
 	repos := newRepositories("LEGION", ghrepo.Renames{})
 	repos.fill(ghrepo.MustParse("Acme/Widgets"))
 	repos.keepRead(ghrepo.MustParse("zeta/tools"), appInstallations{implement: appInstallation{answered: true, installed: true}, review: appInstallation{answered: true}}, "")
@@ -790,6 +795,7 @@ func TestTheStatesRepositoriesAreTheOnesTheLiveRecordsName(t *testing.T) {
 // webhook App (INFRA-4401 A6). A gap kept for a repository no live record names is in no list, and
 // a state whose live repositories hold no gap lists none.
 func TestTheStatesWebhookAppGapsAreTheLiveRepositoriesThatHoldOne(t *testing.T) {
+	t.Parallel()
 	repos := newRepositories("LEGION", ghrepo.Renames{})
 	repos.fill(ghrepo.MustParse("Acme/Widgets"), ghrepo.MustParse("zeta/tools"), ghrepo.MustParse("orbit/gadgets"))
 	failed := "the webhook App check failed: GITHUB_UNREADABLE: GitHub answered 500"
@@ -818,6 +824,7 @@ func TestTheStatesWebhookAppGapsAreTheLiveRepositoriesThatHoldOne(t *testing.T) 
 // one no entry records issues on is answered unread and its preparation reads both role Apps, and
 // release_children waits for it only while GitHub's reads for it went unanswered (the marker).
 func TestEveryReaderOfARepositoryTakesItsAnswerFromOneLookup(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "Acme/Widgets@release/v7.1", "acme/gadgets": "acme/gadgets@main", "other/thing": "Other/Thing@main"})
 	installs := &installations{}
@@ -883,6 +890,7 @@ func TestEveryReaderOfARepositoryTakesItsAnswerFromOneLookup(t *testing.T) {
 // its apply waiting on the fact lock the pass's reconcile holds: let go, the repository was listed
 // by no later pass and that issue was never recorded.
 func TestARecoverySettlesOnlyTheRepositoriesGitHubAnsweredFor(t *testing.T) {
+	t.Parallel()
 	const repo = "stranger/tools"
 	waits := map[string]map[string]releaseWait{repo: {"LEGION-2": {tree: "LEGION-1", parent: "LEGION-1"}}}
 	for _, tc := range []struct {
@@ -959,6 +967,7 @@ func TestARecoverySettlesOnlyTheRepositoriesGitHubAnsweredFor(t *testing.T) {
 // child-release retry. Before, the wait was held all the same, on a repository no pass lists
 // again, where no recovery read it and no architect was told of it.
 func TestAReleaseWaitIsHeldOnlyWhileItsRepositoryIsUnread(t *testing.T) {
+	t.Parallel()
 	const repo = "stranger/tools"
 	for _, tc := range []struct {
 		name string
@@ -1008,6 +1017,7 @@ func TestAReleaseWaitIsHeldOnlyWhileItsRepositoryIsUnread(t *testing.T) {
 // takes its set. The pause only lets the call reach that lock: with the entries read under it,
 // there is nothing the call does before it, so the answer does not depend on the pause.
 func TestAReleaseWaitInFlightAcrossAnAnswerIsRefusedRatherThanStranded(t *testing.T) {
+	t.Parallel()
 	const repo, tree, filed, inFlight = "zeta/tools", "LEGION-1", "LEGION-2", "LEGION-3"
 	w := &workflowRuntime{repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger()}
 	w.unread = map[string]string{repo: "the implement App's installation on zeta/tools could not be read: GitHub answered 502; Legion reads it again"}
@@ -1057,6 +1067,7 @@ func TestAReleaseWaitInFlightAcrossAnAnswerIsRefusedRatherThanStranded(t *testin
 // check a-go, item 5): no issue here names a repository the daemon holds a default for, so each
 // launch would refuse.
 func TestAnUnrecordedIssuesLaunchWorksItsResolvedRepository(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "Acme/Widgets@release/v7.1", "zeta/tools": "zeta/tools@main", "zeta/gadgets": "zeta/gadgets@main"})
 	installs := &installations{missing: map[string]bool{"review zeta/tools": true}}
@@ -1112,6 +1123,7 @@ func TestAnUnrecordedIssuesLaunchWorksItsResolvedRepository(t *testing.T) {
 // from unrecordedRepository's kept path, the cache set stays without Acme/Widgets after the second
 // launch.
 func TestALaterLaunchOfAKeptIssuePutsItsRepositoryBackInTheCacheSet(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "Acme/Widgets@main"})
 	client := &repositoryDispatch{issues: map[string]dispatch.Issue{"LEGION-9": {Key: "LEGION-9", Project: "LEGION", ResolvedRepo: "acme/widgets"}}}
@@ -1148,6 +1160,7 @@ func TestALaterLaunchOfAKeptIssuePutsItsRepositoryBackInTheCacheSet(t *testing.T
 // through: its record's, or, for an issue the workflow does not record, the one Dispatch resolves
 // it to. A token no claim holds is refused.
 func TestAnAdoptedPanesRepositoryIsTheOneItsIssueWorks(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "Acme/Widgets@main"})
 	client := &repositoryDispatch{issues: map[string]dispatch.Issue{"LEGION-9": {Key: "LEGION-9", Project: "LEGION", ResolvedRepo: "acme/widgets"}}}

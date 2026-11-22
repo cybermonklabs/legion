@@ -112,6 +112,7 @@ func deliverableStarts(t *testing.T, pool *store.Pool, issue string) int {
 // rule, which is exactly what the boot resumes. The resume's task therefore waits, and what the
 // test watches is a durable row rather than a decision the daemon could make again for free.
 func TestASecondBootOnTheSameStoreLeavesEverySlotStartAndPlaceAsItWas(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -294,6 +295,7 @@ func applyMigrationsByHand(t *testing.T, st *store.Store, set []migrations.Migra
 // root that never ran takes nothing while the count stands at or above the cap, and takes a
 // row at the first pass where the count is under it.
 func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := preReleaseStore(t)
 	pool := st.Pool()

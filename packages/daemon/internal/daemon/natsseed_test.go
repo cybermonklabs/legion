@@ -136,6 +136,7 @@ func TestTheWorkflowConnectsAsTheDaemonSeedOverThePaneSeed(t *testing.T) {
 // chooseNATSConnection picks the daemon seed, else the pane seed, else none, and its one line says
 // which user that is and whether it is the pane user, the daemon seed naming the pane user included.
 func TestChooseNATSConnectionNamesTheUserTheDaemonConnectsAs(t *testing.T) {
+	t.Parallel()
 	daemonSeed, daemonUser := testnkeys.User(t)
 	paneSeed, paneUser := testnkeys.User(t)
 	for _, tc := range []struct {
@@ -168,6 +169,7 @@ func TestChooseNATSConnectionNamesTheUserTheDaemonConnectsAs(t *testing.T) {
 // launch carry the pane seed as NATS_NKEY_SEED and nothing of the daemon seed, in no secret, no
 // variable, and no other field of the spec.
 func TestNoLaunchCarriesTheDaemonSeed(t *testing.T) {
+	t.Parallel()
 	daemonSeed, paneSeed := testnkeys.UserSeed(t), testnkeys.UserSeed(t)
 	for _, tc := range []struct {
 		name    string

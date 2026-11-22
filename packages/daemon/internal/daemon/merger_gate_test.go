@@ -24,6 +24,7 @@ import (
 // lands. The merger took version 3 and what changed up to version 4 is recorded, so the news it is
 // owed holds nothing back once the gate opens (mergerWaitsForTheDesignGate).
 func TestTheMergersStartWaitsWhileItsTreesDesignGateIsClosed(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
@@ -74,6 +75,7 @@ func TestTheMergersStartWaitsWhileItsTreesDesignGateIsClosed(t *testing.T) {
 // runs the same row. The merger took the spec at 4 and the checks at 1, and what changed in the
 // checks from 1 to 2 is recorded.
 func TestTheMergersStartWaitsWhileItsTreesRegisteredVerificationDocumentIsClosed(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",

@@ -175,6 +175,7 @@ func noticeReasons(t *testing.T, pool *store.Pool, kind string) []string {
 // the issue reaches merging has to ask for the merge forward then, with no change in the GitHub
 // answer to key off.
 func TestThePerIssueReadCatchesAHeadThatStartsConflictingWithItsBase(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name         string
 		state        string
@@ -248,6 +249,7 @@ func TestThePerIssueReadCatchesAHeadThatStartsConflictingWithItsBase(t *testing.
 // what the column records is the read, so a head read a minute ago reads differently from one
 // nothing has read for a day (applyMergeability).
 func TestThePerIssueReadRecordsGitHubsMergeStateForTheHead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		state     string

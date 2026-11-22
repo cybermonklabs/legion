@@ -234,6 +234,7 @@ func assertOneWayBackText(t *testing.T, file, header, extract string) {
 // TestTheWayBackExtractIsTheGuidesWayBackBlock holds it to the guide. Neither half alone is the
 // guarantee: together they are the one this test gave while it read the guide itself.
 func TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
+	t.Parallel()
 	header := wayBackBlockOfTheHeader(t, phaseEntryMigrationFile)
 	// The shape of the block is read here as well as where it runs, so a header broken in a tree
 	// with no database still fails this check by name rather than passing it unread.
@@ -255,6 +256,7 @@ func TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
 // half alone is the guarantee: together they are the one this test gave while it read the guide
 // itself.
 func TestTheArchitectEntryUpgradesWayBackBlockIsOneTextInItsHeadersAndTheGuide(t *testing.T) {
+	t.Parallel()
 	for _, file := range []string{architectStalledNoticesMigrationFile, architectUpgradeMigrationFile, claimHandshakeMigrationFile,
 		entryVerbatimMigrationFile} {
 		assertOneWayBackText(t, file, wayBackBlockOfTheHeader(t, file), architectEntryWayBackExtract)
