@@ -74,10 +74,11 @@ func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 type artifactUploadInput struct {
 	name    string
 	content []byte
-	// precondition is the token of the version a whole-document upload believes it is
-	// replacing, nil when the upload names none. A replacement of a document that already
-	// exists names it, and one that names none is taken unchecked and counted (storeArtifact,
-	// INFRA-4980); a first upload and a file never do.
+	// precondition is the token of the version an upload believes it is replacing, nil when the
+	// upload names none. A replacement of a document that already exists names it, and one that
+	// names none is taken unchecked and counted (storeArtifact); a replacement of a
+	// file or an image names its standing version's token, and one that names none is taken
+	// unchecked. A first upload never names one.
 	precondition *model.EditPrecondition
 	contentType  string
 	summary      string
@@ -274,18 +275,13 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 		}
 	}
 	// The token an upload names is held to what an upload can mean before anything is written:
-	// the document token alone, in the shape every edit's precondition takes, and only on an
-	// upload Dispatch stores as a document, since a file holds no tree and so no token. A token
-	// nothing would read is refused rather than taken and dropped, because the caller believes
-	// its write was conditional. A replacement that names none is taken unchecked, as it was
-	// before #3000, and counted (storeArtifact, INFRA-4980).
+	// the token of the version it replaces alone, in the shape every edit's precondition takes.
+	// A document's is its live tree's, which the document write checks; a file's or an image's is
+	// its standing version's (model.FileVersionToken), which storeArtifact checks. A token nothing
+	// would read is refused rather than taken and dropped, because the caller believes its write
+	// was conditional. A replacement that names none is taken unchecked, as it was before #3000,
+	// and a document's is counted (storeArtifact).
 	if input.precondition != nil {
-		if kind != "doc" {
-			s.writeHandlerError(w, &docs.ErrInvalidPrecondition{
-				Reason: "only a document has a version token; this upload is stored as a file",
-			})
-			return
-		}
 		if refusal := docs.ValidateUploadPrecondition(*input.precondition); refusal != nil {
 			s.writeHandlerError(w, refusal)
 			return
@@ -491,10 +487,7 @@ func (s *server) writeUploadDocumentError(ctx context.Context, w http.ResponseWr
 			s.writeHandlerError(w, readErr)
 			return
 		}
-		body := editPreconditionBody(stale)
-		body.Current.Version = &version
-		body.Error += "; " + uploadBaseAdvice
-		WriteJSON(w, http.StatusConflict, body)
+		WriteJSON(w, http.StatusConflict, uploadPreconditionBody(stale, version))
 		return
 	}
 	if errors.Is(err, docs.ErrPreconditionUnavailable) {
@@ -502,6 +495,54 @@ func (s *server) writeUploadDocumentError(ctx context.Context, w http.ResponseWr
 		return
 	}
 	s.writeHandlerError(w, err)
+}
+
+// uploadPreconditionBody is the 409 PRECONDITION_FAILED body of an upload naming the token of a
+// version that no longer stands, a document's or a file's: the refusal's own body
+// (editPreconditionBody), the number of the version that stands, and the sentence saying where
+// its token is printed.
+func uploadPreconditionBody(stale *docs.ErrPreconditionFailed, version int) editPreconditionError {
+	body := editPreconditionBody(stale)
+	body.Current.Version = &version
+	body.Error += "; " + uploadBaseAdvice
+	return body
+}
+
+// refuseFileBase answers an upload of a file or an image to the artifact artifactID that names
+// base, the token of the version it believes it replaces, when base is not the token of the
+// version that stands, and reports whether it answered. A base naming a version since replaced
+// is refused 409 PRECONDITION_FAILED with the standing version's token and number, as a
+// document's is; one naming any version of an artifact that holds none carrying a token - the
+// first upload under a name, whose artifact is not written yet - is refused as a first
+// document's upload naming one is (writeUploadNoTokenError). An upload naming no base is never
+// refused here. It runs twice, the same check each time: before the upload's object is written,
+// from the pool (putUploadedFile), so an upload refused there leaves no object, and in
+// storeArtifact's transaction under the owner's lock, which decides. An upload the first passed
+// and the second refuses, because another upload replaced the version between them, leaves an
+// object no row names, as putUploadedFile's other refusals can.
+func (s *server) refuseFileBase(ctx context.Context, w http.ResponseWriter, q queryer, artifactID, name string, base *model.EditPrecondition) bool {
+	if base == nil {
+		return false
+	}
+	number, standing, err := standingFileVersion(ctx, q, artifactID)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return true
+	}
+	if standing == "" {
+		s.writeUploadNoTokenError(w, name)
+		return true
+	}
+	if base.Document == standing {
+		return false
+	}
+	WriteJSON(w, http.StatusConflict, uploadPreconditionBody(&docs.ErrPreconditionFailed{
+		CurrentDocument: standing,
+		Mismatches: []model.EditPreconditionMismatch{{
+			Scope: "document", Expected: base.Document, Current: &standing,
+		}},
+	}, number))
+	return true
 }
 
 // writeUploadNoTokenError refuses an upload that names a token where the document has none for
@@ -593,6 +634,7 @@ func (s *server) queueFileVersion(
 		Number: number, Named: summary != nil, Summary: summary, CreatedAt: createdAt,
 		Size: &size, MIME: &input.contentType, SHA256: &sha,
 	}
+	version.StateFileToken()
 	if err := json.Unmarshal(authors, &version.Authors); err != nil {
 		return model.Version{}, err
 	}
@@ -610,6 +652,30 @@ func (s *server) queueFileVersion(
 		insert into artifact_versions (artifact_id, number, content, mime, size, sha256, authors, named, summary, created_at)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`, artifactID, number, content, input.contentType, size, sha, authors, version.Named, summary, createdAt)
+}
+
+// standingFileVersion is the number and token (model.FileVersionToken) of the newest version of a file
+// or an image, which an upload replacing it names; the token is "" when the artifact holds no
+// version carrying one, and for artifactID "". Read in storeArtifact's transaction, it is read
+// under the owner's lock that transaction took before it found the artifact, the lock every
+// upload to that owner takes first, and a file's versions are written by uploads alone, so no
+// other version lands between this read and the version the upload writes.
+func standingFileVersion(ctx context.Context, q queryer, artifactID string) (int, string, error) {
+	if artifactID == "" {
+		return 0, "", nil
+	}
+	var number int
+	var sha *string
+	err := q.QueryRow(ctx, `
+		select number, sha256 from artifact_versions where artifact_id = $1 order by number desc limit 1
+	`, artifactID).Scan(&number, &sha)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && sha == nil) {
+		return 0, "", nil
+	}
+	if err != nil {
+		return 0, "", fmt.Errorf("read the standing version of a file: %w", err)
+	}
+	return number, model.FileVersionToken(*sha), nil
 }
 
 // recordDocumentTaskProgress records the task count of the document a write just stored.
@@ -786,8 +852,7 @@ func (s *server) storeArtifact(
 			// before #3000, and counted once it commits (noteUnguardedReplacement): the refusal
 			// of a missing token comes back once every deployed client sends one (INFRA-4980).
 			// A repair - a live tree outside the Proof schema, which has no token for anyone to
-			// name - names none by design. A file is not a document and was refused a token
-			// already (uploadArtifactFor).
+			// name - names none by design.
 			documentMarkdown, err = s.deps.Docs.ReplaceText(documentCtx, artifact.ID, string(input.content), actor, input.precondition)
 		}
 		if err != nil {
@@ -819,6 +884,13 @@ func (s *server) storeArtifact(
 			return
 		}
 	} else {
+		// An upload over a file or an image that already exists names the token of the version
+		// it is replacing, as a document's does, checked here under the owner's lock; one that
+		// names none is taken unchecked, as it always was. A first upload naming one names a
+		// version that is not there, and is refused (refuseFileBase).
+		if s.refuseFileBase(r.Context(), w, tx, artifact.ID, input.name, input.precondition) {
+			return
+		}
 		version, err = s.queueFileVersion(r.Context(), tx, ledger, artifact.ID, input, sha, documentSummary, actor)
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -2162,7 +2234,8 @@ const artifactVersionsStatement = `
 		from artifact_versions v where v.artifact_id = any($1::uuid[]) order by v.artifact_id, v.number
 	`
 
-// scanVersion reads versionColumns from row; extra receives the columns after them.
+// scanVersion reads versionColumns from row; extra receives the columns after them. It states a
+// file's or an image's version token (model.Version.StateFileToken).
 func scanVersion(row pgx.Row, extra ...any) (model.Version, error) {
 	var version model.Version
 	var authors []byte
@@ -2178,6 +2251,7 @@ func scanVersion(row pgx.Row, extra ...any) (model.Version, error) {
 	if err := json.Unmarshal(authors, &version.Authors); err != nil {
 		return model.Version{}, fmt.Errorf("decode version authors: %w", err)
 	}
+	version.StateFileToken()
 	return version, nil
 }
 

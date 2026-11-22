@@ -84,9 +84,13 @@ async function blockAsks(
  * `agent/<session id>`) as `dispatch_read` does, which a host reads back from a transcript; a
  * larger picture is described without its bytes being fetched when Dispatch states its size. Any
  * other file comes back as text when it is UTF-8, and is described with the route that serves its
- * bytes when it is not. A file carries no token, anchors or approval, so nothing else is read. A
- * picture is shown whatever `shown` holds, and joins it under its address, so the session's later
- * reads name it instead of sending it.
+ * bytes when it is not. Each ends with the token of the version read, in the `Document token:`
+ * line a document read prints, which the upload of the next version names as its precondition:
+ * Dispatch states it beside the version in the artifact's version list, so no other read is made
+ * for it, and a Dispatch that states none takes none on an upload, so nothing is printed. A file
+ * carries no anchors or approval, so nothing else is read. A picture is shown whatever `shown`
+ * holds, and joins it under its address, so the session's later reads name it instead of sending
+ * it.
  */
 async function readUploadedFile(
   client: DispatchClient,
@@ -101,13 +105,14 @@ async function readUploadedFile(
   const number = requested ?? latest;
   const of = number === latest ? "" : ` of ${latest}`;
   const bytesRoute = `GET /api/v1/artifacts/${artifact.id}/versions/${number} serves its bytes.`;
+  const stated = versions.find((version) => version.number === number);
+  const tokenTrailer = stated?.token === undefined ? "" : `\n\nDocument token: ${stated.token}`;
   const tooLarge = (mime: string, bytes: number): DispatchToolResult => ({
     text:
       `${oversizePictureText(artifact.name, bytes)}, so dispatch doc-read cannot show this ` +
-      `uploaded ${mime} picture (version ${number}${of}). ${bytesRoute}`,
+      `uploaded ${mime} picture (version ${number}${of}). ${bytesRoute}${tokenTrailer}`,
     details,
   });
-  const stated = versions.find((version) => version.number === number);
   if (
     artifact.kind === "image" &&
     stated?.size !== undefined &&
@@ -125,7 +130,8 @@ async function readUploadedFile(
       return {
         text:
           `Picture ${artifact.name}: ${image.mimeType}, version ${number}${of}, ${size}.\n` +
-          shownPictureLine(1, address, artifact.name, image.mimeType, file.bytes.length),
+          shownPictureLine(1, address, artifact.name, image.mimeType, file.bytes.length) +
+          tokenTrailer,
         details,
         images: [image],
       };
@@ -139,12 +145,12 @@ async function readUploadedFile(
     return {
       text:
         `${artifact.name} is an uploaded ${file.mime} file (version ${number}${of}, ${size}) that is not ` +
-        `UTF-8 text, so dispatch doc-read cannot show it. ${bytesRoute}`,
+        `UTF-8 text, so dispatch doc-read cannot show it. ${bytesRoute}${tokenTrailer}`,
       details,
     };
   }
   return {
-    text: `File ${artifact.name}: ${file.mime}, version ${number}${of}, ${size}.\n\n${text}`,
+    text: `File ${artifact.name}: ${file.mime}, version ${number}${of}, ${size}.\n\n${text}${tokenTrailer}`,
     details,
   };
 }

@@ -1749,6 +1749,31 @@ type Version struct {
 	Size   *int    `json:"size,omitempty"`
 	MIME   *string `json:"mime,omitempty"`
 	SHA256 *string `json:"sha256,omitempty"`
+	// Token is a file's or an image's version token (FileVersionToken): what an upload replacing
+	// that version names as its precondition's document token, and what `dispatch doc-read`
+	// prints for it. Every read of a version row states it (StateFileToken). A document's version
+	// carries none here, since a document's token is its live tree's (GET
+	// /api/v1/artifacts/{id}/text).
+	Token *string `json:"token,omitempty"`
+}
+
+// FileVersionToken is the token of a file's or an image's version whose bytes have the SHA-256
+// sha (hex), written as a document token is. It is the one place the token is made, for the
+// reads that state it and the upload that checks it, so what `dispatch doc-read` prints is what
+// the upload compares.
+func FileVersionToken(sha string) string {
+	return "sha256:" + sha
+}
+
+// StateFileToken sets Token from SHA256, for a version read from its row. A row's sha256 is
+// written by a file's or an image's upload alone, never with a document's version, so a version
+// that carries one is a file's or an image's; one that carries none is left with no token.
+func (v *Version) StateFileToken() {
+	if v.SHA256 == nil {
+		return
+	}
+	token := FileVersionToken(*v.SHA256)
+	v.Token = &token
 }
 
 // VersionSize is the SQL a version's Size is selected with, over artifact_versions aliased v. A
