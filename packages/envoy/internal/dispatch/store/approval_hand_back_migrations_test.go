@@ -42,8 +42,7 @@ func waitForQueuedLock(t *testing.T, store *Store, relation, mode string) {
 // one transaction inserts are ordered as they were written.
 func TestMigrate0064To0066RecordApprovalHandBacks(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 63)
+	store := openMigratedTestStore(t, 63)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core');
 		insert into issues (key, project_key, number, title, created_by, rank)
@@ -172,8 +171,7 @@ func TestMigrate0064To0066RecordApprovalHandBacks(t *testing.T) {
 // attempt applies 0066. Under the runner's five-second bound that cycle aborts one side with 40P01.
 func TestMigrate0066GivesUpBeforeACommentWriteThatWritesAsksDeadlocks(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 65)
+	store := openMigratedTestStore(t, 65)
 	logs := captureLogs(t)
 	var askID string
 	if _, err := store.Pool.Exec(ctx, `

@@ -54,8 +54,7 @@ func TestTheBlockRefsTargetIndexDropWaitsOutAReaderPastTheRunnersAttempts(t *tes
 		t.Fatalf("the reader's hold of %s does not outlast the runner's %s of attempts and pauses, so a drop with no bound of its own would pass", blockRefsReaderHold, attempts)
 	}
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, blockRefsSourceIndex)
+	store := openMigratedTestStore(t, blockRefsSourceIndex)
 	reader, err := pgx.Connect(ctx, store.Pool.Config().ConnString())
 	if err != nil {
 		t.Fatalf("connect the reader: %v", err)
