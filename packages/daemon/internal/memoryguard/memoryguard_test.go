@@ -10951,3 +10951,58 @@ func TestMemoryGuardSendsTheFirstKillOfAnUrgentReadingOfTheWaitOnceThoughItsProc
 			got, endedChoices(h), strings.Join(h.log.all(), "\n"))
 	}
 }
+
+// A process's read at the reading before a kill's is taken with its own fork flag as the fork-flag
+// rule settles it, not with the flag discountFork set when the read was made (keepSize's before,
+// procReads.read; rows (2) and (3) of the fork-flag table above asOfKill; INFRA-3368's architect's
+// rule of 2026-11-21T16:43Z on INFRA-3531 R1 of spec version 48, item 1). The stay and the later
+// mark are TestMemoryGuardTakesTheSearchsReadOfAForkAsAForksReadWhereTheFullReadReadsItsParentAndNotTheFork's:
+// pid 401's one read there is the search's, made before its parent's and flagged by settleForks,
+// at 305 MiB. Pid 400 then ends, and pid 401 runs python3 build.py of 400 MiB, a program of its
+// own. At the next reading, 3500 MiB, not fallen, pid 301 has grown 500 MiB since the kill of pid
+// 402, the most, and the guard ends it. Pid 401's size as of that kill is its read there, 400 MiB
+// of its own program: its read at the reading before is a fork's read of its parent's program, so
+// it is not the size, though it is lower. At the reading after, 3500 MiB, not fallen, pid 401 is
+// flat, so nothing has grown since the kill of pid 301 and the guard ends nothing. A guard that
+// took that earlier read with discountFork's own flag, no fork's, kept 305 MiB as of the kill, saw
+// 95 MiB of growth since it and ended pid 401.
+func TestMemoryGuardTakesTheReadingBeforesReadWithItsSettledForkFlagAsOfAKill(t *testing.T) {
+	// hide has the full read after the kill of pid 402 find no smaps of pid 401.
+	hide := true
+	pod, h := forkAtALaterMark(t, false, []string{"python3", "pool.py"}, 20*time.Millisecond, func(h *harness) {
+		h.g.smapsRead = func(pid int) {
+			if pid == 401 && hide && h.signal.sent.Load() == 2 {
+				hide = false
+				if err := os.Remove(filepath.Join(h.pod.proc, "401", "smaps")); err != nil {
+					t.Errorf("hiding pid 401's smaps: %v", err)
+				}
+			}
+		}
+		// Pid 402 exits at its kill.
+		kill, exit := h.signal.onKill, exitFreeing(h.pod, 0)
+		h.signal.onKill = func(pid int) bool { return kill(pid) || exit(pid) }
+	})
+	key := procKey{pid: 401, start: 4010}
+	if r := h.g.sizes[key]; hide || r.readBefore || r.beforeKill != 1 || !slices.Equal(r.atReading, []forkRead{{size: 305 * mib}}) {
+		t.Fatalf("pid 401's reads at the later mark are %+v, %d of them before the kill; want the search's alone, before the kill: the case this test is about did not occur; the log:\n%s",
+			r.atReading, r.beforeKill, strings.Join(h.log.all(), "\n"))
+	}
+	// Pid 400 ends; pid 401, an orphan now, runs a program of its own; pid 301 grows.
+	pod.remove(400)
+	pod.add(fakeProcess{pid: 401, ppid: 1, start: 4010, args: []string{"python3", "build.py"}, anon: 400 * mib})
+	pod.resize(&fakeProcess{pid: 301, ppid: 100, start: 3010, args: []string{"python3", "grow2.py"}}, 750*mib)
+	pod.setAnon(3500 * mib)
+	h.tick()
+	if got := h.signal.kills(); !slices.Equal(got, []int{300, 402, 301}) {
+		t.Fatalf("the guard killed %v, want [300 402 301]: at 3500 MiB, not fallen, pid 301 grew the most since the kill of pid 402; it ended %+v; the log:\n%s",
+			got, endedChoices(h), strings.Join(h.log.all(), "\n"))
+	}
+	requireSizeAsOfKill(t, h.g.atKill, key, forkRead{size: 400 * mib},
+		"as of the kill of pid 301: its read of python3 build.py there, and not its fork's read of its parent's program at the reading before")
+	pod.setAnon(3500 * mib)
+	h.tick()
+	if got := h.signal.kills(); !slices.Equal(got, []int{300, 402, 301}) {
+		t.Fatalf("the guard killed %v, want [300 402 301]: at 3500 MiB, not fallen, pid 401 is flat at the 400 MiB of its own program since the kill of pid 301; it ended %+v; the log:\n%s",
+			got, endedChoices(h), strings.Join(h.log.all(), "\n"))
+	}
+}
