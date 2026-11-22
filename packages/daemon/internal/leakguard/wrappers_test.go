@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -352,6 +353,365 @@ func TestTheJJWrapperReadsTheConfigurationThePushWouldUse(t *testing.T) {
 			}
 			if !strings.Contains(out, "/usr/bin/git") {
 				t.Fatalf("the refusal does not name the git jj would have run:\n%s", out)
+			}
+		})
+	}
+}
+
+// The jj wrapper checks the push jj would make, from the repository that push uses and through
+// whatever jj expands the command line to. clap takes `-R` and `--repository` after `git push` as
+// well as before it, the last of them names the repository, and `-R=<path>` names <path>; jj puts
+// an alias's words in place of the command word, expands an alias those words name in turn, and
+// puts ui.default-command in front of a command line that names no command, reading both from the
+// repository the command runs in. The wrapper once took the repository only from in front of
+// `git push`, kept a `-R=<path>` as the path `=<path>`, took a failed read for an unset value, and
+// read only the words it was given: each of those let a push through another git, with no
+// pre-push hook and so no leak check. jj answers `git` when nothing sets the value, so a read that
+// fails is an error, and the wrapper refuses it, as it refuses an expansion it cannot read.
+//
+// A security review of that wrapper found more ways past it, each a push through another git:
+// `jj gerrit upload`, which pushes to refs/for/<branch> and was let through as a built-in command;
+// an alias named with a space (`git help`), which matched two built-in names in the wrapper's list;
+// an alias named `enabled`, whose entry the wrapper's template took for a table's `enabled`; an
+// empty command word and a lone `-`, which jj takes as command words and the wrapper did not; and a
+// name jj expands twice, which the wrapper took for a loop jj refuses. And three commands base ran
+// that the wrapper refused: a table alias with a `description`, shell completion, and `op`, clap's
+// own name for `operation`, which jj never takes as an alias. A fourth, `jj --version` where the
+// default command is a push, is here too.
+//
+// A second review found three more. An option jj does not know, in front of a built-in command's
+// name, makes clap stop before the name, so jj reads no command word and puts ui.default-command
+// in front of the line: `jj -b log`, where the default command is `git push`, pushes the bookmark
+// log, and the wrapper ran it as `log`, with no check. `debug` is a built-in command that `jj
+// help` does not list, so the wrapper ran an alias of that name, which jj ignores. And a
+// `--config` that sets a whole table (`git={…}`) shared a layer with the wrapper's own `--config`
+// in front of the line, and jj refused the line ("Would overwrite entire table").
+//
+// And a review of that wrapper found that it read aliases without jj's defaults, which hold `st`,
+// `b`, `ci` and `desc`: it left those to jj with its last layer after the alias word, which jj
+// then put after `status`, a deeper level than the caller's own `--config`, so jj dropped the
+// caller's: `jj --config <a template> st` ran without it.
+func TestTheJJWrapperChecksThePushJJWouldMake(t *testing.T) {
+	jj, err := exec.LookPath("jj")
+	if err != nil {
+		t.Fatalf("this test runs the real jj, which reads the configuration: %v", err)
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The git wrapper, under the name and in the directory the jj wrapper looks for on PATH.
+	gitWrapper := wrapperCopy(t, bin, "git", [2]string{
+		"real=/usr/bin/git", "real=" + logging(t, filepath.Join(dir, "stand-in-git"), filepath.Join(dir, "argv")),
+	})
+	script := wrapperCopy(t, dir, "jj",
+		[2]string{"real=/usr/local/bin/jj", "real=" + jj},
+		[2]string{"wrapper=/opt/legion/bin/git", "wrapper=" + gitWrapper},
+	)
+	run := fixturegit.Isolated(t, filepath.Join(dir, "home")).With("PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"))
+	// plain names no git of its own and has the remote a real push has, so a push from it runs to
+	// jj's "Nothing changed." under jj 0.45 and 0.46 alike and runs no git.
+	plain := filepath.Join(dir, "plain")
+	run.Run(dir, fixturegit.JJInit(plain, false)...)
+	remote := filepath.Join(dir, "remote.git")
+	run.Run(dir, fixturegit.InitBare(remote, "")...)
+	run.Run(plain, "jj", "git", "remote", "add", "origin", remote)
+	// another names another git in its own configuration.
+	another := filepath.Join(dir, "another")
+	run.Run(dir, fixturegit.JJInit(another, false)...)
+	run.Run(another, "jj", "config", "set", "--repo", "git.executable-path", "/usr/bin/git")
+	configFile := filepath.Join(dir, "another.toml")
+	if err := os.WriteFile(configFile, []byte("git.executable-path = \"/usr/bin/git\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// aliased names another git in its own configuration, beside the aliases jj reads from the
+	// repository a command runs in. jj ignores the aliases that have a built-in command's name.
+	aliased := filepath.Join(dir, "aliased")
+	run.Run(dir, fixturegit.JJInit(aliased, false)...)
+	// defaulted names another git and runs `git push` for a command line that names no command.
+	// Its bookmark has a built-in command's name, log.
+	defaulted := filepath.Join(dir, "defaulted")
+	run.Run(dir, fixturegit.JJInit(defaulted, false)...)
+	run.Run(defaulted, "jj", "bookmark", "create", "log", "-r", "@")
+	// carrier names no git of its own; its alias pushes from another, which does.
+	carrier := filepath.Join(dir, "carrier")
+	run.Run(dir, fixturegit.JJInit(carrier, false)...)
+	// twice names another git, and its default command names an alias of options only, which a
+	// command line naming that alias has expanded already.
+	twice := filepath.Join(dir, "twice")
+	run.Run(dir, fixturegit.JJInit(twice, false)...)
+	for _, setting := range []struct{ repository, key, value string }{
+		{aliased, "git.executable-path", "/usr/bin/git"},
+		{aliased, "aliases.p", `["git", "push"]`},
+		{aliased, "aliases.pp", `["p"]`},
+		{aliased, "aliases.v", `["version"]`},
+		{aliased, "aliases.log", `["git", "push"]`},
+		{aliased, "aliases.op", `["git", "push"]`},
+		{aliased, "aliases.nl", `["git", "push\nx"]`},
+		{aliased, `aliases."git help"`, `["git", "push"]`},
+		{aliased, "aliases.enabled", `["git", "push"]`},
+		{aliased, `aliases.""`, `["git", "push"]`},
+		{aliased, `aliases."-"`, `["git", "push"]`},
+		{aliased, "aliases.q", `["--quiet"]`},
+		{aliased, "aliases.debug", `["git", "push"]`},
+		{defaulted, "git.executable-path", "/usr/bin/git"},
+		{defaulted, "ui.default-command", `["git", "push"]`},
+		{carrier, "aliases.pa", `["git", "push", "-R", ` + strconv.Quote(another) + `]`},
+		{twice, "git.executable-path", "/usr/bin/git"},
+		{twice, "aliases.q", `["--quiet"]`},
+		{twice, "ui.default-command", `["q", "git", "push"]`},
+		{plain, "aliases.tp.definition", `["git", "push"]`},
+		{plain, "aliases.tp.description", `"a table alias, which jj 0.45 and 0.46 both run"`},
+	} {
+		run.Run(setting.repository, "jj", "config", "set", "--repo", setting.key, setting.value)
+	}
+
+	for _, tc := range []struct {
+		name string
+		// in is the directory the command runs in; dir, which is no repository, where empty, as a
+		// push of another directory's repository does.
+		in   string
+		args []string
+		// env is added to the command's environment.
+		env []string
+		// names is what a refusal must name; none where the wrapper must run the command.
+		names []string
+		// prints is what the command's output must hold, where it runs.
+		prints string
+	}{
+		{name: "a -R after git push naming a repository that names another git", args: []string{"git", "push", "-R", another}, names: []string{"/usr/bin/git"}},
+		{name: "a --repository= after git push naming that repository", args: []string{"git", "push", "--repository=" + another}, names: []string{"/usr/bin/git"}},
+		{name: "a -R= in front of git push naming that repository", args: []string{"-R=" + another, "git", "push"}, names: []string{"/usr/bin/git"}},
+		{name: "a second -R, the last, naming that repository", args: []string{"-R", plain, "git", "push", "-R", another}, names: []string{"/usr/bin/git"}},
+		{name: "a --config-file= after git push naming another git", args: []string{"git", "push", "-R", plain, "--config-file=" + configFile}, names: []string{"/usr/bin/git"}},
+		{name: "a -R naming no repository", args: []string{"git", "push", "-R", filepath.Join(dir, "nowhere")}, names: []string{"could not read"}},
+		{name: "an alias that expands to git push", in: aliased, args: []string{"p"}, names: []string{"/usr/bin/git", "through aliases.p"}},
+		{name: "an alias that expands to an alias that expands to git push", in: aliased, args: []string{"pp"}, names: []string{"/usr/bin/git", "through aliases.pp, aliases.p"}},
+		{name: "ui.default-command set to git push", in: defaulted, names: []string{"/usr/bin/git", "through ui.default-command"}},
+		{name: "an alias whose -R names a repository that names another git", in: carrier, args: []string{"pa"}, names: []string{"/usr/bin/git", "through aliases.pa"}},
+		{name: "an alias with a line break in a word", in: aliased, args: []string{"nl"}, names: []string{"line break"}},
+		{name: "gerrit upload, a push to refs/for, from a repository that names another git", in: aliased, args: []string{"gerrit", "upload", "-r", "@", "--remote", "origin", "-b", "main"}, names: []string{"/usr/bin/git", "gerrit upload"}},
+		{name: "an alias whose name holds a space and two built-in names", in: aliased, args: []string{"git help"}, names: []string{"holds characters"}},
+		{name: "an alias named enabled", in: aliased, args: []string{"enabled"}, names: []string{"/usr/bin/git", "through aliases.enabled"}},
+		{name: "an empty command word, an alias named with no letters", in: aliased, args: []string{""}, names: []string{"is empty"}},
+		{name: "a lone - as the command word, an alias named -", in: aliased, args: []string{"-"}, names: []string{"/usr/bin/git", "through aliases.-"}},
+		{name: "an alias of options only, named twice", in: aliased, args: []string{"q", "q", "git", "push"}, names: []string{"a second time"}},
+		{name: "a default command naming the alias the command line expanded", in: twice, args: []string{"q"}, names: []string{"a second time"}},
+		{name: "a second -R, the last, naming a repository that names no git", args: []string{"-R", another, "git", "push", "-R", plain}},
+		{name: "a -R after git push naming a repository that names no git", args: []string{"git", "push", "-R", plain}},
+		{name: "an alias that expands to no push", in: aliased, args: []string{"v"}},
+		{name: "an alias with a built-in command's name, which jj ignores", in: aliased, args: []string{"log", "-r", "@", "--no-graph"}},
+		{name: "op, clap's own name for operation, which jj ignores as an alias", in: aliased, args: []string{"op", "log", "-n", "1", "--no-graph"}},
+		{name: "a table alias with a description, from a repository that names no git", in: plain, args: []string{"tp"}},
+		{name: "shell completion, which runs no command", in: plain, env: []string{"COMPLETE=bash"}},
+		{name: "--version where the default command is a push", in: twice, args: []string{"--version"}},
+		{name: "an option jj does not know, in front of a built-in command's name, where the default command is a push", in: defaulted, args: []string{"-b", "log"}, names: []string{"/usr/bin/git", "through ui.default-command"}},
+		{name: "debug, a built-in command jj's help does not list, which jj ignores as an alias", in: aliased, args: []string{"debug", "--help"}},
+		{name: "a --config that sets a whole table, git's", in: plain, args: []string{"--config", `git={private-commits="none()"}`, "log", "-r", "@", "--no-graph"}},
+		{name: "st, an alias in jj's defaults, keeps the caller's --config", in: plain, args: []string{"--config", `templates.commit_summary="\"MARKER\""`, "st"}, prints: "MARKER"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := tc.in
+			if in == "" {
+				in = dir
+			}
+			out, err := run.With(tc.env...).Try(in, append([]string{script}, tc.args...)...)
+			refused := strings.Contains(out, "LEAK CHECK SETUP ERROR")
+			if refused != (len(tc.names) > 0) {
+				t.Fatalf("the wrapper refused=%v, want %v: %v\n%s", refused, len(tc.names) > 0, err, out)
+			}
+			if len(tc.names) == 0 {
+				if err != nil {
+					t.Fatalf("the wrapper did not run the command: %v\n%s", err, out)
+				}
+				if !strings.Contains(out, tc.prints) {
+					t.Fatalf("the command's output does not hold %q:\n%s", tc.prints, out)
+				}
+				return
+			}
+			var exited *exec.ExitError
+			if !errors.As(err, &exited) || exited.ExitCode() != 2 {
+				t.Fatalf("the refusal exited %v, want 2, the shared check's own setup-error status\n%s", err, out)
+			}
+			for _, name := range tc.names {
+				if !strings.Contains(out, name) {
+					t.Fatalf("the refusal does not name %q:\n%s", name, out)
+				}
+			}
+		})
+	}
+}
+
+// Every push the jj wrapper runs reaches the remote through the git wrapper, whatever git a
+// configuration names for the push's own command. jj reads a `[[--scope]]` with `--when.commands`
+// only for the command it names, and the wrapper's read of `git.executable-path` is a command of
+// its own (`config get`), so it read `git` where the push used another git: the worker prompt's
+// own push went through /usr/bin/git, with the git wrapper run 0 times, in jj 0.45.1, 0.46.0 and
+// 0.47.1 alike. The wrapper now gives jj the git wrapper on the command line, the last layer, which
+// outranks every file and every scope. And it runs the expansion it read, so an alias that a scope
+// for `config` shows the wrapper as one command and jj as another runs as the one the wrapper read.
+//
+// A second review found two more. An alias whose words put an option jj does not know in front of
+// a built-in command's name (`-b log`) makes jj put the default command, a push, in front of the
+// line it expanded, and the wrapper ran that line as `log`, with only the git wrapper in front of
+// it, where the alias's own `--config` outranked it: /usr/bin/git pushed the bookmark log. And a
+// push whose own `--config`, written in front of `git push`, sets git's whole table shared a layer
+// with the wrapper's `--config` in front of it, so jj refused the push.
+//
+// And clap keeps each of `--config` and `--config-file` only from the deepest command level that
+// has any, so a last layer written deeper than the caller's own made jj drop them: a push whose own
+// `--config` makes its commit private, in front of `git push`, between `git` and `push`, or in a
+// `--config-file` in front of a `--config` after it, went through the git wrapper, where jj alone
+// refuses it. The last layer now goes at the deepest level that has a caller's own, and the
+// caller's shallower ones of the other option are written there once more. And the read of the
+// git took every `--config`, so it refused a git named in front of `git` that a `--config` between
+// `git` and `push` drops, where jj alone pushes through the git wrapper.
+//
+// Each row pushes a commit from a repository of its own to a bare remote. The git wrapper's real
+// git is a logging stand-in that pushes nothing, so the remote holds the bookmark only when another
+// git ran the push. A row that makes no push says why, in jj's own words where jj refuses it, and
+// a row whose options the wrapper writes once more (the caller's `--config` or `--config-file` at
+// a shallower level than its other option) shows such a line still pushes. The control runs jj
+// itself, with the scoped git: the remote then holds the bookmark, so the test can see another git
+// push.
+func TestTheJJWrapperRunsEveryPushThroughTheGitWrapper(t *testing.T) {
+	jj, err := exec.LookPath("jj")
+	if err != nil {
+		t.Fatalf("this test runs the real jj, which pushes: %v", err)
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(dir, "argv")
+	gitWrapper := wrapperCopy(t, bin, "git", [2]string{
+		"real=/usr/bin/git", "real=" + logging(t, filepath.Join(dir, "stand-in-git"), log),
+	})
+	script := wrapperCopy(t, dir, "jj",
+		[2]string{"real=/usr/local/bin/jj", "real=" + jj},
+		[2]string{"wrapper=/opt/legion/bin/git", "wrapper=" + gitWrapper},
+	)
+	run := fixturegit.Isolated(t, filepath.Join(dir, "home")).With(
+		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"JJ_USER=Legion test", "JJ_EMAIL=legion-test@example.invalid",
+	)
+	// The scope that names another git for the command `git` alone, in TOML.
+	const scoped = "[[--scope]]\n--when.commands = [\"git\"]\ngit.executable-path = \"/usr/bin/git\"\n"
+	// An alias that pushes through another git, which a scope for `config` shows as `version`.
+	hidden := "aliases.p = [\"--config\", \"git.executable-path=\\\"/usr/bin/git\\\"\", \"git\", \"push\", \"-b\", \"b\"]\n" +
+		"[[--scope]]\n--when.commands = [\"config\"]\naliases.p = [\"version\"]\n"
+	// A default command that pushes, and an alias that puts another git and an option jj does not
+	// know in front of the bookmark log, a built-in command's name.
+	unknown := "ui.default-command = [\"git\", \"push\"]\n" +
+		"aliases.p = [\"--config=git.executable-path=\\\"/usr/bin/git\\\"\", \"-b\", \"log\"]\n"
+	// A configuration file that makes the bookmark b's commit private.
+	private := filepath.Join(dir, "private.toml")
+	if err := os.WriteFile(private, []byte("git.private-commits = \"b\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		// config is added to the repository's own configuration file.
+		config string
+		// args is the command line, where "<repo>" stands for the repository's path.
+		args []string
+		// bookmark is the bookmark the repository has; b where empty.
+		bookmark string
+		// wrapped is whether the push must reach the git wrapper; otherwise the command must make
+		// no push at all.
+		wrapped bool
+		// refused is whether the wrapper must refuse the command.
+		refused bool
+		// says is what the output must hold.
+		says string
+		// control runs jj itself, not the wrapper, and the remote must then hold the bookmark.
+		control bool
+	}{
+		{name: "control: jj itself, the git scoped to the git command, pushes through that git", config: scoped, args: []string{"-R", "<repo>", "git", "push", "--bookmark", "b"}, control: true},
+		{name: "the worker prompt's push, the git scoped to the git command", config: scoped, args: []string{"-R", "<repo>", "git", "push", "--bookmark", "b"}, wrapped: true},
+		{name: "a push whose own --config scopes the git to the git command", args: []string{"git", "push", "-b", "b", "--config", `"--scope"=[{"--when" = {commands = ["git"]}, git = {executable-path = "/usr/bin/git"}}]`}, wrapped: true},
+		{name: "an alias that a scope for config shows as version, pushing through another git", config: hidden, args: []string{"p"}},
+		{name: "a push from a repository that names no git", args: []string{"git", "push", "-b", "b"}, wrapped: true},
+		{name: "a push ended by --", args: []string{"git", "push", "-b", "b", "--"}, wrapped: true},
+		{name: "an alias that puts an option jj does not know in front of log, where the default command is a push", config: unknown, args: []string{"p"}, bookmark: "log", refused: true},
+		{name: "a push whose own --config, in front of it, sets git's whole table", args: []string{"--config", `git={private-commits="none()"}`, "git", "push", "-b", "b"}, wrapped: true},
+		{name: "a push whose own --config, in front of it, makes its commit private, which jj then refuses to push", args: []string{"--config", `git.private-commits="b"`, "git", "push", "-b", "b"}, says: "since it is private"},
+		{name: "a push whose own --config, in front of it, makes its commit private, with a --config-file after the push", args: []string{"--config", `git.private-commits="b"`, "git", "push", "-b", "b", "--config-file=/dev/null"}, says: "since it is private"},
+		{name: "a push whose own --config, between git and push, makes its commit private", args: []string{"git", "--config", `git.private-commits="b"`, "push", "-b", "b"}, says: "since it is private"},
+		{name: "a --config-file in front of the push that makes its commit private, with a --config after the push", args: []string{"--config-file", private, "git", "push", "-b", "b", "--config", "ui.color=never"}, says: "since it is private"},
+		{name: "a push with a --config in front of it and a --config-file after it", args: []string{"--config", "ui.color=never", "git", "push", "-b", "b", "--config-file=/dev/null"}, wrapped: true},
+		{name: "a push with a --config-file in front of it and a --config after it", args: []string{"--config-file=/dev/null", "git", "push", "-b", "b", "--config", "ui.color=never"}, wrapped: true},
+		{name: "a --config naming another git in front of git, which a --config between git and push drops", args: []string{"--config", `git.executable-path="/usr/bin/git"`, "git", "--config", "ui.color=never", "push", "-b", "b"}, wrapped: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := filepath.Join(t.TempDir(), "repo")
+			bookmark := tc.bookmark
+			if bookmark == "" {
+				bookmark = "b"
+			}
+			remote := repo + "-remote.git"
+			run.Run(dir, fixturegit.JJInit(repo, false)...)
+			run.Run(dir, fixturegit.InitBare(remote, "")...)
+			if err := os.WriteFile(filepath.Join(repo, "f"), []byte("x\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			run.Run(repo, "jj", "commit", "-m", "c")
+			run.Run(repo, "jj", "bookmark", "create", bookmark, "-r", "@-")
+			run.Run(repo, "jj", "git", "remote", "add", "origin", remote)
+			if tc.config != "" {
+				path := strings.TrimSpace(run.Out(repo, "jj", "config", "path", "--repo"))
+				file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = file.WriteString("\n" + tc.config)
+				if closed := file.Close(); err == nil {
+					err = closed
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Remove(log); err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Fatal(err)
+			}
+			args := slices.Clone(tc.args)
+			for i, arg := range args {
+				if arg == "<repo>" {
+					args[i] = repo
+				}
+			}
+			command := script
+			if tc.control {
+				command = jj
+			}
+			out, _ := run.Try(repo, append([]string{command}, args...)...)
+			_, err := run.Try(dir, "git", "--git-dir", remote, "rev-parse", "-q", "--verify", "refs/heads/"+bookmark)
+			if landed := err == nil; landed != tc.control {
+				if tc.control {
+					t.Fatalf("jj itself left the remote without the bookmark, so this test could not see another git push it:\n%s", out)
+				}
+				t.Fatalf("another git pushed the bookmark to the remote:\n%s", out)
+			}
+			if tc.control {
+				return
+			}
+			if refused := strings.Contains(out, "LEAK CHECK SETUP ERROR"); refused != tc.refused {
+				t.Fatalf("the wrapper refused=%v, want %v:\n%s", refused, tc.refused, out)
+			}
+			if !strings.Contains(out, tc.says) {
+				t.Fatalf("the output does not hold %q:\n%s", tc.says, out)
+			}
+			read, err := os.ReadFile(log)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Fatal(err)
+			}
+			wrapped := strings.Contains(string(read), "push") && strings.Contains(string(read), "core.hooksPath=/opt/legion/githooks")
+			if wrapped != tc.wrapped {
+				t.Fatalf("the push reached the git wrapper=%v, want %v; the git wrapper ran with %q\n%s", wrapped, tc.wrapped, read, out)
 			}
 		})
 	}

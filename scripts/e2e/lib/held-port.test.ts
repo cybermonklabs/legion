@@ -378,3 +378,58 @@ describe.skipIf(skip)("held-port.py keep", () => {
     expect(await bindOutcome(port)).toBe("bound");
   }, 120_000);
 });
+
+// --pass needs neither /proc nor the listener: the command is env(1), which prints the environment
+// it was executed with and exits.
+describe("held-port.py exec --pass", () => {
+  // passExec runs held-port.py exec with environment as its own, each name in names given to
+  // --pass, executing env(1), and answers env's exit code, its lines sorted, the helper's stderr
+  // and the port file's path.
+  function passExec(label: string, names: string[], environment: Record<string, string>) {
+    const portFile = join(work, `${label}.port`);
+    const run = Bun.spawnSync(
+      [
+        "python3",
+        helper,
+        "exec",
+        "--port-file",
+        portFile,
+        "--fd-env",
+        "LISTEN_FD",
+        "--env",
+        "PORT={port}",
+        ...names.flatMap((name) => ["--pass", name]),
+        "--",
+        "env",
+      ],
+      { env: environment, stdout: "pipe", stderr: "pipe" }
+    );
+    const lines = run.stdout.toString().split("\n").filter(Boolean).sort();
+    return { code: run.exitCode, lines, stderr: run.stderr.toString(), portFile };
+  }
+
+  test("the command's environment is exactly the variables --pass names, the --env pairs and the descriptor's name", () => {
+    const path = Bun.env.PATH ?? "";
+    const url = "postgres://tester:not-a-secret@127.0.0.1:5999/dispatch";
+    const { code, lines, stderr, portFile } = passExec("pass", ["PATH", "DATABASE_URL"], {
+      PATH: path,
+      DATABASE_URL: url,
+      NOT_PASSED: "left behind",
+    });
+    expect(code, stderr).toBe(0);
+    const port = readFileSync(portFile, "utf8").trim();
+    expect(lines).toEqual(
+      [`DATABASE_URL=${url}`, "LISTEN_FD=3", `PATH=${path}`, `PORT=${port}`].sort()
+    );
+  });
+
+  test("a name --pass gives that the environment lacks is refused before the command runs", () => {
+    const { code, lines, stderr, portFile } = passExec("pass-missing", ["PATH", "NOT_SET"], {
+      PATH: Bun.env.PATH ?? "",
+    });
+    expect(code).toBe(1);
+    expect(stderr).toContain("--pass names variables this process's environment lacks: NOT_SET");
+    expect(lines).toEqual([]);
+    expect(existsSync(portFile)).toBe(false);
+  });
+});

@@ -138,25 +138,29 @@ func newBrokerTokens(config listenerBrokerConfig) *brokerTokens {
 	return &brokerTokens{config: config}
 }
 
-// open builds the verifier over the spent-proof bucket on conn's JetStream, and is the listener's
-// refusal to serve this credential any other way: a listener configured to take broker tokens on
-// a bus with no JetStream fails here, naming EnvBrokerURL, rather than falling back to a store in
-// its own memory, which would let one replica accept a proof another replica had already spent.
-// ctx is the start's (bus.EnsureKeyValue).
+// open opens the spent-proof bucket on conn's JetStream (ensureSpentProofBucket) and, on a listener
+// that takes broker tokens, builds the verifier over it. Every listener opens the bucket at its
+// start, whether or not it takes broker tokens: an edge listener's grant creates no bucket
+// (natsgrant.Edge), so it finds the one a full listener of this build made. A listener that takes
+// none and cannot open it refuses to start as every listener refuses a bucket of its own; one
+// that takes broker tokens on a bus with no JetStream fails here, naming EnvBrokerURL, rather than
+// falling back to a store in its own memory, which would let one replica accept a proof another
+// replica had already spent. ctx is the start's (bus.EnsureKeyValue).
 func (b *brokerTokens) open(ctx context.Context, conn *nats.Conn, replicas int) error {
-	if b == nil {
-		return nil
-	}
 	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
 	if err != nil {
+		if b == nil {
+			return fmt.Errorf("JetStream for the spent-proof bucket %s: %w", bus.DPoPProofBucket, err)
+		}
 		return fmt.Errorf("%s needs JetStream for the spent-proof bucket %s: %w", EnvBrokerURL, bus.DPoPProofBucket, err)
 	}
-	kv, err := bus.EnsureKeyValue(ctx, conn, js, &nats.KeyValueConfig{
-		Bucket:   bus.DPoPProofBucket,
-		TTL:      spentProofRetention,
-		Storage:  nats.FileStorage,
-		Replicas: replicas,
-	})
+	kv, err := ensureSpentProofBucket(ctx, conn, js, replicas)
+	if b == nil {
+		if err != nil {
+			return fmt.Errorf("the spent-proof bucket %s, which every listener opens so an edge listener finds it, did not open: %w", bus.DPoPProofBucket, err)
+		}
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("%s needs the spent-proof bucket %s, which this bus did not open: %w", EnvBrokerURL, bus.DPoPProofBucket, err)
 	}
@@ -176,6 +180,20 @@ func (b *brokerTokens) open(ctx context.Context, conn *nats.Conn, replicas int) 
 	}
 	b.verifier.Store(verifier)
 	return nil
+}
+
+// ensureSpentProofBucket opens the spent-proof bucket, creating it when the server holds none and
+// raising it to replicas when it holds fewer copies (bus.EnsureKeyValue): bus.DPoPProofBucket, file
+// storage, replicas copies (ENVOY_NATS_REPLICAS), and spentProofRetention as each key's age. Its
+// other settings are nats.go's defaults for a bucket: one value per key and no size limit. A bucket
+// found with another age, history or storage is opened as it is.
+func ensureSpentProofBucket(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, replicas int) (bus.KeyValue, error) {
+	return bus.EnsureKeyValue(ctx, conn, js, &nats.KeyValueConfig{
+		Bucket:   bus.DPoPProofBucket,
+		TTL:      spentProofRetention,
+		Storage:  nats.FileStorage,
+		Replicas: replicas,
+	})
 }
 
 // verify decides the caller of r, and is the whole of what apiAuth asks of this credential. It is
