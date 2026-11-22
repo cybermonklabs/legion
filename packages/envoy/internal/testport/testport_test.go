@@ -1,3 +1,8 @@
+//go:build unix
+
+// The bind rules these tests check (SO_REUSEADDR, SO_REUSEPORT, a bind beside a socket that does
+// not listen) are unix's; Windows shares ports by other rules, so these tests do not build there.
+
 package testport
 
 import (

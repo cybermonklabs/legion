@@ -9,22 +9,12 @@
 package cputest
 
 import (
-	"fmt"
 	"sync"
-	"syscall"
 	"time"
 )
 
-// Process is this process's total CPU time, user and system, since it started
-// (getrusage(RUSAGE_SELF)). It counts every goroutine, so a test that times one call by it runs
-// no other measured work beside that call: no test in the packages that use it calls t.Parallel.
-func Process() time.Duration {
-	var usage syscall.Rusage
-	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &usage); err != nil {
-		panic(fmt.Sprintf("getrusage(RUSAGE_SELF): %v", err))
-	}
-	return time.Duration(usage.Utime.Nano() + usage.Stime.Nano())
-}
+// Process (process_unix.go, process_windows.go) is this process's total CPU time, user and
+// system, since it started.
 
 // resolution is the smallest step Process moves in on this machine, measured once: the fewest
 // nanoseconds between two readings that differ, over resolutionSamples spins. A Linux kernel moves

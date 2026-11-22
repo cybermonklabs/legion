@@ -32,7 +32,7 @@ type Gate struct {
 	// claim and reservation hold the gate's port from StartGate to the test's end, open or closed
 	// (holdGatePort).
 	claim       net.Listener
-	reservation int
+	reservation testport.Socket
 
 	mu sync.Mutex
 	// relay is the gate's listener and its copies while the gate is open, and nil while it is
@@ -152,15 +152,15 @@ func gateClaim(port int) string { return "@legion-testnats-gate-" + strconv.Itoa
 // its claim, then its reservation at ip, as the comment above ephemeralRangePath describes. It
 // fails when another gate holds the claim, or when a socket already on the address refuses the
 // reservation: one that listens, or one without SO_REUSEADDR.
-func holdGatePort(ip net.IP, port int) (net.Listener, int, error) {
+func holdGatePort(ip net.IP, port int) (net.Listener, testport.Socket, error) {
 	claim, err := net.Listen("unix", gateClaim(port))
 	if err != nil {
-		return nil, -1, fmt.Errorf("claim port %d: %w", port, err)
+		return nil, testport.InvalidSocket, fmt.Errorf("claim port %d: %w", port, err)
 	}
 	reservation, _, err := testport.Reserve(&syscall.SockaddrInet4{Port: port, Addr: [4]byte(ip.To4())})
 	if err != nil {
 		_ = claim.Close()
-		return nil, -1, fmt.Errorf("reserve %s:%d: %w", ip, port, err)
+		return nil, testport.InvalidSocket, fmt.Errorf("reserve %s:%d: %w", ip, port, err)
 	}
 	return claim, reservation, nil
 }

@@ -6,10 +6,11 @@ import (
 )
 
 // Reserve binds a TCP socket of its own to addr, with SO_REUSEADDR, and never listens on it. It
-// returns the socket's descriptor, which the caller closes when it gives the port up, and the port
-// the socket is bound to, which the kernel chose when addr names port 0. Each of setup runs on the
-// socket before SO_REUSEADDR is set and before the bind, for a caller's own options (IPV6_V6ONLY
-// on an AF_INET6 socket, say). On any error the socket is closed and nothing stays bound.
+// returns the socket (Socket, this platform's descriptor type), which the caller closes when it
+// gives the port up, and the port the socket is bound to, which the kernel chose when addr names
+// port 0. Each of setup runs on the socket before SO_REUSEADDR is set and before the bind, for a
+// caller's own options (IPV6_V6ONLY on an AF_INET6 socket, say). On any error the socket is closed,
+// nothing stays bound, and the socket returned is InvalidSocket.
 //
 // On Linux, a reserved port takes the bind of a server whose own socket sets SO_REUSEADDR, as Go's
 // listeners do (net/sockopt_linux.go, setDefaultListenerSockopts): the kernel refuses a bind beside
@@ -23,7 +24,7 @@ import (
 //
 // The daemon module's copy of this package (testport.go's comment) has no Reserve: it has no
 // caller there.
-func Reserve(addr syscall.Sockaddr, setup ...func(fd int) error) (int, int, error) {
+func Reserve(addr syscall.Sockaddr, setup ...func(fd Socket) error) (Socket, int, error) {
 	family := syscall.AF_INET
 	if _, ok := addr.(*syscall.SockaddrInet6); ok {
 		family = syscall.AF_INET6
@@ -37,18 +38,18 @@ func Reserve(addr syscall.Sockaddr, setup ...func(fd int) error) (int, int, erro
 	}
 	syscall.ForkLock.RUnlock()
 	if err != nil {
-		return -1, 0, fmt.Errorf("testport: make a reservation's socket: %w", err)
+		return InvalidSocket, 0, fmt.Errorf("testport: make a reservation's socket: %w", err)
 	}
 	port, err := bindReservation(sock, addr, setup)
 	if err != nil {
 		_ = syscall.Close(sock)
-		return -1, 0, err
+		return InvalidSocket, 0, err
 	}
 	return sock, port, nil
 }
 
 // bindReservation sets sock up as Reserve describes, binds it to addr and returns its port.
-func bindReservation(sock int, addr syscall.Sockaddr, setup []func(fd int) error) (int, error) {
+func bindReservation(sock Socket, addr syscall.Sockaddr, setup []func(fd Socket) error) (int, error) {
 	for _, option := range setup {
 		if err := option(sock); err != nil {
 			return 0, fmt.Errorf("testport: set up a reservation's socket: %w", err)
