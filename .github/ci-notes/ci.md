@@ -2138,10 +2138,15 @@ not run, measured on a probe run of this repository — so a force-cancelled run
 ci-ok, and its ci-ok job, which waits for every job of the run, is left unstarted or
 cancelled rather than concluding one. That is what this act wants: a failing ci-ok on a
 group the queue still holds could
-take an innocent pull request out of the queue. The run of a group whose own job failed
-posts that group's failing ci-ok from that job itself, through the merge-group branch of
-.github/scripts/ci-ok-report.sh, so the queue reads the verdict and rebuilds the groups
-above it without waiting for the rest of that run.
+take an innocent pull request out of the queue. The run of the front group, whose base is the
+tip of main, posts that group's failing ci-ok from the job that failed, through the merge-group
+branch of .github/scripts/ci-ok-report.sh, so the queue reads the verdict and rebuilds the
+groups above it without waiting for the rest of that run. A group behind the front posts
+nothing early: the queue takes its pull request out only once the groups in front of it have
+ended, and a failing ci-ok makes the queue count the group as no longer building and build
+another on it, which built 41 groups in 28 minutes behind one broken entry on 2026-11-22
+(.github/scripts/ci-ok-report.sh's header). Its run's ci-ok job posts its verdict at the end of
+the run.
 
 The job follows these rules:
   * it runs only on `merge_group` and only on attempt 1

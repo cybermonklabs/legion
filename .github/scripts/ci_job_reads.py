@@ -2505,12 +2505,13 @@ SCRIPT_TEST_GATES = [
     harness("ci_ok_report_test", "Test ci-ok's report and the check-run post (a stand-in gh)",
             f"{SCRIPTS}/ci-ok-report.test.sh", [
         (f"{SCRIPTS}/ci-ok-report.sh", "the script under test"),
-        (f"{SCRIPTS}/post-check-run.sh", "ci-ok-report.sh:234 posts with it, and ci-ok-report.test.sh:292,308 runs it on its own"),
-        (f"{SCRIPTS}/gh-read.sh", "ci-ok-report.sh:94 sources it for its bounded gh reads"),
+        (f"{SCRIPTS}/post-check-run.sh", "ci-ok-report.sh:284 posts with it, and ci-ok-report.test.sh:409,425 runs it on its own"),
+        (f"{SCRIPTS}/gh-read.sh", "ci-ok-report.sh:113 sources it for its bounded gh reads"),
         (f"{SCRIPTS}/runner-shutdown.sh",
-         "ci-ok-report.sh:96 sources it, and no early ci-ok is posted for a failure it reads as "
+         "ci-ok-report.sh:115 sources it, and no early ci-ok is posted for a failure it reads as "
          "a runner shutdown"),
-        (f"{SCRIPTS}/ci-ok.sh", "ci-ok-report.sh:210 reaches its verdict with it"),
+        (f"{SCRIPTS}/ci-ok.sh", "ci-ok-report.sh:260 reaches its verdict with it, and ci-ok-report.test.sh's "
+                                "verdict helper runs it for the group behind the front of the queue"),
         (f"{SCRIPTS}/ci-ok.jq", "ci-ok.sh's program includes it"),
     ]),
     harness("ci_ok_reconcile_test", "Test the reconciliation of this head's other ci-ok check runs (a stand-in gh)",
