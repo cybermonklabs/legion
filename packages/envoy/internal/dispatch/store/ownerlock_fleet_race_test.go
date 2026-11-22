@@ -126,8 +126,9 @@ const (
 // and the arrivals that waited for the gate, and how long, are logged. With the gate taken out of
 // the two arrival triggers, a writer that read no earlier build writes beside that build's
 // writers, and updates are lost. The registration's own 5 s bound on the gate is not this row's
-// subject, so the row gives the function the test's bound (waitRegistrationsOut): a registration
-// that waits longer behind a slow writer is no failure here.
+// subject, so the row takes it off the function (waitRegistrationsOut): each registration waits as
+// its own transaction allows, until shortly before the test binary's deadline, and one that waits
+// longer behind a slow writer is no failure here.
 func TestTheOwnerLockGateRacesAnEarlierBuildArrivingWritingAndLeaving(t *testing.T) {
 	s, owners := openFleetStore(t)
 	ctx := context.Background()

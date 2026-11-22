@@ -306,21 +306,21 @@ func setFleetLockTimeout(ctx context.Context, t *testing.T, tx pgx.Tx) error {
 	return err
 }
 
-// waitRegistrationsOut gives owner_lock_legacy_registration, in s's database alone, the bound
-// setFleetLockTimeout gives a fleet test's own transactions in place of its registrationGateBound,
-// for a row whose subject is not that bound: one in which a transaction of this build can hold the
-// gate while a registration waits for it, the row's own steps or a writer it races. On a machine
-// slow enough to hold it longer than the function's 5 s, the function's own bound would refuse the
-// registration and fail the row by the clock.
+// waitRegistrationsOut takes owner_lock_legacy_registration's own bound (registrationGateBound,
+// the lock_timeout the function sets for itself) off the function, in s's database alone, for a row
+// whose subject is not that bound: one in which a transaction of this build can hold the gate while
+// a registration waits for it, the row's own steps or a writer it races. On a machine slow enough to
+// hold it longer than the function's 5 s, the function's own bound would refuse the registration
+// and fail the row by the clock. Without it, a registration waits as long as its own transaction
+// allows, and arriveOn bounds that when the transaction starts (setFleetLockTimeout): every
+// registration, however late in the row it starts, gives up fleetLockMargin before the test binary's
+// deadline, and fails the row by name rather than on Go's alarm. A bound written into the function
+// once, when the row starts, ends a registration that starts later past that deadline.
 // TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound keeps the bound.
 func waitRegistrationsOut(ctx context.Context, t *testing.T, s *Store) {
 	t.Helper()
-	bound := "0"
-	if deadline, ok := t.Deadline(); ok {
-		bound = fmt.Sprintf("%dms", max(time.Until(deadline)-fleetLockMargin, time.Millisecond).Milliseconds())
-	}
-	if _, err := s.Pool.Exec(ctx, "alter function public.owner_lock_legacy_registration() set lock_timeout = '"+bound+"'"); err != nil {
-		t.Fatalf("give owner_lock_legacy_registration the test's own bound: %v", err)
+	if _, err := s.Pool.Exec(ctx, "alter function public.owner_lock_legacy_registration() reset lock_timeout"); err != nil {
+		t.Fatalf("take owner_lock_legacy_registration's own bound off it: %v", err)
 	}
 }
 
