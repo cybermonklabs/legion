@@ -1773,157 +1773,171 @@ for (const route of BROKER_ROUTES) {
  * bounds it. An entry names its file, a text of the site's first line, and how many unbounded
  * sites of that file carry that text: one more of them, or one fewer, fails the row.
  */
-const REVIEWED_WAIT_SITES: readonly { file: string; text: string; count: number; bound: string }[] =
-  [
-    {
-      file: "packages/claude-envoy/hooks/session-hook.ts",
-      text: 'Bun.spawn([process.execPath, Bun.main, "answers-refresh"',
-      count: 1,
-      bound:
-        "the answers hook's refresher, started detached and unref'd in the answers mode: no hook " +
-        "waits on it",
-    },
-    {
-      file: "packages/claude-envoy/hooks/session-hook.ts",
-      text: "Bun.stdin.text",
-      count: 1,
-      bound:
-        "Claude Code's input, which it writes and closes as it starts the hook; nothing of the " +
-        "hook's bounds it, and a hook whose input never closes is ended by Claude Code's own timeout",
-    },
-    {
-      file: "packages/pi-shared/src/jj-attribution.ts",
-      text: 'Bun.spawn(["jj", "config", "path", "--user"]',
-      count: 1,
-      bound:
-        "raced with userConfigChain's setTimeout(timeoutMs), which kills jj's process group: the " +
-        "jj wait the census holds",
-    },
-    {
-      file: "packages/pi-shared/src/jj-attribution.ts",
-      text: "new Response(child.",
-      count: 2,
-      bound: "jj's stdout and stderr, read inside the same race with userConfigChain's setTimeout",
-    },
-    {
-      file: "packages/envoy-client/src/dispatch-http.ts",
-      text: 'fetchImpl(input, { ...init, redirect: "manual" })',
-      count: 1,
-      bound:
-        "the fetch behind the client's #fetch, whose every request is made at :2181 or :2508 with a " +
-        "signal this scan traces to AbortSignal.timeout; `init` is that request's own",
-    },
-    {
-      file: "packages/envoy-client/src/dispatch-cwd.ts",
-      text: "execFileAsync(file, args, { cwd, signal })",
-      count: 1,
-      bound:
-        "its signal is tryExec's controller (:77), which a setTimeout(limitMs) aborts (:79): a timer " +
-        "the census sees, REMOTE_LOOKUP_MS at its callers",
-    },
-    {
-      file: "packages/envoy-client/src/nats-credential.ts",
-      text: "for await (const status of statuses)",
-      count: 2,
-      bound:
-        "two loops over a NATS connection's statuses: the one at :632 runs in a `void` task no " +
-        "caller awaits; the one at :718 is awaited (:742) only in a race with `late`, which " +
-        "AbortSignal.timeout(reconnectMs) (:714) rejects. The open-asks hook opens no NATS connection",
-    },
-    {
-      file: "packages/cipher-client/src/token-client.ts",
-      text: "proved.fetch(url, requestInit(options, signal, headers))",
-      count: 1,
-      bound:
-        "requestInit merges openid-client's own signal and `signal` into the request's (:321); its " +
-        "callers pass AbortSignal.timeout(BROKER_REQUEST_MS) (device-login.ts:257) and the trade's " +
-        "AbortSignal.any([closed, AbortSignal.timeout(this.#attemptMs)]) (:627)",
-    },
-    {
-      file: "packages/cipher-client/src/device-login.ts",
-      text: "fetchImpl(url, requestInit(options, deadline, options.headers))",
-      count: 1,
-      bound:
-        "requestInit (token-client.ts:321) merges `deadline`, AbortSignal.timeout(BROKER_REQUEST_MS) at :257",
-    },
-    {
-      file: "packages/cipher-client/src/person-identity.ts",
-      text: "send(url, requestInit(init, signal, init.headers))",
-      count: 1,
-      bound:
-        "openid-client calls it with the signal of its own `timeout` (ISSUER_TIMEOUT_SECONDS, :119), " +
-        "which requestInit merges with the caller's (token-client.ts:321)",
-    },
-    {
-      file: "packages/claude-envoy/hooks/session-hook.ts",
-      text: "fetch",
-      count: 1,
-      bound:
-        "the fetch handed to the open-asks read's DispatchClient (:319), whose every request is made at dispatch-http.ts:2181 or :2508 under a signal this scan traces to AbortSignal.timeout",
-    },
-    {
-      file: "packages/envoy-client/src/dispatch-http.ts",
-      text: "fetch",
-      count: 1,
-      bound:
-        "DispatchClient's default fetchImpl (:963), called only at :992 for the requests of :2181 and :2508",
-    },
-    {
-      file: "packages/envoy-client/src/session-answers.ts",
-      text: "fetch",
-      count: 1,
-      bound:
-        "the answers mode's DispatchClient (:578), whose requests are made at dispatch-http.ts:2181 and :2508 under the client's own deadline; the open-asks mode does not reach it",
-    },
-    {
-      file: "packages/envoy-client/src/dispatch-commands/context.ts",
-      text: "fetch",
-      count: 1,
-      bound:
-        "the dispatch command's fetchImpl (:316), handed to the same DispatchClient; the open-asks mode does not reach it",
-    },
-    {
-      file: "packages/envoy-client/src/dispatch-cwd.ts",
-      text: "execFile",
-      count: 1,
-      bound: "promisified into execFileAsync (:11), whose one call (:27) is reviewed beside it",
-    },
-    {
-      file: "packages/cipher-client/src/token-client.ts",
-      text: "fetch",
-      count: 1,
-      bound: "the broker client's default fetch (:435), called at :350 under the trade's signal",
-    },
-    {
-      file: "packages/cipher-client/src/device-login.ts",
-      text: "fetch",
-      count: 3,
-      bound:
-        "a device login's default fetch (:377, :449, :680), handed to brokerConfiguration, whose requests are made at :259 under AbortSignal.timeout(BROKER_REQUEST_MS)",
-    },
-    {
-      file: "packages/cipher-client/src/person-identity.ts",
-      text: "fetch",
-      count: 1,
-      bound:
-        "a person sign-in's default fetch (:102), called only at :112 under openid-client's timeout",
-    },
-    {
-      file: "packages/cipher-client/src/pool-identity.ts",
-      text: "fetch",
-      count: 1,
-      bound:
-        "the pool identity's default fetch (:171), called only at :197 under AbortSignal.timeout(POOL_TIMEOUT_MS)",
-    },
-    {
-      file: "packages/cipher-client/src/metadata-identity.ts",
-      text: "request(",
-      count: 1,
-      bound:
-        "node:http's `timeout: TIMEOUT_MS` (:85), on which the call destroys itself (:103): an idle " +
-        "bound of the socket, which the census does not see",
-    },
-  ]
+const REVIEWED_WAIT_SITES: readonly {
+  file: string
+  text: string
+  kind?: string
+  count: number
+  bound: string
+}[] = [
+  {
+    file: "packages/claude-envoy/hooks/session-hook.ts",
+    text: 'Bun.spawn([process.execPath, Bun.main, "answers-refresh"',
+    count: 1,
+    bound:
+      "the answers hook's refresher, started detached and unref'd in the answers mode: no hook " +
+      "waits on it",
+  },
+  {
+    file: "packages/claude-envoy/hooks/session-hook.ts",
+    text: "Bun.stdin.text",
+    count: 1,
+    bound:
+      "Claude Code's input, which it writes and closes as it starts the hook; nothing of the " +
+      "hook's bounds it, and a hook whose input never closes is ended by Claude Code's own timeout",
+  },
+  {
+    file: "packages/pi-shared/src/jj-attribution.ts",
+    text: 'Bun.spawn(["jj", "config", "path", "--user"]',
+    count: 1,
+    bound:
+      "raced with userConfigChain's setTimeout(timeoutMs), which kills jj's process group: the " +
+      "jj wait the census holds",
+  },
+  {
+    file: "packages/pi-shared/src/jj-attribution.ts",
+    text: "new Response(child.",
+    count: 2,
+    bound: "jj's stdout and stderr, read inside the same race with userConfigChain's setTimeout",
+  },
+  {
+    file: "packages/envoy-client/src/dispatch-http.ts",
+    text: 'fetchImpl(input, { ...init, redirect: "manual" })',
+    count: 1,
+    bound:
+      "the fetch behind the client's #fetch, whose every request is made at :2181 or :2508 with a " +
+      "signal this scan traces to AbortSignal.timeout; `init` is that request's own",
+  },
+  {
+    file: "packages/envoy-client/src/dispatch-cwd.ts",
+    text: "execFileAsync(file, args, { cwd, signal })",
+    count: 1,
+    bound:
+      "its signal is tryExec's controller (:77), which a setTimeout(limitMs) aborts (:79): a timer " +
+      "the census sees, REMOTE_LOOKUP_MS at its callers",
+  },
+  {
+    file: "packages/envoy-client/src/nats-credential.ts",
+    text: "for await (const status of statuses)",
+    count: 2,
+    bound:
+      "two loops over a NATS connection's statuses: the one at :632 runs in a `void` task no " +
+      "caller awaits; the one at :718 is awaited (:742) only in a race with `late`, which " +
+      "AbortSignal.timeout(reconnectMs) (:714) rejects. The open-asks hook opens no NATS connection",
+  },
+  {
+    file: "packages/cipher-client/src/token-client.ts",
+    text: "proved.fetch(url, requestInit(options, signal, headers))",
+    count: 1,
+    bound:
+      "requestInit merges openid-client's own signal and `signal` into the request's (:321); its " +
+      "callers pass AbortSignal.timeout(BROKER_REQUEST_MS) (device-login.ts:257) and the trade's " +
+      "AbortSignal.any([closed, AbortSignal.timeout(this.#attemptMs)]) (:627)",
+  },
+  {
+    file: "packages/cipher-client/src/device-login.ts",
+    text: "fetchImpl(url, requestInit(options, deadline, options.headers))",
+    count: 1,
+    bound:
+      "requestInit (token-client.ts:321) merges `deadline`, AbortSignal.timeout(BROKER_REQUEST_MS) at :257",
+  },
+  {
+    file: "packages/cipher-client/src/person-identity.ts",
+    text: "send(url, requestInit(init, signal, init.headers))",
+    count: 1,
+    bound:
+      "openid-client calls it with the signal of its own `timeout` (ISSUER_TIMEOUT_SECONDS, :119), " +
+      "which requestInit merges with the caller's (token-client.ts:321)",
+  },
+  {
+    file: "packages/claude-envoy/hooks/session-hook.ts",
+    text: "fetch",
+    kind: "fetch handed on as a value",
+    count: 1,
+    bound:
+      "the fetch handed to the open-asks read's DispatchClient (:319), whose every request is made at dispatch-http.ts:2181 or :2508 under a signal this scan traces to AbortSignal.timeout",
+  },
+  {
+    file: "packages/envoy-client/src/dispatch-http.ts",
+    text: "fetch",
+    kind: "fetch handed on as a value",
+    count: 1,
+    bound:
+      "DispatchClient's default fetchImpl (:963), called only at :992 for the requests of :2181 and :2508",
+  },
+  {
+    file: "packages/envoy-client/src/session-answers.ts",
+    text: "fetch",
+    kind: "fetch handed on as a value",
+    count: 1,
+    bound:
+      "the answers mode's DispatchClient (:578), whose requests are made at dispatch-http.ts:2181 and :2508 under the client's own deadline; the open-asks mode does not reach it",
+  },
+  {
+    file: "packages/envoy-client/src/dispatch-commands/context.ts",
+    text: "fetch",
+    kind: "fetch handed on as a value",
+    count: 1,
+    bound:
+      "the dispatch command's fetchImpl (:316), handed to the same DispatchClient; the open-asks mode does not reach it",
+  },
+  {
+    file: "packages/envoy-client/src/dispatch-cwd.ts",
+    text: "execFile",
+    kind: "child_process handed on as a value",
+    count: 1,
+    bound: "promisified into execFileAsync (:11), whose one call (:27) is reviewed beside it",
+  },
+  {
+    file: "packages/cipher-client/src/token-client.ts",
+    text: "fetch",
+    kind: "fetch handed on as a value",
+    count: 1,
+    bound: "the broker client's default fetch (:435), called at :350 under the trade's signal",
+  },
+  {
+    file: "packages/cipher-client/src/device-login.ts",
+    text: "fetch",
+    kind: "fetch handed on as a value",
+    count: 3,
+    bound:
+      "a device login's default fetch (:377, :449, :680), handed to brokerConfiguration, whose requests are made at :259 under AbortSignal.timeout(BROKER_REQUEST_MS)",
+  },
+  {
+    file: "packages/cipher-client/src/person-identity.ts",
+    text: "fetch",
+    kind: "fetch handed on as a value",
+    count: 1,
+    bound:
+      "a person sign-in's default fetch (:102), called only at :112 under openid-client's timeout",
+  },
+  {
+    file: "packages/cipher-client/src/pool-identity.ts",
+    text: "fetch",
+    kind: "fetch handed on as a value",
+    count: 1,
+    bound:
+      "the pool identity's default fetch (:171), called only at :197 under AbortSignal.timeout(POOL_TIMEOUT_MS)",
+  },
+  {
+    file: "packages/cipher-client/src/metadata-identity.ts",
+    text: "request(",
+    count: 1,
+    bound:
+      "node:http's `timeout: TIMEOUT_MS` (:85), on which the call destroys itself (:103): an idle " +
+      "bound of the socket, which the census does not see",
+  },
+]
 
 /** The scan row's own limit, sized to what reading the hook's modules as one program costs, not to
  *  the package's 60 s: 4.4 to 4.9 s wall, 10 s of CPU and 551 MB on the dev box; 38.6 s wall alone
@@ -1969,21 +1983,28 @@ test(
     const unbounded = sites.filter((site) => site.boundedBy === undefined)
     const reviewedBy = (site: WaitSite) =>
       REVIEWED_WAIT_SITES.find(
-        (entry) => entry.file === site.file && site.text.includes(entry.text),
-      )
-    expect(
-      unbounded
-        .filter((site) => reviewedBy(site) === undefined)
-        .map((site) => `${site.file}:${site.line} ${site.kind}: ${site.text}`),
-      `wait sites with no bound the census sees, of ${sites.length} in ${modules.length} modules`,
-    ).toEqual([])
-    expect(
-      REVIEWED_WAIT_SITES.map(
         (entry) =>
-          `${entry.file}: ${entry.text}: ${unbounded.filter((site) => reviewedBy(site) === entry).length}`,
-      ),
-      "unbounded sites each reviewed entry names",
-    ).toEqual(REVIEWED_WAIT_SITES.map((entry) => `${entry.file}: ${entry.text}: ${entry.count}`))
+          entry.file === site.file &&
+          site.text.includes(entry.text) &&
+          (entry.kind === undefined || entry.kind === site.kind),
+      )
+    const named = (site: WaitSite) => `${site.file}:${site.line} ${site.kind}: ${site.text}`
+    // One verdict names every site by its line: each one no entry reviews, and each site of an
+    // entry whose count changed, so a new site beside a reviewed one is named too.
+    expect(
+      {
+        unreviewed: unbounded.filter((site) => reviewedBy(site) === undefined).map(named),
+        miscounted: REVIEWED_WAIT_SITES.flatMap((entry) => {
+          const held = unbounded.filter((site) => reviewedBy(site) === entry)
+          return held.length === entry.count
+            ? []
+            : [
+                `${entry.file}: ${entry.text}: ${held.length} sites, not ${entry.count}: ${held.map(named).join("; ")}`,
+              ]
+        }),
+      },
+      `wait sites with no bound the census sees, of ${sites.length} in ${modules.length} modules`,
+    ).toEqual({ unreviewed: [], miscounted: [] })
   },
   SCAN_ROW_LIMIT_MS,
 )
