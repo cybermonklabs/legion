@@ -20,9 +20,10 @@ import (
 // those kinds that no row stands behind is a node a read limited to its project would answer for
 // an object that is gone. A node the removal of its object stated gone is no finding. No issue row
 // stands at ORPH-1, so the document node is at no issue's address, which no release's removal
-// leaves and the block-index tick does not state gone: each of the four lines says no command
-// cures it (TestAnOrphanedDocumentNodeIsStatedGoneUnderItsRemoval reads the cure of a document
-// node at an issue's address).
+// leaves and the block-index tick does not state gone: each of the four lines says it has no
+// in-band cure, since only a delete outside the builds leaves such a node
+// (TestAnOrphanedDocumentNodeIsStatedGoneUnderItsRemoval reads the cure of a document node at an
+// issue's address).
 //
 // Its control is the orphaned class taken out of the census: the four live nodes with no row then
 // read as nothing at all.
@@ -63,10 +64,10 @@ func TestTheProjectCensusNamesALiveNodeWhoseRowIsGone(t *testing.T) {
 		t.Fatalf("read the incomplete nodes: %v", err)
 	}
 	want := []string{
-		"artifact ORPH-1/notes-md: orphaned" + unsweptCure,
-		"ask 33333333-3333-4333-8333-000000000001: orphaned" + unsweptCure,
-		"issue ORPH-1: orphaned" + unsweptCure,
-		"message 33333333-3333-4333-8333-000000000002: orphaned" + unsweptCure,
+		"artifact ORPH-1/notes-md: orphaned; no in-band cure: a delete outside the builds made it",
+		"ask 33333333-3333-4333-8333-000000000001: orphaned; no in-band cure: a delete outside the builds made it",
+		"issue ORPH-1: orphaned; no in-band cure: a delete outside the builds made it",
+		"message 33333333-3333-4333-8333-000000000002: orphaned; no in-band cure: a delete outside the builds made it",
 	}
 	if !slices.Equal(incomplete, want) {
 		t.Errorf("ProjectComplete answers %v, want %v: the four live nodes no row stands behind, none of which the tick states gone, and not the gone one", incomplete, want)

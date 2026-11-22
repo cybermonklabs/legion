@@ -372,9 +372,10 @@ func writeProjectCensus(w io.Writer, kinds []ProjectKindReport) {
 // an orphaned document node at an issue's address, the block-index tick of this build, which
 // states it gone as this build's removal states a removed document's node (sweptCure, docs'
 // writeObjectNodesAnotherBuildWrote and StateOrphanedGone), since no backfill reads a node no row
-// stands behind; none for any other orphaned node, whose row no release removes (unsweptCure); and
-// none for a node that names another project or other parties than its row, since the backfill
-// walks no node naming either and only a person can tell which of the two is wrong (differsCure).
+// stands behind; none in-band for any other orphaned node, whose row no release removes, so only a
+// delete outside the builds made it (unsweptCure); and none for a node that names another project
+// or other parties than its row, since the backfill walks no node naming either and only a person
+// can tell which of the two is wrong (differsCure).
 func ProjectComplete(ctx context.Context, q graphstore.Queryer) ([]string, error) {
 	return projectIncomplete(ctx, q, nil)
 }
@@ -385,7 +386,7 @@ const (
 	differsCure  = "; no command cures it: compare the row with its node"
 	refusedCure  = "; no command cures it: the row names a party the store refuses, one empty or holding white space"
 	sweptCure    = "; this build's block-index tick states it gone"
-	unsweptCure  = "; no command cures it: no release removes its row, and the block-index tick states gone only a removed document of an issue"
+	unsweptCure  = "; no in-band cure: a delete outside the builds made it"
 )
 
 // projectIncomplete is ProjectComplete's read, of at most limit lines in its order when limit is

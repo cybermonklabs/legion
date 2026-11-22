@@ -83,7 +83,7 @@ func seedOrphan(t *testing.T, database *store.Store, slug string) (string, int64
 //
 // Its control is the gone state caused at the sentinel rather than by the removal's event: the
 // tuple then names no event. The cure's control is the issue's address taken out of the census's
-// read of it (issueDocumentAddress in projectIncomplete): the line then says no command cures it.
+// read of it (issueDocumentAddress in projectIncomplete): the line then says it has no in-band cure.
 func TestAnOrphanedDocumentNodeIsStatedGoneUnderItsRemoval(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
