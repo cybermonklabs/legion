@@ -39,10 +39,10 @@ var errEarlierAttemptInProcess = errors.New("the request ended while an earlier 
 // The listener's other publishes under a message id do not take it, and the earlier publish the
 // refusal names stores the one copy all the same. The webhook routes (webhookRoutes:
 // internal/webhook's GitHub, Slack and Ghost Wispr handlers) answer their request by a publish
-// under the delivery's id, so a refusal there is answered 503 and logged `<source> publish
-// failed`, which the webhook publish-failure filter counts; no sender limit charges a webhook,
-// and a redelivery, where its sender makes one, is answered by that copy as a duplicate. The
-// other three carry no request's answer or charge: the sweep's wake report
+// under the delivery's id, so a refusal there is answered 503 and logged `<source> publish in
+// process`, which no alarm counts (internal/webhook's failureOutcome); no sender limit charges a
+// webhook, and a redelivery, where its sender makes one, is answered by that copy as a duplicate.
+// The other three carry no request's answer or charge: the sweep's wake report
 // (publishSweptRoleWake), which logs the report as not published and leaves the next sweep to
 // raise it; a kept copy's dead letter (endKeptCopyWithDeadLetter), whose walk ends as a failed one
 // with its claim left, so the walk that takes the claim over sends it again and is answered with
