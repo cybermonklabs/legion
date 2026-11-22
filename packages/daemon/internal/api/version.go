@@ -3019,7 +3019,7 @@ package api
 // 2026-11-21T12:31:48Z, found 205 declared by no other, so this entry kept 205. Read the base's own
 // number and every open pull request again at every forward merge rather than from this line.)
 //
-// 221: dispatch://INFRA-5208 -- each issue of `GET /legion/v1/state` (and the issue record, which
+// 224: dispatch://INFRA-5208 -- each issue of `GET /legion/v1/state` (and the issue record, which
 // is one issue of that body) carries `podHold`, the standing hold of the issue's pod: why the
 // idle rule keeps that pod past the idle period. It is `{reason, firstAt, at, detail}`: `reason`
 // is the rule's own word for the hold (workflow.IdleHold's String, as the daemon's hold records
@@ -3028,20 +3028,24 @@ package api
 // none. The daemon reads it from `pod_holds` in the state's own snapshot, one statement for the
 // whole project (store.StandingPodHoldsTx), and writes the key only for an issue whose pod a hold
 // stands on: a pod the rule has not held, one it released and one whose streak a later pass ended
-// carry none. A plugin below 221 reads each issue with a strict schema that names no `podHold`,
-// so a caller below 221 is served every issue without it (shaping.go's podHoldContract and
+// carry none. A plugin below 224 reads each issue with a strict schema that names no `podHold`,
+// so a caller below 224 is served every issue without it (shaping.go's podHoldContract and
 // withoutPodHold, its row of stateNarrowings). The caller is placed as 193 places every caller of
-// the state: a plugin from 205 to 220 states its contract and is served 205's keys, which are
+// the state: a plugin from 205 to 223 states its contract and is served 205's keys, which are
 // 202's on this route. No enumerated field arrives: `reason` is a string a reader takes whole, so
 // a hold a later rule adds is read rather than refused. `packages/contracts/src/legion-api.ts`
 // mirrors the key on its issue and takes each of its four members as optional, since no plugin
 // code reads them (LEGION_ANSWER_READS).
-// (This change takes 221, the lowest number above main's 205 that no open pull request declared
-// at a reading of every open pull request of cybermonklabs/legion that ended at
-// 2026-11-22T04:57Z, which found 206 to 220 declared: 206 (#3712 and #4940), 207 (#3993 and
-// #4432), 208 (#4175), 209 (#4049), 210 (#4661), 211 (#2230), 212 (#4030, #4392, #4540 and
-// #4580), 213 (#4553), 214 (#4592 and #4596), 215 (#4065), 216 (#4173, #4180, #4182, #4193,
-// #4251, #4259, #4261, #4269, #4290 and #4932), 217 (#4273, #4590 and #4771), 218 (#3831), 219
-// (#4611) and 220 (#4930). Read the base's own number and every open pull request again at every
-// forward merge rather than from this line.)
-const DaemonAPIVersion = 221
+// (This entry took 221 at first, the lowest number above main's 205 that no open pull request
+// declared at a reading of every open pull request of cybermonklabs/legion that ended at
+// 2026-11-22T04:57Z. 220 to 222 had been named for three changes, #4930 among them, and 223 for
+// #4805, before each of them declared its number, so 221 was taken twice. This entry moved to 224,
+// the lowest number above 223 that no open pull request declares and that no change had been named
+// for. A reading of every open pull request that ended at 2026-11-22T06:08:16Z found 206 (#3712
+// and #4940), 207 (#3993 and #4432), 208 (#4175), 209 (#4049), 210 (#4661), 211 (#2230), 212
+// (#4030, #4392, #4540 and #4580), 213 (#4553), 214 (#4592), 215 (#4065 and #4596), 216 (#4173,
+// #4180, #4182, #4193, #4259 and #4932), 217 (#4273, #4590 and #4771), 218 (#3831), 219 (#4611),
+// 220 (#4930), 221 (this change at its first number) and 223 (#4805) declared, and none above 223.
+// Read the base's own number and every open pull request again at every forward merge rather
+// than from this line.)
+const DaemonAPIVersion = 224

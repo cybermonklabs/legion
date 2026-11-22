@@ -874,7 +874,7 @@ func populatedState(t *testing.T) State {
 				// Its pod is quiet and kept: its reviewer's last report named an async job still
 				// running, so every pass of the idle rule since the evening before has held the pod
 				// for background work, the last of them a minute before this state. That streak is
-				// the pod's standing hold (contract 221), with the kind the report named.
+				// the pod's standing hold (contract 224), with the kind the report named.
 				PodHold: &PodHoldView{
 					Reason:  "background_work",
 					FirstAt: time.Date(2026, 9, 21, 22, 4, 0, 0, time.UTC),

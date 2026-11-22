@@ -293,7 +293,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	})
 
 	// The newest narrowing is a row of the table like every other, so the caller below it is
-	// told what it lost: a caller one contract below the highest row, 220, which states that
+	// told what it lost: a caller one contract below the highest row, 223, which states that
 	// contract in its header as every plugin from shapedAnswersContract on does, is served at the
 	// recorded contract below it, 205, so it stands below that row alone and the log holds that
 	// row's line and nothing else. This subtest does not catch a strip applied beside the loop,
