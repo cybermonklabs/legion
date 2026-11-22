@@ -252,6 +252,10 @@ type bootConfig struct {
 	// (ENVOY_SESSION_LIVE_WINDOW and ENVOY_SESSION_GONE_HORIZON, roleHolderWindows): what the
 	// outbox's reader of the role and session buckets carries (roles.NewBuckets).
 	RoleHolderWindows roles.Windows
+	// SearchFillOff is DISPATCH_SEARCH_FILL=off: this process does not start the keyword fill
+	// (textversions.Run), so it takes no hold and writes no row of search_text_versions or its
+	// cursor. Unset or on, it starts the fill.
+	SearchFillOff bool
 	// Embedder is where meaning search embeds text (DISPATCH_EMBEDDER and DISPATCH_AZURE_*),
 	// checked whole; newEmbedder builds its client.
 	Embedder embedderConfig
@@ -1112,22 +1116,28 @@ func main() {
 	// waits for the fill (waitFill) only once ctx is cancelled, or exits without waiting for it:
 	// once ctx is cancelled, a fill still waiting for serving returns at once, having taken
 	// nothing, and a serving fill commits or rolls back its batch in flight and releases its hold
-	// through the pool, before the pool closes.
+	// through the pool, before the pool closes. DISPATCH_SEARCH_FILL=off starts no fill at all:
+	// the process says so once, and fillStopped is closed from the start, so nothing waits for it.
 	serving := make(chan struct{})
 	fillStopped := make(chan struct{})
-	go func() {
-		defer close(fillStopped)
-		if err := textversions.Run(ctx, textversions.Config{
-			Leases:   textVersionsLeases,
-			Horizon:  background.EventHorizon(),
-			Latency:  answersLatency,
-			Serving:  serving,
-			Events:   textVersionsEventsWake,
-			Released: textVersionsReleasedWake,
-		}); err != nil {
-			slog.Error("dispatch: start the keyword fill", "error", err)
-		}
-	}()
+	if boot.SearchFillOff {
+		close(fillStopped)
+		slog.Info(searchFillDeferredLine, "setting", "DISPATCH_SEARCH_FILL", "value", "off")
+	} else {
+		go func() {
+			defer close(fillStopped)
+			if err := textversions.Run(ctx, textversions.Config{
+				Leases:   textVersionsLeases,
+				Horizon:  background.EventHorizon(),
+				Latency:  answersLatency,
+				Serving:  serving,
+				Events:   textVersionsEventsWake,
+				Released: textVersionsReleasedWake,
+			}); err != nil {
+				slog.Error("dispatch: start the keyword fill", "error", err)
+			}
+		}()
+	}
 	// waitFill waits for the keyword fill to stop; only a cancelled ctx stops it.
 	waitFill := func() { <-fillStopped }
 	// exitAfterIntakes ends a process that started its intakes and its keyword fill and will not
@@ -1424,6 +1434,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, err
 	}
 	if boot.RoleHolderWindows, err = roleHolderWindows(env); err != nil {
+		return bootConfig{}, err
+	}
+	if boot.SearchFillOff, err = searchFillOff(env); err != nil {
 		return bootConfig{}, err
 	}
 	for _, setting := range []struct {
@@ -1951,6 +1964,23 @@ func positiveSetting(env settingValues, name string) (int, error) {
 		return 0, fmt.Errorf("%s=%q (expected a positive integer)", name, raw)
 	}
 	return value, nil
+}
+
+// searchFillDeferredLine is the line a process logs once at boot when DISPATCH_SEARCH_FILL=off
+// keeps it from starting the keyword fill.
+const searchFillDeferredLine = "dispatch: the keyword fill is deferred; this process fills no keyword table"
+
+// searchFillOff reads DISPATCH_SEARCH_FILL: on, or unset, starts the keyword fill, and off defers
+// it. Any other value refuses the boot, naming the variable.
+func searchFillOff(env settingValues) (bool, error) {
+	switch value := env.get("DISPATCH_SEARCH_FILL"); value {
+	case "", "on":
+		return false, nil
+	case "off":
+		return true, nil
+	default:
+		return false, fmt.Errorf("DISPATCH_SEARCH_FILL=%q (expected on or off)", value)
+	}
 }
 
 // openFileStore is the uploaded-file store boot names (files.Open: gs://<bucket> is a Cloud

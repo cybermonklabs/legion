@@ -987,6 +987,16 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Error("NATS on: the router is handed OutboxPublishes = false, want true: the outbox publishes, and a mention's send keeps its order behind the events it still owes")
 			}
 		},
+		"DISPATCH_SEARCH_FILL": func(t *testing.T) {
+			for value, off := range map[string]bool{"": false, "on": false, "off": true} {
+				if boot := resolveWith(t, map[string]string{"DISPATCH_SEARCH_FILL": value}); boot.SearchFillOff != off {
+					t.Errorf("DISPATCH_SEARCH_FILL=%q: SearchFillOff = %v, want %v", value, boot.SearchFillOff, off)
+				}
+			}
+			for _, value := range []string{"OFF", "Off", " off", "0", "false", "no", "yes", "1"} {
+				refusedWith(t, map[string]string{"DISPATCH_SEARCH_FILL": value}, `DISPATCH_SEARCH_FILL="`+value+`" (expected on or off)`)
+			}
+		},
 		"ENVOY_URL": func(t *testing.T) {
 			if boot := resolveWith(t, nil); boot.EnvoyURL != "http://127.0.0.1:9020" {
 				t.Errorf("unset: EnvoyURL = %q", boot.EnvoyURL)

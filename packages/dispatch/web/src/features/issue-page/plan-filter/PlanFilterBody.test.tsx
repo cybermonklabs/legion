@@ -894,7 +894,7 @@ test("a refused read's line stays drawn while its Retry reads again, its Retry b
 // A refused read asked again while the browser is offline is held, not sent: TanStack Query
 // pauses its fetch until the network is back, and the read, which holds no answer, goes to
 // `pending` with its error cleared and its fetch `paused`, so it is neither in error nor running,
-// and keeps its count of failures. It still stands failed (`useIssueTree.ts`'s `standsFailed`),
+// and keeps its error count. It still stands failed (`refs/reference-target.ts`'s `standsFailed`),
 // so its line stays drawn with its Retry.
 test("a refused read's line stays drawn while its Retry waits for the network", async () => {
   setViewport(1440);

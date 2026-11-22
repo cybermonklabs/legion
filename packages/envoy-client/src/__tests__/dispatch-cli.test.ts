@@ -1581,6 +1581,47 @@ describe("the dispatch CLI", () => {
     });
   });
 
+  // A replace with no with was sent and read as an empty one, which deleted the text its find
+  // matched; one whose new text stood under markdown did the same. Both exit 2 before anything is
+  // sent, naming the operation and the field.
+  describe("doc-edit replace", () => {
+    test("refuses a replace with no with before it sends anything", async () => {
+      const { code, stdout } = await run(
+        [
+          "doc-edit",
+          "--issue",
+          "DSP-2",
+          "--ops-json",
+          JSON.stringify([{ op: "replace", find: "old" }]),
+        ],
+        omp
+      );
+      expect(code).toBe(2);
+      expect(stdout).toContain(
+        'ops[0] is a replace with no with, which would delete the text find matches: write the new text in with, or with "" to delete it on purpose.'
+      );
+      expect(requests).toEqual([]);
+    });
+
+    test("refuses a replace carrying a field replace does not take, naming it", async () => {
+      const ops = [
+        { op: "replace", find: "old", with: "new" },
+        { op: "replace", find: "old", markdown: "new" },
+      ];
+      const { code, stdout } = await run(
+        ["doc-edit", "--issue", "DSP-2", "--ops-json", JSON.stringify(ops)],
+        omp
+      );
+      expect(code).toBe(2);
+      expect(stdout).toContain(
+        "ops[1] is a replace carrying markdown, which replace does not take: it takes find, with and occurrence, and its new text goes in with."
+      );
+      expect(stdout).toContain("ops[1] is a replace with no with");
+      expect(stdout).not.toContain("ops[0]");
+      expect(requests).toEqual([]);
+    });
+  });
+
   test("dispatch project prints the created project, and a taken key exits 1 naming PROJECT_EXISTS", async () => {
     const created = await run(["project", "--key", "SMOKE684", "--name", "Smoke"], omp);
     expect(created.code).toBe(0);
