@@ -1037,6 +1037,41 @@ test("a kill's walk by parent pid ends where its table lists two processes as ea
   expect(await scriptedKill([table])).toEqual(["read", `signal ${one}`, `signal ${other}`, "read"]);
 });
 
+// A machine can list one parent with tens of thousands of children: on a dev box of 288 CPUs on
+// 2026-11-22, pid 2, which starts the kernel's threads, had about 36,000. A walk that built each
+// parent's list of children by copying the list for every child it added would take time that
+// grows with the square of that count: at a load average of about 2,150 there, 2.6 s for 36,000
+// children and 13.5 s for 100,000, against 2.4 ms when each child is pushed onto its parent's list.
+// Each kill below walks the table twice and `scriptedKill` runs both kills, so four walks over
+// 300,000 children end far inside the row's limit when the lists grow in place, and take minutes
+// when they are copied. `stopTree` walks in one synchronous pass, so the row clock fires only after
+// the first kill has ended.
+test(
+  "a kill's walk by parent pid takes a parent's many children without copying its list for each",
+  async () => {
+    // The child's own process, which carries its token, and 300,000 kernel threads of pid 2, which
+    // carry none. Every thread's pid is above 2 ** 22, Linux's `PID_MAX_LIMIT`, so no process holds
+    // one.
+    const own: Listed = {
+      pid: process.pid + 2,
+      ppid: 1,
+      start: scriptedChild.start + 1,
+      tokens: [scriptedChild.token],
+      unknown: false,
+    };
+    const threads = Array.from(
+      { length: 300_000 },
+      (_, at): Listed => ({ pid: 2 ** 23 + at, ppid: 2, start: 2, tokens: [], unknown: false })
+    );
+    expect(await scriptedKill([[init, own, sibling, ...threads]])).toEqual([
+      "read",
+      `signal ${own.pid}`,
+      "read",
+    ]);
+  },
+  rowLimit("short")
+);
+
 test("a child's name hides each password libpq reads and keeps the rest", () => {
   // Each URL that carries a password is built from its parts, as replace-blocks-guard.test.ts
   // builds its own, so this source holds no `user:password@host` literal for a credential scanner

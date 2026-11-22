@@ -525,8 +525,15 @@ export async function processTableYielding(tree = machineTree): Promise<Listed[]
  *  the child itself where `root` names it, and every descendant of those by parent pid. This
  *  process is never among them. */
 function treeOf(table: readonly Listed[], token: string, root: number | undefined): Set<number> {
+  // Each child is pushed onto its parent's list. A list copied for every child it gains takes time
+  // that grows with the square of a parent's count, and pid 2 lists every kernel thread: about
+  // 36,000 on a dev box, where that walk held this process's event loop 1.8 s to 3.0 s.
   const children = new Map<number, number[]>();
-  for (const { pid, ppid } of table) children.set(ppid, [...(children.get(ppid) ?? []), pid]);
+  for (const { pid, ppid } of table) {
+    const siblings = children.get(ppid);
+    if (siblings === undefined) children.set(ppid, [pid]);
+    else siblings.push(pid);
+  }
   const found = new Set<number>();
   const seeds = table.filter(({ tokens }) => tokens.includes(token)).map(({ pid }) => pid);
   if (root !== undefined) seeds.push(root);
