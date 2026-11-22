@@ -660,3 +660,34 @@ func TestAnAcceptanceCheckIsNoPartOfTheChangeRequest(t *testing.T) {
 		rig.requireAbsent(t, specRepo, "the-deploy-names-its-host")
 	}
 }
+
+// twoSentenceCheck is a check of a-bill-names-its-order whose claim is two sentences: a problem of
+// form that keeps the node (specgraph.KeepsEachNode), so an approval writes the check as it stands.
+func twoSentenceCheck(base string) string {
+	return ":::check{#a-bill-shows-its-number statement=\"a-bill-names-its-order\" subject=\"code\" procedure=\"program\" " +
+		"runner=\"go\" selector=\"example.com/billing TestABillShowsItsNumber\" job=\"go-test\"" + baseAttribute(base) + "}\n" +
+		"Claim: A bill names its order. It shows the order's number.\n\n" +
+		"Procedure: The test prints the bill of one order.\n\n" +
+		"Failing example: A build whose bill names no order.\n:::\n"
+}
+
+// TestAProblemOfFormAloneProposesNothing: a problem that keeps each node (a claim of two sentences)
+// is the form's, as the approval write reads it (specstore's nodeLosses), so it neither proposes
+// nor changes a check. An issue whose Verification document holds such an approved check as
+// context reads proposes and changes_checks false, and still lists the problem.
+func TestAProblemOfFormAloneProposesNothing(t *testing.T) {
+	rig := newSpecRig(t)
+	rig.seed(t)
+	writer := rig.issue(t, "A bill shows its number", specRepo, "Why the bill changes.\n", twoSentenceCheck(""))
+	rig.approve(t, rig.request(t, writer, true))
+	rig.requireVersions(t, specRepo, "a-bill-shows-its-number", "A bill names its order. It shows the order's number.")
+	quiet := rig.issue(t, "A printer fix beside the approved bill check", specRepo, "Why the printer changes.\n", twoSentenceCheck("1"))
+	read, body := changeRequestOf(t, rig, quiet.Key, "")
+	if read.Proposes || read.ChangesChecks || len(read.ChangedChecks) != 0 || read.VerificationVersion != 1 {
+		t.Errorf("the change request of an issue holding an approved check as context reads %s; "+
+			"want no proposal and no changed check, since a claim of two sentences keeps the node", body)
+	}
+	if len(read.Problems) != 1 || read.Problems[0].Rule != "bad-field" {
+		t.Errorf("the change request lists the problems %+v, want the one bad-field problem of the two-sentence claim", read.Problems)
+	}
+}
