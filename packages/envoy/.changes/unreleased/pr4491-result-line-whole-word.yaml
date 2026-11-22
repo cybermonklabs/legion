@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  A pull-request body line of a result keeps a first word of letters or numbers longer than 80 characters whole, with all that leads into it, such as a parenthesis, a quote, a slash, a full stop, a hyphen or a rule of hyphens, however far that runs, where it used to cut that word at the 80th character or print the lead-in alone, and it keeps a word that ends at the 80th character, which it used to leave out. Every other cut falls inside the 80 characters at a word boundary of Unicode's default word rules (UAX #29, Unicode 17.0.0), with `…`: a reading in Chinese, Hiragana or Thai is cut beside a character, a run of Katakana is one word, and a path is cut at a slash. A `www.` address at the start of a word or after a parenthesis, where GitHub links one, is never cut inside: the line keeps it whole, with a blank before the `…` so that GitHub does not take the `…` into the link, or ends before it. Before it cuts, the line still drops every word that holds a link with a scheme, an issue key, a private host, or a character that is no letter, digit or plain punctuation mark, such as a backtick, a bracket, an emoji or a combining mark.
+time: 2026-11-19T08:09:40Z
+custom:
+  Issue: pr4491
