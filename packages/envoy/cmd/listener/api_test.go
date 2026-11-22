@@ -675,7 +675,7 @@ func TestRoleHolderStateIsNamedByEachRoutesAnswer(t *testing.T) {
 				return httptest.NewRequest(http.MethodGet, "/v1/roles/reviewer", nil)
 			},
 			handler: func(d *listenerDeps) http.Handler {
-				return roleGetHandler(d)
+				return roleGetHandler(d, logging.New("test"))
 			},
 		},
 	}
@@ -781,7 +781,7 @@ func TestRoleHolderLapsedResponseDoesNotInventLastSeen(t *testing.T) {
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
 
 	recorder := httptest.NewRecorder()
-	roleGetHandler(state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/reviewer", nil))
+	roleGetHandler(state, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/reviewer", nil))
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404; body = %s", recorder.Code, recorder.Body.String())
 	}
@@ -933,7 +933,7 @@ func TestARoleLookupWhoseSessionCacheTrailsTheBucketKeepsAFreshClaim(t *testing.
 	claimant, observer := trailingListeners(t)
 	lookup := func(role string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
-		roleGetHandler(observer).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
+		roleGetHandler(observer, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
 		return recorder
 	}
 
@@ -1158,7 +1158,7 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 		stallSessionReads(t, observer.sessions)
 		started := time.Now()
 		recorder := httptest.NewRecorder()
-		roleGetHandler(observer).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/unread", nil))
+		roleGetHandler(observer, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/unread", nil))
 		if elapsed := time.Since(started); recorder.Code != http.StatusServiceUnavailable || elapsed > bound {
 			t.Fatalf("GET /v1/roles/unread while the session bucket cannot be read: status %d %s after %s, want 503 within %s", recorder.Code, recorder.Body.String(), elapsed, bound)
 		}
@@ -1359,7 +1359,7 @@ func TestPublishHandler_ReportsRoleHolderOnlyWhenLive(t *testing.T) {
 		}
 		waitForKeptRoleMessage(t, client, "reviewer", kept.EventID)
 		roleRecorder := httptest.NewRecorder()
-		roleGetHandler(state).ServeHTTP(roleRecorder, httptest.NewRequest(http.MethodGet, "/v1/roles/reviewer", nil))
+		roleGetHandler(state, logging.New("test")).ServeHTTP(roleRecorder, httptest.NewRequest(http.MethodGet, "/v1/roles/reviewer", nil))
 		if roleRecorder.Code != http.StatusNotFound {
 			t.Fatalf("role lookup status = %d, want 404; body = %s", roleRecorder.Code, roleRecorder.Body.String())
 		}
@@ -1486,7 +1486,7 @@ func TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL(t *testing.T) {
 	restoredState := &listenerDeps{client: client, registry: restoredRegistry, sessions: restoredSessions}
 	get := func() *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
-		roleGetHandler(restoredState).ServeHTTP(
+		roleGetHandler(restoredState, logging.New("test")).ServeHTTP(
 			recorder,
 			httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil),
 		)
@@ -2340,7 +2340,7 @@ func TestSessionsHandlerFiltersAndReportsRoles(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/v1/sessions?dir=example&title=Release", nil)
-	sessionsHandler(registry, sessions).ServeHTTP(recorder, request)
+	sessionsHandler(registry, sessions, nil).ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
@@ -2378,7 +2378,7 @@ func TestSessionsHandlerReportsHostWithFallbackToMachineID(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	sessionsHandler(registry, sessions).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	sessionsHandler(registry, sessions, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
 	}
@@ -2435,7 +2435,7 @@ func TestSessionsHandlerAnswersTheTmuxPlaceAndOmitsItForASessionOutsideTmux(t *t
 	}
 
 	recorder := httptest.NewRecorder()
-	sessionsHandler(registry, sessions).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	sessionsHandler(registry, sessions, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
 	}
@@ -2483,7 +2483,7 @@ func TestASecondRegistrationWithoutATmuxPlaceClearsTheStoredTmuxPlace(t *testing
 	}`), &placed); err != nil {
 		t.Fatalf("decode the registration that names a pane: %v", err)
 	}
-	if err := sessions.Put("ses_moved", sessionEntryFromSubscribe(placed, "example-listener", sessionDeliveryOutcome{})); err != nil {
+	if err := sessions.Put("ses_moved", sessionEntryFromSubscribe(placed, "example-listener", sessionDeliveryOutcome{}, nil)); err != nil {
 		t.Fatalf("store the registration that names a pane: %v", err)
 	}
 
@@ -2491,7 +2491,7 @@ func TestASecondRegistrationWithoutATmuxPlaceClearsTheStoredTmuxPlace(t *testing
 	if err := json.Unmarshal([]byte(`{"session_id":"ses_moved"}`), &left); err != nil {
 		t.Fatalf("decode the registration that names none: %v", err)
 	}
-	if err := sessions.Put("ses_moved", sessionEntryFromSubscribe(left, "example-listener", sessionDeliveryOutcome{})); err != nil {
+	if err := sessions.Put("ses_moved", sessionEntryFromSubscribe(left, "example-listener", sessionDeliveryOutcome{}, nil)); err != nil {
 		t.Fatalf("store the registration that names none: %v", err)
 	}
 
@@ -3435,7 +3435,7 @@ func TestSubscribeHandlerStoresAndListsCapabilities(t *testing.T) {
 	}
 
 	list := httptest.NewRecorder()
-	sessionsHandler(registry, sessions).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	sessionsHandler(registry, sessions, nil).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if list.Code != http.StatusOK {
 		t.Fatalf("list sessions: status=%d body=%s", list.Code, list.Body.String())
 	}
@@ -3475,7 +3475,7 @@ func TestSubscribeHandlerStoresAndListsThePluginAndItsVersion(t *testing.T) {
 	}
 
 	list := httptest.NewRecorder()
-	sessionsHandler(registry, sessions).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	sessionsHandler(registry, sessions, nil).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if list.Code != http.StatusOK {
 		t.Fatalf("list sessions: status=%d body=%s", list.Code, list.Body.String())
 	}
@@ -3531,7 +3531,7 @@ func TestSessionRoutesReportEachSessionsDeliveryMode(t *testing.T) {
 	}
 
 	list := httptest.NewRecorder()
-	sessionsHandler(registry, sessions).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	sessionsHandler(registry, sessions, nil).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if list.Code != http.StatusOK {
 		t.Fatalf("GET /v1/sessions: status %d %s, want 200", list.Code, list.Body.String())
 	}
@@ -4161,7 +4161,7 @@ func TestSessionEntryRouteAnswersTheSameBodyAsTheSessionsRow(t *testing.T) {
 	state := &listenerDeps{registry: registry, sessions: sessions}
 
 	list := httptest.NewRecorder()
-	sessionsHandler(registry, sessions).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	sessionsHandler(registry, sessions, nil).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if list.Code != http.StatusOK {
 		t.Fatalf("GET /v1/sessions: status %d %s, want 200", list.Code, list.Body.String())
 	}
@@ -4492,7 +4492,7 @@ func TestRoleAnswersNameALiveHoldersState(t *testing.T) {
 	d := harness.publishDeps(t)
 
 	recorder := httptest.NewRecorder()
-	roleGetHandler(d).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
+	roleGetHandler(d, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("GET /v1/roles/%s: status %d %s, want 200", role, recorder.Code, recorder.Body.String())
 	}
@@ -4723,7 +4723,7 @@ func TestSessionsListRowForASessionWithNoInterestRecordMatchesTheFixture(t *test
 	sessionID := seedNoInterestRecordSession(t, sessions, fixture.AfterThisChange)
 
 	list := httptest.NewRecorder()
-	sessionsHandler(registry, sessions).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	sessionsHandler(registry, sessions, nil).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if list.Code != http.StatusOK {
 		t.Fatalf("GET /v1/sessions: status %d %s, want 200", list.Code, list.Body.String())
 	}

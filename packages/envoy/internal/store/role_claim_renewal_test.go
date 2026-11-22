@@ -336,7 +336,7 @@ func registeredRow(t *testing.T, reg *Registry, sessionID string) Interest {
 // row a registration's write of that same record returns.
 func renewRoleClaims(t *testing.T, reg *Registry, sessionID, instance string) (RoleRenewal, error) {
 	t.Helper()
-	return reg.RenewRoleClaims(context.Background(), sessionID, instance, registeredRow(t, reg, sessionID))
+	return reg.RenewRoleClaims(context.Background(), sessionID, instance, registeredRow(t, reg, sessionID), nil)
 }
 
 // A registration by the very process a claim names moves that claim's renewal to the moment it
@@ -439,7 +439,7 @@ func TestARenewalMovesNoClaimTheRegisteringProcessDoesNotHold(t *testing.T) {
 			advance(beat)
 
 			row := Interest{SessionID: tc.session, Topics: []string{contracts.RoleTopicPrefix + role}}
-			renewal, err := reg.RenewRoleClaims(context.Background(), tc.session, tc.instance, row)
+			renewal, err := reg.RenewRoleClaims(context.Background(), tc.session, tc.instance, row, nil)
 			if err != nil {
 				t.Fatalf("a renewal by %s of process %q: %v; want it to pass the claim over, not fail", tc.session, tc.instance, err)
 			}
