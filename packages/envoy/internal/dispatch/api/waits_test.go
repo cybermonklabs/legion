@@ -63,28 +63,31 @@ func runLeft(t *testing.T) time.Duration {
 	return pastTheRun
 }
 
-// queuedWaiters is what releaseOnceQueued last read: the backends queued behind the held lock, or
-// the error that ended the reading.
+// queuedWaiters is what releaseOnceQueued last read: the backends of the raced calls queued behind
+// the held lock, or the error that ended the reading.
 type queuedWaiters struct {
 	count int
 	err   error
 }
 
-// releaseOnceQueued runs release from a goroutine of its own once want backends queue behind the
-// lock holder's transaction owns (storetest.LockWaiters), and answers a channel that then receives
-// what it last read. It is for a row whose own goroutine is held until the calls it raced answer,
-// which they do only once the lock is released, so the wait cannot run on the test's goroutine.
-// That goroutine calls no t method: at the test binary's deadline less binaryDeadlineMargin
-// (binaryDeadlineGuard) it releases with the count it has, and the row's goroutine fails by name
-// on a count short of want.
-func releaseOnceQueued(t *testing.T, holder pgx.Tx, want int, release func()) <-chan queuedWaiters {
+// releaseOnceQueued runs release from a goroutine of its own once want backends of the pools named
+// applications queue behind the lock holder's transaction owns (storetest.LockWaitersFrom), and
+// answers a channel that then receives what it last read. It counts the raced calls' own backends
+// alone: a backend of the server's own pool queued behind the same lock - the seeded issue's
+// document settlement, which takes the issue's owner lock exclusively while the calls hold it
+// shared - neither ends the wait nor changes the count. It is for a row whose own goroutine is held
+// until the calls it raced answer, which they do only once the lock is released, so the wait
+// cannot run on the test's goroutine. That goroutine calls no t method: at the test binary's
+// deadline less binaryDeadlineMargin (binaryDeadlineGuard) it releases with the count it has, and
+// the row's goroutine fails by name on a count short of want.
+func releaseOnceQueued(t *testing.T, holder pgx.Tx, applications []string, want int, release func()) <-chan queuedWaiters {
 	t.Helper()
 	guard := binaryDeadlineGuard(t)
 	queued := make(chan queuedWaiters, 1)
 	go func() {
 		defer release()
 		for {
-			count, err := storetest.LockWaiters(context.Background(), holder)
+			count, err := storetest.LockWaitersFrom(context.Background(), holder, applications...)
 			if err != nil || count >= want {
 				queued <- queuedWaiters{count: count, err: err}
 				return

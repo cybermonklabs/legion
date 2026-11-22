@@ -97,7 +97,7 @@ const waitingBehindHolder = `
 // exhausted. It reads pg_locks, not pg_stat_activity, whose view is frozen for the rest of a
 // transaction once read. It counts every backend behind the holder, a background document
 // settlement's among them; a test that must know the call under test is the one waiting watches
-// that call's backend instead (QueuedBehind).
+// that call's backend instead (QueuedBehind), or counts its pools' backends alone (LockWaitersFrom).
 func WaitForLockWaiters(t *testing.T, holder pgx.Tx, want int) int {
 	t.Helper()
 	return testwait.UntilPolling(t, 10*time.Millisecond, fmt.Sprintf("%d backends to queue behind the held lock (the count last read)", want), func() (int, bool) {
@@ -132,6 +132,27 @@ func QueuedBehind(ctx context.Context, holder pgx.Tx, pid uint32) (bool, error) 
 		return false, fmt.Errorf("inspect database locks: %w", err)
 	}
 	return queued, nil
+}
+
+// LockWaitersFrom counts the backends queued behind a lock holder's transaction owns, as
+// LockWaiters counts them, whose application_name is one of applications: the backends of pools a
+// test opened for the calls under test (PlannedApplication names those Planned opens). A backend
+// of any other pool queued behind the same lock - a document settlement of the server's own, which
+// takes an issue's owner lock exclusively and so queues among calls that hold it shared - is never
+// counted, so what else the server runs cannot change the count. It reads through holder's own
+// connection, as LockWaiters does, and clears that transaction's snapshot of pg_stat_activity
+// first, which a transaction otherwise takes at its first read and keeps. It fails no test.
+func LockWaitersFrom(ctx context.Context, holder pgx.Tx, applications ...string) (int, error) {
+	if _, err := holder.Exec(ctx, `select pg_stat_clear_snapshot()`); err != nil {
+		return 0, fmt.Errorf("clear the transaction's snapshot of pg_stat_activity: %w", err)
+	}
+	var count int
+	if err := holder.QueryRow(ctx, waitingBehindHolder+`
+		select count(*) from waiting join pg_stat_activity activity using (pid)
+		where activity.application_name = any($1)`, applications).Scan(&count); err != nil {
+		return 0, fmt.Errorf("inspect database locks: %w", err)
+	}
+	return count, nil
 }
 
 // WaitForQueuedBehind waits for the backend pid, the one connection a call under test runs on, to

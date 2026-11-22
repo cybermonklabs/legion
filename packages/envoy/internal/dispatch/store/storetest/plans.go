@@ -23,10 +23,19 @@ const (
 // Plans is every Plan, for a test that reads under each.
 var Plans = []Plan{SequentialScan, IndexScan}
 
-// Planned opens a pool on pool's database whose every connection scans tables with plan alone,
-// closed after t ends, with every pool it opens apart (a listener's). A table a test fills holds
-// too few rows for Postgres to choose either plan as it does for a production read, so a test that
-// reads under each is how it shows a read answers in one order whichever plan serves it.
+// PlannedApplication is the application_name of every connection of a pool Planned opens with
+// plan. It is how a test tells that pool's backends from every other backend of its database
+// (LockWaitersFrom): a pool the test opens for the calls it races serves those calls alone, while
+// the server's own work - an issue's document settlement - runs on the server's pool.
+func PlannedApplication(plan Plan) string {
+	return "storetest planned " + string(plan)
+}
+
+// Planned opens a pool on pool's database whose every connection scans tables with plan alone and
+// names itself PlannedApplication(plan), closed after t ends, with every pool it opens apart (a
+// listener's). A table a test fills holds too few rows for Postgres to choose either plan as it
+// does for a production read, so a test that reads under each is how it shows a read answers in
+// one order whichever plan serves it.
 func Planned(t testing.TB, pool *store.Pool, plan Plan) *store.Pool {
 	t.Helper()
 	var settings map[string]string
@@ -42,6 +51,7 @@ func Planned(t testing.TB, pool *store.Pool, plan Plan) *store.Pool {
 	for name, value := range settings {
 		config.ConnConfig.RuntimeParams[name] = value
 	}
+	config.ConnConfig.RuntimeParams["application_name"] = PlannedApplication(plan)
 	opened, err := pgxpool.NewWithConfig(context.Background(), config)
 	if err != nil {
 		t.Fatalf("open a pool reading with a %s: %v", plan, err)

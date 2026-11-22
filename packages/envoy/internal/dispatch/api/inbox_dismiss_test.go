@@ -727,9 +727,13 @@ func TestDismissedPagesFromItsCursor(t *testing.T) {
 // them - which is the lock order markInboxReadThreads writes down, taken by this route too. The
 // crossing is made rather than waited for, exactly as TestInboxReadRacingAnotherMarkAll makes it:
 // the two dismisses run on servers whose plans are forced apart (markAllOnPlan), so they reach the
-// caller's rows in two orders, and both queue behind a row the test holds.
+// caller's rows in two orders, and both queue behind a row the test holds. The issue's spec never
+// settles during the run (settle: pastTheRun), since a settlement's exclusive take of the issue's
+// owner lock, queued between the two dismisses' shared takes, would keep the second from the gate
+// row and release the round without its crossing; and the wait for the queue counts the
+// dismisses' own backends alone (racingPools), so no other backend ends it or changes its count.
 func TestDismissRacingAnotherDismissAndAMarkAll(t *testing.T) {
-	handler, database, deps := newTestServer(t, testServerOptions{})
+	handler, database, deps := newTestServer(t, testServerOptions{settle: pastTheRun})
 	issue := createInteractionIssue(t, handler, "TEST", "Two dismisses", "A spec")
 	comments := "/api/v1/issues/" + issue.Key + "/comments"
 	threads := make([]string, 0, inboxReadRaceThreads)
@@ -747,7 +751,7 @@ func TestDismissRacingAnotherDismissAndAMarkAll(t *testing.T) {
 		held := holdGateThread(t, database, gate)
 		// race holds the test's goroutine until both dismisses answer, and they answer only once
 		// the gate is released, so a goroutine of its own releases it (releaseOnceQueued).
-		queued := releaseOnceQueued(t, held.tx, 2, held.release)
+		queued := releaseOnceQueued(t, held.tx, racingPools, 2, held.release)
 		mark := time.Now()
 		// One body for both presses: they name the same rows, so they carry the same versions,
 		// which the round's own state answers (dismissBody). Nobody writes in these threads
@@ -761,7 +765,7 @@ func TestDismissRacingAnotherDismissAndAMarkAll(t *testing.T) {
 				return postInboxDismiss(t, byHeap, "alice", dismissing)
 			})
 		if waiting := <-queued; waiting.err != nil || waiting.count != 2 {
-			t.Fatalf("round %d: %d dismisses queued on the gate row, want both of them (read error: %v)", round, waiting.count, waiting.err)
+			t.Fatalf("round %d: %d of the two dismisses queued behind the gate row, want both of them (read error: %v)", round, waiting.count, waiting.err)
 		}
 		if first.Code != http.StatusOK || second.Code != http.StatusOK {
 			t.Fatalf("round %d: the dismiss in thread_id order %d %s, the dismiss in heap order %d %s",

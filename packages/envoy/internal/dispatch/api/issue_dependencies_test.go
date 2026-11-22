@@ -563,7 +563,7 @@ func TestReparentDoesNotDeadlockWithBoardMoveBetweenItsEnds(t *testing.T) {
 // never has one write holding the issue while the other holds the neighbour: a move waiting for its
 // gated first neighbour holds nothing yet, so the reparent finishes before the gate opens.
 func TestReparentDoesNotDeadlockWithABoardMoveOfTheSameIssue(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 3)
 	after, before, moving := keys[0], keys[1], keys[2]
 	// The gated neighbour must be the first lock the move takes.
@@ -576,29 +576,38 @@ func TestReparentDoesNotDeadlockWithABoardMoveOfTheSameIssue(t *testing.T) {
 	if err := store.LockOwner(context.Background(), gate, store.IssueOwner(after)); err != nil {
 		t.Fatal(err)
 	}
+	// The move and the reparent each run on a connection of their own, so each wait below watches
+	// that call's backend alone (storetest.QueuedBehind): any other backend queued on an owner lock,
+	// the server's own among them, is never taken for either.
+	moveHandler, movePID := oneConnectionHandler(t, deps)
 	moves := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		moves <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+moving, map[string]any{
+		moves <- dispatchRequest(t, moveHandler, http.MethodPatch, "/api/v1/issues/"+moving, map[string]any{
 			"rank": map[string]string{"after": after, "before": before},
 		}, "alice")
 	}()
-	waitForDatabaseLocks(t, gate, 1)
+	if response, early := storetest.WaitForQueuedBehind(t, gate, movePID, moves); early {
+		t.Fatalf("the board move answered %d %s before it queued behind the gated neighbour's owner lock", response.Code, response.Body.String())
+	}
+	reparentHandler, reparentPID := oneConnectionHandler(t, deps)
 	reparents := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		reparents <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+moving, map[string]string{"parent": before}, "alice")
+		reparents <- dispatchRequest(t, reparentHandler, http.MethodPatch, "/api/v1/issues/"+moving, map[string]string{"parent": before}, "alice")
 	}()
 	// The reparent answers beside the waiting move, which holds nothing yet. One that waited for
-	// the move would queue on an owner lock behind it, a second owner-lock waiter beside the move's
-	// own wait on the gate.
+	// the move would queue on an owner lock behind it, and so behind the gate.
 	var reparented *httptest.ResponseRecorder
-	testwait.Until(t, "the reparent to answer beside the waiting board move (the owner-lock waiters while it has not)", func() (int, bool) {
+	testwait.Until(t, "the reparent to answer beside the waiting board move (whether its backend has queued behind the gate while it has not)", func() (bool, bool) {
 		select {
 		case reparented = <-reparents:
-			return 0, true
+			return false, true
 		default:
 		}
-		waiting, _ := storetest.OwnerLockWaiters(t, database)
-		return waiting, waiting >= 2
+		queued, err := storetest.QueuedBehind(context.Background(), gate, reparentPID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return queued, queued
 	})
 	if reparented == nil {
 		// The reparent is waiting for the move. Open the gate and report how the two writes end.
