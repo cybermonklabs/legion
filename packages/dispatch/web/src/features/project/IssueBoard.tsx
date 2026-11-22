@@ -134,10 +134,14 @@ function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }):
     transition,
   };
 
+  // `relative` is load-bearing: a marker's `sr-only` words (`UnreachableRouteMarker`) are
+  // absolutely positioned, and without a positioned ancestor inside the lane's scroll box their
+  // containing block is the page, so a card far along the lanes widened the page past the
+  // viewport instead of being clipped by its lane.
   return (
     <article
       aria-label={`${issue.key} ${issue.title}`}
-      className={`cursor-grab rounded-xl border p-3 ${card} ${cardHoverBorder} ${boardFocusRing} ${
+      className={`relative cursor-grab rounded-xl border p-3 ${card} ${cardHoverBorder} ${boardFocusRing} ${
         isDragging ? "opacity-50" : ""
       }`}
       data-board-card={issue.key}
