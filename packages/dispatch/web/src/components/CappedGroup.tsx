@@ -1,4 +1,4 @@
-import { Children, type ReactNode, useId, useState } from "react";
+import { Children, isValidElement, type ReactNode, useId, useState } from "react";
 
 import {
   focusVisibleRing,
@@ -27,17 +27,23 @@ export const LAYOUT_GROUP_MAX = 10;
  * `label` is the group in words, a plural noun ("labels"), which ends the button's name: "Show 3
  * more labels", and "Show fewer labels" while open. `className` lays the group out; `contents`
  * lets its entries flow in the row around it, beside a control the host draws after them.
+ *
+ * Given `list`, the group is a list named by it: a `ul` with each entry in an `li`, and the
+ * control in an `li` of its own, which then carries `data-layout-more`, since the measure skips
+ * only a direct child that carries it.
  */
 export function CappedGroup({
   children,
   className = "",
   label,
+  list,
   max = LAYOUT_GROUP_MAX,
   name,
 }: {
   children: ReactNode;
   className?: string;
   label: string;
+  list?: string;
   max?: number;
   name: string;
 }): ReactNode {
@@ -45,32 +51,46 @@ export function CappedGroup({
   const groupId = useId();
   const entries = Children.toArray(children);
   const hidden = entries.length - max;
-  return (
-    <div
-      className={className}
-      data-layout-group={name}
-      data-layout-max={max < LAYOUT_GROUP_MAX ? max : undefined}
-      data-layout-open={open && hidden > 0 ? "" : undefined}
-      id={groupId}
-    >
-      {open || hidden <= 0 ? entries : entries.slice(0, max)}
-      {hidden <= 0 ? null : (
-        <button
-          aria-controls={groupId}
-          aria-expanded={open}
-          aria-label={open ? `Show fewer ${label}` : `Show ${hidden} more ${label}`}
-          className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
-          data-layout-more=""
-          onClick={() => setOpen((current) => !current)}
-          type="button"
+  const shown = open || hidden <= 0 ? entries : entries.slice(0, max);
+  const more =
+    hidden <= 0 ? null : (
+      <button
+        aria-controls={groupId}
+        aria-expanded={open}
+        aria-label={open ? `Show fewer ${label}` : `Show ${hidden} more ${label}`}
+        className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
+        data-layout-more={list === undefined ? "" : undefined}
+        onClick={() => setOpen((current) => !current)}
+        type="button"
+      >
+        <span
+          className={`rounded-full px-2 py-0.5 text-xs font-medium whitespace-nowrap ${surfaceMutedStrongBg}`}
         >
-          <span
-            className={`rounded-full px-2 py-0.5 text-xs font-medium whitespace-nowrap ${surfaceMutedStrongBg}`}
-          >
-            {open ? "Show fewer" : `+${hidden}`}
-          </span>
-        </button>
-      )}
-    </div>
+          {open ? "Show fewer" : `+${hidden}`}
+        </span>
+      </button>
+    );
+  const attributes = {
+    className,
+    "data-layout-group": name,
+    "data-layout-max": max < LAYOUT_GROUP_MAX ? max : undefined,
+    "data-layout-open": open && hidden > 0 ? "" : undefined,
+    id: groupId,
+  };
+  if (list === undefined) {
+    return (
+      <div {...attributes}>
+        {shown}
+        {more}
+      </div>
+    );
+  }
+  return (
+    <ul aria-label={list} {...attributes}>
+      {shown.map((entry, index) => (
+        <li key={isValidElement(entry) && entry.key !== null ? entry.key : index}>{entry}</li>
+      ))}
+      {more === null ? null : <li data-layout-more="">{more}</li>}
+    </ul>
   );
 }

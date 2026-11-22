@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { CappedGroup } from "./CappedGroup";
@@ -79,6 +79,36 @@ test("a cap below ten is the group's own, and the measure is told it", () => {
     expect(group).toHaveAttribute("data-layout-max", "3");
     expect(drawn(group as HTMLElement)).toEqual(labels(3));
     expect(screen.getByRole("button", { name: "Show 2 more labels" })).toHaveTextContent("+2");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("given a list name, the group is a named list whose control sits in an item of its own", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <CappedGroup label="agents" list="Selected agents" name="agents">
+      {labels(12).map((label) => (
+        <span key={label}>{label}</span>
+      ))}
+    </CappedGroup>
+  );
+  try {
+    const list = screen.getByRole("list", { name: "Selected agents" });
+    expect(list).toHaveAttribute("data-layout-group", "agents");
+    // Ten entries and the item holding the control, which the measure leaves out by its mark.
+    expect(drawn(list)).toEqual(labels(10));
+    const items = within(list).getAllByRole("listitem");
+    expect(items).toHaveLength(11);
+    const more = screen.getByRole("button", { name: "Show 2 more agents" });
+    expect(more.parentElement).toBe(items[10] ?? null);
+    expect(items[10]).toHaveAttribute("data-layout-more");
+    expect(more).not.toHaveAttribute("data-layout-more");
+
+    await user.click(more);
+    expect(drawn(list)).toEqual(labels(12));
+    expect(within(list).getAllByRole("listitem")).toHaveLength(13);
+    expect(screen.getByRole("button", { name: "Show fewer agents" })).toHaveFocus();
   } finally {
     view.unmount();
   }
