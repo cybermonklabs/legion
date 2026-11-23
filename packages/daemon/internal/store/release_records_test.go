@@ -49,7 +49,7 @@ func holdRows(t *testing.T, st *Store, issue string) []struct {
 // rather than failing here, so each caller keeps saying what it expected of the rows.
 func unfinishedResumes(ctx context.Context, st *Store, project string, before time.Time) ([]PodResume, error) {
 	var out []PodResume
-	err := st.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		out, err = st.UnfinishedPodResumesTx(ctx, tx, project, before)
 		return err
@@ -142,7 +142,7 @@ func TestTheStrandedReadSeesOnlyTheWakesOfTheNewestRelease(t *testing.T) {
 	}
 	wake := func(release int64, role string, when time.Time) {
 		t.Helper()
-		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 			_, _, err := RecordPodWakeTx(ctx, tx, PodResume{Release: release, Project: "legion", Issue: rootIssue,
 				Role: role, Kind: pods.WakeDelivery, At: when})
 			return err

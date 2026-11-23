@@ -1,26 +1,23 @@
 // Package testdb gives a test a Postgres database of its own on the devbox and CI Postgres that
-// LEGION_TEST_PG_DSN names, dropped when the test ends, so no test sees another's rows, and a way
-// to reach it across a network's delay (Delayed). A test is skipped without it: there is nothing
-// to run against.
+// LEGION_TEST_PG_DSN names, dropped when the test ends, so no test sees another's rows; ways to
+// reach it across a network's delay (Delayed) or through a proxy that holds or cuts a commit's
+// reply (CommitFaults); and a pool whose transactions are cancelled between two statements
+// (CancelAfterScan). A test is skipped without that Postgres: there is nothing to run against.
 //
 // Database is an empty database, as a URL a pgx pool opens (PoolBounded), and PlainDatabase the
 // same as a URL any other client reads. A test that needs the daemon's schema takes
 // internal/testpg's Clone or CloneStore instead, which copy a template that package migrated once.
 //
-// A package whose tests migrate into the database their DSN names, rather than making one per
-// test, takes one database for the whole run instead: RunDatabaseMain from its TestMain, and
-// RunDatabaseFor wherever it reads the DSN. The two mechanisms compose, and a package that needs
-// both nests them (internal/daemon's TestMain).
+// This package imports no package of this module except internal/testwait, which imports none,
+// and nothing added here may import another: migrating the template needs internal/store, so
+// internal/testpg imports it, and a test binary of internal/store that imported internal/testpg
+// back would be a cycle. Keeping the schema-free half apart is what lets internal/store's own
+// tests take the same fixture every other package's tests take.
 //
-// This package imports nothing of this module, and nothing added here may: migrating the template
-// needs internal/store, so internal/testpg imports it, and a test binary of internal/store that
-// imported internal/testpg back would be a cycle. Keeping the schema-free half apart is what lets
-// internal/store's own tests take the same fixture every other package's tests take.
-//
-// DatabaseURL, Delayed and PoolBounded are the rewrites of LEGION_TEST_PG_DSN a test binary of
-// this module makes, each through rewriteDSN; DatabaseURL's comment says which callers make them
-// and what the check refuses. RandomName is exported for internal/testpg alone, which names its
-// template and each clone of it with it.
+// DatabaseURL, Delayed, CommitFaults and PoolBounded are the rewrites of LEGION_TEST_PG_DSN a test
+// binary of this module makes, each through rewriteDSN; DatabaseURL's comment says which callers
+// make them and what the check refuses. RandomName is exported for internal/testpg alone, which
+// names its template and each clone of it with it.
 package testdb
 
 import (
@@ -98,8 +95,8 @@ func PlainDatabase(t testing.TB, prefix string) string {
 // URL and the function that drops it, which also closes the admin connection create opened. Both
 // URLs it connects or points a caller at — the admin database's and the new database's — come
 // from DatabaseURL, and it makes them before it connects, so a DSN whose rewrite names another
-// server ends the call with no connection and no database. Database and RunDatabaseMain are its
-// two callers: one database per test, one per run.
+// server ends the call with no connection and no database. Database is its caller: one database
+// per test.
 func create(dsn, prefix string) (string, func() error, error) {
 	admin, err := DatabaseURL(dsn, "postgres")
 	if err != nil {
@@ -157,9 +154,9 @@ type Execer interface {
 // has not, which a run under load reaches (envoy's storetest retries the same code). Both
 // refusals are waited out for 30 seconds; any other error is the caller's at once.
 //
-// It lives here rather than in internal/testpg because this package imports nothing of the
-// module, so every package's tests can take it — internal/store's among them, whose own tests
-// cannot import internal/testpg at all.
+// It lives here rather than in internal/testpg because this package imports no package of the
+// module except internal/testwait, which imports none, so every package's tests can take it —
+// internal/store's among them, whose own tests cannot import internal/testpg at all.
 func Drop(ctx context.Context, admin Execer, name string) error {
 	deadline := time.Now().Add(30 * time.Second)
 	for attempt := 0; ; attempt++ {
@@ -206,9 +203,10 @@ func RandomName(prefix string) (string, error) {
 // readers that are no pool, and PoolBounded puts the pool keys back for a pool. Every database a
 // test binary of this module names from LEGION_TEST_PG_DSN is named here — create above, and
 // internal/testpg's prepare and Clone — so one place reads each rewrite back, and no caller checks
-// itself. Delayed's proxy URL and PoolBounded's pool URL are the other rewrites of a DSN this
-// package makes, and they take the same check (rewriteDSN below). dsn is what LEGION_TEST_PG_DSN
-// holds, which every caller read from that variable, and a refusal names it.
+// itself. The proxy URLs of Delayed and CommitFaults and PoolBounded's pool URL are the other
+// rewrites of a DSN this package makes, and they take the same check (rewriteDSN below). dsn is
+// what LEGION_TEST_PG_DSN holds, which every caller read from that variable, and a refusal names
+// it.
 //
 // A rewrite from which pgx reads anything other than dsn's reading with the change asked for is
 // refused: another host, port, user or database, and another password, run-time parameter or
@@ -312,10 +310,11 @@ func PoolBounded(server, dsn string) (string, error) {
 }
 
 // rewrite is what a caller of rewriteDSN changes about the DSN it was given: the database the
-// rewrite must name (DatabaseURL), the address it must send the connection to (Delayed), and the
-// pool keys of its query. With pools set, the rewrite takes every pool key out of the query and
-// appends pool, the raw pairs pgx reads as poolRead: none for DatabaseURL, the server's own or
-// pool_max_conns=PoolConns for PoolBounded. A field left empty is one the rewrite keeps.
+// rewrite must name (DatabaseURL), the address it must send the connection to (Delayed,
+// CommitFaults), and the pool keys of its query. With pools set, the rewrite takes every pool key
+// out of the query and appends pool, the raw pairs pgx reads as poolRead: none for DatabaseURL,
+// the server's own or pool_max_conns=PoolConns for PoolBounded. A field left empty is one the
+// rewrite keeps.
 type rewrite struct {
 	database string
 	host     string
@@ -487,78 +486,6 @@ func rewriteDSN(name, dsn string, want rewrite) (string, error) {
 			name, moved)
 	}
 	return rewritten, nil
-}
-
-// runServer is the server RunDatabaseMain made the run's database on, named by serverKey, and
-// runDatabase the URL of that database; both are empty until a RunDatabaseMain with
-// LEGION_TEST_PG_DSN set runs.
-var (
-	runServer   string
-	runDatabase string
-)
-
-// serverKey is the part of a DSN that names the server rather than a database on it, so two DSNs
-// that differ only in the database they name have one key. It reads the DSN with
-// pgconn.ParseConfig, the parser DatabaseURL and the driver read it with, so the key is the host,
-// the port and the user pgx connects as. A DSN pgx refuses is its own key: every key below holds
-// two NUL bytes, and a DSN a test read out of its environment holds none, so no refused DSN
-// equals a key.
-func serverKey(dsn string) string {
-	cfg, err := pgconn.ParseConfig(dsn)
-	if err != nil {
-		return dsn
-	}
-	return fmt.Sprintf("%s\x00%d\x00%s", cfg.Host, cfg.Port, cfg.User)
-}
-
-// RunDatabaseMain makes one database named <prefix>_<random> for the whole run on the server
-// LEGION_TEST_PG_DSN names, runs run, drops that database and returns run's code; a drop that
-// fails prints why and turns a passing run into exit 1. A package whose tests migrate into the
-// database their DSN names calls it from TestMain, where every test reads the run's database
-// through RunDatabaseFor, so two runs of the package on one server never write each other's rows
-// and neither writes the database that server serves. With LEGION_TEST_PG_DSN unset it makes
-// nothing and returns run(), so those tests skip as they do without a server.
-//
-// It is not internal/testpg's Main, which prepares the template Clone copies: the two are
-// different databases for different needs, and a package that wants both nests them, each under a
-// prefix of its own so a census of either name says which it counted:
-//
-//	os.Exit(testpg.Main("legion_daemon_test", func() int {
-//		return testdb.RunDatabaseMain("legion_daemon_run", m.Run)
-//	}))
-//
-// It takes run rather than *testing.M so that it wraps another TestMain helper.
-func RunDatabaseMain(prefix string, run func() int) int {
-	dsn := os.Getenv("LEGION_TEST_PG_DSN")
-	if dsn == "" {
-		return run()
-	}
-	database, drop, err := create(dsn, prefix)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "make the package's run database: %v\n", err)
-		return 1
-	}
-	runServer, runDatabase = serverKey(dsn), database
-	code := run()
-	if err := drop(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		if code == 0 {
-			code = 1
-		}
-	}
-	return code
-}
-
-// RunDatabaseFor is the URL of the database RunDatabaseMain made for this run when dsn names the
-// server that database is on, which is the host, the port and the user pgx reads from both
-// (serverKey), and dsn itself otherwise: a test that points LEGION_TEST_PG_DSN at a server of its
-// own keeps what it set. Without a run database — no RunDatabaseMain, or LEGION_TEST_PG_DSN
-// unset — it is dsn.
-func RunDatabaseFor(dsn string) string {
-	if runDatabase == "" || serverKey(dsn) != runServer {
-		return dsn
-	}
-	return runDatabase
 }
 
 // DSNFile is a 0600 file under the test's temporary directory holding PlainDatabase's URL, as the

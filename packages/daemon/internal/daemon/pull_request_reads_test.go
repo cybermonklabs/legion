@@ -83,6 +83,7 @@ func headReads(t *testing.T, pool *store.Pool, kind string) int {
 // have carried, with GitHub's updated_at, so the handler's own clock fence decides it. A head that
 // did not move applies nothing, and a read older than the record's clock moves nothing.
 func TestTheReadFollowsAHeadWhoseSynchronizeHasNotArrived(t *testing.T) {
+	t.Parallel()
 	read := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name     string
@@ -125,6 +126,7 @@ func TestTheReadFollowsAHeadWhoseSynchronizeHasNotArrived(t *testing.T) {
 // new head with it, so the push the webhook would have carried is recorded, and that webhook
 // arriving afterwards decides nothing.
 func TestTheReadFollowsAPushAboveAnApprovalAsANewHead(t *testing.T) {
+	t.Parallel()
 	read := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Reviewing, "needs_review", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleReviewer, Claim: "review-claim"})
@@ -146,6 +148,7 @@ func TestTheReadFollowsAPushAboveAnApprovalAsANewHead(t *testing.T) {
 // reaches it. followHead compares GitHub's head with the record as it stands then, so a head the
 // webhook already recorded applies nothing again.
 func TestFollowHeadComparesWithTheRecordAsItStandsNow(t *testing.T) {
+	t.Parallel()
 	read := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
@@ -172,6 +175,7 @@ func TestFollowHeadComparesWithTheRecordAsItStandsNow(t *testing.T) {
 // and declined again, and the issue stays where it is. Once the record changes (a new generation
 // removes the closed pull request), the same read records it and the issue moves on.
 func TestAnOpenedTheWorkflowDoesNotRecordIsAppliedAgainByEveryRead(t *testing.T) {
+	t.Parallel()
 	opened := time.Date(2026, 10, 26, 19, 30, 0, 0, time.UTC)
 	pool := isolatedOutboxPool(t)
 	seedDeclinedOpened(t, pool, opened)
@@ -209,7 +213,7 @@ func TestAnOpenedTheWorkflowDoesNotRecordIsAppliedAgainByEveryRead(t *testing.T)
 func seedDeclinedOpened(t *testing.T, pool *store.Pool, opened time.Time) {
 	t.Helper()
 	seedUnrecorded(t, pool, "handoff")
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(context.Background(), tx, record.PullRequest{State: record.PullRequestClosed, Issue: "CAPTURE-1", Repo: "acme/widgets",
 			Number: 86, Branch: "legion/CAPTURE-1", HeadSHA: "handoff", HeadUpdatedAt: opened.Add(time.Hour), Failing: []string{}})
 	}); err != nil {
@@ -221,6 +225,7 @@ func seedDeclinedOpened(t *testing.T, pool *store.Pool, opened time.Time) {
 // would list other pull requests, so it takes one only when its head is the issue's branch, and one
 // on another branch records nothing.
 func TestTheReadTakesOnlyAPullRequestOnTheIssuesBranch(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedUnrecorded(t, pool, "handoff")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -245,6 +250,7 @@ func TestTheReadTakesOnlyAPullRequestOnTheIssuesBranch(t *testing.T) {
 // read is no newer than what moved it, and following it could move the head back. A read newer
 // than the record's clock is followed.
 func TestFollowHeadKeepsARecordMovedSinceTheListByWhatItReadNoLater(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name string
@@ -282,8 +288,7 @@ func TestFollowHeadKeepsARecordMovedSinceTheListByWhatItReadNoLater(t *testing.T
 func seedUnrecorded(t *testing.T, pool *store.Pool, handoff string) {
 	t.Helper()
 	records := record.NewStore()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		ctx := context.Background()
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, record.Issue{Key: "CAPTURE-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "CAPTURE-1", Project: "CAPTURE", Title: "root",
 			Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"}); err != nil {
 			return err
@@ -304,6 +309,7 @@ func seedUnrecorded(t *testing.T, pool *store.Pool, handoff string) {
 // (heardSpelling), so the webhooks that follow find the record. An issue whose implementer has not
 // completed, or whose pull request is recorded open or merged, costs no read.
 func TestTheReadRecordsAnOpenPullRequestWhoseOpenedHasNotArrived(t *testing.T) {
+	t.Parallel()
 	opened := time.Date(2026, 10, 26, 19, 30, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name     string
@@ -325,7 +331,7 @@ func TestTheReadRecordsAnOpenPullRequestWhoseOpenedHasNotArrived(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			seedUnrecorded(t, pool, tc.handoff)
 			if tc.recorded != "" {
-				if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+				if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 					return record.NewStore().PutPullRequest(context.Background(), tx, record.PullRequest{State: tc.recorded, Issue: "CAPTURE-1", Repo: "acme/widgets",
 						Number: 86, Branch: "legion/CAPTURE-1", HeadSHA: "handoff", HeadUpdatedAt: opened.Add(-time.Hour), Failing: []string{}})
 				}); err != nil {
@@ -540,6 +546,7 @@ func webhookPush(before, after, pusher string) intake.Push {
 // the synchronize, so the head is judged with its chain of pushes and no head run stays open. The
 // push webhooks arriving afterwards decide nothing.
 func TestTheReadRebuildsTheReviewAppsRedTestPushesLost(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
@@ -569,6 +576,7 @@ func TestTheReadRebuildsTheReviewAppsRedTestPushesLost(t *testing.T) {
 // that activity, so the head is judged with its push, and the push webhook arriving afterwards
 // decides nothing.
 func TestTheReadRebuildsAPushLostWhateverTheActivityCallsIt(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	for _, kind := range []string{"push", "force_push"} {
 		t.Run(kind, func(t *testing.T) {
@@ -592,6 +600,7 @@ func TestTheReadRebuildsAPushLostWhateverTheActivityCallsIt(t *testing.T) {
 // again), or GitHub fails the read - the read applies no push, logs a WARN saying why, and applies
 // the synchronize as it did before it read the activity.
 func TestTheReadAppliesNoPushWhenTheActivityCannotBeFollowed(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	zero := strings.Repeat("0", 40)
 	for _, tc := range []struct {

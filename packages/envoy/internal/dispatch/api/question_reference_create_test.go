@@ -65,6 +65,7 @@ func questionEdges(t *testing.T, database *store.Store, fromKind, fromID, askID 
 // spec, the document the ask belongs to once its queued row is written (refs.ScopeOf), and is
 // stored as that ask's edge.
 func TestANewAsksQuestionReferenceResolvesAgainstItsIssuesSpec(t *testing.T) {
+	t.Parallel()
 	handler, database, issue, question := settledQuestionFixture(t, "A new ask citing a question")
 
 	created := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
@@ -84,6 +85,7 @@ func TestANewAsksQuestionReferenceResolvesAgainstItsIssuesSpec(t *testing.T) {
 // The same for a comment this route creates on the issue: its `#q1` resolves against the issue's
 // spec, the document ScopeOf answers for a comment that names none itself.
 func TestANewCommentsQuestionReferenceResolvesAgainstItsIssuesSpec(t *testing.T) {
+	t.Parallel()
 	handler, database, issue, question := settledQuestionFixture(t, "A new comment citing a question")
 
 	created := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
@@ -103,6 +105,7 @@ func TestANewCommentsQuestionReferenceResolvesAgainstItsIssuesSpec(t *testing.T)
 // A reply names no document of its own: its scope is its parent's, which ScopeOf walks the
 // thread for, and the reply's queued row cannot answer that walk.
 func TestANewReplysQuestionReferenceResolvesAgainstItsThreadsDocument(t *testing.T) {
+	t.Parallel()
 	handler, database, issue, question := settledQuestionFixture(t, "A new reply citing a question")
 
 	root := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
@@ -131,6 +134,7 @@ func TestANewReplysQuestionReferenceResolvesAgainstItsThreadsDocument(t *testing
 // An issue message belongs to its issue's spec, and its row's insert is queued with the rest of
 // the write (createStoredMessage), so its `#q1` is resolved from what that row will hold.
 func TestANewIssueMessagesQuestionReferenceResolvesAgainstItsIssuesSpec(t *testing.T) {
+	t.Parallel()
 	handler, database, issue, question := settledQuestionFixture(t, "A new message citing a question")
 
 	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "Answered by #q1."}, "alice")
@@ -143,6 +147,7 @@ func TestANewIssueMessagesQuestionReferenceResolvesAgainstItsIssuesSpec(t *testi
 // summary the requester wrote is part of its question: a `#q1` in that summary resolves against
 // the issue's spec, the document the request belongs to.
 func TestANewApprovalRequestsQuestionReferenceResolvesAgainstItsIssuesSpec(t *testing.T) {
+	t.Parallel()
 	handler, database, issue, question := settledQuestionFixture(t, "An approval request citing a question")
 
 	requested := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/approval-requests", map[string]any{
@@ -165,6 +170,7 @@ func TestANewApprovalRequestsQuestionReferenceResolvesAgainstItsIssuesSpec(t *te
 // document the block is on - the one that declares every question a `#q1` in it can name - is
 // the ask's own scope. A second question block citing the first stores that edge.
 func TestANewAskBlocksQuestionReferenceResolvesAgainstItsOwnDocument(t *testing.T) {
+	t.Parallel()
 	handler, database, issue, question := settledQuestionFixture(t, "An ask block citing a question")
 
 	addAskBlock(t, handler, issue.PrimaryArtifactID, "q2", "Does #q1 settle this?")
@@ -179,6 +185,7 @@ func TestANewAskBlocksQuestionReferenceResolvesAgainstItsOwnDocument(t *testing.
 // of a block that same edit declares still names the ask of that block, because the question
 // map is the document's as the transaction leaves it (refs.QuestionMap).
 func TestQuestionReferencesToABlockOfTheSameEditResolve(t *testing.T) {
+	t.Parallel()
 	handler, database := blockAskHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Two question blocks in one edit", "Context\n")
 	written := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
@@ -202,6 +209,7 @@ func TestQuestionReferencesToABlockOfTheSameEditResolve(t *testing.T) {
 // falling back. The target's row is one this very transaction queued, and a read of the asks
 // table answers for none of it (refs.Pending).
 func TestANewAskBlocksEventNamesTheAskOfTheSameEdit(t *testing.T) {
+	t.Parallel()
 	handler, _ := blockAskHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "An event naming a question of the same edit", "Context\n")
 	written := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{

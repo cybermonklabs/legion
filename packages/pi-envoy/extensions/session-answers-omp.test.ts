@@ -16,6 +16,7 @@ import {
   deliveryFor,
   messageStream,
   ompRoot,
+  ownMessages,
   type Request,
   resumeId,
   serveStandin,
@@ -163,8 +164,10 @@ function isMainTurn(request: Request): boolean {
   );
 }
 
+/** A request's own messages: what the session sent, without the host's date/cwd reminders, which
+ *  it sends as messages of their own once the local date has changed (`ownMessages`). */
 function messagesOf(request: Request): unknown[] {
-  return Array.isArray(request.body.messages) ? request.body.messages : [];
+  return ownMessages(request.body);
 }
 
 /** The text of a message as the binary sent it: string content, or its text blocks joined. */

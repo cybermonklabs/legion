@@ -39,6 +39,7 @@ import (
 // when its start ran (the start executor's newsForStart), and the one prompt the architect is sent
 // is that task. Its turn's confirmation is the credit that takes the row to version 5, once.
 func TestANewerEntrysTaskTakesTheUntakenNewsOfARootArchitectAndTellsIt(t *testing.T) {
+	t.Parallel()
 	token := mustClaimToken(t, pathRoot, claim.RoleArchitect)
 	for _, held := range []struct {
 		name string
@@ -165,6 +166,7 @@ func TestANewerEntrysTaskTakesTheUntakenNewsOfARootArchitectAndTellsIt(t *testin
 // before its row held one, every architect given an entry would read as behind and be told no
 // summary by any news-only start.
 func TestTheRootArchitectsSummaryReachesItAtTheEntryItsRowNames(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		given   int64

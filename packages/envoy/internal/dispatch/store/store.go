@@ -23,6 +23,13 @@ import (
 // Store is the shared Dispatch database handle.
 type Store struct {
 	Pool *Pool
+	// afterNonTransactionalStatement runs on the connection a marked migration was applied on,
+	// once its statement has returned and before its version is recorded, and its error fails
+	// that migration. Only a test sets it: the runner closes that connection before Migrate
+	// returns, so this is the one place the session that applied the statement can be asked
+	// whether it held a transaction around it. Nil, which every Store Open makes leaves it,
+	// runs nothing.
+	afterNonTransactionalStatement func(ctx context.Context, conn *pgx.Conn) error
 }
 
 // Every file in migrations, so pgmigrate.Load judges each one; pgmigratetest.CheckEmbedsEveryFile
@@ -483,6 +490,11 @@ func (s *Store) applyNonTransactionalMigration(ctx context.Context, migrations [
 	}
 	if err := pgmigrate.ExecNonTransactional(ctx, conn, migration, s.Pool.Config().BeforeConnect); err != nil {
 		return err
+	}
+	if s.afterNonTransactionalStatement != nil {
+		if err := s.afterNonTransactionalStatement(ctx, conn); err != nil {
+			return err
+		}
 	}
 	return pgmigrate.Record(ctx, conn, versionTable, migration)
 }

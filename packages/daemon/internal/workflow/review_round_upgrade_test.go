@@ -45,7 +45,7 @@ func storeBeforeTheReviewedHead(t *testing.T) (*store.Store, *pgxpool.Pool) {
 		if migration.Version == phaseReviewedHeadMigration {
 			continue
 		}
-		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			if _, err := tx.Exec(ctx, migration.SQL); err != nil {
 				return err
 			}

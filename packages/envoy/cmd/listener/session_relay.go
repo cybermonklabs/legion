@@ -137,10 +137,9 @@ const (
 	// relayRefusedReplyLogEvery is how often the relay writes its line for a reply that names
 	// another session than its frame's (sessionRelays.onReply): the first such reply, then at most
 	// one a minute, each saying how many it held back since the line before. Any publisher on the
-	// listener's reply inbox can send such a reply. While natsgrant.Session publishes every _INBOX.
-	// subject, any session can, naming another session beside a token of its own frame; once it
-	// publishes bus.SessionReplies alone, a session's reply names that session, and is refused only
-	// for a token of another session's frame, which the session cannot read. A holder of the shared
+	// listener's reply inbox can send such a reply. A session on its own grant (natsgrant.Session)
+	// publishes bus.SessionReplies alone, so its reply names that session, and is refused only for
+	// a token of another session's frame, which the session cannot read. A holder of the shared
 	// session user or of a host user can send any. The line names the frame's session and the
 	// session the reply names, never the sender, which the relay cannot see. A sender can send such
 	// replies as fast as it likes, so the line must not grow with them; one a minute still tells an
@@ -1563,8 +1562,8 @@ func relayNakDelayFor(delivered uint64) time.Duration {
 // A reply moves only the frame of the session its subject names, the session the frame was sent
 // to: one whose subject names another session moves nothing, so a session that learned another's
 // token cannot acknowledge that session's message away under its own reply prefix, the one its
-// grant lets it publish to once natsgrant.Session publishes bus.SessionReplies in place of every
-// _INBOX. subject. The first such reply is logged at WARN, then at most one every
+// grant lets it publish to (natsgrant.Session publishes bus.SessionReplies in place of every
+// _INBOX. subject). The first such reply is logged at WARN, then at most one every
 // relayRefusedReplyLogEvery, each line counting the replies held back before it.
 func (m *sessionRelays) onReply(msg *nats.Msg) {
 	rest, ok := strings.CutPrefix(msg.Subject, m.replyPrefix)

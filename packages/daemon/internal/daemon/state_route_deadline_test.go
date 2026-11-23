@@ -78,6 +78,7 @@ func daemonBackends(t *testing.T, pool *store.Pool, application, condition strin
 // patience. That is the measured failure — 32 connections of the production pool held by reads
 // nobody ended — in one request.
 func TestTheStateRouteEndsItsTransactionAtItsDeadline(t *testing.T) {
+	t.Parallel()
 	// The route's bound as this test sets it (api.Options.StateReadBound), seconds rather than
 	// the daemon's own 60, which is what api's default pins. Nothing in this test is slow but
 	// the hold, so two seconds cuts nothing legitimate here.
@@ -101,7 +102,7 @@ func TestTheStateRouteEndsItsTransactionAtItsDeadline(t *testing.T) {
 	state := &heldState{}
 	state.held.Store(true)
 	handler := api.NewServer("127.0.0.1", 0, api.Options{
-		State: state, StateTransactions: st, StateReadBound: bound, Log: quietLogger(),
+		State: state, StateTransactions: st.Pool(), StateReadBound: bound, Log: quietLogger(),
 	}).Handler
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)

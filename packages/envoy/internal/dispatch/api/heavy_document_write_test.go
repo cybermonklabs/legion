@@ -47,6 +47,7 @@ func heavyWrites() []heavyWrite {
 // (TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedInTime) and by BenchmarkHeavyDocumentWrite
 // beside this file; what a writer is answered is gated here.
 func TestHeavyDocumentWriteVerdicts(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	write := func(t *testing.T, name, body string, stored bool) {

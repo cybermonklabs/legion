@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -35,6 +36,7 @@ import (
 // the turn ends, or that expiry ends a turn that never does, the new tree's architect launches and
 // the role resumes its session in the new tree.
 func TestACarriedChildsRoleStillInATurnStopsBeforeItsNewTreeLaunches(t *testing.T) {
+	t.Parallel()
 	const rootKey, childKey = "LEGION-207", "LEGION-208"
 	carries := []struct {
 		name string
@@ -98,7 +100,7 @@ func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply 
 	start := time.Now().UTC().Truncate(time.Second)
 	until := start.Add(linger)
 	parent := rootKey
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, put := range []error{
 			records.PutIssue(ctx, tx, record.Issue{Key: rootKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: rootKey, Project: "LEGION", Title: "root", Phase: phase.Done,
 				Generation: 1, Status: "done", Rank: "A", LingerUntil: &until, LastDispatchSeq: 1}),
@@ -168,7 +170,7 @@ func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply 
 		}
 	})
 	var carried *record.Issue
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		carried, err = records.Issue(ctx, tx, childKey)
 		return err
@@ -307,6 +309,7 @@ func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply 
 // the cluster. The check before a start reads each claim's view, which only Retree changes, and
 // goes on while the issue's architect launches.
 func TestAStartOfAnIssueInItsOwnTreeWaitsOnNoSiblingsLaunch(t *testing.T) {
+	t.Parallel()
 	sup, fakeRuntime := newOutboxSupervisor(t, "legion", t.TempDir())
 	rt := newStallingRuntime(t, fakeRuntime, false)
 	sup.deps.Runtime = rt
@@ -339,6 +342,7 @@ func TestAStartOfAnIssueInItsOwnTreeWaitsOnNoSiblingsLaunch(t *testing.T) {
 // lingers, or none recorded, leaves no close to wait for, so the stop is bounded at the stop timeout
 // from now, as an operator's is.
 func TestACarriedRolesStopDeadlineIsItsOldRootsLingerExpiry(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 10, 13, 1, 0, 0, 0, time.UTC)
 	until := now.Add(17 * time.Minute)
 	const stop = 10 * time.Second
