@@ -21,9 +21,9 @@ func (w *writes) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// A write reaches the writer under Writer in one write, with every URL's query and userinfo
-// removed, and is answered with its own length; a write the rule leaves alone reaches it byte for
-// byte; an error of the writer is the write's.
+// A write reaches the writer under Writer in one write, with every URL's userinfo and each
+// credential's value in its query removed, and is answered with its own length; a write the rule
+// leaves alone reaches it byte for byte; an error of the writer is the write's.
 func TestWriterGivesEachWriteThroughTheURLRule(t *testing.T) {
 	refused := errors.New("the log is closed")
 	for _, tc := range []struct {
@@ -33,7 +33,7 @@ func TestWriterGivesEachWriteThroughTheURLRule(t *testing.T) {
 		{
 			name:  "a write the rule shortens",
 			write: `could not report: Post "https://legion-reader@daemon.example/legion/v1?token=` + planted + `": connection refused` + "\n",
-			want:  `could not report: Post "https://daemon.example/legion/v1": connection refused` + "\n",
+			want:  `could not report: Post "https://daemon.example/legion/v1?token=": connection refused` + "\n",
 		},
 		{
 			name:  "a write with no URL",

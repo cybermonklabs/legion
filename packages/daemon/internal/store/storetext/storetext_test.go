@@ -193,7 +193,7 @@ func TestFarSideErrorBoundsTheCleanedTextKeepingItsStart(t *testing.T) {
 		{
 			name: "a URL whose query crosses the cut",
 			text: strings.Repeat("w", 2000) + " " + query + " tail " + megabyte,
-			want: strings.Repeat("w", 2000) + " https://h.example/p tail " + megabyte[:FarSideErrorRunes-1-2000-len(" https://h.example/p tail ")] + "…",
+			want: strings.Repeat("w", 2000) + " https://h.example/p?token= tail " + megabyte[:FarSideErrorRunes-1-2000-len(" https://h.example/p?token= tail ")] + "…",
 		},
 		{
 			name: "a NUL and invalid bytes in a long text",
@@ -218,7 +218,7 @@ func TestFarSideErrorBoundsTheCleanedTextKeepingItsStart(t *testing.T) {
 		{
 			name: "a short text loses its URL credentials",
 			text: `Get "https://u:` + planted + `@h.example/x?token=` + planted + `": EOF`,
-			want: `Get "https://h.example/x": EOF`,
+			want: `Get "https://h.example/x?token=": EOF`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -230,7 +230,7 @@ func TestFarSideErrorBoundsTheCleanedTextKeepingItsStart(t *testing.T) {
 			if !utf8.ValidString(got) || strings.ContainsRune(got, 0) || utf8.RuneCountInString(got) > FarSideErrorRunes {
 				t.Fatalf("FarSideError gave %d runes, want valid UTF-8 with no NUL and at most %d runes", utf8.RuneCountInString(got), FarSideErrorRunes)
 			}
-			if strings.Contains(got, "token") || strings.Contains(got, planted) {
+			if strings.Contains(got, planted) {
 				t.Fatalf("FarSideError(%.80q…) holds a part of the URL's credentials", tc.text)
 			}
 			if again := FarSideError(got); again != got {

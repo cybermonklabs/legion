@@ -1074,7 +1074,7 @@ func TestWorkspaceInitFetchWritesNoURLCredentials(t *testing.T) {
 	useInstantClock(t)
 
 	code, stdout, stderr := runWorkspaceInitHere(append(v.fetchArgs(), "--cache-url", "http://legion-reader@"+cache+"/widgets?token=planted-query-token-7"))
-	shown := "http://" + cache + "/widgets"
+	shown := "http://" + cache + "/widgets?token="
 	if want := "workspace-init fetch: waiting for the repository cache " + shown + " to be ready: Get \"" + shown + "\": "; !strings.HasPrefix(stdout, want) {
 		t.Errorf("stdout %q, want the wait logged as %q", stdout, want)
 	}

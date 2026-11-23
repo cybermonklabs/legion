@@ -69,7 +69,7 @@ func TestARetryOutboxErrorThatIsInvalidIsStoredBoundedAndLoggedWhole(t *testing.
 	if runes := utf8.RuneCountInString(lastError); runes != 2048 || !strings.HasSuffix(lastError, "…") {
 		t.Errorf("the row's last error is %d runes ending %q, want 2048 runes ending with …", runes, lastError[max(0, len(lastError)-16):])
 	}
-	const cleaned = "Dispatch answered 502 Bad Gateway for https://dispatch.example/api/v1/issues/LEGION-208 after \uFFFD an upstream reset \uFFFD\n"
+	const cleaned = "Dispatch answered 502 Bad Gateway for https://dispatch.example/api/v1/issues/LEGION-208?token= after \uFFFD an upstream reset \uFFFD\n"
 	if start := lastError[:min(len(lastError), 256)]; !strings.Contains(start, cleaned) {
 		t.Errorf("the row's last error starts %q, want the error's first words %q", start, cleaned)
 	}
@@ -123,7 +123,7 @@ func TestARetryOutboxErrorThatIsInvalidIsStoredBoundedAndLoggedWhole(t *testing.
 		}
 		whole.WriteString(part.Error)
 	}
-	const lastWords = "the last request went to https://dispatch.example/api/v1/events and these are the last words"
+	const lastWords = "the last request went to https://dispatch.example/api/v1/events?token= and these are the last words"
 	if !strings.HasSuffix(whole.String(), lastWords) {
 		t.Errorf("the logged parts join to a text ending %q, want the error's last words %q", whole.String()[max(0, whole.Len()-128):], lastWords)
 	}
