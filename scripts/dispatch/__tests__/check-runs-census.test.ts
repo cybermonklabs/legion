@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -1044,10 +1044,55 @@ describe("the rounds census", () => {
 
 const PROMPTS = "packages/daemon/internal/prompts";
 
-/** The two parts of `prompts.go` the reading takes the tester's parts from: where each kind of
- *  part lives, and `Compose`'s case for the tester, as the daemon's own source holds them. */
-function promptsSource(sharedOfWorkers: string): string {
-  return `package prompts
+/** The planted daemon module's `prompts.go`: one that compiles, in the shape of the daemon's own,
+ *  so that the Go test the reading runs gets from `Compose` the parts this source gives.
+ *  `sharedOfWorkers` is the phase workers' shared list, and `afterShared` the lines that follow
+ *  it in their case. */
+function promptsSource(sharedOfWorkers: string, afterShared = ""): string {
+  return `// Package prompts composes the role instructions the daemon gives a pane, from the role
+// prompts it embeds.
+package prompts
+
+import (
+	"bytes"
+	"embed"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+)
+
+//go:embed roles
+var roleParts embed.FS
+
+//go:embed go/*.md
+var goParts embed.FS
+
+type Parts struct {
+	RolePromptPaths []string
+}
+
+type Composer struct {
+	sharedDir string
+	goDir     string
+}
+
+func eachPart(parts embed.FS, dir string, visit func(name string, body []byte) error) error {
+	return fs.WalkDir(parts, dir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		body, err := parts.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return visit(strings.TrimPrefix(path, dir+"/"), body)
+	})
+}
 
 func New(stateDir string) (*Composer, error) {
 	sharedDir := filepath.Join(stateDir, "prompts", "shared")
@@ -1065,27 +1110,76 @@ func New(stateDir string) (*Composer, error) {
 	return &Composer{sharedDir: sharedDir, goDir: goDir}, nil
 }
 
+func syncPrompt(path string, body []byte, kind string) error {
+	written, err := os.ReadFile(path)
+	if err == nil && bytes.Equal(written, body) {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create %s directory %s: %w", kind, filepath.Dir(path), err)
+	}
+	return os.WriteFile(path, body, 0o600)
+}
+
 func (c *Composer) Compose(role claim.Role, isRoot bool) (Parts, error) {
+	if c == nil {
+		return Parts{}, fmt.Errorf("compose role prompt: nil composer")
+	}
 	var shared, daemonParts []string
 	switch role {
 	case claim.RoleArchitect:
 		name := "architect.md"
+		if isRoot {
+			name = "architect-root.md"
+		}
 		shared, daemonParts = []string{name}, []string{name, "architect-common.md"}
 	case claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer:
 		name := string(role)
 		shared = []string{${sharedOfWorkers}}
-		daemonParts = []string{name + ".md", "worker-common.md"}
+${afterShared}		daemonParts = []string{name + ".md", "worker-common.md"}
+	case claim.RoleMerger:
+		shared, daemonParts = []string{"mechanics/headless.md", "merger.md"}, []string{"merger.md", "worker-common.md"}
 	default:
 		return Parts{}, fmt.Errorf("compose role prompt: unsupported role %q", role)
 	}
-	return Parts{}, nil
+
+	paths := make([]string, 0, len(shared)+len(daemonParts))
+	for _, part := range shared {
+		paths = append(paths, filepath.Join(c.sharedDir, part))
+	}
+	for _, part := range daemonParts {
+		paths = append(paths, filepath.Join(c.goDir, part))
+	}
+	return Parts{RolePromptPaths: slices.Clone(paths)}, nil
 }
 `;
 }
 
 const WORKER_SHARED = `"core/common.md", filepath.Join("core", name+".md"), "mechanics/headless.md", name + ".md"`;
 
+/** The rest of the planted daemon module: its `go.mod`, with a `go` line any Go this suite runs
+ *  on accepts, and the role package `Compose` takes a role of. */
+const DAEMON_MODULE: Record<string, string> = {
+  "packages/daemon/go.mod": "module github.com/sjawhar/legion/daemon\n\ngo 1.22\n",
+  "packages/daemon/internal/claim/claim.go": `// Package claim names the roles a claim can be on.
+package claim
+
+// Role is a role a claim can be on.
+type Role string
+
+const (
+	RoleArchitect   Role = "architect"
+	RolePlanner     Role = "planner"
+	RoleImplementer Role = "implementer"
+	RoleTester      Role = "tester"
+	RoleReviewer    Role = "reviewer"
+	RoleMerger      Role = "merger"
+)
+`,
+};
+
 const CLEAN_PROMPTS: Record<string, string> = {
+  ...DAEMON_MODULE,
   [`${PROMPTS}/prompts.go`]: promptsSource(WORKER_SHARED),
   [`${PROMPTS}/roles/core/common.md`]: "Read the task.\n",
   [`${PROMPTS}/roles/core/tester.md`]:
@@ -1106,6 +1200,16 @@ const CLEAN_PROMPTS: Record<string, string> = {
   [`${PROMPTS}/go/worker-common.md`]:
     "Retract a result of your own that observed wrongly: `dispatch result --retract <result id> --reason '<why>'`.\n",
 };
+
+/** The six parts `Compose` gives the tester in the clean planting, in its order. */
+const CLEAN_TESTER_PARTS = [
+  `${PROMPTS}/roles/core/common.md`,
+  `${PROMPTS}/roles/core/tester.md`,
+  `${PROMPTS}/roles/mechanics/headless.md`,
+  `${PROMPTS}/roles/tester.md`,
+  `${PROMPTS}/go/tester.md`,
+  `${PROMPTS}/go/worker-common.md`,
+];
 
 /** A planted main for the reading: the prompts, the merge of the pull request the reading names
  *  (`afterMerge`), this work's merge, which puts a removed field back in the tester's prompt
@@ -1146,15 +1250,39 @@ function plantReading(prompts: Record<string, string> = CLEAN_PROMPTS): {
 
 async function mainRead(
   planted: { repository: string; path: string },
-  merge: string
+  merge: string,
+  path = `${planted.path}:${process.env.PATH ?? ""}`
 ): Promise<{ report: CensusReport; exitCode: number; out: string }> {
   const out = makeDirectory();
   const run = await runCensus(
     ["main-read", "--merge", merge, "--after", "4230", "--repo", planted.repository, "--out", out],
-    { PATH: `${planted.path}:${process.env.PATH ?? ""}` }
+    { PATH: path }
   );
   const report = JSON.parse(await readFile(join(out, "report.json"), "utf8")) as CensusReport;
   return { report, exitCode: run.exitCode, out };
+}
+
+/** A PATH that holds every command the reading starts but `go`: Bun, git, tar and the planted
+ *  `gh`, each a link in a folder of its own. */
+function pathWithoutGo(planted: { path: string }): string {
+  const bin = makeDirectory();
+  for (const [name, target] of [
+    ["bun", process.execPath],
+    ["git", Bun.which("git")],
+    ["tar", Bun.which("tar")],
+  ] as const) {
+    if (target === null) throw new Error(`no ${name} on this PATH to link`);
+    symlinkSync(target, join(bin, name));
+  }
+  return `${planted.path}:${bin}`;
+}
+
+/** Each UNKNOWN of the reading that says it cannot tell the tester's parts. */
+function cannotTell(report: CensusReport): string[] {
+  return report.unknown
+    .filter((row) => row.what === "the tester's parts")
+    .map((row) => row.reason)
+    .filter((reason) => reason.startsWith("cannot tell the tester's parts: "));
 }
 
 function verdicts(report: CensusReport): Record<string, string> {
@@ -1238,9 +1366,82 @@ describe("the reading of main", () => {
         [`${PROMPTS}/prompts.go`]: promptsSource(`${WORKER_SHARED}, "mechanics/extra.md"`),
       });
       const { report, exitCode } = await mainRead(planted, planted.merged);
+      expect(report.files?.tester).toHaveLength(7);
       expect(report.unknown.map((row) => row.what).join("\n")).toContain(
         `${PROMPTS}/roles/mechanics/extra.md`
       );
+      expect(exitCode).toBe(3);
+    },
+    SLOW
+  );
+
+  test(
+    "a part Compose appends after the list literal is one of the tester's parts",
+    async () => {
+      const planted = plantReading({
+        ...CLEAN_PROMPTS,
+        [`${PROMPTS}/prompts.go`]: promptsSource(
+          WORKER_SHARED,
+          '\t\tshared = append(shared, "mechanics/extra.md")\n'
+        ),
+      });
+      const { report, exitCode } = await mainRead(planted, planted.merged);
+      const extra = `${PROMPTS}/roles/mechanics/extra.md`;
+      expect(report.files?.tester).toEqual([
+        ...CLEAN_TESTER_PARTS.slice(0, 4),
+        extra,
+        ...CLEAN_TESTER_PARTS.slice(4),
+      ]);
+      expect(cannotTell(report)).toEqual([]);
+      // The planted commit lacks the appended part, which is UNKNOWN by name.
+      expect(report.unknown.map((row) => row.what)).toEqual([extra]);
+      expect(report.files?.missing).toContain(extra);
+      expect(exitCode).toBe(3);
+    },
+    SLOW
+  );
+
+  test(
+    "a prompts package that does not compile at the read commit cannot tell the tester's parts",
+    async () => {
+      const planted = plantReading({
+        ...CLEAN_PROMPTS,
+        [`${PROMPTS}/prompts.go`]: promptsSource(
+          WORKER_SHARED,
+          "\t\tshared = append(shared, aPartNothingDeclares)\n"
+        ),
+      });
+      const { report, exitCode } = await mainRead(planted, planted.merged);
+      const reasons = cannotTell(report);
+      expect(reasons).toHaveLength(1);
+      expect(reasons[0]).toContain("go test answered");
+      expect(reasons[0]).toContain("aPartNothingDeclares");
+      expect(report.files?.tester).toEqual([]);
+      expect(exitCode).toBe(3);
+    },
+    SLOW
+  );
+
+  test(
+    "a machine with no go cannot tell the tester's parts, and runs no pin test",
+    async () => {
+      const planted = plantReading({
+        ...CLEAN_PROMPTS,
+        [`${PROMPTS}/judge_test.go`]:
+          'package prompts\n\nimport "testing"\n\nfunc TestJudgeStates(t *testing.T) {}\n',
+      });
+      const path = pathWithoutGo(planted);
+      // The control on the planting: this PATH finds git and no go.
+      expect(Bun.which("git", { PATH: path })).not.toBeNull();
+      expect(Bun.which("go", { PATH: path })).toBeNull();
+      const { report, exitCode } = await mainRead(planted, planted.merged, path);
+      const reasons = cannotTell(report);
+      expect(reasons).toHaveLength(1);
+      expect(reasons[0]).toContain('"go"');
+      expect(report.files?.tester).toEqual([]);
+      const judge = (report.steps ?? []).find((step) => step.name === "TestJudgeStates");
+      expect(judge?.verdict).toBe("not run");
+      expect(judge?.reason).toContain("go did not start");
       expect(exitCode).toBe(3);
     },
     SLOW

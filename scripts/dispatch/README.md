@@ -161,11 +161,25 @@ fails the order; a `gh` that cannot answer is UNKNOWN. Then the three greps of t
 the prompt files at the read commit — a file the commit lacks is UNKNOWN, never a clean grep — and
 the three pin tests, each run where a package under `packages/daemon` holds it and reported as
 `not run` with the reason where none does. A checkout whose tracked files differ from its commit
-is UNKNOWN, and runs no test. It writes each file its reader reads at the read commit under
-`<out>/files/`: the tester's parts as `Compose` in `prompts.go` names them there, `prompts.go`
-itself, and the other files of the readings. It lists them in `<out>/files.txt` with the ones the
-commit lacks, and writes the whole report to `<out>/report.json`. A part `Compose` names that the
-commit lacks, or a `Compose` of a form the census cannot read, is UNKNOWN.
+is UNKNOWN, and runs no test. A machine with no `go` runs no pin test either, and that is UNKNOWN
+too.
+
+The tester's parts come from the code that composes the prompt, not from the text of
+`prompts.go`. The run exports the read commit (`git archive`) into a folder of its own, adds a Go
+test to the prompts package there, and runs it: the test calls `New` and
+`Compose(claim.RoleTester, false)`, as the daemon does, and prints each path `Compose` returns as
+its file in `roles/` or `go/`, with whether the package embeds that file. So a part that an
+`append` or any other code adds is in the list. The export comes from the commit's objects alone,
+so an untracked or changed file of the checkout cannot change the list, and the run writes nothing
+into the checkout; it removes its folder when it ends. A run that cannot get the list — no `go`, a
+package that does not compile at the read commit, a `Compose` that returns an error or a path
+outside its two directories, a test that does not run and pass — is UNKNOWN, `cannot tell the
+tester's parts: <reason>`, and the list is empty.
+
+It writes each file its reader reads at the read commit under `<out>/files/`: the tester's parts,
+`prompts.go`, and the other files of the readings. It lists them in `<out>/files.txt` with the
+ones the commit lacks, and writes the whole report to `<out>/report.json`. A part `Compose`
+returns that the commit lacks, or that the package does not embed, is UNKNOWN.
 
 ## Display read census
 

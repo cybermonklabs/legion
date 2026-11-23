@@ -15,8 +15,9 @@
  * a row of the report's `unknown`, never a bare error.
  */
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, relative } from "node:path";
 import { parseArgs } from "node:util";
 import type {
   Artifact,
@@ -147,8 +148,9 @@ export interface CensusReport {
     readonly after: number;
     readonly afterMerge?: string;
   };
-  /** The files the reading of main wrote for its reader, the tester's parts among them as
-   *  `Compose` names them at the read commit, and the ones the commit lacks. */
+  /** The files the reading of main wrote for its reader, and the ones the commit lacks. `tester`
+   *  is the tester's parts as `Compose` returns them when a Go test runs it at the read commit,
+   *  in that order, and empty where the run could not get them. */
   readonly files?: {
     readonly tester: string[];
     readonly written: string[];
@@ -1583,93 +1585,238 @@ const GREPS: readonly GrepStep[] = [
   },
 ];
 
-/** The parts of a Go string expression the census can evaluate, split at its top-level `sep`. */
-function splitTopLevel(text: string, separator: string): string[] {
-  const parts: string[] = [];
-  let depth = 0;
-  let quoted = false;
-  let current = "";
-  for (const character of text) {
-    if (character === '"') quoted = !quoted;
-    if (!quoted && character === "(") depth += 1;
-    if (!quoted && character === ")") depth -= 1;
-    if (!quoted && depth === 0 && character === separator) {
-      parts.push(current);
-      current = "";
-      continue;
-    }
-    current += character;
-  }
-  parts.push(current);
-  return parts.map((part) => part.trim()).filter((part) => part !== "");
-}
+/** The role package whose `RoleTester` the census gives `Compose`. */
+const CLAIM = "packages/daemon/internal/claim";
 
-/** A Go string expression of `Compose` — a literal, `name`, `string(role)`, a `+` of those, or a
- *  `filepath.Join` of those — or nothing where it is of another form. */
-function evaluateGo(expression: string, name: string, role: string): string | undefined {
-  const text = expression.trim();
-  const literal = text.match(/^"([^"\\]*)"$/);
-  if (literal?.[1] !== undefined) return literal[1];
-  if (text === "name") return name;
-  if (text === "string(role)") return role;
-  const join = text.match(/^filepath\.Join\(([\s\S]*)\)$/);
-  if (join?.[1] !== undefined) {
-    const parts = splitTopLevel(join[1], ",").map((part) => evaluateGo(part, name, role));
-    return parts.some((part) => part === undefined) ? undefined : parts.join("/");
-  }
-  const sum = splitTopLevel(text, "+");
-  if (sum.length > 1) {
-    const parts = sum.map((part) => evaluateGo(part, name, role));
-    return parts.some((part) => part === undefined) ? undefined : parts.join("");
-  }
-  return undefined;
+/** The Go test the census adds to the prompts package of its own export of the read commit. */
+const PARTS_TEST = "TestCheckRunsCensusTesterParts";
+const PARTS_TEST_FILE = "check_runs_census_parts_test.go";
+
+/** The marks of the lines that test prints: one per part `Compose` returned, one for a path
+ *  outside the Composer's two directories, and the count of the parts. */
+const PART_LINE = "check-runs-census part ";
+const OUTSIDE_LINE = "check-runs-census outside ";
+const COUNT_LINE = /^check-runs-census parts (\d+)$/;
+
+/** One part of the tester's prompt: its file in the repository, and whether the prompts package
+ *  embeds that file, which is the file `New` copies to the path `Compose` returns. */
+interface TesterPart {
+  readonly path: string;
+  readonly embedded: boolean;
 }
 
 /**
- * The prompt parts `Compose` in `prompts.go` gives a phase worker's role, read from the source:
- * the case that names `claim.Role<Role>`, its `name`, `shared` and `daemonParts`, with each
- * shared part under `roles/` and each daemon part under `go/`, as `New` syncs the two. A source of
- * any other form returns the reason, which the reading reports UNKNOWN, never a list of its own.
+ * The Go test the census runs at the read commit. It calls `New` and `Compose` for the tester, as
+ * the daemon does, and prints each path `Compose` returns as the embedded folder `New` copies to
+ * that directory (`roles` to the shared one, `go` to its own) and the name below it, with whether
+ * that folder embeds the file. A path outside both directories, or a copy that is not the
+ * embedded file, fails the test: the census cannot then tell which file of the repository the
+ * tester reads.
  */
-export function composeParts(source: string, role: string): string[] | string {
-  if (
-    !source.includes('eachPart(roleParts, "roles"') ||
-    !source.includes('eachPart(goParts, "go"')
-  ) {
-    return "prompts.go does not sync its shared parts from roles and its own from go";
+function partsTestSource(claimImport: string): string {
+  return `package prompts
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"${claimImport}"
+)
+
+// ${PARTS_TEST} is no test of this package: the check runs census writes it into its own
+// export of one commit, runs it there, and removes the export.
+func ${PARTS_TEST}(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	parts, err := composer.Compose(claim.RoleTester, false)
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	for _, path := range parts.RolePromptPaths {
+		root, files := "roles", roleParts
+		name, below := checkRunsCensusBelow(composer.sharedDir, path)
+		if !below {
+			root, files = "go", goParts
+			name, below = checkRunsCensusBelow(composer.goDir, path)
+		}
+		if !below {
+			line, _ := json.Marshal(path)
+			fmt.Printf("${OUTSIDE_LINE}%s\\n", line)
+			t.Fatalf("Compose returned %s, in neither of the Composer's two directories", path)
+		}
+		embedded, missing := fs.ReadFile(files, root+"/"+name)
+		if missing == nil {
+			copied, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(copied, embedded) {
+				t.Fatalf("%s is not the embedded %s/%s that New copies there: %v", path, root, name, err)
+			}
+		}
+		line, _ := json.Marshal(struct {
+			Root, Name string
+			Embedded   bool
+		}{root, name, missing == nil})
+		fmt.Printf("${PART_LINE}%s\\n", line)
+	}
+	fmt.Printf("check-runs-census parts %d\\n", len(parts.RolePromptPaths))
+}
+
+func checkRunsCensusBelow(dir, path string) (string, bool) {
+	name, err := filepath.Rel(dir, path)
+	if err != nil || name == "." || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return filepath.ToSlash(name), true
+}
+`;
+}
+
+/** Writes the read commit's tree into `into` from the repository's objects alone, so nothing of
+ *  the checkout's own files reaches it, or says why it could not. */
+async function exportCommit(repo: string, read: string, into: string): Promise<string | undefined> {
+  const archive = Bun.spawn(["git", "-C", repo, "archive", "--format=tar", read], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const tar = Bun.spawn(["tar", "-x", "-C", into], {
+    stdin: archive.stdout,
+    stdout: "ignore",
+    stderr: "pipe",
+  });
+  const [archived, extracted, archiveError, tarError] = await Promise.all([
+    archive.exited,
+    tar.exited,
+    new Response(archive.stderr).text(),
+    new Response(tar.stderr).text(),
+  ]);
+  if (archived !== 0) {
+    return `git archive ${read} answered ${archived}: ${command(archiveError).slice(0, 300)}`;
   }
-  const compose = source.indexOf("func (c *Composer) Compose(");
-  if (compose === -1) return "prompts.go holds no Compose";
-  const roleName = `${role[0]?.toUpperCase() ?? ""}${role.slice(1)}`;
-  const clause = source
-    .slice(compose)
-    .match(
-      new RegExp(
-        `\\n\\s*case ([^\\n:]*\\bclaim\\.Role${roleName}\\b[^\\n:]*):\\n([\\s\\S]*?)(?=\\n\\s*(?:case |default:))`
-      )
-    )?.[2];
-  if (clause === undefined) return `Compose holds no case for claim.Role${roleName}`;
-  const nameExpression = clause.match(/\bname := ([^\n]+)/)?.[1];
-  const name = nameExpression === undefined ? role : evaluateGo(nameExpression, role, role);
-  const shared = clause.match(/\bshared(?:, daemonParts)? = \[\]string\{([^}]*)\}/)?.[1];
-  const daemon =
-    clause.match(/\bdaemonParts = \[\]string\{([^}]*)\}/)?.[1] ??
-    clause.match(/\bshared, daemonParts = \[\]string\{[^}]*\}, \[\]string\{([^}]*)\}/)?.[1];
-  if (name === undefined || shared === undefined || daemon === undefined) {
-    return `Compose's case for claim.Role${roleName} is of a form the census cannot read`;
-  }
-  const parts: string[] = [];
-  for (const [list, root] of [
-    [shared, "roles"],
-    [daemon, "go"],
-  ] as const) {
-    for (const element of splitTopLevel(list, ",")) {
-      const part = evaluateGo(element, name, role);
-      if (part === undefined) return `Compose names a part the census cannot read: ${element}`;
-      parts.push(`${PROMPTS}/${root}/${part}`);
+  if (extracted !== 0) return `tar answered ${extracted}: ${command(tarError).slice(0, 300)}`;
+  return undefined;
+}
+
+/** The import path of the role package in the export: the module the nearest `go.mod` above it
+ *  names, and the package's place below that file. */
+async function claimImportOf(root: string): Promise<string | undefined> {
+  for (let at = dirname(CLAIM); ; at = dirname(at)) {
+    const text = await readFile(join(root, at, "go.mod"), "utf8").catch(() => undefined);
+    if (text !== undefined) {
+      const module = text.match(/^module\s+"?([^\s"]+)"?\s*$/m)?.[1];
+      return module === undefined ? undefined : `${module}/${relative(at, CLAIM)}`;
     }
+    if (at === ".") return undefined;
   }
+}
+
+/** A part line's JSON, or nothing where it is not one part of the two folders. */
+function partOf(text: string): TesterPart | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (parsed === null || typeof parsed !== "object") return undefined;
+  const root = "Root" in parsed ? parsed.Root : undefined;
+  const name = "Name" in parsed ? parsed.Name : undefined;
+  const embedded = "Embedded" in parsed ? parsed.Embedded : undefined;
+  if (root !== "roles" && root !== "go") return undefined;
+  if (typeof name !== "string" || name === "" || typeof embedded !== "boolean") return undefined;
+  return { path: `${PROMPTS}/${root}/${name}`, embedded };
+}
+
+/** The parts the Go test printed, or why its output gives none: a list is taken only from a run
+ *  that passed its one test and printed as many part lines as its count. */
+function partsOf(output: string, exitCode: number | null): TesterPart[] | string {
+  const lines = output.split("\n");
+  const outside = lines.find((line) => line.startsWith(OUTSIDE_LINE));
+  if (outside !== undefined) {
+    return `Compose returned a path outside the Composer's two directories: ${outside.slice(OUTSIDE_LINE.length)}`;
+  }
+  if (output.includes("--- SKIP") || output.includes("no tests to run")) {
+    return "the go test selected no test, or skipped it";
+  }
+  if (exitCode !== 0) return `go test answered ${exitCode}: ${command(output).slice(-600)}`;
+  if (!output.includes(`--- PASS: ${PARTS_TEST} `)) {
+    return "the go test printed no pass of its test";
+  }
+  const parts: TesterPart[] = [];
+  for (const line of lines) {
+    if (!line.startsWith(PART_LINE)) continue;
+    const part = partOf(line.slice(PART_LINE.length));
+    if (part === undefined) return `the go test printed a part the census cannot read: ${line}`;
+    parts.push(part);
+  }
+  const count = lines.map((line) => line.match(COUNT_LINE)?.[1]).find((n) => n !== undefined);
+  if (count === undefined || Number(count) !== parts.length) {
+    return `the go test printed ${parts.length} part line(s) and the count ${count ?? "nowhere"}`;
+  }
+  if (parts.length === 0) return "Compose returned no part for the tester";
   return parts;
+}
+
+async function testerPartsIn(
+  repo: string,
+  read: string,
+  scratch: string
+): Promise<TesterPart[] | string> {
+  if (!holds(repo, read, PROMPTS)) return `${read} lacks ${PROMPTS}`;
+  const exported = await exportCommit(repo, read, scratch);
+  if (exported !== undefined) return exported;
+  const claimImport = await claimImportOf(scratch);
+  if (claimImport === undefined) return `${read} holds no go.mod with a module above ${CLAIM}`;
+  // `wx`: a file of that name at the commit is the commit's own, and the census writes none over it.
+  await writeFile(join(scratch, PROMPTS, PARTS_TEST_FILE), partsTestSource(claimImport), {
+    flag: "wx",
+  });
+  const workspace = join(scratch, "go.work");
+  const run = Bun.spawnSync(
+    [
+      "go",
+      "-C",
+      join(scratch, PROMPTS),
+      "test",
+      "-count=1",
+      "-v",
+      "-vet=off",
+      "-run",
+      `^${PARTS_TEST}$`,
+      ".",
+    ],
+    {
+      stdout: "pipe",
+      stderr: "pipe",
+      // The export's own workspace, or none: never a go.work of a folder above the export.
+      env: { ...process.env, GOWORK: (await Bun.file(workspace).exists()) ? workspace : "off" },
+    }
+  );
+  return partsOf(`${run.stdout.toString()}${run.stderr.toString()}`, run.exitCode);
+}
+
+/**
+ * The tester's parts as `Compose` returns them at the read commit: the commit exported into a
+ * folder of the census's own, a Go test added to its prompts package that calls `New` and
+ * `Compose(claim.RoleTester, false)`, and its printed paths taken back to their files. A run that
+ * cannot get the list — no `go`, a package that does not compile there, a `Compose` that errs —
+ * returns the reason, which the reading reports UNKNOWN, never a list of its own.
+ */
+async function testerParts(repo: string, read: string): Promise<TesterPart[] | string> {
+  const scratch = await mkdtemp(join(tmpdir(), "check-runs-census-"));
+  try {
+    return await testerPartsIn(repo, read, scratch);
+  } catch (error) {
+    return why(error);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
 }
 
 interface StepRun {
@@ -1826,27 +1973,35 @@ function pinTestStep(repo: string, read: string, name: string, coherent: boolean
     };
   }
   const relative = `./${dirname(file).replace(/^packages\/daemon\//, "")}/`;
-  const run = Bun.spawnSync(
-    [
-      "go",
-      "-C",
-      join(repo, "packages/daemon"),
-      "test",
-      "-count=1",
-      "-v",
-      "-run",
-      `^${name}$`,
-      relative,
-    ],
-    { stdout: "pipe", stderr: "pipe" }
-  );
-  const output = `${run.stdout.toString()}${run.stderr.toString()}`;
+  let output: string;
+  let exitCode: number | null;
+  try {
+    const run = Bun.spawnSync(
+      [
+        "go",
+        "-C",
+        join(repo, "packages/daemon"),
+        "test",
+        "-count=1",
+        "-v",
+        "-run",
+        `^${name}$`,
+        relative,
+      ],
+      { stdout: "pipe", stderr: "pipe" }
+    );
+    output = `${run.stdout.toString()}${run.stderr.toString()}`;
+    exitCode = run.exitCode;
+  } catch (error) {
+    // A machine with no `go` cannot run the test, which is UNKNOWN, never a failed step.
+    return unreadable(name, `go did not start: ${why(error)}`);
+  }
   // A run that selected no test, or that skipped, proves nothing and fails its step.
   if (output.includes("--- SKIP") || output.includes("no tests to run")) {
     return failed(name, "the run selected no test, or skipped it", output.slice(-2000));
   }
-  if (run.exitCode === 0) return { step: { name, verdict: "pass", detail: relative } };
-  return failed(name, `go test answered ${run.exitCode} in ${relative}`, output.slice(-2000));
+  if (exitCode === 0) return { step: { name, verdict: "pass", detail: relative } };
+  return failed(name, `go test answered ${exitCode} in ${relative}`, output.slice(-2000));
 }
 
 async function runMainRead(options: ReadingOptions): Promise<CensusReport> {
@@ -1886,13 +2041,26 @@ async function runMainRead(options: ReadingOptions): Promise<CensusReport> {
   for (const step of GREPS) record(grepStep(options.repo, read, step));
   for (const name of PIN_TESTS) record(pinTestStep(options.repo, read, name, coherent));
 
-  // The tester's parts as `Compose` names them at the read commit, and the other files.
-  const source = git(options.repo, ["show", `${read}:${PROMPTS_GO}`]);
-  const composed =
-    source.exitCode === 0 ? composeParts(source.stdout, "tester") : `${read} lacks ${PROMPTS_GO}`;
-  const tester = typeof composed === "string" ? [] : composed;
+  // The tester's parts as `Compose` returns them at the read commit, and the other files.
+  const composed = await testerParts(options.repo, read);
+  const tester = typeof composed === "string" ? [] : composed.map((part) => part.path);
   if (typeof composed === "string") {
-    unknown.push({ issue: "", what: "the tester's parts", reason: composed });
+    unknown.push({
+      issue: "",
+      what: "the tester's parts",
+      reason: `cannot tell the tester's parts: ${composed}`,
+    });
+  } else {
+    for (const part of composed) {
+      // A part the commit lacks is the loop's below; one it holds but does not embed is this.
+      if (!part.embedded && holds(options.repo, read, part.path)) {
+        unknown.push({
+          issue: "",
+          what: part.path,
+          reason: `Compose names it, and the prompts package does not embed it at ${read}`,
+        });
+      }
+    }
   }
   const written: string[] = [];
   const missing: string[] = [];
