@@ -5,7 +5,7 @@ the repository you are working in.
 
 ## Review mechanics
 
-Then read the plan handoff's `requiredSkills` for your role and follow those too. A task with no planner step before yours has no plan handoff for you, so no skills are named for you there.
+Read the skills and the repository docs that every task of the plan names, and follow those too: the `skills` and `docs` attributes of its `plan_task` block where it has them, else the `Skills:` and `Docs:` lines of its text, and, in a plan written as plain sections below an owner's task block, those lines of each section that names the id of the task's block. Where a task names none, no skill or doc beyond your role's own is named for you.
 
 Read the plan first: where a planner step comes before yours, or your task has no `Task:` line, it is the issue's `plan.md` at the newest version the plan review approved, as the daemon part below says; where no planner step comes before yours, it is your task's `Task text:`, read beside the issue's spec. Read it again before you write your review, because the change is reviewed against the plan as it stands then.
 

@@ -188,10 +188,11 @@ func TestARoleWritesItsHandoffOnceWhenItCompletes(t *testing.T) {
 // `plan_task` declares `skills` and `docs` attributes, the planner writes them there. Where it
 // does not, the planner writes a `Skills:` line and a `Docs:` line in the task's text, because
 // Dispatch refuses an attribute that the schema does not declare. Under an owner's task block,
-// the planner writes the two lines in each plain section. The command needles have no backtick at
-// either end, because each is a part of a longer code span. Taking the naming sentence out of the
-// core, or the schema read out of the role part, fails here (d-pins' negative control). This shows
-// the text is loaded, never that a planner follows it.
+// the planner writes the two lines in each plain section. Each such section names the id of the
+// owner's `plan_task` block it belongs to. The command needles have no backtick at either end,
+// because each is a part of a longer code span. Taking the naming sentence out of the core, or
+// the schema read out of the role part, fails here (d-pins' negative control). This shows the
+// text is loaded, never that a planner follows it.
 func TestThePlannerNamesEachTasksSkillsAndDocs(t *testing.T) {
 	core := partText(t, "roles/core/planner.md")
 	for _, terms := range [][]string{
@@ -209,7 +210,8 @@ func TestThePlannerNamesEachTasksSkillsAndDocs(t *testing.T) {
 		"`skills` and `docs` attributes",
 		"a `Skills:` line and a `Docs:` line",
 		"refuses an attribute the schema does not declare",
-		"plain sections")
+		"plain sections",
+		"the id of the owner's `plan_task` block it belongs to")
 }
 
 // Each role after the planner reads the skills and the repository docs that its tasks name
