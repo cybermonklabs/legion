@@ -3120,6 +3120,28 @@ test("one row under the message box holds the delivery picker, the machine, the 
   ).toEqual(["agent-composer", "agent-composer-footer"]);
 });
 
+// INFRA-5200's rule, point 2: the row's facts give way one whole group at a time. The model and
+// thinking pickers are one group, Session: they sit in one flex item of the facts, so a row too
+// narrow for both moves them to the next line together, never the thinking picker alone.
+test("the model and thinking pickers are one flex item of the row's facts", async () => {
+  await renderWithPickers([settingsFrame(1), commandsFrame(2, SWITCHES)]);
+
+  const facts = screen.getByTestId("agent-composer-facts");
+  const itemOf = (testId: string) => {
+    let at: HTMLElement | null = within(facts).getByTestId(testId);
+    while (at !== null && at.parentElement !== facts) at = at.parentElement;
+    return at;
+  };
+  const session = itemOf("agent-model-picker");
+  expect(session).not.toBeNull();
+  expect(itemOf("agent-thinking-picker")).toBe(session);
+  expect(session?.getAttribute("data-testid")).toBe("agent-session-group");
+  expect(session?.className).toContain("flex-wrap");
+  // The other groups are items of their own.
+  expect(itemOf("agent-delivery-picker")).not.toBe(session);
+  expect(itemOf("agent-footer-dir")).not.toBe(session);
+});
+
 // R3, R6. The ring reports what the session said about its window, so a session that published
 // no `context` frame has no ring at all - never one drawn at zero - and one appears where it
 // belongs the moment the session publishes.

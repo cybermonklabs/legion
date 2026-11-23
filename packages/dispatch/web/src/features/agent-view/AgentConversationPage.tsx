@@ -559,7 +559,14 @@ export function AgentConversationPage({
                 </span>
               </span>
             )}
-            <SessionSettings onPick={onPick} pending={switchPending} view={settings} />
+            {/* Session: the model and thinking pickers are one flex item, so a row too narrow for
+                both moves them to the next line together, never the thinking picker alone. */}
+            <span
+              className="flex min-w-0 max-w-full flex-wrap items-center gap-x-3 gap-y-1 empty:hidden"
+              data-testid="agent-session-group"
+            >
+              <SessionSettings onPick={onPick} pending={switchPending} view={settings} />
+            </span>
           </div>
           <span className="flex shrink-0 items-center gap-1">
             <ContextRing
@@ -573,8 +580,9 @@ export function AgentConversationPage({
             />
           </span>
         </div>
-        {/* Under the row, not in it: a line of prose in the row's sideways scroller shrinks to a
-            sliver beside the pickers (`SessionSwitchLines`). */}
+        {/* Under the row, not in it: the facts wrap as groups, and a status sentence among them
+            would be one more flex item that shrinks to a sliver beside the pickers
+            (`SessionSwitchLines`). */}
         <SessionSwitchLines notice={settings.notice} status={sessionSwitch.status} />
       </div>
     </div>
