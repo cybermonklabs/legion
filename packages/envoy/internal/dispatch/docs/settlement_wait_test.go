@@ -9,6 +9,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Shutdown's drain waits for each room's appends to land before it settles the room, and a
@@ -61,24 +62,16 @@ func TestShutdownsDrainWakesOnceWhenARoomsHeldAppendLands(t *testing.T) {
 	counting.Store(true)
 	appends.armed.Store(true)
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
-	select {
-	case <-appends.entered:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the room's append never reached the store")
-	}
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancelShutdown()
+	testwait.Receive(t, "the room's append to reach the store", appends.entered)
+	// Shutdown's drain is bounded by its own budget (ShutdownDrainBudget); the context bounds only
+	// the rest of its work, and ends where testwait gives up rather than at a span of the test's.
+	shutdownCtx := testwait.Context(t)
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- service.Shutdown(shutdownCtx) }()
 	time.Sleep(held)
 	appends.let()
-	select {
-	case err := <-shutdown:
-		if err != nil {
-			t.Fatalf("shutdown: %v", err)
-		}
-	case <-time.After(roomWait(t)):
-		t.Fatal("Shutdown never returned once the room's append was let go")
+	if err := testwait.Receive(t, "Shutdown to return once the room's append was let go", shutdown); err != nil {
+		t.Fatalf("shutdown: %v", err)
 	}
 	counting.Store(false)
 
@@ -120,8 +113,7 @@ func TestShutdownsSettlementLockWaitIsOneStatement(t *testing.T) {
 	versioned, _, _ := latestDocumentVersion(t, observer, artifactID)
 	unlock := holdDocumentLock(t, observer, artifactID)
 	since := tracer.mark()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	started := time.Now()
 	if err := service.Shutdown(ctx); err != nil {
 		t.Errorf("Shutdown with the document's lock held elsewhere: %v", err)

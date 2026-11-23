@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *testing.T) {
@@ -44,7 +45,9 @@ func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *
 			artifactID := createDocument(t, database, "")
 			service := New(Deps{Store: database, Settle: time.Hour})
 			t.Cleanup(func() {
-				shutdown, cancel := context.WithTimeout(context.Background(), time.Second)
+				// t.Context() has ended by the time a cleanup runs, so the bound is read here: what
+				// is left of the test binary's deadline less roomWaitMargin, not a span of the test's.
+				shutdown, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t, roomWaitMargin))
 				defer cancel()
 				if err := service.Shutdown(shutdown); err != nil {
 					t.Errorf("shutdown service: %v", err)
@@ -140,18 +143,14 @@ func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *
 			go func() {
 				browserResult <- browserStyleWrite(service, artifactID, replaceRun("keep", "HUMAN WRITE"), browserMutated)
 			}()
-			select {
-			case <-browserMutated:
-			case <-time.After(2 * time.Second):
-				t.Fatal("browser writer did not mutate the live tree")
-			}
+			testwait.Receive(t, "the browser writer to mutate the live tree", browserMutated)
 			if err := gate.Commit(context.Background()); err != nil {
 				t.Fatalf("release asks gate: %v", err)
 			}
-			if err := awaitRaceResult(t, browserResult); err != nil {
+			if err := testwait.Receive(t, "the browser writer to return", browserResult); err != nil {
 				t.Fatalf("browser writer: %v", err)
 			}
-			err = awaitRaceResult(t, result)
+			err = testwait.Receive(t, "the edit to return", result)
 			if test.precondition {
 				var stale *ErrPreconditionFailed
 				if !errors.As(err, &stale) {
@@ -218,17 +217,6 @@ func documentTokenForTest(t *testing.T, service *Service, artifactID, markdown s
 		t.Fatalf("document token read = markdown %q token %q, want markdown %q and token", read, token, markdown)
 	}
 	return token
-}
-
-func awaitRaceResult(t *testing.T, result <-chan error) error {
-	t.Helper()
-	select {
-	case err := <-result:
-		return err
-	case <-time.After(10 * time.Second):
-		t.Fatal("conditional edit did not complete")
-		return nil
-	}
 }
 
 // The WebSocket server's update observer persists the browser-style writer.
