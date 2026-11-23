@@ -11,7 +11,8 @@
  *
  *  What it adds, each for the defect the INFRA-5200 audit measured on production
  *  (dispatch://INFRA-5200/spec, "Problem"):
- *  - on the issue the issue routes open: a 170-character title, twelve labels, a `role:` route
+ *  - on the issue the issue routes open: a 170-character title, thirteen labels (one of them 40
+ *    characters with no break), a `role:` route
  *    nobody holds, a claim by a session with a 64-character title, a parent, two priorities,
  *    fifteen GitHub pull requests with checks, twelve links that are no pull request, five
  *    subscribers, thirteen components of a fifteen-component architecture source, four more
@@ -64,6 +65,7 @@ import {
   AGENT_REPLY_OPENING,
   ARCHITECTURE_REPO,
   type LayoutSeed,
+  STRESS_LABELS,
 } from "./layout-routes";
 import { seedReviewRoutes } from "./review-seed";
 import { workspaceSessions } from "./workspace";
@@ -112,21 +114,6 @@ const COMPONENTS = [
   "artifacts-tab",
 ];
 const ISSUE_COMPONENTS = COMPONENTS.slice(0, 13);
-
-const LABELS = [
-  "dispatch",
-  "layout",
-  "issue-header",
-  "inbox",
-  "accessibility",
-  "regression",
-  "phone-width",
-  "needs-design-review",
-  "customer-visible",
-  "performance-budget",
-  "browser-test",
-  "priority-escalation",
-];
 
 /** Words a production title or question holds, repeated to the length a case needs. */
 function prose(opening: string, length: number): string {
@@ -304,7 +291,7 @@ export async function seedLayoutStress({
       // redrawn Details lists apart (`links`): more than the rule's cap.
       ...plainLinks("stress-issue", PLAIN_LINKS),
     ],
-    labels: LABELS,
+    labels: [...STRESS_LABELS],
     parent: parent.key,
     repo: PULLS_REPO,
     route: "role:layout-stress-reviewer",

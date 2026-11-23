@@ -36,7 +36,7 @@ export const AGENT_REPLY_OPENING = "The audit is read.";
 /** The repository CORE's architecture source is read from. */
 export const ARCHITECTURE_REPO = "acme/layout-architecture";
 /** The stress issue's title and labels, as `e2e/layout-seed.ts` writes them (its `prose(…, 170)`
- *  title and its `LABELS`): the new issue page's ready locators name them, so a page that drew
+ *  title, and these labels): the new issue page's ready locators name them, so a page that drew
  *  another issue, or this one without its stress data, never settles. */
 export const STRESS_TITLE =
   "Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements";
@@ -53,6 +53,8 @@ export const STRESS_LABELS = [
   "performance-budget",
   "browser-test",
   "priority-escalation",
+  // A label of 40 wide characters with no break, the most the server takes (`maxIssueLabel16`).
+  "mw".repeat(20),
 ];
 
 /** Opens every closed `CappedGroup` in `scope`, one "+N" press at a time, until none is closed,

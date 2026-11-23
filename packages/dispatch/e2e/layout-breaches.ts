@@ -2588,6 +2588,7 @@ export const layoutBreaches: readonly KnownLayoutBreach[] = [
     kind: "clipped",
     element:
       '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
+    count: 2,
     reason: "D surfaces",
   },
   {
@@ -2612,6 +2613,7 @@ export const layoutBreaches: readonly KnownLayoutBreach[] = [
     kind: "clipped",
     element:
       '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
+    count: 2,
     reason: "D surfaces",
   },
   {
@@ -2643,6 +2645,7 @@ export const layoutBreaches: readonly KnownLayoutBreach[] = [
     kind: "clipped",
     element:
       '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
+    count: 2,
     reason: "D surfaces",
   },
   {
@@ -2674,6 +2677,7 @@ export const layoutBreaches: readonly KnownLayoutBreach[] = [
     kind: "clipped",
     element:
       '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
+    count: 2,
     reason: "D surfaces",
   },
   {
@@ -2712,6 +2716,7 @@ export const layoutBreaches: readonly KnownLayoutBreach[] = [
     kind: "clipped",
     element:
       '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
+    count: 2,
     reason: "D surfaces",
   },
   {
@@ -2793,6 +2798,7 @@ export const layoutBreaches: readonly KnownLayoutBreach[] = [
     kind: "clipped",
     element:
       '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
+    count: 2,
     reason: "D surfaces",
   },
   {
@@ -2828,6 +2834,7 @@ export const layoutBreaches: readonly KnownLayoutBreach[] = [
     kind: "clipped",
     element:
       '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
+    count: 2,
     reason: "D surfaces",
   },
   {
@@ -2863,6 +2870,7 @@ export const layoutBreaches: readonly KnownLayoutBreach[] = [
     kind: "clipped",
     element:
       '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
+    count: 2,
     reason: "D surfaces",
   },
   {
@@ -2914,6 +2922,7 @@ export const layoutBreaches: readonly KnownLayoutBreach[] = [
     kind: "clipped",
     element:
       '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
+    count: 2,
     reason: "D surfaces",
   },
   {
@@ -2957,6 +2966,7 @@ export const layoutBreaches: readonly KnownLayoutBreach[] = [
     kind: "clipped",
     element:
       '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
+    count: 2,
     reason: "D surfaces",
   },
   {
@@ -2983,6 +2993,7 @@ export const layoutBreaches: readonly KnownLayoutBreach[] = [
     kind: "clipped",
     element:
       '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
+    count: 2,
     reason: "D surfaces",
   },
   {
@@ -3014,6 +3025,7 @@ export const layoutBreaches: readonly KnownLayoutBreach[] = [
     kind: "clipped",
     element:
       '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
+    count: 2,
     reason: "D surfaces",
   },
   {
@@ -3045,6 +3057,7 @@ export const layoutBreaches: readonly KnownLayoutBreach[] = [
     kind: "clipped",
     element:
       '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
+    count: 2,
     reason: "D surfaces",
   },
   {
@@ -3083,6 +3096,7 @@ export const layoutBreaches: readonly KnownLayoutBreach[] = [
     kind: "clipped",
     element:
       '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
+    count: 2,
     reason: "D surfaces",
   },
   {
@@ -3114,6 +3128,7 @@ export const layoutBreaches: readonly KnownLayoutBreach[] = [
     kind: "clipped",
     element:
       '[aria-label="CORE-1 Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements"]',
+    count: 2,
     reason: "D surfaces",
   },
   {
