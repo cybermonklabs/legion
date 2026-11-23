@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
   constants,
   copyFileSync,
@@ -36,10 +36,22 @@ const script = join(import.meta.dir, "app-logins.ts");
 // The home every child of this file runs under, so none of them reads the caller's.
 const home = join(dir, "home");
 
-// A GitHub that never answers: the port of a server stopped before any run.
-const closed = Bun.serve({ port: 0, fetch: () => new Response() });
+// A GitHub that never answers: a listener of this file's own, held until the file ends, that closes
+// every connection it accepts before a byte of an answer (fetch reads ECONNRESET). The port of a
+// server stopped before any run, which this was, is free for any process to take, and under
+// `bun test --parallel` another file's stand-in GitHub, which accepts these tokens, can take it.
+const closed = Bun.listen({
+  hostname: "127.0.0.1",
+  port: 0,
+  socket: {
+    open(socket) {
+      socket.end();
+    },
+    data() {},
+  },
+});
 const unreachable = `http://127.0.0.1:${closed.port}/`;
-await closed.stop(true);
+afterAll(() => closed.stop(true));
 
 const releaseIDs = [101, 202, 303, 404];
 // The stand-in Apps whose own key a row puts behind a private_key_command.
