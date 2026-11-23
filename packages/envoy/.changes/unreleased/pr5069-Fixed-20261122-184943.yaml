@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  An edge listener logs each run of failures once, when it starts, rather than at every pass for
+  as long as the outage lasts: a project's failed repository reads, a session's failed removal of
+  the interests of a repository that left its projects, the refresh's failed list of the interest
+  records, the give-backs of withheld GitHub events whose session entry cannot record its gap
+  mark, and a relay socket's naks of GitHub frames withheld for want of a fresh repository answer.
+  Each run's end is logged too, with the count of failures between (`failed_reads`,
+  `failed_passes`, `given_back`), or, for a removal, the removal itself or `why` no removal is
+  needed. A nak of a given-back event that fails is logged each time. The failed read's WARN no
+  longer says GitHub events wait for the next answer: the last answer decides them until it is 60
+  seconds old, and the line's `withheld_from` says when they start to be withheld.
+time: 2026-11-22T18:49:43Z
+custom:
+    Issue: pr5069

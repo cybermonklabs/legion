@@ -347,10 +347,14 @@ type clusteredHubSettings struct {
 	// sessionNKey is the session user's public key, "" without a session user: the hub pods'
 	// no-auth-user annotation, which rolls them when it changes (clusteredHubNoAuthUserAnnotation).
 	sessionNKey string
-	// calloutDigest is the hex SHA-256 of auth.conf's callout lines, the auth_callout block and the
-	// ping lines (core.Authorization.CalloutLines), "" without authCallout: the hub pods'
-	// auth-callout annotation, which rolls them when it changes (clusteredHubAuthCalloutAnnotation).
+	// calloutDigest is the hex SHA-256 of auth.conf's callout lines, the auth_callout block, the
+	// ping lines and, beside privateProjects, the server tag (core.Authorization.CalloutLines), ""
+	// without authCallout: the hub pods' auth-callout annotation, which rolls them when it changes
+	// (clusteredHubAuthCalloutAnnotation).
 	calloutDigest string
+	// privateProjects is the input of that name: the chart waits on the hub pods' NetworkPolicy
+	// beside it (newClusteredHubKubernetes).
+	privateProjects bool
 	// route is the resolved route credential, nil without routeAuthorization.
 	route    *clusteredHubRoute
 	tailnet  *clusteredHubTailnet
@@ -534,6 +538,7 @@ func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, 
 	if args.PrivateProjects && len(s.monitorNamespaces) > 0 {
 		return clusteredHubSettings{}, monitorBesidePrivateProjects(s.monitorNamespaces)
 	}
+	s.privateProjects = args.PrivateProjects
 	if s.route, err = newClusteredHubRoute(args.RouteAuthorization, s.namespace); err != nil {
 		return clusteredHubSettings{}, err
 	}

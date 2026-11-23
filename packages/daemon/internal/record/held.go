@@ -46,7 +46,7 @@ const (
 	// work starts while they stand open (LineFacts.ChildWaits).
 	HeldChildrenFirst HeldReason = "children_first"
 	// HeldAcceptedAncestor is an issue beneath an ancestor the daemon has already accepted:
-	// nothing of it starts before that ancestor closes (HeldUnderAccepted).
+	// nothing of it starts while that ancestor stands in retro or merging (HeldUnderAccepted).
 	HeldAcceptedAncestor HeldReason = "accepted_ancestor"
 	// HeldAtWork is the ladder's `!KeepsSlot(issue)` for an issue not standing in held: an issue
 	// that keeps none of the cap's slots where it stands, whose workers run as they did and which

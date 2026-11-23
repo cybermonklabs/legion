@@ -96,8 +96,7 @@ request.
 
 Only the pull request author's App resolves a thread, so the implementer resolves them all. When
 GitHub refuses its `resolveReviewThread`, open a `dispatch ask` with the thread's URL and GitHub's
-message, for a person to resolve it, with the options resolved and could not. The merger does not
-complete while it is open.
+message, for a person to resolve it, with the options resolved and could not.
 
 ## The close
 
