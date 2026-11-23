@@ -829,8 +829,9 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
   return { run, scenario: "tester-proof", label, pass, ref, notes: notes.join(" ") };
 }
 
-/** rig.sh's own_dispatch record, <run>/dispatch.json: the run's own Dispatch, a database in the
- * batch's Postgres container (its id) and the server on it. */
+/** rig.sh's own_dispatch record, <run>/dispatch.json: the run's own Dispatch, a database on the
+ * batch's Postgres (the container's id, or the given server's URL with no password) and the server
+ * on it. */
 const RunDispatch = z.object({
   postgres: z.string().min(1),
   database: z.string().min(1),

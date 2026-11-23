@@ -605,6 +605,43 @@ describe("next_run", () => {
   });
 });
 
+// A batch given SKILL_SCENARIOS_POSTGRES_URL makes each run's database on that server
+// (own_dispatch), and names the server in its notes, its failures and each run's dispatch.json.
+describe("safe_url and pg_database_url", () => {
+  // Catches: a run's database URL that keeps the given server's own database, drops the query a
+  // given URL carries (sslmode, say), or adds a query to a URL that has none.
+  test("pg_database_url keeps the server and the query and names the run's database", () => {
+    expect(
+      bash(`${fn("pg_database_url")}\npg_database_url "$1" run_x\npg_database_url "$2" run_x`, [
+        "postgres://u:p@127.0.0.1:5433/legion_test?sslmode=disable",
+        "postgres://u:p@127.0.0.1:5433/legion_test",
+      ])
+    ).toEqual({
+      code: 0,
+      stdout:
+        "postgres://u:p@127.0.0.1:5433/run_x?sslmode=disable\n" +
+        "postgres://u:p@127.0.0.1:5433/run_x\n",
+      stderr: "",
+    });
+  });
+
+  // Catches: a note, a failure message or a run's dispatch.json that prints the password of a
+  // server the operator gave, and a safe_url that changes a URL with no password in it.
+  test("safe_url drops the password of a URL and keeps the rest", () => {
+    expect(
+      bash(`${fn("safe_url")}\nsafe_url "$1"\nsafe_url "$2"\nsafe_url "$3"`, [
+        "postgres://u:p@h:1/d",
+        "postgres://u@h:1/d",
+        "nats://127.0.0.1:4222",
+      ])
+    ).toEqual({
+      code: 0,
+      stdout: "postgres://u@h:1/d\npostgres://u@h:1/d\nnats://127.0.0.1:4222\n",
+      stderr: "",
+    });
+  });
+});
+
 // run_env_pids names each process whose environment carries a run under DIR, with its start time,
 // for the exit handlers' stop_env_processes. It walks every process's environment, so a machine
 // whose /proc/<pid>/environ entries together pass ARG_MAX must not hand them to grep as its
