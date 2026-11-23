@@ -26,14 +26,22 @@ export const TIMER_RECORD_FILE = "LEGION_TIMER_RECORD_FILE";
 /** The roots of the program's own code, for the preload: absolute directories, `:`-separated. */
 export const TIMER_RECORD_ROOTS = "LEGION_TIMER_RECORD_ROOTS";
 
+/** How often the preload's writer stamps the record as alive (`{ alive }` steps). The stamp is
+ *  how a reader tells a record still being written from one whose writer stopped: a window of no
+ *  timers reads the same in both, and only a later stamp shows the writer was there to write one.
+ *  The period sets how soon a wait for a stamp ends, never a verdict. */
+export const TIMER_RECORD_ALIVE_MS = 100;
+
 /** One step of the record: a timer the program armed, with the delay it chose and the line that
- *  armed it; a timer whose arming stack named no file, with its delay; or that timer's callback
+ *  armed it; a timer whose arming stack named no file, with its delay; that timer's callback
  *  starting (an interval's, at each tick; a sleep's, as it resolves; a deadline's, as its signal
- *  aborts). Timers are numbered in the order they were armed. */
+ *  aborts); or the preload's writer stamping the record as alive. Timers are numbered in the order
+ *  they were armed; stamps, in the order they were written. */
 export type TimerStep =
   | { readonly timer: number; readonly delayMs: number; readonly from: string }
   | { readonly unplaced: number; readonly delayMs: number }
-  | { readonly fired: number };
+  | { readonly fired: number }
+  | { readonly alive: number };
 
 /** A timer of the record that was armed and fired between two steps of a record it shares. */
 export interface TimerOnTheWay {
@@ -206,7 +214,10 @@ export function recordTimers(
 /**
  * Installs the record as the preload does, when `env` names a file (`TIMER_RECORD_FILE`) and the
  * program's roots (`TIMER_RECORD_ROOTS`): each step is appended to the file as one JSON line. A
- * write that fails is dropped, so the record never changes what the program does.
+ * write that fails is dropped, so the record never changes what the program does. The writer also
+ * stamps the record as alive every `TIMER_RECORD_ALIVE_MS` (`writtenAfter` reads the stamps), on
+ * the process's own `setInterval` taken before the record wraps it, so the stamp is never one of
+ * the program's timers; the interval is unref'd, so it keeps no process alive.
  *
  * The writer is `@legion/envoy-client/json-line-record`'s `jsonLineRecord` written again, and the
  * copy stays: that one shared form sits in `@legion/envoy-client` because the program seams that
@@ -221,13 +232,20 @@ export function recordTimersFromEnvironment(env: Record<string, string | undefin
   const file = env[TIMER_RECORD_FILE];
   const roots = (env[TIMER_RECORD_ROOTS] ?? "").split(":").filter((root) => root !== "");
   if (file === undefined || file === "" || roots.length === 0) return;
-  recordTimers(roots, (step) => {
+  const realSetInterval = globalThis.setInterval;
+  const write = (step: TimerStep): void => {
     try {
       appendFileSync(file, `${JSON.stringify(step)}\n`);
     } catch {
       // The test's record only: a write it cannot make changes nothing the program does.
     }
-  });
+  };
+  recordTimers(roots, write);
+  let alive = 0;
+  realSetInterval(() => {
+    alive += 1;
+    write({ alive });
+  }, TIMER_RECORD_ALIVE_MS).unref();
 }
 
 /** Whether `step`, read from a record it may share with other steps, is a timer's arming. */
@@ -243,6 +261,17 @@ function isUnplaced(step: unknown): step is Extract<TimerStep, { unplaced: numbe
 /** Whether `step` is a timer's callback starting. */
 function isFiring(step: unknown): step is Extract<TimerStep, { fired: number }> {
   return typeof step === "object" && step !== null && "fired" in step;
+}
+
+/**
+ * Whether the record `steps` holds a stamp of its writer at or past index `length`: that the
+ * writer was alive, and the reader saw its writes, after a read that found `length` steps. A record
+ * whose writer stopped, or a read that returns an old copy, holds none however long one waits.
+ */
+export function writtenAfter(steps: readonly unknown[], length: number): boolean {
+  return steps
+    .slice(Math.max(0, length))
+    .some((step) => typeof step === "object" && step !== null && "alive" in step);
 }
 
 /**

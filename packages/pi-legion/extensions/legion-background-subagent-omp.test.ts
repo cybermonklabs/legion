@@ -23,6 +23,7 @@ import {
   TIMER_RECORD_ROOTS,
   type TimerStep,
   timersBetween,
+  writtenAfter,
 } from "@legion/test-fixtures/timer-record";
 import { completeLines } from "@legion/test-fixtures/transcript-lines";
 import { timeLeft, until } from "@legion/test-fixtures/wait";
@@ -352,6 +353,11 @@ interface RolePane {
   /** Every timer the pane's own plugin code armed and fired so far, in the pane process's order
    *  (`@legion/test-fixtures/timer-record`, loaded into the pane as one more extension). */
   timerRecord(): Promise<readonly TimerStep[]>;
+  /** Waits until the timer record holds a stamp of its writer past its first `length` steps:
+   *  the record was still being written, and its reads see the writes, after the read that found
+   *  `length`. A writer that stopped, or a read that returns an old copy, fails the wait by name
+   *  at the row's deadline. */
+  recordWrittenAfter(length: number): Promise<void>;
 }
 
 /**
@@ -526,6 +532,19 @@ async function startRolePane(): Promise<RolePane> {
   let seq = 1;
 
   const taken = new Set<Held>();
+  const timerRecord = async (): Promise<readonly TimerStep[]> => {
+    // A record that is missing or cannot be read fails the row, never reads as empty: an empty
+    // record sums to 0 ms and would pass the bound below whatever the plugins did.
+    let text: string;
+    try {
+      text = await readFile(timerRecordFile, "utf8");
+    } catch (error) {
+      throw new Error(
+        `the pane's timer record ${timerRecordFile} could not be read: ${String(error)}`
+      );
+    }
+    return completeLines(text).map((line) => JSON.parse(line) as TimerStep);
+  };
   return {
     held,
     sessionId,
@@ -539,18 +558,16 @@ async function startRolePane(): Promise<RolePane> {
     },
     publish: (payload) => relay(sessionId, payload, seq++),
     until: waitFor,
-    timerRecord: async () => {
-      // A record that is missing or cannot be read fails the row, never reads as empty: an empty
-      // record sums to 0 ms and would pass the bound below whatever the plugins did.
-      let text: string;
-      try {
-        text = await readFile(timerRecordFile, "utf8");
-      } catch (error) {
-        throw new Error(
-          `the pane's timer record ${timerRecordFile} could not be read: ${String(error)}`
-        );
-      }
-      return completeLines(text).map((line) => JSON.parse(line) as TimerStep);
+    timerRecord,
+    async recordWrittenAfter(length) {
+      await until(
+        `the pane's timer record to be written after the read that found ${length} steps (a ` +
+          "record whose writer stopped, or a read that returns an old copy, never is)",
+        async () => {
+          if (closed.error !== undefined) throw closed.error;
+          return writtenAfter(await timerRecord(), length);
+        }
+      );
     },
   };
 }
@@ -636,10 +653,10 @@ test.skipIf(skip)(
 
     // How far the pane's timer record ran before the frame was sent: each later step came after.
     const beforePublish = (await pane.timerRecord()).length;
-    // The pane arms its Envoy heartbeat as its session starts (`context.setInterval` in
-    // packages/pi-envoy/extensions/envoy.ts), so by now the record holds at least that timer. One
-    // that holds none is a record the pane's preload never wrote, which could show no plugin's
-    // timer either.
+    // The preload's writer stamps the record every `TIMER_RECORD_ALIVE_MS`, and the pane arms its
+    // Envoy heartbeat as its session starts (`context.setInterval` in
+    // packages/pi-envoy/extensions/envoy.ts), so by now the record holds steps. One that holds none
+    // is a record the pane's preload never wrote, which could show no plugin's timer either.
     expect(
       beforePublish,
       "the pane's timer record holds none of its timers before the frame was sent"
@@ -651,6 +668,10 @@ test.skipIf(skip)(
       isRoleTurn(request) ? conversation(request).includes(MESSAGE_SUMMARY) : false
     );
     const recordAtRead = await pane.timerRecord();
+    // The record read at the turn was a live one: its writer stamps it again after that read, and
+    // a later read sees the stamp. A window of no timers reads as 0 ms whether the plugins were
+    // quiet or the record had stopped; only a stamp after the read tells the two apart.
+    await pane.recordWrittenAfter(recordAtRead.length);
     // The message is in the role's context at its next model turn: no turn of the role came
     // between the frame's arrival and the turn that read it.
     expect(published.order).toBeLessThan(read.arrived.order);
