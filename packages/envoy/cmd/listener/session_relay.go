@@ -530,7 +530,7 @@ func (r *relayRun) waitRetry(ctx context.Context, d time.Duration) bool {
 }
 
 // ended reports whether the run's goroutine has returned: it was stopped, or it may start again
-// only at the session's next registration.
+// only at the session's next registration or a role claim it makes through this listener.
 func (r *relayRun) ended() bool {
 	select {
 	case <-r.done:
@@ -628,8 +628,9 @@ func (m *sessionRelays) setOwned(owned bool) {
 	m.signal()
 }
 
-// registered implements sessionRelay: the session registered, so a relay that paused resumes and a
-// new epoch restarts it at the ack floor, unless it restarted after heard (relayRun.restartedBefore).
+// registered implements sessionRelay: the session registered or claimed a role through this
+// listener, so a relay that paused or ended starts again and a new epoch restarts it at the ack
+// floor, unless it restarted after heard (relayRun.restartedBefore).
 func (m *sessionRelays) registered(sessionID string, epochChanged bool, heard uint64) {
 	if epochChanged {
 		m.enqueue(sessionID, relayResume|relayRestart, heard)

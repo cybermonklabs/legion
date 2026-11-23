@@ -126,7 +126,8 @@ func (o sessionDeliveryOutcome) relayed() bool {
 	return o.answer != nil && o.answer.Mode == deliveryModeConsumer
 }
 
-// sessionRelay is what the relay of session consumers hears from registrations.
+// sessionRelay is what the relay of session consumers hears from registrations, and from role
+// claims through this listener.
 type sessionRelay interface {
 	// registered reports a registration of sessionID that recorded consumer delivery on its entry,
 	// or a role claim refresh through this listener that recorded the session's admission. Either
