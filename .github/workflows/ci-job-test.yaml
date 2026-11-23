@@ -6,7 +6,7 @@ name: CI job test
 # whole `if:` that decides whether its job runs, so the `if:` here only picks which of the two
 # that is. The two share a file because ci.yaml already calls as many reusable workflows as
 # .github/scripts/check-workflow-files.sh allows it
-# (.github/ci-notes/ci.md#two-jobs-that-call-one-file-the-reusable-workflow-limit).
+# (.github/ci-notes/ci.md#two-jobs-that-call-one-file).
 #
 # The split is for the filters. Each job's filter names this file beside ci.yaml, so a change to
 # these steps selects these two jobs alone, where a change to ci.yaml selects every job.

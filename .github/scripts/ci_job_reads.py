@@ -83,7 +83,7 @@ BUILD_TAGS = ".github/scripts/go_build_tags.py"
 # each the job whose steps are in the other's called file, mapped to that other job. A split puts
 # both jobs in one file because ci.yaml already calls as many reusable workflows as
 # .github/scripts/check-workflow-files.sh allows it
-# (.github/ci-notes/ci.md#two-jobs-that-call-one-file-the-reusable-workflow-limit), and each job
+# (.github/ci-notes/ci.md#two-jobs-that-call-one-file), and each job
 # of the file runs under its own caller alone (ci_filter_coverage.check_called_jobs).
 SHARED_FILE = {
     "tooling-checks": "test",

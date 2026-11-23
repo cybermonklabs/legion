@@ -415,6 +415,8 @@ step gate decides nothing in a job that was not selected.
 The guides' layout step of the tooling-checks job (ci-job-test.yaml's
 "Check the guides' semantic line breaks"), gated on exactly the files that step
 reads, which the guide_layout_files group holds and the job's own filter names too.
+The job's other steps read none of the guides, so a run that changed none of them skips
+that step.
 
 ## docs: docs/site's typecheck, screenshots and build, with the sources its reference
 
@@ -1112,7 +1114,7 @@ every job of the file but the exempt ones, and the re-run term to every job but 
 passing required check, so each refuses such an attempt in a step of its own instead.
 A job split off another keeps its steps in that job's file instead: its caller passes
 `job: <its id>` and its steps' job carries `if: inputs.job == '<its id>'`
-(.github/ci-notes/ci.md#two-jobs-that-call-one-file-the-reusable-workflow-limit).
+(.github/ci-notes/ci.md#two-jobs-that-call-one-file).
 docs/solutions/github/join-a-job-to-the-ci-router.md walks through it.
 
 Caches: two steps of the jobs this workflow calls save an Actions cache entry themselves,
@@ -1770,7 +1772,7 @@ gate decides nothing in a job that was not selected. When `changes` did not succ
 runs. The plugin build, the changelog check, the guides' layout step, the lints and the
 typechecks that ran beside these tests are the tooling-checks job's, in the same file.
 
-## Two jobs that call one file: the reusable-workflow limit
+## Two jobs that call one file
 
 ci.yaml calls 45 unique reusable workflows, the most .github/scripts/check-workflow-files.sh
 allows it (its rule 5 keeps five below the 50 GitHub counts over every tree of nested calls),
@@ -1805,7 +1807,7 @@ typecheck of scripts/e2e/lib's plan ratings read test. They are builds, lints an
 which a pull request runs whatever their time, and they come to 1.0 minutes at the 90th
 percentile (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
 The job shares ci-job-test.yaml with the test job
-(.github/ci-notes/ci.md#two-jobs-that-call-one-file-the-reusable-workflow-limit) and fails open as
+(.github/ci-notes/ci.md#two-jobs-that-call-one-file) and fails open as
 that job does (.github/ci-notes/ci.md#the-fail-open-jobs-and-what-they-buy-while-changes-is-broken).
 
 ## Why the daemon's Go suite is a job of its own
@@ -1874,7 +1876,7 @@ service on a job whose other steps would start it for nothing.
 ## The pi-legion plugin's suite and its build
 
 Two jobs over packages/pi-legion, both calling ci-job-pi-legion.yaml
-(.github/ci-notes/ci.md#two-jobs-that-call-one-file-the-reusable-workflow-limit). pi-legion runs
+(.github/ci-notes/ci.md#two-jobs-that-call-one-file). pi-legion runs
 the plugin's test suite with what only it needs - jj, the pinned Oh My Pi, Go and the go-daemon
 restore for daemon-pane's `go run`, and the NATS service controller-start-omp.test.ts's role
 claim needs - on ubuntu-24.04, since the Oh My Pi release ships linux-x64 alone. It is a slow
@@ -2003,7 +2005,7 @@ The envoy-infra Pulumi plugin's module (packages/envoy/infra). It is not in the 
 its own go.work binds it and packages/envoy, so Pulumi's requirements never move the versions
 the Envoy binaries and the daemon build with, and every go command of ci-job-envoy-infra-go.yaml runs in that
 workspace. Two jobs call that file
-(.github/ci-notes/ci.md#two-jobs-that-call-one-file-the-reusable-workflow-limit).
+(.github/ci-notes/ci.md#two-jobs-that-call-one-file).
 envoy-infra-build checks the module's format, vets it, the files behind the live-test tags
 (pulumilive, natslive) included, as linux and as darwin compile them, and runs its unit tests
 under the race detector: builds, vets and fast tests, which a pull request runs (3.0 minutes).

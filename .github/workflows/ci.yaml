@@ -123,8 +123,7 @@ jobs:
       private_names_port: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.private_names_port }}
       # why: .github/ci-notes/ci.md#why-the-session-message-wait-suite-has-an-output-of-its-own
       sessions_script: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.sessions_script }}
-      # The guides' layout step of the tooling-checks job, which has a filter of its own: the
-      # job's other steps read none of the guides, so a run that changed none of them skips it.
+      # why: .github/ci-notes/ci.md#guide_layout-the-guides-layout-step-of-the-tooling-checks-job-ci-job-testyamls
       guide_layout: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.guide_layout }}
       # why: .github/ci-notes/ci.md#one-output-per-testsh-step-of-the-test-job
       release_push_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.release_push_test }}
@@ -218,7 +217,7 @@ jobs:
       # The checks whose subject is text, in a job with no database: no `full-ci` term, only
       # the dispatched one above, since it is one of the cheapest jobs of the file.
       text_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.text_checks }}
-      # Six slow suites' outputs, held back as .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request says.
+      # why: .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request
       # why: .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request
       envoy_go_race: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race')) && steps.filter.outputs.envoy_go_race || 'false' }}
       envoy_go_race_api: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race_api')) && steps.filter.outputs.envoy_go_race_api || 'false' }}
@@ -357,7 +356,7 @@ jobs:
       checks: write
     uses: ./.github/workflows/ci-job-test.yaml
     with:
-      # why: .github/ci-notes/ci.md#two-jobs-that-call-one-file-the-reusable-workflow-limit
+      # why: .github/ci-notes/ci.md#two-jobs-that-call-one-file
       job: test
       ci-ok-changes: ${{ toJSON(needs.changes) }}
       changes-result: ${{ needs.changes.result }}
@@ -420,7 +419,7 @@ jobs:
       checks: write
     uses: ./.github/workflows/ci-job-test.yaml
     with:
-      # why: .github/ci-notes/ci.md#two-jobs-that-call-one-file-the-reusable-workflow-limit
+      # why: .github/ci-notes/ci.md#two-jobs-that-call-one-file
       job: tooling-checks
       ci-ok-changes: ${{ toJSON(needs.changes) }}
       changes-result: ${{ needs.changes.result }}
@@ -580,7 +579,7 @@ jobs:
       checks: write
     uses: ./.github/workflows/ci-job-pi-legion.yaml
     with:
-      # why: .github/ci-notes/ci.md#two-jobs-that-call-one-file-the-reusable-workflow-limit
+      # why: .github/ci-notes/ci.md#two-jobs-that-call-one-file
       job: pi-legion
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
@@ -594,7 +593,7 @@ jobs:
       checks: write
     uses: ./.github/workflows/ci-job-pi-legion.yaml
     with:
-      # why: .github/ci-notes/ci.md#two-jobs-that-call-one-file-the-reusable-workflow-limit
+      # why: .github/ci-notes/ci.md#two-jobs-that-call-one-file
       job: pi-legion-build
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
@@ -702,7 +701,7 @@ jobs:
       checks: write
     uses: ./.github/workflows/ci-job-envoy-infra-go.yaml
     with:
-      # why: .github/ci-notes/ci.md#two-jobs-that-call-one-file-the-reusable-workflow-limit
+      # why: .github/ci-notes/ci.md#two-jobs-that-call-one-file
       job: envoy-infra-go
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
@@ -716,7 +715,7 @@ jobs:
       checks: write
     uses: ./.github/workflows/ci-job-envoy-infra-go.yaml
     with:
-      # why: .github/ci-notes/ci.md#two-jobs-that-call-one-file-the-reusable-workflow-limit
+      # why: .github/ci-notes/ci.md#two-jobs-that-call-one-file
       job: envoy-infra-build
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
