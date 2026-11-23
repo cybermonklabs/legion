@@ -114,9 +114,10 @@ func TestAClientWithNoSeedIsRefusedByAServerThatRequiresOne(t *testing.T) {
 	}
 }
 
-// A seed configured but unusable is an error before any dial, naming the variable and the path,
-// never a fallback to NATS_NKEY_SEED or to connecting without a credential. The URL is one nothing
-// listens on, so an attempted dial would fail differently.
+// A seed configured but unusable is an error before any dial, naming the variable, and the path of
+// a file that was read (a file that could not be read is named by the variable and the system's
+// reason alone), never a fallback to NATS_NKEY_SEED or to connecting without a credential. The URL
+// is one nothing listens on, so an attempted dial would fail differently.
 func TestAnUnusableSeedIsAnErrorNamingItsVariable(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing.seed")
 	blank := seedFile(t, " \n")
@@ -138,7 +139,7 @@ func TestAnUnusableSeedIsAnErrorNamingItsVariable(t *testing.T) {
 		env  map[string]string
 		want string
 	}{
-		{"a missing file", map[string]string{"NATS_NKEY_SEED_FILE": missing, "NATS_NKEY_SEED": userSeed}, "NATS_NKEY_SEED_FILE names " + missing + ", which could not be read"},
+		{"a missing file", map[string]string{"NATS_NKEY_SEED_FILE": missing, "NATS_NKEY_SEED": userSeed}, "NATS_NKEY_SEED_FILE names a file that could not be read: open: no such file or directory"},
 		{"a blank file", map[string]string{"NATS_NKEY_SEED_FILE": blank}, "NATS_NKEY_SEED_FILE names " + blank + ", which is empty"},
 		{"an empty pointer", map[string]string{"NATS_NKEY_SEED_FILE": ""}, "NATS_NKEY_SEED_FILE is set but empty"},
 		{"a file holding no seed", map[string]string{"NATS_NKEY_SEED_FILE": notASeed}, "NATS_NKEY_SEED_FILE (" + notASeed + ") does not hold a valid nkey seed"},

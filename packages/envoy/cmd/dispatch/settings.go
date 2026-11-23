@@ -81,7 +81,7 @@ var settings = []setting{
 	{Name: "DISPATCH_SERVER_URL", Default: "`dispatch.serverUrl` from `envoy.json`", Required: "no",
 		Description: "The origin people open in a browser, and, where the `DISPATCH_SIGNIN_*` settings configure browser sign-in, the sign-in callback origin (`<origin>/auth/callback`): an absolute http(s) URL with no path. Set, it overrides `envoy.json`; set but empty, it refuses startup."},
 	{Name: "NATS_URLS", Default: "`envoy.natsUrls` from `envoy.json`", Required: "no",
-		Description: "Comma-separated NATS server URLs. Set, it overrides `envoy.json`; set but empty, it refuses startup."},
+		Description: "Comma-separated NATS server URLs; a URL after the first that carries a user name or password names its scheme (`nats://`, `tls://`, `ws://` or `wss://`), and a comma in a credential is written `%2C`. Set, it overrides `envoy.json`; set but empty, it refuses startup."},
 	{Name: "ENVOY_ALLOW_REMOTE_NATS", Required: "no",
 		Description: "Set to `1` to let Dispatch reach a NATS server that is not on this machine; without it Dispatch refuses one, and every deployment sets it."},
 	{Name: "NATS_NKEY_SEED", File: true, Required: "no",

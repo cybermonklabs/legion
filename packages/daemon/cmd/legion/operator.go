@@ -96,8 +96,8 @@ func (c *operatorCall) check(required ...string) (code int, ok bool) {
 
 // connect reads the bearer --operator-token-file names, when the command was given one, by
 // config.ReadPrivateSecretPointer's rules — a file that cannot be read, holds nothing, or that its
-// group or others can read is refused naming its path, never its contents — and finds the daemon
-// the way `legion state` does (daemonAddress).
+// group or others can read is refused, never naming its contents, and naming its path only once it
+// was opened — and finds the daemon the way `legion state` does (daemonAddress).
 func (c *operatorCall) connect() (operator, bool) {
 	var bearer string
 	if *c.tokenFile != "" {

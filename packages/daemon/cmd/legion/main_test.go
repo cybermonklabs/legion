@@ -1027,7 +1027,7 @@ func TestConfigCheckRefusesWhatBootRefuses(t *testing.T) {
 	}{
 		{"a missing operator token file", "", func(t *testing.T, dir string) { remove(t, filepath.Join(dir, "operator-token")) },
 			func(dir string) string {
-				return "legion config check: operator_token_file names " + filepath.Join(dir, "operator-token") + ", which could not be read: "
+				return "legion config check: operator_token_file names a file that could not be read: open: no such file or directory\n"
 			}},
 		{"no operator token file", "", func(t *testing.T, dir string) {
 			rewrite(t, filepath.Join(dir, "legion.yaml"), "operator_token_file: ./operator-token\n", "")
@@ -1037,7 +1037,7 @@ func TestConfigCheckRefusesWhatBootRefuses(t *testing.T) {
 			}},
 		{"a missing Dispatch token file", "", func(t *testing.T, dir string) { remove(t, filepath.Join(dir, "dispatch-token")) },
 			func(dir string) string {
-				return "legion config check: dispatch_token_file names " + filepath.Join(dir, "dispatch-token") + ", which could not be read: "
+				return "legion config check: dispatch_token_file names a file that could not be read: open: no such file or directory\n"
 			}},
 		{"a missing instructions file", "instructions: ./instructions.md\n", func(*testing.T, string) {},
 			func(dir string) string {
@@ -1150,10 +1150,14 @@ func TestConfigCheckReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
 		mode     os.FileMode
 		refusal  func(path string) string
 	}{
-		{"a missing Envoy token file", envoyKey, "", 0, func(path string) string { return "envoy_token_file names " + path + ", which could not be read: " }},
+		{"a missing Envoy token file", envoyKey, "", 0, func(string) string {
+			return "envoy_token_file names a file that could not be read: open: no such file or directory\n"
+		}},
 		{"a blank Envoy token file", envoyKey, " \n", 0o600, func(path string) string { return "envoy_token_file names " + path + ", which is empty\n" }},
 		{"an Envoy token file", envoyKey, "envoy-token\n", 0o600, nil},
-		{"a missing seed file", seedKey, "", 0, func(path string) string { return "nats_nkey_seed_file names " + path + ", which could not be read: " }},
+		{"a missing seed file", seedKey, "", 0, func(string) string {
+			return "nats_nkey_seed_file names a file that could not be read: open: no such file or directory\n"
+		}},
 		{"a seed file others can read", seedKey, seed + "\n", 0o644, func(path string) string {
 			return "nats_nkey_seed_file " + path + " is readable by its group or others (mode 0644); chmod 0600 it\n"
 		}},
@@ -1217,8 +1221,8 @@ func TestConfigCheckReadsTheDaemonNATSSeedAsBootDoes(t *testing.T) {
 		mode     os.FileMode
 		refusal  func(path string) string
 	}{
-		{"a missing file", "", 0, func(path string) string {
-			return "nats_daemon_nkey_seed_file names " + path + ", which could not be read: "
+		{"a missing file", "", 0, func(string) string {
+			return "nats_daemon_nkey_seed_file names a file that could not be read: open: no such file or directory\n"
 		}},
 		{"a file others can read", daemonSeed + "\n", 0o644, func(path string) string {
 			return "nats_daemon_nkey_seed_file " + path + " is readable by its group or others (mode 0644); chmod 0600 it\n"
