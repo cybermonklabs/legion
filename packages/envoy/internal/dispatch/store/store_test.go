@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
 	"math"
 	"net/url"
@@ -1183,8 +1184,25 @@ func execOnAdmin(admin url.URL, statement string) error {
 	return err
 }
 
-// TestMain runs the package's tests, then drops every template openMigratedTestStore built.
+// storeTestParallelism is how many of this package's tests run at once when the command line names
+// no -parallel. Every test calls t.Parallel but those that change or measure something the whole
+// process or the server shares (the default logger, a package variable, openTestStore's one
+// database, a wall-clock bound), which stay serial and run before the rest. Each parallel test has
+// a database of its own and waits on Postgres far more than on a core: alone, the package used 22%
+// of 4 CPUs. go test's default of GOMAXPROCS is four on CI's arm runner, but hundreds on a dev box,
+// where every test's database and pools would open more connections than the test server allows
+// (testlimits.ServerConnections). Eight is the API package's measured setting (internal/dispatch/api,
+// apiTestParallelism): at sixteen, its wall-clock-bounded tests failed for want of cores.
+//
+// go test parses its flags inside m.Run, so a -parallel on the command line still wins.
+const storeTestParallelism = 8
+
+// TestMain sets the package's default -parallel, runs its tests, then drops every template
+// openMigratedTestStore built.
 func TestMain(m *testing.M) {
+	if err := flag.Set("test.parallel", strconv.Itoa(storeTestParallelism)); err != nil {
+		panic("set this package's default -parallel: " + err.Error())
+	}
 	code := m.Run()
 	migratedTemplates.Lock()
 	made := migratedTemplates.made
