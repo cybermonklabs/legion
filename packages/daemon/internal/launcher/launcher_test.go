@@ -1064,7 +1064,7 @@ func TestALongRoleLineIsCutWhereTheURLRuleReadsEachURLWhole(t *testing.T) {
 	}{{
 		name: "a URL across the mark",
 		line: filler + " https://planted-user-1@example.com/path?token=planted-query-token-1 done\n",
-		want: "tester: " + filler + " \n" + "tester: https://example.com/path?token= done\n",
+		want: "tester: " + filler + " \n" + "tester: https://example.com/path done\n",
 	}, {
 		name: "a run with no byte that ends a URL",
 		line: strings.Repeat("y", maxLogLine+5) + "\n",

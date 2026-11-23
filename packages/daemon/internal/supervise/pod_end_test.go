@@ -136,7 +136,7 @@ func TestAPodEndWithNULAndAQueryTokenIsHeldAsTheStoreKeepsIt(t *testing.T) {
 	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
 	h.must(StreamTurnStart{Claim: testToken})
 	h.m.deps.Store = &unansweredCheckLaunchStore{memStore: h.store, failing: true}
-	const want = "Evicted: The node was low\uFFFD on resource; see https://kubelet.example.test/why?token="
+	const want = "Evicted: The node was low\uFFFD on resource; see https://kubelet.example.test/why"
 
 	gone := RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(),
 		PodEnd: "Evicted: The node was low\x00 on resource; see https://kubelet.example.test/why?token=planted-query-token-5c1e"}}

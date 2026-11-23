@@ -194,7 +194,7 @@ func TestALeakCheckCauseWithNULAndAQueryTokenIsHeldInMemoryAsItIsStored(t *testi
 	cause := "the shared public leak check could not be installed: the launcher answered \x00 reading " +
 		"https://codeload.example.test/legion/tar.gz/v3?token=" + plantedQueryToken + " for its slice"
 	const want = "the shared public leak check could not be installed: the launcher answered \uFFFD reading " +
-		"https://codeload.example.test/legion/tar.gz/v3?token= for its slice"
+		"https://codeload.example.test/legion/tar.gz/v3 for its slice"
 	refusal := fmt.Errorf("start through its authenticated launcher: %w", runtime.LeakCheckRefusal{Cause: cause})
 
 	stored := refusedStart(t, h, "LEGION-209", refusal)
@@ -394,7 +394,7 @@ func TestARefusedTurnsMessageWithNULAndAQueryTokenIsHeldInMemoryAsItIsStored(t *
 		t.Fatalf("no machine for %s", token)
 	}
 	message := "the content filter refused\x00 the turn; see https://provider.example.test/refusals?token=" + plantedQueryToken + " for why"
-	const want = "the content filter refused\uFFFD the turn; see https://provider.example.test/refusals?token= for why"
+	const want = "the content filter refused\uFFFD the turn; see https://provider.example.test/refusals for why"
 
 	if err := m.Handle(h.ctx, supervise.RequestTurnOutcome{Claim: token, Generation: m.Claim().Generation, Sequence: 1,
 		Refused: true, Message: message}); err != nil {
