@@ -1401,14 +1401,12 @@ EOF
   C1=$(g rev-parse HEAD)
   g push -q "$R/remote.git" "legion/$worker_key"
   : >"$R/pushes.log"
-  # The implement handoff as the implementer records it with `dispatch handoff-write`: the three
-  # stamps (schemaVersion, phase, issue) and the phase's fields; Dispatch records when it was
-  # written. What the implementer ran is no part of it: seed.ts implement-handoff records that as a
-  # result against the issue's check k1. The PR's head is the implementer's code commit, since no
-  # handoff commit sits above it.
-  jq -n --arg key "$worker_key" '
-    {schemaVersion:1, phase:"implement", issue:$key,
-     filesChanged:["greet.ts","greet.test.ts"]}' >"$R/implement.json"
+  # The implement handoff as the implementer records it with `dispatch handoff-write`: `head`, the
+  # commit the implementer pushed. The PR's head is that commit, since no handoff commit sits above
+  # it. The record holds the issue and the phase, and Dispatch records when it was written. What the
+  # implementer ran is no part of it: seed.ts implement-handoff records that as a result against the
+  # issue's check k1.
+  jq -n --arg head "$C1" '{head:$head}' >"$R/implement.json"
   # Isolated from the operator's own jj configuration (fsmonitor.backend = "watchman" on a devbox
   # that runs it): a bare JJ_CONFIG naming only fsmonitor.backend = "none" and this fixture's own
   # identity, so jj falls back to its built-in defaults and `jj new`'s working-copy snapshot never

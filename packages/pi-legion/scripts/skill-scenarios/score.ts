@@ -116,27 +116,52 @@ const DaemonLine = z.looseObject({
   handoffVersion: z.number().optional(),
 });
 const nonEmpty = z.string().min(1);
+/** The keys a test handoff holds, as the tester role's prompt gives them: `head`, a `note` where
+ * the tester has one, and, until dispatch://INFRA-4930 moves them to results on the issue's checks,
+ * `implementerProof`, `failures` and `failed`. */
+const TEST_HANDOFF_KEYS: Record<string, true> = {
+  head: true,
+  note: true,
+  implementerProof: true,
+  failures: true,
+  failed: true,
+};
 /** The tester's handoff as the tester role's prompt spells it (the `test` shape; nothing in the
- * daemon holds it to one), as far as the score reads it: the stamps the tester writes itself
- * (`schemaVersion` 1, `phase` test and its `issue`), the verdict on the implementer's recorded
- * results, and the failures, each naming the check it is against. What the tester ran is no part
- * of the handoff: it is a result recorded against a `check` block of the issue's Verification
- * document (`dispatch result`), which the pull request body carries one line of per check. The
- * body carries
- * neither a time nor a `previousHandoff`, since Dispatch records when each handoff was written and
- * versions it; the object is loose, so a body from a checkout whose prompt still asks for
- * `previousHandoff` (main's, since sjawhar/legion#2585) or for a `completed` time (the prompt
- * before it) reads too, and the comparison measures the rule the score is about rather than the
- * fields the labels' prompts vary.
+ * daemon holds it to one), as far as the score reads it: `head`, the commit the tester tested, as
+ * 40 lower-case hexadecimal characters (as pi-shared's handoff-record.ts `recordHead` reads it); a
+ * `note`, whose length the score does not read; the verdict on the implementer's recorded
+ * results; and the failures, each naming the check it is against, with their count. What the
+ * tester ran is no part of the handoff: it is a result recorded against a `check` block of the
+ * issue's Verification document (`dispatch result`), which the pull request body carries one line
+ * of per check. The record holds the issue (`issue_key`) and the phase, and Dispatch records when
+ * each handoff was written and versions it, so the body holds no stamp, no time and no
+ * `previousHandoff`.
+ * The body is held to those keys on purpose. Each key outside TEST_HANDOFF_KEYS is an issue at
+ * that key, `a test handoff holds no <key>`, which `z.prettifyError` prints by name: the object
+ * is loose and the refinement names each key, where `z.strictObject` would give one issue for all
+ * of them. So a base checkout's body, whose prompt still gives `schemaVersion`, `phase` and
+ * `issue` (and, in older prompts, `previousHandoff`, a `completed` time, `proof` or
+ * `classSearch`), is refused, and that refusal is what the negative control of INFRA-4942's
+ * `d-scenario` check reads.
  * Nothing stamps a handoff for the tester: it writes the whole body and records it with
  * `dispatch handoff-write`. */
-export const TestHandoff = z.looseObject({
-  schemaVersion: z.literal(1),
-  phase: z.literal("test"),
-  issue: nonEmpty,
-  implementerProof: z.looseObject({ verdict: z.enum(["verified", "rejected"]), how: nonEmpty }),
-  failures: z.array(z.looseObject({ check: z.string(), evidence: z.string() })).optional(),
-});
+export const TestHandoff = z
+  .looseObject({
+    head: z.string().regex(/^[0-9a-f]{40}$/),
+    note: z.string().optional(),
+    implementerProof: z.looseObject({ verdict: z.enum(["verified", "rejected"]), how: nonEmpty }),
+    failures: z.array(z.looseObject({ check: z.string(), evidence: z.string() })).optional(),
+    failed: z.number().int().nonnegative().optional(),
+  })
+  .superRefine((body, context) => {
+    for (const key of Object.keys(body))
+      if (TEST_HANDOFF_KEYS[key] !== true)
+        context.addIssue({
+          code: "custom",
+          path: [key],
+          message: `a test handoff holds no ${key}`,
+        });
+  });
 
 function lines(file: string): string[] {
   if (!existsSync(file)) return [];
@@ -662,10 +687,10 @@ function instant(text: string, what: string): bigint {
  *   2. the accepted completion names a record of the run's issue, at its version, recorded before
  *      the completion: the record comes first, since the `legion` tool's handoff_complete reports
  *      the phase's newest record and refuses when there is none;
- *   3. that record is a `test` record this run's own session wrote (the transcript header's id, the
- *      session `dispatch handoff-write` names), whose body is a test handoff (TestHandoff) of this
- *      issue with `implementerProof.verdict` `verified` and no failures; and the branch as the
- *      tester
+ *   3. that record is a `test` record of this issue (the record's `issue_key`, since the body holds
+ *      no issue) that this run's own session wrote (the transcript header's id, the session
+ *      `dispatch handoff-write` names), whose body is a test handoff (TestHandoff) with
+ *      `implementerProof.verdict` `verified` and no failures; and the branch as the tester
  *      completed it (its last push before the completion, if it pushed) changes nothing under the
  *      PR's head: the handoff is never a commit, and the fixture leaves no defect for a red test;
  *   4. the PR body the gh stand-in kept last carries the line `dispatch result` printed for the
@@ -749,6 +774,8 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
   if (record === undefined) problems.push(`no test record of this run's session on ${world.key}`);
   else {
     if (record.phase !== "test") problems.push(`the record is a ${record.phase} record`);
+    if (record.issue_key !== world.key)
+      problems.push(`the record is ${record.issue_key}'s, not ${world.key}'s`);
     if (record.author.kind !== "session" || record.author.id !== ownSession)
       problems.push(
         `${record.author.kind} ${record.author.id ?? ""} wrote the record, not this run's session ${ownSession}`
@@ -762,8 +789,7 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
     const read = TestHandoff.safeParse(body);
     if (!read.success) problems.push(`not a test handoff: ${z.prettifyError(read.error)}`);
     else {
-      const { issue, implementerProof, failures = [] } = read.data;
-      if (issue !== world.key) problems.push(`issue is ${issue}, not ${world.key}`);
+      const { implementerProof, failures = [] } = read.data;
       if (implementerProof.verdict !== "verified")
         problems.push(`implementerProof.verdict is ${implementerProof.verdict}`);
       if (failures.length > 0) problems.push(`${failures.length} failures`);

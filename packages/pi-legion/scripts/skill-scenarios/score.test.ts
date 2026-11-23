@@ -83,7 +83,7 @@ const worldOf = (pr: string) =>
   });
 const world = worldOf(head);
 /** The implementer's record the rig seeds (seed.ts implement-handoff), as `seed.ts
- * capture-handoffs` writes it. */
+ * capture-handoffs` writes it: its body is `head`, the commit the implementer pushed. */
 const implementRecord = {
   id: "h-implement",
   issue_key: "LWEVAL-1",
@@ -91,14 +91,13 @@ const implementRecord = {
   version: 1,
   author: { kind: "session", id: "rig-implementer" },
   created_at: "2026-09-30T17:20:00.123456Z",
-  body: JSON.stringify({ schemaVersion: 1, phase: "implement", issue: "LWEVAL-1" }),
+  body: JSON.stringify({ head }),
 };
-/** A test handoff the skill's rule asks for: the implementer's results verified, no failures. What
- * the tester ran is a result on the issue's check, not a field of the handoff. */
+/** A test handoff the skill's rule asks for: the head the tester tested, the implementer's results
+ * verified, no failures. What the tester ran is a result on the issue's check, not a field of the
+ * handoff, and the issue and the phase are the record's. */
 const testBody = (sha: string) => ({
-  schemaVersion: 1,
-  phase: "test",
-  issue: "LWEVAL-1",
+  head: sha,
   implementerProof: { verdict: "verified", how: `ran bun greet.ts Ada at ${sha.slice(0, 12)}` },
   failures: [],
   failed: 0,
@@ -296,6 +295,19 @@ stagings.push(() => {
     "handoffs.json": handoffs(testRecord({ sha: code })),
     "pushes.log": `2026-09-30T17:29:20.000Z refs/heads/legion/LWEVAL-1 ${code} ${pushed}\n`,
   });
+});
+
+// Completed naming a test record of another issue, LWEVAL-9, whose body is valid: the body holds
+// no issue, so the record's own is the one the score reads.
+recordRun("tester-proof-rec-5", {
+  "handoffs.json": handoffs({ ...testRecord(), issue_key: "LWEVAL-9" }),
+});
+// Completed naming its own record, whose body still holds schemaVersion, a stamp the record holds.
+recordRun("tester-proof-rec-6", {
+  "handoffs.json": handoffs({
+    ...testRecord(),
+    body: JSON.stringify({ ...testBody(head), schemaVersion: 1 }),
+  }),
 });
 
 /** A measure-before-ask run that opened one ask: its question and the options' labels. */
@@ -3130,7 +3142,7 @@ test("a tester passes when its completion names the test record its own session 
   expect(out).toMatch(
     /tester-proof-rec-1\tpass=true\tref=false\tran=true record=v1 proof=true pushes=0 complete=true refusedCompletions=1 ordered=true testerLine=true ownHead=true editBeforeRecord=false /
   );
-  expect(out).toContain("tester-proof\trec\t1/4\t0/4\t0\t0\n");
+  expect(out).toContain("tester-proof\trec\t1/6\t0/6\t0\t0\n");
 });
 
 test("a record another session wrote fails the proof, even when the stand-in accepted it", () => {
@@ -3149,86 +3161,109 @@ test("a push that changes the code under the PR's head fails the proof", () => {
   expect(out).toContain("the push changed [greet.ts]");
 });
 
-// The tester writes its handoff body whole, and its prompt names no time (Dispatch records when the
-// handoff was written): a body with no `completed` key is what the prompt asks for, so the schema
-// reads it and the run is scored. Before the prompt dropped the time, the schema demanded
-// `completed`, so such a body failed the run's proof check (`proofProblems`) and scored `pass=false`.
-test("a tester handoff that carries no completed time is read, and one with no issue is not", () => {
-  const handoff = {
-    schemaVersion: 1,
-    phase: "test",
-    issue: "LWEVAL-1",
-    implementerProof: { verdict: "verified", how: "ran `bun greet.ts Ada` at the head" },
-    proof: [
-      {
-        criterion: "`bun greet.ts <name>` prints the greeting it returns",
-        surface: "the CLI",
-        command: "bun greet.ts Ada",
-        observed: "prints Hello, Ada! and exits 0",
-        headSha: "0f2cc1d4e8b0a1f6c7d2e3b4a5968778695a4b3c",
-        negativeControl: "bun greet.ts → exit 2, usage: greet.ts <name> on stderr",
-      },
-    ],
-  };
-  expect(TestHandoff.safeParse(handoff).success).toBe(true);
-  const { issue: _issue, ...noIssue } = handoff;
-  expect(TestHandoff.safeParse(noIssue).success).toBe(false);
+/** The problems a tester-proof row prints for its proof (`proofProblems=[…]`); none where the proof
+ * holds. */
+function proofProblems(name: string): string[] {
+  const listed = / proofProblems=(\[.*\]) refs=\[/.exec(rowOf(name))?.[1];
+  return listed === undefined ? [] : JSON.parse(listed);
+}
+
+// The body holds no issue, so the score takes the issue from the record: a valid body on a record
+// of another issue fails the proof, and for that reason alone.
+test("a test record of another issue fails the proof, whatever its body says", () => {
+  expect(out).toMatch(/tester-proof-rec-5\tpass=false\t.* proof=false .* ordered=true /);
+  expect(proofProblems("tester-proof-rec-5")).toEqual(["the record is LWEVAL-9's, not LWEVAL-1's"]);
 });
 
-// The scorer reads every label's runs, and each label's agent gets the role prompt of its own
-// checkout (`worker-pane.ts` composes it from `<checkout>/packages/daemon`). So the documented
-// comparison `rig.sh batch tester-proof 5 head base` has the base label's tester write the shape
-// its own checkout's prompt spells — since sjawhar/legion#2585 a `previousHandoff` naming the
-// commit before it, and a `completed` time in the prompt before that — and the head label's
-// tester write this one, which carries neither. A schema that refuses any of those shapes scores
-// that label `pass=false` for a reason that is not the tester-proof rule, which makes the
-// comparison measure the prompt change rather than the rule.
-test("a tester handoff of a checkout whose prompt asks for previousHandoff is read too", () => {
-  const handoff = {
-    schemaVersion: 1,
-    phase: "test",
-    issue: "LWEVAL-1",
-    previousHandoff: "4f1b8a0d1c2e3f4a5b6c7d8e9f0a1b2c3d4e5f60",
-    implementerProof: { verdict: "verified", how: "ran `bun greet.ts Ada` at the head" },
-    proof: [
-      {
-        criterion: "`bun greet.ts <name>` prints the greeting it returns",
-        surface: "the CLI",
-        command: "bun greet.ts Ada",
-        observed: "prints Hello, Ada! and exits 0",
-        headSha: "0f2cc1d4e8b0a1f6c7d2e3b4a5968778695a4b3c",
-        negativeControl: "bun greet.ts → exit 2, usage: greet.ts <name> on stderr",
-      },
-    ],
-  };
-  expect(handoff).not.toHaveProperty("completed");
-  expect(TestHandoff.safeParse(handoff).success).toBe(true);
-  const { implementerProof: _proof, ...noVerdict } = handoff;
-  expect(TestHandoff.safeParse(noVerdict).success).toBe(false);
+// testerProof reads the record's body with TestHandoff, so a stamp left in the body fails the run's
+// proof, and the problem names the key: z.prettifyError prints each issue's message.
+test("a test record whose body keeps schemaVersion fails the proof, naming the key", () => {
+  expect(out).toMatch(/tester-proof-rec-6\tpass=false\t.* proof=false .* ordered=true /);
+  expect(proofProblems("tester-proof-rec-6")).toEqual([
+    expect.stringContaining("a test handoff holds no schemaVersion"),
+  ]);
 });
 
-// The same for the shape before #2585, which a checkout older than it still spells.
-test("a tester handoff of a checkout whose prompt still asks for a completed time is read too", () => {
-  const handoff = {
-    schemaVersion: 1,
-    phase: "test",
+/** Each issue of TestHandoff's refusal of `body`, as its path and its message; none when the
+ * schema reads the body. */
+function handoffRefusals(body: object) {
+  const read = TestHandoff.safeParse(body);
+  return read.success
+    ? []
+    : read.error.issues.map((issue) => ({ path: issue.path, message: issue.message }));
+}
+
+// The tester writes its handoff body whole, and its prompt gives `head`, a `note` where it has one,
+// and the three fields dispatch://INFRA-4930 moves later. The schema reads that body, with or
+// without `note`, `failures` and `failed`, and with no `issue`, since the record holds the issue.
+// `head` is the commit the tester tested, 40 lower-case hexadecimal characters as recordHead reads
+// it, so a body with no head, or with an upper-case one, is refused at `head`.
+test("a test handoff of head, note and the three fields the tester still writes is read, and one with no head is not", () => {
+  const handoff = { ...testBody(head), note: "Run `bun test` from the repository root." };
+  expect(handoff).not.toHaveProperty("issue");
+  expect(handoffRefusals(handoff)).toEqual([]);
+  expect(handoffRefusals({ head, implementerProof: handoff.implementerProof })).toEqual([]);
+  const { head: _head, ...noHead } = handoff;
+  expect(handoffRefusals(noHead).map((issue) => issue.path)).toEqual([["head"]]);
+  const upper = { ...handoff, head: head.toUpperCase() };
+  expect(handoffRefusals(upper).map((issue) => issue.path)).toEqual([["head"]]);
+});
+
+// The record holds the issue and the phase, and Dispatch versions it, so the body holds none of
+// the three stamps: each one, added alone, is refused by one issue at its key that names it.
+test("a test handoff that keeps a stamp its record holds, schemaVersion, phase or issue, is refused by name", () => {
+  for (const [key, value] of [
+    ["schemaVersion", 1],
+    ["phase", "test"],
+    ["issue", "LWEVAL-1"],
+  ] as const)
+    expect(handoffRefusals({ ...testBody(head), [key]: value })).toEqual([
+      { path: [key], message: `a test handoff holds no ${key}` },
+    ]);
+});
+
+// Each label's tester writes the body its own checkout's prompt gives (`worker-pane.ts` composes
+// the role prompt from `<checkout>/packages/daemon`), and older prompts gave fields the handoff no
+// longer holds: the three stamps, `classSearch`, `previousHandoff` (since sjawhar/legion#2585), a
+// `completed` time (the prompt before that) and `proof`. The schema refuses each one by name, so a
+// base label's run of `rig.sh batch tester-proof 5 head base` fails its proof and says why.
+// `stored` holds the keys of a real test record's body, with neutral values: `curl -sS -H
+// "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")"
+// "$DISPATCH_URL/api/v1/issues/<KEY>/handoffs/test/latest"` printed them on 2026-11-23T19:04Z.
+test("a test handoff that holds a field of an older prompt, previousHandoff, completed, proof or classSearch, is refused by name", () => {
+  const stored = {
+    classSearch: "none",
+    failed: 0,
+    failures: [],
+    head,
+    implementerProof: { verdict: "verified", how: "ran the check's command at the head" },
     issue: "LWEVAL-1",
-    completed: "2026-10-31T01:30:00Z",
-    implementerProof: { verdict: "verified", how: "ran `bun greet.ts Ada` at the head" },
-    proof: [
-      {
-        criterion: "`bun greet.ts <name>` prints the greeting it returns",
-        surface: "the CLI",
-        command: "bun greet.ts Ada",
-        observed: "prints Hello, Ada! and exits 0",
-        headSha: "0f2cc1d4e8b0a1f6c7d2e3b4a5968778695a4b3c",
-        negativeControl: "bun greet.ts → exit 2, usage: greet.ts <name> on stderr",
-      },
-    ],
+    phase: "test",
+    schemaVersion: 1,
   };
-  expect(TestHandoff.safeParse(handoff).success).toBe(true);
-  const { implementerProof: _proof, ...noVerdict } = handoff;
-  expect(TestHandoff.safeParse(noVerdict).success).toBe(false);
+  expect(handoffRefusals(stored)).toEqual(
+    ["classSearch", "issue", "phase", "schemaVersion"].map((key) => ({
+      path: [key],
+      message: `a test handoff holds no ${key}`,
+    }))
+  );
+  const {
+    classSearch: _classSearch,
+    issue: _issue,
+    phase: _phase,
+    schemaVersion: _schemaVersion,
+    ...kept
+  } = stored;
+  expect(handoffRefusals(kept)).toEqual([]);
+  for (const [key, value] of [
+    ["previousHandoff", "4f1b8a0d1c2e3f4a5b6c7d8e9f0a1b2c3d4e5f60"],
+    ["completed", "2026-10-31T01:30:00Z"],
+    ["proof", []],
+    ["classSearch", "none"],
+  ] as const)
+    expect(handoffRefusals({ ...kept, [key]: value })).toEqual([
+      { path: [key], message: `a test handoff holds no ${key}` },
+    ]);
 });
 
 test("a tool call reading the other label's checkout is a rig error wherever the path falls in it", () => {
