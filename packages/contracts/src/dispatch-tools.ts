@@ -1966,8 +1966,8 @@ export const dispatchToolSpecs = [
       "concluded, one that concluded neutral, skipped or cancelled, one absent at the head, an " +
       "issue with no pull request head, or GitHub not read, with what GitHub answered. " +
       "A pull-request line writes `CI run <name>` only when it keeps every word of the name, " +
-      "and `the CI run the check names` in its place where it drops one (an issue key, a word " +
-      "holding `_`). " +
+      "and `the CI run the check names` in its place where it drops one: a word the line drops, " +
+      "such as an issue key or a word holding `_`. " +
       "A push that moves a pull request's head leaves a result at the commit before it, with " +
       "no write of anyone's: record the check again at the new head. A check CI proves is read " +
       "again at the new head by itself. " +

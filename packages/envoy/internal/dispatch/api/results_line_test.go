@@ -374,14 +374,13 @@ func TestTheCIPullRequestLineDropsIssueKeysFromTheChecksWords(t *testing.T) {
 	requireNoPrivateReference(t, check.CI.Line)
 }
 
-// The run a check's ci_check names is text the check's author wrote, and every line Dispatch writes
-// for such a check names it. The line names the run only when it keeps every word of the name, and
-// otherwise reads `the CI run the check names`: the words left of a name that lost some are a run
-// nobody can find, as `0)` is of `unit_tests (test_build.py, 0)`, whose `_` words the plain-word
-// rule drops, and the legs of a matrix job would read alike. A name holding an issue key loses
-// that word too. The runs `e2e build` and `e2e  build`, every word of which the line keeps, are
-// named, the second with its blanks as one, as the line writes every name. Each row is reported, so
-// a run against the old rule shows every row it gets wrong.
+// The run a check's ci_check names is text the check's author wrote. A pull-request line names the
+// run only when it keeps every word of the name, and otherwise reads `the CI run the check names`:
+// the words left of a name that lost some are a run nobody can find, as `0)` is of
+// `unit_tests (test_build.py, 0)`, whose `_` words the plain-word rule drops, and the legs of a
+// matrix job would read alike. A name holding an issue key loses that word, so it reads the same.
+// The runs `e2e build` and `e2e  build`, every word of which the line keeps, are named, the second
+// with its blanks as one. Each row is reported, so a rule that gets several rows wrong shows each.
 func TestTheCIPullRequestLineDropsIssueKeysFromTheRunName(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESCQ", "CI run name", "A spec\n")
@@ -416,8 +415,8 @@ func TestTheCIPullRequestLineDropsIssueKeysFromTheRunName(t *testing.T) {
 }
 
 // A pass or a fail names the run that proved it as a line with no result does: a name the line
-// keeps only part of reads `the CI run the check names`, and the check's words follow as before.
-// The run's own name, which the read answers in ci.run, stays whole.
+// keeps only part of reads `the CI run the check names`, and the check's words follow the run. The
+// run's own name, which the read answers in ci.run, stays whole.
 func TestTheCIVerdictLineNamesTheRunOnlyWhenItKeepsEveryWordOfIt(t *testing.T) {
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESCQ", "acme/widgets", "CI verdict line")
