@@ -32,13 +32,14 @@ export const TIMER_RECORD_ROOTS = "LEGION_TIMER_RECORD_ROOTS";
  *  write one. The period sets how soon a wait for a stamp ends, never a verdict. */
 export const TIMER_RECORD_ALIVE_MS = 100;
 
-/** The timer calls the record wraps, by the names its canary reports them. */
-export const TIMER_APIS = [
-  "setTimeout",
-  "setInterval",
-  "Bun.sleep",
-  "AbortSignal.timeout",
-] as const;
+/** The timer calls the record wraps. */
+const WRAPPED_APIS = ["setTimeout", "setInterval", "Bun.sleep", "AbortSignal.timeout"] as const;
+type WrappedApi = (typeof WRAPPED_APIS)[number];
+/** The ways to a timer the canary goes, by the names it reports them: each wrapped call, and
+ *  `node:timers/promises`, whose `setTimeout` keeps the global `setTimeout` it found when the
+ *  module first loaded (measured on Bun 1.4.4), so a process that loaded it before the record holds
+ *  a way to a timer the wrap never sees. */
+export const TIMER_APIS = [...WRAPPED_APIS, "node:timers/promises"] as const;
 export type TimerApi = (typeof TIMER_APIS)[number];
 
 /** One step of the record: a timer the program armed, with the delay it chose and the line that
@@ -63,27 +64,48 @@ export interface TimerOnTheWay {
 /** True while `probeCanary` calls the timer API: a wrap that sees a call then notes it as seen
  *  rather than recording a timer. */
 let canaryCalling = false;
-const canarySeen = new Set<TimerApi>();
+const canarySeen = new Set<WrappedApi>();
+/** `node:timers/promises`, once the preload's writer has loaded it after the wrap. */
+let timersPromises: { readonly setTimeout: (ms: number) => Promise<unknown> } | undefined;
 
-/**
- * Calls each timer API the record wraps once, through the process's globals as they stand now,
- * and returns the ones whose wrap saw the call. A record whose wrap was undone, or never
- * installed, still has its writer and its stamps, and records no timer: its window reads 0 ms
- * whatever the program did. Only a call through the globals tells that apart, since a wrap that
- * is gone sees no call. Each call is cleared or ends at once.
- */
-export function probeCanary(): TimerApi[] {
+/** Runs `call` as a canary, and returns the wrapped calls whose wrap saw it. */
+function canaryThrough(call: () => void): ReadonlySet<WrappedApi> {
   canarySeen.clear();
   canaryCalling = true;
   try {
+    call();
+  } finally {
+    canaryCalling = false;
+  }
+  return new Set(canarySeen);
+}
+
+/**
+ * Calls each timer API the record wraps once, through the process's globals as they stand now,
+ * and `node:timers/promises`' `setTimeout`, and returns the ways whose call the wrap saw. A record
+ * whose wrap was undone, or never installed, still has its writer and its stamps, and records no
+ * timer: its window reads 0 ms whatever the program did. Only a call through each way tells that
+ * apart, since a wrap that is gone, or one a way to a timer goes around, sees no call. Each call
+ * is cleared or ends at once.
+ */
+export function probeCanary(): TimerApi[] {
+  const wrapped = canaryThrough(() => {
     globalThis.clearTimeout(globalThis.setTimeout(() => undefined, 0));
     globalThis.clearInterval(globalThis.setInterval(() => undefined, 1_000_000));
     void Bun.sleep(0);
     AbortSignal.timeout(0);
-  } finally {
-    canaryCalling = false;
+  });
+  const seen: TimerApi[] = WRAPPED_APIS.filter((api) => wrapped.has(api));
+  const promises = timersPromises;
+  if (
+    promises !== undefined &&
+    canaryThrough(() => {
+      void promises.setTimeout(0);
+    }).has("setTimeout")
+  ) {
+    seen.push("node:timers/promises");
   }
-  return TIMER_APIS.filter((api) => canarySeen.has(api));
+  return seen;
 }
 
 const thisFile = new URL(import.meta.url).pathname;
@@ -108,18 +130,23 @@ export const FRAME_PATTERNS = {
 /**
  * The file and line of one frame of a stack, or undefined for a frame that names no file. A
  * module loaded with a query after its path (Oh My Pi loads an extension as `file.ts?mtime=…`, a
- * test imports `./envoy.ts?nats-stall`) names the file without it. The frame is read from its
- * end, at a cost linear in its length: a pattern that looked for the path from every `/` of the
- * frame took time quadratic in a frame of many `/` and no line after them.
+ * test imports `./envoy.ts?nats-stall`) names the file without it. A frame of one of the runtime's
+ * own `node:` modules names no file either: `node:timers/promises`' `setTimeout` arms through the
+ * global one, and its frame (`node:timers/promises:40:35`) lies between the wrap and the code that
+ * called it, so it is passed over for that code's frame rather than read as a path of its own.
+ * The frame is read from its end, at a cost linear in its length: a pattern that looked for the
+ * path from every `/` of the frame took time quadratic in a frame of many `/` and no line after
+ * them.
  */
 function frameLocation(frame: string): { readonly file: string; readonly at: string } | undefined {
   const tail = FRAME_PATTERNS.tail.exec(frame);
   const line = tail?.[1];
   if (tail === null || line === undefined) return undefined;
   // The location runs to the tail's `:` from the last `(`, `)` or `:` before it: `file:`'s, for a
-  // URL.
+  // URL, and `node:`'s, for one of the runtime's own modules.
   const head = frame.slice(0, tail.index);
   const opened = Math.max(head.lastIndexOf("("), head.lastIndexOf(")"), head.lastIndexOf(":"));
+  if (head.endsWith("node:", opened + 1)) return undefined;
   const location = head.slice(opened + 1);
   // Its path starts at the `/` after `file://`, else at the first `/` that `pathStart` finds, and
   // ends at the query's `?`.
@@ -200,7 +227,7 @@ export function recordTimers(
   let armed = 0;
   /** Records the arming running now, when it is the program's or cannot be placed, and returns
    *  its number. A canary call (`probeCanary`) is noted as seen through `api` and not recorded. */
-  const arm = (api: TimerApi, delay: unknown): number | undefined => {
+  const arm = (api: WrappedApi, delay: unknown): number | undefined => {
     if (canaryCalling) {
       canarySeen.add(api);
       return undefined;
@@ -222,7 +249,7 @@ export function recordTimers(
       write({ fired: timer });
       return handler(...args);
     };
-  const wrapped = (api: TimerApi, scheduler: typeof setTimeout | typeof setInterval) =>
+  const wrapped = (api: WrappedApi, scheduler: typeof setTimeout | typeof setInterval) =>
     ((handler: unknown, delay?: unknown, ...args: unknown[]) => {
       const timer = typeof handler === "function" ? arm(api, delay) : undefined;
       const callback =
@@ -283,6 +310,13 @@ export function recordTimersFromEnvironment(env: Record<string, string | undefin
     }
   };
   recordTimers(roots, write);
+  // Loaded here, after the wrap, and never by a static import, which would load it before the
+  // wrap: it keeps the global `setTimeout` it finds when it first loads. In a process that loaded
+  // it before the record, this returns that module, its timers go around the wrap, and the canary
+  // says so.
+  void import("node:timers/promises").then((module) => {
+    timersPromises = module;
+  });
   let alive = 0;
   realSetInterval(() => {
     alive += 1;

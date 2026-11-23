@@ -474,13 +474,23 @@ async function startRolePane(): Promise<RolePane> {
   const agentEnds: Moment[] = [];
   const closed: { error?: unknown } = {};
   const timerRecordFile = path.join(home, "timer-record.jsonl");
+  // The tests' record of the plugins' own timers, as a preload of the pane's process (the pinned
+  // binary is a compiled Bun executable, which reads `BUN_OPTIONS`), so it is installed before the
+  // host or any extension loads `node:timers/promises`, which keeps the `setTimeout` it finds when
+  // it first loads: loaded as an extension, the record came after the host had loaded it, and a
+  // plugin's timer armed through it never reached the record. A module of no effect but the
+  // record, which only this case hands the pane.
+  const timerRecordPreload = Bun.resolveSync(
+    "@legion/test-fixtures/timer-record-preload",
+    import.meta.dir
+  );
+  if (/\s/.test(timerRecordPreload)) {
+    throw new Error(`BUN_OPTIONS cannot carry the preload's path ${timerRecordPreload}`);
+  }
   const rpc = spawnRpc(
     binary,
     {
       extensions: [
-        // The tests' record of the plugins' own timers, first, so it holds every one they arm:
-        // a module of no effect but the record, which only this case hands the pane.
-        Bun.resolveSync("@legion/test-fixtures/timer-record-preload", import.meta.dir),
         path.resolve(import.meta.dir, "../../pi-envoy/extensions/envoy.ts"),
         // The package root, not its extension file: Oh My Pi discovers an extension package's
         // `agents/` from its root, and `deep-worker` lives there.
@@ -503,6 +513,7 @@ async function startRolePane(): Promise<RolePane> {
         LEGION_WORKSPACE: workspace,
         [TIMER_RECORD_FILE]: timerRecordFile,
         [TIMER_RECORD_ROOTS]: PANE_ROOTS.join(":"),
+        BUN_OPTIONS: `--preload ${timerRecordPreload}`,
       },
       onFrame: (frame) => {
         frames.push(frame);
