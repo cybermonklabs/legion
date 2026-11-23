@@ -63,7 +63,7 @@ type githubReview struct {
 // same installation meets. Any other failure is logged and applies nothing, and the next read of
 // the issue asks again.
 func (w *workflowRuntime) readReviews(ctx, read context.Context, github githubrest.Client, pr record.PullRequest) bool {
-	reviews, err := githubrest.GetPages[githubReview](read, github, fmt.Sprintf("/pulls/%d/reviews", pr.Number))
+	reviews, err := githubrest.GetPages[githubReview](read, github, fmt.Sprintf("/pulls/%d/reviews", pr.Number), "")
 	if err != nil {
 		if ctx.Err() != nil {
 			return true

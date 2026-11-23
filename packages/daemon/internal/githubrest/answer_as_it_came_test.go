@@ -30,7 +30,7 @@ func TestARateLimitIsDecidedOnGitHubsWordsAsTheyCame(t *testing.T) {
 		_, _ = io.WriteString(w, secondaryLimitWithItsURL)
 	}))
 	t.Cleanup(server.Close)
-	err := Client{API: server.URL, Token: githubtest.InstallationToken(t.Name())}.Get(context.Background(), "/repos/acme/widgets", nil)
+	err := Client{API: server.URL, Token: githubtest.InstallationToken(t.Name())}.Get(context.Background(), "/repos/acme/widgets", "", nil)
 	var answer *Answer
 	if !errors.As(err, &answer) {
 		t.Fatalf("Get = %v, want GitHub's *Answer", err)

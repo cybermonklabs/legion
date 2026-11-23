@@ -458,7 +458,10 @@ type activityGitHub struct {
 	// reviews is the JSON array GET /pulls/86/reviews answers, empty for the cases about the head
 	// alone; a case about what a listed review decides at a read-found head sets its own (lists).
 	reviews string
-	reads   pathReads
+	// permission, when set, answers the permission read of every account but a-writer, which GitHub
+	// otherwise answers 404, an account it does not know on the repository.
+	permission http.HandlerFunc
+	reads      pathReads
 }
 
 // lists has GitHub answer reviews, a JSON array, for pull request 86's reviews.
@@ -513,6 +516,10 @@ func (g *activityGitHub) serve(t *testing.T) *httptest.Server {
 		case "/repos/acme/widgets/branches/main":
 			w.Write([]byte(`{"name":"main","protected":false}`))
 		default:
+			if g.permission != nil && strings.HasPrefix(r.URL.Path, "/repos/acme/widgets/collaborators/") {
+				g.permission(w, r)
+				return
+			}
 			http.NotFound(w, r)
 		}
 	}})

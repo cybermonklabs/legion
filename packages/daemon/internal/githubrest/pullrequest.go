@@ -57,7 +57,7 @@ func (p PullRequest) HeadIn(repository string, renames ghrepo.Renames) bool {
 func (c Client) OpenPullRequestOn(ctx context.Context, owner, branch string) (PullRequest, bool, error) {
 	var pulls []PullRequest
 	query := url.Values{"head": {owner + ":" + branch}, "state": {"open"}}
-	if err := c.Get(ctx, "/pulls?"+query.Encode(), &pulls); err != nil {
+	if err := c.Get(ctx, "/pulls?"+query.Encode(), "", &pulls); err != nil {
 		return PullRequest{}, false, err
 	}
 	for _, pull := range pulls {

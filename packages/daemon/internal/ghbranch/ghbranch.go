@@ -44,7 +44,7 @@ func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 			SHA string `json:"sha"`
 		} `json:"object"`
 	}
-	if err := github.Get(ctx, "/git/ref/heads/"+RefPath(base), &read); err != nil {
+	if err := github.Get(ctx, "/git/ref/heads/"+RefPath(base), "", &read); err != nil {
 		return fmt.Errorf("read refs/heads/%s of %s: %w", base, repo, err)
 	}
 	head := read.Object.SHA
@@ -52,7 +52,7 @@ func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 		return fmt.Errorf("read refs/heads/%s of %s: GitHub named no commit", base, repo)
 	}
 
-	err := github.Post(ctx, "/git/refs", map[string]string{"ref": ref, "sha": head}, nil)
+	err := github.Post(ctx, "/git/refs", "", map[string]string{"ref": ref, "sha": head}, nil)
 	var answer *githubrest.Answer
 	if err == nil || errors.As(err, &answer) && answer.Status == http.StatusUnprocessableEntity && alreadyExists(answer) {
 		return nil
@@ -100,7 +100,7 @@ func Read(ctx context.Context, github githubrest.Client, repo ghrepo.Repository)
 		FullName      string `json:"full_name"`
 		DefaultBranch string `json:"default_branch"`
 	}
-	if err := github.Get(ctx, "", &info); err != nil {
+	if err := github.Get(ctx, "", "", &info); err != nil {
 		return Repository{}, fmt.Errorf("read the default branch of %s: %w", repo, err)
 	}
 	if info.DefaultBranch == "" {

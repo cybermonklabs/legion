@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"slices"
 
 	"github.com/sjawhar/envoy/oauth2call"
@@ -128,12 +127,12 @@ func (w *workflowRuntime) readBaseRules(ctx context.Context, github githubrest.C
 // baseRules is readBaseRules' two reads and what they come to, without its log line, with each
 // required context as GitHub's words (said), in the order of Required.
 func baseRules(ctx context.Context, github githubrest.Client, base githubText) (rules record.BaseRules, said []oauth2call.RemoteText) {
-	path := ghbranch.RefPath(base.Name)
+	path, shown := ghbranch.RefPath(base.Name), shownBase(base)
 	read, cancel := context.WithTimeout(ctx, issueRead)
-	rulesets, err := githubrest.GetPages[githubBranchRule](read, github, "/rules/branches/"+path)
+	rulesets, err := githubrest.GetPages[githubBranchRule](read, github, "/rules/branches/"+path, "/rules/branches/"+shown)
 	cancel()
 	if err != nil {
-		return unreadRules(err, "GET /rules/branches/"+shownBase(base)), nil
+		return unreadRules(err), nil
 	}
 	words := map[string]oauth2call.RemoteText{}
 	var required []string
@@ -155,10 +154,10 @@ func baseRules(ctx context.Context, github githubrest.Client, base githubText) (
 	}
 	var branch githubBranch
 	read, cancel = context.WithTimeout(ctx, issueRead)
-	err = github.Get(read, "/branches/"+path, &branch)
+	err = github.Get(read, "/branches/"+path, "/branches/"+shown, &branch)
 	cancel()
 	if err != nil {
-		return unreadRules(err, "GET /branches/"+shownBase(base)), nil
+		return unreadRules(err), nil
 	}
 	if protection := branch.Protection; protection.Enabled && protection.RequiredStatusChecks.EnforcementLevel != "off" {
 		for _, named := range protection.RequiredStatusChecks.Contexts {
@@ -186,29 +185,25 @@ func shownBase(base githubText) string {
 	return base.Said.String()
 }
 
-// unreadRules is what a failed read of the base's rules comes to: no rules for GitHub's refusal of
-// rulesets to a plan that has none (planRefusal), and otherwise rules the daemon could not read,
-// Unread naming read - the read's method and route, its base as shownBase names it - and GitHub's
-// status and message, or why it got no answer. The path the read asked holds the base as it came,
-// and GitHub's answer (githubrest.Answer.Path) and net/http's error for a request that got no
-// answer (url.Error.URL) name that path, so Unread names neither. The refusal is decided on
-// GitHub's message as it came (oauth2call.GitHubRefusal, decoded from the answer), and the message
-// prints as the rule reads it.
-func unreadRules(err error, read string) record.BaseRules {
+// unreadRules is what err, a failed read of the base's rules, comes to: no rules for GitHub's
+// refusal of rulesets to a plan that has none (planRefusal), and otherwise rules the daemon could
+// not read, Unread saying why: GitHub's method, path and status and its message, or the read's
+// own error. The path the read asked holds the base as it came, so baseRules names each read by
+// its route with the base as shownBase names it, and githubrest prints that name in GitHub's answer
+// (Answer.Path) and in net/http's error for a request that got no answer (url.Error.URL). The
+// refusal is decided on GitHub's message as it came (oauth2call.GitHubRefusal, decoded from the
+// answer), and the message prints as the rule reads it.
+func unreadRules(err error) record.BaseRules {
 	var answer *githubrest.Answer
 	if !errors.As(err, &answer) {
-		var unanswered *url.Error
-		if errors.As(err, &unanswered) {
-			return record.BaseRules{Unread: fmt.Sprintf("%s got no answer: %v", read, unanswered.Err)}
-		}
-		return record.BaseRules{Unread: fmt.Sprintf("%s: %v", read, err)}
+		return record.BaseRules{Unread: err.Error()}
 	}
 	var refusal oauth2call.GitHubRefusal
 	_ = answer.Decode(&refusal)
 	if answer.Status == http.StatusForbidden && !answer.RateLimited && refusal.Message.Contains(planRefusal) {
 		return record.BaseRules{}
 	}
-	unread := fmt.Sprintf("GitHub answered %s with %d", read, answer.Status)
+	unread := fmt.Sprintf("GitHub answered %s %s with %d", answer.Method, answer.Path, answer.Status)
 	if !refusal.Message.IsEmpty() {
 		unread += ": " + refusal.Message.String()
 	}

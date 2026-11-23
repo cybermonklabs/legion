@@ -203,7 +203,10 @@ func (w *workflowRuntime) reviewAppClient(ctx context.Context, repository ghrepo
 // answers in GitHub's place, which can echo the read's token back. The read decides on each as it
 // came, and every line and error here names the logins only as logins GitHub allows
 // (githubrest.ShownLogin) and the permission only as one of the words GitHub documents for it,
-// admin, write, read or none (githubrest.ShownWord).
+// admin, write, read or none (githubrest.ShownWord). The read's own failure does too: the path it
+// asks holds login as it came, path-escaped, which keeps a token's letters, so the read is named
+// by its route with login as ShownLogin prints it, and githubrest prints that name in GitHub's
+// answer (Answer.Path) and in net/http's error for a request that got no answer (url.Error.URL).
 func (w *workflowRuntime) readPermission(ctx context.Context, repository ghrepo.Repository, login string) (bool, error) {
 	shown := githubrest.ShownLogin(login)
 	// The mint and every call below are made on the repository GitHub holds this one under now,
@@ -223,7 +226,7 @@ func (w *workflowRuntime) readPermission(ctx context.Context, repository ghrepo.
 			Login string `json:"login"`
 		} `json:"user"`
 	}
-	if err := client.Get(ctx, "/collaborators/"+url.PathEscape(login)+"/permission", &answer); err != nil {
+	if err := client.Get(ctx, "/collaborators/"+url.PathEscape(login)+"/permission", "/collaborators/"+shown+"/permission", &answer); err != nil {
 		var refused *githubrest.Answer
 		if !errors.As(err, &refused) {
 			return false, fmt.Errorf("read %s's permission on %s: %w", shown, repository.String(), err)

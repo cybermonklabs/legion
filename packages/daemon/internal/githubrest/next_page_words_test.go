@@ -75,7 +75,7 @@ func TestANextPageGitHubNamesPrintsNoTokenItEchoes(t *testing.T) {
 			}})
 			client := Client{Token: token, API: server.URL + "/repos/acme/widgets"}
 
-			got, err := GetPages[string](context.Background(), client, path)
+			got, err := GetPages[string](context.Background(), client, path, "")
 			if err == nil || got != nil {
 				t.Fatalf("GetPages = %v, %v; want the read refused", got, err)
 			}

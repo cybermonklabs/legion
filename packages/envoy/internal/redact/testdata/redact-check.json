@@ -4459,13 +4459,13 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
       "test": "TestANextPageGitHubNamesPrintsNoTokenItEchoes/refused",
-      "production": "githubrest laterPage: GitHub's answer to a later page names the page by its number under the caller's path (Answer.Path), never the path GitHub's Link header wrote",
-      "function": "github.com/sjawhar/legion/daemon/internal/githubrest.laterPage",
+      "production": "githubrest call and getPages: GitHub's answer to a later page names the page by its number after the read's name (Answer.Path, refusal), never the path GitHub's Link header wrote",
+      "function": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).refusal",
       "capture": "githubrest.answer-words/next-page-refused",
       "mutation": {
         "file": "packages/daemon/internal/githubrest/githubrest.go",
-        "preimage": "answer.Path = shown",
-        "replacement": "_ = shown"
+        "preimage": "path := shown",
+        "replacement": "path := \"\""
       }
     },
     {
@@ -4473,12 +4473,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
       "test": "TestANextPageGitHubNamesPrintsNoTokenItEchoes/unanswered",
-      "production": "githubrest laterPage: a later page's read that got no answer names the page by its number under the caller's path (url.Error.URL), never the URL GitHub's Link header wrote",
-      "function": "github.com/sjawhar/legion/daemon/internal/githubrest.laterPage",
+      "production": "githubrest call and getPages: a later page's read that got no answer names the page by its number after the read's name (url.Error.URL, unanswered), never the URL GitHub's Link header wrote",
+      "function": "github.com/sjawhar/legion/daemon/internal/githubrest.unanswered",
       "capture": "githubrest.answer-words/next-page-unanswered",
       "mutation": {
         "file": "packages/daemon/internal/githubrest/githubrest.go",
-        "preimage": "unanswered.URL = shown",
+        "preimage": "failed.URL = shown",
         "replacement": "_ = shown"
       }
     },
@@ -6121,6 +6121,34 @@
       "production": "daemon workflowRuntime.readPermission: a login and a documented permission still log as they came"
     },
     {
+      "id": "daemon-answer-words-permission-failed-refused",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAPermissionReadThatFailsNamesTheAuthorOnlyInItsShape/refused",
+      "production": "daemon workflowRuntime.readPermission: a permission read GitHub refused is named, in the error reviewerCanWrite returns and in the per-issue read's line, by its route with the review's author as a login GitHub allows (githubrest's name of the read, Answer.Path), never by the path it asked, which holds the author as it came",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/daemon.workflowRuntime).readPermission",
+      "capture": "daemon.answer-words/permission-failed-refused",
+      "mutation": {
+        "file": "packages/daemon/internal/daemon/review_permission.go",
+        "preimage": "\"/collaborators/\"+shown+\"/permission\"",
+        "replacement": "\"\""
+      }
+    },
+    {
+      "id": "daemon-answer-words-permission-failed-unanswered",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAPermissionReadThatFailsNamesTheAuthorOnlyInItsShape/unanswered",
+      "production": "daemon workflowRuntime.readPermission: a permission read that got no answer is named, in the error reviewerCanWrite returns and in the per-issue read's line, by its route with the review's author as a login GitHub allows (githubrest's name of the read, url.Error.URL), never by the URL it asked, which holds the author as it came",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/daemon.workflowRuntime).readPermission",
+      "capture": "daemon.answer-words/permission-failed-unanswered",
+      "mutation": {
+        "file": "packages/daemon/internal/daemon/review_permission.go",
+        "preimage": "\"/collaborators/\"+shown+\"/permission\"",
+        "replacement": "\"\""
+      }
+    },
+    {
       "id": "daemon-answer-words-base-rules",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/daemon",
@@ -6167,13 +6195,13 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/daemon",
       "test": "TestTheBaseRulesReadNamesGitHubsBaseAsTheRuleReadsIt/unanswered",
-      "production": "daemon unreadRules: a rules read that got no answer is named by its route, GitHub's base as the rule reads it, and its cause, never by net/http's error, whose URL holds the base as it came",
-      "function": "github.com/sjawhar/legion/daemon/internal/daemon.unreadRules",
+      "production": "daemon baseRules and unreadRules: a rules read that got no answer is named by its route with GitHub's base as the rule reads it (githubrest's name of the read, url.Error.URL), and its cause, never by the URL it asked, which holds the base as it came",
+      "function": "github.com/sjawhar/legion/daemon/internal/daemon.baseRules",
       "capture": "daemon.answer-words/base-unanswered",
       "mutation": {
         "file": "packages/daemon/internal/daemon/base_rules.go",
-        "preimage": "return record.BaseRules{Unread: fmt.Sprintf(\"%s got no answer: %v\", read, unanswered.Err)}",
-        "replacement": "return record.BaseRules{Unread: err.Error()}"
+        "preimage": "\"/rules/branches/\"+shown",
+        "replacement": "\"\""
       }
     },
     {
@@ -8864,6 +8892,11 @@
       "site": "a listener send's target_session, expects_reply, message and payload redacted as credentials from the listener's words (no live session [redacted], message is [redacted], and every run of eight characters the reason shares with the message), which broke five of main's delivery tests",
       "source": "the merge of main into the pull request",
       "guard": "redact-listener-send-names-public"
+    },
+    {
+      "site": "daemon readPermission: a permission read whose failure it returned (a 5xx, a 401, a rate limit, a read that got no answer) printed the path it asked, which holds the review's author as GitHub's list named it (a token in GitHub's shape passes url.PathEscape as it is), in GitHub's answer's path and in net/http's error",
+      "source": "the review of #4368 round 6, finding P",
+      "guard": "daemon-answer-words-permission-failed-refused"
     }
   ]
 }

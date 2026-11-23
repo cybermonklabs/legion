@@ -4,6 +4,7 @@ package githubrest
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -31,31 +32,39 @@ func RepositoryAPI(endpoint string, repository ghrepo.Repository) string {
 // Client calls GitHub with an installation token. Its API is a repository's REST base
 // (RepositoryAPI), which Get, Post, GetPages and GetListPages take paths under; an empty endpoint
 // is api.github.com.
+//
+// Each of them also takes shown, the name a failure of the call prints for it (call): a path
+// that holds another party's words - an account GitHub named, a branch GitHub answered - holds
+// them as they came, and GitHub's answer to it, or net/http's error for a request that got no
+// answer, would print them so; its caller passes the path as a message may print it instead.
+// "" names the call by its path, as a path the daemon wrote is named.
 type Client struct {
 	Token string
 	API   string
 }
 
-// Get reads path under the client's REST base into into. An answer other than 2xx is an *Answer.
-func (c Client) Get(ctx context.Context, path string, into any) error {
-	_, _, err := c.call(ctx, http.MethodGet, c.API+path, nil, into)
+// Get reads path under the client's REST base into into, naming the read shown when it fails
+// (Client). An answer other than 2xx is an *Answer.
+func (c Client) Get(ctx context.Context, path, shown string, into any) error {
+	_, _, err := c.call(ctx, http.MethodGet, c.API+path, shown, nil, into)
 	return err
 }
 
 // Post sends body, as JSON, to path under the client's API, and reads GitHub's answer into into
-// when into is not nil. An answer other than 2xx is an *Answer.
-func (c Client) Post(ctx context.Context, path string, body, into any) error {
-	return c.send(ctx, http.MethodPost, path, body, into)
+// when into is not nil, naming the call shown when it fails (Client). An answer other than 2xx is
+// an *Answer.
+func (c Client) Post(ctx context.Context, path, shown string, body, into any) error {
+	return c.send(ctx, http.MethodPost, path, shown, body, into)
 }
 
 // send sends body, as JSON, to path under the client's API with method, and reads GitHub's answer
-// into into when into is not nil.
-func (c Client) send(ctx context.Context, method, path string, body, into any) error {
+// into into when into is not nil, naming the call shown when it fails (Client).
+func (c Client) send(ctx context.Context, method, path, shown string, body, into any) error {
 	encoded, err := json.Marshal(body)
 	if err != nil {
-		return fmt.Errorf("encode %s %s: %w", method, path, err)
+		return fmt.Errorf("encode %s %s: %w", method, cmp.Or(shown, path), err)
 	}
-	_, _, err = c.call(ctx, method, c.API+path, encoded, into)
+	_, _, err = c.call(ctx, method, c.API+path, shown, encoded, into)
 	return err
 }
 
@@ -98,16 +107,18 @@ func spent(headers http.Header, named bool) Budget {
 }
 
 // GetPages reads every page of the JSON array GitHub answers at path, a hundred items to a page,
-// following the Link header's rel="next" until GitHub names none.
-func GetPages[T any](ctx context.Context, c Client, path string) ([]T, error) {
-	return getPages[T](ctx, c, path, "")
+// following the Link header's rel="next" until GitHub names none, naming the read shown when it
+// fails (Client, getPages).
+func GetPages[T any](ctx context.Context, c Client, path, shown string) ([]T, error) {
+	return getPages[T](ctx, c, path, shown, "")
 }
 
 // GetListPages reads every page of the list GitHub answers at path as the field of a JSON object,
 // as its check-run and workflow-run lists answer ({"total_count": n, "check_runs": [...]}), paged as
-// GetPages pages an array. An answer without the field is an error, never an empty list.
-func GetListPages[T any](ctx context.Context, c Client, path, field string) ([]T, error) {
-	return getPages[T](ctx, c, path, field)
+// GetPages pages an array, naming the read shown when it fails (Client, getPages). An answer
+// without the field is an error, never an empty list.
+func GetListPages[T any](ctx context.Context, c Client, path, shown, field string) ([]T, error) {
+	return getPages[T](ctx, c, path, shown, field)
 }
 
 // getPages is GetPages, reading each page's items from the field of the object it answers when
@@ -117,8 +128,10 @@ func GetListPages[T any](ctx context.Context, c Client, path, field string) ([]T
 // The next page's URL is what GitHub's Link header names (nextPage): GitHub's words, or those of
 // whatever answers in its place, which can echo the request's token back. So nothing this returns
 // names it: the refusal of a next page elsewhere names the origin the token is sent to alone, and
-// the failure of a later page's read names the page by its number (laterPage).
-func getPages[T any](ctx context.Context, c Client, path, field string) ([]T, error) {
+// a later page's read is named by its number after the read's own name, shown or else path, in
+// place of the URL GitHub's header named for it (call). The first page's read is named shown, as
+// its caller asked.
+func getPages[T any](ctx context.Context, c Client, path, shown, field string) ([]T, error) {
 	base, err := url.Parse(c.API)
 	if err != nil {
 		return nil, fmt.Errorf("parse the REST base %q: %w", c.API, err)
@@ -127,6 +140,7 @@ func getPages[T any](ctx context.Context, c Client, path, field string) ([]T, er
 	if strings.Contains(path, "?") {
 		separator = "&"
 	}
+	name := cmp.Or(shown, path)
 	var all []T
 	n := 1
 	for target := c.API + path + separator + "per_page=100"; target != ""; n++ {
@@ -136,17 +150,21 @@ func getPages[T any](ctx context.Context, c Client, path, field string) ([]T, er
 		if field != "" {
 			into = &object
 		}
-		next, _, err := c.call(ctx, http.MethodGet, target, nil, into)
+		pageName := shown
+		if n > 1 {
+			pageName = fmt.Sprintf("%s (page %d)", name, n)
+		}
+		next, _, err := c.call(ctx, http.MethodGet, target, pageName, nil, into)
 		if err != nil {
-			return nil, laterPage(err, path, n)
+			return nil, err
 		}
 		if field != "" {
 			list, ok := object[field]
 			if !ok {
-				return nil, fmt.Errorf("GitHub answered GET %s with no %q list", path, field)
+				return nil, fmt.Errorf("GitHub answered GET %s with no %q list", name, field)
 			}
 			if json.Unmarshal(list, &page) != nil {
-				return nil, fmt.Errorf("decode the %q list GitHub answered GET %s with: its items are not the shape this call reads", field, path)
+				return nil, fmt.Errorf("decode the %q list GitHub answered GET %s with: its items are not the shape this call reads", field, name)
 			}
 		}
 		all = append(all, page...)
@@ -161,42 +179,24 @@ func getPages[T any](ctx context.Context, c Client, path, field string) ([]T, er
 	return all, nil
 }
 
-// laterPage is err, the failure of the read of page n of GET path, as getPages returns it: the
-// first page's as it came, since its request is the caller's path under the client's API, and a
-// later page's naming that page as path and its number, in place of the URL GitHub's Link header
-// named for it: GitHub's answer names it (Answer.Path), and so does net/http's error for a
-// request that got no answer (url.Error.URL).
-func laterPage(err error, path string, n int) error {
-	if n == 1 {
-		return err
-	}
-	shown := fmt.Sprintf("%s (page %d)", path, n)
-	var answer *Answer
-	if errors.As(err, &answer) {
-		answer.Path = shown
-		return err
-	}
-	var unanswered *url.Error
-	if errors.As(err, &unanswered) {
-		unanswered.URL = shown
-	}
-	return err
-}
-
 // call sends method to target, with body as JSON when it is not nil, reads a 2xx answer into into
 // when into is not nil, and returns the next page's URL its Link header names ("" for none) and
 // GitHub's response headers. The answer is read through oauth2call.ReadAnswer: an answer other
 // than 2xx is an *Answer, decided on as it came and printed as the rule reads it, with the token
 // the call carried redacted, and a decode's error quotes no value. When it is a rate limit, it
 // names the budget spent, the REST API's core budget when GitHub names no other.
-func (c Client) call(ctx context.Context, method, target string, body []byte, into any) (string, http.Header, error) {
+//
+// A failure names the call shown, its caller's name for it (Client), wherever it would name
+// target: GitHub's answer's path (refusal) and net/http's error for a request that got no answer
+// (unanswered). With shown "" each names target as it is.
+func (c Client) call(ctx context.Context, method, target, shown string, body []byte, into any) (string, http.Header, error) {
 	var payload io.Reader
 	if body != nil {
 		payload = bytes.NewReader(body)
 	}
 	request, err := http.NewRequestWithContext(ctx, method, target, payload)
 	if err != nil {
-		return "", nil, err
+		return "", nil, unanswered(err, shown)
 	}
 	request.Header.Set("Authorization", "Bearer "+c.Token)
 	request.Header.Set("Accept", "application/vnd.github+json")
@@ -205,7 +205,7 @@ func (c Client) call(ctx context.Context, method, target string, body []byte, in
 	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return "", nil, err
+		return "", nil, unanswered(err, shown)
 	}
 	defer response.Body.Close()
 	read, err := oauth2call.ReadAnswer(response, 64<<20)
@@ -213,7 +213,7 @@ func (c Client) call(ctx context.Context, method, target string, body []byte, in
 		return "", response.Header, err
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return "", response.Header, c.refusal(method, request.URL, response, read)
+		return "", response.Header, c.refusal(method, request.URL, shown, response, read)
 	}
 	if into == nil {
 		return nextPage(response.Header.Get("Link")), response.Header, nil
@@ -221,10 +221,26 @@ func (c Client) call(ctx context.Context, method, target string, body []byte, in
 	return nextPage(response.Header.Get("Link")), response.Header, read.Decode(into)
 }
 
+// unanswered is err, the failure of a call that got no answer, as call returns it: naming the call
+// shown in place of the URL net/http's error names (url.Error.URL), which is the target as it
+// came, and err as it came when shown is "".
+func unanswered(err error, shown string) error {
+	var failed *url.Error
+	if shown != "" && errors.As(err, &failed) {
+		failed.URL = shown
+	}
+	return err
+}
+
 // refusal is response, GitHub's answer other than 2xx to method at target, as the *Answer its
-// caller returns (AnswerOf), naming the path under the client's API (answerPath).
-func (c Client) refusal(method string, target *url.URL, response *http.Response, read oauth2call.Answer) *Answer {
-	return AnswerOf(method, c.answerPath(target), response, read)
+// caller returns (AnswerOf), naming the call shown, or, when shown is "", by the path under the
+// client's API (answerPath).
+func (c Client) refusal(method string, target *url.URL, shown string, response *http.Response, read oauth2call.Answer) *Answer {
+	path := shown
+	if path == "" {
+		path = c.answerPath(target)
+	}
+	return AnswerOf(method, path, response, read)
 }
 
 // AnswerOf is response, GitHub's answer other than 2xx to method at path, read as read
@@ -254,9 +270,9 @@ func (c Client) answerPath(target *url.URL) string { return PathUnder(c.API, tar
 
 // PathUnder is the path an Answer names for target, its query left out: the path under api, or
 // GitHub's whole path for a URL outside it, such as a later page GitHub names under
-// /repositories/<id>/, which getPages then names by its number instead (laterPage). Client names
-// its answers' paths so (answerPath), and appauth names those its errors carry so under its own
-// base URL (appauth.AnswerError).
+// /repositories/<id>/, which getPages names by its number instead. Client names its answers'
+// paths so where its caller gives the call no name of its own (refusal), and appauth names those
+// its errors carry so under its own base URL (appauth.AnswerError).
 func PathUnder(api string, target *url.URL) string {
 	if base, err := url.Parse(api); err == nil {
 		if rest, found := strings.CutPrefix(target.Path, base.Path); found && strings.HasPrefix(rest, "/") {
@@ -372,13 +388,14 @@ func nextPage(link string) string {
 }
 
 // Answer is a GitHub REST answer other than 2xx: the request's method and path (its query left
-// out; a later page GetPages read is named by its number under the caller's path, laterPage),
-// GitHub's HTTP status, the body GitHub sent with it as the rule prints it, the rate-limit
-// headers GitHub sent with it (Limit), and whether it is a rate limit, which every further call on
-// the same token meets until the limit resets, with how long GitHub asks the caller to wait before
-// its next call (retryAfter; zero when it is not one) and the budget the limit spent (empty when
-// it is not one). Body is for what the answer prints - a message, a log line, an error - and
-// nothing decides on it: a caller decides on GitHub's words as they came, through Says and Decode.
+// out), or the name its caller gave the call (Client; a later page GetPages read is named by its
+// number after that name, getPages), GitHub's HTTP status, the body GitHub sent with it as the
+// rule prints it, the rate-limit headers GitHub sent with it (Limit), and whether it is a rate
+// limit, which every further call on the same token meets until the limit resets, with how long
+// GitHub asks the caller to wait before its next call (retryAfter; zero when it is not one) and
+// the budget the limit spent (empty when it is not one). Body is for what the answer prints - a
+// message, a log line, an error - and nothing decides on it: a caller decides on GitHub's words as
+// they came, through Says and Decode.
 type Answer struct {
 	Method      string
 	Path        string

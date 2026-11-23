@@ -41,10 +41,10 @@ func TestPostSendsJSONAndAnswersWithTheStatus(t *testing.T) {
 	var created struct {
 		Ref string `json:"ref"`
 	}
-	if err := client.Post(context.Background(), "/git/refs", map[string]string{"ref": "refs/heads/new"}, &created); err != nil || created.Ref != "refs/heads/new" {
+	if err := client.Post(context.Background(), "/git/refs", "", map[string]string{"ref": "refs/heads/new"}, &created); err != nil || created.Ref != "refs/heads/new" {
 		t.Fatalf("Post = %+v, %v; want the 201 answer read", created, err)
 	}
-	err := client.Post(context.Background(), "/git/refs?x=1", map[string]string{"ref": "refs/heads/taken"}, nil)
+	err := client.Post(context.Background(), "/git/refs?x=1", "", map[string]string{"ref": "refs/heads/taken"}, nil)
 	var answer *Answer
 	if !errors.As(err, &answer) || answer.Method != http.MethodPost || answer.Path != "/git/refs" || answer.Status != http.StatusUnprocessableEntity {
 		t.Fatalf("Post of a taken ref = %v, want an *Answer for POST /git/refs with 422", err)
@@ -90,7 +90,7 @@ func TestRetryAfterNamesTheBudgetALimitSpent(t *testing.T) {
 				w.Write([]byte(tc.body))
 			}))
 			defer server.Close()
-			err := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}.Get(context.Background(), "/git/ref/heads/main", nil)
+			err := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}.Get(context.Background(), "/git/ref/heads/main", "", nil)
 			after, budget := RetryAfter(fmt.Errorf("wrapped: %w", err))
 			if budget != tc.budget || after < tc.least || after > tc.most {
 				t.Fatalf("RetryAfter(%v) = %s, %q; want %q between %s and %s", err, after, budget, tc.budget, tc.least, tc.most)
@@ -146,26 +146,26 @@ func TestGetPagesFollowsNextPagesOnTheAPIsOriginOnly(t *testing.T) {
 
 	nextHost.Store(&server.URL)
 	pageTwo.Store(http.StatusOK)
-	if got, err := GetPages[string](context.Background(), client, "/rules/branches/main"); err != nil || !slices.Equal(got, []string{"first", "second"}) {
+	if got, err := GetPages[string](context.Background(), client, "/rules/branches/main", ""); err != nil || !slices.Equal(got, []string{"first", "second"}) {
 		t.Fatalf("GetPages = %v, %v; want both pages", got, err)
 	}
-	if got, err := GetListPages[string](context.Background(), client, "/commits/head/check-runs", "check_runs"); err != nil || !slices.Equal(got, []string{"first", "second"}) {
+	if got, err := GetListPages[string](context.Background(), client, "/commits/head/check-runs", "", "check_runs"); err != nil || !slices.Equal(got, []string{"first", "second"}) {
 		t.Fatalf("GetListPages = %v, %v; want both pages' check runs", got, err)
 	}
 
 	pageTwo.Store(http.StatusForbidden)
-	_, err := GetPages[string](context.Background(), client, "/rules/branches/main")
+	_, err := GetPages[string](context.Background(), client, "/rules/branches/main", "")
 	var answer *Answer
 	if !errors.As(err, &answer) || answer.Path != "/rules/branches/main (page 2)" || answer.Status != http.StatusForbidden {
 		t.Fatalf("GetPages with page 2 refused = %v, want an *Answer naming /rules/branches/main (page 2) with 403", err)
 	}
 
 	nextHost.Store(&other.URL)
-	got, err := GetPages[string](context.Background(), client, "/rules/branches/main")
+	got, err := GetPages[string](context.Background(), client, "/rules/branches/main", "")
 	if err == nil || !strings.Contains(err.Error(), "is not on "+server.URL) || strings.Contains(err.Error(), other.URL) || got != nil {
 		t.Fatalf("GetPages with a next page on another host = %v, %v; want an error naming the API's origin alone and no items", got, err)
 	}
-	list, err := GetListPages[string](context.Background(), client, "/commits/head/check-runs", "check_runs")
+	list, err := GetListPages[string](context.Background(), client, "/commits/head/check-runs", "", "check_runs")
 	if err == nil || !strings.Contains(err.Error(), "is not on "+server.URL) || strings.Contains(err.Error(), other.URL) || list != nil {
 		t.Fatalf("GetListPages with a next page on another host = %v, %v; want an error naming the API's origin alone and no items", list, err)
 	}
@@ -189,10 +189,10 @@ func TestGetListPagesRefusesAnAnswerWithoutTheField(t *testing.T) {
 	type run struct {
 		ID int `json:"id"`
 	}
-	if runs, err := GetListPages[run](context.Background(), client, "/actions/runs", "workflow_runs"); err != nil || len(runs) != 1 || runs[0].ID != 37 {
+	if runs, err := GetListPages[run](context.Background(), client, "/actions/runs", "", "workflow_runs"); err != nil || len(runs) != 1 || runs[0].ID != 37 {
 		t.Fatalf("GetListPages = %+v, %v; want the one run read from workflow_runs", runs, err)
 	}
-	runs, err := GetListPages[run](context.Background(), client, "/commits/head/check-runs", "check_runs")
+	runs, err := GetListPages[run](context.Background(), client, "/commits/head/check-runs", "", "check_runs")
 	if err == nil || runs != nil || err.Error() != `GitHub answered GET /commits/head/check-runs with no "check_runs" list` {
 		t.Fatalf("GetListPages of an answer without the field = %+v, %v; want an error naming check_runs", runs, err)
 	}
@@ -214,7 +214,7 @@ func TestAListThatDoesNotDecodePrintsNoTokenItEchoes(t *testing.T) {
 		ID        int       `json:"id"`
 		StartedAt time.Time `json:"started_at"`
 	}
-	runs, err := GetListPages[checkRun](context.Background(), client, "/commits/head/check-runs", "check_runs")
+	runs, err := GetListPages[checkRun](context.Background(), client, "/commits/head/check-runs", "", "check_runs")
 	if err == nil || runs != nil || !strings.Contains(err.Error(), `"check_runs" list`) {
 		t.Fatalf("GetListPages of a list that does not decode = %+v, %v; want an error naming the check_runs list", runs, err)
 	}
@@ -246,7 +246,7 @@ func TestASecondaryRateLimitNamedOnlyByItsMessageIsARateLimit(t *testing.T) {
 			client := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
 
 			var answer *Answer
-			if err := client.Get(context.Background(), "/collaborators/a-writer/permission", nil); !errors.As(err, &answer) {
+			if err := client.Get(context.Background(), "/collaborators/a-writer/permission", "", nil); !errors.As(err, &answer) {
 				t.Fatalf("Get = %v, want an *Answer", err)
 			}
 			if answer.RateLimited != tc.limited || answer.RetryAfter != tc.wantAfter {
@@ -270,7 +270,7 @@ func TestARateLimitsResetFarInTheFutureWaitsNoLongerThanAnHour(t *testing.T) {
 	client := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
 
 	var answer *Answer
-	if err := client.Get(context.Background(), "/collaborators/a-writer/permission", nil); !errors.As(err, &answer) {
+	if err := client.Get(context.Background(), "/collaborators/a-writer/permission", "", nil); !errors.As(err, &answer) {
 		t.Fatalf("Get = %v, want an *Answer", err)
 	}
 	if !answer.RateLimited || answer.RetryAfter != time.Hour {
@@ -293,7 +293,7 @@ func TestAnAnswerCarriesTheRateLimitHeadersGitHubSent(t *testing.T) {
 	client := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
 
 	var answer *Answer
-	if err := client.Get(context.Background(), "", nil); !errors.As(err, &answer) {
+	if err := client.Get(context.Background(), "", "", nil); !errors.As(err, &answer) {
 		t.Fatalf("Get = %v, want an *Answer", err)
 	}
 	if answer.RateLimited || answer.RetryAfter != 0 || answer.Budget != "" {

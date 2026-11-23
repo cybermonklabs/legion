@@ -360,7 +360,7 @@ func (w *workflowRuntime) openPullRequestOn(ctx context.Context, repo, branch st
 	}
 	var pulls []githubPullRequest
 	query := url.Values{"head": {repository.Owner() + ":" + branch}, "state": {"open"}}
-	if err := github.Get(ctx, "/pulls?"+query.Encode(), &pulls); err != nil {
+	if err := github.Get(ctx, "/pulls?"+query.Encode(), "", &pulls); err != nil {
 		return githubPullRequest{}, false, err
 	}
 	for _, pull := range pulls {

@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -94,6 +95,63 @@ func TestAPermissionReadLogsGitHubsLoginAndPermissionOnlyInTheirShape(t *testing
 			}
 			oauth2calltest.RequireNoPiece(t, "daemon.answer-words/permission-"+c.name, logs.String(), echoedToken)
 			requireHolds(t, logs.String(), c.want...)
+		})
+	}
+}
+
+// TestAPermissionReadThatFailsNamesTheAuthorOnlyInItsShape: a review's author, which GitHub's list
+// of reviews names, is a token in GitHub's shape echoed back ("ghs_" and 36 letters and digits,
+// with the gate's marker -RDX- after it), which url.PathEscape leaves as it is, and the read of
+// its permission fails: GitHub answers 500 (refused), or the connection closes with no answer
+// (unanswered). The error reviewerCanWrite returns, and the line the per-issue read logs when the
+// listed review's permission read fails, name the read by its route with the author as
+// githubrest.ShownLogin prints it, and hold none of the login. Both named the path the read asked,
+// the login and all: in GitHub's answer's path, and in net/http's error. Captures
+// daemon.answer-words/permission-failed-<case>.
+func TestAPermissionReadThatFailsNamesTheAuthorOnlyInItsShape(t *testing.T) {
+	at := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		name string
+		fail http.HandlerFunc
+		// names is what the error and the line must say of why the read failed.
+		names string
+	}{
+		{"refused", func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, `{"message":"Server Error"}`, http.StatusInternalServerError)
+		}, "with 500"},
+		{"unanswered", func(w http.ResponseWriter, _ *http.Request) {
+			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+				_ = conn.Close()
+			}
+		}, "EOF"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			login := githubtest.InstallationToken(t.Name()) + "-RDX-"
+			route := "/collaborators/" + notALogin + "/permission"
+
+			server := httptest.NewServer(c.fail)
+			defer server.Close()
+			w := reviewPermissionRuntime(reviewPermissionPool(t), server.URL, quietLogger())
+			canWrite, err := w.reviewerCanWrite(context.Background(), intake.PullRequestReview{Repo: "acme/widgets", Number: 42, State: "approved", Author: login})
+			if err == nil || canWrite {
+				t.Fatalf("the review's author can write = %v, %v; want false and the read's failure", canWrite, err)
+			}
+			requireHolds(t, err.Error(), route, c.names)
+
+			pool := isolatedOutboxPool(t)
+			// The permission read is made before the reviewer's row is asked anything, so the
+			// issue's record and its pull request are all the read needs.
+			seedCapture(t, pool, phase.Reviewing, "needs_review")
+			github := &activityGitHub{permission: c.fail}
+			github.moved("code", captureHeadUpdated)
+			github.lists(fmt.Sprintf(`[{"id":5,"user":{"login":%q},"body":"Ship it.","state":"APPROVED","commit_id":"code","submitted_at":%q}]`, login, at.Format(time.RFC3339)))
+			var logs bytes.Buffer
+			reader := reviewAppRuntime(pool, github.serve(t).URL, slog.New(slog.NewJSONHandler(&logs, nil)))
+			reader.repositories = servedAcme()
+			readCapture(t, reader)
+			requireHolds(t, logs.String(), "apply none of a pull request's reviews this read", route, c.names)
+
+			oauth2calltest.RequireNoPiece(t, "daemon.answer-words/permission-failed-"+c.name, err.Error()+"\n"+logs.String(), login)
 		})
 	}
 }

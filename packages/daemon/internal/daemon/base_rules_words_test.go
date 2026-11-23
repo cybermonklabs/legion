@@ -57,22 +57,23 @@ func TestTheBaseRulesLineNamesGitHubsContextsAsTheRuleReadsThem(t *testing.T) {
 // and quote the probe (echoedWords), and the read of that base's rules fails: GitHub answers it 404
 // (answered), or the connection closes with no answer (unanswered). The line the rules read logs,
 // and the Unread R0 acts on, name the base as the rule reads it: none of the token or the probe's
-// credentials, and the rest of the base and the read's route. The read asks for the base as it
+// credentials, and the rest of the base and the read's route, in GitHub's answer's path or in
+// net/http's error, which name the read as baseRules names it. The read asks for the base as it
 // came. The line and Unread printed the base as it came, in the line's base, in GitHub's answer's
 // path and in net/http's error. Captures daemon.answer-words/base-<case>.
 func TestTheBaseRulesReadNamesGitHubsBaseAsTheRuleReadsIt(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		refuse func(w http.ResponseWriter)
-		// names is what Unread must say beside the route.
-		names string
+		// names is what Unread must say: the route, the base as the rule reads it, and why.
+		names []string
 	}{
-		{"answered", func(w http.ResponseWriter) { w.WriteHeader(http.StatusNotFound) }, "with 404"},
+		{"answered", func(w http.ResponseWriter) { w.WriteHeader(http.StatusNotFound) }, []string{"GitHub answered GET /rules/branches/token", "with 404"}},
 		{"unanswered", func(w http.ResponseWriter) {
 			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
 				_ = conn.Close()
 			}
-		}, "got no answer"},
+		}, []string{`Get "/rules/branches/token`, "EOF"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var asked atomic.Value
@@ -88,7 +89,7 @@ func TestTheBaseRulesReadNamesGitHubsBaseAsTheRuleReadsIt(t *testing.T) {
 			w := &workflowRuntime{log: slog.New(slog.NewJSONHandler(&logs, nil))}
 			github := githubrest.Client{Token: echoedToken, API: githubrest.RepositoryAPI(server.URL, ghrepo.MustParse("acme/widgets"))}
 			var pull githubPullRequest
-			if err := github.Get(context.Background(), "/pulls/86", &pull); err != nil {
+			if err := github.Get(context.Background(), "/pulls/86", "", &pull); err != nil {
 				t.Fatalf("read the pull request: %v", err)
 			}
 
@@ -103,7 +104,7 @@ func TestTheBaseRulesReadNamesGitHubsBaseAsTheRuleReadsIt(t *testing.T) {
 				t.Fatalf("the read logged %v, want one line of the rules it read, with its Unread", lines)
 			}
 			line := fmt.Sprint(lines[0]["base"], " | ", lines[0]["unread"])
-			requireHolds(t, line, "refused;", "GET /rules/branches/token", tc.names)
+			requireHolds(t, line, append([]string{"refused;"}, tc.names...)...)
 			oauth2calltest.RequireNoPiece(t, "daemon.answer-words/base-"+tc.name, line, echoedToken)
 		})
 	}

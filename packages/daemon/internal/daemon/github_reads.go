@@ -157,7 +157,7 @@ func (w *workflowRuntime) readPullRequest(ctx context.Context, pr record.PullReq
 		return githubrest.Client{}, githubPullRequest{}, fmt.Errorf("mint the implement App token for %s: %w", repository.Owner(), err)
 	}
 	var pull githubPullRequest
-	if err := github.Get(ctx, fmt.Sprintf("/pulls/%d", pr.Number), &pull); err != nil {
+	if err := github.Get(ctx, fmt.Sprintf("/pulls/%d", pr.Number), "", &pull); err != nil {
 		return githubrest.Client{}, githubPullRequest{}, err
 	}
 	return github, pull, nil
