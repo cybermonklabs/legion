@@ -2170,8 +2170,10 @@ test("the state golden carries each issue's repository and the repositories its 
 // the deployment renders each as `unchecked` with its citation (contract 21) — and the report is
 // never absent from a state. `installed` left the status set at contract 25: it was codegraph's
 // until LEGION-629, and no row has carried it since. Each deployment row carries `source`
-// (contract 25): `configuration` (what legion.yaml alone decides) or `boot` (what boot measured);
-// a live row carries none.
+// (contract 25): `configuration` (what legion.yaml alone decides) or `boot` (what boot measured),
+// or, on `repository-cache-room`, `caches` (contract 213), what the repository caches' last health
+// reads said of their room: the golden's one cache ran out of room, so that row is open too. A
+// live row carries none.
 test("the state golden carries the deployment's capability report", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
 
@@ -2216,18 +2218,34 @@ test("the state golden carries the deployment's capability report", () => {
   }
   expect(statuses).not.toContain("installed");
 
+  expect(rows["repository-cache-room"]).toMatchObject({
+    status: "open",
+    configLine: 'capabilities.decided.repository-cache-room: "<reason>"',
+    source: "caches",
+  });
+  expect(rows["repository-cache-room"].detail).toContain("acme/widgets on a 20.0 GiB volume");
+
   const deploymentRows = [
     rows.secrets,
     rows["model-fallback"],
     rows["resource-limits"],
     rows["pool-capacity"],
+    rows["repository-cache-room"],
   ];
   for (const row of deploymentRows) {
-    expect(["configuration", "boot"]).toContain(row.source ?? "");
+    expect(["configuration", "boot", "caches"]).toContain(row.source ?? "");
   }
 
   const emptied = fixture("state-stage3.json") as { capabilities: unknown[] };
   expect(emptied.capabilities).toEqual([]);
+});
+
+// `source` is a finite set, so the schema names its three words and no other: a fourth word is
+// refused with the whole state, as `caches` was before it joined the enum at contract 213.
+test("a capability row whose source is a word the schema does not name is refused", () => {
+  const unknownSource = fixture("state.json") as { capabilities: { source?: string }[] };
+  unknownSource.capabilities = [{ ...unknownSource.capabilities[0], source: "volume" }];
+  expect(LegionStateResponse.safeParse(unknownSource).success).toBeFalse();
 });
 
 test("a capability row's status is one the report renders, and the report may be left out", () => {
@@ -2512,17 +2530,24 @@ test("a reader at the previous contract parses the state body this daemon serves
   expect(droppedFromState(served)).toBe("strandedClaims[0].suspendedBy");
 });
 
-// A plugin below 202 reads the repositories block with contract 152's schema
+// A plugin from 152 to 189 reads the repositories block with contract 152's schema
 // (`repositoriesAt152`), which requires `owners`, `mapped`, `refused` and `withoutWebhookApp`: the
-// block this contract writes refuses there, and with it the whole state, so the route serves that
-// caller the block in 152's shape, written from the same entries, and leaves every other key as
+// block this contract writes refuses there, and with it the whole state. A plugin from 193 on reads
+// every key of the block as optional (#3659), and the route serves every caller below 202 the
+// block in 152's shape all the same, written from the same entries, and leaves every other key as
 // the contract it serves the caller at writes it. `state-narrowed-repositories.json` is the body
-// served to a caller that states 201 (`internal/api`'s TestStateNarrowedRepositoriesGolden), and
-// the drift gate above holds every key of it to that copy. The entries land where 152 put them:
-// `owners` and `mapped` are the ones both role Apps are installed on, under the name each is
-// served under, every `default` false; `refused` is each other entry with why; `withoutWebhookApp`
-// is this contract's own list.
+// served to a caller that states the contract before 202 (`internal/api`'s
+// TestStateNarrowedRepositoriesGolden), and the drift gate above holds every key of it to that
+// copy. The entries land where 152 put them: `owners` and `mapped` are the ones both role Apps are
+// installed on, under the name each is served under, every `default` false; `refused` is each
+// other entry with why; `withoutWebhookApp` is this contract's own list.
 test("a reader at contract 152 parses the repositories block served below 202", () => {
+  // The caller states the contract before 202, the one whose entry made the block live
+  // (`repositoriesLiveContract` in `internal/api/shaping.go`), and the `contract` mark below names
+  // the highest contract the records hold below 202 (`recordedContractAtOrBelow`). The bound is
+  // 202 and not `daemonApiVersion`: the records hold an entry at 202 itself, so a bound at the
+  // daemon's own contract would name 202 as soon as a later contract lands.
+  const repositoriesLiveContract = 202;
   const served = fixtureBody("state-narrowed-repositories.json");
   const written = served.repositories;
   expect(isJsonObject(written) ? Object.keys(written).sort() : written).toEqual([
@@ -2578,11 +2603,18 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
   // the body from, a pod at 201, which `state.json`'s own fixture does not hold. No band stands
   // between 199 and 202 but the repositories block's, so the narrowing changes this one block and
-  // nothing beside it.
+  // no other key. One value strip stands above 199 as well: `caches`, the source of the
+  // repository-cache-room row, arrived at contract 213, so that row is served here without its
+  // `source`, every other field of it and every other row as the state golden holds them.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
-  expect(served.contract).toEqual({ daemon: daemonApiVersion, caller: 199 });
+  const recordedBelow = z
+    .array(z.object({ contract: z.number() }))
+    .parse(fixture("contract-shapes.json"))
+    .map((record) => record.contract)
+    .filter((contract) => contract < repositoriesLiveContract);
+  expect(served.contract).toEqual({ daemon: daemonApiVersion, caller: Math.max(...recordedBelow) });
   const {
     repositories: _narrowedBlock,
     contract: _narrowedMark,
@@ -2595,11 +2627,20 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     lowestPluginContract: _lowest,
     ...rest
   } = fixtureBody("state.json");
-  expect(narrowedRest).toEqual(rest);
+  const capabilities = z.array(z.record(z.string(), z.unknown())).parse(rest.capabilities);
+  expect(capabilities.some((row) => row.source === "caches")).toBeTrue();
+  const withoutCachesSource = capabilities.map((row) => {
+    if (row.source !== "caches") {
+      return row;
+    }
+    const { source: _source, ...kept } = row;
+    return kept;
+  });
+  expect(narrowedRest).toEqual({ ...rest, capabilities: withoutCachesSource });
 
-  // What serving the current block would do, and why it is not served: the reader of 152 refuses
-  // it for the three keys it requires beside the `withoutWebhookApp` and `caches` the block keeps,
-  // so a caller below 202 would lose its whole state.
+  // What serving the current block would do: the reader of 152 refuses it for the three keys it
+  // requires beside the `withoutWebhookApp` and `caches` the block keeps, so a caller from 152 to
+  // 189 would lose its whole state.
   const current = repositoriesAt152.safeParse(fixtureBody("state.json").repositories);
   expect(current.success).toBeFalse();
   expect(current.error?.issues.map((issue) => issue.path[0]).sort()).toEqual([

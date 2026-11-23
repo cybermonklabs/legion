@@ -51,7 +51,7 @@ func (w *unansweringWriter) RecordRuns(ctx context.Context, observations []contr
 // answering, writes both and the head settles with its failure.
 func TestAPassWhoseWriteOfOneFinishedRunFailedSettlesNothing(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-22T00:04:00Z"),
@@ -100,7 +100,7 @@ func (h *harness) answerNoRunWriteCarrying(check string, failures int) {
 // pass, with the bus answering, writes the queued run, and the head waits for it.
 func TestAPassWhoseRunWriteFailedWritesNothingMoreOfTheHead(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	settlements := h.subscribe()
 	changes := checkRun(1, "changes", "completed", "success", otherApp, "2026-11-22T00:02:05Z")
@@ -153,7 +153,7 @@ func TestAPassWhoseRunWriteFailedWritesNothingMoreOfTheHead(t *testing.T) {
 // pass records the ends and the head settles again, superseding the first settlement.
 func TestAPassOverRunsNoWebhookCarriedSettlesNothingWhileGitHubStillRunsSome(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	settlements := h.subscribe()
 
@@ -225,7 +225,7 @@ func TestAPassOverRunsNoWebhookCarriedSettlesNothingWhileGitHubStillRunsSome(t *
 func TestAPassWritesAnUnfinishedRunOnlyWhereItIsGitHubsNewest(t *testing.T) {
 	t.Run("a queued run never replaces the same run completed", func(t *testing.T) {
 		h := newHarness(t, reviewerAppID)
-		h.mapRepository(rowRepository)
+		h.seedProjectDefault(rowRepository)
 		h.listHead()
 		settlements := h.subscribe()
 		done := checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-22T00:05:00Z")
@@ -255,7 +255,7 @@ func TestAPassWritesAnUnfinishedRunOnlyWhereItIsGitHubsNewest(t *testing.T) {
 
 	t.Run("a queued run never replaces a newer run of its name", func(t *testing.T) {
 		h := newHarness(t, reviewerAppID)
-		h.mapRepository(rowRepository)
+		h.seedProjectDefault(rowRepository)
 		h.listHead()
 		settlements := h.subscribe()
 		newer := checkRun(5, "ci-ok", "completed", "success", otherApp, "2026-11-22T00:05:00Z")
@@ -286,7 +286,7 @@ func TestAPassWritesAnUnfinishedRunOnlyWhereItIsGitHubsNewest(t *testing.T) {
 
 	t.Run("a re-run GitHub has not finished re-arms the head and it settles again superseding", func(t *testing.T) {
 		h := newHarness(t, reviewerAppID)
-		h.mapRepository(rowRepository)
+		h.seedProjectDefault(rowRepository)
 		h.listHead()
 		settlements := h.subscribe()
 		first := checkRun(1, "ci-ok", "completed", "failure", otherApp, "2026-11-22T00:05:00Z")

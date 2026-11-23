@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // realGHForCapture is the real gh a test that drives one runs: LEGION_GH_PATH when the test runs
@@ -137,6 +138,8 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		// fail its handshake with GitHub rather than reach it.
 		testGhChildEnv + "=" + strings.Join([]string{"SSL_CERT_FILE=" + proxy.caFile, "SSL_CERT_DIR=" + t.TempDir(), "GIT_SSL_CAINFO=" + proxy.caFile}, "\n"),
 	}
+	// This binary's deadline, which bounds what each `legion gh` here waits for (boundByTheDeadline).
+	base = append(base, testDeadlineEnviron()...)
 	runIn := func(dir string, env []string, name string, args ...string) (int, string) {
 		cmd := exec.Command(name, args...)
 		cmd.Env, cmd.Dir = append(append([]string{}, base...), env...), dir
@@ -446,7 +449,9 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	// named `help`, which gh would run on `legion gh help`, is refused before gh runs; one whose
 	// config.yml is no regular file is refused without being opened, so a named pipe there stalls
 	// nothing. The pane's own directory is judged before gh reads any help, so each is refused
-	// promptly; each run has a bound of its own, which a gh stalled on the pipe would meet.
+	// promptly. Each run's bound is what is left of the test binary's deadline less 30 s, which a
+	// gh stalled on the pipe would meet and fail its row by name, while a run a loaded machine
+	// makes slow is waited for.
 	acmeConfig := filepath.Join(ghconfig.Dir(root, "acme"), ghconfig.ConfigFile)
 	keptConfig, err := os.ReadFile(acmeConfig)
 	if err != nil {
@@ -473,7 +478,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		if err := tc.plant(); err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, 1<<60, 30*time.Second))
 		cmd := exec.CommandContext(ctx, os.Args[0], "gh", "api", "repos/acme/widgets")
 		cmd.Env, cmd.Dir = append(append([]string{}, base...), ghEnv...), home
 		out, err := cmd.CombinedOutput()

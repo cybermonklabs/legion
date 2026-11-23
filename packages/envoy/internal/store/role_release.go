@@ -41,9 +41,11 @@ type RoleReleaseAuthority struct {
 	// Force frees each claim the session holds, whoever holds it, as the release read it: the
 	// claim it read, through the holder's renewals and an adoption, and not a grant made after
 	// its read, which it leaves standing (Registry.releaseReadRoleClaim). It is the
-	// administrator's release, and DELETE /v1/interests/<session_id> is its one caller: an
+	// administrator's release, and DELETE /v1/interests/<session_id> is its one route: an
 	// operator clearing a session's interests states no process and must still be able to free
-	// the roles that session took.
+	// the roles that session took. The release of a role an edge registration refuses
+	// (ReleaseRefusedRoleClaims) uses it too: that registration is the session's own, so no
+	// process of that session keeps it.
 	Force bool
 	// handsBack is this release's statement that it is its caller's own hand-back of the roles
 	// whose lane topics it names, so a claim it may not free is marked handed back rather than

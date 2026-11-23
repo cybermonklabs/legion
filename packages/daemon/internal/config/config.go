@@ -330,6 +330,12 @@ const (
 	// minutes of the ask, so thirty minutes is three times that answer and still inside one tick
 	// of a roll (dispatch://INFRA-2981 R2).
 	defaultPodUpdateGrace = 30 * time.Minute
+
+	// DefaultReviewRoundCap is `review_round_cap`'s default (Config.ReviewRoundCap). It is exported
+	// for a test that builds its Config by hand: the daemon API contract takes a positive cap
+	// alone (packages/contracts/src/legion-api.ts), so a pane's `legion` tool refuses every state
+	// read of a daemon whose cap is 0.
+	DefaultReviewRoundCap = 3
 )
 
 // tossedKeys are the settings that no longer exist, mapped to why. A file carrying one is refused
@@ -1003,7 +1009,7 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		StalledTreeNotice:    6 * time.Hour,
 		WorkerSilence:        defaultWorkerSilence,
 		WorkerBackground:     defaultWorkerBackground,
-		ReviewRoundCap:       3,
+		ReviewRoundCap:       DefaultReviewRoundCap,
 		Warnings:             file.Warnings,
 	}
 	if file.Project == nil || strings.TrimSpace(*file.Project) == "" {

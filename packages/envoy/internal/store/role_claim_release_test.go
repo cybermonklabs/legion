@@ -434,6 +434,62 @@ func releaseUnderAFreshGrant(t *testing.T, holder, another string, grantAfter ti
 	}
 }
 
+// The edge's release of a role its registration refuses (ReleaseRefusedRoleClaims) is a forced
+// release, so it frees the grant it read and no grant made after that read: the session's claim
+// granted again between that release's read and its delete stands after the release, which names
+// no role and answers no error, and the next release, which reads that grant, frees it - at the
+// edge, the session's next registration. It meets the same race whether the role claim copy names
+// the role or, while the copy cannot be served, the scan of the role bucket does, and also where
+// the session's stored row names the role while the copy cannot be served: the release of the
+// row's role is then the one read of that role, and the scan that follows leaves the role alone
+// rather than read the new grant as its own. Controls: with the delete freeing whatever the
+// session holds (the force before grant ids decided it), the first release frees the new grant
+// and names the role on every path; with the scan reading again a role the row's release weighed,
+// it does so where the row names the role.
+func TestARefusedRoleReleaseLeavesAGrantMadeSinceItsReadToTheNextRelease(t *testing.T) {
+	const (
+		role   = "legion-infra-infra-9-reviewer"
+		holder = "ses_refused_release_under_a_grant"
+	)
+	refusesEvery := func(string) bool { return false }
+	for _, path := range []claimReleasePath{
+		{name: "the role claim copy names the role", viewed: true},
+		{name: "the scan while the copy cannot be served"},
+		{name: "the stored row names the role while the copy cannot be served", handsBack: true},
+	} {
+		t.Run(path.name, func(t *testing.T) {
+			reg, advance := claimForRelease(t, path, role, holder, roleClaimInstance)
+			read := storedRoleClaim(t, reg, role)
+			advance(time.Second)
+			var granted RoleClaim
+			racing := raceReleaseWith(t, reg, role, 1, func() {
+				claimRoleAs(t, reg, holder, "example-host", role, roleClaimInstance)
+				granted = storedRoleClaim(t, reg, role)
+			})
+
+			released, err := reg.ReleaseRefusedRoleClaims(context.Background(), holder, refusesEvery)
+			if err != nil || len(released) != 0 {
+				t.Fatalf("the release under a new grant answered %q, %v; want no role released and no error", released, err)
+			}
+			if granted.GrantID == "" || granted.GrantID == read.GrantID {
+				t.Fatalf("the new grant carries the id %q and the claim the release read %q, want an id of the grant's own", granted.GrantID, read.GrantID)
+			}
+			if racing.deletes != 1 {
+				t.Fatalf("the release sent %d conditional deletes, want one: a claim granted since its read is never deleted", racing.deletes)
+			}
+			if stood := storedRoleClaim(t, reg, role); stood != granted {
+				t.Fatalf("the claim after the release is %+v, want the new grant %+v untouched", stood, granted)
+			}
+
+			released, err = reg.ReleaseRefusedRoleClaims(context.Background(), holder, refusesEvery)
+			if err != nil || len(released) != 1 || released[0] != role {
+				t.Fatalf("the next release answered %q, %v; want %s released and no error", released, err, role)
+			}
+			assertClaimFreed(t, reg, role)
+		})
+	}
+}
+
 // The bound: a claim renewed under every one of the release's deletes is left standing rather
 // than looped on, and the release says so rather than answering success. Three deletes is the
 // whole of what one release sends (roleClaimReleaseAttempts), because the loop runs inside an

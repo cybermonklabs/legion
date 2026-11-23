@@ -1,21 +1,24 @@
 /** The stand-in Dispatch the tailnet leg's tests run against, as a process of its own, so a test
  *  worker's event loop that something holds (the bounded runner's synchronous stop of a sibling
  *  run) never holds its answers. `outside-agent-tailnet-stand-ins.ts` starts it with its settings
- *  in the environment, `OUTSIDE_STAND_IN_DISPATCH` (JSON): the port, the state directory, whether
+ *  in the environment, `OUTSIDE_STAND_IN_DISPATCH` (JSON): a nonce, the state directory, whether
  *  the full member's controls are answered or refused, the commits /healthz names, the full
  *  member's login and the repository of the GitHub proxy's read.
  *
- *  Its /healthz names the commit and fleet_commit the settings say. It answers the full member's
- *  browser session (cookie `session=full`, with the origin's own Origin) on the routes the leg's
- *  controls read, and 401 to anything else. Its access list names the test person until
- *  `POST /_remove`, the owner's removal. It appends each request it answers, `METHOD path`, to
- *  `<state>/dispatch-seen`, and answers `GET /_ready` (unrecorded) once it listens. */
+ *  It binds a port of the kernel's choosing (port 0) and writes it to `<state>/dispatch-port`, so
+ *  no port a parent chose and closed can be taken by another process before it binds. It answers
+ *  `GET /_ready` (unrecorded) with the nonce, so the parent knows the answer is its own child's
+ *  and not another run's stand-in's. Its /healthz names the commit and fleet_commit the settings
+ *  say. It answers the full member's browser session (cookie `session=full`, with the origin's own
+ *  Origin) on the routes the leg's controls read, and 401 to anything else. Its access list names
+ *  the test person until `POST /_remove`, the owner's removal. It appends each request it answers,
+ *  `METHOD path`, to `<state>/dispatch-seen`. */
 
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 interface Settings {
-  readonly port: number;
+  readonly nonce: string;
   readonly state: string;
   readonly controls: "answered" | "refused";
   readonly commit: string;
@@ -28,13 +31,13 @@ const settings = JSON.parse(process.env.OUTSIDE_STAND_IN_DISPATCH ?? "{}") as Se
 const seen = join(settings.state, "dispatch-seen");
 let listed = true;
 
-Bun.serve({
+const server = Bun.serve({
   hostname: "127.0.0.1",
-  port: settings.port,
+  port: 0,
   async fetch(request) {
     const url = new URL(request.url);
     const path = url.pathname;
-    if (path === "/_ready") return new Response("ready");
+    if (path === "/_ready") return new Response(settings.nonce);
     appendFileSync(seen, `${request.method} ${path}\n`);
     if (path === "/healthz") {
       return Response.json({
@@ -93,3 +96,6 @@ Bun.serve({
     return Response.json({ code: "NOT_FOUND" }, { status: 404 });
   },
 });
+// The port, written whole: a reader sees no file or the whole number, never a part of it.
+writeFileSync(join(settings.state, "dispatch-port.writing"), String(server.port));
+renameSync(join(settings.state, "dispatch-port.writing"), join(settings.state, "dispatch-port"));

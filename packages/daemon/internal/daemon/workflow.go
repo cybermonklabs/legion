@@ -358,9 +358,8 @@ func appTransient(err error) bool {
 // runTokenCommand shares: an attempt whose bound ends while the command runs is pending
 // (ErrCommandPending), the next attempt joins the run still going, and a run that finishes
 // between two attempts is kept for the next one (appauth's finishedRunKeep), so the command does
-// not run again for it. The logins read takes and forgets every run it is answered with, so the
-// key proof that follows it never takes a release the logins read was answered with (appauth's
-// anyInstallation).
+// not run again for it. The logins read shares those runs; appauth's anyInstallation says why the
+// key proof never takes a release the logins read was answered with.
 func appAttempt(waits *startWaits, call string, attempt func(context.Context) error) func(context.Context) bootprobe.Outcome {
 	return func(ctx context.Context) bootprobe.Outcome {
 		bounded, cancel := context.WithTimeout(ctx, appMintAttempt)
@@ -784,6 +783,11 @@ func (w *workflowRuntime) queueGatedStepsPublish(ctx context.Context) error {
 // costs the record two queries — the issues to publish, then their gates — and one enqueue each.
 // The lane is woken on commit (projectRecords), which before attach reaches nothing: the outbox's
 // first sweep runs whatever this pass left.
+//
+// Each set says which of its rows hold their tree under this boot's steps (record.GateDocuments),
+// so a boot on a `gates.design` the operator has changed since corrects what Dispatch holds, and
+// a row still pending from an older daemon, whose set says nothing of it, takes this boot's set
+// in its place (the enqueue writes a payload that differs).
 func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 	now := time.Now().UTC()
 	scoped, committed := intake.WithCommitHooks(ctx)
@@ -797,7 +801,7 @@ func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 			return err
 		}
 		for _, issue := range live {
-			publish := record.DesignGatesPublish{Issue: issue, Gates: record.GateDocuments(gates[issue])}
+			publish := record.DesignGatesPublish{Issue: issue, Gates: record.GateDocuments(w.gatedSteps, gates[issue])}
 			if err := w.records.EnqueueDesignGates(scoped, tx, publish, now); err != nil {
 				return err
 			}
@@ -1146,18 +1150,25 @@ func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ su
 // this answer drops one only where the record says another tree is owed it. A task left naming
 // nothing is retired rather than sent, and its delivery's write releases whatever it still held.
 //
+// A task that also carries news of the approved design (supervise.Delivery.News: since #3711 a
+// root architect's entry start carries the kept decisions and the news it is owed) is narrowed in
+// the start's own text, the one the news follows (record.DeliveryNews.Task), and the narrowed text
+// and the news are rendered again by the one render every task of news goes through
+// (narrowedNews, designNews, renderNews). So the news it carries is exactly what its text names,
+// and no later send renders the text the start wrote, which still names the released decision.
+//
 // It is the machine that asks, because the machine owns the pending delivery: the hand-over that
 // moved the issue commits in a transaction of its own, with no lock on this claim, and a task
 // rewritten there would be overwritten by the machine's next write of what memory still held. The
 // write here serializes with every fact (intake.SerializeFacts), since it writes the catch-up a
 // ready would write, and takes no lock of the daemon's: the machine asks it holding its own.
-func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error) {
+func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, []byte, error) {
 	if len(d.Kept) == 0 {
-		return d.Task, d.Kept, nil
+		return d.Task, d.Kept, d.News, nil
 	}
 	var named record.KeptDecisions
 	if err := json.Unmarshal(d.Kept, &named); err != nil {
-		return "", nil, fmt.Errorf("decode what the task held for %s names: %w", c.Token, err)
+		return "", nil, nil, fmt.Errorf("decode what the task held for %s names: %w", c.Token, err)
 	}
 	stays := record.KeptDecisions{KeptApproval: named.KeptApproval}
 	// The record the rewrite reads where the task is of an entry and so carries the first-task
@@ -1221,11 +1232,11 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		}
 		return workflow.CatchUpTheTreesOwed(scoped, tx, w.records, w.gatedSteps, trees, time.Now().UTC())
 	}); err != nil {
-		return "", nil, fmt.Errorf("read what the task held for %s still names of %s's tree: %w", c.Token, c.Tree, err)
+		return "", nil, nil, fmt.Errorf("read what the task held for %s still names of %s's tree: %w", c.Token, c.Tree, err)
 	}
 	committed()
 	if len(stays.Decisions) == len(named.Decisions) {
-		return d.Task, d.Kept, nil
+		return d.Task, d.Kept, d.News, nil
 	}
 	// A task that carries the root's own first task keeps it: a decision leaving this tree says
 	// nothing about whether the tree has been taken up, and a rewrite from the decisions alone
@@ -1241,19 +1252,44 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		task = workflow.KeptDecisionsTask(c.Tree, stays)
 	}
 	if task == "" {
-		return "", nil, nil
+		return "", nil, nil, nil
 	}
-	if len(stays.Decisions) == 0 && stays.Approved == 0 {
-		// The task names no decision now, so it holds none: the rows it named were released
-		// above, and a kept record naming nothing would have this delivery hold what it no
-		// longer says.
+	// A task that names no decision now holds none: the rows it named were released above, and a
+	// kept record naming nothing would have this delivery hold what it no longer says.
+	var kept []byte
+	if len(stays.Decisions) > 0 || stays.Approved != 0 {
+		var err error
+		if kept, err = keptJSON(&stays); err != nil {
+			return "", nil, nil, fmt.Errorf("encode what the task held for %s still names: %w", c.Token, err)
+		}
+	}
+	task, news, err := w.narrowedNews(ctx, c, d, task)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	return task, kept, news, nil
+}
+
+// narrowedNews is the narrowed text of d, a root architect's held task (rootTask), with the news
+// d carries rendered after it: the news's own text (record.DeliveryNews.Task) becomes task, and the
+// one render every task of news goes through (designNews) renders the two again, so the news it
+// answers is exactly what the text it answers names. A task that carries no news is task alone.
+func (w *workflowRuntime) narrowedNews(ctx context.Context, c supervise.Claim, d supervise.Delivery, task string) (string, []byte, error) {
+	if len(d.News) == 0 {
 		return task, nil, nil
 	}
-	kept, err := keptJSON(&stays)
-	if err != nil {
-		return "", nil, fmt.Errorf("encode what the task held for %s still names: %w", c.Token, err)
+	var carried record.DeliveryNews
+	if err := json.Unmarshal(d.News, &carried); err != nil {
+		return "", nil, fmt.Errorf("decode the news the task held for %s carries: %w", c.Token, err)
 	}
-	return task, kept, nil
+	carried.Task = task
+	narrowed := d
+	var err error
+	if narrowed.News, err = json.Marshal(carried); err != nil {
+		return "", nil, fmt.Errorf("encode the news the narrowed task held for %s carries: %w", c.Token, err)
+	}
+	narrowed.Task = task
+	return w.designNews(ctx, c, narrowed)
 }
 
 // treeClosable answers supervise's Deps.TreeClosable: a tree a workflow issue backs closes when
@@ -1304,7 +1340,19 @@ func (w *workflowRuntime) reconcile(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list Dispatch issues for admission: %w", err)
 	}
-	return w.reconcileListing(ctx, issues, nil, true)
+	refused, err := w.reconcileListing(ctx, issues, nil, true)
+	if err != nil {
+		return err
+	}
+	// The boot's listing is read before the catch-up, the API and the consumers apply any fact, so
+	// no applied fact should be newer than it and it should refuse no summary (reconcileListing).
+	// A summary it did refuse leaves its issue unrecorded until that issue's next event or the next
+	// boot, so each one is said at Info, naming the issue.
+	if len(refused) != 0 {
+		w.log.Info("workflow: the boot's listing was older than an issue fact the daemon had applied for these issues, so it recorded nothing of them; each waits for its next event or the next boot",
+			"issues", refused)
+	}
+	return nil
 }
 
 // reconcileListing applies issues, a Dispatch listing of the project, as reconcile says: the
@@ -1312,8 +1360,11 @@ func (w *workflowRuntime) reconcile(ctx context.Context) error {
 // out of admission's decision and refills the project's rows of the copy of Dispatch's issues
 // where its mark asks for it), or a recovery's (recoverRepositories), scoped to the summaries
 // keep keeps, judged against every record, while every summary of the listing is still the walk
-// each chain is read up.
-func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatch.IssueSummary, keep func(records map[string]*record.Issue, summary dispatch.IssueSummary) bool, boot bool) error {
+// each chain is read up. Once it commits it answers the keys admission found older than an issue
+// fact of theirs the daemon applied and so recorded nothing from (admit's Reconcile), for a
+// recovery to keep in the scope of its next pass. The boot's listing finds none: it is read
+// after every fact the daemon applied before it starts, and before the consumers apply any.
+func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatch.IssueSummary, keep func(records map[string]*record.Issue, summary dispatch.IssueSummary) bool, boot bool) ([]string, error) {
 	// The transaction performs no I/O: what admission reads of a todo issue's repository, the
 	// Dispatch chain above its parent, and who set the label of a labelled triage root the workflow
 	// does not record, are read now, up one walk over the whole listing (listingAncestry); each
@@ -1323,7 +1374,7 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 	var err error
 	if keep != nil {
 		if records, walk, err = w.listingAncestry(ctx, issues); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	scope := make([]dispatch.IssueSummary, 0, len(issues))
@@ -1337,7 +1388,7 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		if fact.Status == "todo" || labelledTriageRoot {
 			if walk == nil {
 				if records, walk, err = w.listingAncestry(ctx, issues); err != nil {
-					return err
+					return nil, err
 				}
 			}
 		}
@@ -1345,7 +1396,7 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		case fact.Status == "todo":
 			prepared, err := w.prepareListed(ctx, records, walk, fact, boot)
 			if err != nil {
-				return fmt.Errorf("prepare the repository of %s for admission: %w", summary.Key, err)
+				return nil, fmt.Errorf("prepare the repository of %s for admission: %w", summary.Key, err)
 			}
 			// What the preparation read: the chain it walked, and the refusal GitHub answered for
 			// the repository the issue resolves to, which this listing's own apply says on the issue
@@ -1356,7 +1407,7 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 			// a recorded root a person moved back to triage is never queued again, so its log is
 			// not read.
 			if fact.LabelSetter, err = w.labelSetter(ctx, summary.Key); err != nil {
-				return fmt.Errorf("prepare who set the label of %s for admission: %w", summary.Key, err)
+				return nil, fmt.Errorf("prepare who set the label of %s for admission: %w", summary.Key, err)
 			}
 		}
 		scope = append(scope, summary)
@@ -1364,11 +1415,11 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 	}
 	target, err := w.consumers.DispatchTarget(ctx)
 	if err != nil {
-		return fmt.Errorf("read notification stream target: %w", err)
+		return nil, fmt.Errorf("read notification stream target: %w", err)
 	}
 	position, err := w.consumers.DispatchPosition(ctx)
 	if err != nil {
-		return fmt.Errorf("read Dispatch consumer position: %w", err)
+		return nil, fmt.Errorf("read Dispatch consumer position: %w", err)
 	}
 	// The reconcile is its own transaction, so it owns the commit hooks its admission and workflow
 	// changes register (intake.OnCommit), as ApplyFact does for a fact, and it records issues, so it
@@ -1377,6 +1428,7 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 	// writes end as a fact does (intake.OpenSettlers), before it commits.
 	scoped, committed := intake.WithCommitHooks(ctx)
 	scoped, settle := intake.OpenSettlers(scoped, w.handlers...)
+	var refused []string
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
 		if err := intake.SerializeFacts(scoped, tx); err != nil {
 			return fmt.Errorf("serialize the reconcile with every fact: %w", err)
@@ -1436,15 +1488,16 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 				return err
 			}
 		}
-		if err := w.admission.Reconcile(scoped, tx, listed, target, position); err != nil {
+		var err error
+		if refused, err = w.admission.Reconcile(scoped, tx, listed, target, position); err != nil {
 			return err
 		}
 		return settle(scoped, tx)
 	}); err != nil {
-		return fmt.Errorf("reconcile admission: %w", err)
+		return nil, fmt.Errorf("reconcile admission: %w", err)
 	}
 	committed()
-	return nil
+	return refused, nil
 }
 
 // identity is the bot a role's commits are authored by: its App's, from the lease the token
@@ -2274,6 +2327,11 @@ func entrySweepPeriod(override time.Duration) time.Duration {
 // project raises none. Each run's event id is its own — the word, the project, this boot and the
 // run's time — since processed_events is shared by every project's daemon. A failed apply is
 // logged, and the next run tries again, as applyControllerTick does.
+//
+// The same tick queues the reconcile of each tree's news of its approved design that
+// record.OwedNews owes and no queued row will reconcile (queueOwedDesignNews): the backstop for
+// news no fact queued a row for, which queues nothing while the project is paused, as the gate of
+// the entry sweep's fact answers no then. A failed pass is logged, and the next tick tries again.
 func (w *workflowRuntime) tickEntrySweep(ctx context.Context) {
 	ticker := time.NewTicker(entrySweepPeriod(w.entrySweep))
 	defer ticker.Stop()
@@ -2283,6 +2341,9 @@ func (w *workflowRuntime) tickEntrySweep(ctx context.Context) {
 			return
 		case at := <-ticker.C:
 			w.applyEntrySweep(ctx, at)
+			if err := w.queueOwedDesignNews(ctx); err != nil {
+				w.log.Warn("queue the reconcile of the news each tree is owed failed", "error", err)
+			}
 		}
 	}
 }

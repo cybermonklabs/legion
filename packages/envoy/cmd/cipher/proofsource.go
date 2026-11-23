@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
@@ -37,11 +38,12 @@ type proofSigner interface {
 }
 
 // Signer is a session's proofSigner, which also builds and signs a credential-request object
-// naming the secrets the session is asking for, and the lifetime its grant lasts: lifetimeSeconds,
-// or nil when it lasts until the session ends. audience is the broker the object is for.
+// naming the secrets the session is asking for, the lifetime its grant lasts (lifetimeSeconds, or
+// nil when it lasts until the session ends) and the target that narrows its one secret
+// (locations, record.TargetLocations, nil for none). audience is the broker the object is for.
 type Signer interface {
 	proofSigner
-	SignRequestObject(audience cipheraddr.Address, names []string, reason string, lifetimeSeconds *int) (string, error)
+	SignRequestObject(audience cipheraddr.Address, names []string, reason string, lifetimeSeconds *int, locations []string) (string, error)
 }
 
 // fileSigner signs with the key and enrollment id an agent box or pod keeps under
@@ -79,12 +81,8 @@ func (f *fileSigner) Reenroll(ctx context.Context) error {
 	return nil
 }
 
-func (f *fileSigner) SignRequestObject(audience cipheraddr.Address, names []string, reason string, lifetimeSeconds *int) (string, error) {
-	details := make([]record.AuthorizationDetail, len(names))
-	for i, name := range names {
-		details[i] = record.AuthorizationDetail{Type: record.KindAgentSecret, Identifier: name, Actions: []string{"inject"}}
-	}
-	return record.Sign(f.key, audience.Raw(), details, reason, "", lifetimeSeconds, time.Now())
+func (f *fileSigner) SignRequestObject(audience cipheraddr.Address, names []string, reason string, lifetimeSeconds *int, locations []string) (string, error) {
+	return record.Sign(f.key, audience.Raw(), record.SecretDetails(names, locations), reason, "", lifetimeSeconds, time.Now())
 }
 
 // helperSigner asks agent-secrets-helper, over its unix socket, to sign for this process's
@@ -192,14 +190,22 @@ func (h *helperSigner) Sign(method, url string) (string, error) {
 
 // SignRequestObject asks the helper's sign-request op. A helper from before lifetime_seconds
 // ignores the field and signs no lifetime; the broker's answer then names none, and the caller
-// that asked for one refuses it (grantedLifetime).
-func (h *helperSigner) SignRequestObject(audience cipheraddr.Address, names []string, reason string, lifetimeSeconds *int) (string, error) {
-	resp, err := helper.Call(h.sock, helper.Request{Op: "sign-request", Secrets: names, Reason: reason, LifetimeSeconds: lifetimeSeconds}, 5*time.Second)
+// that asked for one refuses it (grantedLifetime). A helper from before locations ignores them
+// too and signs a request for the whole profile, which nothing the broker answers shows, so the
+// object it signed is read back here, and one that does not carry the target is refused before
+// it is sent.
+func (h *helperSigner) SignRequestObject(audience cipheraddr.Address, names []string, reason string, lifetimeSeconds *int, locations []string) (string, error) {
+	resp, err := helper.Call(h.sock, helper.Request{Op: "sign-request", Secrets: names, Reason: reason, LifetimeSeconds: lifetimeSeconds, Locations: locations}, 5*time.Second)
 	if err != nil {
 		return "", helperFailure(h.sock, err, false)
 	}
 	if !resp.OK {
 		return "", helperFailure(h.sock, helperRefusal(resp), true)
+	}
+	if len(locations) > 0 {
+		if signed, err := record.SignedLocations(resp.RequestObject); err != nil || !slices.Equal(signed, locations) {
+			return "", &refusedBeforeCall{fmt.Sprintf("agent-secrets-helper at %s signed the request without its --target, as a helper from before --target does; nothing was sent: restart the helper so it runs this release", h.sock)}
+		}
 	}
 	return resp.RequestObject, nil
 }

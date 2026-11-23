@@ -207,6 +207,44 @@ func TestIssueReleaseAuthorizesAnIssueInTheWorkflowAndWaitsForAllStoredRoles(t *
 	}
 }
 
+// The teardown reads a start queued above the release's rows by the one rule the idle hold and
+// the boundary read (idleWaitingRow). A start queued for news alone does not cancel it: the start
+// wakes the claim the release suspended, as any start wakes one, and the role comes back with its
+// news in the pod that replaces this one. A phase start queued after it is the pod being used
+// again, and cancels the release as overtaken, as it does at a role stop.
+func TestTheTeardownIsCancelledByAPhaseStartQueuedAfterTheReleaseAndNotByAStartOfNewsAlone(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	markRelease(t, st, 5, 6, 10, 0)
+	if err := st.PutClaim(ctx, supervise.Claim{Token: claim.Token("legion-legion-legion-208-architect"), Project: "legion", Tree: rootIssue,
+		Issue: rootIssue, Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, State: supervise.StateSuspended,
+		SuspendedBy: supervise.SuspendedByReleased}); err != nil {
+		t.Fatal(err)
+	}
+	queue := func(id int64, payload string) {
+		t.Helper()
+		if _, err := st.Pool().Exec(ctx, `insert into outbox (id, kind, issue, payload, attempts, next_at, last_error)
+			values ($1, 'supervise', $2, $3, 0, now(), '')`, id, rootIssue, payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	release := IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: 10}
+
+	queue(30, `{"op":"start","tree":"LEGION-208","role":"architect","generation":1,"news":true}`)
+	if decision, err := st.IssueRelease(ctx, "legion", release, record.OutOfWorkflow); err != nil || decision.Act != ReleaseActs {
+		t.Fatalf("the teardown with a start of news alone queued after the release's rows = %s (%s), %v; want %s",
+			decision.Act, decision.Cause, err, ReleaseActs)
+	}
+
+	queue(31, `{"op":"start","tree":"LEGION-208","role":"tester","generation":1,"phase":"testing"}`)
+	decision, err := st.IssueRelease(ctx, "legion", release, record.OutOfWorkflow)
+	if err != nil || decision.Act != ReleaseCancel || decision.Cause != ReleaseCauseOvertaken {
+		t.Fatalf("the teardown with a phase start queued after the release's rows = %s (%s), %v; want %s for %s",
+			decision.Act, decision.Cause, err, ReleaseCancel, ReleaseCauseOvertaken)
+	}
+}
+
 // A close and a release order against each other: each waits on the other's role stops, which is
 // what adding 'release' to both op fences buys. A release row below a close's own row makes the
 // close wait, exactly as one of its own suspends would.

@@ -264,9 +264,10 @@ func isSubjectPattern(s string) bool {
 // "# <line>", then the block. Each keyed user is a comment naming it and one JSON object (keys
 // sorted, non-ASCII raw: nats-server's config strings take no \u escape); a pending user is not
 // rendered. With a callout, its auth_callout block follows the users inside the block, and the
-// top-level ping lines end the text, both from calloutParts; without one the text is exactly what
-// it was before callouts existed. no_auth_user is a top-level option, so it follows the block,
-// naming the fallback user's key. The text ends with one newline.
+// top-level ping lines, then beside PrivateProjects the server tag's lines, end the text, all from
+// calloutParts; without one the text is exactly what it was before callouts existed. no_auth_user
+// is a top-level option, so it follows the block, naming the fallback user's key. The text ends
+// with one newline.
 func (a Authorization) Render(header []string) (string, error) {
 	if err := a.Validate(); err != nil {
 		return "", err

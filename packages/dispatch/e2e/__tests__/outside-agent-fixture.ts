@@ -53,14 +53,6 @@ const textTools = [
   "kill",
 ];
 
-/** A loopback port that nothing listens on: one the kernel gave a listener this row then closed. */
-export function closedPort(): number {
-  const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
-  const { port } = listener;
-  listener.stop(true);
-  return port;
-}
-
 /** A directory holding a link to each text tool this host has, and to each of `more`, for PATH. */
 export function textToolPath(scratch: Scratch, more: readonly string[] = []): string {
   const bin = join(scratch("bin"), "bin");

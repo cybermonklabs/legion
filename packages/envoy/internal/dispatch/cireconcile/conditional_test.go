@@ -96,7 +96,7 @@ func (h *harness) refuseWrites(check string) {
 // nothing. The next pass reads it conditionally and GitHub answers 304.
 func TestARefusedWriteKeepsTheHeadsETags(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	// Only a head read over REST holds ETags, so every head in this file is one a query cannot
 	// answer: GitHub refuses its Checks fields, which sends the pass to the REST reads these
@@ -141,7 +141,7 @@ func TestARefusedWriteKeepsTheHeadsETags(t *testing.T) {
 // answers 304 to each, and the head's record is left exactly where it was.
 func TestNothingChangedSoNothingIsReadInFull(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.refuseChecks(gitHubRepository, headSHA)
 	h.github.setCheckRuns(gitHubRepository, headSHA,
@@ -195,7 +195,7 @@ func TestNothingChangedSoNothingIsReadInFull(t *testing.T) {
 // would never reach it.
 func TestAWriteThatDidNotLandIsNotHiddenBehindAnETag(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.refuseChecks(gitHubRepository, headSHA)
 	h.github.setCheckRuns(gitHubRepository, headSHA,
@@ -242,7 +242,7 @@ func TestAWriteThatDidNotLandIsNotHiddenBehindAnETag(t *testing.T) {
 // the answers as they now stand writes nothing and settles nothing more.
 func TestGitHubsOwnNewsIsWrittenOnce(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
@@ -288,7 +288,7 @@ func TestGitHubsOwnNewsIsWrittenOnce(t *testing.T) {
 // for ever.
 func TestAHeadWithNothingToRecordKeepsItsETags(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.refuseChecks(gitHubRepository, headSHA)
 	// GitHub holds no check run and no check suite of this head: each listing answers empty.
@@ -334,7 +334,7 @@ func TestAHeadWithNothingToRecordKeepsItsETags(t *testing.T) {
 // page afterwards is found by the next pass, whose first page answers 304.
 func TestAListingIsReadPageByPage(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	// One full page of GitHub's own size, and three runs on the page after it.
 	runs := make([]object, 0, pageSize+3)

@@ -576,8 +576,9 @@ func newRig(t *testing.T, o Options, wrap ...func(net.Conn) net.Conn) *rig {
 	if o.Rules.Secrets == nil {
 		o.Rules = testRules()
 	}
-	// A row that puts the broker's own request machine behind the proxy gives it here
-	// (slack_test.go's newSlackBroker); every other row reads the fake.
+	// The fake grants, unless the row gives a grant source of its own: a real broker's
+	// requests.Machine (profile_test.go, and slack_test.go's newSlackBroker), whose reads no map a
+	// row writes stands in for. r.grants is then a fake nothing reads.
 	if o.Grants == nil {
 		o.Grants = r.grants
 	}

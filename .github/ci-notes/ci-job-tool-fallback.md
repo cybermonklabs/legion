@@ -26,9 +26,10 @@ action reads `github.job` as the id of the job that called it, and .github/actio
 passes no-cache for every job whose id starts with `tool-fallback`, which is what keeps every
 case of this job a reading of an install rather than of the Actions cache.
 
-The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
-decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+The job's last step reports ci-ok for the caller: on a merge-group run of the queue's front
+group that this job's own result decides, it posts the failing ci-ok at once
+(.github/actions/ci-ok-report), as every job of ci.yaml ends. `ci-ok-changes` carries ci.yaml's
+`toJSON(needs.changes)` for it.
 
 ## The job's budget, and the bound every install step carries
 

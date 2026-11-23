@@ -247,7 +247,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- dispatch comment posts on the issue unless quote anchors it in a document, so document spec would be dropped: add --quote to comment on a passage of it, or name only the issue",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --clear-mentions, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --mention-role, --clear-mentions, --image, --clear-images, --help, --dry-run",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -264,7 +264,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- issue DSP-2 and ref dispatch://DSP-1 name two owners; --ref dispatch://DSP-1 alone acts on DSP-1, and --issue DSP-2 alone acts on DSP-2",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --clear-mentions, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --mention-role, --clear-mentions, --image, --clear-images, --help, --dry-run",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -281,7 +281,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- artifact is required when quote is supplied",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --clear-mentions, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --mention-role, --clear-mentions, --image, --clear-images, --help, --dry-run",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -299,7 +299,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- reply_to and reply_to_ask cannot both be set",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --clear-mentions, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --mention-role, --clear-mentions, --image, --clear-images, --help, --dry-run",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -316,7 +316,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- reply_to dispatch://DSP-1/ask/01234567-0000-4000-8000-000000000001#b-p-1 names a block of an ask, but a comment reply answers a block of a comment (dispatch://KEY/comment/<id>#b-<block id>); answer it with dispatch comment --reply-to-ask 'dispatch://DSP-1/ask/01234567-0000-4000-8000-000000000001#b-p-1'",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --clear-mentions, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --mention-role, --clear-mentions, --image, --clear-images, --help, --dry-run",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -333,7 +333,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- reply_to_ask dispatch://DSP-1/comment/01234567-0000-4000-8000-000000000001#b-p-1 names a block of a comment, but reply_to_ask answers a part of the ask it names (dispatch://KEY/ask/<id>#b-<block id>); answer it with dispatch comment --reply-to 'dispatch://DSP-1/comment/01234567-0000-4000-8000-000000000001#b-p-1'",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --clear-mentions, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --mention-role, --clear-mentions, --image, --clear-images, --help, --dry-run",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -350,7 +350,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- dispatch comment acts on the live document, so the version ref dispatch://DSP-1/artifact/spec@v2 names would be dropped: drop its @v2",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --clear-mentions, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --mention, --mention-role, --clear-mentions, --image, --clear-images, --help, --dry-run",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },

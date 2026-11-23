@@ -96,7 +96,7 @@ esac
 if ! runs=$(gh_read gh api --paginate \
   "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?check_name=ci-ok&filter=all&per_page=100" \
   --jq '.check_runs[] | "\(.id) \(.status) \(.conclusion) \(.external_id // "" | if . == "" then "-" else . end)"'); then
-  echo "::warning::GitHub refused this head's ci-ok check runs three times, so any ci-ok beside this job's own stands as it was; this job's own conclusion ($CONCLUSION) is this attempt's verdict"
+  echo "::warning::GitHub refused this head's ci-ok check runs at every attempt gh-read.sh made, so any ci-ok beside this job's own stands as it was; this job's own conclusion ($CONCLUSION) is this attempt's verdict"
   exit 0
 fi
 
@@ -139,7 +139,7 @@ while read -r id status was marker; do
     echo "set ci-ok check run $id from $was to $CONCLUSION"
     reconciled=$((reconciled + 1))
   else
-    echo "::warning::GitHub refused the PATCH of ci-ok check run $id three times, so it stands at $was while this attempt's verdict is $CONCLUSION"
+    echo "::warning::GitHub refused the PATCH of ci-ok check run $id at every attempt gh-read.sh made, so it stands at $was while this attempt's verdict is $CONCLUSION"
   fi
 done <<<"$runs"
 echo "ci-ok on $HEAD_SHA is $CONCLUSION; $reconciled other check run(s) of that name were set to it"
