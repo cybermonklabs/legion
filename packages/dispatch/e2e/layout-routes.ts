@@ -151,6 +151,7 @@ const additions: Readonly<
   machine: { minElements: shortPage(46) },
   machines: { minElements: shortPage(15) },
   "not-found": { minElements: shortPage(4) },
+  person: { minElements: shortPage(27) },
   "project-document": { minElements: shortPage(49) },
   "project-documents": { minElements: shortPage(40) },
   "project-issues": { states: [twoRowsSelected] },
