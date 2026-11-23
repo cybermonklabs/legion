@@ -341,7 +341,7 @@ func identitySource(stdout, stderr io.Writer) int {
 	}
 	dir := keyDir()
 	awaitEnrollment(stderr, dir, wait)
-	name, detail, err := describeSource(dir)
+	name, detail, err := describeSource(dir, stderr)
 	if err != nil {
 		reportError(stderr, "agent-secrets identity", err)
 		return 1

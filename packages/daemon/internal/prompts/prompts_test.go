@@ -195,15 +195,7 @@ func composedText(t *testing.T, composer *Composer, role claim.Role, isRoot bool
 	if err != nil {
 		t.Fatalf("Compose %s (root %t): %v", role, isRoot, err)
 	}
-	var text strings.Builder
-	for _, path := range parts.RolePromptPaths {
-		body, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		text.Write(body)
-	}
-	return text.String()
+	return readJoined(t, parts.RolePromptPaths...)
 }
 
 // No role's handoff is a commit: each is a record on the Dispatch issue, so no phase worker's
@@ -331,6 +323,21 @@ func TestTheComposedPromptsNameAnIssueWithNoBeforeMergeCheckAsAGap(t *testing.T)
 // still one phrase to match.
 func foldWhitespace(text string) string {
 	return strings.Join(strings.Fields(text), " ")
+}
+
+// readJoined is the bytes of each of paths, read in order and joined; a read that fails ends the
+// test (t.Fatalf), naming the path.
+func readJoined(t *testing.T, paths ...string) string {
+	t.Helper()
+	var text strings.Builder
+	for _, path := range paths {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		text.Write(body)
+	}
+	return text.String()
 }
 
 // ruleParagraphs are the blank-line-separated paragraphs of a composed prompt that hold marker,
@@ -588,15 +595,7 @@ func TestTheControllerPartNamesTheGatedSteps(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ControllerPromptPaths(headless %t): %v", headless, err)
 		}
-		var text strings.Builder
-		for _, path := range paths {
-			body, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("read %s: %v", path, err)
-			}
-			text.Write(body)
-		}
-		folded := foldWhitespace(text.String())
+		folded := foldWhitespace(readJoined(t, paths...))
 		if !strings.Contains(folded, "`Design gate steps:`") {
 			t.Errorf("the composed controller prompt (headless %t) never names the `Design gate steps:` line it reads its steps off", headless)
 		}
@@ -628,7 +627,7 @@ func TestTheComposedPushingPromptsPinTheReadOfThePullRequestHead(t *testing.T) {
 		"once the branch has an open pull request",
 		"an empty one when your work is complete",
 		"tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
-		"The merger pushes nothing, so this step never falls to it; it reports a mismatch it sees to the architect.",
+		"The merger pushes only a merge of the base forward, and makes this read after that push as any role does",
 	}
 	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
 		claim.RoleReviewer, claim.RoleMerger} {

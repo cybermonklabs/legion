@@ -156,8 +156,7 @@ worked, so a parent is accepted after its children. After the close the role you
 `production_check` names — the tester, unless the setting is `off` — checks the change in
 production and records what it saw
 as the result of the issue's `after_merge` check, with that result's line on the pull request; a
-closed issue takes a result for such a check, a comment and a message, and no other write, so
-look in both places.
+closed issue takes a result for such a check, a comment and a message, so look in both places.
 Each look that finds the deploy missing says when it wants to look again, and nothing else brings
 it back.
 The tree's workspace is kept for three days (`linger_hours`, 72 by default) in case the work
@@ -202,7 +201,7 @@ of the phase the issue stands in, at each boot and then every `controller_wake_i
 | `icebox` | a person or the controller | Parked for the long term. Legion does not run it. |
 | `backlog` | a person, the controller, or the architect that owns a child | Should not run now: a person asked for that, for example while it waits on a decision or a deploy. A root also goes here when its work is done, folded into another issue or no longer needed. The architect that owns a child writes `backlog` on it only when a person asked for that, or as the first step of a restart (`backlog`, then `rerun_child`), and it closes a child whose work is done, folded or no longer needed with `done`. Legion does not run it. |
 | `todo` | a person, the controller, or the daemon for a person's handover | Ready. A labelled root is admitted when a slot is free and waits in line until then. A child in `todo` waits in the same line for a slot of its own, and shows `todo` only until its first phase: the move into planning sets it to `in_progress`. |
-| `in_progress` | the daemon | Admitted: the architect is writing the spec or waiting for your approval, or the planner or implementer is working. Work sent back by a failed test or a review returns here. A head that conflicts with its base keeps the status it has: the implementer merges the base forward while the issue stays in its phase. |
+| `in_progress` | the daemon | Admitted: the architect is writing the spec or waiting for your approval, or the planner or implementer is working. Work sent back by a failed test or a review returns here. A head that conflicts with its base keeps the status it has: before the review the implementer merges the base forward, and after it the merger does when it merges, while the issue stays in its phase. |
 | `testing` | the daemon | The implementer opened the pull request and finished; the tester is checking the change. |
 | `needs_review` | the daemon | The tester passed; Legion's reviewer is reviewing, and once it approves the architect reads the evidence and accepts the change or sends it back. Your GitHub review counts now. |
 | `retro` | the daemon | The architect accepted. The issue stays here through retro and the merge — and, for a root whose tree still runs, through the wait between its merge and its close. |

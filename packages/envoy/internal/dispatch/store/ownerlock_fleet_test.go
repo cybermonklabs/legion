@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The owner lock beside an earlier build (OwnerLockProtocol). A build before this one serialises
@@ -284,15 +285,54 @@ var earlierBuildArrivals = []earlierBuildArrival{
 	}},
 }
 
-// arriveOn runs arrival for key in a transaction of its own on conn, bounded by a lock timeout so
-// a wait that never ends fails rather than hangs, and commits it.
-func arriveOn(ctx context.Context, conn *pgxpool.Conn, arrival earlierBuildArrival, key string) error {
+// fleetLockMargin is how long before the test binary's deadline a fleet test's own transaction
+// stops waiting for a lock (setFleetLockTimeout). It is shorter than testwait's own margin, so a
+// wait of the test that waits on such a transaction gives up first and names what it waited for;
+// a transaction no wait of the test watches still ends before Go's alarm panics the binary.
+const fleetLockMargin = 10 * time.Second
+
+// setFleetLockTimeout bounds tx's lock waits by the test binary's deadline less fleetLockMargin, so
+// a lock wait that is merely slow is never refused by a span of the clock, and one that never ends
+// still fails rather than hangs. Under -timeout 0 the binary has no deadline and the waits no
+// bound. A deadline already less than the margin away leaves a bound of 1 ms, since 0 would turn
+// the bound off.
+func setFleetLockTimeout(ctx context.Context, t *testing.T, tx pgx.Tx) error {
+	deadline, ok := t.Deadline()
+	if !ok {
+		return nil
+	}
+	left := max(time.Until(deadline)-fleetLockMargin, time.Millisecond)
+	_, err := tx.Exec(ctx, `select set_config('lock_timeout', $1, true)`, fmt.Sprintf("%dms", left.Milliseconds()))
+	return err
+}
+
+// waitRegistrationsOut takes owner_lock_legacy_registration's own bound (registrationGateBound,
+// the lock_timeout the function sets for itself) off the function, in s's database alone, for a row
+// whose subject is not that bound: one in which a transaction of this build can hold the gate while
+// a registration waits for it, the row's own steps or a writer it races. On a machine slow enough to
+// hold it longer than the function's 5 s, the function's own bound would refuse the registration
+// and fail the row by the clock. Without it, a registration waits as long as its own transaction
+// allows, and arriveOn bounds that when the transaction starts (setFleetLockTimeout): every
+// registration, however late in the row it starts, gives up fleetLockMargin before the test binary's
+// deadline, and fails the row by name rather than on Go's alarm. A bound written into the function
+// once, when the row starts, ends a registration that starts later past that deadline.
+// TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound keeps the bound.
+func waitRegistrationsOut(ctx context.Context, t *testing.T, s *Store) {
+	t.Helper()
+	if _, err := s.Pool.Exec(ctx, "alter function public.owner_lock_legacy_registration() reset lock_timeout"); err != nil {
+		t.Fatalf("take owner_lock_legacy_registration's own bound off it: %v", err)
+	}
+}
+
+// arriveOn runs arrival for key in a transaction of its own on conn, its lock waits bounded by the
+// test binary's deadline (setFleetLockTimeout), and commits it.
+func arriveOn(ctx context.Context, t *testing.T, conn *pgxpool.Conn, arrival earlierBuildArrival, key string) error {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local lock_timeout = '20s'`); err != nil {
+	if err := setFleetLockTimeout(ctx, t, tx); err != nil {
 		return err
 	}
 	if err := arrival.arrive(ctx, tx, key); err != nil {
@@ -302,35 +342,62 @@ func arriveOn(ctx context.Context, conn *pgxpool.Conn, arrival earlierBuildArriv
 }
 
 // arrive runs arrival for key on a connection of the pool's (arriveOn).
-func arrive(ctx context.Context, s *Store, arrival earlierBuildArrival, key string) error {
+func arrive(ctx context.Context, t *testing.T, s *Store, arrival earlierBuildArrival, key string) error {
 	conn, err := s.Pool.Acquire(ctx)
 	if err != nil {
 		return err
 	}
 	defer conn.Release()
-	return arriveOn(ctx, conn, arrival, key)
+	return arriveOn(ctx, t, conn, arrival, key)
 }
 
-// awaitGateWait waits up to ten seconds for backend pid to wait for the owner lock gate
-// exclusively, as an earlier build's arrival waits for it, and fails the test when what it runs,
-// named what, ends first (ended).
+// awaitGateWait waits for backend pid to wait for the owner lock gate exclusively, as an earlier
+// build's arrival waits for it, and fails the test when what it runs, named what, ends first
+// (ended). Its one bound is the test binary's deadline less testwait's margin (testwait.Until),
+// whose failure prints the gate as pid last held or waited for it.
 func awaitGateWait(t *testing.T, s *Store, pid uint32, ended <-chan error, what string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if gate, granted := gateLock(t, s, pid); gate == "ExclusiveLock" && !granted {
-			return
+	testwait.Until(t, what+" to wait for the owner lock gate exclusively", func() (string, bool) {
+		gate, granted := gateLock(t, s, pid)
+		if gate == "ExclusiveLock" && !granted {
+			return "", true
 		}
 		select {
 		case err := <-ended:
 			t.Fatalf("%s ended (%v) while a transaction held the gate shared; want it to wait for the gate", what, err)
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s did not wait for the gate within 10s", what)
-		}
-		time.Sleep(5 * time.Millisecond)
+		return fmt.Sprintf("backend %d holds or waits for the gate as %q (granted %t)", pid, gate, granted), false
+	})
+}
+
+// awaitGateWaitOrEnd is awaitGateWait for an arrival with a bound of its own on the gate, an
+// earlier build's registration (registrationGateBound): such an arrival stops waiting once that
+// bound has passed, so a test slower than the bound between starting it and reading pg_locks finds
+// it ended rather than waiting. It answers true and the arrival's result when the arrival ended
+// first, and false and nil once backend pid is seen waiting for the gate exclusively; the caller
+// judges an ended arrival by its result. Its one bound is the test binary's deadline less
+// testwait's margin (testwait.Until).
+func awaitGateWaitOrEnd(t *testing.T, s *Store, pid uint32, ended <-chan error, what string) (bool, error) {
+	t.Helper()
+	type outcome struct {
+		ended bool
+		err   error
+		gate  string
 	}
+	got := testwait.Until(t, what+" to wait for the owner lock gate exclusively or to end", func() (outcome, bool) {
+		gate, granted := gateLock(t, s, pid)
+		if gate == "ExclusiveLock" && !granted {
+			return outcome{}, true
+		}
+		select {
+		case err := <-ended:
+			return outcome{ended: true, err: err}, true
+		default:
+		}
+		return outcome{gate: fmt.Sprintf("backend %d holds or waits for the gate as %q (granted %t)", pid, gate, granted)}, false
+	})
+	return got.ended, got.err
 }
 
 // writerShape is how one writer of the owner lock's races (ownerlock_fleet_race_test.go,
@@ -353,14 +420,16 @@ const (
 // earlier build in the fleet (fleetModeWriter alone; false for the others), and the transaction's
 // error. This build's writers take their write phase's row locks in touch's order, an order of the
 // handler's appends, which no rule fixes since the advisory locks they hold already exclude each
-// other; the earlier build's take theirs sorted by `<kind>:<key>` up front.
-func raceWriter(ctx context.Context, s *Store, shape writerShape, owners []Owner, touch []Owner) (legacy bool, err error) {
+// other; the earlier build's take theirs sorted by `<kind>:<key>` up front. Its lock waits end only
+// fleetLockMargin before the test binary's deadline (setFleetLockTimeout), so a writer that is
+// merely slow behind another is never counted a failure by the clock.
+func raceWriter(ctx context.Context, t *testing.T, s *Store, shape writerShape, owners []Owner, touch []Owner) (legacy bool, err error) {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local lock_timeout = '20s'`); err != nil {
+	if err := setFleetLockTimeout(ctx, t, tx); err != nil {
 		return false, err
 	}
 	switch shape {
@@ -469,7 +538,7 @@ func (l *raceLedger) record(t *testing.T, role string, err error, touched []Owne
 // build's writer as its fleet read answers, the mode it committed in.
 func (l *raceLedger) write(ctx context.Context, t *testing.T, s *Store, shape writerShape, all []Owner) {
 	subset, touch := randomOwners(all)
-	legacy, err := raceWriter(ctx, s, shape, subset, touch)
+	legacy, err := raceWriter(ctx, t, s, shape, subset, touch)
 	if err == nil && shape == fleetModeWriter {
 		l.mu.Lock()
 		l.modes[legacy]++
@@ -532,14 +601,15 @@ func randomOwners(all []Owner) (subset, touch []Owner) {
 }
 
 // heartbeatAsThisBuild stamps instance's heartbeat as processes' heartbeat does: under the
-// registry's lock, in a transaction of its own.
-func heartbeatAsThisBuild(ctx context.Context, s *Store, instance string) error {
+// registry's lock, in a transaction of its own whose lock waits are bounded by the test binary's
+// deadline (setFleetLockTimeout).
+func heartbeatAsThisBuild(ctx context.Context, t *testing.T, s *Store, instance string) error {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local lock_timeout = '20s'`); err != nil {
+	if err := setFleetLockTimeout(ctx, t, tx); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1)`, registryLockKey); err != nil {
