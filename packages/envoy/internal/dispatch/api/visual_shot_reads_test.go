@@ -280,14 +280,16 @@ func nothingOwed(t *testing.T, database *store.Store) {
 const shotPerson = "alice@d.example"
 
 // shotSignIn makes shotPerson somebody who has signed in, as the suite's dev sign-in does - a
-// session and a people row - and answers the session cookie, which every read, socket and room of
-// the test presents. The suite's server resolves a cookie (identity.CookieIdentity), which writes
-// nothing on a request; the package's header identity records the person it names on every one,
-// which would be no write of a read's.
-func shotSignIn(t *testing.T, database *store.Store) (identity.CookieIdentity, *http.Cookie) {
+// session and a people row, written on database, untraced, since they are the sign-in's and no
+// read's - and answers the session cookie, which every read, socket and room of the test presents,
+// and the identity that resolves it. The identity reads its sessions on traced, the pool the
+// tracer watches, so what a cookie's resolution runs on any read is that read's. The suite's
+// server resolves a cookie (identity.CookieIdentity), which writes nothing on a request; the
+// package's header identity records the person it names on every one, which would be no write of
+// a read's.
+func shotSignIn(t *testing.T, database, traced *store.Store) (identity.CookieIdentity, *http.Cookie) {
 	t.Helper()
-	sessions := store.NewPgSessionStore(database.Pool)
-	generation, err := sessions.EnsureSession(context.Background(), shotPerson)
+	generation, err := store.NewPgSessionStore(database.Pool).EnsureSession(context.Background(), shotPerson)
 	if err != nil {
 		t.Fatalf("establish %s's session: %v", shotPerson, err)
 	}
@@ -296,7 +298,7 @@ func shotSignIn(t *testing.T, database *store.Store) (identity.CookieIdentity, *
 	if err != nil {
 		t.Fatalf("parse the session cookie: %v", err)
 	}
-	return identity.CookieIdentity{SigningKey: testSigningKey, Sessions: sessions}, cookie
+	return identity.CookieIdentity{SigningKey: testSigningKey, Sessions: store.NewPgSessionStore(traced.Pool)}, cookie
 }
 
 // asShotPerson is handler for the corpus's own writes, which the package's helpers send as the
@@ -441,7 +443,7 @@ func TestTheVisualShotReadsWriteOnlyTheirCaches(t *testing.T) {
 		return true
 	})
 	broker := newFakeBrokerRig(t)
-	cookies, cookie := shotSignIn(t, database)
+	cookies, cookie := shotSignIn(t, database, traced)
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{
 		store:                  traced,
 		envoyURL:               listener.URL,
@@ -515,8 +517,14 @@ func TestTheVisualShotReadsWriteOnlyTheirCaches(t *testing.T) {
 		}
 		served.detached.wait()
 		ran := statements.stop()
-		if len(ran) == 0 {
-			t.Errorf("the tracer saw no statement while %s answered: it did not see the read", route)
+		// Both halves of the read are seen: the cookie's resolution reads the person's session
+		// generation, and the feed's head marks the event log (events.Horizon.Mark), so a write by
+		// either is caught too.
+		if !slices.ContainsFunc(ran, func(statement string) bool { return strings.Contains(statement, "from user_sessions") }) {
+			t.Errorf("the tracer saw no read of user_sessions among the %d statements %s ran: the cookie's resolution ran on a pool it does not watch", len(ran), route)
+		}
+		if !slices.ContainsFunc(ran, func(statement string) bool { return strings.Contains(statement, "pg_current_xact_id()") }) {
+			t.Errorf("the tracer saw no mark of the event log among the %d statements %s ran: it did not see the feed's head", len(ran), route)
 		}
 		violations, seen := shotWriteViolations(shotAuthChannel, "GET "+route, ran)
 		for _, violation := range violations {
