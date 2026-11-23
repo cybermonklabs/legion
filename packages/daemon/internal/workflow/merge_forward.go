@@ -82,8 +82,8 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 		}
 	}
 	if at != phase.Implementing {
-		// A held issue stands in held, not in the phase its hold came from (StandsAt), such as a
-		// parent held before its retro for the issues beneath it (holdBeforeRetro).
+		// A held issue stands in held, not in the phase its hold came from (StandsAt), such as an
+		// issue held from testing whose confirmed conflict is acted on as in testing (mergeability).
 		stays := "stays in " + string(at)
 		if issue.Phase == phase.Held {
 			stays = "stays held from " + string(at)
@@ -143,7 +143,8 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 //     asks nothing, as any move there at a conflicting head does: a plan with no tester and no
 //     reviewer step moves out of implementing into its retro, or into an acceptance no step
 //     follows, the ask of implementing stays on the record, and the move into merging asks the
-//     merger. A parent held before its retro is such a move (holdBeforeRetro).
+//     merger. A parent held before its retro stands where the merge comes next too, and its hold
+//     asks nothing (holdBeforeRetro).
 //
 // mergeForward asks once for each head, so a move into merging at a head the merger was already
 // asked of asks nothing more.

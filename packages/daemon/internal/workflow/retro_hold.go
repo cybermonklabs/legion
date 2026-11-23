@@ -211,7 +211,7 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	// The release moves the parent into its retro as the pass into the retro would have
 	// (transition), so it queues the reconcile of its tree's news as that pass does
 	// (queueMovedNews). It asks nothing of the merge forward: the retro is where the merge comes
-	// next (classify.MergeComesNext), where a move asks nothing (mergeForwardOnEntry), and the
-	// hold before it already was the move into the retro for the merge forward (holdBeforeRetro).
+	// next (classify.MergeComesNext), where a move asks nothing (mergeForwardOnEntry), as the hold
+	// before it asked nothing (holdBeforeRetro).
 	return e.queueMovedNews(ctx, tx, parent)
 }

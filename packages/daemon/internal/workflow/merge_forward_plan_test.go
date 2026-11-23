@@ -310,10 +310,10 @@ func implementerAsked(at phase.Phase, why record.ConflictWhy) record.MergeForwar
 // the merge comes next asks nothing at a conflicting head (classify.MergeComesNext): merging asks
 // the merger (cybermonklabs/legion#4979), so an ask of the implementer there would ask twice for
 // one merge. A parent whose last step is the implementer's is held before its retro while an issue
-// beneath it is still in the workflow (holdBeforeRetro), and the hold is the move into the retro
-// for the merge forward: it asks nothing again, as the move into the retro does, tells the
-// architect no checks-red notice, and leaves the ask of implementing on the record for the move
-// into merging, which asks the merger. The control is the same parent with nothing beneath it,
+// beneath it is still in the workflow (holdBeforeRetro), and the hold asks nothing again, as the
+// move into the retro does: it tells the architect no checks-red notice and leaves the ask of
+// implementing on the record for the move into merging, which asks the merger. The control is the
+// same parent with nothing beneath it,
 // which moves into its retro. The release of the held parent into its retro, once the issue beneath
 // it is done (startHeldRetro), asks the implementer nothing either.
 func TestAParentHeldBeforeItsRetroAsksWhatTheMoveIntoItsRetroAsks(t *testing.T) {
