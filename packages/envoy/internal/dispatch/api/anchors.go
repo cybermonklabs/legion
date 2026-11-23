@@ -21,21 +21,10 @@ func (s *server) resolveAnchor(ctx context.Context, tx pgx.Tx, owner owner, inpu
 	if input == nil {
 		return nil, "", nil, nil
 	}
+	if err := anchorInputError(input); err != nil {
+		return nil, "", nil, err
+	}
 	artifactRef := strings.TrimSpace(input.Artifact)
-	if artifactRef == "" {
-		return nil, "", nil, errorf(http.StatusBadRequest, "INVALID_ANCHOR", "anchor artifact is required")
-	}
-	quotePath := input.Quote != nil && input.MarkID == nil
-	markPath := input.Quote == nil && input.MarkID != nil && input.Occurrence == nil
-	if !quotePath && !markPath {
-		return nil, "", nil, errorf(http.StatusBadRequest, "INVALID_ANCHOR", "anchor must provide quote with optional occurrence or mark_id")
-	}
-	if input.Quote != nil && *input.Quote == "" {
-		return nil, "", nil, errorf(http.StatusBadRequest, "INVALID_ANCHOR", "anchor quote must not be empty")
-	}
-	if input.MarkID != nil && strings.TrimSpace(*input.MarkID) == "" {
-		return nil, "", nil, errorf(http.StatusBadRequest, "INVALID_ANCHOR", "anchor mark_id must not be empty")
-	}
 	artifact, err := s.loadAnchorArtifact(ctx, tx, owner, artifactRef)
 	if err != nil {
 		return nil, "", nil, err
@@ -92,6 +81,27 @@ func (s *server) resolveAnchor(ctx context.Context, tx pgx.Tx, owner owner, inpu
 		return &anchor, artifact.Name, &snapshot, nil
 	}
 	return &anchor, artifact.Name, nil, nil
+}
+
+// anchorInputError is the refusal of an anchor read off input alone: no document named, neither a
+// quote nor a mark id, or an empty one. It is resolveAnchor's first check, which a text beside a
+// held issue makes at its hold too (heldSpecAnchor), where no dry run makes it.
+func anchorInputError(input *model.AnchorInput) error {
+	if strings.TrimSpace(input.Artifact) == "" {
+		return errorf(http.StatusBadRequest, "INVALID_ANCHOR", "anchor artifact is required")
+	}
+	quotePath := input.Quote != nil && input.MarkID == nil
+	markPath := input.Quote == nil && input.MarkID != nil && input.Occurrence == nil
+	if !quotePath && !markPath {
+		return errorf(http.StatusBadRequest, "INVALID_ANCHOR", "anchor must provide quote with optional occurrence or mark_id")
+	}
+	if input.Quote != nil && *input.Quote == "" {
+		return errorf(http.StatusBadRequest, "INVALID_ANCHOR", "anchor quote must not be empty")
+	}
+	if input.MarkID != nil && strings.TrimSpace(*input.MarkID) == "" {
+		return errorf(http.StatusBadRequest, "INVALID_ANCHOR", "anchor mark_id must not be empty")
+	}
+	return nil
 }
 
 // loadAnchorArtifact reads the document an anchor targets, which must be one of owner's. The caller

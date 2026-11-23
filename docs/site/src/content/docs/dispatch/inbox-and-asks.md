@@ -92,7 +92,8 @@ are kept for your browser instead.
 
 The split follows whose turn it is, not who wrote last. Where a row holds its own card, the row
 shows a chip such as `Planner replied` when an agent wrote last and the turn is still yours.
-Each card also says `Waiting on you` or `Waiting on <agent>` on its status line.
+A card says whose turn it is only where the turn is not yours: `Waiting on <agent>`, or
+`Waiting on <person>` for a question handed to somebody else.
 
 ### Filter
 
@@ -149,13 +150,12 @@ every project names a default assignee. Choosing it makes the issue yours, so th
 own list, and your counts, from then on. An ask on a project document belongs to no issue and
 never has one.
 
-Every open ask carries **Asked of**, a badge naming the person it waits on and a picker that hands
-it to somebody else. The badge names a person on every ask: an ask nobody was handed shows the
-issue's assignee, and one on an issue nobody holds, or on a project document, shows the project's
-default assignee. It is on the card wherever the question is drawn: the Inbox, the issue page
-and a document's margin. Hand a question on and it leaves your list and joins theirs, wherever its
-issue goes after that; hand it back to the issue's assignee and it follows the issue again. Under
-the badge the card says who handed it on and when.
+To hand an open question to somebody else, choose **Hand this question to…** in the card's menu,
+or press `a`, and pick the person. Hand a question on and it leaves your list and joins theirs,
+wherever its issue goes after that; hand it back to the issue's assignee and it follows the issue
+again. The card works the same wherever the question is drawn: the Inbox, the issue page and a
+document's margin. Once the question waits on somebody else, the line above it reads, for example,
+`Waiting on bruno, handed on by dana 20 minutes ago`.
 
 The filter is part of the page's address: one `?assignee=` value per person, each a login or the
 word `unassigned`, so a link carries the list you are looking at. `?assignee=everyone` is the
@@ -266,10 +266,10 @@ decision block, and in the ask's own row where there is no second column.
 
 ![An ask card in the Inbox: the question, its two options and Other, a note field, and Answer.](/legion/media/dispatch/ask-card.png)
 
-1. Read the question. The line under it names who asked, when, and the ask's `dispatch://`
-   reference, which you can copy.
+1. Read the question. The line above it names who asked and when, and holds a button that copies
+   the ask's `dispatch://` reference. Where the turn is not yours, it says whose it is first.
 2. Pick an option. When the ask allows more than one, the options are checkboxes. To answer in your
-   own words, pick **Other** and type your answer; Other needs text.
+   own words, pick **Other** and type your answer; Other needs text. `1` to `9` pick an option too.
 3. Add a note if you want. You can type context beside any option.
 4. Choose **Answer**, or press `Ctrl+Enter` (`⌘Enter` on a Mac). `Enter` alone starts a new line.
 
@@ -279,6 +279,63 @@ the issue's Conversation tab.
 If the agent edits the question while you are answering, the card loads the new wording, keeps your
 text, and clears your pick. Pick again so your answer matches the question you read. If someone
 answered or closed the ask before you, the card says so and offers no retry.
+
+### The card's other actions
+
+**Answer** is the left half of one button. The chevron on its right half opens every other action
+of the card, each with its key:
+
+- **Rewrite** (`r`) asks Dispatch to rewrite the question for you ([Rewrite](#rewrite)).
+
+- **Ask back** (`b`) turns the answer box into a question back to the agent ([Ask back](#ask-back)).
+
+- **Hand this question to…** (`a`) hands the question to another person
+  ([Whose asks you see](#whose-asks-you-see)).
+
+- **Decline to answer** (`n`) closes the question with no answer, and Dispatch tells the agent
+  that asked to decide without one. A note is optional.
+
+- **Define selected words** (`d`) says what the words you selected in the question mean
+  ([Define](#define)).
+
+An approval request offers no Rewrite and no Decline. The keys work while the card holds the
+focus, or while its row is selected in the Inbox. Inside the answer box they type text.
+
+### Rewrite
+
+**Rewrite** asks Dispatch to write an open question again, for you, from what Dispatch holds on
+its issue. When the session that asked has not ended and its host takes side questions, Dispatch
+first asks it one side question and waits up to a minute for the answer. The card reads
+**Rewriting…** while it works, then **Rewritten** once the new wording is in place. Press the
+badge, or `w`, to see the agent's own wording in place; the badge then reads **Original**, and a
+second press shows the rewrite again.
+
+Dispatch keeps the agent's wording whenever a rewrite would lose what the question needs: its
+options, their order, a link, a picture or most of its words. It keeps it too when the agent
+changed, answered or closed the question meanwhile. The badge then reads **Rewrite failed**, says
+why in its tooltip, and `r` tries again. Rewrite and Define work only where the deployment gives
+them a model ([Running Dispatch](/legion/dispatch/running-dispatch/#agents-texts)).
+
+An agent's text that Dispatch's reviewer rewrote before you saw it wears the same **Rewritten**
+badge: an ask, a comment, a message or an issue's title. Its badge shows the agent's own wording
+the same way.
+
+### Define
+
+Select words of the question, or of a document, and choose **Define** on the bar that appears
+over them, or press `d`. Dispatch shows what the words mean there, beside them, read from what it
+holds on the issue, with links to where it read it. For words in a question, it also asks the
+running agent that asked; its answer appears beside the definition when it comes within a minute.
+
+A definition changes nothing and nobody else sees it. Dispatch counts it as your question about
+those words.
+
+### Quote reply
+
+Select words of a question, a comment, a reply or a message, and choose **Quote reply** on the bar
+that appears over them, or press `q`. The words go into the box that answers them as a quote, with
+the cursor on the line under it. The box's checks read only your own lines: a quote alone is no
+answer.
 
 ### Changing your answer
 
@@ -307,8 +364,11 @@ and the card stays open with both answers.
 
 ### Ask back
 
-When you cannot answer yet, type what you need to know and choose **Ask back**. Your question is
-posted as a reply on the ask. The ask stays open and waits on the agent until it replies.
+When you cannot answer yet, choose **Ask back** in the card's menu, or press `b`. The answer box
+becomes a question back and keeps what you typed, and the button reads **Ask back**. Type what you
+need to know and choose **Ask back**, or press `Ctrl+Enter`. Your question is posted as a reply on
+the ask. The ask stays open and waits on the agent until it replies. `Escape` in the box turns it
+back into an answer.
 
 If you type a question and choose **Answer** with no option picked, Dispatch checks first. It
 offers **Ask back instead** and **Answer with it anyway**.
@@ -366,8 +426,9 @@ a later version does to an approval.
 
 ## How an ask reaches its agents
 
-Under the answer form, a folded **Reaches N** line lists every agent session that receives this
-ask's answer and replies. Open it to see two groups:
+The chevron beside the asking agent's name, on the line above the question, opens a panel that
+copies the session's ID, title and tmux target, and holds **Reaches N**: every agent session that
+receives this ask's answer and replies, in two groups:
 
 - **Followers.** The session that opened the ask, every session that replied to it, and any session
   someone added. Each follower receives the answer, edits, resolution, and every reply directly.

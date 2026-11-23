@@ -498,11 +498,11 @@ func documentRefs(t *testing.T, database *store.Store, document string) string {
 // added to the tree and not named here fails until someone says what it reads, which is the
 // question that tells a writer from a repair.
 var indexPasses = map[string]string{
-	"api/comment_actions.go#commentAction":   "the request naming the action and the comment it acts on",
-	"api/comment_actions.go#editComment":     "the edit request's own body",
-	"api/comment_actions.go#reopenComment":   "the reopen request",
-	"api/comment_create.go#createCommentFor": "the create request's own body",
-	"api/comment_delivery.go#replyComment":   "the reply a delivery recorded",
+	"api/comment_actions.go#commentAction": "the request naming the action and the comment it acts on",
+	"api/comment_actions.go#editComment":   "the edit request's own body",
+	"api/comment_actions.go#reopenComment": "the reopen request",
+	"api/comment_create.go#writeComment":   "the create request's own body, or a held comment's record at its post",
+	"api/comment_delivery.go#replyComment": "the reply a delivery recorded",
 	// A delivery attempt's settle states the session it reached (graphstore.QueueReached).
 	"api/comment_delivery.go#completeCommentDelivery": "the delivery attempt the sender settles",
 	"api/message_delivery.go#completeMessageDelivery": "the delivery attempt the sender settles",
@@ -517,7 +517,7 @@ var indexPasses = map[string]string{
 	// follow answered.
 	"asks/followers.go#queueFollow":    "the ask and the session its caller names",
 	"api/server.go#appendCausingEvent": "the event its caller appends and the facts its caller's write stated before it",
-	"api/asks.go#createAskFor":         "the ask the create request opens and the event it appended after the follow",
+	"api/asks.go#writeAsk":             "the ask the create request opens, or a held ask's record at its post, and the event it appended after the follow",
 	// A renewed approval request follows its ask for the requester and moves the node that
 	// follow made onto the last event the renewal appended, or leaves it at the sentinel when
 	// the renewal appended none.
@@ -531,7 +531,7 @@ var indexPasses = map[string]string{
 	// projection and mends nothing.
 	"api/artifacts.go#storeArtifact":                "the facts the upload's index pass stated and the event the upload appended",
 	"api/artifacts.go#commitArtifactVersionEvent":   "the facts the version's index pass stated and the event that recorded the version",
-	"api/issue_create.go#createIssue":               "the facts the spec's index pass stated and the issue's own event",
+	"api/issue_create.go#writeIssue":                "the facts the spec's index pass stated and the issue's own event",
 	"cmd/dispatch-seed/write_docs.go#writeDocument": "the facts the seeded version's index pass stated",
 	"docs/block_index.go#indexOwedDocument":         "the facts the tick's index pass stated and the event that recorded the version",
 	// The seed's comments: their nodes, their author's person node and each comment's

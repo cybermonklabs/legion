@@ -49,7 +49,10 @@ var queryKeyExceptions = map[string]string{
 // `limit`, `offset` and `max_chars`, and parseQueryBool with `keywords_only`, which both
 // searchResultsRouteQuery and the related route's query struct declare. searchRouteQuery, the
 // other search route's, declares it no longer: the five members a build released before them
-// drops are declared on GET /api/v1/search/results alone (routes_shapes.go).
+// drops are declared on GET /api/v1/search/results alone (routes_shapes.go). writing_check.go's
+// getWritingCheckCounts reads its two days through a closure of its own, `day`, as Get(name), and
+// calls it with `last` and `first` alone, which writingCheckCountsQuery, the parameters struct of
+// GET /api/v1/writing-check/counts, declares.
 var queryKeysReadThroughAHelper = []string{
 	// multipartJSONField reads one named JSON field of an upload's form: `actor` and
 	// `precondition`, each a field of the multipart body the upload routes declare.
@@ -58,6 +61,7 @@ var queryKeysReadThroughAHelper = []string{
 	`delivery.go: Has(name)`,
 	`server.go: query[field]`,
 	`server.go: query[field]`,
+	`writing_check.go: Get(name)`,
 }
 
 func TestEveryQueryKeyAHandlerReadsIsNamedByItsParameters(t *testing.T) {

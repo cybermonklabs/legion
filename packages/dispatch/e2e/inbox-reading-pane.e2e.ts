@@ -99,9 +99,7 @@ test("the Inbox shows a decision block in the reading pane and answers it in two
     // Two taps answer it: the option, then Answer. The note disclosure stays shut - a reader who
     // picks an option is done - and nothing else is pressed.
     const card = block.locator("article[data-testid^=ask-]");
-    const disclosure = card.getByRole("button", {
-      name: "Add a note or answer in your own words",
-    });
+    const disclosure = card.getByRole("button", { name: "Add a note" });
     await expect(disclosure).toHaveAttribute("aria-expanded", "false");
     await card.getByRole("radio", { exact: true, name: "Ledger first" }).click();
     await expect(disclosure).toHaveAttribute("aria-expanded", "false");
@@ -350,9 +348,7 @@ test("Enter opens the selected decision block's note field and puts the focus in
     const card = pane
       .locator(`[data-dispatch-ask-block="${DECISION_BLOCK}"]`)
       .locator("article[data-testid^=ask-]");
-    const disclosure = card.getByRole("button", {
-      name: "Add a note or answer in your own words",
-    });
+    const disclosure = card.getByRole("button", { name: "Add a note" });
     await expect(disclosure).toHaveAttribute("aria-expanded", "false");
 
     // One Enter, the key the Inbox offers for answering the selected question: the note field
@@ -360,7 +356,7 @@ test("Enter opens the selected decision block's note field and puts the focus in
     // keystroke to the Inbox's own keys - `j` walks the list while the reader believes they are
     // writing an answer.
     await page.keyboard.press("Enter");
-    await expect(disclosure).toHaveAttribute("aria-expanded", "true");
+    await expect(disclosure).toHaveCount(0);
     await expect(card.locator("[data-ask-answer]")).toBeFocused();
 
     // What the reader types then reaches the answer, and the selection stays where it was.

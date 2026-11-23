@@ -1,5 +1,5 @@
 /**
- * Standalone selection-action bar: Comment / Suggest / Ask.
+ * Standalone selection-action bar: Comment / Suggest / Ask / Define.
  *
  * ./editor/plugins/mark-selection-bar.ts has no extension point — its button
  * set (Comment/Flag/Suggest) is built by a private `buildButtons()` method
@@ -31,6 +31,12 @@
  * alone, and only for a selection that holds text, which writes nothing and
  * reports a `quote-comment` action with the selection's range, for a host
  * whose server anchors the comment by the quote it reads there.
+ *
+ * Define is offered on every access, for a selection that holds text, where
+ * the host passes `onDefine`: it writes nothing and calls `onDefine`, and the
+ * host reads the selected words and their place on screen from the selection
+ * itself. The bar then steps aside until the selection changes, so the
+ * host's answer beside the words is the one thing drawn over the text.
  */
 
 import { $prose } from '@milkdown/kit/utils';
@@ -50,7 +56,12 @@ const TOUCH_SELECTION_SETTLE_DELAY = 400;
 export interface ActionBarOptions {
   by: string;
   onMarkAction?: (action: MarkAction) => void | Promise<void>;
+  /** Offers Define, and is called when the reader presses it (`defineSelection`). */
+  onDefine?: () => void;
 }
+
+/** What the bar's buttons do: the three that write a mark, and Define, which writes nothing. */
+type BarActionKind = SelectionBarActionKind | 'define';
 
 /** What a reader may do with a document: edit it, comment on it alone, or only read it. */
 export type ProofEditorAccess = 'edit' | 'comment' | 'read';
@@ -78,12 +89,14 @@ function getAnchorBox(view: EditorView, range: MarkRange) {
 }
 
 /** Centers the bar horizontally on the selection's anchor box, clamped to the
- *  viewport by MARGIN, and places it above the selection when there's room,
- *  else below, else clamped — always near the selection, never docked in the
- *  editor's gutter. "Room above" is measured against the editor's own top edge,
- *  not the viewport's: the bar is fixed-positioned, so a selection on the
- *  document's first line would otherwise put it over whatever the host renders
- *  above the editor (tabs, a toolbar) and swallow clicks meant for those. */
+ *  editor's own column where the bar fits in it (else to the viewport by
+ *  MARGIN), and places it above the selection when there's room, else below,
+ *  else clamped — always near the selection, never docked in the editor's
+ *  gutter. The column bounds it on the sides as the editor's top edge does
+ *  "room above", rather than the viewport: the bar is fixed-positioned, so a
+ *  selection at a line's start, or on the document's first line, would
+ *  otherwise put it over whatever the host renders beside or above the editor
+ *  (a sidebar, tabs, a toolbar) and swallow clicks meant for those. */
 export function positionBar(bar: HTMLElement, view: EditorView, range: MarkRange): void {
   try {
     const anchorBox = getAnchorBox(view, range);
@@ -102,7 +115,12 @@ export function positionBar(bar: HTMLElement, view: EditorView, range: MarkRange
     const hasRoomBelow = belowTop + barRect.height <= viewportH - MARGIN;
     const top = hasRoomAbove ? aboveTop : hasRoomBelow ? belowTop : Math.max(minTop, Math.min(anchorBox.top, maxTop));
     const center = (anchorBox.left + anchorBox.right) / 2;
-    const left = Math.max(MARGIN, Math.min(center - barRect.width / 2, viewportW - barRect.width - MARGIN));
+    const minLeft = Math.max(MARGIN, editorRect.left);
+    const maxLeft = Math.min(viewportW - MARGIN, editorRect.right) - barRect.width;
+    const left =
+      minLeft <= maxLeft
+        ? Math.max(minLeft, Math.min(center - barRect.width / 2, maxLeft))
+        : Math.max(MARGIN, Math.min(center - barRect.width / 2, viewportW - barRect.width - MARGIN));
     bar.style.left = `${left}px`;
     bar.style.top = `${top}px`;
   } catch {
@@ -110,29 +128,37 @@ export function positionBar(bar: HTMLElement, view: EditorView, range: MarkRange
   }
 }
 
-/** Each live view's bar, for `commentOnSelection`. */
+/** Each live view's bar, for `commentOnSelection` and `defineSelection`. */
 const controllers = new WeakMap<EditorView, ActionBarController>();
 /** Each view's access (`setAccess`). The view keeps the setting rather than its bar, since a
  *  plugin reconfiguration - the collab cursors' install - builds the bar anew. */
 const accesses = new WeakMap<EditorView, ProofEditorAccess>();
 
 /** What the bar offers on `view`: every action while the view is editable, Comment alone while
- *  it is read-only with `'comment'` access, and nothing otherwise. The view's own editability
- *  decides `'edit'`, since that is what ProseMirror edits by. */
+ *  it is read-only with `'comment'` access, and nothing otherwise, Define aside. The view's own
+ *  editability decides `'edit'`, since that is what ProseMirror edits by. */
 function accessOf(view: EditorView): ProofEditorAccess {
   if (view.editable) return 'edit';
   return accesses.get(view) === 'comment' ? 'comment' : 'read';
 }
 
-/** Whether the bar offers anything on `view` for the valid `range`: every action while the view
- *  is editable, Comment where it takes comments alone and `range` holds text to quote, and
- *  nothing otherwise. */
-function offersActions(view: EditorView, range: MarkRange): boolean {
-  const access = accessOf(view);
-  if (access !== 'comment') return access === 'edit';
-  // A comment named by its quote needs text to quote; a leaf node such as an image or a hard
-  // break adds none.
+/** Whether `range` holds text to quote or define; a leaf node such as an image or a hard break
+ *  adds none. */
+function holdsText(view: EditorView, range: MarkRange): boolean {
   return view.state.doc.textBetween(range.from, range.to, '', '').trim() !== '';
+}
+
+/** Whether the bar offers anything on `view` for the valid `range`: every action while the view
+ *  is editable, and on a read-only view, Comment where it takes comments and Define where the host
+ *  offers it, each only where `range` holds text. */
+function offersActions(view: EditorView, range: MarkRange, defines: boolean): boolean {
+  const access = accessOf(view);
+  if (access === 'edit') return true;
+  return (access === 'comment' || defines) && holdsText(view, range);
+}
+
+function sameRange(left: MarkRange | null, right: MarkRange | null): boolean {
+  return left?.from === right?.from && left?.to === right?.to;
 }
 
 class ActionBarController {
@@ -140,6 +166,8 @@ class ActionBarController {
   private readonly bar: HTMLDivElement;
   private lastRange: MarkRange | null = null;
   private readonly options: ActionBarOptions;
+  /** Whether the host offers Define (`onDefine`). */
+  private readonly defines: boolean;
   private lastPointerType: string | null = null;
   private pointerDown = false;
   private editorLostFocus = false;
@@ -148,6 +176,11 @@ class ActionBarController {
   private selectionSettleTimer: ReturnType<typeof setTimeout> | null = null;
   /** The buttons only an editable view offers. */
   private readonly editButtons: HTMLButtonElement[] = [];
+  /** Comment, which a view only read takes no press of. */
+  private commentButton: HTMLButtonElement | undefined;
+  /** The selection the reader last pressed Define on, over which the bar stays hidden: the host's
+   *  answer is drawn beside those words. */
+  private definedRange: MarkRange | null = null;
 
   private readonly handleSelectionChange = () => {
     const range = getSelectionRange(this.view);
@@ -205,6 +238,7 @@ class ActionBarController {
   constructor(view: EditorView, options: ActionBarOptions) {
     this.view = view;
     this.options = options;
+    this.defines = options.onDefine !== undefined;
     this.bar = document.createElement('div');
     this.bar.className = 'dispatch-action-bar';
     this.bar.style.display = 'none';
@@ -249,11 +283,14 @@ class ActionBarController {
 
   update(view: EditorView): void {
     this.view = view;
-    for (const button of this.editButtons) button.hidden = !view.editable;
+    const access = accessOf(view);
+    for (const button of this.editButtons) button.hidden = access !== 'edit';
+    if (this.commentButton) this.commentButton.hidden = access === 'read';
     const range = getSelectionRange(view);
-    // A read-only view offers Comment alone where it takes comments and the selection holds text
-    // to quote, and nothing elsewhere.
-    if (!range || this.lostFocus() || !offersActions(view, range)) {
+    if (!sameRange(range, this.definedRange)) this.definedRange = null;
+    // A read-only view offers Comment where it takes comments and Define where the host offers
+    // it, each only where the selection holds text, and nothing elsewhere.
+    if (!range || this.definedRange || this.lostFocus() || !offersActions(view, range, this.defines)) {
       this.lastRange = range;
       this.hideBar();
       return;
@@ -303,9 +340,10 @@ class ActionBarController {
       if (
         this.pointerDown ||
         this.lostFocus() ||
+        this.definedRange ||
         !this.isTouchSelection() ||
         !isRangeValid(this.view, this.lastRange) ||
-        !offersActions(this.view, this.lastRange)
+        !offersActions(this.view, this.lastRange, this.defines)
       ) {
         return;
       }
@@ -327,19 +365,30 @@ class ActionBarController {
     this.bar.style.display = 'none';
   }
 
-  /** The one path from a selection to an action, for the bar's buttons and `commentOnSelection`.
-   *  It acts on nothing and answers false for an empty or stale range, or for a kind the view does
-   *  not offer: on a read-only view, anything but Comment, and Comment too unless the view takes
-   *  comments there and the range holds text to quote, where it writes no mark and reports a
-   *  `quote-comment` instead. */
-  act(kind: SelectionBarActionKind, range: MarkRange | null): boolean {
+  /** The one path from a selection to an action, for the bar's buttons, `commentOnSelection` and
+   *  `defineSelection`. It acts on nothing and answers false for an empty or stale range, or for a
+   *  kind the view does not offer: Define where the host offers none or the range holds no text;
+   *  on a read-only view, Suggest and Ask, and Comment too unless the view takes comments there
+   *  and the range holds text to quote, where it writes no mark and reports a `quote-comment`
+   *  instead. */
+  act(kind: BarActionKind, range: MarkRange | null): boolean {
     if (!isRangeValid(this.view, range)) return false;
+    if (kind === 'define') {
+      const onDefine = this.options.onDefine;
+      if (!onDefine || !holdsText(this.view, range)) return false;
+      this.definedRange = range;
+      this.hideBar();
+      onDefine();
+      return true;
+    }
     if (this.view.editable) {
       void this.runAction(kind, range);
       return true;
     }
     // A reachable button must not write a provisional mark into a closed or historical document.
-    if (kind !== 'comment' || !offersActions(this.view, range)) return false;
+    if (kind !== 'comment' || accessOf(this.view) !== 'comment' || !holdsText(this.view, range)) {
+      return false;
+    }
     void this.reportQuoteComment(range);
     return true;
   }
@@ -396,7 +445,7 @@ class ActionBarController {
   private buildButtons(): void {
     this.bar.innerHTML = '';
 
-    const makeButton = (label: string, kind: SelectionBarActionKind) => {
+    const makeButton = (label: string, kind: BarActionKind) => {
       const button = document.createElement('button');
       button.type = 'button';
       button.textContent = label;
@@ -410,9 +459,11 @@ class ActionBarController {
       return button;
     };
 
-    this.bar.appendChild(makeButton('Comment', 'comment'));
+    this.commentButton = makeButton('Comment', 'comment');
+    this.bar.appendChild(this.commentButton);
     this.editButtons.push(makeButton('Suggest', 'suggest'), makeButton('Ask', 'ask'));
     for (const button of this.editButtons) this.bar.appendChild(button);
+    if (this.defines) this.bar.appendChild(makeButton('Define', 'define'));
   }
 }
 
@@ -424,11 +475,18 @@ export function commentOnSelection(view: EditorView): boolean {
   return controllers.get(view)?.act('comment', getSelectionRange(view)) ?? false;
 }
 
-/** Sets what the bar offers on `view` while the view is read-only: Comment alone with
- *  `'comment'` access, which marks nothing and reports a `quote-comment`, and nothing otherwise.
- *  An editable view offers every action whatever its access says, so the caller makes the view
- *  editable exactly for `'edit'`. It takes effect at the view's next update, which that
- *  caller's `setProps` makes. */
+/** Defines `view`'s selection exactly as the bar's Define button does - `onDefine`, with the bar
+ *  stepping aside - and answers whether it did: not for a selection that holds no text, nor on a
+ *  view whose host offers no Define. */
+export function defineSelection(view: EditorView): boolean {
+  return controllers.get(view)?.act('define', getSelectionRange(view)) ?? false;
+}
+
+/** Sets what the bar offers on `view` while the view is read-only: Comment with `'comment'`
+ *  access, which marks nothing and reports a `quote-comment`, and nothing with `'read'`; Define,
+ *  where the host offers it, stands beside either. An editable view offers every action whatever
+ *  its access says, so the caller makes the view editable exactly for `'edit'`. It takes effect
+ *  at the view's next update, which that caller's `setProps` makes. */
 export function setAccess(view: EditorView, access: ProofEditorAccess): void {
   accesses.set(view, access);
 }

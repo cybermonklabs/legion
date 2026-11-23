@@ -13,6 +13,7 @@ import type {
   IssueCoverage,
   IssueDetails,
   ReferenceTarget,
+  TextRewrite,
 } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import { referenceSpans } from "../refs/reference-spans";
@@ -121,8 +122,13 @@ export interface Draft {
    *  name; empty for a node that is no block. */
   pointers: Readonly<Record<string, readonly string[]>>;
   question: boolean;
+  /** Whether this ask is a decision block the reviewer holds (`TreeNode.heldForReview`). */
+  heldForReview?: true;
   reference?: string;
   replaced: boolean;
+  /** The rewrite of this ask's, comment's or message's words, as its read carries it
+   *  (`TreeNode.rewrite`). */
+  rewrite?: TextRewrite;
   /** The record `text` is, where the draft's read names one (`TreeNode.source`). */
   source?: TextSource;
   /** How it stands, for a type the model gives a state (`TreeNode.state`); absent on a check
@@ -828,15 +834,26 @@ function addAsks(
     draft.state = askState(ask);
     draft.text = ask.question;
     draft.tree = ask.question_tree;
+    // A rewrite of the question - a person's Rewrite or the reviewer's - which its row draws the
+    // badge of, and the wording it replaced while the badge shows it (`TreeNode.rewrite`).
+    if (ask.rewrite !== undefined) draft.rewrite = ask.rewrite;
     // An open question is what the fold unfolds the path to, whatever its depth (R6).
     draft.question = ask.state === "open";
+    // A decision block the reviewer holds (`held_for_review`) is the open question it is, and
+    // nothing that lists or counts what waits on people holds it until it posts: the Decisions
+    // view lists it in no part and counts it nowhere (`TreeNode.heldForReview`).
+    if (ask.held_for_review === true) draft.heldForReview = true;
     // An open question whose turn is the reader's own waits on the reader, and is what the
     // header's count of what waits puts the focus on (R13, `waiting.ts`): the person the server
     // resolved it waits on (`waiting_on_person`), as every other count of what waits on the
     // reader reads it (`inbox/BlockedOnYou.tsx`'s `waitingOnYou`). A question waiting on
-    // somebody else is open all the same, and the fold still unfolds the path to it.
+    // somebody else is open all the same, and the fold still unfolds the path to it. A decision
+    // block the reviewer holds (`held_for_review`) does not wait on the reader until it posts:
+    // the server leaves it out of the issue's `open_asks`, which the count reads, and out of every
+    // Inbox, so the tree shows it without marking it or putting the focus on it.
     draft.waiting =
       ask.state === "open" &&
+      ask.held_for_review !== true &&
       ask.waiting_on === "human" &&
       context.viewer !== undefined &&
       ask.waiting_on_person === context.viewer;
@@ -883,6 +900,8 @@ interface Turn {
   readonly kind: "comment" | "message";
   /** The node it answers, `null` for a root turn under the issue. */
   readonly replyTo: string | null;
+  /** The reviewer's rewrite of `body`, where it held the turn and posted it rewritten. */
+  readonly rewrite?: TextRewrite;
 }
 
 /**
@@ -915,6 +934,10 @@ interface Turn {
  *
  * An address naming a comment or a message of the outline (`/comments/<id>`, `/messages/<id>`,
  * `?comment=`) is therefore an address of a row of this tree.
+ *
+ * A turn the reviewer held and posted rewritten keeps the read's `rewrite` beside its words, so
+ * its row draws the badge and, while the badge shows it, the words the agent wrote
+ * (`TreeNode.rewrite`).
  */
 function addTurns(
   drafts: Map<string, Draft>,
@@ -943,6 +966,7 @@ function addTurns(
         (comment.ask_id === null
           ? (context.nodeIdOf(changeOf.get(comment.id) ?? "") ?? null)
           : (asks.get(comment.ask_id) ?? comment.ask_id)),
+      rewrite: comment.rewrite,
     })),
     ...(reads.messages ?? [])
       .flatMap((thread) => [thread.message, ...(thread.replies ?? [])])
@@ -954,6 +978,7 @@ function addTurns(
         id: message.id,
         kind: "message" as const,
         replyTo: message.in_reply_to,
+        rewrite: message.rewrite,
       })),
   ].filter((turn) => !history.has(turn.id));
   for (const turn of turns) {
@@ -965,6 +990,7 @@ function addTurns(
     draft.source = textSourceOf(turn.kind, turn.id);
     draft.text = turn.body;
     draft.tree = turn.bodyTree;
+    if (turn.rewrite !== undefined) draft.rewrite = turn.rewrite;
   }
 }
 

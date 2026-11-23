@@ -520,6 +520,23 @@ func (i ItemIndexing) Block(blockID string) (nodeID, excerpt string, found bool)
 	return string(i.kind) + "/" + i.itemID + "#" + blockID, excerpt, true
 }
 
+// NewItemBlock is the excerpt of block blockID of an item no index has reached yet, whose blocks,
+// read from its text as its index reads them, are blocks: itemblocks.Split of a comment's or a
+// message's body, AskParts of an ask. It is the block as that item's first index writes it
+// (planItemBlocks): against no stored block, each block takes the next number from the one an
+// item with no state row starts at (unindexedItem), in order, so no alignment a kind adds (an
+// ask's replaced answer) takes part, and its excerpt is its text cut to BlockExcerptRunes. A
+// reply held beside a held item, which only that item's post indexes, reads the block it names
+// here. found is false when blocks hold no such block.
+func NewItemBlock(blocks []itemblocks.Block, blockID string) (excerpt string, found bool) {
+	ids, _ := itemblocks.Align(nil, blocks, unindexedItem.nextBlock, nil)
+	position := slices.Index(ids, blockID)
+	if position < 0 {
+		return "", false
+	}
+	return text.HeadRunes(blocks[position].Text, BlockExcerptRunes), true
+}
+
 // Queue queues the index's writes on a write phase's batch: the item's state row taken first,
 // the blocks the body changed and removed, the block texts of a kind that records them, the
 // links its blocks hold, and last the statement that records the item indexed
@@ -633,13 +650,17 @@ type itemState struct {
 	edited     bool
 }
 
+// unindexedItem is the state of an item with no state row, one no block-aware build indexed or
+// one whose insert the calling transaction has queued: never indexed, its blocks numbered from 1.
+var unindexedItem = itemState{nextBlock: 1}
+
 // readItemState is the item's state row as the index finds it, read under no lock: the index's
 // write phase takes the row (queueStateLock) and the owner's lock the caller holds, the
 // reconciliation included, excludes every other writer of the item until then (IndexItem). An
 // item with no state row, one no block-aware build indexed, and one whose insert the calling
-// transaction has queued, read as never indexed.
+// transaction has queued, read as never indexed (unindexedItem).
 func readItemState(ctx context.Context, q Queryer, kind ItemKind, tables itemTables, itemID string) (itemState, error) {
-	state := itemState{nextBlock: 1}
+	state := unindexedItem
 	var sum *string
 	var err error
 	if tables.revisions() {
@@ -659,7 +680,7 @@ func readItemState(ctx context.Context, q Queryer, kind ItemKind, tables itemTab
 		state.indexed = sum != nil
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
-		return itemState{nextBlock: 1}, nil
+		return unindexedItem, nil
 	}
 	if err != nil {
 		return itemState{}, fmt.Errorf("read the block state of %s %s: %w", kind, itemID, err)

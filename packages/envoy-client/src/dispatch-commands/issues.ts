@@ -3,6 +3,7 @@ import type {
   CheckResultRecorded,
   ClaimedIssue,
   DuplicateCandidate,
+  HeldState,
   Issue,
   IssueComponents,
   IssueComponentsInput,
@@ -15,6 +16,7 @@ import {
   type DispatchClient,
   DispatchGatewayError,
   DispatchServiceError,
+  DispatchWriteKept,
   DispatchWriteLandedError,
   DispatchWriteUnsettledError,
 } from "../dispatch-http";
@@ -38,6 +40,7 @@ import {
   stringArg,
 } from "./context";
 import { dispatchAnswered, refusalWithCode, withAccount, writeMayHaveLanded } from "./failures";
+import { heldFor, heldWriteLine, keptWriteResult } from "./held";
 import { linkFor } from "./links";
 import { claimText, holdsSession, liveAgents, progressText, routeText } from "./render-issue";
 import { formatCheckResults } from "./render-results";
@@ -188,9 +191,10 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
     const href = linkFor(`/issues/${encodeURIComponent(created.key)}`, linkBase);
     // Dispatch picks the assignee when the call names none (the creating person, the personal
     // token's owner, the parent's, or the project's default), so the line says whom it
-    // answered.
+    // answered. A held issue's answer names the assignee its create named, and Dispatch picks
+    // one when it posts, so a held issue naming none is not said to be unassigned.
     const assigned =
-      created.assignee === undefined
+      created.assignee === undefined || (created.held !== undefined && created.assignee === null)
         ? ""
         : created.assignee === null
           ? "; unassigned"
@@ -201,9 +205,16 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
     // does not apply: the first line says so instead.
     return {
       text: [
-        created.created
-          ? `Created ${created.key}: ${created.title} → ${href}${suffixes}`
-          : `Dispatch already holds ${created.key}: ${created.title} → ${href}; nothing was created${suffixes}`,
+        created.held !== undefined
+          ? heldWriteLine(
+              created.held,
+              "issue",
+              created.key,
+              `: ${created.title} → ${href}${suffixes}`
+            )
+          : created.created
+            ? `Created ${created.key}: ${created.title} → ${href}${suffixes}`
+            : `Dispatch already holds ${created.key}: ${created.title} → ${href}; nothing was created${suffixes}`,
         ...(created.created
           ? relatedCheckLines(created.advice?.suggestions, {
               project: created.project,
@@ -216,6 +227,7 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
       details: {
         issue: created.key,
         ...(created.advice === undefined ? {} : { advice: created.advice }),
+        ...(created.held === undefined ? {} : { held: created.held }),
       },
     };
   } catch (error) {
@@ -237,6 +249,50 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
       refused: true,
     };
   }
+}
+
+/** A closing reason `dispatch issue-update` posted before its close: the message's id, its
+ *  reference, and `held` where the reviewer holds it. */
+interface ClosingNote {
+  readonly id: string;
+  readonly ref: string;
+  readonly held: HeldState | undefined;
+}
+
+/** The line that says the reviewer holds `note`, the closing reason of `issueKey`, as `held`. */
+function heldReasonLine(held: HeldState, note: ClosingNote, issueKey: string): string {
+  return heldWriteLine(
+    held,
+    "message",
+    note.id,
+    ` (${note.ref}), the closing reason of ${issueKey}`
+  );
+}
+
+/** What `dispatch issue-update` prints for its update Dispatch kept beside a held issue: the line
+ *  every kept write prints (`keptWriteResult`), then, for a close, where its reason is, landed or
+ *  held, so the caller never posts it again. */
+function keptUpdateResult(
+  kept: DispatchWriteKept,
+  issueKey: string,
+  note: ClosingNote | undefined
+): DispatchToolResult {
+  const result = keptWriteResult(kept);
+  if (note === undefined) return result;
+  return {
+    text: [
+      result.text,
+      note.held === undefined
+        ? `The closing reason of ${issueKey} landed as message ${note.id} (${note.ref}).`
+        : heldReasonLine(note.held, note, issueKey),
+    ].join("\n"),
+    details: {
+      ...result.details,
+      issue: issueKey,
+      message: note.id,
+      ...(note.held === undefined ? {} : { message_held: note.held }),
+    },
+  };
 }
 
 /** `dispatch issue-update`: change one issue's fields, posting a closing reason first. */
@@ -286,13 +342,14 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       `${issueKey} closed at ${before.closed_at}, so the reason was not posted and the close was not sent`
     );
   }
-  let closingNote: { readonly id: string; readonly ref: string } | undefined;
+  let closingNote: ClosingNote | undefined;
   if (reason !== undefined) {
     try {
       const message = await client.message(issueKey, { body: reason, actor });
       closingNote = {
         id: message.id,
         ref: dispatchChildRef(dispatchIssueRef(issueKey), "message", message.id),
+        held: message.held,
       };
     } catch (error) {
       if (error instanceof DispatchWriteLandedError) {
@@ -355,6 +412,10 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
     // The update is this call's own last write: one that landed without its answer is the
     // call's landing, which the caller reports as done.
     if (error instanceof DispatchWriteLandedError) throw error;
+    // Dispatch kept the update beside a held issue its body names (`--blocked-by`, `--parent`,
+    // `--before`, `--after`), to run right after that issue posts: it was accepted, so the call
+    // did what it was asked, a close with its reason included.
+    if (error instanceof DispatchWriteKept) return keptUpdateResult(error, issueKey, closingNote);
     // A URL links exactly one issue. A server from before EXTERNAL_LINK_TAKEN answers the
     // unique-index violation with 500 INTERNAL, which names nothing; say what it means. A
     // gateway's 500 page is not that answer, and gets no such reading. A 500 can also come after
@@ -371,10 +432,13 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       }
       throw refusalWithCode(error, taken);
     }
-    // The reason is on the issue, so a blind retry would post it a second time: the error
-    // says where the first one is, and whether the close may have landed anyway. A gateway's
-    // timeout or rate limit refused nothing there is to fix.
-    const posted = `the reason already landed as message ${closingNote.id} (${closingNote.ref})`;
+    // The reason is on the issue, or held to post there under its id, so a blind retry would
+    // post it a second time: the error says where the first one is, and whether the close may
+    // have landed anyway. A gateway's timeout or rate limit refused nothing there is to fix.
+    const posted =
+      closingNote.held === undefined
+        ? `the reason already landed as message ${closingNote.id} (${closingNote.ref})`
+        : `the reason is held ${heldFor(closingNote.held)}, as message ${closingNote.id} (${closingNote.ref}; \`dispatch held ${closingNote.id}\` reads it)`;
     const fix =
       error instanceof DispatchGatewayError && error.transient
         ? ""
@@ -394,7 +458,7 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
     .filter((advance) => !advance.inherited)
     .map((advance) => advance.id);
   const changes = [
-    ...(closingNote === undefined
+    ...(closingNote === undefined || closingNote.held !== undefined
       ? []
       : [`reason posted as message ${closingNote.id} (${closingNote.ref})`]),
     ...(status === undefined ? [] : [`status ${before.status} -> ${after.status}`]),
@@ -458,7 +522,11 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
     setsStatus: status !== undefined,
   });
   return {
+    // A closing reason the reviewer holds is not on the issue yet: the first line says so.
     text: [
+      ...(closingNote?.held === undefined
+        ? []
+        : [heldReasonLine(closingNote.held, closingNote, after.key)]),
       `${after.key}: ${changes.join("; ")}${await notSubscribed(issueTopic(after.key), input.subscriptions)}`,
       ...adviceLines,
     ].join("\n"),
@@ -467,6 +535,7 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       status: after.status,
       external_links: (after.external_links ?? []).map((link) => link.url),
       ...(closingNote === undefined ? {} : { message: closingNote.id }),
+      ...(closingNote?.held === undefined ? {} : { held: closingNote.held }),
       ...(after.advice === undefined ? {} : { advice: after.advice }),
     },
   };

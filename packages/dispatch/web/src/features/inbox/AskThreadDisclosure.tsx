@@ -1,9 +1,11 @@
-import { type ReactNode, useId, useState } from "react";
+import { hashKey, type MutationKey } from "@tanstack/react-query";
+import { type ReactNode, useEffect, useId, useState } from "react";
 
 import type { ArtifactOwner } from "../../api/client";
 import type { Ask } from "../../api/types";
 import { linkHoverText, linkText } from "../../theme/classes";
 import type { DwellRef } from "../shell/useDwell";
+import { onQuote, type QuoteRef } from "../threads/quote-reply";
 import { composerFirst } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
 import {
@@ -31,6 +33,9 @@ interface AskThreadDisclosureProps {
   /** The order the thread reads in (`AskThread`), which also places this control and the
    *  composer it reveals: under the question in Newest first, at the foot in Oldest first. */
   order: ThreadOrder;
+  /** An answered or resolved ask's thread as a text of Quote reply (`AskThread`): a quote handed
+   *  to its reply box opens the box. */
+  quote?: { readonly key: MutationKey; readonly ref: QuoteRef };
   /** The ids of the replies the reader has not read (`AskThread`). */
   unread?: ReadonlySet<string>;
 }
@@ -44,10 +49,17 @@ export function AskThreadDisclosure({
   markNewest,
   currentReplyId,
   order,
+  quote,
   unread,
 }: AskThreadDisclosureProps): ReactNode {
   const [composerOpen, setComposerOpen] = useState(false);
   const composerId = useId();
+  // A Quote reply opens Write a reply; the box takes the words as it mounts (`AskReplyComposer`).
+  const quoteName = quote === undefined ? undefined : hashKey(quote.key);
+  useEffect(
+    () => (quoteName === undefined ? undefined : onQuote(quoteName, () => setComposerOpen(true))),
+    [quoteName]
+  );
   const unsentReply = useUnsentReply(ask);
   if (thread.isError) {
     const message =
@@ -82,6 +94,7 @@ export function AskThreadDisclosure({
         embedded={embedded}
         markNewest={markNewest}
         order={order}
+        quote={quote}
         showComposer={false}
         thread={thread}
         unread={unread}
@@ -106,7 +119,12 @@ export function AskThreadDisclosure({
       </button>
       {composerOpen ? (
         <div className="mt-2" id={composerId}>
-          <AskReplyComposer ask={ask} createReply={createReply} uploadOwner={uploadOwner} />
+          <AskReplyComposer
+            ask={ask}
+            createReply={createReply}
+            quoteKey={quote?.key}
+            uploadOwner={uploadOwner}
+          />
         </div>
       ) : null}
     </>

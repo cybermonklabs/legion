@@ -186,7 +186,38 @@ An ask is short and self-contained: the person answers it with no other reading.
 
 ### Content failures (`concern`)
 
-7. **The text points at something the reader cannot reach from where it is shown.** An ask, comment, or message points at a thing and gives no `dispatch://` link, URL, or inline quote of it. Examples of such pointers: "see my note above", "the reply before this one", "as agreed", "the Friday build", "that report". The ask view does not show the issue's comments. The inbox does not show the thread. So the person cannot find the thing, and cannot decide. Every reference is a link. Fix: put the content in the text, or link it. (Not this: a `dispatch://` link, a URL, a quoted passage, or "the spec" on the same issue. Not this: the name of a thing the person uses, such as a run id, a report name or an artifact name. That name is the thing itself, not a pointer to somewhere else.)
+7. **A pointer that does not say in plain words what it points at, or that
+   the reader cannot follow.** The write points at a thing, such as an issue,
+   a pull request, a comment, an ask, a message or a document. It must say in
+   plain words what that thing delivers or says. A link may stand beside
+   those words. A link never stands in their place. These pointers fail:
+   - A key or a link that carries the meaning, such as "dispatch://ACME-7
+     moves that code", "see ACME-8" or "as dispatch://ACME-9/comment/<id>
+     asks".
+   - A pointer with neither those words nor a link, such as "see my note
+     above", "the reply before this one", "as agreed", "the Friday build" or
+     "that report".
+
+   To check a pointer, take each key and each link out of its sentence. The
+   sentence must still be whole and still say what the thing delivers or
+   says. If it does not, a key or a link stood in place of words.
+
+   The person must also reach the thing from where the text is shown. The
+   ask view does not show the issue's comments. The inbox does not show the
+   thread. So a pointer that the person cannot follow from there gets a
+   link, beside its words. Without that link, the person cannot find the
+   thing, and cannot decide.
+
+   Fix: say in plain words what the thing delivers or says. Keep or add its
+   link beside those words, such as "the move of the export code to the new
+   repository (dispatch://ACME-7)". Or put the content in the text. (Not
+   this: a pointer named in plain words with its link beside them. Not this:
+   a quoted passage. Not this: "the spec" of the same issue with no link
+   beside it. The person reaches it from the ask. Not this: the name of a
+   thing the person uses, such as a run id, a report name or an artifact
+   name. That name is the thing itself, not a pointer to somewhere else. An
+   issue key or a pull-request number is not such a name. It says nothing
+   of what the thing delivers.)
 
 8. **A progress or status entry written into a document** (`dispatch doc-edit`, or a `--spec`/`--spec-file` given to `dispatch issue`): inserted text that records what happened or what the agent is doing — a dated line, "Status:", "Update:", "Done:", a checklist of completed steps, a rollout log — rather than what is agreed or proposed. A spec is not a progress log. Fix: drop the op; the issue's status field and the PR carry progress. (Not this: a decision recorded as decided — "the person ruled X on date" — a revised requirement, an acceptance criterion marked as met with its evidence, a "Rejected" entry. Those are the spec doing its job.)
 
@@ -196,11 +227,13 @@ An ask is short and self-contained: the person answers it with no other reading.
    provider, or process the team uses today, and that claim is the reason a
    particular option exists or another is ruled out. The person cannot tell
    where the claim comes from, so they cannot check the reason.
-   Fix: name the file or command the claim comes from, or drop it and ask
-   only the part that is genuinely open. (Not this: a measured number, a
-   link, a grep result, or a check already named in the ask — any of those
-   is a citation. Not this: the ask's own recommendation or reasoning, which
-   needs none — see non-findings.)
+   Fix: name the file, command or decision the claim comes from, in plain
+   words. Put its link beside those words where it has one. Or drop the
+   claim and ask only the part that is genuinely open. (Not this: a measured
+   number, a link, a grep result, or a check already named in the ask — any
+   of those is a citation. Content 7 judges the words beside a link. Not
+   this: the ask's own recommendation or reasoning, which needs none — see
+   non-findings.)
 
 10. **The person's words stated with no link to where they wrote them.** The
    write states what the person said, asked, chose, ruled or doubted ("You
@@ -213,18 +246,22 @@ An ask is short and self-contained: the person answers it with no other reading.
      `dispatch://KEY/artifact/<slug>/comment/<id>`
    - a message elsewhere, such as a Slack URL.
 
-   Fix: link where the person wrote the words. When no link reaches the
-   words, the agent may restate the claim as its own dated reading of a
-   source it names, such as "I read your 23:40Z message as asking for the
-   export first", which tells the person whose reading it is and lets them
-   correct it. Otherwise drop the claim, and state the design or the question
-   by itself. The text you give as the fix never quotes the person and never
-   tells them, as fact, what they said. An upload of the person's words as a
-   document also fails 10 when the upload lets a later write link that
-   document. The fix is the same: link where the person wrote the words, or
-   drop the claim. (Not this: a premise that links the person's comment, ask
-   or message. Not this: a claim written as the agent's own dated reading of
-   a named source, as above. Not this: a pointer to the person's request that
+   Fix: link where the person wrote the words. Put the link beside plain
+   words that say what those words were about, such as "your comment on the
+   export time (dispatch://KEY/comment/<id>)". The link never stands in
+   place of those words. When no link reaches the words, the agent may
+   restate the claim as its own dated reading of a source it names, such as
+   "I read your 23:40Z message as asking for the export first", which tells
+   the person whose reading it is and lets them correct it. Otherwise drop
+   the claim, and state the design or the question by itself. The text you
+   give as the fix never quotes the person and never tells them, as fact,
+   what they said. An upload of the person's words as a document also fails
+   10 when the upload lets a later write link that document. The fix is the
+   same. Link where the person wrote the words, beside words that say what
+   they were about. Or drop the claim. (Not this: a premise that links the
+   person's comment, ask or message. Content 7 judges the words beside that
+   link. Not this: a claim written as the agent's own dated reading of a
+   named source, as above. Not this: a pointer to the person's request that
    claims nothing about its content, such as "the chart you asked for".)
 
 11. **A cause or blocker stated as fact with nothing that shows it.** The
@@ -241,7 +278,8 @@ An ask is short and self-contained: the person answers it with no other reading.
    reader does not need to decide, build or check. Name each such fact by its
    words. Give the write without them. (Not this: a fact that changes which
    option is right. Not this: a cost. Not this: a count that the decision
-   turns on. Not this: a link. Not this: the concrete case the write is
+   turns on. Not this: a link, or the words beside it that say what it
+   points at. Not this: the concrete case the write is
    about, meaning which machines, files, sessions, records or people and the
    numbers; what each option does, and to whom; the recommendation and its
    reasons. The reader decides from those, however much room they take.)
@@ -251,8 +289,9 @@ An ask is short and self-contained: the person answers it with no other reading.
    already says, an account of the agent's own process that no decision turns
    on, or a closing offer. Name the passage to cut. Give the write without
    it. (Not this: the concrete case, the options and what each does, the
-   recommendation and its reasons, or a citation, gloss or link that another
-   failure here asks for. Those earn their length. Not this: a write whose
+   recommendation and its reasons, or a citation, gloss, link or words
+   beside a link that another failure here asks for. Those earn their
+   length. Not this: a write whose
    length each part earns. Not this: several related decisions in one ask
    with lettered options. Not this: length alone. A write near Dispatch's
    limit is not too long for that reason.)
@@ -281,7 +320,8 @@ without complaint. Each is silence:
   are process gates the person configured; the ask exists because the gate does.
 - **`Done` / `Can't`** on an action ask.
 - **Timestamps, ids, hashes, PR numbers, `03:xxZ`, an unclosed parenthesis in
-  a label, a miscount.** Imperfect, not a failure.
+  a label, a miscount.** Imperfect, not a failure. Whether a key or a PR
+  number stands in place of words is content 7.
 - **Anything needing their own accounts or hardware** (YubiKey tap, SSO login,
   browser grant, revoking their PAT, an org-owner or super-admin console step,
   picking a meeting time), even when phrased as a plain to-do.
@@ -300,15 +340,17 @@ We invented these examples. Each one shows a shape that passes.
   ahead? … I recommend a month." Customer-facing timing with a
   recommendation: passes.
 - "Design gate for LEGION-N… Change: the import page takes files of any
-  size… Recommendation: Approve." A configured gate: passes.
+  size… Recommendation: Approve." A configured gate, its change said in
+  words beside its key: passes.
 - "Every test site shares one disk, and the disk is almost full… The
   fastest way to make room is to delete the oldest site… Recommendation:
   delete it only if you confirm nobody still uses it." Deleting a shared
   resource that others may still use: passes.
-- "Who fixes the slow search page?… the timings are in
-  dispatch://ACME-5/message/<id>… dispatch://ACME-5/ask/<id> put the search
-  service outside my area." An ownership boundary they set, with a link and
-  vocabulary: passes.
+- "Who fixes the slow search page?… the timings are in the support team's
+  message (dispatch://ACME-5/message/<id>)… Your answer put the search
+  service outside my area (dispatch://ACME-5/ask/<id>)." An ownership
+  boundary they set, with vocabulary, and each source in words with its link
+  beside them: passes.
 - "Labels or folders? Today we group issues in two ways… A: labels
   (Recommended) / B: folders / C…" A design decision about their own tool,
   with a recommendation: passes.
@@ -316,16 +358,17 @@ We invented these examples. Each one shows a shape that passes.
   year-month-day… Recommendation: A." An architecture choice the agent
   could have made, argued and recommended: passes.
 - "What do we build next, the export or the search filters? The evidence
-  and an order are in dispatch://ACME-12/artifact/…" with a RECOMMENDED
-  option. What to build next, with a link for the evidence: passes.
+  and an order are in the planning document (dispatch://ACME-12/artifact/…)"
+  with a RECOMMENDED option. What to build next, with the evidence document
+  named and linked: passes.
 - "The three price questions are in the artifact `pricing-choices.md`…
   Choose one letter for each question" with options 1A/1B/2A/2B/3A/3B.
   Three decisions, six options, an artifact: passes.
-- "Should the export include archived issues, as
-  dispatch://ACME-9/message/<id> proposes? The file gets about twice as
-  large." with options `Include them` / `Leave them out`. The link reaches
-  the person's words, and the cost bears on the choice: passes, 10, 12 and
-  13 included.
+- "Should the export include archived issues, as your message proposes
+  (dispatch://ACME-9/message/<id>)? The file gets about twice as large."
+  with options `Include them` / `Leave them out`. The link beside "your
+  message" reaches the person's words, and the cost bears on the choice:
+  passes, 7, 10, 12 and 13 included.
 
 ## Asks that fail — examples
 
@@ -345,9 +388,9 @@ failure it shows.
 - "Should another session write the tests while I write the code, or should
   I do both, one after the other?" → authority 4. The agent coordinates with
   the peer and does not ask the person.
-- "dispatch://ACME-3/ask/<id> rules that the report leaves out the old
-  formats… Should the report leave them out?" → authority 6. The decision the
-  ask links already answers it.
+- "Your answer rules that the report leaves out the old formats
+  (dispatch://ACME-3/ask/<id>)… Should the report leave them out?" →
+  authority 6. The decision the ask links already answers it.
 - "Import: dup ids = skip, or fail…? March file: 3 dup rows vs 0 allowed…"
   → self-contained 1. Fragments, not sentences.
 - "A customer asked when the fix ships… The reply is drafted at [a
@@ -360,6 +403,10 @@ failure it shows.
   the refund… [no check shown of the access this session or a peer holds]"
   → access 7, `blocker`. The session did not check what access it or a
   peer holds.
+- "Should the import wait for ACME-8? dispatch://ACME-7 moves the export
+  code first." → content 7. The reason quotes "wait for ACME-8" and
+  "dispatch://ACME-7 moves", and tells the agent to say in plain words what
+  each issue delivers, with its link beside those words.
 - "We take support requests only through the contact form today, so a chat
   window would reach nobody… Recommendation: keep the form", with no file
   or command cited → content 9. An unsourced claim about what we run today,
@@ -379,8 +426,8 @@ failure it shows.
   recommendation stay.
 - `dispatch artifact --name review-notes.md` whose content is the person's
   Slack message, copied word for word, uploaded so that a later spec can
-  link it → content 10. The fix: the spec links the Slack message itself,
-  or drops the claim.
+  link it → content 10. The fix: the spec says what the Slack message was
+  about and links the message itself beside those words, or drops the claim.
 
 ## Your answer
 

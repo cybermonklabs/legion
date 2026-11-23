@@ -24,7 +24,7 @@ func (s *server) agentOpenAskCounts(ctx context.Context, sessionIDs []string) (m
 		select a.author->>'id', count(*)::int
 		from asks a
 		left join issues i on i.key = a.issue_key
-		where a.state = 'open'
+		where a.state = 'open' and `+askNotHeld+`
 			and a.author->>'kind' = 'session'
 			and a.author->>'id' = any($1::text[])
 			and (i.key is null or i.closed_at is null)

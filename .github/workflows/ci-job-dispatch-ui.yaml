@@ -40,8 +40,8 @@ jobs:
       # '@legion/contracts/dispatch-tools' does not provide an export named
       # 'DISPATCH_BLOCK_UNITS'" and passed again once contracts was built
       # (every job of dispatch-browser.yaml that runs the suite needs contracts built for the
-      # same reason and carries a `Build contracts for dispatch e2e` step of its own, which that
-      # file's shard job explains).
+      # same reason, in a `Build contracts for dispatch e2e` step of its own or in the
+      # build:contracts its `bun run e2e` script runs, as that file's shard job's note explains).
       # `build:dispatch` bundles only the contracts entries Dispatch imports - the package itself,
       # ./dispatch-snippet and ./dispatch-tools (web/vite.config.ts:117-123 aliases the same
       # three) - so the build compiles no module outside the set the dashboard's tsc

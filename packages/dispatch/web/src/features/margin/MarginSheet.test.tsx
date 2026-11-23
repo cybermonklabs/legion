@@ -1,11 +1,23 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { api } from "../../api/client";
 import type { Artifact, Comment } from "../../api/types";
+import { issueAsk, mockAskReads, selectWords, stateCardBox } from "../inbox/inbox-fixture";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { useKeymapScope } from "../shell/keymap";
+import { COMPACT_VIEWPORT_QUERY } from "../shell/useDialog";
+import { useSelectionBarKeys } from "../threads/quote-reply";
 import { MarginSheet } from "./MarginSheet";
+
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const specArtifact: Artifact = {
   created_at: "2026-09-10T00:00:00Z",
@@ -529,5 +541,193 @@ test("the standalone document phone sheet shows each suggestion's diff and Accep
   } finally {
     view.unmount();
     window.matchMedia = originalMatchMedia;
+  }
+});
+
+/** The issue page around the margin, as far as its keys go: its scope, and the selection bar's
+ *  `q` and `d` in it (`IssuePage`). */
+function IssuePageKeys({ children }: { children: ReactNode }): ReactNode {
+  useKeymapScope("issue");
+  useSelectionBarKeys("issue");
+  return children;
+}
+
+// Below `xl` the open review panel is a dialog, and a dialog masks the page's keys (`useDialog`,
+// `keymap.ts`'s `resolve`): the selection bar over words in the panel shows Quote reply `q` and,
+// over an ask's words, Define `d`, so each key does there what the bar's button does.
+test("in the review panel below xl, q and d act on the words selected in it, as the selection bar shows them", async () => {
+  const user = userEvent.setup();
+  const root: Comment = {
+    anchor: null,
+    ask_id: null,
+    turn: null,
+    author: { id: "bob", kind: "user" },
+    body: "Review this paragraph.",
+    created_at: "2026-09-10T00:00:00Z",
+    edited_at: null,
+    id: "comment-sheet",
+    issue_key: "CORE-1",
+    reply_to: null,
+    resolved: false,
+    resolved_at: null,
+    resolved_by: null,
+    suggestion: null,
+    ...commentDeliveryFields(),
+  };
+  const ask = issueAsk({ id: "ask-sheet", question: "Which release path?" });
+  const originalMatchMedia = window.matchMedia;
+  window.matchMedia = ((query: string) =>
+    ({
+      addEventListener: () => {},
+      addListener: () => {},
+      dispatchEvent: () => true,
+      matches: query === COMPACT_VIEWPORT_QUERY,
+      media: query,
+      onchange: null,
+      removeEventListener: () => {},
+      removeListener: () => {},
+    }) as MediaQueryList) as typeof window.matchMedia;
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
+  const getAsk = mockAskReads([ask]);
+  const defineWords = spyOn(api, "defineWords").mockImplementation(() => new Promise(() => {}));
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <IssuePageKeys>
+            <MarginSheet
+              model={{
+                actions: {
+                  closeComposer: () => {},
+                  discardKeptDraft: () => {},
+                  onAction: () => {},
+                  onComposerKindChange: () => undefined,
+                  onEdit: async () => undefined,
+                  onRetryAction: () => {},
+                  onUnpin: () => {},
+                  onUnpinConversation: () => {},
+                  onRetryAnsweredAsk: undefined,
+                  onRetryComments: () => {},
+                  onRetryIssue: () => {},
+                  onToggleResolved: () => {},
+                  onToggleThread: () => {},
+                  onEditingChange: () => {},
+                },
+                composer: undefined,
+                items: {
+                  actionFailure: undefined,
+                  answeredAsksPending: false,
+                  asksPending: false,
+                  commentsError: false,
+                  commentsPending: false,
+                  decisions: [],
+                  historicalAsks: [],
+                  keptDrafts: [],
+                  isClosed: false,
+                  issueError: false,
+                  owner: { key: "CORE-1", kind: "issue" },
+                  issuePending: false,
+                  marginRef: { current: null },
+                  needsYou: [ask],
+                  onSelectCard: () => {},
+                  openAskCount: 1,
+                  pendingActionIds: new Set<string>(),
+                  pinned: [],
+                  pinnedConversations: [],
+                  pinnedIds: [],
+                  resolvedThreads: [],
+                  foldedAskCount: 0,
+                  threads: [
+                    {
+                      anchor: root.anchor,
+                      key: root.id,
+                      lastReplyAt: undefined,
+                      replies: [],
+                      resolved: false,
+                      root: { comment: root, kind: "comment" },
+                    },
+                  ],
+                  viewerLogin: "alice",
+                  visibleArtifact: specArtifact,
+                },
+                placement: { blockPlacements: new Map(), markPlacements: new Map() },
+                selection: {
+                  expandedThreadKey: root.id,
+                  editingCommentId: undefined,
+                  savingCommentEditId: undefined,
+                  hoveredItemId: undefined,
+                  hoveredMarkId: undefined,
+                  landedCard: undefined,
+                  routeMarkedItemId: undefined,
+                  selectedItemId: undefined,
+                  showResolved: false,
+                },
+                sheet: {
+                  closeThread: () => {},
+                  expanded: true,
+                  replySending: false,
+                  thread: undefined,
+                  toggle: () => {},
+                },
+                filter: { blockId: undefined, clear: () => {} },
+                tab: { set: () => {}, value: "comments" },
+              }}
+            />
+          </IssuePageKeys>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const panel = await screen.findByRole("dialog", { name: "Review panel" });
+    const card = within(panel).getByTestId(`margin-comment-${root.id}`);
+    await waitFor(() => {
+      if (card.querySelector(".dispatch-markdown")?.textContent !== root.body) {
+        throw new Error("the comment's words have not rendered");
+      }
+    });
+    // The press that selects the words takes the focus out of the reply box the open thread
+    // focused: here, to the panel's own control.
+    const panelToggle = within(panel).getByRole("button", { name: /^Close review panel/ });
+    act(() => panelToggle.focus());
+    selectWords(card, ".dispatch-markdown");
+    await user.keyboard("q");
+    // The open thread's reply box takes the quote (`ThreadCard`).
+    const reply = within(panel).getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
+    await waitFor(() => expect(reply.value).toBe(`> ${root.body}\n\n`));
+
+    const askCard = panel.querySelector<HTMLElement>(`[data-ask-card="${ask.id}"]`);
+    if (askCard === null) throw new Error("the panel draws no card for the ask");
+    await waitFor(() => {
+      const question = askCard.querySelector("[data-ask-question] .dispatch-markdown");
+      if (question?.textContent !== ask.question) {
+        throw new Error("the question's words have not rendered");
+      }
+    });
+    stateCardBox(askCard);
+    act(() => panelToggle.focus());
+    selectWords(askCard, "[data-ask-question] .dispatch-markdown");
+    await user.keyboard("d");
+    await waitFor(() =>
+      expect(defineWords).toHaveBeenCalledWith(
+        { ask_id: ask.id, words: [ask.question] },
+        expect.anything()
+      )
+    );
+  } finally {
+    window.getSelection()?.removeAllRanges();
+    view.unmount();
+    window.matchMedia = originalMatchMedia;
+    defineWords.mockRestore();
+    getAsk.mockRestore();
+    whoAmI.mockRestore();
   }
 });

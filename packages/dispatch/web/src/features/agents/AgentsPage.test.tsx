@@ -49,6 +49,7 @@ import "./BroadcastPage";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import type { AgentPart } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { appKeymap } from "../shell/keymap";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError } from "../writes/keyed-write";
 import { resetWriteStorage } from "../writes/write-storage";
 import { orderAgents } from "./AgentsPage";
@@ -730,6 +731,25 @@ test("Agents shows the shared empty state when Envoy has no live sessions", asyn
   try {
     const emptyState = await screen.findByRole("region", { name: "Agents empty state" });
     expect(within(emptyState).getByText("No agents are connected.")).toBeTruthy();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// The Agents page draws no ask, so of the selection bar's keys it registers Quote reply alone:
+// Define there would be a row of `?` that never applies.
+test("Agents registers the selection bar's Quote reply and no Define", async () => {
+  const page = renderAgents();
+  try {
+    await waitFor(() =>
+      expect(
+        appKeymap.describe().filter((key) => key.scope === "agents" && key.keys.includes("q"))
+      ).not.toHaveLength(0)
+    );
+    expect(
+      appKeymap.describe().filter((key) => key.scope === "agents" && key.keys.includes("d"))
+    ).toEqual([]);
   } finally {
     page.view.unmount();
     page.restore();
@@ -1572,6 +1592,72 @@ test("Agents renders each targeted message and its reply beneath the matching ca
     await expect(within(conversation).findByText("Can this ship?")).resolves.toBeTruthy();
     await expect(within(conversation).findByText("Yes, it can.")).resolves.toBeTruthy();
     expect(within(conversation).getByText(wholeText("Answered by Planner"))).toBeTruthy();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A session's reply the reviewer rewrote shows its badge on the Agents page as it does in the
+// Inbox's thread of the same conversation (`ThreadBody`): the badge, or `w` while the reply holds
+// the focus, shows the agent's wording in place. A reply nobody rewrote shows no badge.
+test("Agents shows a rewritten reply's badge and, on w, its original; a reply nobody rewrote shows none", async () => {
+  const user = userEvent.setup();
+  const root = message("Can this ship?");
+  const session = { id: "planner-session", kind: "session" } as const;
+  const page = renderAgents({
+    messages: [
+      {
+        message: root,
+        replies: [
+          message("The deploy waits for the migration.", {
+            author: session,
+            created_at: "2026-09-14T00:01:00Z",
+            id: "message-rewritten",
+            in_reply_to: root.id,
+            rewrite: {
+              at: "2026-09-14T00:01:00Z",
+              by: "reviewer",
+              original: { body: "R3 flip: deploy gated on mig." },
+              state: "rewritten",
+            },
+          }),
+          message("Agreed.", {
+            author: session,
+            created_at: "2026-09-14T00:02:00Z",
+            id: "message-plain",
+            in_reply_to: root.id,
+          }),
+        ],
+      },
+    ],
+  });
+
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    const conversation = await within(planner).findByRole("list", {
+      name: "Conversation with Planner",
+    });
+    const words = await within(conversation).findByText("The deploy waits for the migration.");
+    const reply = words.closest<HTMLElement>("[data-reply]");
+    if (reply === null) throw new Error("the rewritten reply has no row");
+    expect(within(reply).getByRole("button", { name: "Rewritten" })).toHaveAttribute(
+      "title",
+      "Show the original wording (w)"
+    );
+    await user.click(words);
+    await user.keyboard("w");
+    expect(await within(reply).findByText("R3 flip: deploy gated on mig.")).toBeTruthy();
+    expect(within(reply).getByRole("button", { name: "Original" })).toBeTruthy();
+    await user.keyboard("w");
+    expect(await within(reply).findByText("The deploy waits for the migration.")).toBeTruthy();
+
+    const plain = (await within(conversation).findByText("Agreed.")).closest<HTMLElement>(
+      "[data-reply]"
+    );
+    if (plain === null) throw new Error("the plain reply has no row");
+    expect(within(plain).queryByRole("button", { name: /Rewritten|Original/ })).toBeNull();
   } finally {
     page.view.unmount();
     page.restore();

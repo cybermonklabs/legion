@@ -215,6 +215,15 @@ export function duplicateRows<Row extends ListedRow>(
  *  would leave that test measuring a lane the shard job does not run. */
 export const stubProjectNames: readonly string[] = ["stub", "stub-phone"];
 
+/** The project that takes the ask card's 29 pictures (`ask-card-pictures.e2e.ts`, INFRA-3231's
+ *  check b5ee93c7), and the variable the config writes for every worker where the command line
+ *  names it. Like `visual.e2e.ts`'s rows, the spec's one row is in every listing and runs only
+ *  where it is asked for: a run that does not name the project finds the variable unset and the
+ *  row skips itself, so no lane pays for 29 pictures and the reviewer's server it seeds through.
+ *  `bun run e2e -- --project=ask-card-pictures` runs it. */
+export const askCardPicturesProject = "ask-card-pictures";
+export const askCardPicturesVariable = "DISPATCH_E2E_ASK_CARD_PICTURES";
+
 /** The projects the pull-request lane runs, which is what
  *  `.github/workflows/dispatch-browser.yaml`'s shard job names for `lane: pull-request`. The
  *  lane is these four and the `@pr` tag; every other project, and every row without the tag,

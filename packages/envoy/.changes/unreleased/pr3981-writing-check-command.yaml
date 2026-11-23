@@ -1,0 +1,51 @@
+kind: Added
+body: |-
+  `cmd/writing-check` is a new development command that measures Dispatch's writing check and the
+  work on agents' texts. No image and no release ships it; run it from `packages/envoy` with
+  `go run ./cmd/writing-check`.
+  Its first subcommands measure the structure rules and the phrase detector against agent writes
+  read from Dispatch's event log. `writing-check dataset` builds the dataset of texts a person could
+  not read, and of texts they read with no trouble, from a snapshot of the event log.
+  `writing-check harness` scores the reviewer, Rewrite and Define and the other changes on that
+  dataset against a local Dispatch, with a fresh reader and a Claude grader, and reports each
+  score's interval, wait and cost. The harness, the dataset steps (`export-sessions.sh` among
+  them), `fetch`, `readers`, `group`, `plant`, `label`, `recall` and `score` refuse to write their
+  output inside a repository, and a refused `dataset build`, `dataset sessions`, `dataset named`,
+  `dataset owner-texts` or `dataset followups` leaves its output as it was: an earlier run's files
+  stay, and an output directory that did not exist is not left behind. A run that continues
+  earlier results (`label --resume`, `fetch --resume`, `readers --state`, `dataset fetch`,
+  `dataset classify`, `harness load`, `harness score` and `harness phrases-labels`) reuses them
+  only under the same inputs, by their digests,
+  and refuses or redoes the rest; `harness asked-words` measures a run only against the cases it
+  scored, and refuses with exit 2 a `--cases` build of other cases; a run whose model calls failed
+  or stopped (`probe-model`, `label`,
+  `regress`, `score`, `reading`) exits 1, and a stopped `harness probe` exits 1 and writes no `--out`; and every
+  command sends a key or a token over http only to a host inside the
+  machine or the cluster. Every command refuses, with exit 2 and before it writes anything, an
+  output that is one of its inputs by one path or another (`probe-model --bodies`, `label
+  --definition`, a key or token file, a file of an input directory), two of its outputs that are
+  one file, whether or not it exists yet (`readers --out X --state X`), and `dataset fetch` an
+  output inside its work directory. A file a command renames over
+  its output is written first to a file of a name of its own beside it, and a failed write removes
+  that file alone; `fetch`, `dataset fetch` and `label`, whose files keep their names for the next
+  run, hold a lock on them until they end, so a second run on the same files is refused. `harness score`
+  opens each lane's `cases.jsonl` and reads each credential file its models' calls read (the
+  gateway's key, a Foundry candidate's federated token) before it records a held-out run in the
+  exposure log, and `score --final-test` reads the reader's key and token files before it claims
+  the set; each refuses a credential file it cannot read or that holds nothing.
+  `dataset build --from` a directory finds a bundle of any name, and refuses two bundles, or a
+  tarball, manifest and parts of one name that are not one bundle; `dataset pack` refuses an
+  `--out` named as a manifest or a part; and `harness score --texts-from` refuses a directory of a
+  run and a lockstep's runs.
+  `harness local` stopped before its instance is up exits 1. The harness's model calls escape
+  each tag of their message that a text holds, as the reviewer does, and read the words a reply
+  copies with the escape undone. `dataset fetch` and `dataset named` take the owner as a required
+  `--owner`, and `dataset/DATASET` records the owner's SHA-256 (`owner_sha256`), not the address.
+  `writing-check dataset followups` reads what the person did after each text (their next texts
+  and their acts) and writes the agents' explanations of their words as answer cases, so the
+  harness's score can be held against what the person did. `harness score --grader` takes a model
+  of another family only with `--grader-no-session` and `--readers-from`: it grades that run's
+  answers again and reads no session text.
+  The `answered` grader reads the text the fresh reader read, and fails an answer when the person
+  said they could not follow the text and the text still leans on words of the work it does not
+  explain (the check `7_not_plain`; the reply's fields end at `9_answers`).

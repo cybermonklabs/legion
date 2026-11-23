@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  `POST /api/v1/reviewer-drafts {kind, text, title?, options?, multiple?, issue?, reader?}` returns
+  the reviewer's findings and rewrite for a draft, and writes nothing. `kind` is `ask`, `issue`,
+  `comment`, `message`, `document` or `decision_block`. Each model call in the answer names the
+  deployment it asked for and the model that served it.
+  The route answers whenever the reviewer's model group is set, whatever the kinds' settings say.
+  Without the group it answers `503 REVIEWER_NO_MODEL`, and a model call that gives no answer is
+  `502 REVIEWER_MODEL_FAILED`. A person at a browser whose draft another person would read gets the
+  review without the words that person asked about, as `GET /api/v1/readers/{login}/words` serves
+  them.

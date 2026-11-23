@@ -125,6 +125,11 @@ jobs:
       - name: Comment mention of the real CLI against a real Dispatch
         run: bun test src/__tests__/comment-mention.live.test.ts
         working-directory: packages/envoy-client
+      # A session's ask through the real CLI against a real Dispatch whose reviewer holds asks
+      # (INFRA-3231's check 47b5e250): the ask is held under its id, and the reviewer reads it.
+      - name: Held ask of the real CLI against a real Dispatch
+        run: bun test src/__tests__/held-ask.live.test.ts
+        working-directory: packages/envoy-client
       # A keyed write a real Dispatch refused because it could not resolve the caller.
       # The client of this tree sends it again under its own key against a server of this tree,
       # started with an OIDC issuer nothing serves, and the issue holds the comment once.

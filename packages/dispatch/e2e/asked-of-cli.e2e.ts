@@ -124,17 +124,22 @@ test("open-asks names the person each ask waits on, before and after a hand-on",
     expect(printedCounts(project.stdout)).toEqual({ agent: 0, human: 2, total: 2 });
 
     // 3. Bob, who holds neither the issue nor the document, takes the first question himself
-    // with the control on its card on the issue page.
+    // with Hand this question to… in the menu of its card's split button on the issue page. Its
+    // card names whose turn it is while that is not bob's own: alice's, then nobody's.
     const page = await bob.newPage();
     await page.goto(`/issues/${issue.key}`);
     await page.getByRole("tab", { name: "Conversation" }).click();
     const card = page.locator("#issue-conversation-panel").getByTestId(`ask-${issueAsk}`);
-    await expect(card).toContainText("Asked of alice");
-    const control = card.locator(`select[data-ask-hand-on="${issueAsk}"]`);
-    await control.focus();
-    await expect(control.locator('option[value="bob"]')).toHaveCount(1);
-    await control.selectOption("bob");
-    await expect(card).toContainText("Asked of bob");
+    const turn = card.getByTestId(`turn-${issueAsk}`);
+    await expect(turn).toContainText("Waiting on alice");
+    await card.locator("[data-ask-menu-button]").click();
+    await page.locator('[data-ask-menu] [data-ask-menu-item="hand-on"]').click();
+    await page
+      .getByRole("dialog", { name: "Hand this question to" })
+      .locator('[data-ask-hand-on-person="bob"]')
+      .click();
+    await expect(card.locator("[data-ask-handed-on]")).toContainText("handed on by bob");
+    await expect(turn).toHaveCount(0);
     await expect
       .poll(async () => (await getAsk(issueAsk, { login: "bob" })).ask.asked_of)
       .toBe("bob");

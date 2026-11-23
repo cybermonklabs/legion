@@ -31,6 +31,7 @@ import { hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import {
   canonicalTopic,
+  DISPATCH_GENERATED_TEXT_HEADER,
   EnvelopeSchema,
   type Envelope,
   legacyDispatchIssueSubject,
@@ -1291,6 +1292,9 @@ async function bootDirectSession(
   const posts: string[] = [];
   // The session's replies to the direct message's attempts, as Dispatch's reply route took them.
   const replies: { readonly path: string; readonly body: unknown }[] = [];
+  // Each reply's generated-text header, in the order of `replies`: "1" where the plugin marked
+  // the text its own, null where it is the agent's.
+  const replyHeaders: (string | null)[] = [];
   const replyWaiters: { readonly count: number; readonly resolve: () => void }[] = [];
   globalThis.fetch = async (input, init) => {
     const url = new URL(input.toString());
@@ -1320,6 +1324,7 @@ async function bootDirectSession(
       posts.push(`${init?.method ?? "GET"} ${url.pathname}`);
       if ((init?.method ?? "GET") === "POST" && url.pathname.endsWith("/reply")) {
         replies.push({ body: JSON.parse(init?.body?.toString() ?? "null"), path: url.pathname });
+        replyHeaders.push(new Headers(init?.headers).get(DISPATCH_GENERATED_TEXT_HEADER));
         for (const waiter of replyWaiters.splice(0)) {
           if (replies.length >= waiter.count) waiter.resolve();
           else replyWaiters.push(waiter);
@@ -1430,6 +1435,7 @@ async function bootDirectSession(
     recordedWhenDelivered,
     replied,
     replies,
+    replyHeaders,
     sends,
   };
 }
@@ -6718,7 +6724,9 @@ console.log(JSON.stringify(args));
         );
         expect(stdout).toContain("dispatch comment was not called: AskGate is on for this session");
         expect(code).toBe(1);
-        expect(sent).toEqual([]);
+        // The written rules are read before AskGate's marker (dispatch-cli.ts), so the CLI asks
+        // Dispatch whether they refuse, and posts nothing.
+        expect(sent).toEqual(["http://dispatch.test/api/v1/settings/writing-rules"]);
         await fixture.handlers.get("session_shutdown")?.({}, gateContext([]));
       } finally {
         delete process.env.OMP_ASKGATE;
@@ -14225,6 +14233,44 @@ console.log(JSON.stringify(args));
       expect(matchInjectedUserTurn("ses_delivery", turn)).toBe(DIRECT_MESSAGE_ID);
     });
 
+    // INFRA-3231's reviewer sends the writer its findings on a held text as a delivery frame of
+    // its own (Decision 5 of its plan): a message.created from Dispatch's system actor whose
+    // message id is the held text's id, which Dispatch stores as no message. It reaches the
+    // session's main conversation as a card that starts a turn: no side turn answers it, no
+    // accept is asked (only a person's Send is one), and nothing reads a message by that id.
+    test("a reviewer's findings frame about a held text starts a main turn", async () => {
+      const heldID = "66666666-6666-4666-8666-666666666666";
+      const findings = `Dispatch holds your comment ${heldID}. Run dispatch held-edit ${heldID}.`;
+      const sideTurns: string[] = [];
+      const { accepts, agent, delivered, fixture, posts, sends } = await bootDirectSession(
+        "reviewer-findings-frame",
+        {
+          idle: () => true,
+          sideTurn: (prompt) => {
+            sideTurns.push(prompt);
+            return "";
+          },
+        }
+      );
+
+      agent.push(
+        directDispatchEnvelope("steer", "reviewer-findings-frame", {
+          actor: { id: "dispatch-reviewer", kind: "system" },
+          body: findings,
+          messageID: heldID,
+        })
+      );
+      await delivered(1);
+
+      expect(accepts).toEqual([]);
+      expect(posts).toEqual([]);
+      expect(sideTurns).toEqual([]);
+      expect(fixture.userMessages).toEqual([]);
+      expect(fixture.deliveries.map((delivery) => delivery.customType)).toEqual(["envoy-message"]);
+      expect(JSON.stringify(fixture.deliveries[0]?.content)).toContain(`held-edit ${heldID}`);
+      expect(sends[0]?.options).toMatchObject({ triggerTurn: true });
+    });
+
     // Send is Enter at the terminal (no deliverAs); Aside lands at the next step. The frame's
     // mode and text are what any publisher wrote, so Dispatch's answer decides both.
     for (const [index, [frameMode, storedMode, options]] of (
@@ -14801,7 +14847,7 @@ console.log(JSON.stringify(args));
         ],
       ] as const satisfies readonly (readonly [string, UserInputResult, string])[]) {
         test(`answers ${name} with the session's reply`, async () => {
-          const { agent, delivered, replied, replies } = await bootDirectSession(
+          const { agent, delivered, replied, replies, replyHeaders } = await bootDirectSession(
             `typed-input-reply-${name}`,
             {
               accept: () => ({ accepted: true, body: "/new" }),
@@ -14819,6 +14865,8 @@ console.log(JSON.stringify(args));
               path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
             },
           ]);
+          // The reply is the plugin's text, not the agent's: it carries the generated-text header.
+          expect(replyHeaders).toEqual(["1"]);
         });
       }
 
@@ -15353,7 +15401,7 @@ console.log(JSON.stringify(args));
       };
 
       test("runs the line itself: the host is never handed it, and all three answers carry it", async () => {
-        const { agent, delivered, fixture, inputs, replied, replies, sends } =
+        const { agent, delivered, fixture, inputs, replied, replies, replyHeaders, sends } =
           await bootShellSession("shell-command-ran", {
             accept: () => ({ accepted: true, body: "!printf hi" }),
           });
@@ -15395,6 +15443,8 @@ console.log(JSON.stringify(args));
             path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
           },
         ]);
+        // The report is the plugin's text, so its one send carries the generated-text header.
+        expect(replyHeaders).toEqual(["1"]);
 
         // Taken, with no turn awaited: the host wrote no message for the line, and the record is
         // there all the same.
@@ -16985,7 +17035,7 @@ console.log(JSON.stringify(args));
         const prompts: string[] = [];
         const move: { fire?: () => Promise<void> } = {};
         let moved = false;
-        const { agent, fixture, replied, replies } = await bootDirectSession(
+        const { agent, fixture, replied, replies, replyHeaders } = await bootDirectSession(
           "btw-left-before-side-turn",
           {
             dispatch: async (url) => {
@@ -17027,6 +17077,8 @@ console.log(JSON.stringify(args));
 
         expect(moved).toBe(true);
         expect(replies).toEqual([{ body: { actor, attempt: 1, error: notSent }, path: replyPath }]);
+        // The refusal is the plugin's own text, so it carries the generated-text header.
+        expect(replyHeaders).toEqual(["1"]);
         expect(prompts).toEqual([]);
       });
 
@@ -17045,7 +17097,7 @@ console.log(JSON.stringify(args));
         const move: { fire?: () => Promise<void> } = {};
         let moved = false;
         try {
-          const { agent, fixture, replied, replies } = await bootDirectSession(
+          const { agent, fixture, replied, replies, replyHeaders } = await bootDirectSession(
             "btw-left-inside-side-turn-broker",
             {
               dispatch: broker.trade,
@@ -17073,6 +17125,8 @@ console.log(JSON.stringify(args));
           expect(replies).toEqual([
             { body: { actor, attempt: 1, body: "This session's answer." }, path: replyPath },
           ]);
+          // The side turn's answer is the agent's words: it carries no generated-text header.
+          expect(replyHeaders).toEqual([null]);
           // And signed as the session the question was asked of: the broker minted that
           // session's token for this reply and was asked for no other session.
           expect(broker.presented.filter((one) => one.path === replyPath)).toEqual([

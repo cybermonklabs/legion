@@ -13,6 +13,7 @@ import type {
   IssueDetails,
   MessageRead,
   ReferenceTarget,
+  TextRewrite,
 } from "../../api/types";
 import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
@@ -222,6 +223,13 @@ export interface TreeNode {
   /** Whether this node is an open question, whoever's turn it is - the reader's, another
    *  person's or an agent's - which the fold unfolds the path to whatever its depth (R6). */
   readonly question: boolean;
+  /** Whether this ask is a decision block the reviewer holds (`Ask.held_for_review`), which
+   *  reaches no reader until it posts: no list, count or focus of what waits on people holds it -
+   *  it waits on no reader (`waiting`), the next-question key passes over it (`nextQuestion`),
+   *  and the Decisions view lists it in no part and counts it nowhere (`decisionsParts`,
+   *  `filterSignals`), as the server's `open_asks` and every Inbox leave it out. The outline
+   *  still draws it as the open question it is (`question`). Absent on every other node. */
+  readonly heldForReview?: true;
   /** The node's own `dispatch://` address, where it has one. */
   readonly reference?: string;
   /** The parent a filter draws as no row, where it draws this node as one (R2): every parent
@@ -233,6 +241,13 @@ export interface TreeNode {
   /** Whether the decision this node holds was replaced, which folds its branch to one line
    *  (R1). */
   readonly replaced: boolean;
+  /** The rewrite of the node's words, where one runs, was written or failed (`TextRewrite`,
+   *  INFRA-3231's R7): an ask's, from a person's Rewrite or the reviewer's, and a comment's or a
+   *  message's the reviewer wrote before it posted, each as its read carries it. Its row draws the
+   *  badge beside its author and time, and while the badge shows it the wording the rewrite
+   *  replaced in place (`NodeRow.tsx`'s `useOriginalWords`). Absent where no rewrite touched the
+   *  words, and on every other kind. */
+  readonly rewrite?: TextRewrite;
   /** The record `text` is, where it is one: an ask, a comment, a message, or the document a
    *  decision is a block of. A body drawn from `tree` links what the text cites against it, as
    *  every other surface drawing the same text does (`MarkdownBody`'s `source`). */
@@ -673,8 +688,10 @@ function assemble(
       ...(draft.multiple === undefined ? {} : { multiple: draft.multiple }),
       ...(draft.options === undefined ? {} : { options: draft.options }),
       question: draft.question,
+      ...(draft.heldForReview === undefined ? {} : { heldForReview: draft.heldForReview }),
       ...(draft.reference === undefined ? {} : { reference: draft.reference }),
       replaced: draft.replaced,
+      ...(draft.rewrite === undefined ? {} : { rewrite: draft.rewrite }),
       ...(draft.source === undefined ? {} : { source: draft.source }),
       ...(draft.state === undefined ? {} : { state: draft.state }),
       ...(draft.statement === undefined ? {} : { statement: draft.statement }),

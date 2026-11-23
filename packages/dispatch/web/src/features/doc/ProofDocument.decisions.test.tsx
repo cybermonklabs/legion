@@ -142,13 +142,13 @@ test("ProofDocument hands its decision blocks the indexed ask; the hosted card a
     const section = editor.root.querySelector("section[data-dispatch-ask-block]");
     if (section === null) throw new Error("the ask block shell was not mounted");
     const block = within(section as HTMLElement);
-    // The block hosts the shared ask card for its indexed row: it names the asker and reads
-    // the thread the Inbox card would.
-    const hosted = await block.findByRole("article", { name: "Urgency: High" });
-    expect(within(hosted).getByText("Architect for CORE-1")).toBeDefined();
+    // The block hosts the shared ask card for its indexed row: it names the asker, in the
+    // block's own header, and reads the thread the Inbox card would.
+    await block.findByRole("article", { name: "Urgency: High" });
+    expect(await block.findByText("Architect for CORE-1")).toBeDefined();
     await waitFor(() => expect(getAsk).toHaveBeenCalledWith("ask-1"));
     await user.click(await block.findByRole("radio", { name: "Ship Release it" }));
-    await user.click(block.getByRole("button", { name: "Add a note or answer in your own words" }));
+    await user.click(block.getByRole("button", { name: "Add a note" }));
     await user.click(block.getByLabelText("Your answer"));
     await user.paste("Go.");
     const getArtifactText = spyOn(api, "getArtifactText");
@@ -237,8 +237,12 @@ test("after Ask back on a decision block, the hosted card's turn label follows t
     const section = editor.root.querySelector("section[data-dispatch-ask-block]");
     if (section === null) throw new Error("the ask block shell was not mounted");
     const block = within(section as HTMLElement);
-    expect((await block.findByTestId("turn-ask-1")).textContent).toBe("Waiting on you");
-    await user.click(block.getByRole("button", { name: "Add a note or answer in your own words" }));
+    // The reader's own question names no turn: it is waiting on them wherever it is drawn.
+    await block.findByRole("radio", { name: "Ship Release it" });
+    expect(block.queryByTestId("turn-ask-1")).toBeNull();
+    // Ask back is the card's menu's; it opens the answer box, which the action then sends.
+    await user.click(block.getByRole("button", { name: "More actions" }));
+    await user.click(await within(document.body).findByRole("menuitem", { name: "Ask back" }));
     await user.click(block.getByLabelText("Your answer"));
     await user.paste("Ship where?");
     await user.click(block.getByRole("button", { name: "Ask back" }));
@@ -348,6 +352,39 @@ test("the open-decision link names its block as encodeBlockId writes it, in its 
     expect(editors[0]?.focusedBlocks).toContain("ship_it");
   } finally {
     window.history.replaceState(null, "", originalHash || "/");
+    listIssueAsks.mockRestore();
+    view.unmount();
+  }
+});
+
+// A decision block the reviewer holds (`held_for_review`) shows in the document, and the open-
+// decisions navigator neither counts it nor walks to it until it posts, as the Inbox and every
+// count of open asks leave it out. The next read of the issue's asks after the post counts it.
+test("the open-decisions navigator leaves out a decision block the reviewer holds until it posts", async () => {
+  const other: Ask = { ...blockAsk, block_id: "b-2", id: "ask-2", question: "Which region?" };
+  const held: Ask = { ...blockAsk, held_for_review: true };
+  const queryClient = createQueryClient();
+  queryClient.setQueryData(["asks", "CORE-1"], [held, other]);
+  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([
+    { ...held, last_reply: null },
+    { ...other, last_reply: null },
+  ]);
+  const { editors, sync, view } = renderProofDocument({ queryClient });
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    const nav = await within(view.container).findByRole("navigation", { name: "Open decisions" });
+    expect(within(nav).getByText("1 open decision")).toBeDefined();
+    expect(within(nav).getByRole("link")).toHaveTextContent("Which region?");
+
+    listIssueAsks.mockResolvedValue([
+      { ...blockAsk, last_reply: null },
+      { ...other, last_reply: null },
+    ]);
+    await act(() => queryClient.invalidateQueries({ queryKey: ["asks", "CORE-1"] }));
+    await waitFor(() => expect(within(view.container).getByText("2 open decisions")).toBeDefined());
+  } finally {
     listIssueAsks.mockRestore();
     view.unmount();
   }

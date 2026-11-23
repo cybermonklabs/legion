@@ -98,6 +98,16 @@ export const CarriedBodyPayloadSchema = z.strictObject(carriedBodyFields).readon
 
 export type CarriedBodyPayload = z.output<typeof CarriedBodyPayloadSchema>;
 
+/** Whether a person typed the command that made the write, in a session
+ *  (`DISPATCH_PERSON_TYPED_HEADER`): `true` on the event of such a write, so a reader of the log
+ *  (the server's records job above all) reads its text as that person's though a session is its
+ *  actor; absent on every other event. It rides on the payloads of the events a text write emits:
+ *  `comment.*`, `message.*`, `ask.*`, `issue.*`, `artifact.created`, `artifact.version` and an
+ *  approval's review. */
+export const personTypedFields = {
+  person_typed: z.boolean().optional(),
+};
+
 export const replyBlockFields = {
   node: z.string(),
   ref: z.string().optional(),

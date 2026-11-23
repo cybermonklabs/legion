@@ -76,7 +76,7 @@ func TestAnAppendsAskBlockAuthorIsReadBackInItsOwnTransaction(t *testing.T) {
 			return err
 		}
 		var err error
-		recorded, err = transactionRecordedAskAuthors(ctx, tx, artifactID)
+		recorded, _, err = transactionRecordedAskAuthors(ctx, tx, artifactID)
 		return err
 	}); err != nil {
 		t.Fatalf("append the update and read its ask block authors back: %v", err)

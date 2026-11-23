@@ -76,6 +76,7 @@ test("the selection bar comments, suggests, and asks on marks that both users se
       "Comment",
       "Suggest",
       "Ask",
+      "Define",
     ]);
     await barAction(alicePage, "Comment");
     const cancelledComposer = alicePage.getByRole("form", { name: "Comment composer" });
@@ -717,7 +718,7 @@ test("a viewer who opens the issue after an anchored ask is answered sees it in 
     await alicePage.getByRole("tab", { name: "Spec" }).click();
     const aliceCard = marginCard(alicePage, ask.id);
     await expect(aliceCard).toContainText("brown");
-    await aliceCard.getByRole("button", { name: "Add a note or answer in your own words" }).click();
+    await aliceCard.getByRole("button", { name: "Add a note" }).click();
     await aliceCard.getByLabel("Your answer").fill("Because it is precise.");
     await aliceCard.getByRole("button", { exact: true, name: "Answer" }).click();
     await expect.poll(() => getAsk(ask.id)).toMatchObject({ ask: { state: "answered" } });
@@ -795,9 +796,7 @@ test("long option labels and descriptions wrap inside the margin ask card @phone
     await setSheet(page, testInfo.project.name, true);
     const card = needsYouCards(page).getByTestId(`ask-${ask.id}`);
     await expect(card).toContainText("severity table shape");
-    await expect(
-      card.getByRole("button", { name: "Add a note or answer in your own words" })
-    ).toBeVisible();
+    await expect(card.getByRole("button", { name: "Add a note" })).toBeVisible();
     await page.screenshot({
       path: testInfo.outputPath(`margin-long-options-${testInfo.project.name}.png`),
     });
@@ -822,8 +821,9 @@ test("long option labels and descriptions wrap inside the margin ask card @phone
       if (box === null || textBox === null) throw new Error("an option row has no layout box");
       expect(box.x + box.width).toBeLessThanOrEqual(cardBox.x + cardBox.width);
       expect(textBox.x + textBox.width).toBeLessThanOrEqual(box.x + box.width);
-      // A row is its text plus 24 px of padding, never shorter than the 44 px touch minimum.
-      expect(box.height).toBeLessThanOrEqual(Math.max(44, textBox.height + 24));
+      // A row is its text plus 12 px of padding above and below it and its 1 px border, never
+      // shorter than the 44 px touch minimum.
+      expect(box.height).toBeLessThanOrEqual(Math.max(44, textBox.height + 26));
     }
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)

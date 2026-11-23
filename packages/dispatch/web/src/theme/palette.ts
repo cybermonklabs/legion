@@ -36,6 +36,11 @@ export const SLATE_800 = swatch("slate-800", 0.279, 0.041, 260.031);
 export const SLATE_900 = swatch("slate-900", 0.208, 0.042, 265.755);
 export const SLATE_950 = swatch("slate-950", 0.129, 0.042, 264.695);
 
+/** The selection bar's own greys: the document editor's bar is a neutral charcoal, not a slate. */
+export const NEUTRAL_100 = swatch("neutral-100", 0.97, 0, 0);
+export const NEUTRAL_300 = swatch("neutral-300", 0.87, 0, 0);
+export const NEUTRAL_900 = swatch("neutral-900", 0.205, 0, 0);
+
 export const SKY_50 = swatch("sky-50", 0.977, 0.013, 236.62);
 export const SKY_100 = swatch("sky-100", 0.951, 0.026, 236.824);
 export const SKY_200 = swatch("sky-200", 0.901, 0.058, 230.902);

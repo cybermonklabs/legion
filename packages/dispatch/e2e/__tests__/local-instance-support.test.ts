@@ -14,6 +14,7 @@ import {
   awaitPostgres,
   awaitSeededInbox,
   databaseUrlRefusal,
+  handOverMessage,
   type InboxRowRead,
   Interrupted,
   type OpenAskRead,
@@ -448,6 +449,55 @@ describe("shellQuote", () => {
     },
     rowLimit("short")
   );
+});
+
+describe("handOverMessage", () => {
+  const instance = {
+    baseUrl: "http://127.0.0.1:9030",
+    plannerSessionId: "planner-1",
+    fakeEnvoy: "http://127.0.0.1:9031",
+    databaseUrl: "postgres://tester@127.0.0.1:5999/dispatch_local?sslmode=disable",
+    supplied: true,
+    ports: { DISPATCH_E2E_PORT: "9030", FAKE_ENVOY_PORT: "9031" },
+    env: {},
+  };
+  const said = (message: string) => ({
+    broadcast: message.split("\n").filter((line) => line.includes("Seeded broadcast")),
+    keptDatabase: message.includes(
+      `  Database (kept as it is, DISPATCH_E2E_KEEP_DATABASE=1): ${instance.databaseUrl}\n`
+    ),
+    reseededDatabase: message.includes(
+      `  Database (truncated and reseeded on every start): ${instance.databaseUrl}\n`
+    ),
+    keptRun: message.includes(
+      "(this empties the records loaded into it, and a restart with " +
+        "DISPATCH_E2E_KEEP_DATABASE=1 does not reseed):\n"
+    ),
+    reseededRun: message.includes("(this empties the instance; restart it to reseed):\n"),
+  });
+
+  test("a kept instance names no broadcast, says its database is kept, and says a spec run empties the records loaded into it and a restart with DISPATCH_E2E_KEEP_DATABASE=1 does not reseed", () => {
+    expect(said(handOverMessage({ ...instance, kept: true }))).toEqual({
+      broadcast: [],
+      keptDatabase: true,
+      reseededDatabase: false,
+      keptRun: true,
+      reseededRun: false,
+    });
+  });
+
+  test("a seeded instance names its broadcast, says its database is reseeded on every start, and says a restart reseeds it", () => {
+    const seeded = handOverMessage({ ...instance, kept: false, broadcastId: "broadcast-1" });
+    expect(said(seeded)).toEqual({
+      broadcast: [
+        "  Seeded broadcast:          http://127.0.0.1:9030/agents/broadcasts/broadcast-1",
+      ],
+      keptDatabase: false,
+      reseededDatabase: true,
+      keptRun: false,
+      reseededRun: true,
+    });
+  });
 });
 
 // `agentViewRefusal` opens a real live socket, and this package's test preload replaces

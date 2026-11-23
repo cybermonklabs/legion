@@ -1,7 +1,8 @@
 import { type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { NavigationType, useLocation, useNavigationType } from "react-router-dom";
 
-import { DIALOG_SCOPE, useKeymap, useKeymapScope } from "./keymap";
+import { selectionBarKeys } from "../threads/quote-reply";
+import { DIALOG_SCOPE, type KeyBinding, useKeymap, useKeymapScope } from "./keymap";
 
 /** Below Tailwind's `xl`: the margin is a sheet and the sidebar a drawer. */
 export const COMPACT_VIEWPORT_QUERY = "(max-width: 1279px)";
@@ -206,8 +207,16 @@ export interface DialogHandle<T extends HTMLElement> {
  * control outside the dialog. While open it pushes the
  * `dialog` keymap scope, which masks every page and global binding, and registers Escape there
  * for the innermost open dialog, whatever element holds focus; a descendant that owns its Escape
- * (the margin Composer dismissing its picker) stops propagation before the dispatcher sees it.
- * Tab trapping listens on the container.
+ * (the margin Composer dismissing its picker) stops propagation before the dispatcher sees it,
+ * and one whose Escape is a binding of the `dialog` scope (the Inbox drawer's way back to a row)
+ * takes the key first, the close being that scope's `fallback`. Tab trapping listens on the
+ * container.
+ *
+ * The selection bar (`threads/SelectionBar.tsx`) is drawn over words selected in a dialog as it
+ * is over the page's, with Quote reply `q` and Define `d` beside its buttons, and the page's
+ * bindings of those keys are masked here: so the innermost open dialog registers them in its
+ * own scope for the words selected inside it, as fallbacks under any binding of the scope that
+ * takes the key first (the Inbox drawer's own, an ask card's).
  */
 export function useDialog<T extends HTMLElement>({
   initialFocusRef,
@@ -224,12 +233,32 @@ export function useDialog<T extends HTMLElement>({
       ? [
           {
             id: "dialog.close",
+            // The last step of the scope's Escape: what the dialog holds takes the key first.
+            fallback: true,
             inEditable: true,
             keys: "Escape",
             label: "Close dialog",
             run: () => onCloseRef.current(),
             when: () => innermostOpenDialog() === containerRef.current,
           },
+          ...selectionBarKeys().map(
+            (binding): KeyBinding => ({
+              ...binding,
+              fallback: true,
+              when: () => {
+                const container = containerRef.current;
+                const selection = window.getSelection();
+                return (
+                  container !== null &&
+                  innermostOpenDialog() === container &&
+                  selection !== null &&
+                  selection.rangeCount > 0 &&
+                  container.contains(selection.getRangeAt(0).commonAncestorContainer) &&
+                  binding.when?.() !== false
+                );
+              },
+            })
+          ),
         ]
       : []
   );

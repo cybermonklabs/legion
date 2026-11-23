@@ -177,11 +177,12 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	limit, offset, err := parseMyAnswersPage(r)
+	page, err := parseListPage(r.URL.Query())
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	limit, offset := page.limit, page.offset
 	login := model.CanonicalLogin(r.PathValue("login"))
 	// The acting credential is marshalled once and bound by both reads: it is one value for
 	// the request, and the two statements name the same reader.

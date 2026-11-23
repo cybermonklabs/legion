@@ -107,7 +107,8 @@ LISTED = [
     # dispatch_browser gate declares that entry as a read. The contracts modules that command
     # loads are its bundle's, which BUNDLES pairs with dispatch_two_builds_go, so the block is
     # the union of the two sets: a module only the command loads is one the suite loads too.
-    # Its jobs' `Build contracts for dispatch e2e` step runs packages/contracts' `build:dispatch`,
+    # Its jobs build packages/contracts' `build:dispatch` (a `Build contracts for dispatch e2e`
+    # step, or the build:contracts a job's `bun run e2e` script runs),
     # which bundles the three entries the dashboard imports (web/vite.config.ts:117-123 aliases the
     # same three) and so compiles nothing outside dispatch_ui's set: not
     # packages/contracts/src/legion-api.ts, which neither Dispatch nor the command imports. A

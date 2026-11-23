@@ -1,5 +1,6 @@
-import type { DocumentWriteAdvice, WriteAdvice } from "@legion/contracts";
+import type { DocumentWriteAdvice, HeldState, WriteAdvice } from "@legion/contracts";
 import { messageFor } from "../errors";
+import { heldOpening } from "./held";
 
 const triageAdviceShown = new Set<string>();
 
@@ -114,6 +115,8 @@ export function renderAdvice(
     isPlan?: boolean;
     setsStatus?: boolean;
     replyToOwnAsk?: boolean;
+    /** The write's `held`, where Dispatch's reviewer holds it: no person sees it yet. */
+    held?: HeldState | undefined;
   }
 ): string[] {
   if (advice === undefined) return [];
@@ -284,7 +287,8 @@ export function renderAdvice(
   }
 
   // The cadence line comes last and opens by saying the write went through: behind `| tail -1`
-  // it is the only line an agent sees, and "Stop posting" alone reads as a refusal.
+  // it is the only line an agent sees, and "Stop posting" alone reads as a refusal. A write the
+  // reviewer holds did not post, so its line opens with the held state instead.
   if (
     hasIssueAdvice &&
     writesSinceHuman !== undefined &&
@@ -297,8 +301,9 @@ export function renderAdvice(
       writesSinceHuman >= 6
         ? "Stop posting here until a human replies. Their reply ends this: post then what you held back."
         : "Progress ledger or scratchpad? If so, stop.";
+    const opening = opts.held === undefined ? "Posted" : heldOpening(opts.held);
     lines.push(
-      `Posted. You've sent ${writesSinceHuman} messages on ${key} with no human response. ${middle} See the \`dispatch\` skill, "Structure over stream".`
+      `${opening}. You've sent ${writesSinceHuman} messages on ${key} with no human response. ${middle} See the \`dispatch\` skill, "Structure over stream".`
     );
   }
 

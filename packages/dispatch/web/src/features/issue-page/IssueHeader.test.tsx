@@ -25,6 +25,7 @@ import type {
   IssueCoverage,
   IssueDetails,
   Project,
+  TextRewrite,
   UserIssueState,
 } from "../../api/types";
 import { subsetRanges } from "../../fonts/inter/subset-script";
@@ -1006,6 +1007,72 @@ test("Shift+P is off while the pin's write is out", async () => {
     view.unmount();
     putIssueState.mockRestore();
     restore();
+  }
+});
+
+/** What the reviewer wrote of the issue's title and spec, whose agent wrote `original`. */
+const titleRewrite: TextRewrite = {
+  at: "2026-09-09T00:00:00Z",
+  by: "reviewer",
+  original: { body: "The spec as the agent wrote it.", title: "The agent's title" },
+  state: "rewritten",
+};
+
+// INFRA-3231's R7: an issue whose title and spec the reviewer rewrote draws the badge after its
+// title's last word, and the badge, or `w` while it holds the focus, shows the agent's title in
+// place, reading Original. While it does the title opens no editor, so `e` is not offered, and a
+// press, Enter or Space on the badge is the badge's. An issue the reviewer did not rewrite draws
+// no badge.
+test("a rewritten issue's badge after its title shows the agent's title, and opens no editor", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader({ ...issue, rewrite: titleRewrite });
+  const view = renderHeader();
+
+  try {
+    const heading = await screen.findByRole("heading", { level: 1, name: /Review the spec/ });
+    const badge = within(heading).getByRole("button", { name: "Rewritten" });
+    expect(heading.textContent?.startsWith(issue.title)).toBe(true);
+    expect(keyApplies("title")).toBe(true);
+
+    await user.click(badge);
+    expect(heading.textContent?.startsWith("The agent's title")).toBe(true);
+    expect(within(heading).getByRole("button", { name: "Original" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    expect(
+      screen.queryByRole("textbox", { name: "Issue title" }),
+      "the press opened the editor"
+    ).toBeNull();
+    expect(heading.tabIndex).toBe(-1);
+    expect(keyApplies("title"), "e is offered while the agent's title shows").toBe(false);
+    await user.click(heading);
+    expect(screen.queryByRole("textbox", { name: "Issue title" })).toBeNull();
+
+    // `w` and Enter on the badge are the badge's.
+    act(() => badge.focus());
+    await user.keyboard("w");
+    expect(heading.textContent?.startsWith(issue.title)).toBe(true);
+    expect(badge.textContent).toBe("Rewritten");
+    await user.keyboard("{Enter}");
+    expect(heading.textContent?.startsWith("The agent's title")).toBe(true);
+    expect(screen.queryByRole("textbox", { name: "Issue title" })).toBeNull();
+    await user.keyboard("w");
+    expect(heading.textContent?.startsWith(issue.title)).toBe(true);
+    expect(keyApplies("title")).toBe(true);
+  } finally {
+    view.unmount();
+    restore();
+  }
+
+  const restorePlain = stubHeader(issue);
+  const unrewritten = renderHeader();
+  try {
+    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
+    expect(within(heading).queryByRole("button")).toBeNull();
+  } finally {
+    unrewritten.unmount();
+    restorePlain();
   }
 });
 

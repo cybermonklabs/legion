@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { type Envelope, legacyDispatchIssueSubject } from "@legion/contracts";
+import {
+  DISPATCH_GENERATED_TEXT_HEADER,
+  type Envelope,
+  legacyDispatchIssueSubject,
+} from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { decode } from "@toon-format/toon";
 import { bearerCredential } from "../bearer";
@@ -423,6 +427,53 @@ describe("renderInbound dispatch events", () => {
             target: "session:ses_target",
             error: "Invalid Dispatch targeted delivery frame",
           },
+        },
+      ]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  // A reply the plugin generated (a `!command` report, its own error reply) carries the
+  // generated-text header on its one send, so Dispatch posts it at once; an agent's own answer
+  // carries none.
+  test("marks a generated reply with the generated-text header, on one send", async () => {
+    const replies: Array<{ readonly header: string | null; readonly body: unknown }> = [];
+    const server = Bun.serve({
+      port: 0,
+      fetch: async (request) => {
+        replies.push({
+          header: request.headers.get(DISPATCH_GENERATED_TEXT_HEADER),
+          body: await request.json(),
+        });
+        return Response.json({}, { status: 201 });
+      },
+    });
+    const config = {
+      url: `http://127.0.0.1:${server.port}`,
+      credential: bearerCredential(REPLY_TOKEN),
+    };
+    const delivery: DispatchDelivery = {
+      resource: "message",
+      id: "message-1",
+      attempt: 1,
+      mode: "btw",
+      replyPath: "/api/v1/messages/message-1/reply",
+      replyFields: {},
+      issueKey: "CORE-1",
+      body: "Does it work?",
+    };
+    try {
+      await postDeliveryReply(config, reader, delivery, { error: "It failed.", generated: true });
+      await postDeliveryReply(config, reader, delivery, { body: "It works." });
+      expect(replies).toEqual([
+        {
+          header: "1",
+          body: { actor: { kind: "session", id: reader }, attempt: 1, error: "It failed." },
+        },
+        {
+          header: null,
+          body: { actor: { kind: "session", id: reader }, attempt: 1, body: "It works." },
         },
       ]);
     } finally {

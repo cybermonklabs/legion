@@ -1,6 +1,7 @@
 package agentloop
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -80,6 +81,52 @@ func TestOpenAIChatWithNoQuerySendsNoQueryString(t *testing.T) {
 	}
 }
 
+// A step carries the model id the provider's response says served it, not the id the request
+// asked for: the stand-in's chunks name gpt-standin while the fixture asks for claude-standin.
+func TestAStepCarriesTheModelTheProviderServed(t *testing.T) {
+	t.Parallel()
+	s := newStandIn(t, chatStream("stop", chatUsage{Prompt: 2, Completion: 3}, "The note says plum."))
+	f := newFixture(t, s, OpenAIChat, 1)
+	result, err := Run(context.Background(), f.req)
+	if err != nil || result.Fault != "" {
+		t.Fatalf("result %+v, %v", result, err)
+	}
+	if len(result.Steps) != 1 {
+		t.Fatalf("%d steps, want 1", len(result.Steps))
+	}
+	if got := result.Steps[0].Model; got != "gpt-standin" || got == f.req.Model.ID {
+		t.Errorf("the step's model is %q, want the served gpt-standin and not the requested %q", got, f.req.Model.ID)
+	}
+}
+
+// A request's temperature rides on the call, and a request with none sends none.
+func TestTheTemperatureIsSentOnlyWhenTheRequestSetsOne(t *testing.T) {
+	t.Parallel()
+	s := newStandIn(t,
+		chatStream("stop", chatUsage{Prompt: 2, Completion: 3}, "The note says plum."),
+		chatStream("stop", chatUsage{Prompt: 2, Completion: 3}, "The note says plum."))
+	f := newFixture(t, s, OpenAIChat, 1)
+	zero := 0.0
+	f.req.Temperature = &zero
+	if result, err := Run(context.Background(), f.req); err != nil || result.Fault != "" {
+		t.Fatalf("result %+v, %v", result, err)
+	}
+	f.req.Temperature = nil
+	if result, err := Run(context.Background(), f.req); err != nil || result.Fault != "" {
+		t.Fatalf("result %+v, %v", result, err)
+	}
+	got := s.requests()
+	if len(got) != 2 {
+		t.Fatalf("%d model calls, want 2", len(got))
+	}
+	if temperature, ok := got[0].decoded(t)["temperature"]; !ok || temperature != 0.0 {
+		t.Errorf("the first call's temperature is %v (sent %v), want 0", temperature, ok)
+	}
+	if temperature, ok := got[1].decoded(t)["temperature"]; ok {
+		t.Errorf("the second call sent temperature %v, want none", temperature)
+	}
+}
+
 // A model configured for no reasoning at all reaches Chat Completions as the effort that API
 // defines for it, as it does the Responses API: the loop's own "off" is sent as "none".
 func TestOpenAIChatSendsEffortOffAsNone(t *testing.T) {
@@ -155,6 +202,57 @@ func TestOpenAIChatSendsTheFinalSchemaAsAJSONSchemaResponseFormat(t *testing.T) 
 	}
 	if format, ok := free[0].decoded(t)["response_format"]; ok {
 		t.Errorf("the call with no Final sends response_format %v, want none", format)
+	}
+}
+
+// Request.StrictFinal sends an openai-chat Final in OpenAI's strict mode and changes no other byte
+// of the request, so a request without it sends what it always sent, strict false. On every other
+// protocol the field changes no byte of the request at all.
+func TestStrictFinalSetsOpenAIChatsStrictFlagAndNothingElse(t *testing.T) {
+	t.Parallel()
+	answered := map[Kind]func() reply{
+		OpenAIChat: func() reply { return chatStream("stop", chatUsage{Prompt: 2, Completion: 3}, finalAnswer) },
+		OpenAIResponses: func() reply {
+			return openaiStream(openaiUsage{Input: 2, Output: 3}, "", openaiMessage("msg_final", finalAnswer))
+		},
+		AnthropicMessages: func() reply {
+			return anthropicStream("end_turn", anthropicUsage{Input: 2, Output: 3}, anthropicText(finalAnswer))
+		},
+		AzureAnthropic: func() reply {
+			return anthropicStream("end_turn", anthropicUsage{Input: 2, Output: 3}, anthropicText(finalAnswer))
+		},
+	}
+	for kind, reply := range answered {
+		t.Run(string(kind), func(t *testing.T) {
+			t.Parallel()
+			bodies := map[bool][]byte{}
+			for _, strict := range []bool{false, true} {
+				s := newStandIn(t, reply())
+				f := newFixture(t, s, kind, 1)
+				f.req.Final = json.RawMessage(finalSchema)
+				f.req.StrictFinal = strict
+				result, err := Run(context.Background(), f.req)
+				if err != nil || result.Fault != "" || !sameJSON(t, result.Value, []byte(finalAnswer)) {
+					t.Fatalf("strict %v: result %+v, %v, want %s and no fault", strict, result, err, finalAnswer)
+				}
+				got := s.requests()
+				if len(got) != 1 {
+					t.Fatalf("strict %v: %d model calls, want 1", strict, len(got))
+				}
+				bodies[strict] = got[0].body
+			}
+			want := bodies[false]
+			if kind == OpenAIChat {
+				loose, strict := []byte(`"strict":false`), []byte(`"strict":true`)
+				if n := bytes.Count(want, loose); n != 1 {
+					t.Fatalf("the request without StrictFinal holds %s %d times, want once:\n%s", loose, n, want)
+				}
+				want = bytes.Replace(want, loose, strict, 1)
+			}
+			if !bytes.Equal(bodies[true], want) {
+				t.Errorf("with StrictFinal the request is\n%s\nwant\n%s", bodies[true], want)
+			}
+		})
 	}
 }
 

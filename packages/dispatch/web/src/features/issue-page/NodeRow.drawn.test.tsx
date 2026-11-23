@@ -8,11 +8,12 @@ import { MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
 import { displayTree } from "../../__tests__/display-trees";
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { api } from "../../api/client";
-import type { DisplayTree, IssueChild } from "../../api/types";
+import type { DisplayTree, IssueChild, TextRewrite } from "../../api/types";
 import { pageKindBullet, pageKindTag } from "../../theme/classes";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { heldSends } from "../conversation/held-sends";
 import type { SentRequest } from "../conversation/send-request";
+import { originalListenersNow } from "../inbox/ask-rewrite";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { measureNearWords } from "./clamp-fixtures";
 import { issueDetails, KEY } from "./decisions-filter/decisions-fixtures";
@@ -1793,5 +1794,121 @@ test("a press on Keep open or Let close leaves the focus where it is", async () 
     } finally {
       view.unmount();
     }
+  }
+});
+
+/** A rewrite the reviewer wrote of a text whose agent wrote `original`. */
+function reviewerRewrite(original: TextRewrite["original"]): TextRewrite {
+  return { at: "2026-11-05T09:30:00Z", by: "reviewer", original, state: "rewritten" };
+}
+
+/** The words a row draws: its one line where it is folded, else its words whole. */
+function rowWords(view: RenderResult): string {
+  return (
+    view.container.querySelector("[data-node-first-line], [data-node-words]")?.textContent ?? ""
+  );
+}
+
+// INFRA-3231's R7: a comment or a message the reviewer rewrote draws the badge beside its author
+// and time, and the badge shows the words its agent wrote in place, on a folded row's one line as
+// on an open row's words, reading Original until it is pressed again. Inside the tree the badge is
+// out of the tab order, as every control of a row is, and `f` reaches it.
+test("a comment the reviewer rewrote draws the badge after its author and time, whose press shows the agent's words on its one line and open", async () => {
+  const user = userEvent.setup();
+  const rewritten = node({
+    id: "comment-rewritten",
+    rewrite: reviewerRewrite({ body: "The agent's own words." }),
+    text: "The reviewer's words.",
+    type: "comment",
+  });
+  const agent: Author = { kind: "agent", name: "Planner", reader: false };
+  for (const shape of [{ body: true }, { body: false, expanded: false, folded: 1 }]) {
+    const view = renderRow(rewritten, { author: agent, ...shape });
+    try {
+      const badge = view.getByRole("button", { name: "Rewritten" });
+      expect(badge.closest("[data-node-margin-line]")).not.toBeNull();
+      expect(
+        badge
+          .closest("[data-node-rewrite]")
+          ?.previousElementSibling?.hasAttribute("data-node-byline")
+      ).toBe(true);
+      expect(badge.tabIndex).toBe(-1);
+      expect(rowWords(view)).toContain("The reviewer's words.");
+      await user.click(badge);
+      expect(view.getByRole("button", { name: "Original" })).toHaveAttribute(
+        "aria-pressed",
+        "true"
+      );
+      expect(rowWords(view)).toContain("The agent's own words.");
+      expect(rowWords(view)).not.toContain("The reviewer's words.");
+      await user.click(view.getByRole("button", { name: "Original" }));
+      expect(rowWords(view)).toContain("The reviewer's words.");
+    } finally {
+      view.unmount();
+    }
+  }
+
+  // A comment no rewrite touched draws no badge.
+  const plain = renderRow(node({ id: "comment-plain", type: "comment" }), { author: agent });
+  try {
+    expect(plain.container.querySelector("[data-node-rewrite]")).toBeNull();
+    expect(plain.queryByRole("button", { name: "Rewritten" })).toBeNull();
+  } finally {
+    plain.unmount();
+  }
+});
+
+// An ask's rewrite (a person's Rewrite or the reviewer's) changes its question and each option's
+// description, never a label: the badge shows the question and the descriptions the agent wrote,
+// with the labels as they are, as the ask card does.
+test("an ask whose question was rewritten draws the badge, whose press shows the agent's question and option descriptions", async () => {
+  const user = userEvent.setup();
+  const asked = node({
+    id: "ask-rewritten",
+    options: [{ description: "Fill the window.", label: "Wide" }, { label: "Narrow" }],
+    question: true,
+    rewrite: reviewerRewrite({
+      body: "Pick the width.",
+      options: [{ description: "As wide as the screen.", label: "Wide" }, { label: "Narrow" }],
+    }),
+    state: "open",
+    text: "Which width should the page take?",
+    type: "ask",
+  });
+  const view = renderRow(asked, { author: { kind: "agent", name: "Planner", reader: false } });
+  try {
+    const options = () => view.container.querySelector("[data-node-options]")?.textContent ?? "";
+    expect(rowWords(view)).toContain("Which width should the page take?");
+    expect(options()).toContain("Fill the window.");
+    await user.click(view.getByRole("button", { name: "Rewritten" }));
+    expect(rowWords(view)).toContain("Pick the width.");
+    expect(options()).toContain("Wide");
+    expect(options()).toContain("As wide as the screen.");
+    expect(options()).not.toContain("Fill the window.");
+  } finally {
+    view.unmount();
+  }
+});
+
+// The outline draws a row for every node of the issue, and each reads once whether its words show
+// the original: the badge is told by its row (`RowRewriteBadge`), so a row holds one subscription
+// to the store of shown originals, before and after a press of its badge.
+test("a rewritten row holds one subscription to the store of shown originals", async () => {
+  const user = userEvent.setup();
+  const rewritten = node({
+    id: "comment-rewritten",
+    rewrite: reviewerRewrite({ body: "The agent's own words." }),
+    text: "The reviewer's words.",
+    type: "comment",
+  });
+  const view = renderRow(rewritten, { author: { kind: "agent", name: "Planner", reader: false } });
+  try {
+    expect(originalListenersNow(), "the row subscribed more than once").toHaveLength(1);
+    await user.click(view.getByRole("button", { name: "Rewritten" }));
+    expect(rowWords(view)).toContain("The agent's own words.");
+    expect(view.getByRole("button", { name: "Original" })).toHaveAttribute("aria-pressed", "true");
+    expect(originalListenersNow(), "the row subscribed more than once").toHaveLength(1);
+  } finally {
+    view.unmount();
   }
 });

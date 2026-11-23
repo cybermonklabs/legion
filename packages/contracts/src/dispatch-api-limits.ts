@@ -155,6 +155,39 @@ export const IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
  *  the first request under the key rather than ran again. */
 export const IDEMPOTENCY_REPLAYED_HEADER = "Idempotency-Replayed";
 
+/**
+ * The request header (`1`) a plugin puts on a reply that holds text it generated rather than text
+ * the agent wrote: a person's `!command` report, a slash command's output, a plugin's error reply.
+ * Dispatch reads it on `POST /api/v1/messages/{id}/reply` and `POST /api/v1/comments/{id}/reply`
+ * alone and ignores it on every other route: such a reply posts at once, the writing check does
+ * not read it, and `writing_check_events` records it as `exempt_generated`. An agent's own answer
+ * that a plugin posts carries no header. A Dispatch that does not know the header ignores it.
+ */
+export const DISPATCH_GENERATED_TEXT_HEADER = "Dispatch-Generated-Text";
+
+/**
+ * The request header (`1`) the `dispatch` command puts on every write it makes when a person typed
+ * the command themselves in a session (`!dispatch …` through pi-envoy's typed shell, which sets
+ * `DISPATCH_PERSON_TYPED=1` for that command alone). Dispatch reads it on every write route: the
+ * write posts at once, with no hold and no review whatever the reviewer's settings say,
+ * `writing_check_events` records it as `exempt_person_typed` with its session, and the event the
+ * write emits carries `person_typed: true`, so the records job reads it as the person's text. A
+ * Dispatch that does not know the header ignores it.
+ */
+export const DISPATCH_PERSON_TYPED_HEADER = "Dispatch-Person-Typed";
+
+/**
+ * The request header (`1`) the agents' `DispatchClient` puts on every write it sends: the client
+ * reads the answer of a write Dispatch keeps beside a text its reviewer holds, `202 {id, held}`,
+ * which carries none of the route's own shape. Dispatch keeps a session's write so, and runs it
+ * right after that text posts, only where the write carries the header; it answers a session's
+ * write without it `409 HELD_TEXT` with the held id, as it answers a session's read of a held
+ * text, and keeps nothing, since a client built before the header reads that `202` as its route's
+ * own answer. A person's write at a browser is the route's own, which finds no held text. A
+ * Dispatch that does not know the header ignores it.
+ */
+export const DISPATCH_ACCEPTS_KEPT_WRITE_HEADER = "Dispatch-Accepts-Kept-Write";
+
 /** The longest `IDEMPOTENCY_KEY_HEADER` value, in characters. */
 export const IDEMPOTENCY_KEY_MAX = 128;
 

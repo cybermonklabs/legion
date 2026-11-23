@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -933,7 +934,10 @@ func (s *server) planMessageReply(
 		plan.parentIndex, plan.block = repair, block
 		plan.replyBlock = block.replyBlock(message.IssueKey, "", "")
 	}
-	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&plan.id, &plan.createdAt); err != nil {
+	// Under the id a held reply's hold reserved where its post runs this route, else a fresh one
+	// (textIDFor).
+	plan.id = textIDFor(ctx)
+	if err := tx.QueryRow(ctx, `select now()`).Scan(&plan.createdAt); err != nil {
 		return plan, err
 	}
 	var err error
@@ -983,13 +987,21 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// A reply to the frame that carried a held text's findings names the held text's id: it is
+	// the writer's answer, kept with the held text, and no message (held_routes.go). A reply to a
+	// definition's side question names the definition's id: it is the asking session's answer,
+	// kept with the definition, and no message either (definitions.go).
+	if s.answerDefinitionFrame(w, r, actor, input) || s.answerHeldFrame(w, r, actor, input) {
+		return
+	}
 	// The message's target and the session its attempt names are read before the transaction,
 	// so a reply from a session the attempt does not name, to a message sent for a route to a
 	// role, asks the listener whether that session holds the role now with nothing held
-	// (lookUpRoleHolderReply). A read that finds nothing asks nothing: the transaction below
-	// answers that message or attempt as it always has. A read that fails is the route's 500. An
-	// attempt past message_deliveries.attempt's range names no delivery, so no read is made with
-	// it: the bound below (fitsIntegerColumn) answers it, where it always has.
+	// (lookUpRoleHolderReply); a reply the reviewer holds keeps the answer for its post. A read
+	// that finds nothing asks nothing: the transaction below answers that message or attempt as
+	// it always has. A read that fails is the route's 500. An attempt past
+	// message_deliveries.attempt's range names no delivery, so no read is made with it: the bound
+	// below (fitsIntegerColumn) answers it, where it always has.
 	var roleReply roleHolderReply
 	if fitsIntegerColumn(input.Attempt) {
 		roleReply, err = s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
@@ -1002,6 +1014,20 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// An agent's answer to a person is the reviewer's to read (Decision 9); an error report is
+	// no answer, and goes to the writing check alone.
+	var after *postedReview
+	if input.Body != nil {
+		var proceed bool
+		if after, proceed = s.reviewReply(w, r, actor, input, reviewedReply{
+			kind: reviewer.KindMessage, body: *input.Body, subject: reviewer.Subject{InReplyTo: r.PathValue("id")},
+			followUp: followUp, roleHolder: roleReply,
+		}); !proceed {
+			return
+		}
+	} else {
+		s.writingCheck(r, actor, input)
+	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -1009,6 +1035,8 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	// A held reply's post, or its dry run, runs this route again (held_replay.go).
+	held := heldPostFrom(r.Context())
 	message, err := scanMessage(tx.QueryRow(r.Context(), `
 		select `+messageColumns+`
 		from messages where id = $1
@@ -1036,6 +1064,12 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
+	}
+	// The held row of a held reply's post is taken first of the route's row locks, after the
+	// reply was planned, so the planning holds no transaction id (INFRA-636).
+	if err := held.lock(r.Context(), tx); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	if input.InReplyToBlock != nil {
 		// Before the attempt row, as the accept route takes them: issue, message, attempt.
@@ -1071,11 +1105,17 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	var response any
 	status := http.StatusOK
 	var events []model.Event
+	// postedID is the reply this request posted, which the reviewer reads after the post where
+	// its setting is after; "" where it posted none.
+	postedID := ""
+	// finish is the held reply's mark of its row (held_texts.go): finishRepeat where this request
+	// posts nothing on an attempt already answered, so a held reply's dry run answers the stored
+	// reply as the route does with the reviewer off, rather than hold a repeat.
+	finish := held.finish
 	switch {
 	case attempt.ReplyID != nil:
 		if followUp && input.InReplyToBlock != nil {
-			writeError(w, "INVALID_MESSAGE", http.StatusBadRequest,
-				"a follow-up is filed under the session's first reply, so it names no block of message "+message.ID)
+			s.writeHandlerError(w, followUpNamesNoBlock(message.ID))
 			return
 		}
 		answer, err := s.loadMessage(r.Context(), tx, messageIssueKey(message), *attempt.ReplyID)
@@ -1099,13 +1139,23 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			// The hydration wrote the block into the row the shape stands in front of, so the
 			// shape is taken again over it (display_trees.go).
 			shapeBuilt(wantsDisplayTrees(r), read.shape)
+			// A retry of the answer, or a follow-up already posted, writes nothing, and records no
+			// writing check row.
+			dropWritingCheck(r)
+			finish = held.finishRepeat
 		}
 		response = read
 		if posted != nil {
 			events = append(events, *posted)
 			status = http.StatusCreated
+			// A held follow-up's dry run keeps the reply it wrote, so its answer names the first
+			// reply it is filed under, as its post writes it (replayAnswerOf).
+			held.keep(read.Message)
 		}
 	case input.Error != nil && attempt.State == "failed":
+		// An error report repeated on an attempt already failed writes nothing, and records no
+		// writing check row.
+		dropWritingCheck(r)
 		response = attempt
 	case input.Error != nil:
 		updated, err := scanMessageDelivery(tx.QueryRow(r.Context(), `
@@ -1156,13 +1206,30 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		response, events, status = replyRead{shapedMessage: newShapedMessage(reply, wantsDisplayTrees(r))}, append(events, answered), http.StatusCreated
+		postedID = reply.ID
+		held.keep(reply)
+	}
+	if err := finish(r.Context(), tx); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	s.publish(r.Context(), events...)
+	if postedID != "" {
+		s.reviewPosted(r.Context(), after, postedID)
+	}
 	WriteJSON(w, status, response)
+}
+
+// followUpNamesNoBlock is the refusal of a follow-up that names a block of message messageID, the
+// delivered message: a follow-up is filed under the session's first reply (replyMessage, and a
+// follow-up held beside that reply at its hold, heldFollowUpBeside).
+func followUpNamesNoBlock(messageID string) error {
+	return errorf(http.StatusBadRequest, "INVALID_MESSAGE",
+		"a follow-up is filed under the session's first reply, so it names no block of message %s", messageID)
 }
 
 // replyAfterAnswer is the reply route on an attempt the session already answered with answer.

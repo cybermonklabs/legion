@@ -169,6 +169,7 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	s.writingCheck(r, actor, input)
 	if s.deps.Envoy == nil {
 		writeError(w, "ENVOY_UNAVAILABLE", http.StatusServiceUnavailable, "ENVOY_URL is not configured")
 		return
@@ -744,7 +745,9 @@ func (s *server) readBroadcast(ctx context.Context, who model.Actor, id string, 
 // order, each reply's block read for who. Messages created before positions existed, or by an
 // old server during a rolling deploy, have no position; their request order was never stored, so
 // they retain the created_at and id fallback order. created_at cannot order one current broadcast
-// because all of its rows share the one transaction's now().
+// because all of its rows share the one transaction's now(). Each message and each reply carries
+// the reviewer's rewrite where it held the text and posted it rewritten, as every message read
+// does (hydrateMessageThreads).
 func (s *server) loadBroadcastRecipients(ctx context.Context, who model.Actor, broadcastID string, reader *displayTreeReader) ([]broadcastRecipient, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select `+messageColumns+`
@@ -781,6 +784,9 @@ func (s *server) loadBroadcastRecipients(ctx context.Context, who model.Actor, b
 		return nil, err
 	}
 	if err := hydrateThreadReplyBlocks(ctx, s.deps.Store.Pool, who, messages, replies); err != nil {
+		return nil, err
+	}
+	if err := attachMessageRewrites(ctx, s.deps.Store.Pool, messages, replies); err != nil {
 		return nil, err
 	}
 	recipients := make([]broadcastRecipient, len(messages))

@@ -70,6 +70,12 @@ func (e *MarkNotAllowedError) PlacePlural() string {
 	return plural
 }
 
+// Allows reports whether a mark of markType may stand where the refused text stands, as MarkRange
+// judges it: a comment's mark in the code block an ask's may not stand in.
+func (e *MarkNotAllowedError) Allows(markType string) bool {
+	return markAllowedInTextblock(markType, e.Textblock)
+}
+
 // place is where the refused text stands, as a person says it of one such place and of several,
 // held as one mapping so the singular and the plural never name different things.
 func (e *MarkNotAllowedError) place() (singular, plural string) {

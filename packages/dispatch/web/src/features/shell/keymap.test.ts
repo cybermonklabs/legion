@@ -539,3 +539,84 @@ test("rows within a scope read alphabetically, a lowercase word among capitalise
     "Go to Settings",
   ]);
 });
+
+test("conflicts names two bindings of one scope that one press fires while both apply", () => {
+  const { keymap } = harness();
+  let cardHeld = true;
+  keymap.register("ask", [{ id: "rewrite", keys: "r", label: "Rewrite", run: () => {} }]);
+  keymap.register("ask", [
+    { id: "rewrite", keys: "r", label: "Rewrite", run: () => {}, when: () => cardHeld },
+  ]);
+  // Another scope's `r`, and a different key, are no conflict.
+  keymap.register("issue", [{ id: "refresh", keys: "r", label: "Refresh", run: () => {} }]);
+  keymap.register("ask", [{ id: "ask-back", keys: "b", label: "Ask back", run: () => {} }]);
+  expect(keymap.conflicts()).toEqual([
+    { first: "rewrite", keys: "r", scope: "ask", second: "rewrite" },
+  ]);
+  // A binding whose `when()` stands down is no conflict.
+  cardHeld = false;
+  expect(keymap.conflicts()).toEqual([]);
+});
+
+test("conflicts reads `$mod` as the Control or Meta press it matches, and each key of a binding", () => {
+  const { keymap } = harness();
+  keymap.register("global", [{ id: "search", keys: "$mod+k", label: "Search", run: () => {} }]);
+  keymap.register("global", [
+    { id: "other", keys: ["x", "Control+k"], label: "Other", run: () => {} },
+  ]);
+  keymap.register("global", [{ id: "chord", keys: "g k", label: "Chord", run: () => {} }]);
+  expect(keymap.conflicts()).toEqual([
+    { first: "search", keys: "$mod+k", scope: "global", second: "other" },
+  ]);
+});
+
+test("a fallback binding takes the press only where no other binding of its scope does, and is no conflict", () => {
+  const { keymap, press } = harness();
+  const ran: string[] = [];
+  let rowHeld = true;
+  keymap.pushScope(DIALOG_SCOPE);
+  // Registered first, as a dialog registers its Close before what it holds mounts.
+  keymap.register(DIALOG_SCOPE, [
+    {
+      fallback: true,
+      id: "dialog.close",
+      inEditable: true,
+      keys: "Escape",
+      label: "Close dialog",
+      run: () => ran.push("close"),
+    },
+  ]);
+  keymap.register(DIALOG_SCOPE, [
+    {
+      id: "back",
+      inEditable: true,
+      keys: "Escape",
+      label: "Back to the row",
+      run: () => ran.push("back"),
+      when: () => rowHeld,
+    },
+  ]);
+  expect(keymap.conflicts()).toEqual([]);
+  expect(press("Escape")).toBe(true);
+  rowHeld = false;
+  expect(press("Escape")).toBe(true);
+  expect(ran).toEqual(["back", "close"]);
+});
+
+test("conflicts counts in a text field only the bindings that fire in one", () => {
+  const { keymap } = harness();
+  keymap.register("inbox", [{ id: "clear", keys: "Escape", label: "Clear", run: () => {} }]);
+  keymap.register("inbox", [
+    { id: "leave", inEditable: true, keys: "Escape", label: "Leave", run: () => {} },
+  ]);
+  expect(keymap.conflicts()).toEqual([
+    { first: "clear", keys: "Escape", scope: "inbox", second: "leave" },
+  ]);
+  const field = document.body.appendChild(document.createElement("textarea"));
+  try {
+    field.focus();
+    expect(keymap.conflicts()).toEqual([]);
+  } finally {
+    field.remove();
+  }
+});

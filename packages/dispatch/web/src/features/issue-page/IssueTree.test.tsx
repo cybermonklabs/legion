@@ -31,10 +31,12 @@ import type {
   IDCandidate,
   IssueDecisions,
   IssueDetails,
+  TextRewrite,
 } from "../../api/types";
 import { pageFocusedRow } from "../../theme/classes";
 import { bindRemoteMarks, createEditor, type EditorHandle } from "../doc/editor";
 import { compiledBlockSchema } from "../doc/schema";
+import { toggleOriginal } from "../inbox/ask-rewrite";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildDispatchReference, buildIssuePath, parseIssuePath } from "../refs/routes";
@@ -9044,6 +9046,93 @@ function renderAddressedBody(
     view,
   };
 }
+
+/** A rewrite the reviewer wrote of a text whose agent wrote `original`. */
+function reviewerRewrite(original: TextRewrite["original"]): TextRewrite {
+  return { at: "2026-11-05T01:30:00Z", by: "reviewer", original, state: "rewritten" };
+}
+
+// INFRA-3231's R7 on the outline: a reply the reviewer rewrote is drawn with the badge, and `w`
+// shows the agent's words only while the badge holds the focus. On the row itself `w` stays the
+// tree's, which moves into the decision behind the row and here says there is none.
+test("w on a rewritten reply's row is the tree's, and w on its badge shows the agent's words", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const reply: Comment = {
+    ...readComment("reply-a", 2, "head-a", { id: "session-1", kind: "session" }),
+    body: "The reviewer's words.",
+    rewrite: reviewerRewrite({ body: "The agent's own words." }),
+  };
+  try {
+    // The reply's own address, which unfolds the thread to it and puts the focus on its row.
+    const body = renderAddressedBody(buildIssuePath({ id: "reply-a", key: KEY, kind: "comment" }), [
+      readComment("head-a", 1),
+      reply,
+    ]);
+    const { container } = body.view;
+    await waitFor(() => expect(focusedRow(container)).toBe("reply-a"));
+    const row = rowsFor(container, "reply-a")[0];
+    if (row === undefined) throw new Error("the reply has no row");
+    const words = () => row.querySelector("[data-node-words]")?.textContent ?? "";
+    const badge = row.querySelector<HTMLButtonElement>("[data-node-rewrite] button");
+    if (badge === null) throw new Error("the rewritten reply's row draws no badge");
+    expect(badge.textContent).toBe("Rewritten");
+    expect(badge.tabIndex, "the badge is a tab stop inside the tree").toBe(-1);
+
+    act(() => row.focus());
+    await user.keyboard("w");
+    await waitFor(() => expect(rowReport(container)).toBe(KEY_REPORTS.no_decision));
+    expect(words()).toContain("The reviewer's words.");
+    expect(badge.textContent).toBe("Rewritten");
+
+    // `f` steps through the row's controls no key presses, the badge among them.
+    for (let press = 0; press < 5 && document.activeElement !== badge; press += 1) {
+      await user.keyboard("f");
+    }
+    expect(document.activeElement, "f never reached the badge").toBe(badge);
+    await user.keyboard("w");
+    await waitFor(() => expect(words()).toContain("The agent's own words."));
+    expect(words()).not.toContain("The reviewer's words.");
+    expect(badge.textContent).toBe("Original");
+    expect(focusedRow(container)).toBe("reply-a");
+    expect(rowReport(container)).not.toBe(KEY_REPORTS.no_decision);
+    await user.keyboard("w");
+    await waitFor(() => expect(words()).toContain("The reviewer's words."));
+  } finally {
+    names.mockRestore();
+  }
+});
+
+// The reviewer rewrote the issue's title and spec as its agent opened it: while the title's badge
+// shows the agent's wording (`IssueTitleRow`, whose press is this same toggle), the spec as the
+// agent wrote it stands over the outline, and none is drawn while the badge shows the rewrite.
+test("the agent's spec stands over the outline while the issue's original wording is shown", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const issue: IssueDetails = {
+    ...issueDetails(),
+    artifacts: [],
+    rewrite: reviewerRewrite({ body: "The spec as the agent wrote it.", title: "Agent's title" }),
+  };
+  try {
+    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, BodySlot, issue);
+    const { container } = body.view;
+    await waitFor(() => expect(rowsFor(container, "head-a")).toHaveLength(1));
+    expect(container.querySelector("[data-issue-original-spec]")).toBeNull();
+
+    act(() => toggleOriginal(KEY));
+    const spec = container.querySelector("[data-issue-original-spec]");
+    expect(spec?.textContent).toBe("The spec as the agent wrote it.");
+    expect(spec?.getAttribute("aria-label")).toBe("Spec");
+    expect(rowsFor(container, "head-a"), "the outline's rows went").toHaveLength(1);
+
+    act(() => toggleOriginal(KEY));
+    expect(container.querySelector("[data-issue-original-spec]")).toBeNull();
+  } finally {
+    names.mockRestore();
+  }
+});
 
 // A fold of a branch on an address's own path lets it go of the hold for that following. The fold
 // was kept under the following's location key, and Back gives an earlier entry's own key back:

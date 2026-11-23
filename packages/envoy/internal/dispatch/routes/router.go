@@ -46,6 +46,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -136,7 +137,21 @@ type AppContextOptions struct {
 	Embedder embed.Embedder
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is configured.
 	// cmd/dispatch builds it (newAnswerer). See api.DepsInput.
-	Answerer      api.Answerer
+	Answerer api.Answerer
+	// WritingRules is the refusal of the written rules (cmd/dispatch:
+	// DISPATCH_WRITING_RULES_REFUSAL, DISPATCH_WRITING_RULES_EXTRA). See api.Deps.WritingRules.
+	WritingRules api.WritingRulesConfig
+	// Reviewer is the reviewer of agents' texts to people (cmd/dispatch: DISPATCH_REVIEWER_*);
+	// nil where no reviewer's model group is set. See api.Deps.Reviewer.
+	Reviewer *api.Reviewer
+	// RewriteDefine is a person's Rewrite and Define (cmd/dispatch:
+	// DISPATCH_REWRITE_DEFINE_MODEL_*); nil where their model group is unset. See
+	// api.Deps.RewriteDefine.
+	RewriteDefine *api.RewriteDefine
+	// TestModels are the models a test request may name in its Dispatch-Test-Model header
+	// (cmd/dispatch: DISPATCH_TEST_MODELS, under the test hooks); nil names none. See
+	// api.Deps.TestModels.
+	TestModels    map[string]reviewer.Model
 	Events        *events.Broker
 	App           *auth.AppConfig
 	GitHubAPIBase string
@@ -237,6 +252,10 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		Docs:                   opts.Docs,
 		Embedder:               opts.Embedder,
 		Answerer:               opts.Answerer,
+		WritingRules:           opts.WritingRules,
+		Reviewer:               opts.Reviewer,
+		RewriteDefine:          opts.RewriteDefine,
+		TestModels:             opts.TestModels,
 		Events:                 opts.Events,
 		Renames:                opts.Renames,
 		App:                    opts.App,

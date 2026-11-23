@@ -796,9 +796,9 @@ func TestCrossProjectRelatedQueryFailingKeepsTheOneProjectAnswer(t *testing.T) {
 // in production, however late its leg's goroutine reaches the read.
 type heldReadKey struct{}
 
-// heldRead is the read heldCrossProjectRead held: the context the leg read on and the moment the
-// leg came to read.
-type heldRead struct {
+// crossProjectReadHeld is the read heldCrossProjectRead held: the context the leg read on and the
+// moment the leg came to read.
+type crossProjectReadHeld struct {
 	ctx context.Context
 	at  time.Time
 }
@@ -808,7 +808,7 @@ type heldRead struct {
 // leg until the case releases it, whatever its context does, as a read that has not come back
 // holds it. Nothing the leg does, then, ends the check's wait for it.
 type heldCrossProjectRead struct {
-	reads    chan heldRead
+	reads    chan crossProjectReadHeld
 	released chan struct{}
 	free     sync.Once
 }
@@ -816,7 +816,7 @@ type heldCrossProjectRead struct {
 // newHeldCrossProjectRead returns a stand-in the case's cleanup releases, so a case that fails
 // before it releases the leg leaves no goroutine held.
 func newHeldCrossProjectRead(t *testing.T) *heldCrossProjectRead {
-	held := &heldCrossProjectRead{reads: make(chan heldRead, 1), released: make(chan struct{})}
+	held := &heldCrossProjectRead{reads: make(chan crossProjectReadHeld, 1), released: make(chan struct{})}
 	t.Cleanup(held.release)
 	return held
 }
@@ -826,7 +826,7 @@ func (h *heldCrossProjectRead) read(ctx context.Context) error {
 		return nil
 	}
 	select {
-	case h.reads <- heldRead{ctx: ctx, at: time.Now()}:
+	case h.reads <- crossProjectReadHeld{ctx: ctx, at: time.Now()}:
 	default:
 	}
 	<-h.released
@@ -837,14 +837,14 @@ func (h *heldCrossProjectRead) release() { h.free.Do(func() { close(h.released) 
 
 // next waits for the marked check's leg to come to its read: the leg runs on a goroutine of its
 // own, which the check does not wait for.
-func (h *heldCrossProjectRead) next(t *testing.T) heldRead {
+func (h *heldCrossProjectRead) next(t *testing.T) crossProjectReadHeld {
 	t.Helper()
 	select {
 	case read := <-h.reads:
 		return read
 	case <-binaryDeadlineGuard(t):
 		t.Fatalf("the check's cross-project leg had not come to its read %s before the test binary's deadline", binaryDeadlineMargin)
-		return heldRead{}
+		return crossProjectReadHeld{}
 	}
 }
 

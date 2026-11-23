@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The plugin's own replies to a Dispatch delivery now carry `Dispatch-Generated-Text: 1`: a
+  `!command` report and its refusals, a slash command's output, and the plugin's error replies.
+  Dispatch posts them at once, and its writing check does not read them. An answer the agent wrote
+  goes out unmarked.

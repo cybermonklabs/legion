@@ -2,6 +2,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 
 import { type IssueTab, parseIssuePath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
+import { useSelectionBarKeys } from "../threads/quote-reply";
 import { bringOnScreen } from "./identity-block";
 import { issueAddress, presetPath } from "./issue-address";
 import { CONTROL_LABELS, PRESET_NAMES, type Preset } from "./page-words";
@@ -151,10 +152,20 @@ const CHORDS: readonly {
 ];
 
 /**
- * The `issue` scope of the new issue page, and the chords of its view row in it.
+ * The `issue` scope of the new issue page, the chords of its view row in it, and the selection
+ * bar's `q` and `d` (`threads/quote-reply.ts`).
  *
  * The scope is the issue page: the page's other keys bind into this same scope as the parts that
  * draw what they act on land, and none pushes a scope of its own.
+ *
+ * The bar shows over the words of a text a reader may quote - a thread's card or an ask's card in
+ * Details, which is no dialog beside the page from the phone's width up, so its keys are this
+ * scope's (`MarginSheet`'s `drawer`) - and its two keys act wherever it shows them, the focus on
+ * the page or in Details: `q` quotes the words in a reply, and `d` defines an ask's words. The
+ * tree's own `q` stands down while they are selected (`useTreeKeymap.ts`'s `tree-question`), as
+ * the Inbox's list keys stand down while a card's apply, so no press fires two bindings. An ask
+ * card holding the focus takes both first, in its own scope (`ask-card-keys.ts`); the phone's
+ * Details is a dialog, which registers the two in its own scope (`useDialog`).
  */
 export function useIssueKeymap(issueKey: string): void {
   const navigate = useNavigate();
@@ -164,6 +175,7 @@ export function useIssueKeymap(issueKey: string): void {
   const active =
     route === undefined ? "conversation" : issueAddress(route, "", "", undefined).preset;
   useKeymapScope("issue");
+  useSelectionBarKeys("issue");
   useKeymap(
     "issue",
     CHORDS.map(({ keys, label, part, path, tab }) => ({

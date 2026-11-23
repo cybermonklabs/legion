@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  When Dispatch's `DISPATCH_WRITING_RULES_REFUSAL` is on, the bundled `dispatch` command refuses a
+  session's first write of an ask, an issue, a comment or a message once, and shows the written
+  rules for the person who reads it. The agent checks its text and runs the command again.
+  The session hook counts each compaction (a `SessionStart` whose `source` is `compact`) in the
+  command's state file, so the rules show again before the next such write.

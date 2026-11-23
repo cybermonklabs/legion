@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 
@@ -88,6 +88,12 @@ export function AskBlockCard({
   // empty login) still shows when it was asked; "asked by" waits for a name.
   const named = ask !== undefined && (ask.author.kind === "session" || ask.author.id !== "");
   const reference = ask === undefined ? undefined : itemRoute("ask", ask, owner);
+  // Where an open hosted card draws its provenance line - who asked, when, the rewrite's badge
+  // and the reference - in this header, above the document's text (`AskCard`'s
+  // `provenanceSlot`). The slot is `display: contents`, so the line's parts sit in the header's
+  // own row.
+  const [provenanceSlot, setProvenanceSlot] = useState<HTMLElement | null>(null);
+  const cardInHeader = hosted && ask.state === "open";
   return (
     <>
       {createPortal(
@@ -108,6 +114,9 @@ export function AskBlockCard({
               </span>
             )}
             <strong className={textPrimaryOnSurface}>Decision</strong>
+            {cardInHeader ? (
+              <span className="contents" data-dispatch-ask-provenance="" ref={setProvenanceSlot} />
+            ) : null}
             {carded || ask === undefined ? null : (
               <span className="inline-flex items-center gap-x-2" data-dispatch-ask-asked="">
                 <span aria-hidden="true">·</span>
@@ -175,6 +184,7 @@ export function AskBlockCard({
               markRead
               onAnswered={onAnswered}
               owner={owner}
+              provenanceSlot={cardInHeader ? provenanceSlot : undefined}
               thread="collapsed"
               variant="compact"
             />

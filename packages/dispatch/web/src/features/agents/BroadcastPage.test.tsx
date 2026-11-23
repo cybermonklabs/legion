@@ -386,3 +386,54 @@ test("the broadcast's body and a recipient's answer render as Markdown blocks, l
     page.restore();
   }
 });
+
+// A recipient's answer the reviewer rewrote carries its rewrite in the broadcast read
+// (`loadBroadcastRecipients`), and the row shows its badge: the badge, or `w` while the answer
+// holds the focus, shows the agent's wording in place. An answer nobody rewrote shows no badge.
+test("a rewritten answer shows its badge and, on w, its original; an answer nobody rewrote shows none", async () => {
+  const user = userEvent.setup();
+  const read = answeredBroadcast();
+  const session = { id: "planner-session", kind: "session" } as const;
+  const rewritten: BroadcastRead = {
+    ...read,
+    recipients: (read.recipients ?? []).map((recipient) => ({
+      ...recipient,
+      replies: [
+        {
+          ...threadMessage("answer-1", session, "The deploy waits for the migration."),
+          rewrite: {
+            at: new Date().toISOString(),
+            by: "reviewer",
+            original: { body: "R3 flip: deploy gated on mig." },
+            state: "rewritten",
+          },
+        },
+        threadMessage("answer-2", session, "Green."),
+      ],
+    })),
+  };
+  const page = renderBroadcast(rewritten);
+  try {
+    const row = await screen.findByRole("article", { name: "Planner" });
+    const words = await within(row).findByText("The deploy waits for the migration.");
+    const answer = words.closest<HTMLElement>("[tabindex]");
+    if (answer === null) throw new Error("the rewritten answer takes no focus");
+    expect(within(answer).getByRole("button", { name: "Rewritten" })).toHaveAttribute(
+      "title",
+      "Show the original wording (w)"
+    );
+    await user.click(words);
+    await user.keyboard("w");
+    expect(await within(row).findByText("R3 flip: deploy gated on mig.")).toBeTruthy();
+    expect(within(answer).getByRole("button", { name: "Original" })).toBeTruthy();
+    await user.keyboard("w");
+    expect(await within(row).findByText("The deploy waits for the migration.")).toBeTruthy();
+
+    // One badge on the row: the rewritten answer's, none on the answer nobody rewrote.
+    await within(row).findByText("Green.");
+    expect(within(row).getAllByRole("button", { name: /Rewritten|Original/ })).toHaveLength(1);
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});

@@ -70,11 +70,17 @@ func (s *server) createMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	issueKey := r.PathValue("key")
-	message, advice, err := s.createStoredMessage(r.Context(), &issueKey, input, delivery, false, actor)
+	create := messageCreate{IssueKey: &issueKey, Input: input, Delivery: delivery}
+	after, proceed := s.reviewWrite(w, r, actor, input, create.reviewed())
+	if !proceed {
+		return
+	}
+	message, advice, err := s.writeMessage(r.Context(), create, actor, uuid.NewString(), nil)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	s.reviewPosted(r.Context(), after, message.ID)
 	WriteJSON(w, http.StatusCreated, withAdvice(newShapedMessage(message, wantsDisplayTrees(r)), advice))
 }
 
@@ -120,6 +126,7 @@ func (s *server) createAgentMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	s.writingCheck(r, actor, input)
 	message, _, err := s.createStoredMessage(r.Context(), nil, messageInput, delivery, input.ConnectedOnly, actor)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -260,10 +267,8 @@ func (s *server) owedMessageAttempts(ctx context.Context, messageIDs []string) (
 	return owed, rows.Err()
 }
 
-// createStoredMessage writes one message in a single transaction, with it the keyed request's
-// recovery point (bindRequestKeyRecovery), so a repeat under the key is answered with this message
-// however this request ends, then sends a targeted message's first attempt. connectedOnly is the
-// request's connected_only, which only the agents route takes
+// createStoredMessage writes one message of actor's, under a fresh id, in a single transaction
+// (writeMessage). connectedOnly is the request's connected_only, which only the agents route takes
 // (createAgentMessageInput.ConnectedOnly).
 func (s *server) createStoredMessage(
 	ctx context.Context,
@@ -273,13 +278,38 @@ func (s *server) createStoredMessage(
 	connectedOnly bool,
 	actor model.Actor,
 ) (model.Message, *writeAdvice, error) {
+	return s.writeMessage(ctx, messageCreate{IssueKey: issueKey, Input: input, Delivery: delivery, ConnectedOnly: connectedOnly}, actor, uuid.NewString(), nil)
+}
+
+// messageCreate is a message a write sends, decoded and checked (validateCreateMessage): what
+// writeMessage writes, and what a held message stores, so that its post writes the message the
+// write itself would have written.
+type messageCreate struct {
+	IssueKey *string            `json:"issue_key,omitempty"`
+	Input    createMessageInput `json:"input"`
+	Delivery string             `json:"delivery"`
+	// ConnectedOnly is the request's connected_only (createAgentMessageInput.ConnectedOnly), which
+	// attempt 1 records.
+	ConnectedOnly bool `json:"connected_only,omitempty"`
+}
+
+// writeMessage writes create as actor's message under messageID in a single transaction, with it
+// the keyed request's recovery point (queueRequestKeyRecovery), so a repeat under the key is
+// answered with this message however this request ends, then sends a targeted message's first
+// attempt. A held message's post runs it with the id its hold reserved (held, whose row the first
+// statement of its write batch takes, after the reads, and marks posted in the same transaction).
+// A hold's dry run answers errHeldDryRun, once the batch has run, with the advice the write would
+// have answered with.
+func (s *server) writeMessage(ctx context.Context, create messageCreate, actor model.Actor, messageID string, held *heldPost) (model.Message, *writeAdvice, error) {
+	issueKey, input, delivery, connectedOnly := create.IssueKey, create.Input, create.Delivery, create.ConnectedOnly
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return model.Message{}, nil, err
 	}
 	defer tx.Rollback(ctx)
 	// The issue's owner lock is taken first (lockIssue), the order recordPendingMessageDelivery
-	// states, without the closed refusal: a closed issue still takes a message.
+	// states, without the closed refusal: a closed issue still takes a message. A held message's
+	// post takes its held row in the write phase below (heldPost.queuePosted).
 	var status string
 	if issueKey != nil {
 		status, err = s.lockIssue(ctx, tx, *issueKey)
@@ -333,13 +363,13 @@ func (s *server) createStoredMessage(
 		return model.Message{}, nil, err
 	}
 	// The message's index, its references and the advice are read here, before its first write, so
-	// none holds a transaction id (INFRA-636). Its id, which both are planned for, and its
-	// created_at, the transaction's now() its column defaults to, are taken before the insert
+	// none holds a transaction id (INFRA-636). Its id - the one a held message's hold reserved
+	// where its post runs this, else a fresh one - which both are planned for, and its
+	// created_at, the transaction's now() its column defaults to, are known before the insert
 	// (neither assigns one), and the advice counts the message.created this write appends after it
 	// (writeAdvice).
-	var messageID string
 	var createdAt time.Time
-	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&messageID, &createdAt); err != nil {
+	if err := tx.QueryRow(ctx, `select now()`).Scan(&createdAt); err != nil {
 		return model.Message{}, nil, err
 	}
 	eventType := "message.created"
@@ -358,9 +388,12 @@ func (s *server) createStoredMessage(
 			return model.Message{}, nil, err
 		}
 		logins = events.ThreadLoginsOf(root)
-		advice = s.writeAdvice(
-			ctx, tx, "POST /api/v1/issues/{key}/messages", *issueKey, actor, adviceAsks{}, status, eventType, false,
-		)
+		// A held message's post answers nobody.
+		if held.answers() {
+			advice = s.writeAdvice(
+				ctx, tx, routeIssueMessage, *issueKey, actor, adviceAsks{}, status, eventType, false,
+			)
+		}
 	}
 	message, err := insertedMessage(messageID, issueKey, author, input, createdAt)
 	if err != nil {
@@ -391,6 +424,9 @@ func (s *server) createStoredMessage(
 	// the event's id as the id sequence left it.
 	var event model.Event
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		// A held message's post marks its held row posted first, in this transaction: a post that
+		// finds it taken by another stops here.
+		held.queuePosted(b)
 		if block != nil {
 			queueReplyParentMessageLock(b, parent.ID)
 			parentRepair.Queue(b)
@@ -442,6 +478,9 @@ func (s *server) createStoredMessage(
 		return nil
 	}); err != nil {
 		return model.Message{}, nil, err
+	}
+	if err := held.dryRunEnds(); err != nil {
+		return message, advice, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return model.Message{}, nil, err
@@ -626,10 +665,7 @@ func loadMessageReplyParent(
 	if inReplyTo == nil {
 		return messageReplyParent{}, nil
 	}
-	invalid := errorf(http.StatusBadRequest, "MESSAGE_INPUT", "in_reply_to must identify a message on this issue")
-	if issueKey == nil {
-		invalid = errorf(http.StatusBadRequest, "MESSAGE_INPUT", "in_reply_to must identify a message of this session's conversation")
-	}
+	invalid := replyParentInvalid(issueKey)
 	if strings.TrimSpace(*inReplyTo) == "" {
 		return messageReplyParent{}, invalid
 	}
@@ -672,6 +708,16 @@ func loadMessageReplyParent(
 	parent.ID = *inReplyTo
 	parent.ReplyBody = messageReplyPreview(parentBody)
 	return parent, nil
+}
+
+// replyParentInvalid is the refusal of an in_reply_to that names no message of the conversation a
+// reply joins: its issue's, or, for a reply on no issue, the session's (loadMessageReplyParent,
+// and a message beside a held parent at its hold, heldReplyParentError).
+func replyParentInvalid(issueKey *string) error {
+	if issueKey == nil {
+		return errorf(http.StatusBadRequest, "MESSAGE_INPUT", "in_reply_to must identify a message of this session's conversation")
+	}
+	return errorf(http.StatusBadRequest, "MESSAGE_INPUT", "in_reply_to must identify a message on this issue")
 }
 
 // messageReplyThread is what a message's event and its delivery frame both say about the
@@ -913,6 +959,9 @@ func (s *server) hydrateMessageThreads(ctx context.Context, who model.Actor, roo
 		return nil, err
 	}
 	if err := hydrateThreadReplyBlocks(ctx, s.deps.Store.Pool, who, roots, replies); err != nil {
+		return nil, err
+	}
+	if err := attachMessageRewrites(ctx, s.deps.Store.Pool, roots, replies); err != nil {
 		return nil, err
 	}
 	reader := s.readDisplayTrees(ctx, trees)

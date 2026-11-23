@@ -2,13 +2,16 @@ package refs
 
 import (
 	"context"
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -76,5 +79,49 @@ func TestBlockNumberReadsAMintedID(t *testing.T) {
 		if _, ok := blockNumber(id); ok {
 			t.Errorf("blockNumber(%q) read a number", id)
 		}
+	}
+}
+
+// NewItemBlock is the block an item's first index writes: each block of a comment's body, and each
+// part of an ask, takes the id the index planned against an item with no state row
+// (unindexedItem) gives it, with the excerpt that index writes, a long block's cut to
+// BlockExcerptRunes; an id the text holds no block of is found by neither.
+func TestNewItemBlockIsTheBlockAnItemsFirstIndexWrites(t *testing.T) {
+	long := strings.TrimSpace(strings.Repeat("gnomon ", BlockExcerptRunes))
+	body := "Status\nWe spin up the node.\n\nThe node answers on 8080.\n\n" + long
+	ask := model.Ask{
+		ID: "00000000-0000-0000-0000-000000000001", Question: "Which port should the node use?",
+		Options: []model.AskOption{{Label: "Port 8080", Description: "The port it answers on now."}, {Label: "Port 8081"}},
+	}
+	parts := AskParts(ask)
+	askSource, err := askPartsSource(ask, parts, askPartsSum(parts), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The parts hold no link, so no Reader is asked for one.
+	askSource.pairs = func([]itemblocks.Block, []string) []blockPair { return nil }
+	for _, item := range []struct {
+		kind   ItemKind
+		blocks []itemblocks.Block
+		source itemBlockSource
+	}{
+		{ItemComment, itemblocks.Split(body), itemBodySource(ItemComment, body, nil, nil)},
+		{ItemAsk, parts, askSource},
+	} {
+		index := ItemIndex{state: unindexedItem, stored: []itemblocks.Stored{}}
+		first, err := planItemBlocks(index, item.kind, ask.ID, time.Now(), item.source)
+		if err != nil {
+			t.Fatalf("plan the first index of the %s: %v", item.kind, err)
+		}
+		for number := 1; number <= len(item.blocks)+1; number++ {
+			id := fmt.Sprintf("b%d", number)
+			_, wrote, written := first.Block(id)
+			if excerpt, found := NewItemBlock(item.blocks, id); found != written || excerpt != wrote {
+				t.Errorf("the %s's %s: NewItemBlock = %q, %v; its first index writes %q, %v", item.kind, id, excerpt, found, wrote, written)
+			}
+		}
+	}
+	if excerpt, found := NewItemBlock(itemblocks.Split(body), "b3"); !found || excerpt == long {
+		t.Errorf("the long block's excerpt = %q, %v; want it cut to %d runes", excerpt, found, BlockExcerptRunes)
 	}
 }

@@ -258,15 +258,26 @@ func encodeDocumentTree(tree *pmdoc.Node) ([]byte, error) {
 // that version holds, an element this build may not create yet among it. held nil is
 // encodeDocumentTree.
 func encodeDocumentTreeHolding(tree, held *pmdoc.Node) ([]byte, error) {
+	doc, _, err := seededDocument(tree, held)
+	if err != nil {
+		return nil, err
+	}
+	return crdt.EncodeStateAsUpdateV1(doc, nil), nil
+}
+
+// seededDocument is a fresh document with tree written into it, holding held as
+// encodeDocumentTreeHolding says, and the fragment that holds the tree: the document a seed's
+// first update loads into a room (encodeDocumentTreeHolding, QuoteInSeed).
+func seededDocument(tree, held *pmdoc.Node) (*crdt.Doc, *crdt.YXmlFragment, error) {
 	doc := crdt.New()
 	fragment := doc.GetXmlFragment(fragmentName)
 	doc.GetMap(marksMapName)
 	if err := doc.TransactE(func(transaction *crdt.Transaction) error {
 		return pmdoc.UpdateHolding(transaction, fragment, tree, held)
 	}); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return crdt.EncodeStateAsUpdateV1(doc, nil), nil
+	return doc, fragment, nil
 }
 
 // errDocUnloaded is returned for a room whose live document is not resident (evicted, or never

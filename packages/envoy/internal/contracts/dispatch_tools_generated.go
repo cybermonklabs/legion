@@ -464,6 +464,39 @@ var DispatchTools = []DispatchTool{
 		Example:     json.RawMessage("{}"),
 	},
 	{
+		Name:        "dispatch_held",
+		Description: "Read a text of yours that Dispatch's reviewer holds: an ask, an issue, a comment, a message or a reply you wrote to a person, which no person sees until it posts. It prints the text as it will post, what the reviewer found in it, the reviewer's rewrite, and how long you have to act. Then change it with dispatch held-edit, or post it as you wrote it with dispatch held-post.",
+		Arguments: []ToolField{
+			{Name: "held", Kind: ToolFieldString, Required: true, Description: "The held text's id: the id its write answered (an issue's key, else a uuid)."},
+		},
+		Example: json.RawMessage("{\"held\":\"01234567-0000-4000-8000-000000000001\"}"),
+	},
+	{
+		Name:        "dispatch_held_edit",
+		Description: "Change a text of yours that Dispatch's reviewer holds, before it posts. An ask takes its question and its options, an issue its title and its spec, and a comment, a message or a reply its body. The reviewer reads the changed text again: a text it finds nothing in posts, and its findings come to you again otherwise.",
+		Arguments: []ToolField{
+			{Name: "held", Kind: ToolFieldString, Required: true, Description: "The held text's id: the id its write answered (an issue's key, else a uuid)."},
+			{Name: "question", Kind: ToolFieldString, Description: "An ask's new question."},
+			{Name: "options", Kind: ToolFieldArray, Description: "Options carry the genuinely different approaches. Each option has a label, and its description says what that approach costs. An ask's new options; up to 8 objects { label, description? }.", Item: &ToolField{Kind: ToolFieldObject, Required: true, Fields: []ToolField{
+				{Name: "label", Kind: ToolFieldString, Required: true, Description: "Selectable option label."},
+				{Name: "description", Kind: ToolFieldString, Description: "What this option causes."},
+			}}},
+			{Name: "title", Kind: ToolFieldString, Description: "An issue's new title."},
+			{Name: "spec", Kind: ToolFieldString, Description: "An issue's new spec."},
+			{Name: "body", Kind: ToolFieldString, Description: "A comment's, a message's or a reply's new body."},
+		},
+		Example: json.RawMessage("{\"held\":\"01234567-0000-4000-8000-000000000001\",\"body\":\"The test fails on its first call.\"}"),
+	},
+	{
+		Name:        "dispatch_held_post",
+		Description: "Post a text of yours that Dispatch's reviewer holds, as you wrote it, over what the reviewer found. Say in the reason why the text is right for its reader as written; Dispatch records the reason. Only the session that wrote the text posts it.",
+		Arguments: []ToolField{
+			{Name: "held", Kind: ToolFieldString, Required: true, Description: "The held text's id: the id its write answered (an issue's key, else a uuid)."},
+			{Name: "reason", Kind: ToolFieldString, Required: true, Description: "Why the text is right for its reader as written."},
+		},
+		Example: json.RawMessage("{\"held\":\"01234567-0000-4000-8000-000000000001\",\"reason\":\"The reader asked for the status line in these words.\"}"),
+	},
+	{
 		Name:        "dispatch_limits",
 		Description: "The bounds this Dispatch server holds a write to, read from the server itself: how long one block of a body may be and how many blocks a body may hold, how many options an ask may have and how long an ask's question and options are together, how long a body an event carries whole may be, and how many bytes a request, a document and a handoff body may hold. Dispatch refuses a text over a bound and names the block or the field it passed; no tool and no command cuts or refuses your text before the server reads it, so these numbers are what decides whether a write is taken.",
 		Arguments:   []ToolField{},

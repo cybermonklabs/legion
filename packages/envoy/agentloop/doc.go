@@ -64,9 +64,11 @@
 // reads that reply back against the schema itself: a reply that does not fit is FaultMalformed.
 // The schema also rides to the provider, where the protocol says: in output_config.format on
 // anthropic-messages and azure-anthropic, as the Responses API's text format on
-// openai-responses, and on openai-chat as response_format.json_schema without the provider's
-// strict mode, because the package checks the reply against the schema itself and strict mode
-// refuses schemas that are valid JSON Schema.
+// openai-responses, and on openai-chat as response_format.json_schema. On openai-chat it rides
+// without the provider's strict mode unless Request.StrictFinal asks for it: the package checks
+// the reply against the schema itself, and strict mode refuses schemas that are valid JSON
+// Schema. A caller whose model writes something other than the object asks for strict mode with
+// a schema that keeps strict mode's rules.
 //
 // # Bounds
 //

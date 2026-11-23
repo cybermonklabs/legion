@@ -1,6 +1,6 @@
 import { spyOn } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
@@ -84,9 +84,8 @@ export async function renderRecipients({
   );
   const view = render(recipients(props));
   const user = userEvent.setup();
-  // The routing list is folded at rest; every assertion of the tests that render it is about
-  // what it holds, so the harness opens it once and each test reads the open list.
-  await user.click(screen.getByRole("button", { name: /^Reaches/ }));
+  // The routing list is open at rest, under its `Reaches N` heading, in the popover the asker's
+  // chevron opens on the card (`AskCard`).
   return {
     getArtifactSubscribers,
     getIssueSubscribers,

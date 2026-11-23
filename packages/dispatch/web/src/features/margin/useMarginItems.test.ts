@@ -467,6 +467,89 @@ test("a document owner loads asks and comments from the artifact routes, hides p
   }
 });
 
+/** An open question on the standalone document, as its ask list answers it: a decision block
+ *  where `block` names one, held for review where `held` says so. */
+function documentAsk(id: string, { block, held = false }: { block?: string; held?: boolean } = {}) {
+  return {
+    anchor: null,
+    answer: null,
+    artifact_id: artifact.id,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
+    block_id: block ?? null,
+    author: { id: "session-1", kind: "session" as const },
+    created_at: "2026-09-09T00:00:00Z",
+    edited_at: null,
+    id,
+    issue_key: null,
+    kind: "question",
+    multiple: false,
+    opened_event_id: 1,
+    options: [],
+    question: `Question ${id}?`,
+    state: "open" as const,
+    urgency: "med" as const,
+    ...(held ? { held_for_review: true } : {}),
+  };
+}
+
+// A decision block the reviewer holds (`held_for_review`) shows in its document, and the margin's
+// open asks and the count of them leave it out until it posts, as the Inbox and the server's open-
+// ask counts do. The next read of the document's asks after the post counts it.
+test("the margin's open asks leave out a decision block the reviewer holds until it posts", async () => {
+  const listArtifactAsks = spyOn(api, "listArtifactAsks").mockResolvedValue([
+    documentAsk("held-block", { block: "decide", held: true }),
+    documentAsk("plain"),
+  ]);
+  const listArtifactComments = spyOn(api, "listArtifactComments").mockResolvedValue([]);
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const view = renderHook(
+    () =>
+      useMarginItems(
+        { artifactId: artifact.id, kind: "document", project: "CORE", slug: "design-notes" },
+        "comments",
+        { ...artifact, issue_key: null, primary: false, slug: "design-notes" },
+        new Map(),
+        new Map(),
+        undefined
+      ),
+    {
+      wrapper: ({ children }: { children: ReactNode }) =>
+        createElement(
+          MemoryRouter,
+          { initialEntries: ["/projects/CORE/documents/design-notes"] },
+          createElement(QueryClientProvider, { client: queryClient }, children)
+        ),
+    }
+  );
+  const counted = () => ({
+    count: view.result.current.openAskCount,
+    ids: view.result.current.needsYou.map((ask) => ask.id),
+  });
+
+  try {
+    await waitFor(() => expect(counted().ids).toContain("plain"));
+    expect(counted()).toEqual({ count: 1, ids: ["plain"] });
+
+    listArtifactAsks.mockResolvedValue([
+      documentAsk("held-block", { block: "decide" }),
+      documentAsk("plain"),
+    ]);
+    await act(() => queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id, "asks"] }));
+    await waitFor(() => expect(counted().ids).toContain("held-block"));
+    expect(counted()).toEqual({ count: 2, ids: ["held-block", "plain"] });
+  } finally {
+    view.unmount();
+    getInbox.mockRestore();
+    listArtifactAsks.mockRestore();
+    listArtifactComments.mockRestore();
+  }
+});
+
 function ActionButtons() {
   const { mutateItem, pendingActionIds, actionFailure } = useMarginItems(
     { key: "CORE-1", kind: "issue" },

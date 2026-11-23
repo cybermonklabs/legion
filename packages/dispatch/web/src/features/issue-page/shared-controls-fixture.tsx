@@ -1,5 +1,5 @@
 import { act, type RenderResult } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { type ReactNode, useRef } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
@@ -12,12 +12,23 @@ import type {
   ArtifactApproval,
   Ask,
   AskRead,
+  Definition,
   Priorities,
   PriorityRow,
 } from "../../api/types";
-import { PAGE_COLORS } from "../../theme/classes";
+import {
+  focusBorder,
+  focusRing,
+  focusVisibleRing,
+  groupFocusVisibleRing,
+  hasFocusVisibleRing,
+  PAGE_COLORS,
+} from "../../theme/classes";
 import { ProofDocument } from "../doc/ProofDocument";
 import { DocumentRuntime } from "../doc/runtime";
+import { AskHandOnPicker } from "../inbox/AskHandOnPicker";
+import { DefinePopover } from "../inbox/DefinePopover";
+import { RewriteBadge } from "../inbox/RewriteBadge";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { MarginProvider } from "../margin/margin-context";
 import { NoTooltips } from "./NoTooltips";
@@ -116,9 +127,28 @@ export const RAW_COLOR_PATTERN = new RegExp(
 );
 
 /** The variants of a focus indicator, kept inside `NoTooltips`: `focusVisibleRing`,
+ *  `groupFocusVisibleRing` (the same ring on a mark inside its control, the rewrite badge's pill),
  *  `hasFocusVisibleRing` and `main`'s focus rule on a field stay, since the page's palette holds
  *  no focus colour and the application has one focus indicator. */
-export const FOCUS_VARIANTS: readonly string[] = ["focus", "focus-visible", "has-focus-visible"];
+export const FOCUS_VARIANTS: readonly string[] = [
+  "focus",
+  "focus-visible",
+  "group-focus-visible",
+  "has-focus-visible",
+];
+
+/** `main`'s focus indicator, token by token: the only colour of a focus rule, a ring or an outline
+ *  drawn under a focus variant that `NoTooltips` keeps. */
+const MAIN_FOCUS_TOKENS: ReadonlySet<string> = new Set(
+  [focusBorder, focusRing, focusVisibleRing, groupFocusVisibleRing, hasFocusVisibleRing].flatMap(
+    tokens
+  )
+);
+
+/** The utilities that draw a focus indicator under a focus variant: a border, a ring or an
+ *  outline. What else a focus variant draws - the page's mark behind a menu row the keyboard is on
+ *  - is a colour of the page like any other. */
+const FOCUS_INDICATOR = /^(?:border(?:-[xytrblse])?|ring(?:-offset)?|outline)-/;
 
 /** A token as its variants and the utility after them. A colon inside brackets or parentheses
  *  is an arbitrary value's (`[overflow-wrap:anywhere]`, `content-[attr(data-initial)]`), not a
@@ -174,8 +204,9 @@ export function colourOf(utility: string): string | undefined {
 }
 
 /** What `elements` draw that is no colour of the page: each token the palette guard reads as
- *  raw, and each colour `PAGE_COLORS` does not name, focus indicators skipped. Each offender
- *  names the element it is on after `name`, what the elements are of. */
+ *  raw, each colour `PAGE_COLORS` does not name, and each colour of a focus indicator that is not
+ *  `main`'s (`MAIN_FOCUS_TOKENS`), which is kept whole. Each offender names the element it is on
+ *  after `name`, what the elements are of. */
 export function offPageColours(
   name: string,
   elements: readonly Element[]
@@ -187,7 +218,12 @@ export function offPageColours(
     const where = `${name}: <${element.tagName.toLowerCase()}${testId === null ? "" : ` data-testid="${testId}"`}>`;
     for (const token of classOf(element)) {
       const { utility, variants } = splitToken(token);
-      if (variants.some((variant) => FOCUS_VARIANTS.includes(variant))) continue;
+      const focused = variants.some((variant) => FOCUS_VARIANTS.includes(variant));
+      if (focused && MAIN_FOCUS_TOKENS.has(token)) continue;
+      if (focused && FOCUS_INDICATOR.test(utility) && colourOf(utility) !== undefined) {
+        offenders.push(`${where} ${token}: a focus indicator that is not main's`);
+        continue;
+      }
       if (RAW_COLOR_PATTERN.test(utility)) {
         offenders.push(`${where} ${token}: a raw colour`);
         continue;
@@ -412,3 +448,93 @@ export const minutesFromNow = (minutes: number) =>
 
 /** The instant the claims of a case were made at. */
 export const CLAIMED_AT = "2026-09-24T06:00:00Z";
+
+/** Why the failed rewrite `rewriteBadges` draws was not applied, as Dispatch says it. */
+export const REWRITE_FAILED_REASON = "The rewrite left out a fact the question needs.";
+
+/** The ask card's rewrite badge (`RewriteBadge`) in each state it draws, as the card draws it
+ *  with its key `w`: a rewrite running, one in place, the original wording shown in its place,
+ *  and one Dispatch did not apply, which a press tries again. */
+export function rewriteBadges(): ReactNode {
+  const none = () => undefined;
+  return (
+    <>
+      <RewriteBadge onToggle={none} rewrite={{ state: "rewriting" }} showingOriginal={false} />
+      <RewriteBadge
+        onToggle={none}
+        rewrite={{ state: "rewritten" }}
+        showingOriginal={false}
+        toggleKey="w"
+      />
+      <RewriteBadge
+        onToggle={none}
+        rewrite={{ state: "rewritten" }}
+        showingOriginal
+        toggleKey="w"
+      />
+      <RewriteBadge
+        onRetry={none}
+        onToggle={none}
+        rewrite={{ reason: REWRITE_FAILED_REASON, state: "failed" }}
+        showingOriginal={false}
+      />
+    </>
+  );
+}
+
+/** The ask card's hand-on picker (`AskHandOnPicker`), open under an anchor of its own as the card
+ *  opens it under its split button: the people `GET /api/v1/users` lists, the issue's assignee
+ *  first, and the person the question waits on now ticked. */
+export function HandOnPickerOpen({
+  assignee,
+  waitingOn,
+}: {
+  assignee: string;
+  waitingOn: string;
+}): ReactNode {
+  const anchor = useRef<HTMLSpanElement>(null);
+  return (
+    <>
+      <span ref={anchor} />
+      <AskHandOnPicker
+        anchorRef={anchor}
+        assignee={assignee}
+        onClose={() => undefined}
+        onPick={() => undefined}
+        waitingOn={waitingOn}
+      />
+    </>
+  );
+}
+
+/** A definition of `words` in the open ask, as `POST /api/v1/definitions` answers it: the
+ *  record's meaning with no link, and no side question to the asking session. */
+export function definitionOf(words: string, overrides: Partial<Definition> = {}): Definition {
+  return {
+    agent: { state: "none" },
+    artifact_id: null,
+    ask_id: "ask-1",
+    calls: null,
+    created_at: "2026-10-08T00:00:00Z",
+    definitions: [{ links: null, meaning: `What ${words} means here.`, words }],
+    id: `definition-${words}`,
+    inputs: null,
+    person: "alice",
+    version: null,
+    words: [words],
+    ...overrides,
+  };
+}
+
+/** The ask card's Define (`DefinePopover`) of `words` in the open ask, open beside them. */
+export function definePopover(words: string): ReactNode {
+  return (
+    <DefinePopover
+      column={{ left: 0, right: 800 }}
+      onClose={() => undefined}
+      place={{ ask_id: "ask-1" }}
+      rect={new DOMRect(16, 16, 80, 20)}
+      words={words}
+    />
+  );
+}

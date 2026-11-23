@@ -69,6 +69,13 @@ export interface ExecuteDispatchToolInput {
   /** The wait before each new attempt of a request Dispatch answered with no route
    *  (`DispatchClient`); a test passes one that returns at once. */
   readonly sleep?: Sleep;
+  /** Send no write: the client throws `DispatchWriteHeld` at the call's first write, which the
+   *  dispatch CLI reads the write's route and body from (`writing-rules.ts`). */
+  readonly holdWrites?: boolean;
+  /** Whether a person typed this call's command in a session (`DISPATCH_PERSON_TYPED=1`, which the
+   *  dispatch CLI read once at start): every write carries `Dispatch-Person-Typed: 1`. A plugin's
+   *  own call leaves it unset. */
+  readonly personTyped?: boolean;
   readonly exec?: ExecFn;
   /** The topics the session's Envoy subscriptions hold, or null when they cannot be read (Envoy
    *  off, or no answer from its listener); called only by a write that would name its owner as
@@ -327,6 +334,8 @@ export function sessionContext(
         signal: input.signal,
         writeRetry: input.writeRetry,
         sleep: input.sleep,
+        holdWrites: input.holdWrites,
+        personTyped: input.personTyped,
       }),
   };
 }

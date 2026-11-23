@@ -22,6 +22,8 @@
  * broker takes the issuer's URL as its token issuer and its sign-in provider. `FAKE_EMBEDDER_PORT`
  * is the fake embedder's (`e2e/fake-embedder.ts`), started only by a run whose server embeds
  * there (`e2e/harness-embedder.ts`), so it takes part in the collision check only then.
+ * `FAKE_MODEL_PORT` is the stand-in model's (`e2e/fake-model.ts`), which every model group of the
+ * server calls (DISPATCH_TEST_MODEL_URL).
  *
  * A set value that is not a port in canonical decimal is refused naming its variable, because
  * every later consumer turns it into something that names nothing: `net.connect` raises
@@ -66,7 +68,7 @@ import { harnessSignIn } from "./harness-signin";
  *  every worker process that environment. */
 export const stacksVariable = "DISPATCH_E2E_STACKS";
 
-/** The last manifest parsed, and the text it was parsed from. `harnessPorts()` resolves eleven
+/** The last manifest parsed, and the text it was parsed from. `harnessPorts()` resolves twelve
  *  variables through the manifest and a row calls it whenever it addresses a listener, so a run
  *  would otherwise parse the same JSON tens of thousands of times. The text is the key, so an
  *  environment that changes - a test that hands in another manifest, a process that clears a
@@ -142,6 +144,7 @@ export const harnessVariables = {
   fakeEmbedder: "FAKE_EMBEDDER_PORT",
   fakeEnvoy: "FAKE_ENVOY_PORT",
   fakeGithub: "FAKE_GITHUB_PORT",
+  fakeModel: "FAKE_MODEL_PORT",
   plainHttp: "PLAIN_HTTP_PORT",
   realBroker: "REAL_BROKER_PORT",
   signinIssuer: "DISPATCH_E2E_SIGNIN_ISSUER_PORT",
@@ -218,6 +221,7 @@ export function harnessPorts(
     fakeEmbedder: harnessPort(env, harnessVariables.fakeEmbedder),
     fakeEnvoy: harnessPort(env, harnessVariables.fakeEnvoy),
     fakeGithub: harnessPort(env, harnessVariables.fakeGithub),
+    fakeModel: harnessPort(env, harnessVariables.fakeModel),
     plainHttp: harnessPort(env, harnessVariables.plainHttp),
     realBroker: harnessPort(env, harnessVariables.realBroker),
     signinIssuer: harnessPort(env, harnessVariables.signinIssuer),

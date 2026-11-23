@@ -227,7 +227,9 @@ A line of details follows: labels, subscribers, the parent issue, linked GitHub 
 requests, and **Referenced by**. Choose the title, or press `e`, to edit it.
 
 A title shows in full, wrapped at any width, rather than cut off after two lines. A list that
-still clamps a title shows the whole of it on hover.
+still clamps a title shows the whole of it on hover. A new issue that Dispatch's reviewer rewrote
+before you saw it has a **Rewritten** badge beside its title: press it to see the agent's own title
+and spec in place.
 
 - **Parent** shows the parent issue or **None**. You can edit it to move the issue under another.
 - **Subscribers: N** lists the agent sessions subscribed to the issue. **Unsubscribe** stops
@@ -356,16 +358,23 @@ An issue with no Verification document, or no plan document, shows on that tab t
 
 The box at the foot of the Conversation posts a comment on the issue, on a closed issue too: its
 composers, **Reply** on a message and a delivery's **Retry** all work there, and you can still
-comment on a quote of its documents: select the text and choose **Comment**, the one action the
-selection bar offers on a closed issue's document, and the comment opens in the margin. Type `@`
-to mention an agent role or a live agent session; the comment is then delivered to it. The picker
-also offers, under **Not running**, this issue's Legion roles that no running agent holds; a
-mention picked there is addressed to the role, and the comment is posted on the issue, but its
-delivery fails while nobody holds that role, since there is no session to take it. The thread
-shows that failed attempt with **Retry** beside it, which sends to whoever holds the role at the
-time; that Retry is offered for three days, after which a fresh comment is the way to reach the
-role. Start the comment with `/btw ` or `/aside ` to choose how a mentioned agent receives it.
+comment on a quote of its documents: select the text and choose **Comment**, which with
+**Define** is all the selection bar offers on a closed issue's document, and the comment opens in
+the margin. Type `@` to mention an agent role or a live agent session; the comment is then
+delivered to it. The picker also offers, under **Not running**, this issue's Legion roles that no
+running agent holds; a mention picked there is addressed to the role, and the comment is posted on
+the issue, but its delivery fails while nobody holds that role, since there is no session to take
+it. The thread shows that failed attempt with **Retry** beside it, which sends to whoever holds the
+role at the time; that Retry is offered for three days, after which a fresh comment is the way to
+reach the role. Start the comment with `/btw ` or `/aside ` to choose how a mentioned agent
+receives it.
 [Agents](/legion/dispatch/agents/#sending-to-one-agent) explains the delivery modes.
+
+Select words of a comment, a reply or a message in the Conversation and choose **Quote reply** on
+the bar that appears over them, or press `q`. The words go into the box that answers them as a
+quote, with the cursor on the line under it; for a message, the box at the foot of the tab then
+replies to that message. A comment or a message that Dispatch's reviewer rewrote before you saw it
+has a **Rewritten** badge in its header, which shows the agent's own wording in place.
 
 Press `Ctrl+Enter` (`⌘Enter` on a Mac) to send. `Enter` alone starts a new line.
 

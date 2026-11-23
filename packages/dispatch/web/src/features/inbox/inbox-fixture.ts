@@ -143,3 +143,23 @@ export function mockAskReads(rows: readonly InboxRow[]) {
     };
   });
 }
+
+/** Selects every word of the first element `selector` names under `root`, as a drag of the mouse
+ *  across them would, leaving the focus where it is. */
+export function selectWords(root: HTMLElement, selector: string): void {
+  const element = root.querySelector(selector);
+  if (element === null) throw new Error(`nothing matches ${selector}`);
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
+/** happy-dom computes no style from a stylesheet, so an ask card's padding and border would read
+ *  as no number and Define's popover would place itself at none (`selectedWordsIn`): the card
+ *  states its own, as a browser computes them. */
+export function stateCardBox(card: HTMLElement): void {
+  card.style.padding = "0px";
+  card.style.borderWidth = "0px";
+}

@@ -41,12 +41,18 @@ type adviceDeclinedAsk struct {
 }
 
 // The routes of the two writes whose author may be about to put a question to a person: the ask
-// route, and a document edit, whose ops can add the ask blocks that settle into asks. Each names
-// itself in its own writeAdvice call, which is where the log line of an omitted advice query
-// gets its route, and routeEditDocument names the same write to supersededApprovalAdvice.
+// route, and a document edit, whose ops can add the ask blocks that settle into asks; and of the
+// three other writes a held text's advice is worked out for, a comment and a message on an issue
+// and a new issue. Each names itself in its own writeAdvice call, which is where the log line of
+// an omitted advice query gets its route, as a text held beside a held parent names its own
+// (heldIssueAdvice, issueCreate.beside), and routeEditDocument names the same write to
+// supersededApprovalAdvice.
 const (
 	routeOpenAsk      = "POST /api/v1/issues/{key}/asks"
 	routeEditDocument = "POST /api/v1/artifacts/{id}/edits"
+	routeIssueComment = "POST /api/v1/issues/{key}/comments"
+	routeIssueMessage = "POST /api/v1/issues/{key}/messages"
+	routeNewIssue     = "POST /api/v1/issues"
 )
 
 type writeAdvice struct {
@@ -1028,22 +1034,31 @@ type advisedResponse struct {
 }
 
 func (response advisedResponse) MarshalJSON() ([]byte, error) {
-	payload, err := json.Marshal(response.payload)
+	return mergedJSON(response.payload, "advice", response.advice)
+}
+
+// mergedJSON is payload's JSON object with one more member, name, holding value, written beside
+// the payload's own members rather than nesting the payload: a write's answer with its `advice`
+// (advisedResponse) or with the `held` object of a write the reviewer holds (heldAnswer), which
+// the OpenAPI document states as one rule (openAPIAdvised). A payload that is no JSON object is an
+// error.
+func mergedJSON(payload any, name string, value any) ([]byte, error) {
+	object, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
-	if len(payload) < 2 || payload[0] != '{' || payload[len(payload)-1] != '}' {
-		return nil, fmt.Errorf("write advice payload must be a JSON object")
+	if len(object) < 2 || object[0] != '{' || object[len(object)-1] != '}' {
+		return nil, fmt.Errorf("an answer that carries %s beside its payload needs a payload that is a JSON object", name)
 	}
-	advice, err := json.Marshal(response.advice)
+	member, err := json.Marshal(value)
 	if err != nil {
 		return nil, err
 	}
-	key := `"advice":`
-	if len(payload) > 2 {
+	key := `"` + name + `":`
+	if len(object) > 2 {
 		key = "," + key
 	}
-	return slices.Concat(payload[:len(payload)-1], []byte(key), advice, []byte("}")), nil
+	return slices.Concat(object[:len(object)-1], []byte(key), member, []byte("}")), nil
 }
 
 func withAdvice(payload any, advice *writeAdvice) any {

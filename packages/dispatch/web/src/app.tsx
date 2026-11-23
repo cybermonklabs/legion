@@ -96,6 +96,7 @@ import { useDocumentTitle } from "./features/shell/useDocumentTitle";
 import { useKeyboardFit } from "./features/shell/useKeyboardFit";
 import { legacyPinnedAgentsKey, useUserPreference } from "./features/shell/userPreference";
 import { Sidebar } from "./features/sidebar/Sidebar";
+import { SelectionBar } from "./features/threads/SelectionBar";
 import "./features/writes/kinds";
 import { KeptWrites } from "./features/writes/KeptWrites";
 import { SendStoppedError, stoppedWriteNote } from "./features/writes/keyed-write";
@@ -1147,6 +1148,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         <ShortcutHelp onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
         {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}
         <RefPreviewHost />
+        <SelectionBar />
       </div>
     </ShellProviders>
   );

@@ -55,6 +55,11 @@ import { type DecisionState, isReader, NODE_TYPE_NAMES } from "../page-words";
  * where today's read holds the decision's `shaped` ties, so the ask's entry carries the
  * statements they name: the person's decision reaches every statement it shaped.
  *
+ * Nor does the filter draw a decision block the reviewer holds (`TreeNode.heldForReview`) until
+ * it posts: the document and the outline show it, and the server's Decisions view, every Inbox
+ * and every count of open asks leave it out, so it stands in no part, and the Decisions
+ * filter's count leaves it out with the list (`presets.ts`'s `filterSignals`).
+ *
  * This module is pure. It holds no React and makes no request, so the body
  * (`DecisionsFilterBody.tsx`) and the unit tests read one model.
  *
@@ -276,6 +281,9 @@ export function decisionsParts({
     isReader(by, reader) ? yours : others;
   for (const { node, parent } of placed.values()) {
     if (kept !== undefined && !kept.has(node.id)) continue;
+    // A decision block the reviewer holds is in no part until it posts, open or closed: the
+    // server's Decisions view and every Inbox leave it out (`TreeNode.heldForReview`).
+    if (node.heldForReview === true) continue;
     const base = {
       node,
       ...(parent === undefined ? {} : { parent }),

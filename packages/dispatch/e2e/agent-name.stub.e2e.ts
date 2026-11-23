@@ -70,10 +70,14 @@ test("on a phone the ask card's asker still opens its copy handles, and the live
   }));
   expect(widths.scroll).toBe(widths.client);
 
+  // The asker's chevron opens a popover holding the session's handles.
   await asker.tap();
+  const handles = page.getByRole("dialog");
   await expect(
-    card.getByRole("button", { name: `Copy session ID ${runId}`, exact: true })
+    handles.getByRole("button", { name: `Copy session ID ${runId}`, exact: true })
   ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(handles).toHaveCount(0);
   await live.tap();
   await expect(page).toHaveURL(new RegExp(`${livePath(runId)}$`));
 });

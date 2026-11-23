@@ -21,6 +21,7 @@ import type {
   MessageRead,
   ReferenceTarget,
   RequirementCoverage,
+  TextRewrite,
 } from "../../api/types";
 import { askResolutionBadge } from "../refs/actor";
 import { agentsOnlyItem } from "./issue-address";
@@ -1993,6 +1994,34 @@ test("an open question waits on the reader only where its turn is theirs", () =>
   expect(waiting(undefined)).toEqual([]);
 });
 
+// A decision block the reviewer holds (`held_for_review`) is drawn as the open question it is,
+// and does not wait on the reader until it posts: the tree leaves it unmarked (`node.waiting`),
+// so the page does not open on it (`IssueTree.tsx`'s `waitingQuestion`), as the server's
+// `open_asks`, which the header's count reads (`waiting.ts`), and every Inbox leave it out. Once
+// it posts, the same question waits on the reader again.
+test("a decision block the reviewer holds does not wait on the reader until it posts", () => {
+  const read = (held: boolean) => {
+    const root = buildIssueTree({
+      asks: [
+        question("held", {
+          waiting_on: "human",
+          waiting_on_person: "alice",
+          ...(held ? { held_for_review: true } : {}),
+        }),
+        question("mine", { waiting_on: "human", waiting_on_person: "alice" }),
+      ],
+      issue: issueDetails([]),
+      viewer: "alice",
+    });
+    return {
+      questions: root.children.map((child) => child.question),
+      waiting: root.children.filter((child) => child.waiting).map((child) => child.id),
+    };
+  };
+  expect(read(true)).toEqual({ questions: [true, true], waiting: ["mine"] });
+  expect(read(false)).toEqual({ questions: [true, true], waiting: ["held", "mine"] });
+});
+
 // A Change is a comment a person anchored to a decision's words in the decisions document. The
 // fixture is the shape the Change control (`DecisionActions.tsx`) stored on a running build of
 // the checkpoint (preview of 29111db16c41), read with `Dispatch-Trees: 1`: the Change is
@@ -3078,6 +3107,42 @@ test("a node holds the server's reading of its text where its read sends one", (
   for (const id of [blockNodeId(SPEC, "r1"), blockNodeId(VERIFICATION, "c1"), "res-1"]) {
     expect({ id, ...held(id) }).toEqual({ id, source: undefined, tree: undefined });
   }
+});
+
+// INFRA-3231's R7: a comment, a message or an ask whose read carries the reviewer's rewrite (or a
+// person's Rewrite of the ask) keeps it on its node, so its row draws the badge and the wording
+// the rewrite replaced; a node no rewrite touched carries none.
+test("a comment, a message and an ask keep the rewrite their read carries", () => {
+  const rewrite = (body: string): TextRewrite => ({
+    at: "2026-11-05T09:30:00Z",
+    by: "reviewer",
+    original: { body },
+    state: "rewritten",
+  });
+  const message = thread("m1", "2026-11-05T10:00:00Z");
+  const root = buildIssueTree({
+    asks: [{ ...question("ask-1"), rewrite: rewrite("The agent's question?") }],
+    comments: [
+      comment("c1", "2026-11-05T09:00:00Z"),
+      {
+        ...comment("c2", "2026-11-05T09:10:00Z"),
+        answers: "c1",
+        author: { id: "planner", kind: "session" },
+        reply_to: "c1",
+        rewrite: rewrite("The agent's reply."),
+      },
+    ],
+    issue: issueDetails([]),
+    messages: [
+      { ...message, message: { ...message.message, rewrite: rewrite("The agent's message.") } },
+    ],
+  });
+  const kept = (id: string) => nodeOf(root, id)?.rewrite?.original.body;
+  expect(kept("ask-1")).toBe("The agent's question?");
+  expect(kept("c2")).toBe("The agent's reply.");
+  expect(kept("m1")).toBe("The agent's message.");
+  expect(nodeOf(root, "c1")).toBeDefined();
+  expect(nodeOf(root, "c1")?.rewrite).toBeUndefined();
 });
 
 // The coverage read's and the results read's plain words leave out every

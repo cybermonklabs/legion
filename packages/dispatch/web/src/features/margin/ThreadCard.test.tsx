@@ -393,6 +393,61 @@ test("a comment body with inline code renders it as <code>", async () => {
   }
 });
 
+// A reply the reviewer rewrote shows its original with `w`, as its badge says, while it holds the
+// focus a press on its words gives it. The card's own `w` is its rewritten root's, and leaves a
+// `w` the reply took, so the root keeps the wording it shows.
+test("w on a rewritten reply shows its original in place, and leaves its rewritten root as it is", async () => {
+  await warmMarkdownRenderer();
+  const user = userEvent.setup();
+  const rewrittenRoot = comment("root-rewritten", "The mirror lags the ledger.", root.created_at, {
+    rewrite: {
+      at: "2026-09-10T00:02:00Z",
+      by: "reviewer",
+      original: { body: "mirror slow" },
+      state: "rewritten",
+    },
+  });
+  const rewrittenReply = comment(
+    "reply-rewritten",
+    "The deploy waits for the migration.",
+    reply.created_at,
+    {
+      anchor: null,
+      reply_to: rewrittenRoot.id,
+      rewrite: {
+        at: "2026-09-10T00:02:00Z",
+        by: "reviewer",
+        original: { body: "R3 flip: deploy gated on mig." },
+        state: "rewritten",
+      },
+    }
+  );
+  const view = renderCard(
+    thread({
+      key: rewrittenRoot.id,
+      replies: [rewrittenReply],
+      root: { comment: rewrittenRoot, kind: "comment" },
+    })
+  );
+  try {
+    const replyRow = within(view.container.querySelector("[data-reply]") as HTMLElement);
+    expect(replyRow.getByRole("button", { name: "Rewritten" })).toHaveAttribute(
+      "title",
+      "Show the original wording (w)"
+    );
+    await user.click(await replyRow.findByText("The deploy waits for the migration."));
+    await user.keyboard("w");
+    expect(await replyRow.findByText("R3 flip: deploy gated on mig.")).toBeTruthy();
+    expect(screen.getByText("The mirror lags the ledger.")).toBeTruthy();
+    expect(screen.queryByText("mirror slow")).toBeNull();
+    await user.keyboard("w");
+    expect(await replyRow.findByText("The deploy waits for the migration.")).toBeTruthy();
+    expect(screen.getByText("The mirror lags the ledger.")).toBeTruthy();
+  } finally {
+    view.unmount();
+  }
+});
+
 test("Escape with an empty inline reply collapses the thread", async () => {
   const user = userEvent.setup();
   let collapsed = false;
@@ -753,6 +808,41 @@ test("a collapsed suggestion card previews its note formatted on one line", asyn
     expect(preview.querySelector("ul, li, p")).toBeNull();
   } finally {
     view.unmount();
+  }
+});
+
+// A suggestion's note is the comment's body, which the reviewer may have rewritten: while the
+// badge shows the agent's wording, the note under the diff shows it too, and the folded card's
+// preview of the note reads the same wording (`useOriginalShown`).
+test("a rewritten suggestion's note shows its original while the badge does, open and folded", async () => {
+  await warmMarkdownRenderer();
+  const user = userEvent.setup();
+  const rewritten = suggestionThread({
+    body: "Tighter wording.",
+    rewrite: {
+      at: "2026-09-10T00:02:00Z",
+      by: "reviewer",
+      original: { body: "tighten pls" },
+      state: "rewritten",
+    },
+  });
+  const open = renderCard(rewritten);
+  try {
+    const card = screen.getByTestId("margin-comment-root-1");
+    expect(await within(card).findByText("Tighter wording.")).toBeTruthy();
+    await user.click(within(card).getByRole("button", { name: "Rewritten" }));
+    expect(await within(card).findByText("tighten pls")).toBeTruthy();
+    expect(within(card).queryByText("Tighter wording.")).toBeNull();
+  } finally {
+    open.unmount();
+  }
+  const folded = renderCard(rewritten, { expanded: false });
+  try {
+    const card = screen.getByTestId("margin-comment-root-1");
+    expect(await within(card).findByText("tighten pls")).toBeTruthy();
+    expect(within(card).queryByText("Tighter wording.")).toBeNull();
+  } finally {
+    folded.unmount();
   }
 });
 

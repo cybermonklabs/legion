@@ -400,15 +400,17 @@ export function DecisionsFilterBody({
   }, [drawn, partOf, reveal, writeUps]);
   // Whether the list draws the node the address names, which the page is told
   // (`onRevealDrawn`), so that where it does not the outline is drawn in the view's place and
-  // lands on it as the outline does. The list draws every node the tree holds that an address
-  // names - an ask or a decision as an entry, a node of another kind as the row before the
-  // parts, a decision the decisions read holds no row for in the foot - but for a person's
-  // write-up of an answered question, which it draws only as the row of a question it answers,
-  // where the address lands as above. Under words that match none of those questions the list
-  // draws neither the write-up nor any question it answers, so the address would land nowhere
-  // here; the outline draws the write-up under the question it answers. It is said before the
-  // browser paints, so where the reads were held as the view was drawn, as on Back to its
-  // address, no list is painted in the outline's place.
+  // lands on it as the outline does. The list draws the node where it stands in a part
+  // (`partOf`) - an ask or a decision as an entry, a node of another kind as the row before the
+  // parts, a decision the decisions read holds no row for in the foot. A decision block the
+  // reviewer holds stands in no part until it posts (`decisionsParts`), so the list draws no row
+  // of it, and the outline draws it and lands on it. Nor is a person's write-up of an answered
+  // question an entry: the list draws it only as the row of a question it answers, where the
+  // address lands as above. Under words that match none of those questions the list draws
+  // neither the write-up nor any question it answers, so the address would land nowhere here;
+  // the outline draws the write-up under the question it answers. It is said before the browser
+  // paints, so where the reads were held as the view was drawn, as on Back to its address, no
+  // list is painted in the outline's place.
   useLayoutEffect(() => {
     if (onRevealDrawn === undefined) return;
     if (reveal === undefined) {
@@ -420,8 +422,8 @@ export function DecisionsFilterBody({
       onRevealDrawn(drawn.some((entry) => restated.has(entry.node.id)));
       return;
     }
-    onRevealDrawn(true);
-  }, [drawn, onRevealDrawn, reveal, writeUps]);
+    onRevealDrawn(partOf.has(reveal));
+  }, [drawn, onRevealDrawn, partOf, reveal, writeUps]);
 
   // Whether the focus on the foot's control is the one this body put there on its own, which
   // the reader has not yet pressed, typed on or left. The tree takes the focus only from a

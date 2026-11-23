@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
 
-import type { ArtifactBlock, Decision, DecisionLink, DisplayTree } from "../../../api/types";
+import type { ArtifactBlock, Ask, Decision, DecisionLink, DisplayTree } from "../../../api/types";
 import { wordsOf } from "../../refs/tree-fragment";
 import { type ChangeComment, decisionChanges, inReviewList } from "../decision-review";
-import type { DocumentBlocks, TreeNode } from "../issue-tree";
+import { buildIssueTree, type DocumentBlocks, type TreeNode } from "../issue-tree";
 import { NODE_TYPE_NAMES } from "../page-words";
-import { presetView } from "../presets";
+import { filterSignals, presetView } from "../presets";
 import { treeContext } from "../tree-drafts";
 import {
   AGENT,
@@ -743,4 +743,72 @@ test("a comment the address names is an entry of its own", () => {
     shapes: [],
   });
   expect(idsOf(partsOf(children, made)).named).toEqual([]);
+});
+
+/** One question of the issue as the asks read sends it, which the tree is built from
+ *  (`buildIssueTree`): asked by the agent, open, and the reader's turn. */
+function askRead(id: string, extra: Partial<Ask> = {}): Ask {
+  return {
+    anchor: null,
+    answer: null,
+    author: AGENT,
+    artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
+    block_id: null,
+    created_at: "2026-11-10T08:00:00Z",
+    edited_at: null,
+    id,
+    issue_key: KEY,
+    kind: "question",
+    multiple: false,
+    opened_event_id: 1,
+    options: [],
+    question: `Question ${id}?`,
+    state: "open",
+    urgency: "med",
+    waiting_on: "human",
+    waiting_on_person: READER,
+    ...extra,
+  };
+}
+
+// A decision block the reviewer holds (`held_for_review`) shows in its document and in the
+// outline, and is in no part of the filter until it posts, as the server's Decisions view, every
+// Inbox and every count of open asks leave it out; the filter's count leaves it out with the
+// list. The tree is built from the asks read as the server sends it (`buildIssueTree`), so the
+// case reads the mark the tree takes from that read. Once the block posts, it is an open
+// question like any other.
+test("a decision block the reviewer holds is in no part until it posts", () => {
+  const block = {
+    block_artifact: { id: "artifact-spec", primary: true, slug: SPEC_SLUG },
+    block_id: "q-held",
+  };
+  const read = (held: boolean) => {
+    const root = buildIssueTree({
+      asks: [
+        askRead("held", { ...block, ...(held ? { held_for_review: true } : {}) }),
+        askRead("open"),
+      ],
+      issue: issueDetails(),
+      viewer: READER,
+    });
+    const parts = decisionsParts({
+      asks: [],
+      decisions: decisionsRead([]),
+      issueKey: KEY,
+      nodeIdOf,
+      reader: READER,
+      root,
+      view: presetView(root, "decisions", "").root,
+    });
+    return { count: filterSignals(root, "").decisions.count, parts: idsOf(parts) };
+  };
+  const nothingElse = { agents: [], named: [], others: [], review: [], yours: [] };
+  expect(read(true)).toEqual({ count: 1, parts: { ...nothingElse, open_questions: ["open"] } });
+  expect(read(false)).toEqual({
+    count: 2,
+    parts: { ...nothingElse, open_questions: ["open", `${SPEC_SLUG}#b-q-held`] },
+  });
 });

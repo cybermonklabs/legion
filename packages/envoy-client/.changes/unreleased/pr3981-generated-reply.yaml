@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  `postDeliveryReply` and `DispatchClient.deliveryReply` take `generated: true` for text the plugin
+  generated rather than the agent wrote, such as a `!command` report or the plugin's own error
+  reply. That send carries `Dispatch-Generated-Text: 1`, so Dispatch posts it at once and its
+  writing check does not read it. An agent's own answer never sets it.

@@ -1,0 +1,73 @@
+kind: Added
+body: |-
+  Dispatch can now review an agent's text to a person, before or after the person sees it. The
+  reviewer reads an ask, a new issue's title and spec, a comment, a message, and an agent's reply to
+  a delivery. It reads no text a person wrote, none the Legion daemon wrote, and none that only an
+  agent reads.
+  One setting for each kind chooses what happens: `DISPATCH_REVIEWER_ASKS`,
+  `DISPATCH_REVIEWER_ISSUES`, `DISPATCH_REVIEWER_COMMENTS` and `DISPATCH_REVIEWER_MESSAGES`, each
+  `off` (the default), `after` or `hold`.
+  With `hold`, no person sees the text until it posts. The write answers at once, in its
+  usual shape, under an id kept for the text, with an added `held` object. That answer carries the
+  advice the write gets with the reviewer off, the nearest existing issues and answered questions
+  and the near-copy check included, and a near copy the check refuses is refused at once, with
+  nothing held. A write beside a held text it names (an ask, a comment or a message on a held
+  issue, a reply to a held comment or ask, a child of a held issue or a new issue a held issue
+  blocks, a follow-up to a held reply)
+  answers what its post will write, read off the held texts it waits on: whom an ask waits on, the
+  text an ask's or a comment's anchor covers in a held issue's spec, a comment's thread, turn and
+  `ask_waiting_on`, the block a reply names in a held comment, ask or message (its id, reference
+  and text, all but its node id), the reply a follow-up is filed under, and the advice of its
+  issue as that post will find it, a child's spec read as its seed renders it, and is refused at
+  once, with the answer its post would give, where that post would refuse it (a reply to a held
+  text on another issue, a block or an anchor quote the held text does not hold, an anchor whose
+  mark may not stand where its quote does, a child the depth cap or its own create refuses). An
+  anchor in a held issue's document is left to its post where a write kept beside that issue
+  posts first, since that write can make the document. A held text counts in its advice the held
+  texts that post before it. A review that finds nothing posts the text.
+  A new issue whose blockers name held issues posts only once each of them has posted, its dry run
+  leaving every held blocker out, and a session whose credential names one project is refused a
+  held blocker of another project at once (`403 PROJECT_SCOPE`).
+  Otherwise the findings and the
+  reviewer's rewrite go to the writer session as a turn of their own, and the writer edits the text
+  or posts it as written.
+  A held issue writes its `near_copy_checks` row when it posts, under its key, with the title and
+  the spec the near-copy gate read.
+  At its post a held issue is checked for near copies again, and one filed while it was held, or
+  one its edited title matches, refuses nothing: the issue posts marked as forced past it, and its
+  writer is told the copy's key and title.
+  When Dispatch refuses a held text's post, that text and every held text that reads it (a write
+  that names it, or the session's later reply to the same delivery) are not posted, and the writer
+  session of each is told so, with the refusal or the text it waited on. A held text that waited on
+  it only for its turn at its place posts in its turn. A refusal a later post can clear (`429`,
+  `DOC_NEWER_CONTENT`, `DOCUMENT_UNLOADABLE`) leaves the text for the sweep to post again.
+  A session's later reply to a delivery whose earlier reply is held waits on it, a generated or
+  typed one too, so the replies post in the order written; one sent again on the same attempt
+  while the first is held is answered the first's held answer, with no `ask_waiting_on`, as a
+  reply sent again after its post is answered, and nothing more is held. A held reply from the
+  live holder of the role its delivery went to posts on what the listener said when it was
+  written. Any other held ask, comment, message, reply or new issue waits on the same session's
+  newest held text, not yet posted, at the place it posts to: its issue or document, the session
+  or role a message goes to, the issue or document of the comment a reply answers, the session
+  that sent the message a reply answers, or a new issue's project. It is reviewed at once, its
+  answer's `held.waits_on` names that text, and it posts only after it, so the session's held
+  texts there post in the order written. A
+  write that posts at once, such as one a person typed, a generated one, or one of a kind whose
+  setting is not `hold`, does not wait for them.
+  With `after`, the text posts at once, and the findings of the review after it go to the writer.
+  Nothing more happens if the writer does not act.
+  A writer has `DISPATCH_REVIEWER_WRITER_WINDOW` (default `5m`) to act, and a writer session that
+  has gone has none. Then `DISPATCH_REVIEWER_UNEDITED` decides what posts: `rewrite` (the default)
+  posts the reviewer's rewrite, marked as rewritten, and `as_written` posts the text as written.
+  A review whose model fails, or that takes longer than `DISPATCH_REVIEWER_TIMEOUT` (default
+  `120s`), posts the text as written. A reply that is not the object the call asks for is asked
+  again, two more times at most, inside that same bound. On an `azure` model group each call sends
+  its schema in strict mode. A finding whose quote is not in the text is dropped.
+  `DISPATCH_REVIEWER_RULES` names the rule sets the reviewer applies, from `noslop`, `phrases`,
+  `reader_words`, `ask_parts`, `structure` and `detector`. The default is
+  `noslop,phrases,reader_words,ask_parts`.
+  A value other than `off` needs the reviewer's model group (`DISPATCH_REVIEWER_MODEL_*`): without
+  it the server refuses to start.
+  A sweep under the lease `reviewer-sweep`, every 10 seconds, reviews again a text a stopped
+  process left and posts each text whose writer did not act in time. Each decision is a row of
+  `writing_check_events`.

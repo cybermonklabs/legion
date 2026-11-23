@@ -1,0 +1,55 @@
+# What each model of candidates.yaml charges, in USD per million tokens: prompt tokens (input),
+# reply tokens (output), a cache write and a cache read. The harness prices every call's tokens
+# with this table, and refuses to start when a model of candidates.yaml has no row here. A model
+# that --grader or --reader names needs a row too.
+sources:
+  claude:
+    source: >-
+      The operator's model gateway, GET /model/info: each model's input_cost_per_token,
+      output_cost_per_token, cache_creation_input_token_cost and cache_read_input_token_cost,
+      times one million. cache_creation_input_token_cost is the price of a five-minute cache
+      write; the gateway prices a write of a mark that names no life, which lives one hour, at
+      cache_creation_input_token_cost_above_1hr. The harness's own calls carry no cache mark.
+      claude-fable-5-2, a candidate that `--reader` may name as the fresh reader, was read from
+      the same source on 2026-11-16.
+    read: 2026-11-15
+  foundry:
+    source: >-
+      The Azure retail prices API (https://prices.azure.com/api/retail/prices), region westus2,
+      the Global meters of each model (the deployments are GlobalStandard): "Azure Grok Models"
+      meters "4.7 Inp glbl 1M Tokens", "4.7 Outp glbl 1M Tokens" and "4.7 Cached glbl 1M Tokens"
+      (effective 2026-10-01); "Azure Kimi" meters "Kimi 3.1 Pro Inp Glbl 1M Tokens", "Kimi 3.1 Pro
+      Outp Glbl 1M Tokens" and "Kimi 3.1 Cached Inp Glbl 1M Tokens" (effective 2026-11-01). A
+      Foundry chat deployment has no cache write price. The four deployments INFRA-3483 declares,
+      read 2026-11-17: "Azure Mistral Models" meters "Large 3 Inp glbl Tokens" and "Large 3 Outp
+      glbl Tokens" (effective 2025-12-01); "Azure Llama Models" meters "Llama 4 Maverick 17B Inp
+      glbl Tokens" and "Llama 4 Maverick 17B Outp glbl Tokens" (effective 2025-06-01); "Azure
+      OpenAI OSS Models" meters "gpt-oss-120B Inp glbl Tokens" and "gpt-oss-120B Outp glbl
+      Tokens" (effective 2026-03-01). These three list no cached-input meter, so a cached read
+      is priced as input. DeepSeek-V4-Pro has no Global meter, and INFRA-3483 declares a
+      GlobalStandard deployment, so its row is an estimate from another meter: "Azure Fireworks
+      Models" "FW DeepSeek-V4-Pro Inp DZ Tokens", "FW DeepSeek-V4-Pro Outp DZ Tokens" and "FW
+      DeepSeek-V4-Pro Ch Inp DZ Tokens" (data zone, effective 2026-06-01). The four rows are
+      corrected from each deployment's first billed calls before the held-out run's named commit.
+    read: 2026-11-15
+
+prices:
+  claude-opus-5: {family: claude, input: 5, output: 25, cache_write: 6.25, cache_read: 0.5}
+  claude-opus-4-7: {family: claude, input: 5, output: 25, cache_write: 6.25, cache_read: 0.5}
+  claude-opus-4-6: {family: claude, input: 5, output: 25, cache_write: 6.25, cache_read: 0.5}
+  claude-sonnet-4-5: {family: claude, input: 3, output: 15, cache_write: 3.75, cache_read: 0.3}
+  claude-opus-5-5: {family: claude, input: 4, output: 20, cache_write: 5, cache_read: 0.2}
+  claude-sonnet-4-6: {family: claude, input: 3, output: 15, cache_write: 3.75, cache_read: 0.3}
+  claude-haiku-4-5-20251001: {family: claude, input: 1, output: 5, cache_write: 1.25, cache_read: 0.1}
+  claude-haiku-5-5: {family: claude, input: 0.1, output: 0.5, cache_write: 0.125, cache_read: 0.01}
+  claude-sonnet-5-5: {family: claude, input: 2, output: 10, cache_write: 2.5, cache_read: 0.1}
+  claude-opus-4-8: {family: claude, input: 5, output: 25, cache_write: 6.25, cache_read: 0.5}
+  claude-fable-5-2: {family: claude, input: 8, output: 40, cache_write: 10, cache_read: 0.2}
+  grok-4.7: {family: foundry, input: 2, output: 6, cache_write: 0, cache_read: 0.5}
+  Kimi-K3.1-Pro: {family: foundry, input: 2.3, output: 11.5, cache_write: 0, cache_read: 0.23}
+  # INFRA-3483's four deployments, named as its R1 names them. A row prices no call until its
+  # deployment joins candidates.yaml. DeepSeek-V4-Pro's row is an estimate from a data-zone meter.
+  DeepSeek-V4-Pro: {family: foundry, input: 1.925, output: 3.828, cache_write: 0, cache_read: 0.165}
+  Mistral-Large-3: {family: foundry, input: 0.5, output: 1.5, cache_write: 0, cache_read: 0.5}
+  Llama-4-Maverick-17B-128E-Instruct-FP8: {family: foundry, input: 0.25, output: 1, cache_write: 0, cache_read: 0.25}
+  gpt-oss-120b: {family: foundry, input: 0.15, output: 0.6, cache_write: 0, cache_read: 0.15}

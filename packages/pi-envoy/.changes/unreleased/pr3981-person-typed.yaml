@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  A `!` line a person sends from Dispatch's live view whose first word is `dispatch` now runs as
+  `DISPATCH_PERSON_TYPED=1 dispatch …`. Only that first command gets the variable, never a command
+  after `;`, `&&`, `||` or `|`, and the person's stored line does not change. The `dispatch`
+  command marks each of its writes with `Dispatch-Person-Typed: 1`, so Dispatch posts it at once as
+  the person's own text, with no review and no written-rules refusal.

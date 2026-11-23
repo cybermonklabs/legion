@@ -55,6 +55,50 @@ func TestQuoteAnchorWritesServerMark(t *testing.T) {
 	}
 }
 
+// A new anchor whose mark the schema allows nowhere its quote stands - an ask's in a code block,
+// any anchor's in the front matter - is the caller's anchor to fix, not a document outside its
+// schema: 400 INVALID_ANCHOR naming the anchor's kind, its quote, the place and the way out. A
+// comment's mark may stand in the code block an ask's may not.
+func TestAnAnchorWhoseMarkMayNotStandWhereItsQuoteStandsIsRefusedAsTheCallers(t *testing.T) {
+	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
+		documentService := docs.New(docs.Deps{Store: database, Settle: time.Hour})
+		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		return documentService
+	})
+	issue := createInteractionIssue(t, handler, "TEST", "Anchors where marks may not stand", "---\ntitle: Gnomon offsets\n---\n\nIntro.\n\n```\nreseat the gnomon\n```\n")
+	onIssue := "/api/v1/issues/" + issue.Key
+	for _, refused := range []struct {
+		what, path string
+		body       map[string]any
+		want       string
+	}{
+		{"an ask quoting a code block", onIssue + "/asks", map[string]any{
+			"question": "Reseat the gnomon?", "anchor": map[string]any{"artifact": "spec", "quote": "reseat the gnomon"},
+		}, `the ask anchored on "reseat the gnomon" would stand in a code block, where its mark is not allowed; quote text that stands outside a code block, or anchor a comment there`},
+		{"a comment quoting the front matter", onIssue + "/comments", map[string]any{
+			"body": "The title names the offsets.", "anchor": map[string]any{"artifact": "spec", "quote": "Gnomon offsets"},
+		}, `the comment anchored on "Gnomon offsets" would stand in the front matter, where its mark is not allowed; quote text that stands outside the front matter`},
+		{"a suggestion quoting the front matter", onIssue + "/comments", map[string]any{
+			"body": "Name the offsets.", "anchor": map[string]any{"artifact": "spec", "quote": "Gnomon offsets"},
+			"suggestion": map[string]any{"replace_with": "Offsets"},
+		}, `the suggestion anchored on "Gnomon offsets" would stand in the front matter, where its mark is not allowed; quote text that stands outside the front matter`},
+	} {
+		response := dispatchRequest(t, handler, http.MethodPost, refused.path, refused.body, "alice")
+		answer := decodeBody[struct {
+			Code  string `json:"code"`
+			Error string `json:"error"`
+		}](t, response)
+		if response.Code != http.StatusBadRequest || answer.Code != "INVALID_ANCHOR" || answer.Error != refused.want {
+			t.Errorf("%s: %d %s, want 400 INVALID_ANCHOR %q", refused.what, response.Code, response.Body.String(), refused.want)
+		}
+	}
+	if comment := dispatchRequest(t, handler, http.MethodPost, onIssue+"/comments", map[string]any{
+		"body": "Reseat it first.", "anchor": map[string]any{"artifact": "spec", "quote": "reseat the gnomon"},
+	}, "alice"); comment.Code != http.StatusCreated {
+		t.Errorf("a comment quoting the code block: %d %s, want it anchored", comment.Code, comment.Body.String())
+	}
+}
+
 func TestMarkAnchorVerifiesBrowserMark(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service

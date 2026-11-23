@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  When Dispatch's `DISPATCH_WRITING_RULES_REFUSAL` is on, the bundled `dispatch` command refuses a
+  session's first write of an ask, an issue, a comment or a message once, and shows the written
+  rules for the person who reads it. The agent checks its text and runs the command again.
+  The plugin counts each compaction of the main agent's context in the command's state file, so
+  the rules show again before the next such write. A subagent's compaction is not counted.
+  A write AskGate gates is checked against the rules before its AskGate marker is spent, so a
+  write the rules refuse keeps its marker, and the call run again is the one AskGate reviewed.

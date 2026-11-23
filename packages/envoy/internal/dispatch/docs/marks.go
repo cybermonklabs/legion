@@ -87,6 +87,8 @@ type Anchored struct {
 
 // MarkQuote marks one matching quote and returns what the new mark anchors to. A comment mark
 // made under WithCommentMarks is written on a closed issue's document too; a suggestion's is not.
+// A mark the schema allows nowhere its quote stands is the caller's anchor to fix
+// (AnchorNotAllowedError).
 func (s *Service) MarkQuote(ctx context.Context, artifactID string, mark MarkSpec, quote string, occurrence *int) (Anchored, error) {
 	if mark.Kind == MarkComment {
 		ctx = commentMarkOperation(ctx)
@@ -103,7 +105,7 @@ func (s *Service) MarkQuote(ctx context.Context, artifactID string, mark MarkSpe
 		transact(func(txn *crdt.Transaction) {
 			_, markErr = markQuoteInTxn(txn, fragment, tree, quote, occurrence, nil, mark)
 		})
-		return markErr
+		return anchorNotAllowed(mark.Kind, quote, markErr)
 	})
 	if err != nil {
 		return Anchored{}, err
@@ -118,6 +120,90 @@ func (s *Service) MarkQuote(ctx context.Context, artifactID string, mark MarkSpe
 		return Anchored{}, err
 	}
 	return anchored, nil
+}
+
+// QuoteInSeed is MarkQuote made in the document a seed of markdown starts (SeedText) rather than
+// in a room: the seed's tree is written into a fresh document, as its first update loads into a
+// room (seededDocument), a mark of kind is written on quote there by MarkQuote's own steps
+// (markQuoteInTxn), and what that mark covers is read back (readAnchored). It answers the refusal
+// MarkQuote answers in that document - no such quote, places occurrence does not choose between,
+// and a mark the schema allows nowhere its text stands (AnchorNotAllowedError) - and otherwise
+// what the mark anchors to: the text it covers, which a whitespace-normalized quote, or one
+// written with inline markdown, does not repeat, and a block of this document alone, whose id the
+// seed of a real document mints again. The document is dropped. A text held beside a held issue
+// resolves the anchor it names in that issue's spec here, before the issue's post seeds the spec.
+func QuoteInSeed(markdown string, kind MarkKind, quote string, occurrence *int) (Anchored, error) {
+	tree, err := parseReplacing(nil, markdown)
+	if err != nil {
+		return Anchored{}, err
+	}
+	doc, fragment, err := seededDocument(tree, nil)
+	if err != nil {
+		return Anchored{}, err
+	}
+	// The tree read back from the document, as a room's operation starts from it (startTree).
+	seeded, err := treeOfUnshared(doc)
+	if err != nil {
+		return Anchored{}, err
+	}
+	mark := MarkSpec{Kind: kind, ID: "seed"}
+	var markErr error
+	doc.Transact(func(txn *crdt.Transaction) {
+		_, markErr = markQuoteInTxn(txn, fragment, seeded.Node(), quote, occurrence, nil, mark)
+		markErr = anchorNotAllowed(kind, quote, markErr)
+	})
+	// The document the mark was written on reads, so a schema refusal is the write's own.
+	if markErr != nil {
+		return Anchored{}, producedSchemaError(markErr)
+	}
+	marked, err := treeOfUnshared(doc)
+	if err != nil {
+		return Anchored{}, producedSchemaError(err)
+	}
+	anchored, err := readAnchored(marked.Node(), kind, mark.ID)
+	if errors.Is(err, ErrAnchorMissing) {
+		return Anchored{}, fmt.Errorf("%w: written mark %q is missing", ErrDocSchema, mark.ID)
+	}
+	return anchored, err
+}
+
+// AnchorNotAllowedError is the refusal of a new anchor whose mark the schema allows nowhere its
+// quote stands (pmdoc.MarkNotAllowedError: an ask's in a code block, any anchor's in the front
+// matter), which MarkQuote and QuoteInSeed answer in place of the schema's refusal: the caller's
+// anchor to fix, as an upload's is (reanchorError), naming the anchor's kind, its quote, the place
+// its text stands and the way out, and holding no cause it wraps, so no route reads it as a
+// document outside its schema. Every route answers it 400 INVALID_ANCHOR, and a held text's post
+// that meets it fails the text.
+type AnchorNotAllowedError struct {
+	// Kind is the anchor's kind as a person names it (anchorKinds), Quote its quote as the caller
+	// wrote it, and Place where that text stands (pmdoc.MarkNotAllowedError.Place).
+	Kind, Quote, Place string
+	// Comment is whether a comment's mark may stand there, a way out for an ask's anchor.
+	Comment bool
+}
+
+func (e *AnchorNotAllowedError) Error() string {
+	message := fmt.Sprintf("the %s anchored on %q would stand in %s, where its mark is not allowed; quote text that stands outside %s",
+		e.Kind, e.Quote, e.Place, e.Place)
+	if e.Comment {
+		message += ", or anchor a comment there"
+	}
+	return message
+}
+
+// anchorNotAllowed is err, the refusal of a mark of kind on quote (markQuoteInTxn), as the
+// caller's refusal where the schema allows that mark nowhere the quote stands
+// (AnchorNotAllowedError); err itself otherwise, and for a mark type no anchor carries.
+func anchorNotAllowed(kind MarkKind, quote string, err error) error {
+	var notAllowed *pmdoc.MarkNotAllowedError
+	name, named := anchorKinds[string(kind)]
+	if !named || !errors.As(err, &notAllowed) {
+		return err
+	}
+	return &AnchorNotAllowedError{
+		Kind: name, Quote: quote, Place: notAllowed.Place(),
+		Comment: kind != MarkComment && notAllowed.Allows(string(MarkComment)),
+	}
 }
 
 // readAnchored reads a persisted mark's covered text and containing block from tree;

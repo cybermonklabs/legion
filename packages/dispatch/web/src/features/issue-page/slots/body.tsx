@@ -11,11 +11,14 @@ import { Link, Navigate, useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
 import {
+  pageLineBorder,
+  pageWordsText,
   primaryButtonBg,
   primaryButtonHoverBg,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../../theme/classes";
+import { originalWording, useOriginalShown } from "../../inbox/ask-rewrite";
 import { ItemMatchList } from "../../issue/ItemMatchList";
 import type { ItemLanding, ItemRoute } from "../../issue/useItemLanding";
 import { buildIssuePath } from "../../refs/routes";
@@ -34,8 +37,9 @@ import { NoTooltips } from "../NoTooltips";
 import { useOutlineReads } from "../outline-reads";
 import { useOutlineRequest } from "../outline-request";
 import { KEY_REPORTS } from "../page-structure";
-import { EMPTY_STATE_LINES } from "../page-words";
+import { EMPTY_STATE_LINES, PRESET_NAMES } from "../page-words";
 import { presetView } from "../presets";
+import { RowText } from "../RowText";
 import type { SlotProps } from "../slot-props";
 import { specSummary } from "../spec-summary";
 import { focusIsLoose } from "../tree-focus";
@@ -116,6 +120,11 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   // the body draws for the row to take onto its own stage (`useOutlineEditing`).
   const { onEditing, panels } = useOutlineEditing(issue);
   const isClosed = issue.closed_at !== null;
+  // The reviewer rewrote the issue's title and spec as the agent opened it: while the title's
+  // badge shows the agent's wording (`IssueTitleRow`), the spec as the agent wrote it stands over
+  // the outline, whose first rows are the spec's own blocks (`ROOT_ORDER.block`), as today's page
+  // draws it in place of the Spec tab's document (`issue/IssuePage.tsx`).
+  const originalSpec = originalWording(issue.rewrite, useOriginalShown(key))?.body;
   return (
     <NoTooltips>
       {given === undefined && <ReaderActsWatch into={own} key={following} />}
@@ -129,6 +138,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
         data-issue-body=""
         ref={box}
       >
+        {originalSpec === undefined ? null : <OriginalSpec words={originalSpec} />}
         {fallback?.kind === "landing" ? (
           // Keyed on the following, so a link to the same item followed again is drawn anew and
           // takes the focus again.
@@ -174,6 +184,23 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
       </div>
       {panels}
     </NoTooltips>
+  );
+}
+
+/**
+ * The issue's spec as its agent wrote it, before the reviewer rewrote it (INFRA-3231's R7), named
+ * by the Spec's own name: drawn as stored, as the outline draws every text no reading of the
+ * server's came with (`RowText`), and outside the tree, so its links keep their tab stops.
+ */
+function OriginalSpec({ words }: { words: string }): ReactNode {
+  return (
+    <section
+      aria-label={PRESET_NAMES.spec}
+      className={`mb-3 min-w-0 border-b pb-3 text-[15px] leading-6 ${pageLineBorder} ${pageWordsText}`}
+      data-issue-original-spec=""
+    >
+      <RowText markdown={words} tabStops />
+    </section>
   );
 }
 

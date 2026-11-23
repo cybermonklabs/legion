@@ -126,11 +126,7 @@ func (s *server) registerCommentAnchor(ledger *docs.Ledger, comment model.Commen
 	if comment.Anchor == nil {
 		return
 	}
-	kind := docs.MarkComment
-	if comment.Suggestion != nil {
-		kind = docs.MarkSuggestion
-	}
-	row := docs.PendingAnchor{ID: comment.ID, Kind: kind, Anchor: *comment.Anchor, Open: !comment.Resolved}
+	row := docs.PendingAnchor{ID: comment.ID, Kind: commentMarkKind(comment.Suggestion != nil), Anchor: *comment.Anchor, Open: !comment.Resolved}
 	if row.Open {
 		row.Event = func(ctx context.Context, tx pgx.Tx) (func(model.Anchor) (model.Event, error), error) {
 			return s.commentAnchorRefreshEvent(ctx, tx, comment, actor, stored)

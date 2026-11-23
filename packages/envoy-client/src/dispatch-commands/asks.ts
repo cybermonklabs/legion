@@ -33,6 +33,7 @@ import {
   type ToolArguments,
 } from "./context";
 import { anchor, resolveArtifact } from "./document-targets";
+import { heldWriteLine } from "./held";
 import { askId, normalizeUUID, refuseItemOffRef, resolveIdPrefix } from "./refs";
 import { formatOpenAsksSummary, waitsOnPerson } from "./render-item";
 import { askOwnerDetails, documentTopic, followedAskDetails, followsAsk } from "./results";
@@ -351,14 +352,17 @@ export async function askCommand(context: CommandContext): Promise<DispatchToolR
   const declinedLines =
     ask.issue_key === null ? [] : declinedAskLines(ask.advice, ask.issue_key, linkBase);
   const adviceLines = await otherAdviceLines(() =>
-    renderAdvice(input.tool, askOwner.label, ask.advice, {})
+    renderAdvice(input.tool, askOwner.label, ask.advice, { held: ask.held })
   );
   // The person the question reaches is on the line that names the ask, so an agent learns
   // who reads it without a second command.
   const asked = waitsOnPerson(ask);
+  const names = ` on ${askOwner.label} (urgency ${ask.urgency})${asked === undefined ? "" : `, waiting on ${asked}`}`;
   return {
     text: [
-      `Asked ${ask.id} on ${askOwner.label} (urgency ${ask.urgency})${asked === undefined ? "" : `, waiting on ${asked}`}: ${ask.question}`,
+      ask.held === undefined
+        ? `Asked ${ask.id}${names}: ${ask.question}`
+        : `${heldWriteLine(ask.held, "ask", ask.id, names)} The question: ${ask.question}`,
       ...checkLines,
       ...reviewLines,
       ...declinedLines,
@@ -368,6 +372,7 @@ export async function askCommand(context: CommandContext): Promise<DispatchToolR
     details: {
       ...(await followedAskDetails(client, ask, resolved?.artifact)),
       ...(ask.advice === undefined ? {} : { advice: ask.advice }),
+      ...(ask.held === undefined ? {} : { held: ask.held }),
     },
   };
 }

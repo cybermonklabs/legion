@@ -8,6 +8,7 @@ import {
   textMutedOnSurface,
   textPrimaryOnSurface,
 } from "../../theme/classes";
+import type { OriginalToggleProps } from "../inbox/ask-rewrite";
 import { type AgentPart, AgentParts } from "../refs/AgentName";
 import { Timestamp } from "../refs/Timestamp";
 import type { DwellRef } from "../shell/useDwell";
@@ -285,6 +286,9 @@ interface TargetedMessageCardProps {
   readonly header: ReactNode;
   readonly onReply?: () => void;
   readonly onRetry?: (delivery: MessageDeliveryMode) => void;
+  /** What lets `w` show or hide a rewritten message's original wording (`originalToggleProps`),
+   *  on the card's own row: its replies, drawn under that row, take their own. */
+  readonly originalToggle?: OriginalToggleProps;
   /** Holds the Reply button while the composer it would address is busy with a send. */
   readonly replyDisabled?: boolean;
   readonly register?: DwellRef;
@@ -308,6 +312,7 @@ export function TargetedMessageCard({
   header,
   onReply,
   onRetry,
+  originalToggle,
   register,
   replyDisabled = false,
   retrying = false,
@@ -324,7 +329,7 @@ export function TargetedMessageCard({
       data-turn={turnID}
       ref={register}
     >
-      <div className="flex gap-3">
+      <div className="flex gap-3" {...originalToggle}>
         {header}
         <div className="min-w-0 flex-1">{body}</div>
         {onReply === undefined ? null : (

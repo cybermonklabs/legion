@@ -9,12 +9,14 @@ import "fake-indexeddb/auto";
 import { notifyManager } from "@tanstack/react-query";
 import { resetReachability } from "../api/reachability";
 import { resetAnswerDrafts } from "../features/inbox/answer-drafts";
+import { resetOriginalsShown } from "../features/inbox/ask-rewrite";
 import { resetDraftStorage } from "../features/inbox/draft-store";
 import { resetOutstandingAnswers } from "../features/inbox/outstanding-answers";
 import { resetReplyDrafts } from "../features/inbox/reply-drafts";
 import { resetPinState } from "../features/issue/pin-write";
 import { resetRowReferenceReadings } from "../features/issue-page/row-references";
 import { resetTimestampTick } from "../features/refs/Timestamp";
+import { resetQuotes } from "../features/threads/quote-reply";
 import { resetWriteStorage } from "../features/writes/write-storage";
 import { type Writes, watchWriteStores } from "../features/writes/write-store";
 import {
@@ -198,6 +200,13 @@ afterEach(resetReachability);
 // `<Timestamp>` would tick. `clearTimeout` clears a timer of either clock (measured on Bun 1.4.4),
 // so this reset needs no place relative to the clock restore below.
 afterEach(resetTimestampTick);
+// Which rewritten texts show their original (`ask-rewrite.ts`) is kept by the text's id, and a
+// quote no reply box has taken yet (`quote-reply.ts`) by the name of the box's send, which a
+// thread's id names. Rows draw their texts and threads under the same ids, so a text one row left
+// on its original would open on it in the next, and a quote one row handed to a box that never
+// mounted would land in the next row's box of that name.
+afterEach(resetOriginalsShown);
+afterEach(resetQuotes);
 // Each text a row reads is kept in one module-level cache (`row-references.ts`), and so is the id of
 // each list of keys it was read against. A rerun of the file keeps both with the module: a row that
 // counts the readings it makes found its texts read by the run before and counted fewer reads than

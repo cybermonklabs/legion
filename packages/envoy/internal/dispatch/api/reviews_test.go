@@ -622,8 +622,8 @@ func TestAReviewNamingNoVersionOfTheDocumentIsRefusedWithNothingWritten(t *testi
 // holds the person scope and never approve (brokerTokenActor), are each refused 403
 // OAUTH_SCOPE_REQUIRED by the row's scope gate (gateRouteScopes), which runs before the handler.
 // A personal token of the same person holding approve passes that gate and is refused 400
-// INVALID_REVIEW, so the number check is live for the callers the 403 turned away. None of them
-// writes a review.
+// INVALID_REVIEW, so the number check is live for the callers the 403 turned away. No refusal
+// names the session a broker token proved. None of them writes a review.
 func TestAReviewByACallerWhoMayNotReviewIsRefusedForItsCredentialBeforeItsNumber(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRig(t)
@@ -681,8 +681,12 @@ func TestAReviewByACallerWhoMayNotReviewIsRefusedForItsCredentialBeforeItsNumber
 			},
 		} {
 			refused := row.send()
-			if code, _ := refusalOf(t, refused); refused.Code != http.StatusForbidden || code != row.code {
+			code, text := refusalOf(t, refused)
+			if refused.Code != http.StatusForbidden || code != row.code {
 				t.Fatalf("%s reviewing version %q: status=%d body=%s, want 403 %s", row.caller, number, refused.Code, refused.Body.String(), row.code)
+			}
+			if strings.Contains(text, brokerTestSession) {
+				t.Fatalf("%s reviewing version %q: the refusal %q names the session %s", row.caller, number, text, brokerTestSession)
 			}
 		}
 		live := agentRequest(t, rig.handler, http.MethodPost, path, body, reviewer)

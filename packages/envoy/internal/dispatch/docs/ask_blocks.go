@@ -56,6 +56,9 @@ type settlementReconciliation struct {
 	// rewrites are the ask blocks whose server attributes repairAsk repaired, which
 	// withholdAnswers reads again where a repair wrote back an answer.
 	rewrites []serverRewrite
+	// afterCommit is what the reviewer (AskBlockReviewer) asked to run once the settlement's
+	// transaction commits: the reviews of the blocks it opened or reworded.
+	afterCommit []func()
 	// follows are the follows of the asks this settlement opened, each beside the ask it follows:
 	// a session author's node is written before the ask.opened that records the ask exists, and
 	// learns that event right after the settlement appends it (followsByEvent).
@@ -363,10 +366,16 @@ func (s *Service) reconcileAskBlocks(
 	if err != nil {
 		return settlementReconciliation{}, err
 	}
-	credit.askSources.recorded, err = transactionRecordedAskAuthors(ctx, tx, artifactID)
+	// The durable authors, and the ask blocks a person typed in a session among them
+	// (doc_ask_block_authors.person_typed): a block such a write opens or rewords is theirs, and
+	// the reviewer reads none of it. A block a stamp of this transaction renamed keeps the mark
+	// under its minted id, which the rows tx has queued carry (recordStampedAskAuthors).
+	var personTyped map[string]bool
+	credit.askSources.recorded, personTyped, err = transactionRecordedAskAuthors(ctx, tx, artifactID)
 	if err != nil {
 		return settlementReconciliation{}, err
 	}
+	reviewer := s.askBlockReviewer()
 	restoredDecided, err := s.restoreDocumentDecidedWordings(ctx, tx, rows)
 	if err != nil {
 		return settlementReconciliation{}, err
@@ -458,10 +467,20 @@ func (s *Service) reconcileAskBlocks(
 			if err := write(ctx, tx, parts); err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of new ask block %s: %w", ask.ID, err)
 			}
+			payload := model.NewAskEventPayload(ask, changes)
+			// A block a person typed in a session is theirs, as the write that typed it was.
+			payload.PersonTyped = personTyped[block.id]
+			if reviewer != nil {
+				after, err := reviewer.AskBlockOpened(ctx, tx, ask, blockActor, personTyped[block.id])
+				if err != nil {
+					return settlementReconciliation{}, fmt.Errorf("tell the reviewer of new ask block %s: %w", ask.ID, err)
+				}
+				if after != nil {
+					reconciled.afterCommit = append(reconciled.afterCommit, after)
+				}
+			}
 			reconciled.follows = append(reconciled.follows, openedFollow{ask: ask.ID, followed: followed})
-			reconciled.events = append(reconciled.events, documentAskEvent(
-				owner, artifactID, "ask.opened", blockActor, model.NewAskEventPayload(ask, changes),
-			))
+			reconciled.events = append(reconciled.events, documentAskEvent(owner, artifactID, "ask.opened", blockActor, payload))
 			reconciled.repairAsk(block.node, block.id, ask, "", nil)
 			continue
 		}
@@ -559,13 +578,18 @@ func (s *Service) reconcileAskBlocks(
 			if err := write(ctx, tx, parts); err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of reconciled ask %s: %w", ask.ID, err)
 			}
-			reconciled.events = append(reconciled.events, documentAskEvent(
-				owner,
-				artifactID,
-				"ask.edited",
-				actor,
-				model.NewAskEditEventPayload(ask, previous, actor, changes),
-			))
+			edited := model.NewAskEditEventPayload(ask, previous, actor, changes)
+			edited.PersonTyped = personTyped[block.id]
+			reconciled.events = append(reconciled.events, documentAskEvent(owner, artifactID, "ask.edited", actor, edited))
+			if reviewer != nil {
+				after, err := reviewer.AskBlockReworded(ctx, tx, ask, previous, actor, personTyped[block.id])
+				if err != nil {
+					return settlementReconciliation{}, fmt.Errorf("tell the reviewer of reworded ask block %s: %w", ask.ID, err)
+				}
+				if after != nil {
+					reconciled.afterCommit = append(reconciled.afterCommit, after)
+				}
+			}
 		}
 		repaired := documentAskEvent(
 			owner,

@@ -143,6 +143,12 @@ function dispatchReplyPath(resource: DispatchDelivery["resource"], id: string): 
  * `followUp` is the ask that a second answer to an attempt already settled by the first is
  * posted rather than handed back (`?follow_up=true`). It travels as the route's query parameter,
  * never in the body, which the route decodes strictly.
+ *
+ * `generated` marks text the plugin generated rather than an agent wrote - a `!command`'s
+ * report, a slash command's output, the plugin's own error reply - with the
+ * `Dispatch-Generated-Text` header on the one send, so Dispatch posts it at once and its writing
+ * check does not read it. An agent's own answer never sets it. A Dispatch that does not know the
+ * header ignores it.
  */
 export async function postDeliveryReply(
   config: Pick<ActiveDispatchConfig, "url" | "credential">,
@@ -152,9 +158,10 @@ export async function postDeliveryReply(
     readonly body?: string;
     readonly error?: string;
     readonly followUp?: boolean;
+    readonly generated?: boolean;
   }
 ): Promise<void> {
-  const { followUp, ...reply } = result;
+  const { followUp, generated, ...reply } = result;
   const client = new DispatchClient(config.url, config.credential);
   await client.deliveryReply(
     delivery.resource,
@@ -165,7 +172,10 @@ export async function postDeliveryReply(
       ...delivery.replyFields,
       ...reply,
     },
-    followUp === undefined ? {} : { followUp }
+    {
+      ...(followUp === undefined ? {} : { followUp }),
+      ...(generated === true ? { generated } : {}),
+    }
   );
 }
 

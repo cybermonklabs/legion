@@ -255,7 +255,7 @@ test("an answered decision keeps its backlink control and still moves with a lat
   const card = documentEditor(page).locator('[data-dispatch-ask-block="ship-decision"]');
   await expect(card.getByRole("button", { name: /^Referenced by \(1\)$/ })).toBeVisible(live);
 
-  const note = card.getByRole("button", { name: "Add a note or answer in your own words" });
+  const note = card.getByRole("button", { name: "Add a note" });
   const answer = card.getByLabel("Your answer");
   // A compact card folds its answer box behind that disclosure, so the row opens it only where
   // the card drew it folded. The box is read first, since the disclosure stays once it is open.

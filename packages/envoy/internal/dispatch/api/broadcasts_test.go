@@ -329,6 +329,61 @@ func TestBroadcastRecipientRepliesAppearInTheBroadcastAndItsSummary(t *testing.T
 	}
 }
 
+// A recipient's answer the reviewer held and posted rewritten carries the reviewer's rewrite in
+// the broadcast read too, as every message read carries it (hydrateMessageThreads): the Broadcast
+// page draws its badge and the agent's wording from it. An answer nobody rewrote carries none.
+func TestBroadcastReadCarriesTheReviewersRewriteOfARecipientsAnswer(t *testing.T) {
+	listener, _ := newBroadcastListener(t, broadcastSessions)
+	handler, database := newTargetedMessageHandler(t, listener.URL)
+
+	created := decodeBody[broadcastResponse](t, postBroadcast(t, handler, map[string]any{
+		"body": "Status?", "delivery": "btw", "session_ids": []string{"planner", "tester"},
+	}, "alice"))
+	answers := map[string]string{}
+	for _, recipient := range awaitBroadcastDeliveries(t, handler, created.ID).Recipients {
+		answer := bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+recipient.Message.ID+"/reply", map[string]any{
+			"actor": map[string]any{"kind": "session", "id": recipient.SessionID}, "attempt": 1, "body": "The node answers on its port.",
+		})
+		if answer.Code != http.StatusCreated {
+			t.Fatalf("%s's answer: status=%d body=%s", recipient.SessionID, answer.Code, answer.Body.String())
+		}
+		answers[recipient.SessionID] = decodeBody[model.Message](t, answer).ID
+	}
+	// The planner's answer is one the reviewer held and posted rewritten: its held_texts row, as
+	// the post leaves it, with the planner's own wording and the finding that rewrote it.
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into held_texts (id, kind, route, request, original, actor, writer, reader, state, outcome, findings, posted_at)
+		values ($1, 'message', 'POST /api/v1/messages/{id}/reply', '{}',
+			'{"kind":"message","body":"Node up, port ok."}', '{"kind":"session","id":"planner"}', 'planner', 'alice',
+			'posted', 'rewrite_posted', '[{"rule_set":"noslop","quote":"port ok","why":"clipped","fix":"answers on its port"}]', now())`,
+		answers["planner"]); err != nil {
+		t.Fatalf("hold the planner's answer: %v", err)
+	}
+
+	read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/broadcasts/"+created.ID, nil, "alice")
+	if read.Code != http.StatusOK {
+		t.Fatalf("read broadcast: status=%d body=%s", read.Code, read.Body.String())
+	}
+	rewrites := map[string]*model.TextRewrite{}
+	for _, recipient := range decodeBody[broadcastResponse](t, read).Recipients {
+		if recipient.Message.Rewrite != nil {
+			t.Errorf("%s's copy of the broadcast carries %+v, want no rewrite", recipient.SessionID, recipient.Message.Rewrite)
+		}
+		if len(recipient.Replies) != 1 || recipient.Replies[0].ID != answers[recipient.SessionID] {
+			t.Fatalf("%s's replies = %+v, want its one answer", recipient.SessionID, recipient.Replies)
+		}
+		rewrites[recipient.SessionID] = recipient.Replies[0].Rewrite
+	}
+	planner := rewrites["planner"]
+	if planner == nil || planner.State != model.RewriteRewritten || planner.By != model.RewriteByReviewer ||
+		planner.Original.Body != "Node up, port ok." || !strings.Contains(planner.Reason, "clipped") {
+		t.Errorf("the planner's answer carries %+v, want the reviewer's rewrite with the original and its finding", planner)
+	}
+	if tester := rewrites["tester"]; tester != nil {
+		t.Errorf("the tester's answer carries %+v, want no rewrite", tester)
+	}
+}
+
 // Every message read names the broadcast that sent the message, and says null for a message no
 // broadcast sent, so a session reading a direct message back can tell a person's own message to
 // it from one recipient's copy of a broadcast: the thread read a session confirms a delivery

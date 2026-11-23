@@ -199,18 +199,15 @@ func lockDeploymentIssueDependencies(ctx context.Context, tx pgx.Tx) error {
 // that read and the lock is still refused by writeBlockedBy's own read inside the transaction.
 //
 // A caller whose credential names one project is refused a target outside it here, before any
-// lock is taken: the pre-handler check reads the project of the object the path names and no key
-// of the body (project_scope.go), so this is the first point at which a target's project is
-// known, and a caller that may not write at all would otherwise take the deployment-wide lock
-// first. writeBlockedBy refuses it again under the locks, which is the authoritative refusal;
-// both word it through refuseBlockedByOutsideCallerProject.
+// lock is taken (callerForeignTargets): the pre-handler check reads the project of the object the
+// path names and no key of the body (project_scope.go), so this is the first point at which a
+// target's project is known, and a caller that may not write at all would otherwise take the
+// deployment-wide lock first. writeBlockedBy refuses it again under the locks, which is the
+// authoritative refusal; both word it through refuseBlockedByOutsideCallerProject.
 func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller string, targets []string) error {
-	foreign, err := foreignTargets(ctx, tx, project, targets)
+	foreign, err := callerForeignTargets(ctx, tx, project, caller, targets)
 	if err != nil {
 		return err
-	}
-	if caller != "" && len(foreign) > 0 {
-		return refuseBlockedByOutsideCallerProject(caller, foreign[0].key, foreign[0].project)
 	}
 	projects := make([]string, 0, len(foreign)+1)
 	projects = append(projects, project)
@@ -253,10 +250,50 @@ func foreignTargets(ctx context.Context, q queryer, project string, targets []st
 	})
 }
 
+// callerForeignTargets is foreignTargets, refused for a caller whose credential names one project,
+// caller ("" for none), where one of them belongs to another project: the first step of a
+// dependency write (lockIssueDependencyWrite).
+func callerForeignTargets(ctx context.Context, q queryer, project, caller string, targets []string) ([]foreignTarget, error) {
+	foreign, err := foreignTargets(ctx, q, project, targets)
+	if err != nil {
+		return nil, err
+	}
+	if caller != "" && len(foreign) > 0 {
+		return nil, refuseBlockedByOutsideCallerProject(caller, foreign[0].key, foreign[0].project)
+	}
+	return foreign, nil
+}
+
+// heldForeignTargets is every held issue of held (heldIssuesAmong: a key no issues row holds yet,
+// by the project its held row names) that belongs to a project other than project, which
+// foreignTargets, reading the issues rows alone, leaves out. A write that names one waits for its
+// post (heldNamedOpenSQL), which then refuses it as a target of that project.
+func heldForeignTargets(held map[string]string, project string) []foreignTarget {
+	var foreign []foreignTarget
+	for key, heldProject := range held {
+		if heldProject != project {
+			foreign = append(foreign, foreignTarget{key: key, project: heldProject})
+		}
+	}
+	return foreign
+}
+
+// refuseForeignBlocker is callerForeignTargets' refusal at the hold of a write that waits on held
+// issues (heldIssueCreateError, refuseHeldForeignBlockers): for caller, the one project its
+// credential may write, the first of foreign in key order, the order writeBlockedBy reads its
+// targets in, so the hold refuses the target its post would; nil where foreign is empty.
+func refuseForeignBlocker(caller string, foreign []foreignTarget) error {
+	if len(foreign) == 0 {
+		return nil
+	}
+	first := slices.MinFunc(foreign, func(a, b foreignTarget) int { return strings.Compare(a.key, b.key) })
+	return refuseBlockedByOutsideCallerProject(caller, first.key, first.project)
+}
+
 // refuseBlockedByOutsideCallerProject is what a caller whose credential names one project is
-// answered for a blocked_by target outside it. Two steps of the same write refuse it — the lock
-// step before any lock is taken, and writeBlockedBy under the locks — so the wording lives here
-// once and the two cannot drift.
+// answered for a blocked_by target outside it. Each step that refuses it - the lock step before
+// any lock is taken, writeBlockedBy under the locks, and the hold of a write that waits on held
+// issues (refuseForeignBlocker) - words it here, so they cannot drift.
 func refuseBlockedByOutsideCallerProject(caller, target, targetProject string) error {
 	return errorf(http.StatusForbidden, codeProjectScope,
 		"this request's credential may write project %s; blocked_by issue %s belongs to project %s",
@@ -360,7 +397,7 @@ func validateIssueParent(ctx context.Context, tx pgx.Tx, key, project, parent st
 		return err
 	}
 	if parentProject != project {
-		return errorf(http.StatusBadRequest, "PARENT_INPUT", "parent must be in the same project")
+		return parentOtherProject()
 	}
 	// parent and the issues above it, parent first: the server's one ancestor walk
 	// (refs.IssueAncestors) with parent itself at its head, since a parent key already stands
@@ -386,8 +423,16 @@ func validateIssueParent(ctx context.Context, tx pgx.Tx, key, project, parent st
 // reparent takes, so two writes cannot each pass alone and together pass the cap. Both walks stop
 // one link past the cap, so a chain that loops or is already too deep ends them.
 func refuseParentTooDeep(ctx context.Context, tx pgx.Tx, child, parent string) error {
+	return refuseChainTooDeep(ctx, tx, child, parent, parent, 0)
+}
+
+// refuseChainTooDeep is refuseParentTooDeep for a parent whose chain up to its root starts with
+// held issues that no issues row holds yet: held of them, then from, the nearest issue of the
+// chain a row holds ("" for none), from which the walk up reads on (heldIssueCreateError). A
+// parent a row holds is its own from, with held 0.
+func refuseChainTooDeep(ctx context.Context, q queryer, child, parent, from string, held int) error {
 	var above, below int
-	if err := tx.QueryRow(ctx, `
+	if err := q.QueryRow(ctx, `
 		with recursive up as (
 			select parent_key, 1 as depth from issues where key = $1
 			union all
@@ -402,9 +447,10 @@ func refuseParentTooDeep(ctx context.Context, tx pgx.Tx, child, parent string) e
 			where d.depth <= $3
 		)
 		select coalesce((select max(depth) from up), 0), coalesce((select max(depth) from down), 0)
-	`, parent, child, parentDepthCap).Scan(&above, &below); err != nil {
+	`, from, child, parentDepthCap).Scan(&above, &below); err != nil {
 		return err
 	}
+	above += held
 	if above+below <= parentDepthCap {
 		return nil
 	}

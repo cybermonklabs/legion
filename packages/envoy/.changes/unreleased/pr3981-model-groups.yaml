@@ -1,0 +1,16 @@
+kind: Added
+body: |-
+  Three model groups serve the work on agents' texts: the reviewer's (`DISPATCH_REVIEWER_MODEL_*`),
+  Rewrite and Define's (`DISPATCH_REWRITE_DEFINE_MODEL_*`) and the records job's
+  (`DISPATCH_WORD_RECORDS_MODEL_*`). Each takes `_KIND` (`azure` or `anthropic`), `_ENDPOINT`,
+  `_DEPLOYMENT` and `_TOKENS_PER_MINUTE`, and `_API_VERSION` and `_SCOPE` for `azure` or
+  `_KEY_FILE` for `anthropic`.
+  A group is set whole or not at all. A group set in part refuses the boot and names each setting
+  it is missing, and so does a setting its kind does not read. An `anthropic` group's `_ENDPOINT`
+  is https, or http only to a host inside the cluster (localhost, a loopback address, or a
+  Service name ending `.svc` or `.cluster.local`), since each call carries the group's key: http
+  to any other host refuses the boot. An `azure` group signs in with the
+  shared Azure sign-in (`DISPATCH_AZURE_TENANT_ID`, `DISPATCH_AZURE_CLIENT_ID`,
+  `DISPATCH_AZURE_FEDERATED_TOKEN_FILE`), which a deployment may now set for its model groups
+  alone.
+  No group is set by default, so by default nothing of this work calls a model.

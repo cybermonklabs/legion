@@ -1,0 +1,56 @@
+# The models of INFRA-3231's harness: the three roles and the candidates of R3 (plan Decision 20).
+# This file is one of the paths that decide a score: after the held-out run it must not change.
+#
+# family: claude is a Claude model at the operator's model gateway (Anthropic Messages); foundry is
+# a chat deployment of Dispatch's Azure AI Foundry account. The endpoints and the sign-in are flags
+# of the harness, not part of this file.
+#
+# A candidate with an effort is the model at that reasoning effort, a candidate of its own named
+# <id>:<effort> (for example Kimi-K3.1-Pro:off). `score --model` and `--models` take that name, and
+# `local --test-models` lists it in DISPATCH_TEST_MODELS. It has the price of its id. Without an
+# effort a Foundry candidate sends none, and a Claude candidate asks for no thinking.
+#
+# The grader and each grader fallback are no candidate: a grader grades no output it wrote (R2).
+# The grader does not play the writer or the fresh reader, and a fallback plays no other role. The
+# writer and the fresh reader may be candidates.
+roles:
+  # The grading model: it reads every text, Dispatch's record and the writer's session. Each
+  # reply gives what the grader found before its verdict (prompts/, judge.go's numbered fields).
+  grader: {family: claude, id: claude-opus-5}
+  # The graders of a judgement claude-opus-5 refuses on every try, and only of that judgement,
+  # tried in this order; the grade names the one that graded it and each refused call. Claude
+  # models the gateway serves that are no candidate, play no other role, and wrote none of the
+  # outputs they grade. claude-opus-4-7 also refused one judgement of the development part
+  # (2026-11-15), so two older models follow it.
+  grader_fallbacks:
+    - {family: claude, id: claude-opus-4-7}
+    - {family: claude, id: claude-opus-4-6}
+    - {family: claude, id: claude-sonnet-4-5}
+  # The writer, played with the writer's session (changes 2, 3, 5 and 6): the model most writer
+  # sessions ran.
+  writer: {family: claude, id: claude-opus-5-5}
+  # The fresh reader: it reads only the text a person sees and, for a question case, his question.
+  reader: {family: claude, id: claude-sonnet-4-6}
+
+candidates:
+  - {family: foundry, id: grok-4.7}
+  - {family: foundry, id: Kimi-K3.1-Pro}
+  # The architect's measurement of Kimi-K3.1-Pro with reasoning off, 2026-11-16: a development
+  # candidate. Its result decides whether the held-out run scores it.
+  - {family: foundry, id: Kimi-K3.1-Pro, effort: "off"}
+  - {family: claude, id: claude-haiku-4-5-20251001}
+  - {family: claude, id: claude-haiku-5-5}
+  - {family: claude, id: claude-sonnet-5-5}
+  - {family: claude, id: claude-opus-4-8}
+  # The writer's model, and claude-fable-5-2, which `score --reader` may also name as the fresh
+  # reader of a run.
+  - {family: claude, id: claude-opus-5-5}
+  - {family: claude, id: claude-fable-5-2}
+
+# The four deployments INFRA-3483 declares on the Foundry account, named by its stack outputs. Each
+# joins the candidates above, with its id, when it answers from the pod (`harness probe`).
+pending:
+  - {family: foundry, output: writingCheckCandidateFirst}
+  - {family: foundry, output: writingCheckCandidateSecond}
+  - {family: foundry, output: writingCheckCandidateThird}
+  - {family: foundry, output: writingCheckCandidateFourth}

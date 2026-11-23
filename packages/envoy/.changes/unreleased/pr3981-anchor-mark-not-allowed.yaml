@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  A new ask, comment or suggestion anchored on text where its mark cannot stand (an ask's quote in
+  a code block, any anchor's quote in a document's front matter) is refused `400 INVALID_ANCHOR`,
+  naming the anchor's kind, its quote and the place, with the way out: quote text outside that
+  place, or, for an ask's quote in a code block, anchor a comment there. It was answered
+  `500 DOC_SCHEMA`, as if the document were outside its schema.

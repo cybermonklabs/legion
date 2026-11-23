@@ -9,6 +9,7 @@ import {
   listComments,
   resolveAsk,
 } from "./api";
+import { askBack } from "./ask-card";
 import { conversationFilter, threadCard } from "./editor";
 import { inboxRow } from "./inbox-pane";
 import { holdPosts, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
@@ -81,10 +82,8 @@ test("an ask is a thread: replies before and after answering, then a live agent 
   await expect(card.locator("strong")).toHaveText("change");
   const thread = margin.getByTestId(`thread-${ask.id}`);
 
-  // Alice asks back from the same compact composer that can submit her answer.
-  await card.getByRole("button", { name: "Add a note or answer in your own words" }).click();
-  await card.getByLabel("Your answer").fill("Any blockers first?");
-  await card.getByRole("button", { name: "Ask back" }).click();
+  // Alice asks back from the menu of the same compact card that can submit her answer.
+  await askBack(card, "Any blockers first?");
   await expect(thread.getByText("Any blockers first?")).toBeVisible();
 
   // Alice answers - a distinct, first-class event.

@@ -57,12 +57,13 @@ func (block *namedBlock) replyBlock(issueKey *string, project, slug string) *mod
 }
 
 // ownerAddress is how refs addresses an item under owner: an issue's comments and messages by
-// its key, a document's comments by its project and slug (refs.ItemBlockRef, refs.ReplyBlocks).
-func (s *server) ownerAddress(ctx context.Context, tx pgx.Tx, owner owner) (issueKey *string, project, slug string, err error) {
+// its key, a document's comments by its project and slug (refs.ItemBlockRef, refs.ReplyBlocks),
+// read on q.
+func (s *server) ownerAddress(ctx context.Context, q queryer, owner owner) (issueKey *string, project, slug string, err error) {
 	if owner.ArtifactID == nil {
 		return owner.IssueKey, "", "", nil
 	}
-	if err := tx.QueryRow(ctx, `
+	if err := q.QueryRow(ctx, `
 		select coalesce(project_key, ''), slug from artifacts where id = $1
 	`, *owner.ArtifactID).Scan(&project, &slug); err != nil {
 		return nil, "", "", fmt.Errorf("load the address of document %s: %w", *owner.ArtifactID, err)
@@ -149,9 +150,15 @@ func (s *server) planReplyBlock(
 		return refs.ItemRepair{}, nil, err
 	}
 	if !found {
-		return refs.ItemRepair{}, nil, errorf(http.StatusBadRequest, code, "%s %s is not a block of %s %s", field, blockID, kind, itemID)
+		return refs.ItemRepair{}, nil, notABlock(kind, itemID, blockID, field, code)
 	}
 	return repair, &namedBlock{kind: kind, node: node, item: itemID, id: blockID, excerpt: excerpt}, nil
+}
+
+// notABlock is the refusal of blockID, which a reply names in field and item itemID of kind does
+// not hold now: 400 with code (planReplyBlock, heldNamedBlock).
+func notABlock(kind refs.ItemKind, itemID, blockID, field, code string) error {
+	return errorf(http.StatusBadRequest, code, "%s %s is not a block of %s %s", field, blockID, kind, itemID)
 }
 
 // nodeID is the block's node id for replies_to_block, null for a reply naming no block.

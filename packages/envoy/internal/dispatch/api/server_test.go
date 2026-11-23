@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -209,6 +210,18 @@ type testServerOptions struct {
 	// dashboardEntry is the entry chunk of the dashboard build the server serves; empty is a
 	// server with no dashboard, as the Go test rigs are.
 	dashboardEntry string
+	// writingRules is the refusal of the written rules as the deployment set it (Deps.WritingRules);
+	// zero is the refusal off with no rule set beside the written rules.
+	writingRules WritingRulesConfig
+	// reviewer is the reviewer of agents' texts (Deps.Reviewer); nil is a deployment that sets no
+	// reviewer's model group.
+	reviewer *Reviewer
+	// rewriteDefine is a person's Rewrite and Define (Deps.RewriteDefine); nil is a deployment
+	// that sets no model group for them.
+	rewriteDefine *RewriteDefine
+	// testModels are the models a request may name in its Dispatch-Test-Model header
+	// (Deps.TestModels), which a server with testHooks reads.
+	testModels map[string]reviewer.Model
 	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
 	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
 	buildCommit string
@@ -216,6 +229,10 @@ type testServerOptions struct {
 	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
 	// nearCopyVerdictBound, so whether the machine met duplicateGateTimeout is not what it measures.
 	duplicateBound time.Duration
+	// clock is the server's clock (Deps.Now), which dates what R8's counts read by day; nil is
+	// time.Now. A test that counts a day passes a fixed one (fixedClock), so a run across a UTC
+	// midnight counts the day the test set.
+	clock func() time.Time
 	// outboxPublishes is Deps.OutboxPublishes: the server's deployment has an outbox, so a
 	// mention's send waits for the earlier events of its owner the outbox still owes its session.
 	// False is the deployment with no outbox, which every test that runs none is.
@@ -384,6 +401,10 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Answerer:              options.answerer,
 		Files:                 options.files,
 		DashboardEntry:        options.dashboardEntry,
+		WritingRules:          options.writingRules,
+		Reviewer:              options.reviewer,
+		RewriteDefine:         options.rewriteDefine,
+		TestModels:            options.testModels,
 		BuildCommit:           options.buildCommit,
 		OutboxPublishes:       options.outboxPublishes,
 		Metrics:               options.metrics,
@@ -391,7 +412,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}
-	deps.LiveSocketAge = options.liveSocketAge
+	deps.LiveSocketAge, deps.Now = options.liveSocketAge, options.clock
 	mux := http.NewServeMux()
 	served := register(mux, lifetime, deps)
 	maps.Copy(served.liveKinds, options.liveKinds)

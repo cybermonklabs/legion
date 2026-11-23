@@ -55,8 +55,9 @@ const (
 )
 
 // issueDecisions is GET /api/v1/issues/{key}/decisions: the issue's decisions document, the open
-// questions its spec still holds, and each decision of that document in document order. document
-// is null, with no decisions, when the issue has no decisions.md.
+// questions its spec still holds but a decision block the reviewer holds (specOpenQuestions), and
+// each decision of that document in document order. document is null, with no decisions, when the
+// issue has no decisions.md.
 type issueDecisions struct {
 	Document      *string          `json:"document"`
 	OpenQuestions []issueAskRow    `json:"open_questions"`
@@ -179,16 +180,18 @@ func artifactMissing(err error) bool {
 }
 
 // specOpenQuestions are the issue's open asks whose block is in its spec, oldest first, in the
-// shape every ask read has (askReadColumns, with the newest reply beside the row). reader is the
-// answer's own, and each row registers its texts with it once the slice has stopped growing: a
-// shaping registers a pointer into the row, and an append that moved the backing array would
-// leave the reader filling trees into memory the answer no longer holds.
+// shape every ask read has (askReadColumns, with the newest reply beside the row), less a decision
+// block the reviewer holds (askNotHeld): the view's open questions are what waits on its reader,
+// which the page counts, and the spec itself shows the held block. reader is the answer's own,
+// and each row registers its texts with it once the slice has stopped growing: a shaping
+// registers a pointer into the row, and an append that moved the backing array would leave the
+// reader filling trees into memory the answer no longer holds.
 func (s *server) specOpenQuestions(
 	ctx context.Context, who model.Actor, key, specID string, reader *displayTreeReader,
 ) ([]issueAskRow, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select `+askReadColumns+` `+askReadFrom+`
-		where a.issue_key = $1 and a.state = 'open' and a.block_artifact_id = $2::uuid
+		where a.issue_key = $1 and a.state = 'open' and a.block_artifact_id = $2::uuid and `+askNotHeld+`
 		order by a.created_at, a.id
 	`, key, specID)
 	if err != nil {

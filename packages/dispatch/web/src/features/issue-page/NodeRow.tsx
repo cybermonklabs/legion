@@ -4,12 +4,13 @@ import {
   type ReactNode,
   type RefObject,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import { Link } from "react-router-dom";
 
-import type { Artifact } from "../../api/types";
+import type { Artifact, TextWording } from "../../api/types";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import {
   pageFailedText,
@@ -28,6 +29,8 @@ import {
   pageStateText,
   pageWordsText,
 } from "../../theme/classes";
+import { originalOption, originalWording, useOriginalShown } from "../inbox/ask-rewrite";
+import { rewriteControls } from "../inbox/RewriteBadge";
 import { useAgentText } from "../refs/AgentName";
 import { buildReferencePath, parseNodeReference } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
@@ -209,6 +212,9 @@ export function NodeRow({
   const stage = useDocumentStage(editing);
   // Where the reader writes: a row's Reply and an open question's Answer set it (R16).
   const writer = useOutlineWriter();
+  // The node's words as the row draws them: its own, or while its rewrite's badge shows the
+  // wording the rewrite replaced, that wording, on its one line and its open words alike.
+  const shown = useOriginalWords(node);
   // The reader's own words: a turn a person wrote who is the reader (R34). An ask, a block or a
   // decision is not a turn, so its words are never the reader's here, whoever asked it.
   const own = author.reader && (node.type === "comment" || node.type === "message");
@@ -231,7 +237,7 @@ export function NodeRow({
   // What `RowText` draws the words from: a later read that brings other words - a statement's,
   // which its document's blocks draw before the coverage read brings them - draws them cut, and
   // one that brings the same words in new objects leaves the row as it stands (`useClamp`).
-  const clamp = useClamp(words, cuttable, node.tree ?? node.text);
+  const clamp = useClamp(words, cuttable, shown.tree ?? shown.text);
   const [opened, setOpened] = useState(false);
   const clamped = clamp !== undefined && !opened && !body;
 
@@ -240,7 +246,7 @@ export function NodeRow({
   const depth = level - 1;
   // R1's one line, cut from the words of the node's first block (`lineWords`), as every one-line
   // drawing of a node is cut, so a heading never runs into the paragraph after it.
-  const first = firstLineOf(lineWords(node));
+  const first = firstLineOf(lineWords(shown));
   // How many nodes a folded branch holds: on its one line, and after its words once its focus
   // or its pin draws them whole, so the reader still knows what the fold hides (R1).
   const count =
@@ -341,10 +347,10 @@ export function NodeRow({
               ) : node.child === undefined ? (
                 <RowText
                   focused={focused}
-                  markdown={node.text}
-                  source={node.source}
+                  markdown={shown.text}
+                  source={shown.source}
                   tabStops={tabStops}
-                  tree={node.tree}
+                  tree={shown.tree}
                 />
               ) : (
                 // A child issue's row is one line, as the prototype's `.kr` draws it: its title,
@@ -376,8 +382,8 @@ export function NodeRow({
               {trailInWords ? null : trail}
             </p>
           ) : null}
-          {node.options === undefined || oneLine ? null : (
-            <NodeOptions body={body} node={node} tabStops={tabStops} writer={writer} />
+          {shown.options === undefined || oneLine ? null : (
+            <NodeOptions body={body} node={shown} tabStops={tabStops} writer={writer} />
           )}
           {node.answer === undefined || oneLine ? null : (
             <AskAnswer answerer={answerer ?? ""} node={node} own={ownAnswer} />
@@ -422,7 +428,14 @@ export function NodeRow({
             </p>
           )}
         </div>
-        <RowMargin author={author} context={context} node={node} tabStops={tabStops} tone={tone} />
+        <RowMargin
+          author={author}
+          context={context}
+          node={node}
+          showingOriginal={shown !== node}
+          tabStops={tabStops}
+          tone={tone}
+        />
         {threadRead === undefined || oneLine ? null : <ThreadReadMark mark={threadRead} />}
       </div>
     </div>
@@ -676,23 +689,28 @@ function Bullet({
 /**
  * What stands at the right end of the row's first line (R9, R34, the prototype's `.mg`): the
  * node's kind as one tag - its word and its shape, in its colour - where it has a typed kind,
- * then who made it, by a name and a shape, and when, in the page's short form, all on one line;
- * and under them its state, by a word and a shape, with the one word a decision the model marks
- * unsure says of itself, on a second, smaller line (ruling 5). All of it is grey but the tag, the
- * reader's own name and a state that asks something of the reader. A node the model holds no
- * author for draws none here: its body says so (`NodeBody`, ruling 5). From 761 px up it is a
- * column as wide as its first line; on a phone it is one small line under the words (ruling 4).
+ * then who made it, by a name and a shape, and when, in the page's short form, then the badge a
+ * rewrite of its words left (`RowRewriteBadge`), all on one line; and under them its state, by a
+ * word and a shape, with the one word a decision the model marks unsure says of itself, on a
+ * second, smaller line (ruling 5). All of it is grey but the tag, the reader's own name, the badge
+ * and a state that asks something of the reader. A node the model holds no author for draws none
+ * here: its body says so (`NodeBody`, ruling 5). From 761 px up it is a column as wide as its
+ * first line; on a phone it is one small line under the words (ruling 4).
  */
 export function RowMargin({
   author,
   context,
   node,
+  showingOriginal,
   tabStops,
   tone,
 }: {
   author: { readonly kind: AuthorKind; readonly name: string; readonly reader: boolean };
   context: boolean;
   node: TreeNode;
+  /** Whether the row draws the wording the node's rewrite replaced (`useOriginalWords`), which its
+   *  badge says. */
+  showingOriginal: boolean;
   tabStops: boolean;
   tone: Tone;
 }): ReactNode {
@@ -770,6 +788,7 @@ export function RowMargin({
             )}
           </span>
         )}
+        <RowRewriteBadge node={node} showingOriginal={showingOriginal} tabStops={tabStops} />
       </div>
       {node.state === undefined && node.unsure !== true ? null : (
         <div className={NODE_ROW_LAYOUT.marginState}>
@@ -803,6 +822,76 @@ export function RowMargin({
       )}
     </div>
   );
+}
+
+/**
+ * The badge a rewrite left on the node's words, after its author and time (INFRA-3231's R7), as
+ * every page draws one (`rewriteControls`): Rewritten, whose press shows the wording the rewrite
+ * replaced in place on every row of the node (`useOriginalWords`) and reads Original until it is
+ * pressed again; Rewriting… while a person's Rewrite of an ask runs; and Rewrite failed where
+ * Dispatch applied none, which nothing on this page tries again. Whether it reads Original is the
+ * row's to say (`showingOriginal`), which reads the store once for its words. `w` while the badge
+ * holds the focus does what its press does (`originalToggleProps`), as the title's badge does on
+ * today's page; on the row itself `w` stays the tree's, which moves into the decision behind the
+ * row (`useTreeKeymap.ts`'s `tree-decision`). Out of the tab order unless `tabStops` holds, as
+ * every control inside a row is: `f` stops on it. Its words are the shared badge's own, which the
+ * page marks as words it did not author (`authorText`), as the title's badge is inside the title.
+ * Nothing where no rewrite touched the words.
+ */
+function RowRewriteBadge({
+  node,
+  showingOriginal,
+  tabStops,
+}: {
+  node: TreeNode;
+  showingOriginal: boolean;
+  tabStops: boolean;
+}): ReactNode {
+  if (node.rewrite === undefined) return null;
+  const { badge, toggle } = rewriteControls({
+    id: node.id,
+    rewrite: node.rewrite,
+    showingOriginal,
+    tabIndex: tabStops ? undefined : -1,
+  });
+  return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: hears the `w` pressed on the badge's own button, which is the control
+    <span className="inline-flex" data-node-rewrite="" onKeyDown={toggle.onKeyDown} {...authorText}>
+      {badge}
+    </span>
+  );
+}
+
+/**
+ * The node as its row draws its words (INFRA-3231's R7): the node itself, or, while the badge of
+ * its rewrite shows the wording the rewrite replaced (`RowRewriteBadge`), a new node holding that
+ * wording, so the row tells which it draws by `!==`: an ask's question, with each option's
+ * description as the agent wrote it, or none, and each label kept, which a rewrite never changes
+ * (`originalOption`, as `AskCard` draws them), and a comment's or a message's body. That wording
+ * comes with no reading of the server's, so the row draws it as stored, as it draws every text
+ * whose read sent none (`RowText`). Every row of the node swaps together, and so does each part of
+ * the page that reads the same store (`useOriginalShown`), such as a comment's or a message's card
+ * in Details; an ask's card keeps its own state (`AskCard`), and the zoom's crumb and the focused
+ * node's title keep the rewritten first line.
+ */
+export function useOriginalWords(node: TreeNode): TreeNode {
+  const original = originalWording(node.rewrite, useOriginalShown(node.id));
+  return useMemo(
+    () => (original === undefined ? node : withOriginalWords(node, original)),
+    [node, original]
+  );
+}
+
+/** `node` holding `original` as its words (`useOriginalWords`). */
+function withOriginalWords(node: TreeNode, original: TextWording): TreeNode {
+  const { tree: _rewritten, ...rest } = node;
+  return {
+    ...rest,
+    ...(node.options === undefined
+      ? {}
+      : { options: node.options.map((option) => originalOption(option, original)) }),
+    text: original.body,
+  };
 }
 
 /**

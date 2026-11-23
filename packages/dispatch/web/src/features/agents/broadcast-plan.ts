@@ -4,6 +4,7 @@ import { AGENT_LIST_REFILLING } from "../../api/client";
 import type { Agent, MessageDeliveryMode } from "../../api/types";
 import { MODE_LABELS } from "../conversation/delivery";
 import type { AgentPart } from "../refs/AgentName";
+import { ownWords } from "../threads/quote-reply";
 
 /** A session a broadcast would leave out, with its composer-facing reason named through
  *  `MODE_LABELS`. The server's stored diagnostic keeps the wire name. */
@@ -291,7 +292,8 @@ export function broadcastSendState(
     return {
       label,
       notice: excluded.length === 0 ? null : exclusionLine(excluded, null),
-      refusal: body.trim() === "" ? ["Type a message first."] : null,
+      // A quote (`> ` lines) is not the reader's own words (INFRA-3231's R7).
+      refusal: ownWords(body).trim() === "" ? ["Type a message first."] : null,
       refusalOnNotice: false,
     };
   }

@@ -1,6 +1,7 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import type { TextRewrite } from "../../api/types";
 import {
   bgTransparent,
   borderStrongHover,
@@ -8,9 +9,14 @@ import {
   focusBorder,
   pageInkText,
 } from "../../theme/classes";
+import { originalWording, useOriginalShown } from "../inbox/ask-rewrite";
+import { rewriteControls } from "../inbox/RewriteBadge";
 import type { IssueDrafts } from "../issue/useIssueDrafts";
 import { hearPresses } from "./focus-keeper";
 import { authorText } from "./page-structure";
+
+/** The mark of the element around the title's rewrite badge, whose presses are the badge's. */
+const TITLE_REWRITE = "data-title-rewrite";
 
 /**
  * Row two of the header: the issue's title, which is the issue as a person names it, and the
@@ -37,13 +43,27 @@ import { authorText } from "./page-structure";
  * never opens the editor: the page gives the focus back to the heading on its own - Details
  * closing onto the control that opened it, a return to the window - and an editor opened then
  * would take the next shortcut key as text of the title.
+ *
+ * The reviewer may have rewritten the title and the spec as the agent opened the issue
+ * (INFRA-3231's R7): the rewrite's badge then stands after the title's last word, as on today's
+ * page (`issue/IssueHeader.tsx`), and a press on it, or `w` while it holds the focus, shows the
+ * title as the agent wrote it in place, and the spec over the outline (`slots/body.tsx`); the
+ * badge reads Original until it is pressed again. While the agent's title shows, the heading
+ * opens no editor and takes no focus, so `e` is not offered. A press, Enter or Space on the badge
+ * is the badge's, and opens no editor either.
  */
 export function IssueTitleRow({
   drafts,
   isClosed,
+  issueKey,
+  rewrite,
 }: {
   drafts: IssueDrafts;
   isClosed: boolean;
+  /** The issue's key, which the shown original is kept by (`useOriginalShown`). */
+  issueKey: string;
+  /** The reviewer's rewrite of the title and the spec, as the issue read carries it. */
+  rewrite: TextRewrite | undefined;
 }): ReactNode {
   const [editing, setEditing] = useState(false);
   // Whether a press of the reader's is under way, read by the editor's blur: a blur a press
@@ -200,29 +220,58 @@ export function IssueTitleRow({
   // and the row is the prototype's height: 2 px above the words and none below.
   const box = `[grid-area:1/1] min-w-0 rounded-md border px-1 font-semibold tracking-[-0.012em] whitespace-pre-wrap [overflow-wrap:anywhere] ${type} ${pageInkText}`;
   const whole = editing || held;
+  const original = originalWording(rewrite, useOriginalShown(issueKey));
+  // The badge and its `w` as every page draws them (`rewriteControls`), where the title is
+  // rewritten.
+  const controls =
+    rewrite?.state === "rewritten"
+      ? rewriteControls({ id: issueKey, rewrite, showingOriginal: original !== undefined })
+      : undefined;
+  const originalTitle = original === undefined ? undefined : (original.title ?? drafts.title);
+  const editable = !isClosed && originalTitle === undefined;
 
   return (
     <div className="-mx-[5px] mt-px -mb-px grid min-w-0">
       <h1
         aria-hidden={editing ? true : undefined}
         className={`${box} ${borderTransparent} ${whole ? "" : "min-[761px]:line-clamp-2"} ${
-          editing ? "invisible" : isClosed ? "" : `cursor-text ${borderStrongHover}`
+          editing ? "invisible" : editable ? `cursor-text ${borderStrongHover}` : ""
         }`}
-        onClick={() => {
-          if (!isClosed) openEdit();
+        onClick={(event) => {
+          if (
+            editable &&
+            !(event.target instanceof Element && event.target.closest(`[${TITLE_REWRITE}]`))
+          ) {
+            openEdit();
+          }
         }}
         onKeyDown={(event) => {
-          if (!isClosed && (event.key === "Enter" || event.key === " ")) {
+          if (
+            editable &&
+            event.target === event.currentTarget &&
+            (event.key === "Enter" || event.key === " ")
+          ) {
             event.preventDefault();
             openEdit();
           }
         }}
         ref={heading}
-        tabIndex={isClosed || editing ? -1 : 0}
+        tabIndex={editable && !editing ? 0 : -1}
         {...authorText}
       >
-        {/* A trailing space or an empty draft still holds a line, as the editor does. */}
-        {shown === "" || shown.endsWith(" ") ? `${shown}\u200b` : shown}
+        {originalTitle ??
+          // A trailing space or an empty draft still holds a line, as the editor does.
+          (shown === "" || shown.endsWith(" ") ? `${shown}\u200b` : shown)}
+        {editing || controls === undefined ? null : (
+          // biome-ignore lint/a11y/noStaticElementInteractions: hears the `w` pressed on the badge's own button, which is the control
+          <span
+            className="ml-2 inline-flex translate-y-[-3px] align-middle"
+            onKeyDown={controls.toggle.onKeyDown}
+            {...{ [TITLE_REWRITE]: "" }}
+          >
+            {controls.badge}
+          </span>
+        )}
       </h1>
       {editing ? (
         <textarea

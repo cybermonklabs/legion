@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox/copyrule"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -1263,7 +1264,10 @@ func (s *server) planCommentReply(
 		}
 		plan.replyBlock = block.replyBlock(issueKey, project, slug)
 	}
-	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, clock_timestamp()`).Scan(&plan.id, &plan.createdAt); err != nil {
+	// Under the id a held reply's hold reserved where its post runs this route, else a fresh one
+	// (textIDFor).
+	plan.id = textIDFor(ctx)
+	if err := tx.QueryRow(ctx, `select clock_timestamp()`).Scan(&plan.createdAt); err != nil {
 		return plan, err
 	}
 	// The reply carries no anchor - a callback reply names none - and belongs to whatever the
@@ -1313,12 +1317,13 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// The mention the reply answers and the session its attempt names are read before the
 	// transaction, so a reply from a session the attempt does not name, to a mention of a role,
 	// asks the listener whether that session holds the role now with nothing held
-	// (lookUpRoleHolderReply). The mention is the one the request names, else the comment's
-	// first, which is its only one wherever the transaction below takes a reply naming none. A
-	// read that finds nothing asks nothing: the transaction below answers that comment, mention
-	// or attempt as it always has. A read that fails is the route's 500. An attempt past
-	// comment_deliveries.attempt's range names no delivery, so no read is made with it: the bound
-	// below (fitsIntegerColumn) answers it, where it always has.
+	// (lookUpRoleHolderReply); a reply the reviewer holds keeps the answer for its post. The
+	// mention is the one the request names, else the comment's first, which is its only one
+	// wherever the transaction below takes a reply naming none. A read that finds nothing asks
+	// nothing: the transaction below answers that comment, mention or attempt as it always has. A
+	// read that fails is the route's 500. An attempt past comment_deliveries.attempt's range names
+	// no delivery, so no read is made with it: the bound below (fitsIntegerColumn) answers it,
+	// where it always has.
 	var roleReply roleHolderReply
 	var err error
 	if fitsIntegerColumn(input.Attempt) {
@@ -1335,6 +1340,21 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// An agent's answer to a person is the reviewer's to read (Decision 9); an error report is
+	// no answer, and goes to the writing check alone. A mention's reply has no follow-up: a second
+	// text on an answered attempt answers its stored reply.
+	var after *postedReview
+	if input.Body != nil {
+		var proceed bool
+		if after, proceed = s.reviewReply(w, r, actor, input, reviewedReply{
+			kind: reviewer.KindComment, body: *input.Body, subject: reviewer.Subject{ReplyTo: r.PathValue("id")},
+			roleHolder: roleReply,
+		}); !proceed {
+			return
+		}
+	} else {
+		s.writingCheck(r, actor, input)
+	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -1342,6 +1362,8 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	// A held reply's post, or its dry run, runs this route again (held_replay.go).
+	held := heldPostFrom(r.Context())
 	comment, err := s.lockedCommentForDelivery(r.Context(), tx, r.PathValue("id"))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -1413,6 +1435,12 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The held row of a held reply's post is taken first of the route's row locks, after the
+	// reply was planned, so the planning holds no transaction id (INFRA-636).
+	if err := held.lock(r.Context(), tx); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 
 	// The attempt is a number comment_deliveries keeps in an integer column, so one past that
 	// column (fitsIntegerColumn) is a delivery no comment has, answered as the read below answers
@@ -1438,14 +1466,20 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	}
 	// A replay of a callback that already posted its reply writes nothing and answers the stored
 	// reply as it is, with no ask_waiting_on: that names whom the ask waits on once a reply is its
-	// newest, which a replayed reply need no longer be.
+	// newest, which a replayed reply need no longer be. Writing nothing, it records no writing
+	// check row. A held reply's dry run answers it so too (finishRepeat), rather than hold it.
 	if attempt.ReplyID != nil {
+		dropWritingCheck(r)
 		reply, err := s.loadComment(r.Context(), tx, *attempt.ReplyID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 		if err := hydrateCommentReplyBlocks(r.Context(), tx, actor, &reply); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if err := held.finishRepeat(r.Context(), tx); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -1456,7 +1490,10 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusOK, reply)
 		return
 	}
+	// An error report repeated on an attempt already failed writes nothing, and records no
+	// writing check row.
 	if attempt.State == "failed" && input.Error != nil {
+		dropWritingCheck(r)
 		if err := tx.Commit(r.Context()); err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -1517,11 +1554,11 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// A callback reply requests no turn, so it hands the turn back the way any session reply
 	// with no `turn` does.
 	turn := plan.thread.replyTurn(actor, nil)
-	// The row's id and created_at were taken above, so the reply's own index and references
-	// could be planned for them with nothing held; both are written explicitly here, as the
-	// comments route writes them (comment_create.go). The reply's node goes in before the row,
-	// whose foreign key names it, in the one batch that writes the row (commentStoreWrite), and
-	// a reply left out of the store writes none.
+	// The row's id and its created_at were taken above (planCommentReply), so the reply's own
+	// index and references could be planned for them with nothing held; both are written
+	// explicitly here, as the comments route writes them (comment_create.go). The reply's node
+	// goes in before the row, whose foreign key names it, in the one batch that writes the row
+	// (commentStoreWrite), and a reply left out of the store writes none.
 	var reply model.Comment
 	nodeKind, nodeAddress := plan.stored.rowNode()
 	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
@@ -1619,12 +1656,20 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// A held reply's dry run keeps the reply and whom its ask waits on after it, which the held
+	// answer states as this answer does (replayAnswerOf).
+	held.keep(commentWritten{comment: reply, waitingOn: waitingOn})
+	if err := held.finish(r.Context(), tx); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	s.publish(r.Context(), event)
 	s.storeDisplayTrees(r.Context(), reply.ID, reply.Body)
+	s.reviewPosted(r.Context(), after, reply.ID)
 	WriteJSON(w, http.StatusCreated, commentWriteResponse{shapedComment: newShapedComment(reply, wantsDisplayTrees(r)), AskWaitingOn: waitingOn})
 }
 

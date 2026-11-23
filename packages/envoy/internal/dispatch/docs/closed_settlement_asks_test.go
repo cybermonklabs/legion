@@ -347,7 +347,7 @@ func TestAnAskBlockOnAServiceThatHasNotHeardTheCloseGetsNoRow(t *testing.T) {
 	if _, markdown, _ := latestDocumentVersion(t, pair.database, pair.artifactID); !strings.Contains(markdown, resolved) {
 		t.Fatalf("the settled version reads:\n%s\nwant the block saved resolved: %s", markdown, resolved)
 	}
-	recorded, err := readRecordedAskAuthors(ctx, pair.database.Pool, pair.artifactID)
+	recorded, _, err := readRecordedAskAuthors(ctx, pair.database.Pool, pair.artifactID)
 	if err != nil {
 		t.Fatalf("read the document's recorded ask block authors: %v", err)
 	}

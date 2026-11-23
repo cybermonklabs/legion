@@ -418,7 +418,10 @@ export function useMarginItems(
   const needsYou = useMemo(() => {
     const openAsks = new Map<string, Ask>(inboxOpenAsks.map((ask) => [ask.id, ask]));
     for (const ask of answeredAsks.asks) {
-      if (ask.state === "open") {
+      // A decision block the reviewer holds (`held_for_review`) needs nobody's answer until it
+      // posts: its document shows it, and the Inbox and every count of open asks leave it out,
+      // so the margin's open asks and their count do too.
+      if (ask.state === "open" && ask.held_for_review !== true) {
         openAsks.set(ask.id, ask);
       }
     }

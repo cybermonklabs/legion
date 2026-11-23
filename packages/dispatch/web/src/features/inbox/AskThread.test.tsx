@@ -1,6 +1,6 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, waitFor } from "@testing-library/react";
+import { render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
@@ -188,5 +188,64 @@ test("a resolved ask's thread takes a reply on that ask, whichever way it was re
     } finally {
       view.unmount();
     }
+  }
+});
+
+// An agent's reply in an ask's thread is a comment, which the reviewer holds and may post
+// rewritten (`commentCreate.reviewed`, with its ask): the reply shows its badge, and the badge, or
+// `w` while the reply holds the focus, shows the agent's wording in place. A reply nobody
+// rewrote shows no badge.
+test("a rewritten reply in an ask's thread shows its badge and, on w, its original; one nobody rewrote shows none", async () => {
+  const user = userEvent.setup();
+  const rewritten: Comment = {
+    ...reply,
+    author: { id: "session-1", kind: "session" },
+    body: "The deploy waits for the migration.",
+    id: "comment-rewritten",
+    rewrite: {
+      at: "2026-09-09T02:01:00Z",
+      by: "reviewer",
+      original: { body: "R3 flip: deploy gated on mig." },
+      state: "rewritten",
+    },
+  };
+  const plain: Comment = {
+    ...reply,
+    body: "Agreed.",
+    created_at: "2026-09-09T03:00:00Z",
+    id: "comment-plain",
+  };
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const thread = { data: { ...read, replies: [rewritten, plain] } } as unknown as AskThreadQuery;
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <AskThread ask={answeredAsk} order="oldest" showComposer={false} thread={thread} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const words = await view.findByText("The deploy waits for the migration.");
+    const row = words.closest<HTMLElement>("[data-reply]");
+    if (row === null) throw new Error("the rewritten reply has no row");
+    expect(within(row).getByRole("button", { name: "Rewritten" })).toHaveAttribute(
+      "title",
+      "Show the original wording (w)"
+    );
+    await user.click(words);
+    await user.keyboard("w");
+    expect(await within(row).findByText("R3 flip: deploy gated on mig.")).toBeTruthy();
+    expect(within(row).getByRole("button", { name: "Original" })).toBeTruthy();
+    await user.keyboard("w");
+    expect(await within(row).findByText("The deploy waits for the migration.")).toBeTruthy();
+
+    const plainRow = (await view.findByText("Agreed.")).closest<HTMLElement>("[data-reply]");
+    if (plainRow === null) throw new Error("the plain reply has no row");
+    expect(within(plainRow).queryByRole("button", { name: /Rewritten|Original/ })).toBeNull();
+  } finally {
+    view.unmount();
   }
 });

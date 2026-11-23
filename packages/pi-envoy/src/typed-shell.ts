@@ -94,6 +94,27 @@ export function shellCommandFrom(body: string): string | undefined {
   return command === "" ? undefined : command;
 }
 
+/** The assignment put before a person's typed `dispatch` line (Decision 26 of INFRA-3231): the
+ *  `dispatch` command reads it once at start, takes it out of its own environment before it
+ *  starts any child, and marks every write it sends with `Dispatch-Person-Typed: 1`, so Dispatch
+ *  posts the person's own text at once and reviews none of it. */
+const PERSON_TYPED_ASSIGNMENT = "DISPATCH_PERSON_TYPED=1";
+
+/** The line's first word is `dispatch`: the word ends at the line's end, at blank space or at an
+ *  operator that ends a simple command (`;`, `&`, `|`, a redirection, a parenthesis). */
+const DISPATCH_FIRST_WORD = /^dispatch(?=$|[\s;&|<>()])/;
+
+/** The command a person's typed line runs as: the line itself, with `PERSON_TYPED_ASSIGNMENT`
+ *  before it when its first word is `dispatch`, and unchanged for every other line. The variable
+ *  is set as an assignment before the line's first simple command, never in the shell's
+ *  environment, `childEnv` or the session's, so in sh, bash, zsh and fish 3.1 and later it reaches
+ *  that one `dispatch` and no command after `;`, `&&`, `||` or `|`, and an agent a person starts
+ *  with `!claude -p …` inherits nothing. The person's stored line does not change: only the
+ *  argv this module spawns carries the assignment (`shellInvocation`). */
+function personTypedCommand(command: string): string {
+  return DISPATCH_FIRST_WORD.test(command) ? `${PERSON_TYPED_ASSIGNMENT} ${command}` : command;
+}
+
 /** What the host would spawn for a shell command of its own, with this caller's own `-c` in
  *  place of the host's args. `procmgr.getShellConfig()` is the host's own configuration, built
  *  once and refreshed where the extension changes what a child shell must see
@@ -126,7 +147,12 @@ export function shellCommandFrom(body: string): string | undefined {
  *     so a zsh is given `-f` (`--no-rcs`) before the `-c`. A zsh still reads the system
  *     `/etc/zshenv` first, which no flag closes.
  *  Nothing else of the host's environment changes: the two names are dropped from a copy of
- *  it, and the command is handed the rest as the host built it. */
+ *  it, and the command is handed the rest as the host built it.
+ *
+ *  A person's `dispatch` line gets its assignment (`personTypedCommand`) before the prefix goes
+ *  in front of it, so it runs as `<prefix> DISPATCH_PERSON_TYPED=1 dispatch …`: a prefix ends in
+ *  `&&` or `;`, and an assignment put before the prefix would attach to the prefix's own first
+ *  step instead. */
 function shellInvocation(command: string): {
   readonly argv: string[];
   readonly env: Record<string, string>;
@@ -136,7 +162,8 @@ function shellInvocation(command: string): {
   delete childEnv.BASH_ENV;
   delete childEnv.ENV;
   const args = basename(shell).includes("zsh") ? ["-f", "-c"] : ["-c"];
-  return { argv: [shell, ...args, prefix ? `${prefix} ${command}` : command], env: childEnv };
+  const line = personTypedCommand(command);
+  return { argv: [shell, ...args, prefix ? `${prefix} ${line}` : line], env: childEnv };
 }
 
 /** The shell this module starts: no standard input and no pty, and a pipe of its own for each
@@ -390,9 +417,13 @@ function fenced(output: string): string {
 /**
  * The person's line, what the command printed and how it ended: the one text the live view, the
  * reply on Dispatch and the agent's transcript all carry. A command that printed nothing says so,
- * so every `!` message has an answer. The person's line is the first paragraph and the separator
- * follows it, which is the rule the Agents page reads this text back by
- * (`isShellCommandReport`, `@legion/contracts`).
+ * so every `!` message has an answer. The person's line, bare, is the first paragraph and the
+ * separator follows it, which is the rule the Agents page reads this text back by
+ * (`isShellCommandReport`, `@legion/contracts`). The line stays bare because a page deployed
+ * before this plugin reads no other opening, and would draw the person's line again for each
+ * report it does not match. The report is the plugin's own text, so its reply is posted once with
+ * the generated-text header, `Dispatch-Generated-Text: 1` (`postTypedInputReply` in
+ * `extensions/envoy.ts`), and Dispatch's writing check does not read it.
  *
  * `line` is that message as the person sent it and as Dispatch stored it, the mark and every
  * space around it kept: `! ls` opens with `! ls` and `!ls\t` with `!ls\t`, while `ls` is what

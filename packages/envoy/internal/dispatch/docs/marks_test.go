@@ -54,6 +54,40 @@ func TestMarkQuoteWritesMarkAndReturnsCoveredText(t *testing.T) {
 	}
 }
 
+// QuoteInSeed answers, before any document holds a seed, what MarkQuote answers once the seed is a
+// document's: the text the mark covers, for a quote written with inline markdown or with its
+// spaces run together too, and MarkQuote's refusal word for word, for a quote the document holds
+// nowhere or twice and for a mark the schema allows nowhere its text stands (an ask's in a code
+// block, a comment's in the front matter).
+func TestQuoteInSeedAnswersWhatMarkQuoteAnswersInTheSeededDocument(t *testing.T) {
+	const markdown = "---\ntitle: Gnomon offsets\n---\n\nThe astrolabe reads a `constant` offset, an offset twice.\n\n```\nreseat the gnomon\n```\n"
+	database := storetest.Open(t)
+	service := newTestServiceOn(t, database)
+	for _, test := range []struct {
+		name  string
+		kind  MarkKind
+		quote string
+	}{
+		{"a quote written with inline markdown", MarkAsk, "a `constant` offset"},
+		{"a quote with its spaces run together", MarkComment, "astrolabe  reads"},
+		{"a comment in a code block", MarkComment, "reseat the gnomon"},
+		{"a quote held nowhere", MarkAsk, "no such words"},
+		{"a quote held twice", MarkAsk, "offset"},
+		{"an ask in a code block", MarkAsk, "reseat the gnomon"},
+		{"a comment in the front matter", MarkComment, "Gnomon offsets"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			artifactID := createDocument(t, database, "# First")
+			seedServiceText(t, service, artifactID, markdown)
+			want, wantErr := joinedMarkQuote(service, artifactID, MarkSpec{Kind: test.kind, ID: "m1", By: model.Actor{Kind: "session", ID: "s1"}}, test.quote, nil)
+			got, err := QuoteInSeed(markdown, test.kind, test.quote, nil)
+			if got.Quote != want.Quote || fmt.Sprint(err) != fmt.Sprint(wantErr) {
+				t.Errorf("QuoteInSeed = %q, %v; MarkQuote in the seeded document = %q, %v", got.Quote, err, want.Quote, wantErr)
+			}
+		})
+	}
+}
+
 func TestMarkQuoteJoinsTheCallerTransaction(t *testing.T) {
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "The quick brown fox")

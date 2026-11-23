@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  `DISPATCH_WRITING_RULES_REFUSAL` (`on` or `off`, default `off`) turns on the `dispatch` command's
+  refusal that shows an agent the written rules once before its first write of an ask, an issue, a
+  comment or a message, and again after each compaction. `DISPATCH_WRITING_RULES_EXTRA` adds
+  `reader_words` (the words the reader asked about before) and `ask_parts` (the parts of an ask)
+  to the rules it shows; the default adds none.
+  `GET /api/v1/settings/writing-rules` answers `{refusal, extra}`.
+  `POST /api/v1/writing-rules {route, body}` answers `{reader, text}` for a write not sent yet: the
+  person who would read it, and the rules for that person. It writes nothing. The rules are
+  `skills/plain-words`, which the server embeds. A person signed in at a browser gets the words
+  the reader asked about only where that reader is the person, as
+  `GET /api/v1/readers/{login}/words` serves them.

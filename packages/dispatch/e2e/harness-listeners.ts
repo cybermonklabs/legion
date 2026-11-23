@@ -56,6 +56,18 @@ const dispatchServer = {
   report: /msg="dispatch: listening" addr=127\.0\.0\.1:(\d+)(?:\s|$)/,
 } as const;
 
+/** A Dispatch server a spec starts beside its stack's own (`startHarness`'s `listeners`), with
+ *  `env` on top of the harness's environment: `run-server.sh` against the stack's database and
+ *  fakes, under the stack's own port variable, which the caller leaves empty so the OS chooses
+ *  (`e2e/reviewer-server.ts`). */
+export function ownDispatchServer(
+  id: string,
+  name: string,
+  env: Readonly<Record<string, string>>
+): HarnessListener {
+  return { ...dispatchServer, env, id, key: "dispatch", name };
+}
+
 // Two-process mode (e2e/harness-processes.ts): the round-robin proxy on DISPATCH_E2E_PORT, which
 // every helper addresses, then Dispatch A and B, each a run-server.sh against the one
 // DATABASE_URL, with B on DISPATCH_E2E_WEB_DIST_B's build when it is set (run-server.sh reads that
@@ -210,8 +222,9 @@ function realBrokerListeners(): HarnessListener[] {
 // two-process mode the round-robin proxy and the two servers behind it), whose environment names
 // the fakes' ports and the issuer's, then the real broker's dev issuer and the real broker, then
 // the plain-HTTP proxy, which forwards to the server's origin. A deployed run starts only those
-// marked `deployed`: its Dispatch server is already up, and the fake GitHub serves only a server
-// this run starts. The fake broker is listed exactly when the harness switch points this run's
+// marked `deployed`: its Dispatch server is already up, and the fake GitHub and the stand-in
+// model (e2e/fake-model.ts, which the server's model groups call) serve only a server this run
+// starts. The fake broker is listed exactly when the harness switch points this run's
 // server at it (e2e/harness-broker.ts), never for a deployed run, the real broker and its
 // issuer exactly when a spec of this run can reach them (e2e/harness-real-broker.ts), and the
 // fake embedder exactly when this run's server embeds there (e2e/harness-embedder.ts).
@@ -236,6 +249,15 @@ export const harnessListeners: readonly HarnessListener[] = [
     key: "fakeGithub",
     name: "the fake GitHub",
     report: /^fake github listener on 127\.0\.0\.1:(\d+)$/,
+  },
+  {
+    argv: ["bun", script("fake-model.ts")],
+    bootMs: listenerBootMs,
+    deployed: false,
+    id: "fake-model",
+    key: "fakeModel",
+    name: "the stand-in model",
+    report: /^fake model listener on 127\.0\.0\.1:(\d+)$/,
   },
   ...(usesFakeBroker
     ? [

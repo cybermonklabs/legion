@@ -38,6 +38,7 @@ import {
   rowTakesFocus,
   stubReads,
 } from "../slots/stage-fixtures";
+import { blockNodeId } from "../tree-drafts";
 import { issueAsksQuery } from "../useIssueTree";
 import {
   decision,
@@ -46,6 +47,7 @@ import {
   issueDetails,
   KEY,
   READER,
+  SPEC_SLUG,
 } from "./decisions-fixtures";
 
 let stubs: { mockRestore(): void }[] = [];
@@ -147,6 +149,61 @@ test("a comment the tree holds, named beside the Decisions view, keeps the view,
   } finally {
     comments.mockRestore();
   }
+});
+
+/** The block id of the issue's one decision block, a block of its spec, the id of the ask the
+ *  server indexed from it, and the outline's row of the block. */
+const DECISION_BLOCK = "q1";
+const DECISION_ASK = "ask-q1";
+const BLOCK_ROW = `[data-issue-body] [data-node-row][data-node-id="${blockNodeId(SPEC_SLUG, DECISION_BLOCK)}"]`;
+
+/** The decision block as the asks read answers it, with no reply under it: an open question the
+ *  agent asks, which the reviewer holds until it posts where `held` says so (`held_for_review`). */
+function decisionBlock(held: boolean): IssueAskRow {
+  return {
+    ...answeredAsk({
+      answer: null,
+      block_artifact: { id: "artifact-spec", primary: true, slug: SPEC_SLUG },
+      block_id: DECISION_BLOCK,
+      id: DECISION_ASK,
+      question: "Which region does the page serve?",
+      state: "open",
+      ...(held ? { held_for_review: true } : {}),
+    }),
+    last_reply: null,
+  };
+}
+
+// A decision block the reviewer holds is in no part of the Decisions view until it posts
+// (`decisionsParts`), though the view keeps it as the address's node, so an address that names
+// it, by its block or as an ask, names no row the view draws. The view tells the stage so, and
+// the stage draws the outline in the view's place, which draws the block and lands on its row.
+// Once the block posts it is an open question of the list, and the same address keeps the view,
+// which lands on its entry.
+test("a decision block the reviewer holds, named on the Decisions view's address, draws the outline in the view's place, with the focus on the block's row", async () => {
+  for (const after of [`#b-${DECISION_BLOCK}`, `?ask=${DECISION_ASK}`]) {
+    spyOn(api, "listIssueAsks").mockResolvedValue([decisionBlock(true)]);
+    const view = drawStage(after);
+    await rowTakesFocus(view, BLOCK_ROW, `the held block's address ${after}`);
+    expect(
+      view.container.querySelector("[data-decisions-body]"),
+      `the held block's address ${after} drew the view beside the outline`
+    ).toBeNull();
+    cleanup();
+  }
+  // The messages read, which answers last: with it every read is held, and the view has told the
+  // stage whether its tree draws the block.
+  const messagesOut = Promise.withResolvers<[]>();
+  spyOn(api, "listIssueMessages").mockReturnValue(messagesOut.promise);
+  spyOn(api, "listIssueAsks").mockResolvedValue([decisionBlock(false)]);
+  const view = drawStage(`#b-${DECISION_BLOCK}`);
+  await rowTakesFocus(
+    view,
+    askRow(blockNodeId(SPEC_SLUG, DECISION_BLOCK)),
+    "the posted block's address"
+  );
+  await act(async () => messagesOut.resolve([]));
+  expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
 });
 
 /** The issue's asks as the asks read answers them, with no reply under either: a question still

@@ -83,6 +83,27 @@ test("the next-question key walks the open questions and reports past the last",
   expect(nextQuestion(node("CORE-1", "issue", [node("a", "ask")]), undefined)).toBeUndefined();
 });
 
+// A decision block the reviewer holds (`TreeNode.heldForReview`) is drawn as the open question
+// it is, and is no stop of the walk until it posts, as the document's open-decisions navigator
+// walks to none: from the question before it the key goes on to the next open question past
+// it, and from the held block itself it enters at the first question, as from a node that is no
+// question. Once the block posts, it is a stop like any other.
+test("the next-question key passes over a decision block the reviewer holds", () => {
+  const root = (held: boolean) =>
+    node("CORE-1", "issue", [
+      node("spec#b-q1", "ask", [], { question: true }),
+      node("spec#b-held", "ask", [], {
+        question: true,
+        ...(held ? { heldForReview: true as const } : {}),
+      }),
+      node("spec#b-q2", "ask", [], { question: true }),
+    ]);
+  expect(nextQuestion(root(true), "spec#b-q1")?.id).toBe("spec#b-q2");
+  expect(nextQuestion(root(true), "spec#b-held")?.id).toBe("spec#b-q1");
+  expect(nextQuestion(root(false), "spec#b-q1")?.id).toBe("spec#b-held");
+  expect(nextQuestion(root(false), "spec#b-held")?.id).toBe("spec#b-q2");
+});
+
 test("the decision behind a node is the first that names it, whatever version it pins", () => {
   const root = issue();
   expect(decisionBehind(root, "spec#b-r1")?.id).toBe("decisions-md#b-d1");

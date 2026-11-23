@@ -8,6 +8,7 @@ import {
   getAsk,
   patchIssue,
 } from "./api";
+import { startAskBack } from "./ask-card";
 import {
   askCard,
   centreRow,
@@ -260,7 +261,10 @@ test("the reader's own Ask back leaves the view still and holds the row only whe
     const field = card.getByLabel("Your answer");
     await field.click();
     await field.fill("Ship what, exactly?");
-    const askBack = card.getByRole("button", { name: "Ask back" });
+    // Ask back from the split button's menu: the box keeps its text, and the action reads Ask
+    // back, which is the press below.
+    await startAskBack(card);
+    const askBack = card.locator("[data-ask-action]");
     // Measured with the button already in view, so the click itself scrolls nothing.
     await askBack.hover();
     const before = await topOf(row);

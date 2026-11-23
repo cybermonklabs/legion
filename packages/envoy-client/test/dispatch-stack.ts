@@ -36,6 +36,9 @@ export interface DispatchStack {
   readonly url: string;
   /** The bearer token the server accepts for an agent, as `DISPATCH_TOKEN` takes it. */
   readonly token: string;
+  /** The stack's own database, for a row that sets up a state no route reaches: a delivery
+   *  attempt bound to a session, which the server writes only once a listener resolved it. */
+  readonly databaseUrl: string;
   /** Stops the server and drops its database. Its scratch directory is the caller's, and goes
    *  with it. */
   stop(): Promise<void>;
@@ -67,8 +70,10 @@ export interface DispatchStackOptions {
    * default stack is not: `DISPATCH_OIDC_ISSUER` and `DISPATCH_OIDC_AUDIENCE` make a server that
    * verifies projected service-account tokens, and an issuer nothing serves makes every such
    * verification answer `503 OIDC_ISSUER_UNAVAILABLE`
-   * (`src/__tests__/dispatch-keyed-resend-live.test.ts`). A name the stack sets itself is refused,
-   * so a row cannot quietly take the server's database, port or token away from it.
+   * (`src/__tests__/dispatch-keyed-resend-live.test.ts`); `DISPATCH_TEST_HOOKS=1` and the
+   * reviewer's settings make a server whose reviewer holds asks
+   * (`src/__tests__/held-ask.live.test.ts`). A name the stack sets itself is refused, so a row
+   * cannot quietly take the server's database, port or token away from it.
    */
   readonly env?: Readonly<Record<string, string>> | undefined;
   /** Called with the port the stack chooses for the server, before the server starts. */
@@ -184,7 +189,7 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
       const response = await fetch(`${url}/api/v1`, { signal: AbortSignal.timeout(2_000) });
       return response.ok;
     });
-    return { url, token, stop };
+    return { url, token, databaseUrl: databaseUrl.toString(), stop };
   } catch (error) {
     await stop();
     throw error;

@@ -2,6 +2,7 @@ import { type RefObject, useEffect, useRef } from "react";
 
 import { type KeyBinding, useKeymap } from "../shell/keymap";
 import { focusOnDocument } from "../shell/roving";
+import { quotableSelection } from "../threads/quote-reply";
 import { type RowAction, rowActionSelector } from "./DecisionActions";
 import { bringOnScreen } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
@@ -539,6 +540,9 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       when: reading,
     },
     {
+      // Words the reader selected in a text they may quote - a card in Details - make `q` the
+      // selection bar's, which quotes them in a reply (`useIssueKeymap.ts`): this one stands
+      // down while they are selected, so one press fires one binding.
       id: "tree-question",
       keys: "q",
       label: "Move to the next open question",
@@ -550,9 +554,11 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         }
         goTo(question.id);
       },
-      when: reading,
+      when: () => reading() && quotableSelection() === null,
     },
     {
+      // On a rewrite's badge inside a row `w` is the badge's: it shows the wording the rewrite
+      // replaced and takes the press before this sees it (`NodeRow.tsx`'s `RowRewriteBadge`).
       id: "tree-decision",
       keys: "w",
       label: "Move into the decision behind the focused row",

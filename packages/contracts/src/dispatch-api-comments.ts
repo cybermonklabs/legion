@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { askFields } from "./dispatch-api-asks";
+import { askFields, TextRewriteSchema } from "./dispatch-api-asks";
 import {
   ActorSchema,
   AnchorSchema,
@@ -15,6 +15,7 @@ import {
 } from "./dispatch-api-limits";
 import {
   carriedBodyFields,
+  personTypedFields,
   ReplyBlockSchema,
   referenceChangesFields,
   threadLoginsFields,
@@ -105,6 +106,10 @@ export const commentFields = {
    *  or, with `ask_id`, a part of that ask; null on every other comment, and absent from a
    *  Dispatch older than the field. */
   reply_block: WrittenReplyBlockSchema.nullable().optional(),
+  /** The reviewer's rewrite of the comment where it held the comment and posted it rewritten
+   *  (`TextRewriteSchema`): `original` holds the body as the agent wrote it. Present on comment
+   *  reads alone, absent once the comment was edited after its post and on every event payload. */
+  rewrite: TextRewriteSchema.optional(),
 };
 
 export const CommentSchema = z.strictObject(commentFields).readonly();
@@ -144,6 +149,7 @@ export const commentEventPayloadFields = {
   ...referenceChangesFields,
   ...threadLoginsFields,
   ...carriedBodyFields,
+  ...personTypedFields,
 };
 
 export const WrittenCommentEventPayloadSchema = z

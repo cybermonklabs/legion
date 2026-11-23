@@ -121,7 +121,14 @@ const askedOfPersonExpression = `coalesce(a.asked_of, i.assignee, p.default_assi
 // to its own `from <table> a`, whatever that caller indents its statement by.
 const askedOfPersonJoins = `
 	left join issues i on i.key = a.issue_key
-	left join artifacts ar on ar.id = a.artifact_id
+	left join artifacts ar on ar.id = a.artifact_id` + ownerProjectJoin
+
+// ownerProjectJoin is the last of askedOfPersonJoins: the project of whichever of the issue i and
+// the document ar owns the row, as p. The writing check's readers of what a text is on and of a
+// document (textOwnerJoins and documentReader in api/writing_check_reader.go) reach the project
+// the same way, and append this one text rather than spell the join again, so the joins the rule
+// reads are written once (TestOneExpressionDecidesWhoWaitsInOneSpelling).
+const ownerProjectJoin = `
 	left join projects p on p.key = coalesce(i.project_key, ar.project_key)`
 
 // askItemRefExpression is the SPA item route of the ask aliased a, whose issue is aliased i and
@@ -178,10 +185,14 @@ func askWaitingOnPerson(ctx context.Context, q queryer, owner owner, askedOf *st
 // rather than evaluating the rule a second time; LastReply still names the newest comment.
 // WaitingOnPerson is askedOfPersonExpression, the person that turn waits on, aliased
 // waiting_on_person for the same reason; every project names a default assignee, so it is null
-// only for a question whose project row the read could not reach. Queries selecting them read
-// from askReadFrom. Event payloads are built from askRowColumns instead: they carry neither.
+// only for a question whose project row the read could not reach. HeldForReview is the reviewer's
+// hold of a decision block as askNotHeld reads it, so a reader of a list that shows the block (an
+// issue's asks, from which the page marks what waits on its reader) can leave it out of what waits
+// as the server's own lists and counts do. Queries selecting them read from askReadFrom. Event
+// payloads are built from askRowColumns instead: they carry none of them.
 const askReadColumns = askRowColumns + `, lr.author, lr.created_at, ` + waitingOnExpression +
-	` as waiting_on, ` + askedOfPersonExpression + ` as waiting_on_person`
+	` as waiting_on, ` + askedOfPersonExpression + ` as waiting_on_person, not ` + askNotHeld +
+	` as held_for_review`
 
 // askReadFrom is askRowFrom with the three joins askedOfPersonExpression reads beside the ask
 // (askedOfPersonJoins) and the ask's newest reply. A query over it that wants the issue's or
@@ -275,7 +286,8 @@ func applyAskBacklinkCounts(asks []*model.Ask, counts map[string]int) {
 // revision - and returns the apply that stamps them onto the asks once the batch is closed. The
 // three statements are queued in that order wherever an ask is read: the issue read queues them
 // beside its other reads (readIssueDetails), and a read of its own sends them as a batch of its
-// own (loadAskDetails). No ask queues nothing and its apply stamps nothing. A node kind refs
+// own (loadAskDetails). A read a person is shown queues the asks' rewrites after them
+// (queueAskReadDetails). No ask queues nothing and its apply stamps nothing. A node kind refs
 // declares no counting arms for is refused as the count is queued, which queues nothing and
 // answers nothing itself, so the apply reports that refusal.
 func queueAskDetails(b *pgx.Batch, who model.Actor, asks []*model.Ask) func() error {
@@ -299,12 +311,40 @@ func queueAskDetails(b *pgx.Batch, who model.Actor, asks []*model.Ask) func() er
 	}
 }
 
+// queueAskReadDetails is queueAskDetails for a read of asks a person is shown - the Inbox's rows,
+// an owner's asks, the issue read's open asks - which carries each ask's rewrite too
+// (text_rewrites.go). An event payload's asks carry no rewrite, so their read queues none.
+func queueAskReadDetails(b *pgx.Batch, who model.Actor, asks []*model.Ask) func() error {
+	apply := queueAskDetails(b, who, asks)
+	rewrites := map[string]model.TextRewrite{}
+	queueAskRewrites(b, distinctAskIDs(asks), rewrites)
+	return func() error {
+		if err := apply(); err != nil {
+			return err
+		}
+		applyAskRewrites(asks, rewrites)
+		return nil
+	}
+}
+
 // loadAskDetails sends queueAskDetails's statements as a batch of their own on q, for an ask read
-// that queues nothing else: an owner's asks, the Inbox's rows, an event payload's asks. The batch
-// holds q's connection until its results close, so nothing else reads the database in between.
+// that queues nothing else: an event payload's asks. The batch holds q's connection until its
+// results close, so nothing else reads the database in between.
 func loadAskDetails(ctx context.Context, q queryer, who model.Actor, asks []*model.Ask) error {
+	return sendAskDetails(ctx, q, who, asks, queueAskDetails)
+}
+
+// loadAskReadDetails is loadAskDetails for a read a person is shown (queueAskReadDetails): an
+// owner's asks and the Inbox's rows.
+func loadAskReadDetails(ctx context.Context, q queryer, who model.Actor, asks []*model.Ask) error {
+	return sendAskDetails(ctx, q, who, asks, queueAskReadDetails)
+}
+
+// sendAskDetails sends what queue queues for asks, read for who, as a batch of its own on q, and
+// applies it.
+func sendAskDetails(ctx context.Context, q queryer, who model.Actor, asks []*model.Ask, queue func(*pgx.Batch, model.Actor, []*model.Ask) func() error) error {
 	batch := &pgx.Batch{}
-	apply := queueAskDetails(batch, who, asks)
+	apply := queue(batch, who, asks)
 	if batch.Len() == 0 {
 		return nil
 	}
@@ -353,14 +393,18 @@ func applyAskPartIDs(asks []*model.Ask, partIDs []refs.AskIDs) {
 }
 
 // attachAskReadFields is what the read of one ask (getAsk) attaches beyond its row: its inbound
-// graph-edge count (attachAskBacklinkCounts), then the part ids of its options and of its answer
-// with its part revision (attachAskPartIDs). A write attaches neither. A list of asks reads the
-// same fields, with their identity events, in one batch instead (queueAskDetails, loadAskDetails).
+// graph-edge count (attachAskBacklinkCounts), the part ids of its options and of its answer with
+// its part revision (attachAskPartIDs), and its rewrite (attachAskRewrites). A write attaches
+// none. A list of asks reads the same fields, with their identity events, in one batch instead
+// (queueAskDetails, loadAskDetails).
 func attachAskReadFields(ctx context.Context, q queryer, who model.Actor, asks []*model.Ask) error {
 	if err := attachAskBacklinkCounts(ctx, q, who, asks); err != nil {
 		return err
 	}
-	return attachAskPartIDs(ctx, q, asks)
+	if err := attachAskPartIDs(ctx, q, asks); err != nil {
+		return err
+	}
+	return attachAskRewrites(ctx, q, asks)
 }
 
 func (s *server) loadAskAnchorArtifact(
@@ -380,20 +424,22 @@ func (s *server) loadAskAnchorArtifact(
 }
 
 // scanAskRead decodes one askReadColumns row; an open ask gets WaitingOn from
-// waitingOnExpression, WaitingOnPerson comes from askedOfPersonExpression, the three steps that
-// end at the project's default assignee, and the newest reply is returned separately (nil when
-// the thread is empty).
+// waitingOnExpression and HeldForReview from askNotHeld, WaitingOnPerson comes from
+// askedOfPersonExpression, the three steps that end at the project's default assignee, and the
+// newest reply is returned separately (nil when the thread is empty).
 func scanAskRead(row pgx.Row, extra ...any) (model.Ask, *model.AskLastReply, error) {
 	var replyAuthor []byte
 	var repliedAt *time.Time
 	var turn string
 	var waitingOnPerson *string
-	ask, err := scanAskRow(row, append([]any{&replyAuthor, &repliedAt, &turn, &waitingOnPerson}, extra...)...)
+	var heldForReview bool
+	ask, err := scanAskRow(row, append([]any{&replyAuthor, &repliedAt, &turn, &waitingOnPerson, &heldForReview}, extra...)...)
 	if err != nil {
 		return model.Ask{}, nil, err
 	}
 	if ask.State == "open" {
 		ask.WaitingOn = turn
+		ask.HeldForReview = heldForReview
 	}
 	if waitingOnPerson != nil {
 		ask.WaitingOnPerson = *waitingOnPerson

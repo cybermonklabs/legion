@@ -47,7 +47,7 @@ import { chromium, type FullConfig, type FullProject, firefox, webkit } from "@p
 
 import { resetFakeEnvoy, setLiveSessions } from "./agents";
 import { baseUrlOf, devSignInPath, listAgents, sessionCookieFrom } from "./api";
-import { stubProjectNames } from "./configurations";
+import { askCardPicturesProject, stubProjectNames } from "./configurations";
 import { type Stack, startStacks } from "./harness-pool";
 import { harnessPorts, refuseStackConflicts, stacksVariable } from "./harness-ports";
 import {
@@ -67,11 +67,13 @@ const playwrightEngines = ["chromium", "firefox", "webkit"] as const;
 type PlaywrightEngine = (typeof playwrightEngines)[number];
 
 /** The projects of `e2e/playwright.config.ts` whose names do not hold their engine's: `iphone`
- *  and `stub-phone` are an iPhone's viewport in Chromium, and `stub` is Chromium at the desktop
- *  width. Every other project is named for its engine (`chromium-plain-http`, `firefox-alone`,
- *  `webkit-iphone`), and a name this cannot read takes every engine of the mode, so a project
- *  added there is never skipped here. */
+ *  and `stub-phone` are an iPhone's viewport in Chromium, `stub` is Chromium at the desktop
+ *  width, and the ask card's pictures are Chromium at the demo's 1440 px. Every other project is
+ *  named for its engine (`chromium-plain-http`, `firefox-alone`, `webkit-iphone`), and a name
+ *  this cannot read takes every engine of the mode, so a project added there is never skipped
+ *  here. */
 const namedProjectEngines: Readonly<Record<string, PlaywrightEngine>> = {
+  [askCardPicturesProject]: "chromium",
   iphone: "chromium",
   stub: "chromium",
   "stub-phone": "chromium",

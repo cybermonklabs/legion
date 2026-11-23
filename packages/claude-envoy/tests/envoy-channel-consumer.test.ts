@@ -418,6 +418,74 @@ test("a late BTW is passed over and answered done, and the frame after it is sho
   }
 })
 
+// INFRA-3231's reviewer sends the writer its findings on a held text as a delivery frame of its
+// own (Decision 5 of its plan): a direct message.created from Dispatch's system actor whose
+// message id is the held text's id, which Dispatch stores as no message. It reaches the main
+// conversation as the session's own turn: the one write into the conversation, holding the
+// findings and the commands, answered done, and no person's Send it would need Dispatch to accept.
+test("a reviewer's findings frame about a held text is written into the main conversation", async () => {
+  const directory = scratchState()
+  const nats = new FakeNats()
+  const notifier = heldNotifier()
+  const { client } = listener(() => ({ ...noInterest(), delivery: CONSUMER }))
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity(SESSION, "/tmp"), directory, {
+      connection: nats,
+      notifier: notifier.notifier,
+      client,
+    }),
+  )
+  const held = "66666666-6666-4666-8666-666666666666"
+  const reviewer = { id: "dispatch-reviewer", kind: "system" }
+  const findings = `Dispatch holds your comment ${held}. Run dispatch held-edit ${held}.`
+  try {
+    nats.emitRelay(SESSION, {
+      subject: DIRECT,
+      seq: 5,
+      reply: "_INBOX.findings",
+      raw: JSON.stringify({
+        event_id: "evt-findings",
+        dedupe_key: `held:${held}:1`,
+        source: "dispatch",
+        source_event_id: "1",
+        topic: DIRECT,
+        issued_at: 1,
+        payload_summary: findings,
+        payload: JSON.stringify({
+          event: {
+            actor: reviewer,
+            issue_key: null,
+            payload: {
+              author: reviewer,
+              body: findings,
+              created_at: "2026-11-15T00:00:00Z",
+              deliveries: [],
+              id: held,
+              in_reply_to: null,
+              issue_key: null,
+              target: `session:${SESSION}`,
+            },
+            type: "message.created",
+          },
+          delivery: { attempt: 1, mode: "steer" },
+        }),
+      }),
+    })
+    await waitFor(
+      async () => notifier.written.length === 1,
+      "the findings written into the conversation",
+    )
+    expect(notifier.written[0]?.eventId).toBe("evt-findings")
+    expect(notifier.written[0]?.content).toContain(`held-edit ${held}`)
+    notifier.pending[0]?.resolve()
+    await waitFor(async () => nats.repliesOn("_INBOX.findings").length === 2, "done")
+    expect(nats.repliesOn("_INBOX.findings")).toEqual(["received", "done"])
+  } finally {
+    for (const write of notifier.pending) write.resolve()
+    await session.shutdown()
+  }
+})
+
 // The acceptance line of dispatch://INFRA-771: no Envoy session receives from a plain NATS
 // subscription. The whole subscription set is asserted, never the presence of the relay subject,
 // so a core subscription added back on any followed subject fails here. Oh My Pi's plugin holds

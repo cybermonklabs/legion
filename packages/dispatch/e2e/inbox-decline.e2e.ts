@@ -47,11 +47,27 @@ test.beforeEach(async ({ context }) => {
   await signIn(context, "alice");
 });
 
-/** The person's way out of a question, on the card `card` draws: **Decline to answer**. While the
- *  dialog is open the card holds the dialog's own button of that name too, so this is read before
- *  it opens and counted where the claim is that the act is drawn or is not. */
-function declineControl(card: Locator): Locator {
-  return card.getByRole("button", { exact: true, name: "Decline to answer" });
+/** The person's way out of a question: **Decline to answer**, an item of the menu the card's split
+ *  button opens by its chevron (INFRA-3231's R7), the card drawing no button of its own for it. */
+function declineItem(page: Page): Locator {
+  return page.locator('[data-ask-menu] [data-ask-menu-item="decline"]');
+}
+
+/** Whether the card `card` draws offers Decline to answer: its chevron opens a menu holding it.
+ *  A closed question's card is its record, with no split button and so no menu at all. The menu
+ *  is closed again before this answers. */
+async function offersDecline(page: Page, card: Locator): Promise<boolean> {
+  await expect(card).toBeVisible();
+  const chevron = card.locator("[data-ask-menu-button]");
+  // An open question's card draws its split button in the same render as the card itself
+  // (`AskCard`'s answer row), so a visible card with no chevron is a closed question's record.
+  if ((await chevron.count()) === 0) return false;
+  await chevron.click();
+  await expect(page.locator("[data-ask-menu]")).toBeVisible();
+  const offered = (await declineItem(page).count()) === 1;
+  await page.keyboard.press("Escape");
+  await expect(page.locator("[data-ask-menu]")).toHaveCount(0);
+  return offered;
 }
 
 /** The dialog the control opens, which is the page's: it is drawn over everything else. */
@@ -63,7 +79,8 @@ function declineDialog(page: Page): Locator {
  *  is one, and the dialog's own **Decline to answer**. An empty note is no note - the field is
  *  left as the dialog opened it - which is what the write carries. */
 async function decline(page: Page, card: Locator, note: string): Promise<void> {
-  await declineControl(card).click();
+  await card.locator("[data-ask-menu-button]").click();
+  await declineItem(page).click();
   const dialog = declineDialog(page);
   await expect(dialog).toBeVisible();
   if (note !== "") {
@@ -120,7 +137,7 @@ test("a question declined from the Inbox with a note leaves the list and reads d
   await expect(record).not.toContainText("Withdrawn");
   await expect(record).not.toContainText("Retracted by");
   await expect(record).not.toContainText("Resolved by");
-  await expect(declineControl(record)).toHaveCount(0);
+  expect(await offersDecline(page, record)).toBe(false);
 });
 
 // SLOW(>=2s): the reading column drawn at its own width, a decline written in it, and the issue
@@ -188,16 +205,16 @@ test("an approval request beside a question in one Inbox draws no Decline to ans
   await expect(page.locator("[data-inbox-row]")).toHaveCount(2);
 
   const questionCard = await askCard(page, question.id);
-  await expect(declineControl(questionCard)).toHaveCount(1);
+  expect(await offersDecline(page, questionCard)).toBe(true);
 
   // The approval request is answered with Approve or Request changes, and the server refuses a
   // decline of one, so its card offers the person no such way out.
   const approvalCard = await askCard(page, approval.ask.id);
-  await expect(approvalCard).toContainText("Approval requested");
+  await expect(approvalCard).toContainText("(version 1)?");
   const options = approvalCard.getByRole("group", { name: "Answer options" });
   await expect(options.getByRole("radio", { name: /^Approve/ })).toHaveCount(1);
   await expect(options.getByRole("radio", { name: /^Request changes/ })).toHaveCount(1);
-  await expect(declineControl(approvalCard)).toHaveCount(0);
+  expect(await offersDecline(page, approvalCard)).toBe(false);
 });
 
 // SLOW(>=2s): the spec's live document room is drawn before its block hosts a card, and the
@@ -233,10 +250,10 @@ test("a document's decision block and the issue page both draw Decline to answer
     .locator(`[data-dispatch-ask-block="${block}"]`)
     .locator("article[data-testid^=ask-]");
   await expect(hosted).toBeVisible();
-  await expect(declineControl(hosted)).toHaveCount(1);
+  expect(await offersDecline(page, hosted)).toBe(true);
 
   const listed = await conversationCard(page, issue.key, blockAsk.id);
-  await expect(declineControl(listed)).toHaveCount(1);
+  expect(await offersDecline(page, listed)).toBe(true);
 });
 
 // SLOW(>=2s): a seeded reply waited for until the server has moved the turn, then the Inbox and
@@ -345,12 +362,12 @@ test("an answered ask and a declined ask draw no Decline to answer, which an ope
   await page.getByRole("tab", { name: "Conversation" }).click();
   const conversation = page.getByRole("region", { name: "Conversation" });
   await expect(conversation.getByTestId(`ask-${answered.id}`)).toBeVisible();
-  await expect(declineControl(conversation.getByTestId(`ask-${answered.id}`))).toHaveCount(0);
+  expect(await offersDecline(page, conversation.getByTestId(`ask-${answered.id}`))).toBe(false);
   await expect(
     conversation.getByTestId(`ask-${declined.id}`).getByTestId("ask-resolution-badge")
   ).toHaveText("Declined");
-  await expect(declineControl(conversation.getByTestId(`ask-${declined.id}`))).toHaveCount(0);
-  await expect(declineControl(conversation.getByTestId(`ask-${open.id}`))).toHaveCount(1);
+  expect(await offersDecline(page, conversation.getByTestId(`ask-${declined.id}`))).toBe(false);
+  expect(await offersDecline(page, conversation.getByTestId(`ask-${open.id}`))).toBe(true);
 });
 
 // SLOW(>=2s): a note of 32,000 characters filled into the dialog, written, and read back from
@@ -368,7 +385,8 @@ test("the decline dialog counts what is left of the note's bound and takes a not
 
   await page.goto("/");
   const card = await askCard(page, ask.id);
-  await declineControl(card).click();
+  await card.locator("[data-ask-menu-button]").click();
+  await declineItem(page).click();
   const dialog = declineDialog(page);
   const left = dialog.getByText(/^\d+ characters? left$/);
 

@@ -66,6 +66,7 @@ import { capabilitiesForTarget, TargetedMessageCard } from "../conversation/Targ
 import { useAgents } from "../conversation/useAgents";
 import { type MeasuredHeights, rowWindow, withMeasuredHeights } from "../delivery/lib/rowWindow";
 import { waitingOnYou } from "../inbox/BlockedOnYou";
+import { useRewrittenText } from "../inbox/RewriteBadge";
 import {
   AgentName,
   type AgentPart,
@@ -79,6 +80,8 @@ import { Timestamp } from "../refs/Timestamp";
 import { closestMatching, focusOnDocument } from "../shell/roving";
 import { MD_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { quoteInto } from "../threads/quote-reply";
+import { QuotableText } from "../threads/SelectionBar";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AgentMessageComposer, type AgentReply, agentSendKey } from "./AgentMessageComposer";
 import { AGENT_GROUP_LABELS, AGENT_GROUPS, type AgentGroup, agentGroup } from "./agent-groups";
@@ -185,9 +188,15 @@ function rowTarget(agent: Agent): AgentPart {
   return { sessionId: agent.session_id, storedTitle: agent.title };
 }
 
+/** Quote reply on a message of a row's conversation (`threads/quote-reply.ts`): the row's composer
+ *  answers that message, and the selected words' Markdown goes at the end of what it holds.
+ *  Absent while the row takes no message: its session advertises no mode, or a send is out. */
+type AgentQuoteReply = (reply: AgentReply, blocks: readonly string[]) => void;
+
 function AgentExchangeReply({
   agent,
   liveAgents,
+  onQuoteReply,
   onReply,
   read,
   reply,
@@ -195,6 +204,7 @@ function AgentExchangeReply({
 }: {
   agent: Agent;
   liveAgents: readonly Agent[] | undefined;
+  onQuoteReply: AgentQuoteReply | undefined;
   onReply: (reply: AgentReply) => void;
   read: MessageRead;
   reply: MessageWithTrees;
@@ -219,14 +229,27 @@ function AgentExchangeReply({
     (candidate) => candidate.in_reply_to === reply.id && candidate.author.kind === "session"
   );
   const capabilities = capabilitiesForTarget(read.message.target, liveAgents);
+  // A session's reply the reviewer rewrote before the reader saw it: its badge, or `w` while the
+  // reply holds the focus, shows the agent's wording in place, as the Inbox's thread of this
+  // conversation does (`ThreadBody`).
+  const rewritten = useRewrittenText(reply);
   return (
     <ReplyTurn
       at={reply.created_at}
       author={reply.author}
+      badge={rewritten.badge}
       body={
-        <div className={textPrimaryOnCanvas}>
-          <MarkdownBody markdown={reply.body} tree={reply.body_tree} />
-        </div>
+        <QuotableText
+          onQuote={
+            onQuoteReply === undefined
+              ? undefined
+              : (blocks) => onQuoteReply(agentReplyTo(agent, read, reply), blocks)
+          }
+        >
+          <div className={textPrimaryOnCanvas}>
+            <MarkdownBody markdown={rewritten.markdown} tree={rewritten.tree} />
+          </div>
+        </QuotableText>
       }
       delivery={
         (reply.deliveries ?? []).length === 0
@@ -245,6 +268,7 @@ function AgentExchangeReply({
             }
       }
       onReply={() => onReply(agentReplyTo(agent, read, reply))}
+      originalToggle={rewritten.toggle}
       quote={
         parent === undefined
           ? undefined
@@ -268,12 +292,14 @@ function AgentExchangeReply({
 function AgentTargetedMessage({
   agent,
   liveAgents,
+  onQuoteReply,
   onReply,
   read,
   replyDisabled,
 }: {
   agent: Agent;
   liveAgents: readonly Agent[] | undefined;
+  onQuoteReply: AgentQuoteReply | undefined;
   onReply: (reply: AgentReply) => void;
   read: MessageRead;
   replyDisabled: boolean;
@@ -293,6 +319,10 @@ function AgentTargetedMessage({
   });
   const replies = read.replies ?? [];
   const answer = replies.find((reply) => reply.author.kind === "session");
+  const capabilities = capabilitiesForTarget(read.message.target, liveAgents);
+  // The conversation's first message, drawn as a message's root is (`ConversationTab`'s
+  // `TargetedMessageTurn`): a rewrite of it shows its badge, and `w` on the card's own row.
+  const rewritten = useRewrittenText(read.message);
   return (
     <TargetedMessageCard
       answeredBy={answer?.author}
@@ -301,19 +331,29 @@ function AgentTargetedMessage({
           <p className={`flex items-baseline gap-2 text-sm ${textSecondaryOnCanvas}`}>
             <AgentName actor={read.message.author} className="font-semibold" inline />
             <Timestamp at={read.message.created_at} />
+            {rewritten.badge}
           </p>
-          <div className={textPrimaryOnCanvas}>
-            <MarkdownBody markdown={read.message.body} tree={read.message.body_tree} />
-          </div>
+          <QuotableText
+            onQuote={
+              onQuoteReply === undefined
+                ? undefined
+                : (blocks) => onQuoteReply(agentReplyTo(agent, read, read.message), blocks)
+            }
+          >
+            <div className={textPrimaryOnCanvas}>
+              <MarkdownBody markdown={rewritten.markdown} tree={rewritten.tree} />
+            </div>
+          </QuotableText>
         </>
       }
-      canAside={capabilitiesForTarget(read.message.target, liveAgents)?.includes("aside") !== false}
-      canBtw={capabilitiesForTarget(read.message.target, liveAgents)?.includes("btw") !== false}
-      canSteer={capabilitiesForTarget(read.message.target, liveAgents)?.includes("steer") !== false}
+      canAside={capabilities?.includes("aside") !== false}
+      canBtw={capabilities?.includes("btw") !== false}
+      canSteer={capabilities?.includes("steer") !== false}
       deliveries={deliveryAttempts(read.message.deliveries ?? [], rowTarget(agent))}
       header={null}
       onReply={() => onReply(agentReplyTo(agent, read, read.message))}
       onRetry={retry.mutate}
+      originalToggle={rewritten.toggle}
       replyDisabled={replyDisabled}
       retrying={retry.isPending}
       targetName={rowTarget(agent)}
@@ -325,6 +365,7 @@ function AgentTargetedMessage({
                 agent={agent}
                 key={reply.id}
                 liveAgents={liveAgents}
+                onQuoteReply={onQuoteReply}
                 onReply={onReply}
                 read={read}
                 reply={reply}
@@ -360,12 +401,14 @@ function exchangesAfter(
 function AgentMessageList({
   agent,
   liveAgents,
+  onQuoteReply,
   onReply,
   open,
   replyDisabled,
 }: {
   agent: Agent;
   liveAgents: readonly Agent[] | undefined;
+  onQuoteReply: AgentQuoteReply | undefined;
   onReply: (reply: AgentReply) => void;
   /** Whether the row is open. Its list stays mounted while it is collapsed, and marks nothing read
    *  there: a reply is read once it is on screen. */
@@ -422,6 +465,7 @@ function AgentMessageList({
       agent={agent}
       key={read.message.id}
       liveAgents={liveAgents}
+      onQuoteReply={onQuoteReply}
       onReply={onReply}
       read={read}
       replyDisabled={replyDisabled}
@@ -841,6 +885,16 @@ function AgentRowDetails({
       <AgentMessageList
         agent={agent}
         liveAgents={liveAgents}
+        // The composer answers the quoted message, with the quote at the end of what it holds.
+        onQuoteReply={
+          modes.length === 0 || hold.sending
+            ? undefined
+            : (next, blocks) => {
+                if (hold.sendingNow()) return;
+                setReplyTo(next);
+                quoteInto(sendKey, blocks);
+              }
+        }
         onReply={(next) => {
           if (!hold.sendingNow()) setReplyTo(next);
         }}

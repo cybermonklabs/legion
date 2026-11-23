@@ -13,10 +13,12 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/going/goingtest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/modelpace"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -24,6 +26,13 @@ import (
 // testTokensPerMinute is a quota far past anything one test's prompts cost, so every test but the
 // quota's own exercises the pacer without ever waiting on it.
 const testTokensPerMinute = 300_000
+
+// testPace is an answerer's share of a pacer of its own whose quota is tokensPerMinute, as the
+// boot's share states the deployment's quota (cmd/dispatch answererConfig.share); now, when set,
+// is the pacer's clock.
+func testPace(tokensPerMinute int, now func() time.Time) *modelpace.Caller {
+	return modelpace.New(modelpace.Config{Now: now}).Join(modelpace.Share{TokensPerMinute: tokensPerMinute, StatesQuota: true})
+}
 
 // The two items a test's seeding search finds, and one target no citation set holds: the filter
 // admits a link by its href alone, so the href is what a reply links.
@@ -194,12 +203,13 @@ func testReads() *reads {
 }
 
 // testAnswerer builds an Answerer over the real HTTP client against model, so every test drives
-// the client's own route, sign-in and reading of the stream.
+// the client's own route, sign-in and reading of the stream, and the calls pass a pacer of
+// testTokensPerMinute unless cfg names one.
 func testAnswerer(t *testing.T, model *goingtest.Model, cfg going.AnswererConfig) *going.Answerer {
 	t.Helper()
 	cfg.Model = testClient(t, model, going.HTTPConfig{})
-	if cfg.TokensPerMinute == 0 {
-		cfg.TokensPerMinute = testTokensPerMinute
+	if cfg.Pace == nil {
+		cfg.Pace = testPace(testTokensPerMinute, nil)
 	}
 	answerer, err := going.NewAnswerer(cfg)
 	if err != nil {
@@ -232,7 +242,7 @@ func answerWords(n int) string {
 // TestNewAnswererRefusesAnswererWithoutAModel: an answerer with no chat client is a programming
 // error, refused at boot rather than at the first question.
 func TestNewAnswererRefusesAnswererWithoutAModel(t *testing.T) {
-	if _, err := going.NewAnswerer(going.AnswererConfig{TokensPerMinute: testTokensPerMinute}); err == nil {
+	if _, err := going.NewAnswerer(going.AnswererConfig{Pace: testPace(testTokensPerMinute, nil)}); err == nil {
 		t.Fatal("NewAnswerer with no model returned no error")
 	}
 }
@@ -471,8 +481,8 @@ func TestRunEndsWithTheDeadlineWhenTheModelNeverAnswers(t *testing.T) {
 	model := goingtest.NewModel(t, goingtest.Reply{Silent: true})
 	transport := &deadlineTransport{}
 	answerer, err := going.NewAnswerer(going.AnswererConfig{
-		Model:           testClient(t, model, going.HTTPConfig{HTTPClient: &http.Client{Transport: transport}}),
-		TokensPerMinute: testTokensPerMinute,
+		Model: testClient(t, model, going.HTTPConfig{HTTPClient: &http.Client{Transport: transport}}),
+		Pace:  testPace(testTokensPerMinute, nil),
 	})
 	if err != nil {
 		t.Fatalf("NewAnswerer: %v", err)
@@ -547,8 +557,7 @@ func TestRunEndsWithTheDeadlineWhenTheQuotaCannotPaceTheCall(t *testing.T) {
 	frozen := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
 	model := goingtest.NewModel(t, goingtest.Reply{Text: "An answer nobody will see."})
 	answerer := testAnswerer(t, model, going.AnswererConfig{
-		TokensPerMinute: 1,
-		Now:             func() time.Time { return frozen },
+		Pace: testPace(1, func() time.Time { return frozen }),
 	})
 	stream := &answerStream{}
 
@@ -561,6 +570,49 @@ func TestRunEndsWithTheDeadlineWhenTheQuotaCannotPaceTheCall(t *testing.T) {
 	}
 	if got := model.Calls(); got != 0 {
 		t.Errorf("model served %d calls, want none: the quota could pace none of them", got)
+	}
+}
+
+// TestNoCallFitsAQuotaOfTheLeastACallIsCharged: the least a call is charged, modelpace.Charge of
+// LeastCallRunes with no reply bound, is less than the shortest run's call is charged, a question
+// of one word whose search finds nothing, which sends the rules, the question and the search tool.
+// So a quota of that least, which the boot refuses for the answerer's deployment, paces no call and
+// ends the run as a quota too small does, and a quota of the shortest call's charge paces it.
+func TestNoCallFitsAQuotaOfTheLeastACallIsCharged(t *testing.T) {
+	frozen := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	run := func(quota int) (*goingtest.Model, *answerStream) {
+		t.Helper()
+		model := goingtest.NewModel(t, goingtest.Reply{Text: "Dispatch holds no answer to that question."})
+		answerer := testAnswerer(t, model, going.AnswererConfig{Pace: testPace(quota, func() time.Time { return frozen })})
+		stream := &answerStream{}
+		if err := answerer.Run(t.Context(), (&reads{}).request("port"), stream.emit); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		return model, stream
+	}
+	least := modelpace.Charge(going.LeastCallRunes(), 0)
+	served, _ := run(testTokensPerMinute)
+	if served.Calls() != 1 {
+		t.Fatalf("the shortest run made %d calls, want one", served.Calls())
+	}
+	// The call's characters as its pacer counts them: its messages and its tools.
+	sent := served.Requests()[0]
+	runes := 0
+	for _, message := range sent.Messages {
+		runes += utf8.RuneCountInString(message.Content)
+	}
+	for _, tool := range sent.Tools {
+		runes += utf8.RuneCountInString(tool.Name) + utf8.RuneCountInString(tool.Description)
+	}
+	shortest := modelpace.Charge(runes, 0)
+	if shortest <= least {
+		t.Fatalf("the shortest call is charged %d, not more than the least %d", shortest, least)
+	}
+	if model, stream := run(least); model.Calls() != 0 || stream.code(t) != contracts.GoingErrorAnswerDidNotArrive {
+		t.Errorf("a quota of the least charge %d: %d calls, code %s, want none and %s", least, model.Calls(), stream.code(t), contracts.GoingErrorAnswerDidNotArrive)
+	}
+	if model, _ := run(shortest); model.Calls() != 1 {
+		t.Errorf("a quota of the shortest call's charge %d: %d calls, want one", shortest, model.Calls())
 	}
 }
 

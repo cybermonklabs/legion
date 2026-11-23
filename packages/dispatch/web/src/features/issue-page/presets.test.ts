@@ -247,6 +247,24 @@ test("the Decisions count leaves out a section that restates a person's answer",
   expect(filterSignals(root, "").decisions).toEqual({ count: 4 });
 });
 
+// A decision block the reviewer holds (`TreeNode.heldForReview`) is no entry of the Decisions
+// filter until it posts (`decisions-filter/decisions-parts.ts`), so its count leaves the block
+// out with the list. Once it posts, it is counted as the open question it is.
+test("the Decisions count leaves out a decision block the reviewer holds", () => {
+  const root = (held: boolean) =>
+    node("CORE-1", "issue", [
+      node("spec#b-q1", "ask", [], {
+        question: true,
+        state: "open",
+        ...(held ? { heldForReview: true as const } : {}),
+      }),
+      node("ask-2", "ask", [], { question: true, state: "open" }),
+      node("decision-1", "decision"),
+    ]);
+  expect(filterSignals(root(true), "").decisions).toEqual({ count: 2 });
+  expect(filterSignals(root(false), "").decisions).toEqual({ count: 3 });
+});
+
 // R26, R18: the parent a filter draws as no row is one line on its child's row, and carries the
 // parent's own address where the model gives it one, so the line is the link to that node.
 test("a parent line carries the parent's own address", () => {

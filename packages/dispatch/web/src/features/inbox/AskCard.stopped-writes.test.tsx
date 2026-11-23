@@ -1,7 +1,7 @@
 import { beforeAll, expect, jest, mock, spyOn, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: the pastes below carry a file, which user-event has no form for
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { stopTheLateWrite, untilAttempted } from "../../__tests__/stop-late-write";
@@ -31,6 +31,27 @@ installAskCardApiMocks();
 // one does not keep pace with. So the engine is loaded before the rows begin.
 beforeAll(warmMarkdownRenderer);
 
+/** The card's **Hand this question to…**, from its split button's menu, which opens the people
+ *  picker (`AskHandOnPicker`); the people are read as it opens. The press of `person` hands the
+ *  ask to them on the clock the case holds from there. */
+async function handOnTo(container: HTMLElement, person: string) {
+  const user = userEvent.setup();
+  await user.click(await within(container).findByRole("button", { name: "More actions" }));
+  const page = within(document.body);
+  await user.click(await page.findByRole("menuitem", { name: /^Hand this question to/ }));
+  const pick = await page.findByRole("button", { name: person });
+  jest.useFakeTimers();
+  await userOnFakeClock().click(pick);
+}
+
+/** The card's Ask back, from its split button's menu: the action then reads Ask back, and its
+ *  press sends the text in the answer box. */
+async function askBack(user: UserEvent, container: HTMLElement) {
+  await user.click(within(container).getByRole("button", { name: "More actions" }));
+  await user.click(await screen.findByRole("menuitem", { name: "Ask back" }));
+  await user.click(within(container).getByRole("button", { name: "Ask back" }));
+}
+
 // A hand-on is a `PUT` of whom the ask waits on. One the reader stopped may have been made, so
 // the card neither says it failed nor shows the stopped write's own words, which are a
 // composer's and speak of a message: it says what its Retry does with the hand-on.
@@ -48,12 +69,7 @@ test("a hand-on the reader stopped says what Retry does, not a message's words",
   const { queryClient, view } = renderCard(<AskCard ask={open} initialThread={thread(open, [])} />);
   const card = within(view.container);
   try {
-    const control = await card.findByLabelText<HTMLSelectElement>("Hand this question to");
-    // The people are read only once the reader reaches for the control (`AskHandOn`).
-    await userEvent.setup().click(control);
-    await waitFor(() => expect(within(control).getByRole("option", { name: "bob" })).toBeTruthy());
-    jest.useFakeTimers();
-    await userOnFakeClock().selectOptions(control, "bob");
+    await handOnTo(view.container, "bob");
     await stopTheLateWrite(queryClient);
 
     // The alert's paragraph, without its Retry button's name.
@@ -163,7 +179,7 @@ test("a clarification the reader stopped says Retry asks again under its key, no
     const field = card.getByLabelText("Your answer");
     await user.click(field);
     await user.paste("Ship what, exactly?");
-    await user.click(card.getByRole("button", { name: "Ask back" }));
+    await askBack(user, view.container);
     await stopTheLateWrite(queryClient);
     expect(card.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("your clarification", "sent", {
@@ -259,12 +275,7 @@ test("a stopped hand-on's Retry after the card moves to another ask hands on the
     <AskCard ask={open} initialThread={thread(open, [])} />
   );
   try {
-    const control = await screen.findByLabelText<HTMLSelectElement>("Hand this question to");
-    // The people are read only once the reader reaches for the control (`AskHandOn`).
-    await userEvent.setup().click(control);
-    await waitFor(() => expect(within(control).getByRole("option", { name: "bob" })).toBeTruthy());
-    jest.useFakeTimers();
-    await userOnFakeClock().selectOptions(control, "bob");
+    await handOnTo(view.container, "bob");
     await stopTheLateWrite(queryClient);
     const stopped = handAskTo.mock.calls.length;
 
@@ -384,7 +395,7 @@ test("a stopped question back's Retry after the card moves to another ask posts 
     const user = userOnFakeClock();
     await user.click(screen.getByLabelText("Your answer"));
     await user.paste("Ship what, exactly?");
-    await user.click(screen.getByRole("button", { name: "Ask back" }));
+    await askBack(user, view.container);
     await stopTheLateWrite(queryClient);
     const stoppedKey = createComment.mock.calls[0]?.[2].key;
     const stopped = createComment.mock.calls.length;

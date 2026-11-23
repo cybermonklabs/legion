@@ -8,6 +8,7 @@ import type {
   BroadcastExclusion,
   BroadcastRecipient,
   MessageDeliveryMode,
+  MessageWithTrees,
 } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
@@ -36,6 +37,7 @@ import {
   DeliveryStatus,
 } from "../conversation/TargetedMessageCard";
 import { useAgents } from "../conversation/useAgents";
+import { useRewrittenText } from "../inbox/RewriteBadge";
 import { AgentName, type AgentPart, AgentParts, useAgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
@@ -64,6 +66,26 @@ export function exclusionsFromState(state: unknown): readonly BroadcastExclusion
   if (typeof state !== "object" || state === null) return [];
   const excluded = Reflect.get(state, "excluded");
   return Array.isArray(excluded) ? (excluded as BroadcastExclusion[]) : [];
+}
+
+/** One message of a recipient's thread: the session's answer, or the sender's own follow-up. An
+ *  answer the reviewer rewrote before the reader saw it carries its badge beside its author and
+ *  time, and the badge, or `w` while the message holds the focus, shows the agent's wording in
+ *  place (`useRewrittenText`). */
+function BroadcastReply({ reply }: { reply: MessageWithTrees }): ReactNode {
+  const rewritten = useRewrittenText(reply);
+  return (
+    <div className={`mt-2 border-t pt-2 ${borderDefault}`} {...rewritten.toggle}>
+      <p className={`flex items-baseline gap-2 text-xs ${textSecondaryOnCanvas}`}>
+        <AgentName actor={reply.author} className="font-semibold" inline />
+        <Timestamp at={reply.created_at} />
+        {rewritten.badge}
+      </p>
+      <div className={textPrimaryOnCanvas}>
+        <MarkdownBody markdown={rewritten.markdown} tree={rewritten.tree} />
+      </div>
+    </div>
+  );
 }
 
 function BroadcastRecipientRow({
@@ -159,15 +181,7 @@ function BroadcastRecipientRow({
         </div>
       ) : null}
       {replies.map((reply) => (
-        <div className={`mt-2 border-t pt-2 ${borderDefault}`} key={reply.id}>
-          <p className={`flex items-baseline gap-2 text-xs ${textSecondaryOnCanvas}`}>
-            <AgentName actor={reply.author} className="font-semibold" inline />
-            <Timestamp at={reply.created_at} />
-          </p>
-          <div className={textPrimaryOnCanvas}>
-            <MarkdownBody markdown={reply.body} tree={reply.body_tree} />
-          </div>
-        </div>
+        <BroadcastReply key={reply.id} reply={reply} />
       ))}
     </article>
   );

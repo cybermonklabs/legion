@@ -34,12 +34,15 @@ export function nodesInOrder(root: TreeNode): TreeNode[] {
  * anywhere else - no focus at all, or a node that is no question - the first open question of
  * the tree, because a position among nodes that are not questions says nothing about where in
  * the questions the reader is. Undefined when the reader is on the last one, which the key
- * reports rather than wrapping round to a question they have just read (R6).
+ * reports rather than wrapping round to a question they have just read (R6). A decision block
+ * the reviewer holds (`TreeNode.heldForReview`) is no stop until it posts, as the document's
+ * open-decisions navigator walks to none: the tree shows it without putting the focus on it.
  */
 export function nextQuestion(root: TreeNode, from: string | undefined): TreeNode | undefined {
+  const stop = (node: TreeNode): boolean => node.question && node.heldForReview !== true;
   const order = nodesInOrder(root);
-  const at = order.findIndex((node) => node.id === from && node.question);
-  return order.slice(at + 1).find((node) => node.question);
+  const at = order.findIndex((node) => node.id === from && stop(node));
+  return order.slice(at + 1).find(stop);
 }
 
 /** A reference with the version it pins taken off, so a decision's link to a block and that

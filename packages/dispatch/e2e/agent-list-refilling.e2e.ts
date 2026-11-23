@@ -134,7 +134,7 @@ async function expectNoAbsenceClaim(page: Page): Promise<void> {
   await expect(page.getByText("No live agents match.")).toHaveCount(0);
   await expect(page.getByText(/may have ended/)).toHaveCount(0);
   await expect(page.getByRole("button", { name: /^Subscribers: \d/ })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /^Reaches \d/ })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: /^Reaches \d/ })).toHaveCount(0);
   await expect(page.getByRole("img", { exact: true, name: "Not running" })).toHaveCount(0);
   await expect(page.getByTestId("issue-route-unreachable")).toHaveCount(0);
 }
@@ -170,8 +170,11 @@ async function openMentionSuggestions(page: Page): Promise<Locator> {
   return suggestions;
 }
 
-function askRecipients(page: Page, askId: string): Locator {
-  return page.getByTestId(`ask-${askId}`).getByRole("region", { name: "Recipients" });
+/** The ask's Reaches list, which the chevron beside its asker's name opens in a popover on its
+ *  card (INFRA-3231's R7): opened, and answered. */
+async function askRecipients(page: Page, askId: string): Promise<Locator> {
+  await page.getByTestId(`ask-${askId}`).locator("[data-ask-asker]").click();
+  return page.getByRole("dialog").getByRole("region", { name: "Recipients" });
 }
 
 async function openProjectList(page: Page, issueKey: string): Promise<void> {
@@ -213,10 +216,8 @@ async function expectFreshViewsRefilling(page: Page, fixture: RefillFixture): Pr
   await expectNoUnreachableWording(page);
 
   await page.goto("/");
-  const recipients = askRecipients(page, fixture.askId);
+  const recipients = await askRecipients(page, fixture.askId);
   await expect(refillingNotice(recipients)).toHaveText(REFILLING, { timeout: REFILL_TIMEOUT });
-  const toggle = recipients.getByRole("button", { name: "Recipients", exact: true });
-  await toggle.click();
   await expect(
     recipients
       .getByRole("list", { name: "Followers" })
@@ -264,8 +265,8 @@ test("a list that starts refilling after a complete read claims no agent absent,
     await expect(subscribed.getByText(watcher.title, { exact: true })).toBeVisible();
     await expect(subscribed.getByRole("img", { exact: true, name: "Running" })).toHaveCount(1);
     await page.goto("/");
-    const recipients = askRecipients(page, fixture.askId);
-    await expect(recipients.getByRole("button", { name: "Reaches 2" })).toBeVisible();
+    const recipients = await askRecipients(page, fixture.askId);
+    await expect(recipients).toContainText("Reaches 2");
 
     await setListsState("refilling");
 
@@ -292,7 +293,7 @@ test("a list that starts refilling after a complete read claims no agent absent,
 
     // The ask card read while the list refilled is the one a Retry brings back.
     await page.goto("/");
-    const refilled = askRecipients(page, fixture.askId);
+    const refilled = await askRecipients(page, fixture.askId);
     await expect(refillingNotice(refilled)).toHaveText(REFILLING, { timeout: REFILL_TIMEOUT });
 
     await setListsState("ok");
@@ -313,7 +314,7 @@ test("a list that starts refilling after a complete read claims no agent absent,
     await expectNoRefillingWording(issuePage);
 
     await refilled.getByRole("button", { name: "Retry" }).click();
-    await expect(refilled.getByRole("button", { name: "Reaches 2" })).toBeVisible();
+    await expect(refilled).toContainText("Reaches 2");
     await expectNoRefillingWording(page);
 
     await page.goto(documentPath);
@@ -363,8 +364,8 @@ test("an empty list that starts refilling never says nobody is connected", async
         .getByRole("img", { exact: true, name: "Not running" })
     ).toHaveCount(1);
     await page.goto("/");
-    const recipients = askRecipients(page, fixture.askId);
-    await recipients.getByRole("button", { name: "Reaches 2" }).click();
+    const recipients = await askRecipients(page, fixture.askId);
+    await expect(recipients).toContainText("Reaches 2");
     await expect(recipients.getByRole("img", { exact: true, name: "Not running" })).toHaveCount(2);
     await openProjectList(page, fixture.issueKey);
     await expect(page.getByTestId("issue-route-unreachable")).toHaveCount(1);
@@ -488,13 +489,12 @@ test("a listener that cannot answer reads as unreachable on every view, never as
     await expectNoAbsenceClaim(page);
 
     await page.goto("/");
-    const recipients = askRecipients(page, fixture.askId);
+    const recipients = await askRecipients(page, fixture.askId);
     await expect(
       recipients
         .getByRole("alert")
         .filter({ hasText: "Subscribers unavailable — Envoy listener unreachable." })
     ).toBeVisible();
-    await recipients.getByRole("button", { name: "Recipients", exact: true }).click();
     await expect(
       recipients
         .getByRole("list", { name: "Followers" })

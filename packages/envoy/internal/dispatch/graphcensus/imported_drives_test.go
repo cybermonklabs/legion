@@ -269,8 +269,8 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		return append([]string{name, "graphstore/people.go#QueueAuthored"}, sites...)
 	}
 	return []graphcensus.StoreDrive{{
-		Name: "api/issue_create.go#createIssue", Database: r.database,
-		Sites: []string{"api/issue_create.go#createIssue", "refs/blocks.go#Queue"},
+		Name: "api/issue_create.go#writeIssue", Database: r.database,
+		Sites: []string{"api/issue_create.go#writeIssue", "refs/blocks.go#Queue"},
 		Drive: func(t *testing.T) {
 			created := decoded[struct {
 				Key     string `json:"key"`
@@ -303,8 +303,8 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		},
 		Counts: newBlockCounted,
 	}, {
-		Name: "api/comment_create.go#createCommentFor, on an issue", Database: r.database,
-		Sites: comment("api/comment_create.go#createCommentFor"),
+		Name: "api/comment_create.go#writeComment, on an issue", Database: r.database,
+		Sites: comment("api/comment_create.go#writeComment"),
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments",
 				map[string]any{"body": "A remark on the issue."}, "alice", http.StatusCreated)
@@ -322,8 +322,8 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		// A comment anchored to the notes, whose mention resolves to the held session: the
 		// listener holds that send, so what the comment's create appends is read before its settle
 		// runs.
-		Name: "api/comment_create.go#createCommentFor, anchored to a document, mentioning a session", Database: r.database,
-		Sites: comment("api/comment_create.go#createCommentFor"),
+		Name: "api/comment_create.go#writeComment, anchored to a document, mentioning a session", Database: r.database,
+		Sites: comment("api/comment_create.go#writeComment"),
 		Drive: func(t *testing.T) {
 			r.mentioned = decoded[model.Comment](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments", map[string]any{
 				"body": "Does this ship, @" + heldSession + "?", "mentions": []map[string]any{{"target": "session:" + heldSession}},
@@ -394,8 +394,8 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		},
 		Counts: sessionNodeCounted,
 	}, {
-		Name: "api/asks.go#createAskFor", Database: r.database,
-		Sites: []string{"api/asks.go#createAskFor", "asks/followers.go#queueFollow"},
+		Name: "api/asks.go#writeAsk", Database: r.database,
+		Sites: []string{"api/asks.go#writeAsk", "asks/followers.go#queueFollow"},
 		Drive: func(t *testing.T) {
 			r.ask = decoded[model.Ask](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/asks", map[string]any{
 				"question": "Which store do the writers take?", "actor": sessionActor("ses_asker"),

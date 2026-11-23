@@ -294,7 +294,9 @@ function renderVersion(markdown: string = TEXT) {
             artifactId="artifact-1"
             asks={[]}
             createdAt="2026-09-09T00:00:00Z"
+            definePlace={undefined}
             highlight={undefined}
+            keyScope="document"
             owner={undefined}
             version={1}
           />

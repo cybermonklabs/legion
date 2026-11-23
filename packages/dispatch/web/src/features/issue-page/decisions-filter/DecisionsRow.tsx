@@ -26,6 +26,7 @@ import {
   RowMargin,
   type Tone,
   useClamp,
+  useOriginalWords,
   useRowOnScreen,
 } from "../NodeRow";
 import { shortDay } from "../node-time";
@@ -146,7 +147,9 @@ export function DecisionsRow({
   /** The thread whose newest write this row draws, which a dwell on the row marks read. */
   threadRead?: ThreadMark;
 }): ReactNode {
-  const node = entry.node;
+  // The node's words as the row draws them: its own, or the wording its rewrite replaced while
+  // the rewrite's badge in its margin shows it (`useOriginalWords`), as the outline's row does.
+  const node = useOriginalWords(entry.node);
   // Each person the row names, by the page's one rule for naming one (`AgentText.author`): a
   // name and a shape, never an id, and whether they are the reader (R9, R22, R34).
   const agentText = useAgentText();
@@ -174,7 +177,10 @@ export function DecisionsRow({
       : entry.kind === "decision"
         ? !review
         : false;
-  const clamp = useClamp(words, cuttable);
+  // What the words are drawn from, as the outline's row keys its own (`NodeRow.tsx`): a row in
+  // view drawn from other words - a later read's, or the other wording a press of the badge
+  // shows - is measured again for them (`useClamp`).
+  const clamp = useClamp(words, cuttable, node.tree ?? node.text);
   const [opened, setOpened] = useState(false);
   const clamped = clamp !== undefined && !opened && !body;
   const tone = toneOf(entry);
@@ -390,6 +396,7 @@ export function DecisionsRow({
             state: standing?.token,
             waiting: entry.kind === "decision" ? review : node.waiting,
           }}
+          showingOriginal={node !== entry.node}
           tabStops={false}
           tone={tone}
         />

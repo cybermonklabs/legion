@@ -1,12 +1,13 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
-import { act, type RenderResult, render, waitFor } from "@testing-library/react";
+import { act, type RenderResult, render, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useEffect, useRef } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
 import { nextFrame } from "../../../__tests__/frames";
+import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { ApiError, api } from "../../../api/client";
 import type {
   Actor,
@@ -16,6 +17,7 @@ import type {
   Decision,
   DecisionKeep,
   IssueDecisions,
+  TextRewrite,
 } from "../../../api/types";
 import {
   pageFocusedRow,
@@ -23,8 +25,10 @@ import {
   pageOwnWordsRule,
   pageStateText,
 } from "../../../theme/classes";
+import { originalListenersNow } from "../../inbox/ask-rewrite";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { useKeymapScope } from "../../shell/keymap";
+import { measureNearWords } from "../clamp-fixtures";
 import type { OutlineRequest } from "../IssueTree";
 import { artifactsBySlug } from "../issue-artifacts";
 import type { TreeNode } from "../issue-tree";
@@ -2307,4 +2311,95 @@ test("nothing the body draws is hidden at a width", async () => {
       .map((element) => element.getAttribute("class"))
   ).toEqual([]);
   expect(view.container.querySelectorAll("[data-decisions-body] [hidden]").length).toBe(0);
+});
+
+/** 3,000 words, which run 400 lines of 24 px where they are drawn whole. */
+const LONG_WORDS = Array.from({ length: 3000 }, (_unused, at) => `word${at + 1}`).join(" ");
+
+/** Lays every element out until the answer is called, as `NodeRow.drawn.test.tsx` lays a row
+ *  out: each box 9,600 px tall from the top of the view, and its words as tall as `words` says.
+ *  No DOM of a unit test lays anything out, and a row's cut reads the words' own boxes
+ *  (`clamp-measurer.ts`). */
+function layOut(words: (element: HTMLElement) => number): () => void {
+  const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+    configurable: true,
+    get(this: HTMLElement) {
+      return words(this);
+    },
+  });
+  const box = spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 0, 600, 9600)
+  );
+  return () => {
+    if (own === undefined) Reflect.deleteProperty(HTMLElement.prototype, "scrollHeight");
+    else Object.defineProperty(HTMLElement.prototype, "scrollHeight", own);
+    box.mockRestore();
+  };
+}
+
+/** An answered question the reviewer rewrote: `text` is the rewrite, and `original` the question
+ *  its agent wrote. */
+function rewrittenAsk(id: string, text: string, original: string): TreeNode {
+  const rewrite: TextRewrite = {
+    at: "2026-11-05T01:30:00Z",
+    by: "reviewer",
+    original: { body: original },
+    state: "rewritten",
+  };
+  return answeredAsk(id, { at: "2026-11-14T09:00:00Z", text: "Ship it." }, { rewrite, text });
+}
+
+// INFRA-3231's R7 and decision 261: a row in view keeps its length unless it draws other words,
+// and the badge of an answered ask's rewrite draws the question its agent wrote in place. A short
+// rewrite of a long question is drawn whole as its row mounts in view; once the badge shows the
+// original, the row is cut as the original runs, which it draws once the focus the press gave the
+// row leaves it.
+test("an answered ask whose badge shows a long original for its short rewrite is cut as the original runs", async () => {
+  const user = userEvent.setup();
+  // Drawn whole, the original runs 400 lines of 24 px, and the rewrite five.
+  const restore = layOut((element) =>
+    (element.textContent ?? "").includes("word3000") ? 9600 : 120
+  );
+  const near = installIntersectionObserver();
+  try {
+    const view = renderBody({
+      children: [openAsk("q-open"), rewrittenAsk("a-rewritten", "Ship it?", LONG_WORDS)],
+    });
+    await measureNearWords(near);
+    const row = rowOf(view, "a-rewritten");
+    const drawn = () => row.querySelector<HTMLElement>("[data-node-words]");
+    expect(row.querySelector("[data-node-more]"), "the short rewrite was cut").toBeNull();
+
+    await user.click(within(row).getByRole("button", { name: "Rewritten" }));
+    expect(words(drawn())).toBe(LONG_WORDS);
+    await act(async () => rowOf(view, "q-open").focus());
+    expect(focusedRow(view)).toBe("q-open");
+    expect(
+      row.querySelector("[data-node-more]")?.textContent,
+      "the original was drawn whole in view"
+    ).toBe(`${CONTROL_LABELS.read_more} · 2,955 ${CONTROL_LABELS.read_more_words}`);
+    expect(drawn()?.style.maxHeight).toBe("144px");
+  } finally {
+    near.restore();
+    restore();
+  }
+});
+
+// Every row of the view reads once whether its words show the original: its badge is told by the
+// row (`NodeRow.tsx`'s `RowMargin`), so the view holds one subscription to the store of shown
+// originals for each row it draws.
+test("each row of the view holds one subscription to the store of shown originals", async () => {
+  const user = userEvent.setup();
+  const view = renderBody({
+    children: [openAsk("q-open"), rewrittenAsk("a-rewritten", "Ship it?", "Should it ship?")],
+  });
+  const rows = view.container.querySelectorAll("[data-node-row]").length;
+  expect(rows).toBe(2);
+  expect(originalListenersNow(), "a row subscribed more than once").toHaveLength(rows);
+  await user.click(within(rowOf(view, "a-rewritten")).getByRole("button", { name: "Rewritten" }));
+  expect(words(rowOf(view, "a-rewritten").querySelector("[data-node-words]"))).toBe(
+    "Should it ship?"
+  );
+  expect(originalListenersNow(), "a row subscribed more than once").toHaveLength(rows);
 });

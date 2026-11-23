@@ -151,16 +151,17 @@ test("agentWrittenAskBlockAppearsAndAnswersInPlace", async ({ browser }, testInf
     const hosted = await expectHosted(ask);
     await expect(ask.locator("[data-dispatch-ask-pill]")).toHaveText("High");
     await expect(ask).toHaveAttribute("data-dispatch-ask-urgency", "high");
-    // The block hosts the Inbox's ask card for its indexed ask; the card, not the block header,
-    // says when it was asked (and by whom, once the server records the editing actor).
-    await expect(hosted.locator("time")).toBeVisible();
+    // The block hosts the Inbox's ask card for its indexed ask; the card's provenance line, which
+    // the block draws in its own header, says when it was asked (and by whom, once the server
+    // records the editing actor).
+    await expect(ask.locator("time")).toBeVisible();
     await expect(ask.locator("[data-dispatch-ask-asked]")).toHaveCount(0);
     // The question is the editor's text; the card does not repeat it.
     await expect(ask.getByText("Should we ship?")).toHaveCount(1);
     await expect(hosted.getByRole("radio")).toHaveCount(3);
-    // Nothing chosen yet: nothing to submit.
-    await expect(hosted.getByRole("button", { exact: true, name: "Answer" })).toHaveCount(0);
-    await hosted.getByRole("button", { name: "Add a note or answer in your own words" }).click();
+    // Nothing chosen yet: nothing to submit. The split button stands, its Answer disabled.
+    await expect(hosted.getByRole("button", { exact: true, name: "Answer" })).toBeDisabled();
+    await hosted.getByRole("button", { name: "Add a note" }).click();
     const answer = hosted.getByLabel("Your answer");
     const submit = hosted.getByRole("button", { exact: true, name: "Answer" });
     await expect(submit).toBeDisabled();
@@ -226,9 +227,12 @@ test("a reader asks back from a decision block: the question threads under the b
     const hosted = await expectHosted(block);
     // No exchange yet: nothing to disclose.
     await expect(block.getByRole("button", { name: /repl/ })).toHaveCount(0);
-    // The same two-row composer as the Inbox card: the words can answer or ask back.
-    await hosted.getByRole("button", { name: "Add a note or answer in your own words" }).click();
-    const askBack = hosted.getByRole("button", { name: "Ask back" });
+    // The same composer as the Inbox card: Ask back from the split button's menu turns its action
+    // into Ask back, which waits for words.
+    await hosted.locator("[data-ask-menu-button]").click();
+    await page.locator('[data-ask-menu] [data-ask-menu-item="ask-back"]').click();
+    const askBack = hosted.locator("[data-ask-action]");
+    await expect(askBack).toHaveText("Ask back");
     await expect(askBack).toBeDisabled();
     await hosted.getByLabel("Your answer").fill(question);
     await expect(askBack).toBeEnabled();
@@ -522,7 +526,7 @@ test("decision blocks read as urgency-accented cards in the document and its ver
     const storageCard = hostedCard(storage);
     await expect(storageCard.getByRole("radio")).toHaveCount(3);
     await expect(storageCard.getByText("Reuse the existing cluster")).toBeVisible();
-    await expect(storageCard.getByRole("button", { exact: true, name: "Answer" })).toHaveCount(0);
+    await expect(storageCard.getByRole("button", { exact: true, name: "Answer" })).toBeDisabled();
     await pickOption(storageCard, "Postgres Reuse the existing cluster");
     await expect(storageCard.getByRole("button", { exact: true, name: "Answer" })).toBeEnabled();
 

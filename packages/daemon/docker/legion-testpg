@@ -68,7 +68,7 @@ superuser=$(id -un)
 # script leaves superuser_reserved_connections at its default. A shell script cannot read the Go
 # constant, so it holds the sum, and packages/envoy/internal/dispatch/testlimits/testlimits_test.go
 # fails when the two differ.
-max_connections=487
+max_connections=495
 
 die() {
 	echo "$name: $*" >&2
@@ -294,7 +294,7 @@ start() {
 		# new process for connection: …` instead. So a connect the server forked for and then
 		# failed leaves lines, a connect whose fork failed leaves that one line, and a connect
 		# with neither never reached the postmaster: a burst past the listen queue, which is
-		# 2 x max_connections = 974, under gVisor's somaxconn of 1024, is dropped by the
+		# 2 x max_connections = 990, under gVisor's somaxconn of 1024, is dropped by the
 		# network stack with no server line. Measured 2026-11-17: some such connects ended in
 		# EOF, which libpq reports as `server closed the connection unexpectedly`, and the rest
 		# hung until the client's timeout. The cost, measured the same day, is about 350 bytes

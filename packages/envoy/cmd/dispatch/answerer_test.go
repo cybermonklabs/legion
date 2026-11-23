@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/modelpace"
 )
 
 // azureChatEnvironment is a boot environment (signInEnvironment's) whose answerer is a chat
@@ -182,7 +183,7 @@ func TestNewAnswererBuildsEachPlaceAndLogsTheOneLine(t *testing.T) {
 		t.Run(place, func(t *testing.T) {
 			cfg := resolveWith(t, env).Answerer
 			logged := capturedLog(t)
-			answerer, err := newAnswerer(cfg)
+			answerer, err := newAnswerer(cfg, modelpace.New(modelpace.Config{}))
 			if err != nil {
 				t.Fatalf("newAnswerer: %v", err)
 			}
@@ -207,7 +208,7 @@ func TestNewAnswererBuildsEachPlaceAndLogsTheOneLine(t *testing.T) {
 	}
 
 	logged := capturedLog(t)
-	answerer, err := newAnswerer(resolveWith(t, nil).Answerer)
+	answerer, err := newAnswerer(resolveWith(t, nil).Answerer, modelpace.New(modelpace.Config{}))
 	if err != nil || answerer != nil {
 		t.Fatalf("no DISPATCH_ANSWERER: newAnswerer = %v, %v, want no answerer and no error", answerer, err)
 	}

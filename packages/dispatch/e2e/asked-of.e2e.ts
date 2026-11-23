@@ -46,22 +46,25 @@ const asker = {
   as: "agent" as const,
 };
 
-/** The ask card's hand-on control, wherever that card is drawn. It is a native `<select>`, which
- *  is also what the Inbox's own filters are built from, so every query for it is scoped to the
- *  card's own ask rather than to a bare role. */
-function handOnControl(scope: Locator | Page, askId: string): Locator {
-  return scope.locator(`select[data-ask-hand-on="${askId}"]`);
+/** The ask card's split button, whose menu holds Hand this question to… (INFRA-3231's R7): the
+ *  card draws it wherever it draws an open ask, and nothing of it once the ask is closed. */
+function handOnControl(card: Locator): Locator {
+  return card.locator("[data-ask-menu-button]");
 }
 
 /**
- * Hands the ask the control belongs to over to `login`, as a reader does: the people it offers
- * are read only once the reader reaches for it, so the control is focused first and the option
- * waited for. Naming the assignee of the ask's own issue is how a reader hands it back.
+ * Hands the question `card` draws over to `login`, as a reader does: the chevron's menu, its Hand
+ * this question to…, and the person in the picker that opens, which reads the people only once
+ * it is open. Naming the assignee of the ask's own issue is how a reader hands it back.
  */
-async function handTo(control: Locator, login: string): Promise<void> {
-  await control.focus();
-  await expect(control.locator(`option[value="${login}"]`)).toHaveCount(1);
-  await control.selectOption(login);
+async function handTo(card: Locator, login: string): Promise<void> {
+  const page = card.page();
+  await handOnControl(card).click();
+  await page.locator('[data-ask-menu] [data-ask-menu-item="hand-on"]').click();
+  await page
+    .getByRole("dialog", { name: "Hand this question to" })
+    .locator(`[data-ask-hand-on-person="${login}"]`)
+    .click();
 }
 
 /** Every band heading the Inbox list is drawing, with its count. */
@@ -180,13 +183,12 @@ test("a person hands an ask to another person and it moves between the two Inbox
       agentRow(bobAgents, asker.actor.id).getByRole("link", { name: "Needs you 1" })
     ).toBeVisible();
 
-    // 2. Alice hands it to bob with the control on her Inbox row, which names her as the person
-    // it waits on until she does.
-    const rowControl = handOnControl(inboxRow(alicePage, moved.id), moved.id);
-    await expect(rowControl).toHaveCount(1);
-    await expect(rowControl).toHaveValue("alice");
-    await expect(inboxRow(alicePage, moved.id)).toContainText("Asked of alice");
-    await handTo(rowControl, "bob");
+    // 2. Alice hands it to bob with the control on her Inbox row's card, which names nobody's
+    // turn while it waits on her: a question of the reader's own is hers to answer.
+    const rowCard = inboxRow(alicePage, moved.id).getByTestId(`ask-${moved.id}`);
+    await expect(handOnControl(rowCard)).toHaveCount(1);
+    await expect(rowCard.getByTestId(`turn-${moved.id}`)).toHaveCount(0);
+    await handTo(rowCard, "bob");
     await handsOff(alicePage);
 
     // 3. Without a reload, the row leaves her list and enters his, and every count beside it
@@ -226,36 +228,36 @@ test("a person hands an ask to another person and it moves between the two Inbox
     expect(handedOn.asked_of_by).toBe("alice");
     expect(handedOn.waiting_on_person).toBe("bob");
     await expect(aliceCard).toBeVisible();
-    await expect(aliceCard).toContainText("Asked of bob");
+    await expect(aliceCard.getByTestId(`turn-${moved.id}`)).toContainText("Waiting on bob");
     await expect(aliceCard).toContainText("handed on by alice");
     await expect(aliceCard.locator(`time[datetime="${handedOn.asked_of_at}"]`)).toHaveCount(1);
 
     const bobIssue = await bob.newPage();
     const bobIssueCard = await conversationCard(bobIssue, hers.key, moved.id);
     await expect(bobIssueCard).toBeVisible();
-    await expect(bobIssueCard).toContainText("Asked of bob");
-    await expect(handOnControl(bobIssueCard, moved.id)).toHaveCount(1);
+    await expect(bobIssueCard.getByTestId(`turn-${moved.id}`)).toHaveCount(0);
+    await expect(handOnControl(bobIssueCard)).toHaveCount(1);
     await bobIssue.close();
 
     // 5. The control is on the card wherever the card renders an open ask: on the Inbox row
     // (pressed above), on the reading column's card, on the issue page, on a document's margin
     // and in a document's ask block.
     await selectRow(bobPage, moved.id);
-    const paneControl = handOnControl(inboxPane(bobPage), moved.id);
-    await expect(paneControl).toHaveCount(1);
-    await expect(paneControl).toHaveValue("bob");
-    await expect(handOnControl(aliceCard, moved.id)).toHaveCount(1);
+    const paneCard = inboxPane(bobPage).getByTestId(`ask-${moved.id}`);
+    await expect(handOnControl(paneCard)).toHaveCount(1);
+    await expect(paneCard.getByTestId(`turn-${moved.id}`)).toHaveCount(0);
+    await expect(handOnControl(aliceCard)).toHaveCount(1);
 
     const docPage = await alice.newPage();
     await docPage.goto(`/projects/CORE/documents/${runbook.artifact.slug}`);
     const marginCard = needsYouCards(docPage).getByTestId(`ask-${docAsk.id}`);
     await expect(marginCard).toBeVisible();
-    await expect(handOnControl(marginCard, docAsk.id)).toHaveCount(1);
+    await expect(handOnControl(marginCard)).toHaveCount(1);
     await docPage.goto(`/issues/${blocked.key}`);
     const block = documentEditor(docPage).locator('[data-dispatch-ask-block="rollout-decision"]');
     const blockCard = block.locator(`article[data-testid="ask-${blockAsk.id}"]`);
     await expect(blockCard).toBeVisible();
-    await expect(handOnControl(blockCard, blockAsk.id)).toHaveCount(1);
+    await expect(handOnControl(blockCard)).toHaveCount(1);
     await docPage.close();
 
     // 6. Each person's Replies list follows the same expression: the thread of a question the
@@ -283,7 +285,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     // follows the same move, with no reload either: the hand-on event names the person it moved
     // from and the one it moved to in its `thread_logins`, which is what tells each of those two
     // readers their thread rows have moved (`movesInboxThreads`, `web/src/api/event-refresh.ts`).
-    await handTo(paneControl, "alice");
+    await handTo(paneCard, "alice");
     await handsOff(bobPage);
     await expect
       .poll(async () => (await getAsk(moved.id, { login: "alice" })).ask.asked_of ?? null)
@@ -297,11 +299,10 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await bobReplies.close();
 
     // 8. The control on the issue page hands it on and hands it back the same way.
-    const issueControl = handOnControl(aliceCard, moved.id);
-    await handTo(issueControl, "bob");
+    await handTo(aliceCard, "bob");
     await expect(inboxRow(bobPage, moved.id)).toBeVisible();
     await expect(inboxRow(alicePage, moved.id)).toHaveCount(0);
-    await handTo(issueControl, "alice");
+    await handTo(aliceCard, "alice");
     await expect
       .poll(async () => (await getAsk(moved.id, { login: "alice" })).ask.asked_of ?? null)
       .toBeNull();
@@ -310,7 +311,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
 
     // 9. Bob answers it, which a person who is not the issue's assignee may do, and the control
     // is gone from the card the moment the question is no longer open.
-    await handTo(issueControl, "bob");
+    await handTo(aliceCard, "bob");
     await expect(inboxRow(bobPage, moved.id)).toBeVisible();
     await selectRow(bobPage, moved.id);
     const bobCard = inboxPane(bobPage).getByTestId(`ask-${moved.id}`);
@@ -321,7 +322,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
       .poll(async () => (await getAsk(moved.id, { login: "bob" })).ask.state)
       .toBe("answered");
     await expect(aliceCard).toContainText("Answered by bob");
-    await expect(handOnControl(aliceCard, moved.id)).toHaveCount(0);
+    await expect(handOnControl(aliceCard)).toHaveCount(0);
     await expect(inboxRow(bobPage, moved.id)).toHaveCount(0);
     await expect(inboxRow(alicePage, moved.id)).toHaveCount(0);
   } finally {

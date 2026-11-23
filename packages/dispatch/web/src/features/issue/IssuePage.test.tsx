@@ -1188,6 +1188,53 @@ test("IssuePage opens the Activity tab with the t v chord", async () => {
   }
 });
 
+// The reviewer rewrote the issue's title and spec as its agent opened it: `w` on the page shows
+// the agent's own title, as a press on the title's badge does, and `w` again the rewrite; on the
+// badge itself, which keeps its keys from the title, `w` does the same.
+test("IssuePage's w shows and hides the original wording of a rewritten title", async () => {
+  const user = userEvent.setup();
+  const agentTitle = "Review the zork train";
+  const restore = stubIssuePage({
+    ...issue,
+    rewrite: {
+      at: "2026-09-09T00:00:00Z",
+      by: "reviewer",
+      original: { body: "The agent's own spec.", title: agentTitle },
+      state: "rewritten",
+    },
+  });
+  const view = renderIssuePage("/issues/CORE-1/spec");
+
+  try {
+    const heading = await screen.findByRole("heading", {
+      level: 1,
+      name: new RegExp(`^${issue.title}`),
+    });
+    const badge = await within(heading).findByRole("button", { name: "Rewritten" });
+    expect(badge).toHaveAttribute("aria-pressed", "false");
+
+    await user.keyboard("w");
+    expect(within(heading).getByRole("button", { name: "Original" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    expect(heading.textContent).toContain(agentTitle);
+    expect(heading.textContent).not.toContain(issue.title);
+
+    await user.keyboard("w");
+    expect(heading.textContent).toContain(issue.title);
+    expect(heading.textContent).not.toContain(agentTitle);
+
+    act(() => within(heading).getByRole("button", { name: "Rewritten" }).focus());
+    await user.keyboard("w");
+    expect(heading.textContent).toContain(agentTitle);
+    expect(within(heading).getByRole("button", { name: "Original" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
 test("IssuePage opens the Decisions tab with the t d chord", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);

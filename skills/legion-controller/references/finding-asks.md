@@ -43,7 +43,7 @@ Then reply under the ask, first line exactly `Filed dispatch://<NEW KEY>`, `Hand
 An answer that arrives while no controller runs never wakes you, a reference published then reaches nobody, and a new session follows none of the asks an earlier one followed. So at every start:
 
 1. `dispatch read` the report issue (none yet: nothing to catch up). Reopen and assign it as `skill://legion-controller/references/daily-report.md` "Keep it answerable" says.
-2. `dispatch open-asks --project <PROJECT>` lists every open ask; an ask on a closed issue is not listed. Follow those on the report issue, and take each whose question opens `Clear defect from ` as above. On another issue, a question opening `Finding from ` or `Clear defect from ` is a role's own-issue ask: take a clear defect the same way; move a finding to the report issue with the same question, options and `--ref`, reply `Moved dispatch://<REPORT KEY>/ask/<new id>` under the old one, and resolve it.
+2. `dispatch open-asks --project <PROJECT>` lists every open ask; an ask on a closed issue is not listed, nor a decision block the reviewer holds until it posts. Follow those on the report issue, and take each whose question opens `Clear defect from ` as above. On another issue, a question opening `Finding from ` or `Clear defect from ` is a role's own-issue ask: take a clear defect the same way; move a finding to the report issue with the same question, options and `--ref`, reply `Moved dispatch://<REPORT KEY>/ask/<new id>` under the old one, and resolve it.
 3. List the answered asks still waiting on you, for the report issue and then each issue of one snapshot of `dispatch issues --project <PROJECT> --status needs_review --all` (never paged):
 
    ```text

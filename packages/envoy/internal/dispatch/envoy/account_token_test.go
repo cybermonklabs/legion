@@ -276,8 +276,6 @@ func TestACallTheListenerRefusesOnTheAccountTokenIsMadeAgainOnAFreshToken(t *tes
 	defer listener.Close()
 	marked := SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k", Role: "reviewer"}
 	unmarked := SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k"}
-	const sharedLine = "dispatch: the Envoy listener did not take Dispatch's identity token on two tries, so the call is made again on the shared token"
-	const refusedLine = "dispatch: the Envoy listener did not take Dispatch's identity token on two tries, so the call is not made on any other credential"
 	client := func(logs *bytes.Buffer, options ...Option) *Client {
 		return New(listener.URL, append(options, WithAccountTokenFile(path), WithLogger(slog.New(slog.NewJSONHandler(logs, nil))))...)
 	}
@@ -314,11 +312,11 @@ func TestACallTheListenerRefusesOnTheAccountTokenIsMadeAgainOnAFreshToken(t *tes
 		if len(got) != 2 || got[0].authorization != "Bearer "+account || got[1].authorization != "Bearer "+account || got[0].role != "reviewer" || got[1].role != "reviewer" {
 			t.Fatalf("the listener was called %+v, want two tries on the account token with the role mark and none on the shared token", got)
 		}
-		if n := logLines(&logs, "ERROR", refusedLine, map[string]any{"role_mark": true}); n != 1 {
-			t.Fatalf("the client wrote %d Error lines %q, want one:\n%s", n, refusedLine, logs.String())
+		if n := logLines(&logs, "ERROR", identityRefusedLine, map[string]any{"role_mark": true}); n != 1 {
+			t.Fatalf("the client wrote %d Error lines %q, want one:\n%s", n, identityRefusedLine, logs.String())
 		}
-		if n := logLines(&logs, "WARN", sharedLine, nil); n != 0 {
-			t.Fatalf("the client wrote %d WARN lines %q for a send for a role, want none", n, sharedLine)
+		if n := logLines(&logs, "WARN", identitySharedLine, nil); n != 0 {
+			t.Fatalf("the client wrote %d WARN lines %q for a send for a role, want none", n, identitySharedLine)
 		}
 	})
 
@@ -332,8 +330,8 @@ func TestACallTheListenerRefusesOnTheAccountTokenIsMadeAgainOnAFreshToken(t *tes
 		if len(got) != 3 || got[2].authorization != "Bearer shared" || got[2].role != nil {
 			t.Fatalf("the listener was called %+v, want two tries on the account token, then the shared token", got)
 		}
-		if n := logLines(&logs, "WARN", sharedLine, nil); n != 1 {
-			t.Fatalf("the client wrote %d WARN lines %q, want one:\n%s", n, sharedLine, logs.String())
+		if n := logLines(&logs, "WARN", identitySharedLine, nil); n != 1 {
+			t.Fatalf("the client wrote %d WARN lines %q, want one:\n%s", n, identitySharedLine, logs.String())
 		}
 	})
 
@@ -346,8 +344,8 @@ func TestACallTheListenerRefusesOnTheAccountTokenIsMadeAgainOnAFreshToken(t *tes
 		if got := stand.taken(); len(got) != 2 {
 			t.Fatalf("the client with no shared token called %d times, want two", len(got))
 		}
-		if n := logLines(&logs, "WARN", sharedLine, nil); n != 0 {
-			t.Fatalf("the client with no shared token wrote %d WARN lines %q, want none", n, sharedLine)
+		if n := logLines(&logs, "WARN", identitySharedLine, nil); n != 0 {
+			t.Fatalf("the client with no shared token wrote %d WARN lines %q, want none", n, identitySharedLine)
 		}
 	})
 
@@ -412,5 +410,66 @@ func TestASecondTryThatWasNeverWrittenIsNoReceiptTimeout(t *testing.T) {
 
 	if control := sendTransportError(context.DeadlineExceeded, true); !errors.Is(control, ErrReceiptTimeout) {
 		t.Fatalf("control: a written send that timed out = %v, want ErrReceiptTimeout", control)
+	}
+}
+
+// The two lines do writes for a call the listener refused on Dispatch's identity token twice:
+// made again on the shared token, or made on no other credential.
+const (
+	identitySharedLine  = "dispatch: the Envoy listener did not take Dispatch's identity token on two tries, so the call is made again on the shared token"
+	identityRefusedLine = "dispatch: the Envoy listener did not take Dispatch's identity token on two tries, so the call is not made on any other credential"
+)
+
+// A session id is what the client reads and sends by, and nothing it logs or answers as an error
+// names one: a read is named by its route's pattern (GET /v1/registry/{session_id}) in the lines
+// do writes for a refused identity token and in the error of a refused or unreached read, and a
+// send for a role this Dispatch cannot mark is refused naming its role alone. The id is one the
+// test finds wherever it is written, and each pattern is asserted where it stands instead.
+func TestNoLineOrErrorOfTheClientNamesTheSessionItReadsOrSendsTo(t *testing.T) {
+	const session = "ses-unnamed-7f3a"
+	const pattern = "GET /v1/registry/{session_id}"
+	path := filepath.Join(t.TempDir(), "listener-account-token")
+	writeAccountToken(t, path, accountToken(t, "system:serviceaccount:dispatch:example-dispatch", time.Now().Add(time.Hour)))
+	stand := &identityStand{takes: map[string]bool{"Bearer shared": true}}
+	listener := httptest.NewServer(http.HandlerFunc(stand.serve))
+	defer listener.Close()
+	var logs bytes.Buffer
+	logger := WithLogger(slog.New(slog.NewJSONHandler(&logs, nil)))
+	ctx := context.Background()
+
+	if _, err := New(listener.URL, WithAccountTokenFile(path), WithToken("shared"), logger).Session(ctx, session); err != nil {
+		t.Fatalf("a read made on the shared token after two refused tries: %v", err)
+	}
+	if n := logLines(&logs, "WARN", identitySharedLine, map[string]any{"route": pattern}); n != 1 {
+		t.Errorf("the read wrote %d WARN lines %q naming route %q, want one:\n%s", n, identitySharedLine, pattern, logs.String())
+	}
+	_, refused := New(listener.URL, WithAccountTokenFile(path), logger).Session(ctx, session)
+	if refused == nil || !strings.Contains(refused.Error(), pattern) {
+		t.Errorf("a read refused on two tries with no shared token = %v, want an error naming %q", refused, pattern)
+	}
+	if n := logLines(&logs, "ERROR", identityRefusedLine, map[string]any{"route": pattern}); n != 1 {
+		t.Errorf("the refused read wrote %d Error lines %q naming route %q, want one:\n%s", n, identityRefusedLine, pattern, logs.String())
+	}
+	gone := httptest.NewServer(http.NotFoundHandler())
+	gone.Close()
+	_, unreached := New(gone.URL, logger).Session(ctx, session)
+	if !errors.Is(unreached, ErrUnreachable) || !strings.Contains(unreached.Error(), pattern) {
+		t.Errorf("a read no listener answered = %v, want ErrUnreachable naming %q", unreached, pattern)
+	}
+	_, unmarked := New(listener.URL, WithToken("shared"), logger).Send(ctx, SendInput{TargetSession: session, Message: "m", IdempotencyKey: "k", Role: "reviewer"})
+	if !errors.Is(unmarked, ErrNoListenerIdentity) || !strings.Contains(unmarked.Error(), "for role reviewer") {
+		t.Errorf("a send for a role with no identity = %v, want ErrNoListenerIdentity naming role reviewer", unmarked)
+	}
+	if n := logLines(&logs, "ERROR", refusedRoleSendLine, map[string]any{"role": "reviewer"}); n != 1 {
+		t.Errorf("the refused send wrote %d Error lines %q naming role reviewer, want one:\n%s", n, refusedRoleSendLine, logs.String())
+	}
+
+	for what, text := range map[string]string{
+		"the log": logs.String(), "the refused read's error": refused.Error(),
+		"the unreached read's error": unreached.Error(), "the refused send's error": unmarked.Error(),
+	} {
+		if strings.Contains(text, session) {
+			t.Errorf("%s names the session %s:\n%s", what, session, text)
+		}
 	}
 }

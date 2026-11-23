@@ -53,7 +53,8 @@ const HEADER_FOCUS_FALLBACKS: readonly FocusFallback[] = [
  *
  * 1. The breadcrumb, the key, the control that copies it and the one overflow menu, with
  *    Details at the right (`IssueIdentityRow.tsx`).
- * 2. The title, which is its own editor (`IssueTitleRow.tsx`).
+ * 2. The title, which is its own editor, with the badge of the reviewer's rewrite after it where
+ *    the reviewer rewrote it (`IssueTitleRow.tsx`).
  * 3. One properties line: the status, the priority, the assignee, the children's progress, the
  *    count of what waits on the reader, the approval control, the one marker where the route
  *    reaches nobody, and the labels that fit (`IssuePropertiesRow.tsx`).
@@ -185,7 +186,12 @@ export function IssueHeader({
           parent={issue.parent}
           project={issue.project}
         />
-        <IssueTitleRow drafts={drafts} isClosed={isClosed} />
+        <IssueTitleRow
+          drafts={drafts}
+          isClosed={isClosed}
+          issueKey={issue.key}
+          rewrite={issue.rewrite}
+        />
         {drafts.titleError === null ? null : (
           <p className={`text-sm ${pageFailedText}`} id="issue-title-help">
             {drafts.titleError}

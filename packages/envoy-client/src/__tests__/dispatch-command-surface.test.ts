@@ -273,6 +273,32 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     if (rest === "artifacts") return response([]);
     if (rest === "plans") return response(plansBody());
   }
+  if (segments[2] === "held" && segments.length >= 4) {
+    return response({
+      id: UUID,
+      kind: "comment",
+      state: rest === "state" ? "posted" : method === "PATCH" ? "reviewing" : "awaiting_writer",
+      route: `POST /api/v1/issues/{key}/comments`,
+      writer: SESSION,
+      reader: "alice@example.com",
+      issue_key: ISSUE,
+      wording: { body: "The test fails on its first call." },
+      original: { body: "This names the problem." },
+      findings: [
+        {
+          rule_set: "phrases",
+          quote: "This names the problem.",
+          why: "It states no fact.",
+          fix: "Say what fails.",
+        },
+      ],
+      rewrite: { body: "The test fails on its first call." },
+      revision: 1,
+      deadline: null,
+      written_at: AT,
+      posted_at: null,
+    });
+  }
   throw new Error(`unexpected request: ${route}`);
 }
 

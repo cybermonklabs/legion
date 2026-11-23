@@ -1,0 +1,18 @@
+kind: Added
+body: |-
+  The `dispatch` command can refuse an agent session's first write of an ask, an issue, a comment
+  or a message, once, to show the written rules for the person who will read that write. It does
+  so again before the first such write after each compaction of the session's context. The agent
+  checks its text against the rules and runs the command again, and that call sends the write.
+  Dispatch says whether the refusal is on (`GET /api/v1/settings/writing-rules`), and the command
+  keeps that answer in the session's state file for 10 minutes. A Dispatch without the route
+  refuses nothing; the command asks that route once, with no retry after 1, 2 and 4 s as during
+  a rolling release. The rules request itself (`POST /api/v1/writing-rules`) keeps those retries,
+  so a write whose settings read reached a newer Dispatch is not sent without its rules because
+  its rules request reached an older one. To learn the write's route and body, the command first
+  runs the call with its writes held, which sends nothing (`DispatchClient`'s `holdWrites` option
+  and the `DispatchWriteHeld` error). The host plugin counts each compaction with
+  `noteCompaction`.
+  A command a person typed is never refused.
+  A write AskGate gates is checked against the rules before its AskGate marker is spent, so a
+  write the rules refuse keeps its marker, and the call run again is the one AskGate reviewed.

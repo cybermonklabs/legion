@@ -373,6 +373,7 @@ for (const signIn of serverSignIns) {
 function handOver(databaseUrl: string, supplied: boolean): string {
   return handOverMessage({
     baseUrl: "http://127.0.0.1:9030",
+    kept: false,
     broadcastId: "broadcast-1",
     plannerSessionId: "planner-1",
     fakeEnvoy: "http://127.0.0.1:9031",

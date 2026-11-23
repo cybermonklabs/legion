@@ -58,7 +58,8 @@ type Followed struct {
 // once it is appended (graphstore.QueueCaused over Followed.Uncaused). The node is written whether
 // or not the follower row is new, because a row written before the store existed carries no node,
 // and the first follow of this build that names the session is then the first write that records
-// it in the store.
+// it in the store. Its error names the ask and not the session, which a handler that logs the
+// error has from its request.
 func Follow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model.Actor, at time.Time, event int64) (Followed, error) {
 	var followed Followed
 	err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
@@ -104,12 +105,12 @@ func queueFollow(b *store.WriteBatch, askID, sessionID string, who model.Actor, 
 		arms, params, err = graphstore.WriteArms(3, nodes, nil, nil)
 	}
 	if err != nil {
-		return graphstore.Uncaused{}, fmt.Errorf("follow ask %q as %q: %w", askID, sessionID, err)
+		return graphstore.Uncaused{}, fmt.Errorf("follow ask %q: %w", askID, err)
 	}
 	if arms != "" {
 		arms = ",\n" + arms
 	}
-	b.Queue(fmt.Sprintf("follow ask %q as %q", askID, sessionID), `
+	b.Queue(fmt.Sprintf("follow ask %q", askID), `
 		with followed as (
 			insert into ask_followers (ask_id, session_id)
 			values ($1, $2)
@@ -134,7 +135,8 @@ func queueFollow(b *store.WriteBatch, askID, sessionID string, who model.Actor, 
 // does nothing for a human, so every insert site can call it with the actor it already has. The
 // session's node is made by the author at at, as Follow makes it, for a write whose event that
 // phase appends: before it, with graphstore.NoEvent, whose node it holds for QueueCaused, or right
-// after it, with graphstore.LatestEvent, whose node it states under that event.
+// after it, with graphstore.LatestEvent, whose node it states under that event. Its failure names
+// the ask and not the session, as Follow's does.
 func QueueFollowAuthor(b *store.WriteBatch, askID string, author model.Actor, at time.Time, event int64) (graphstore.Uncaused, error) {
 	if author.Kind != "session" || author.ID == "" {
 		return graphstore.Uncaused{}, nil
@@ -144,27 +146,28 @@ func QueueFollowAuthor(b *store.WriteBatch, askID string, author model.Actor, at
 
 // Follows reports whether sessionID already follows askID: the read a route that queues its follow
 // (QueueFollowAuthor) makes in its read phase, since no statement's result is read before the
-// write phase sends the next.
+// write phase sends the next. Its error names the ask and not the session, as Follow's does.
 func Follows(ctx context.Context, db Queryer, askID, sessionID string) (bool, error) {
 	rows, err := db.Query(ctx, `select 1 from ask_followers where ask_id = $1 and session_id = $2`, askID, sessionID)
 	if err != nil {
-		return false, fmt.Errorf("read whether %q follows ask %q: %w", sessionID, askID, err)
+		return false, fmt.Errorf("read whether a session follows ask %q: %w", askID, err)
 	}
 	defer rows.Close()
 	follows := rows.Next()
 	if err := rows.Err(); err != nil {
-		return false, fmt.Errorf("read whether %q follows ask %q: %w", sessionID, askID, err)
+		return false, fmt.Errorf("read whether a session follows ask %q: %w", askID, err)
 	}
 	return follows, nil
 }
 
-// Unfollow removes sessionID from askID's followers and reports whether a row went.
+// Unfollow removes sessionID from askID's followers and reports whether a row went. Its error
+// names the ask and not the session, as Follow's does.
 func Unfollow(ctx context.Context, db Execer, askID, sessionID string) (bool, error) {
 	tag, err := db.Exec(ctx, `
 		delete from ask_followers where ask_id = $1 and session_id = $2
 	`, askID, sessionID)
 	if err != nil {
-		return false, fmt.Errorf("unfollow ask %q as %q: %w", askID, sessionID, err)
+		return false, fmt.Errorf("unfollow ask %q: %w", askID, err)
 	}
 	return tag.RowsAffected() == 1, nil
 }

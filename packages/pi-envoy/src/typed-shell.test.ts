@@ -546,6 +546,110 @@ describe("running a person's command", () => {
   }, 60_000);
 });
 
+// A person's own `!dispatch …` line is the person's text, not the agent's (Decision 26 of
+// INFRA-3231): its `dispatch` runs with `DISPATCH_PERSON_TYPED=1`, set as an assignment before
+// that one command, so the command marks its writes and Dispatch reviews none of them. Nothing
+// else the line runs, and no other line, sees the variable: an agent a person starts with
+// `!claude -p …` writes as an agent. Each row runs a real shell of each kind this machine has,
+// with a `dispatch`, a `dispatcher` and a `claude` of the row's own on PATH that print the
+// variable as they see it, and `env`, the real one, printing the environment of a command after
+// `;` or `|`. The rows run with a small environment of their own, so all of what `env` prints
+// fits inside the output bound and nothing past the cut goes unread.
+describe("a person's typed `dispatch` line", () => {
+  const shells = ["sh", "bash", "zsh", "fish"].flatMap((name) => {
+    const path = Bun.which(name);
+    return path === null ? [] : [path];
+  });
+  let directory: string;
+  let saved: Record<string, string | undefined>;
+
+  beforeEach(async () => {
+    directory = scratch();
+    const bin = join(directory, "bin");
+    for (const name of ["dispatch", "dispatcher", "claude"]) {
+      const program = join(bin, name);
+      await Bun.write(
+        program,
+        ["#!/bin/sh", `printf '${name}:%s\\n' "\${DISPATCH_PERSON_TYPED-unset}"`, ""].join("\n")
+      );
+      chmodSync(program, 0o755);
+    }
+    saved = { ...process.env };
+    for (const name of Object.keys(process.env)) {
+      if (name !== "HOME" && name !== "PATH" && name !== "TMPDIR") delete process.env[name];
+    }
+    process.env.PATH = `${bin}:${saved.PATH ?? ""}`;
+    procmgr.__resetShellConfigCacheForTests();
+  });
+  afterEach(() => {
+    for (const name of Object.keys(process.env)) delete process.env[name];
+    for (const [name, value] of Object.entries(saved)) {
+      if (value !== undefined) process.env[name] = value;
+    }
+    procmgr.__resetShellConfigCacheForTests();
+    rmSync(directory, { recursive: true, force: true });
+  });
+
+  /** Runs `line` under the shell the host resolves with `SHELL` naming `shell` (the host runs a
+   *  bash for a plain `sh`), as a person's `!line` runs, and answers all it printed. */
+  async function typed(shell: string, line: string): Promise<string> {
+    process.env.SHELL = shell;
+    procmgr.__resetShellConfigCacheForTests();
+    const result = await runShellCommand(line, { cwd: directory, limitMs: 10_000 });
+    expect(result.status).toBeUndefined();
+    expect(result.cut).toBe(false);
+    return result.output;
+  }
+
+  test("runs on a real shell of this machine", () => {
+    expect(shells.length).toBeGreaterThan(0);
+  });
+
+  test("hands `dispatch` the assignment, and the session keeps no copy", async () => {
+    for (const shell of shells) {
+      expect(await typed(shell, "dispatch comment INFRA-1 --body 'This names the problem.'")).toBe(
+        "dispatch:1"
+      );
+      expect(await typed(shell, "dispatch")).toBe("dispatch:1");
+      expect(process.env.DISPATCH_PERSON_TYPED).toBeUndefined();
+      expect(procmgr.getShellConfig().env.DISPATCH_PERSON_TYPED).toBeUndefined();
+    }
+  });
+
+  test("hands no other first word the variable: `!claude -p hi` runs with none", async () => {
+    for (const shell of shells) {
+      expect(await typed(shell, "claude -p hi")).toBe("claude:unset");
+      // A word that only starts with `dispatch` is another command.
+      expect(await typed(shell, "dispatcher -p hi")).toBe("dispatcher:unset");
+      expect(await typed(shell, "env")).not.toContain("DISPATCH_PERSON_TYPED");
+    }
+  });
+
+  test("reaches no command after `;` or `|`", async () => {
+    for (const shell of shells) {
+      const listed = await typed(shell, "dispatch --help; env");
+      expect(listed.split("\n")[0]).toBe("dispatch:1");
+      expect(listed).toContain("PATH=");
+      expect(listed).not.toContain("DISPATCH_PERSON_TYPED");
+      const piped = await typed(shell, "dispatch read X | env");
+      expect(piped).toContain("PATH=");
+      expect(piped).not.toContain("DISPATCH_PERSON_TYPED");
+      expect(await typed(shell, "dispatch read X && claude -p hi")).toBe(
+        "dispatch:1\nclaude:unset"
+      );
+    }
+  });
+
+  // The host's prefix ends in `&&`: an assignment put before it would reach the prefix's own
+  // first step, and `dispatch` would print `unset`.
+  test("goes after the host's prefix, so it reaches `dispatch` and not the prefix", async () => {
+    process.env.PI_SHELL_PREFIX = "printf before: &&";
+    for (const shell of shells) {
+      expect(await typed(shell, "dispatch read X")).toBe("before:dispatch:1");
+    }
+  });
+});
+
 describe("the texts a command becomes", () => {
   /** The person's line, as they sent it and as Dispatch stored it. */
   const line = "!printf hi";

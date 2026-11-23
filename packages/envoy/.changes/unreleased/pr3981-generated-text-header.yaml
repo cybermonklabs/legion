@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  A plugin may mark a reply as text it generated, not text the agent wrote, with the request header
+  `Dispatch-Generated-Text: 1`: a `!command` report, a slash command's output, or the plugin's own
+  error reply. Dispatch reads the header on `POST /api/v1/messages/{id}/reply` and
+  `POST /api/v1/comments/{id}/reply` only, and ignores it on every other route.
+  Such a reply posts at once. The writing check does not read it and records it as
+  `exempt_generated`, and the reviewer does not hold it.

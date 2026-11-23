@@ -206,13 +206,14 @@ export function shellQuote(value: string): string {
   return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
-/** What `handOverMessage` prints from. */
-export interface HandOver {
+/** What `handOverMessage` prints from. `kept` says whether the instance kept its database as it
+ *  was (DISPATCH_E2E_KEEP_DATABASE=1) and seeded nothing, or truncated it and seeded the broadcast
+ *  `broadcastId` names, so a kept instance has no seeded broadcast to name. */
+export type HandOver = {
   readonly baseUrl: string;
-  readonly broadcastId: string;
   readonly plannerSessionId: string;
   readonly fakeEnvoy: string;
-  /** The database the instance truncates and seeds. */
+  /** The database the instance truncates and seeds, or keeps as it is. */
   readonly databaseUrl: string;
   /** Whether a person gave `databaseUrl` in DATABASE_URL, rather than the command making it on
    *  the repository's dev container. */
@@ -221,7 +222,7 @@ export interface HandOver {
   readonly ports: Readonly<Record<string, string>>;
   /** The environment the broker switch (e2e/harness-broker.ts) is read from. */
   readonly env: Readonly<Record<string, string | undefined>>;
-}
+} & ({ readonly kept: false; readonly broadcastId: string } | { readonly kept: true });
 
 /** What `bun run dispatch:local` prints once its instance is up: the URLs to open, the database,
  *  and a command that runs a spec against the instance, with each harness input it needs.
@@ -253,18 +254,25 @@ export function handOverMessage(handOver: HandOver): string {
     "\nDispatch local instance is up.\n" +
     `  Open (signed in as alice): ${baseUrl}/auth/_dev/signin?login=alice&next=/\n` +
     `  Sign in as bob:            ${baseUrl}/auth/_dev/signin?login=bob&next=/\n` +
-    `  Seeded broadcast:          ${baseUrl}/agents/broadcasts/${handOver.broadcastId}\n` +
+    (handOver.kept
+      ? ""
+      : `  Seeded broadcast:          ${baseUrl}/agents/broadcasts/${handOver.broadcastId}\n`) +
     `  Planner's live view:       ${baseUrl}/agents/${handOver.plannerSessionId}/live\n` +
     `  Agent bearer:              e2e-token (for a local Oh My Pi session: DISPATCH_URL=${baseUrl} ` +
     "DISPATCH_TOKEN=e2e-token, with DISPATCH_TOKEN_FILE unset since it wins)\n" +
-    `  Database (truncated and reseeded on every start): ${database.url}\n` +
+    (handOver.kept
+      ? `  Database (kept as it is, DISPATCH_E2E_KEEP_DATABASE=1): ${database.url}\n`
+      : `  Database (truncated and reseeded on every start): ${database.url}\n`) +
     (passwordLeftOut
       ? "  (The password of the DATABASE_URL you gave is printed nowhere here.)\n"
       : "") +
     `  Fake Envoy: live sessions GET ${fakeEnvoy}/v1/sessions; ` +
     `reseed them with PUT ${fakeEnvoy}/__fixture/sessions\n` +
-    "  Run a spec against it from packages/dispatch (this empties the instance; restart it to " +
-    "reseed)" +
+    "  Run a spec against it from packages/dispatch " +
+    (handOver.kept
+      ? "(this empties the records loaded into it, and a restart with " +
+        "DISPATCH_E2E_KEEP_DATABASE=1 does not reseed)"
+      : "(this empties the instance; restart it to reseed)") +
     (passwordLeftOut
       ? ", with the password of the DATABASE_URL you gave exported as PGPASSWORD in that shell, " +
         "where the run's psql reads it"
