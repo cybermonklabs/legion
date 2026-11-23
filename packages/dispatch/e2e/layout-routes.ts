@@ -162,6 +162,27 @@ const twoRowsSelected: LayoutState = {
   name: "two-rows-selected",
 };
 
+/** Every capped group of the Agents page opened by its "+N": the roles of each drawn row (the
+ *  stress layer's first session holds fourteen), then every agent selected and the composer's
+ *  chosen agents. The rows are opened before the selection, so the composer that sticks to the
+ *  bottom of a narrow screen covers none of their controls. A state that opened nothing would read
+ *  the folded page again, so each group must have had a "+N" to press. */
+const groupsExpanded: LayoutState = {
+  act: async (page) => {
+    const roles = await openCappedGroups(page, { group: "roles" });
+    await page.getByRole("checkbox", { name: "Select all matching agents" }).check();
+    await page.getByRole("region", { exact: true, name: "Broadcast" }).waitFor();
+    const chosen = await openCappedGroups(page, { group: "chosen-agents" });
+    if (roles === 0 || chosen === 0) {
+      throw new Error(
+        `groups-expanded opened ${roles} roles group(s) and ${chosen} chosen-agents group(s); each needs a "+N" to press`
+      );
+    }
+  },
+  name: "groups-expanded",
+  requiredGroups: ["roles", "chosen-agents"],
+};
+
 /** Every agent selected for a broadcast, which draws the composer and its list of chosen agents
  *  (`AgentsPage.tsx`'s "Selected agents"): the stress layer's 17 sessions are past its cap. */
 const allAgentsSelected: LayoutState = {
@@ -264,7 +285,10 @@ function shortPage(measured: number): NonNullable<LayoutRoute["minElements"]> {
 const additions: Readonly<
   Record<string, Pick<LayoutRoute, "minElements" | "requiredGroups" | "states">>
 > = {
-  agents: { requiredGroups: ["roles"], states: [peekDrawer, allAgentsSelected] },
+  agents: {
+    requiredGroups: ["roles"],
+    states: [peekDrawer, allAgentsSelected, groupsExpanded],
+  },
   answers: { minElements: shortPage(32) },
   broadcast: { minElements: shortPage(48) },
   broadcasts: { minElements: shortPage(14) },

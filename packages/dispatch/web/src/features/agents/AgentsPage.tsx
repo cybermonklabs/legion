@@ -1208,7 +1208,7 @@ function BroadcastComposer({
         label="agents"
         list="Selected agents"
         max={compact ? COMPACT_RECIPIENTS_SHOWN : LAYOUT_GROUP_MAX}
-        name="selected-agents"
+        name="chosen-agents"
       >
         {[...selected].map((sessionID) => {
           const agent = agents.find((candidate) => candidate.session_id === sessionID);
