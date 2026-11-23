@@ -176,8 +176,9 @@ type wake struct {
 	// has no moment to run: it waits on the machine with no timer of the clock's, is published as
 	// no waiting wake (publish), is no wake of the pacing's for a request that does not wait to
 	// drop (dropWakeFor), and leaves by its grant (TimerPodStart, podStartDue) or by whatever drops
-	// the wake, which takes its start out of the gate for what dropped it (dropPodPark: suspended,
-	// retire, letGo, waitOnMachine).
+	// the wake, whose decision takes its start out of the gate as it ends (Machine.podPark,
+	// endPodPark). A grant during a pause clears it, and the pause's gate holds the wake in its
+	// place (podStartDue).
 	park *podHold
 }
 
@@ -317,10 +318,9 @@ func (m *Machine) parkWake(ctx context.Context, waiting *wake, after time.Durati
 // held over this claim is still bounded by the deadline its arrival set (holdSuspension), which
 // the wake's turn does not run.
 //
-// A launch this wake replaces that waits at its issue pod's gate leaves the gate here, as a failed
-// launch: its start never ran (dropPodPark).
+// A launch this wake replaces that waits at its issue pod's gate leaves the gate at the end of the
+// decision, as a failed launch: its start never ran (endPodPark).
 func (m *Machine) waitOnMachine(ctx context.Context, waiting *wake) error {
-	m.dropPodPark(podFailedLaunch)
 	m.wake = waiting
 	if m.claim.Locator != nil {
 		for _, kind := range []TimerKind{TimerBoot, TimerRegistration, TimerProbe, TimerTurn} {

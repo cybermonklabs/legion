@@ -144,6 +144,20 @@ func (h *harness) podWaiting() []claim.Token {
 	return tokens
 }
 
+// podHolder is the claim whose start or load holds podIssue's pod now, "" for none.
+func (h *harness) podHolder() claim.Token {
+	g := h.deps.PodStarts
+	if g == nil {
+		return ""
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if q := g.pods[podIssue]; q != nil && q.holder != nil {
+		return q.holder.token
+	}
+	return ""
+}
+
 // wantWaitsForPod is r's start waiting at the gate, held by what is observable: the start is in
 // the gate's queue, the runtime has not been asked for r's process beyond the before starts it
 // was asked for earlier, and r's claim is launching, as the try wrote it before it parked.
@@ -158,6 +172,19 @@ func (h *harness) wantWaitsForPod(r *podRole, before int) {
 	if state := r.m.View().Claim.State; state != StateLaunching {
 		h.t.Fatalf("%s is %s while its start waits at the gate, want launching", r.token, state)
 	}
+}
+
+// parks is ev, a start of r that waits at the gate, handed to r's machine and answered within
+// promptBound (postPromptly), and then r's start waiting (wantWaitsForPod) with before starts of r
+// asked of the runtime earlier. A start the gate cannot grant parks on its machine and its
+// decision ends (askPod), so a decision that waited at the gate for another role's load again
+// fails here, at the bound, rather than at the test binary's timeout with the package's run.
+func (h *harness) parks(r *podRole, ev Event, before int) {
+	h.t.Helper()
+	if err := h.postPromptly(r, ev); err != nil {
+		h.t.Fatalf("%T of %s, whose start waits at the gate: %v", ev, r.token, err)
+	}
+	h.wantWaitsForPod(r, before)
 }
 
 // wantGrantedStart is r's start the gate granted after its wait: the gate tells r's machine on a
@@ -374,6 +401,17 @@ func receive(t *testing.T, what string, done <-chan error, failed bool) {
 	}
 }
 
+// parkedPromptly is the decision on done of a launch the gate parked, which must have ended in no
+// error within promptBound (promptly): a start the gate cannot grant parks on its machine and its
+// decision ends (askPod), so a decision that waited at the gate for another role's load again
+// fails here, at the bound, rather than at the test binary's timeout.
+func parkedPromptly(t *testing.T, what string, done <-chan error) {
+	t.Helper()
+	if err := promptly(t, what, done); err != nil {
+		t.Fatalf("%s answered %v, want no failure", what, err)
+	}
+}
+
 // A second role's start into an issue pod waits until the first role's session load ends,
 // podLoadSettle after its agent's registration, and a third waits behind the second rather than
 // starting beside it; the LINUX-1301 shape, where the second start was asked while the first
@@ -391,8 +429,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 
 		h.mustPostTo(first.m, RequestResume{Claim: first.token})
 		h.wantStarts(first.token, 1)
-		h.mustPostTo(second.m, RequestResume{Claim: second.token})
-		h.wantWaitsForPod(second, 0)
+		h.parks(second, RequestResume{Claim: second.token}, 0)
 		h.clock.Advance(19 * time.Second)
 		h.wantWaitsForPod(second, 0)
 
@@ -409,8 +446,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 
 		h.mustPostTo(first.m, RequestResume{Claim: first.token})
-		h.mustPostTo(second.m, RequestResume{Claim: second.token})
-		h.wantWaitsForPod(second, 0)
+		h.parks(second, RequestResume{Claim: second.token}, 0)
 		h.clock.Advance(8 * time.Second)
 		h.registered(first)
 		h.wantWaitsForPod(second, 0)
@@ -453,7 +489,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		h.rt.ScriptResume(inIssuePod(second.token, 2))
 		door.release <- nil
 		second.m.Wait()
-		receive(t, "the second role's resume, parked at the gate until its grant", secondStarted, false)
+		parkedPromptly(t, "the second role's resume, parked at the gate until its grant", secondStarted)
 
 		h.wantLoadEndLine(first.token, issueSandbox, podLoadWant{loaded: 19*time.Second + podLoadSettle, endedBy: "registration",
 			registered: true, registeredAfter: 19 * time.Second})
@@ -466,10 +502,8 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		third := h.podRole(claim.RoleTester, StateQueued)
 
 		h.mustPostTo(first.m, RequestResume{Claim: first.token})
-		h.mustPostTo(second.m, RequestResume{Claim: second.token})
-		h.wantWaitsForPod(second, 0)
-		h.mustPostTo(third.m, RequestSpawn{Claim: third.token})
-		h.wantWaitsForPod(third, 0)
+		h.parks(second, RequestResume{Claim: second.token}, 0)
+		h.parks(third, RequestSpawn{Claim: third.token}, 0)
 		h.clock.Advance(10 * time.Second)
 
 		h.loadEnds(first)
@@ -507,7 +541,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		door.at(t, second)
 		door.release <- nil
 		second.m.Wait()
-		receive(t, "the second role's resume, parked at the gate until its grant", secondStarted, false)
+		parkedPromptly(t, "the second role's resume, parked at the gate until its grant", secondStarted)
 		h.wantStartLine(second.token, podIssue, &podWait{claim: first.token, waited: 118*time.Second + podLoadBound, endedBy: "bound"})
 
 		// The load the bound passed over ends when its settle ends, and its line says the bound
@@ -523,8 +557,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 
 		h.mustPostTo(first.m, RequestResume{Claim: first.token})
-		h.mustPostTo(second.m, RequestResume{Claim: second.token})
-		h.wantWaitsForPod(second, 0)
+		h.parks(second, RequestResume{Claim: second.token}, 0)
 
 		// The first role's agent registers 100 s after its process started, inside the bound: its
 		// load ends 30 s later, at +130 s, and the bound no longer runs.
@@ -558,12 +591,12 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			door.at(t, second)
 			door.release <- nil
 			second.m.Wait()
-			receive(t, "the second role's resume, parked at the gate until its grant", secondStarted, false)
+			parkedPromptly(t, "the second role's resume, parked at the gate until its grant", secondStarted)
 			h.wantStartLine(second.token, podIssue, &podWait{claim: first.token, waited: 4 * time.Second, endedBy: "failed launch"})
 			h.wantLoadEndLines(first.token, 0)
 
 			// The first role's launch tries again, and that try waits for the second role's load.
-			receive(t, "the first role's launch, parked for its second try", firstStarted, false)
+			parkedPromptly(t, "the first role's launch, parked for its second try", firstStarted)
 			h.wantWaitsForPod(first, 1)
 			h.clock.Advance(7 * time.Second)
 			h.loadEnds(second)
@@ -579,8 +612,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 
 			h.mustPostTo(first.m, RequestResume{Claim: first.token})
-			h.mustPostTo(second.m, RequestResume{Claim: second.token})
-			h.wantWaitsForPod(second, 0)
+			h.parks(second, RequestResume{Claim: second.token}, 0)
 			h.clock.Advance(5 * time.Second)
 			relaunched := h.died(first)
 			h.wantGrantedStart(second, 1)
@@ -588,7 +620,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			h.wantStartLine(second.token, podIssue, &podWait{claim: first.token, waited: 5 * time.Second, endedBy: "process end"})
 
 			// The dead process's relaunch waits for the second role's load.
-			receive(t, "the first role's relaunch, parked", relaunched, false)
+			parkedPromptly(t, "the first role's relaunch, parked", relaunched)
 			h.wantWaitsForPod(first, 1)
 			h.loadEnds(second)
 			h.wantGrantedStart(first, 2)
@@ -600,8 +632,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 
 			h.mustPostTo(first.m, RequestResume{Claim: first.token})
-			h.mustPostTo(second.m, RequestResume{Claim: second.token})
-			h.wantWaitsForPod(second, 0)
+			h.parks(second, RequestResume{Claim: second.token}, 0)
 			h.clock.Advance(4 * time.Second)
 			h.registered(first)
 			h.clock.Advance(10 * time.Second)
@@ -615,7 +646,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			h.wantStartLine(second.token, podIssue, &podWait{claim: first.token, waited: 14 * time.Second, endedBy: "process end"})
 
 			// The settle the death cut short ends nothing more: the load wrote one line.
-			receive(t, "the first role's relaunch, parked", relaunched, false)
+			parkedPromptly(t, "the first role's relaunch, parked", relaunched)
 			h.clock.Advance(podLoadSettle)
 			h.wantLoadEndLines(first.token, 1)
 			h.wantWaitsForPod(first, 1)
@@ -640,7 +671,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			h.wantClaimState(first, StateSuspended)
 			door.release <- nil
 			second.m.Wait()
-			receive(t, "the second role's resume, parked at the gate until its grant", secondStarted, false)
+			parkedPromptly(t, "the second role's resume, parked at the gate until its grant", secondStarted)
 			h.wantStarts(second.token, 1)
 			h.wantStartLine(second.token, podIssue, &podWait{claim: first.token, waited: 6 * time.Second, endedBy: "suspension"})
 			h.wantLoadEndLines(first.token, 0)
@@ -651,8 +682,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 
 			h.mustPostTo(first.m, RequestResume{Claim: first.token})
-			h.mustPostTo(second.m, RequestResume{Claim: second.token})
-			h.wantWaitsForPod(second, 0)
+			h.parks(second, RequestResume{Claim: second.token}, 0)
 			h.clock.Advance(3 * time.Second)
 			h.mustPostTo(first.m, RequestStop{Claim: first.token})
 			h.wantGrantedStart(second, 1)
@@ -688,8 +718,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 
 				h.mustPostTo(first.m, RequestSpawn{Claim: first.token})
 				h.wantStarts(first.token, 1)
-				h.mustPostTo(second.m, tc.start(second.token))
-				h.wantWaitsForPod(second, 0)
+				h.parks(second, tc.start(second.token), 0)
 				h.clock.Advance(2 * time.Second)
 
 				h.loadEnds(first)
@@ -716,6 +745,9 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		aRelaunchThatWaitsStopsAtThePark)
 	t.Run("a resume whose launch parks over a stop the runtime refused answers no failure and waits at the gate",
 		aResumeParkedOverARefusedStop)
+	t.Run("a start granted while the project is paused starts nothing, and the pause stops its claim", aGrantWhileTheProjectIsPaused)
+	t.Run("a start granted during a pause that ends before the pause's stop goes through the gate again as a fresh try",
+		aGrantWhoseLaunchThePauseLetsOut)
 }
 
 // The starts waiting in one pod go in the spec's order (dispatch://INFRA-5297/spec R3), whatever

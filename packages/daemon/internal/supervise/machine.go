@@ -1642,6 +1642,13 @@ type Machine struct {
 	// (podHold). It is memory only, as the gate is: a restart gives the pod the load of a claim it
 	// restores booting (adoptPodLoad).
 	podLoad *podHold
+	// podPark is the gate's hold of the start of the launch parked at the claim's issue pod's gate
+	// (askPod), from the park until the grant runs that start (podStartDue) or the start leaves
+	// the gate (endPodPark), nil for none. The parked wake carries the same hold (wake.park); this
+	// is the machine's own record of what it asked the gate, kept apart from the wake so that a
+	// decision that drops or replaces the wake, by whatever path, takes the start out of the gate
+	// as it ends (Machine.unlock). It is memory only, as the gate is.
+	podPark *podHold
 	// wake is the launch the wake pacing holds until its turn (reserveWake), run when TimerWake
 	// fires (wakeNow); nil for none. It lives as long as that timer, which letGo disarms with it,
 	// and it is memory only, as relaunch and staleRelaunch are: a restart loses no wake. A
@@ -1770,8 +1777,8 @@ func (p awaitedPrompts) LogValue() slog.Value { return slog.AnyValue(p.ids()) }
 // armed is one scheduled timer: its arming's sequence and delivery, how to cancel it, and when it
 // fires (due), so a later arming can tell whether it would fire sooner. TimerPodStart's is no
 // timer of the clock's: it fires at the pod's gate's grant, so it has no due and nothing to
-// cancel, and the start it waits for leaves the gate where its wake is dropped, for what dropped
-// it (askPod, dropPodPark).
+// cancel, and the start it waits for leaves the gate at the end of the decision that drops its
+// wake, for what that decision left of the claim (askPod, endPodPark).
 type armed struct {
 	seq        uint64
 	deliveryID string
@@ -1853,9 +1860,9 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // No decision waits for another role's session load in the claim's issue pod: a launch the pod's
 // start gate cannot grant at once parks on the machine as a wake that carries its podHold and its
 // decision ends (askPod, wake.park), so a suspension, a retirement and every read of the claim
-// find the lock free, and the row each of them runs drops that wake, whose cut takes the start
-// out of the gate and names that row's end: a suspension's or a retirement's (dropPodPark,
-// dispatch://INFRA-5297).
+// find the lock free, and the row each of them runs drops that wake, and the end of its decision
+// takes the start out of the gate and names that row's end: a suspension's or a retirement's
+// (endPodPark, dispatch://INFRA-5297).
 //
 // Handle gives ev through the store's rule first; the comment that opens its body says why.
 func (m *Machine) Handle(ctx context.Context, ev Event) error {
@@ -2358,6 +2365,12 @@ func serving[T comparable](pending *Delivery, carried func(Delivery) T, retired 
 
 // Claim is a copy of the claim as the machine holds it now. It waits for the decision in flight,
 // so what it reports is what that decision left: a check a decision must not race reads it here.
+// A read that decides whether to stop a claim at all is such a check. The published view (View)
+// reads a claim failed until a retry decision's first write publishes its launch (putClaim), so a
+// stop that found the view failed or retired and gave up there would let that retry launch the
+// claim the stop was for; such a stop reads Claim before it gives up (internal/daemon's stop rows).
+// That read waits for the decision in flight, as every read of Claim does, and is made only where
+// the view reads failed or retired, so a stop of a claim the view shows live never waits on it.
 func (m *Machine) Claim() Claim {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -2453,11 +2466,13 @@ func (m *Machine) stoppingProcess() func() {
 // unlock ends a locked section that may have changed the claim: it holds the stale-plugin lane to
 // its invariants — the credit this machine holds goes back unless a refresh wake of its own is
 // waiting, and nothing of a relaunch's intent outlives the decision that raised it
-// (endRefreshLane) — settles the session load of a process the decision left registered, or ends
-// the load of one it left no longer booting, which gives its issue pod's start to the next role
-// (endPodLoad), publishes the claim, says the machine decides nothing, then releases mu.
+// (endRefreshLane) — takes the start of a launch parked at its issue pod's gate out of the gate
+// where the decision took that launch's wake off the machine (endPodPark), settles the session
+// load of a process the decision left registered, or ends the load of one it left no longer
+// booting, which gives its issue pod's start to the next role (endPodLoad), publishes the claim,
+// says the machine decides nothing, then releases mu.
 //
-// Every decision of a machine ends here, which is what makes it the place those three are kept:
+// Every decision of a machine ends here, which is what makes it the place those four are kept:
 // every locked section that can change the wake, the credit, the intent or the claim's process
 // ends in unlock, and a section that takes mu without it reads the claim or counts goroutines and
 // changes none of them. The sections that defer it are Handle, which every event and every timer
@@ -2468,6 +2483,7 @@ func (m *Machine) stoppingProcess() func() {
 // keep, rather than this list of the sections there are now.
 func (m *Machine) unlock() {
 	m.endRefreshLane()
+	m.endPodPark()
 	m.endPodLoad()
 	m.publish()
 	m.decide(nil)
@@ -3092,14 +3108,22 @@ func (m *Machine) writeTry(starting context.Context, l launchTry) (token string,
 }
 
 // relaunchAtProbe leaves the launch launchTries was making to be tried again at the probe
-// interval (relaunchLater): raised anew from the top, as no request's, letting no process go
-// (noEnd), and as the lane whose intent it carried (retryHolding). It is the retry of the two
+// interval (relaunchLater), raised anew from the top (launchFromTop). It is the retry of the two
 // tries that started nothing and were refused by nothing about the claim: a write the store did
 // not take, and a hold of the session the store did not answer (launchTries).
 func (m *Machine) relaunchAtProbe(l launchTry) {
-	m.relaunchLater(m.deps.Timeouts.Probe, m.retryHolding(l.intent, func(ctx context.Context) error {
+	m.relaunchLater(m.deps.Timeouts.Probe, m.launchFromTop(l))
+}
+
+// launchFromTop is the launch l's tries belong to raised anew from the top: as no request's,
+// letting no process go (noEnd), and as the lane whose intent it carried (retryHolding). The
+// retries of a try that started nothing take it (relaunchAtProbe), and so does a launch parked at
+// its issue pod's gate, for the lifecycle recheck of its let-out after a pause (askPod,
+// wake.again).
+func (m *Machine) launchFromTop(l launchTry) func(context.Context) error {
+	return m.retryHolding(l.intent, func(ctx context.Context) error {
 		return m.launchAfter(ctx, l.charged, l.exempt, false, noEnd)
-	}))
+	})
 }
 
 // promptRefused is a start the runtime refused because the role's composed system prompt is larger
@@ -3997,10 +4021,10 @@ func (m *Machine) endProcess(ctx context.Context, cause string) error {
 // purpose, so a record left on it would tell a later start of the claim that work it ended on
 // purpose was lost.
 //
-// A launch the claim's issue pod's gate holds leaves it as this retirement's, so the start the
-// gate grants next names a retirement as what ended its wait (dropPodPark, podRetirement).
+// A launch the claim's issue pod's gate holds leaves it as this retirement's at the end of the
+// decision, so the start the gate grants next names a retirement as what ended its wait
+// (endPodPark, podRetirement).
 func (m *Machine) retire(ctx context.Context, cause string) error {
-	m.dropPodPark(podRetirement)
 	m.letGo(ctx, cause)
 	m.claim.State = StateRetired
 	drops := m.dropsUpdateTask()
@@ -4024,11 +4048,11 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // letGo ends what the machine had with the claim's process: no timer watches it — the ladder's
 // wait after a provider error among them (providererror.go) — no relaunch waits on one
 // (relaunchLater), no wake of the pacing waits its turn (reserveWake), no launch waits at its
-// issue pod's gate, whose start leaves the gate as an end of the process it was to start unless
-// the caller took it out for a suspension or a retirement first (dropPodPark) — the launch it was
-// to make is the one this end replaces, and the credit of the refresh gate a refresh of the
-// stale-plugin lane held for that wake goes back at the end of this decision, which is where a
-// credit whose wake is gone goes back wherever that wake went (endRefreshLane,
+// issue pod's gate, whose start leaves the gate at the end of the decision for what the decision
+// left of the claim (endPodPark) — the launch it was to make is the one this end replaces, and the
+// credit of the refresh gate a refresh of the stale-plugin lane held for that wake goes back at
+// the end of this decision, which is where a credit whose wake is gone goes back wherever that
+// wake went (endRefreshLane,
 // dispatch://INFRA-2712 R1) — no send talks to it, no prompt of the pending task waits on a
 // result from it (Machine.outstanding: the process that would answer is gone, and the next one
 // is sent the task anew), no suspension is held for its turn,
@@ -4065,7 +4089,6 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // write of the delivery, which settle makes before the next decision (unsaved).
 func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.recordEnd(ctx, cause)
-	m.dropPodPark(podProcessEnded)
 	m.disarmAll()
 	m.relaunch = nil
 	m.wake = nil

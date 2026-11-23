@@ -7273,6 +7273,7 @@ a role's process starts only when no other role of that pod is loading its sessi
   A waiting launch is parked on its claim, written as launching with no process, as a launch the wake pacing holds over no process is, so nothing that reads or stops the claim waits for it, and the outbox row that asked for the start is done.
   A launch that replaces a running process, as a relaunch after a stall or onto a new plugin does, stops that process before it parks, so the old process neither runs nor holds memory while the other role loads.
   A suspension, a release, a close or a retirement of a waiting role, or a pause's stop of it, ends its wait at once, and its process is never started.
+  A waiting start that the gate lets through while the project is paused starts no process either: the pause holds its launch and stops the role for the pause, owed a launch at the resume, as it holds every launch asked during a pause, and the next role's start goes on.
 
 - **Loading** runs from the role's process start until 30 seconds after the agent registers, or until its launch fails, its process ends, or its claim is suspended or retired.
   The registration alone is too early: the plugin registers inside Oh My Pi's `session_start`, and in two resumes read every half second in an issue pod, of a 4.7 MB and a 75 MB transcript, the process's memory went on rising after it and peaked 6.7 and 16.4 seconds later.

@@ -122,8 +122,9 @@ const (
 	// one of a role before its own in claim.Roles. It may wait out more than one load. The claim
 	// is written launching and records no process, and the gate's grant of its start starts the
 	// replacement (podStartDue) — unless a suspension or a retirement of the claim takes the
-	// launch out of the gate first (dropPodPark), the start the grant makes is refused until the
-	// claim's launch budget runs out (launchTries, fail), or the daemon's stop leaves the launch
+	// launch out of the gate first (endPodPark), the start the grant makes is refused until the
+	// claim's launch budget runs out (launchTries, fail), a project pause holds it at the grant
+	// (pauseGate), or the daemon's stop leaves the launch
 	// to its next boot. It is an end of its own because the claim alone reads as the relaunch
 	// still to make (EndRelaunchPending), where nothing refused or cut this one short: it is
 	// queued at the gate.

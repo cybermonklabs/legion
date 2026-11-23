@@ -82,8 +82,7 @@ func (h *harness) waitingTrio() (first, second, third *podRole) {
 	h.mustPostTo(first.m, RequestResume{Claim: first.token})
 	h.wantStarts(first.token, 1)
 	for _, r := range []*podRole{second, third} {
-		h.mustPostTo(r.m, RequestResume{Claim: r.token})
-		h.wantWaitsForPod(r, 0)
+		h.parks(r, RequestResume{Claim: r.token}, 0)
 	}
 	return first, second, third
 }
@@ -240,8 +239,7 @@ func aGrantAfterTheDaemonsStop(t *testing.T) {
 	third := h.podRole(claim.RoleTester, StateSuspended)
 	h.mustPostTo(first.m, RequestResume{Claim: first.token})
 	for _, r := range []*podRole{second, third} {
-		h.mustPostTo(r.m, RequestResume{Claim: r.token})
-		h.wantWaitsForPod(r, 0)
+		h.parks(r, RequestResume{Claim: r.token}, 0)
 	}
 
 	// The daemon stops the second's machine while its start waits: the start stays in the
@@ -265,10 +263,11 @@ func aGrantAfterTheDaemonsStop(t *testing.T) {
 }
 
 // aGrantedStartCutBeforeItRan: a start granted and cut before it ran names what cut it to the
-// next start, for every end a cut passes but the daemon's stop's (aGrantAfterTheDaemonsStop): a
-// suspension's and a retirement's own (suspended, retire), the end of the process the launch was
-// to start at a let-go of the claim's process (letGo), and a failed launch where another park
-// replaces this one (waitOnMachine).
+// next start, for every end a cut passes but the daemon's stop's (aGrantAfterTheDaemonsStop) and
+// the pause's (aGrantWhileTheProjectIsPaused), as the end of the decision that dropped its wake
+// reads it from the claim (endPodPark): a suspension's and a retirement's own, the end of the
+// process the launch was to start where its claim failed, and a failed launch where another park
+// replaces this one or where a decision drops the wake and names nothing.
 func aGrantedStartCutBeforeItRan(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -308,6 +307,15 @@ func aGrantedStartCutBeforeItRan(t *testing.T) {
 					run: func(context.Context) error { return nil }}, time.Hour)
 			})
 		}},
+		// A path added later that drops the parked wake and takes nothing out of the gate: the
+		// decision's end takes the start out all the same (Machine.unlock, endPodPark), so the
+		// pod's start goes on rather than waiting for a grant nothing will run.
+		{name: "a decision that drops the wake alone", state: StateLaunching, ended: "failed launch", cut: func(h *harness, r *podRole) error {
+			return h.insideDecision(r.m, func() error {
+				r.m.wake = nil
+				return nil
+			})
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := podHarness(t, "")
@@ -324,8 +332,7 @@ func aGrantedStartCutBeforeItRan(t *testing.T) {
 			third := h.podRole(claim.RoleTester, StateSuspended)
 			h.mustPostTo(first.m, RequestResume{Claim: first.token})
 			for _, r := range []*podRole{second, third} {
-				h.mustPostTo(r.m, RequestResume{Claim: r.token})
-				h.wantWaitsForPod(r, 0)
+				h.parks(r, RequestResume{Claim: r.token}, 0)
 			}
 			// The generation the second's try wrote before it parked, which its cut-short line names.
 			parked := second.m.View().Claim.Generation
@@ -372,8 +379,7 @@ func aRelaunchThatWaitsStopsAtThePark(t *testing.T) {
 	// The runtime finds the second role's live process holding an address a process launched
 	// now is not handed: its relaunch lets it go and waits at the gate behind the first role's
 	// load, and the process is stopped there, before any grant.
-	h.mustPostTo(second.m, RuntimeObservation{Observation: runtime.Observation{Locator: replaced, Kind: runtime.StaleAddress, At: h.clock.Now()}})
-	h.wantWaitsForPod(second, 1)
+	h.parks(second, RuntimeObservation{Observation: runtime.Observation{Locator: replaced, Kind: runtime.StaleAddress, At: h.clock.Now()}}, 1)
 	if stops := h.calls("Suspend"); len(stops) != 1 || stops[0].Locator != replaced {
 		t.Fatalf("stops = %+v while the relaunch waits at the gate, want the one stop of the process it let go, %+v", stops, replaced)
 	}
@@ -432,4 +438,87 @@ func aResumeParkedOverARefusedStop(t *testing.T) {
 	h.loadEnds(first)
 	h.wantGrantedStart(second, 2)
 	h.wantClaimState(second, StateLaunching)
+}
+
+// grantedDuringAPause is a pod whose second role's start waited at the gate from before a project
+// pause and was granted while the pause stands, its pause's own stop row not having reached the
+// claim yet, as a stop row behind other rows has not: the grant starts no process, the pod's start
+// is free, and the pause's gate has posted the claim's stop for its next decision (podStartDue,
+// pauseGate; decision 7 of dispatch://INFRA-3759), which the harness's clock fires when it moves.
+func grantedDuringAPause(t *testing.T) (h *harness, second *podRole, flag *pauseFlag, stops *stopTransaction) {
+	t.Helper()
+	h = podHarness(t, "")
+	flag, stops = &pauseFlag{}, &stopTransaction{store: h.store}
+	h.deps.Paused, h.deps.PauseStopped = flag.Paused, stops.PauseStopped
+	first := h.podRole(claim.RoleArchitect, StateSuspended)
+	second = h.podRole(claim.RoleImplementer, StateSuspended)
+	h.mustPostTo(first.m, RequestResume{Claim: first.token})
+	h.wantStarts(first.token, 1)
+	h.parks(second, RequestResume{Claim: second.token}, 0)
+
+	// The project pauses while the second's start waits, and the first role's load then ends: the
+	// gate grants the second's start during the pause.
+	flag.set(7)
+	h.loadEnds(first)
+	stopPosted := func() bool {
+		second.m.mu.Lock()
+		defer second.m.mu.Unlock()
+		_, posted := second.m.timers[TimerPause]
+		return posted
+	}
+	testwait.Eventually(t, "the second's grant, during the pause, to start its process or to post its stop for the pause", func() bool {
+		return h.starts(second.token) > 0 || stopPosted()
+	})
+	second.m.Wait()
+	if n := h.starts(second.token); n != 0 {
+		t.Fatalf("the runtime was asked to start the second %d times, want none: its start was granted while the project was paused", n)
+	}
+	if holder := h.podHolder(); holder != "" {
+		t.Fatalf("the pod's start is held by %s once the pause's gate took the second's launch, want it free", holder)
+	}
+	if lines := h.podRecords(podLaunchCutShortLine, second.token); len(lines) != 1 {
+		t.Fatalf("cut-short lines of the second = %d, want 1", len(lines))
+	} else {
+		h.wantAttr(lines[0], "by", "failed launch")
+	}
+	return h, second, flag, stops
+}
+
+// aGrantWhileTheProjectIsPaused: a start granted while the project is paused starts nothing, and
+// the pause's gate stops its claim for the pause, a launch owed (pauseStopDue).
+func aGrantWhileTheProjectIsPaused(t *testing.T) {
+	h, second, _, stops := grantedDuringAPause(t)
+
+	h.clock.Advance(0)
+	second.m.Wait()
+	if c := second.m.View().Claim; c.State != StateSuspended || c.SuspendedBy != SuspendedByReleased || c.Locator != nil {
+		t.Fatalf("the second is %s by %q recording %+v, want it stopped for the pause with no process", c.State, c.SuspendedBy, c.Locator)
+	}
+	h.wantStarts(second.token, 0)
+	stops.wantStops(t, stopCall{stop: PauseStop{Pause: 7, LaunchOwed: true}, landed: true})
+	if waiting := h.podWaiting(); len(waiting) != 0 {
+		t.Fatalf("starts waiting for the pod = %v, want none", waiting)
+	}
+}
+
+// aGrantWhoseLaunchThePauseLetsOut: a start granted during a pause whose pause ends before the
+// gate's stop runs goes back through the pod's gate as a fresh try, not on the grant the pause took
+// (letOutHeldLaunch, the parked wake's run with no hold): its process starts as the pod's holder,
+// so the next role's start waits for its load.
+func aGrantWhoseLaunchThePauseLetsOut(t *testing.T) {
+	h, second, flag, stops := grantedDuringAPause(t)
+	parked := second.m.View().Claim.Generation
+
+	flag.set(0)
+	h.clock.Advance(0)
+	h.wantGrantedStart(second, 1)
+	if c := second.m.View().Claim; c.State != StateLaunching || c.Locator == nil || c.Generation != parked+1 {
+		t.Fatalf("the second is %s at generation %d recording %+v, want it launching a fresh try (generation %d) with its process", c.State,
+			c.Generation, c.Locator, parked+1)
+	}
+	if holder := h.podHolder(); holder != second.token {
+		t.Fatalf("the pod's start is held by %q, want the second's load to hold it", holder)
+	}
+	h.wantStartLine(second.token, podIssue, nil)
+	stops.wantStops(t)
 }

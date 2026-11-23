@@ -183,8 +183,8 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 // the launch has let its process go and parked on the machine with no process started, waiting
 // only for another role's session load, and a suspension, a release or a deletion of the pod
 // never waits (dispatch://INFRA-5297). It is decided where it arrives by the same branch, and the
-// suspension takes its start out of the pod's gate as a suspension (suspended, dropPodPark), where
-// the launch writes that it was cut short.
+// suspension takes its start out of the pod's gate as a suspension at the end of its decision
+// (suspended, endPodPark), where the launch writes that it was cut short.
 //
 // A claim whose process still runs is untouched by any of this. The gate left such a claim exactly
 // as it stood (parkWake), so its suspend is decided by the row of the state it still holds — and a
@@ -424,10 +424,10 @@ func (m *Machine) suspendedFor(ctx context.Context, request RequestSuspend, laun
 // all the same (endHeld, exit): what it ended is recorded as a suspension by by, as the stop that
 // did land records it (endSuspended, letGo), and the record goes to the store with this write.
 //
-// A launch its issue pod's gate holds leaves the gate as this suspension's, so the start the gate
-// grants next names a suspension as what ended its wait (dropPodPark, podSuspension).
+// A launch its issue pod's gate holds leaves the gate as this suspension's at the end of the
+// decision, so the start the gate grants next names a suspension as what ended its wait
+// (endPodPark, podSuspension).
 func (m *Machine) suspended(ctx context.Context, by SuspendSource, stop *PauseStop) error {
-	m.dropPodPark(podSuspension)
 	m.letGo(ctx, endSuspended(by))
 	m.claim.State, m.claim.SuspendedBy = StateSuspended, by
 	if stop != nil {
