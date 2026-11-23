@@ -999,14 +999,21 @@ func (c *countedAskStateWrites) WriteIssueAskStates(ctx context.Context, issueKe
 // reopen while the sweep waits; a sweep that read the issue before the lock would write the
 // closed issue's ask states into the documents of an issue that is open again.
 func TestACloseSweepThatWaitedOutAReopenWritesNothing(t *testing.T) {
-	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "Swept after a reopen", "Context\n")
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `update issues set status = 'done', closed_at = now() where key = $1`, issue.Key); err != nil {
 		t.Fatalf("close the issue: %v", err)
 	}
-	counted := &countedAskStateWrites{API: served.deps.Docs}
-	served.deps.Docs = counted
+	counted := &countedAskStateWrites{API: deps.Docs}
+	// The sweep runs on a connection of its own, so the wait watches its backend alone
+	// (storetest.WaitForQueuedBehind): the reopen commits only once the sweep itself waits, and no
+	// other backend queued on the issue's owner lock is taken for it.
+	callStore, callPID := oneConnectionStore(t, deps)
+	sweepDeps := deps
+	sweepDeps.Store = callStore
+	sweepDeps.Docs = counted
+	sweeper := directServer(sweepDeps)
 
 	holder, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -1018,9 +1025,9 @@ func TestACloseSweepThatWaitedOutAReopenWritesNothing(t *testing.T) {
 	}
 	swept := make(chan error, 1)
 	go func() {
-		swept <- served.sweepClosedIssueAsksTx(ctx, issue.Key, nil, model.Actor{Kind: "user", ID: "alice"})
+		swept <- sweeper.sweepClosedIssueAsksTx(ctx, issue.Key, nil, model.Actor{Kind: "user", ID: "alice"})
 	}()
-	if err, early, _ := storetest.AwaitOwnerLockWaiter(t, database, "the close's sweep", swept); early {
+	if err, early := storetest.WaitForQueuedBehind(t, holder, callPID, swept); early {
 		t.Fatalf("the sweep answered %v while this test held the issue's owner lock: it decided on the issue "+
 			"under no lock", err)
 	}

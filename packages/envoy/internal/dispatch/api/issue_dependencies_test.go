@@ -199,7 +199,7 @@ func TestIssueBlockedBySelfIsAnInputError(t *testing.T) {
 func TestIssueBlockedByConcurrentWritesDoNotDeadlock(t *testing.T) {
 	for _, scenario := range []string{"reciprocal blockers", "blocker and reparent", "old parent and reparent"} {
 		t.Run(scenario, func(t *testing.T) {
-			handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+			handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 			if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 				"key": "CORE", "name": "Core",
 			}, "alice"); response.Code != http.StatusCreated {
@@ -215,6 +215,11 @@ func TestIssueBlockedByConcurrentWritesDoNotDeadlock(t *testing.T) {
 				}
 				return decodeBody[model.Issue](t, response).Key
 			}
+			// Each round's two writes run on a connection of their own, so each wait below watches
+			// that write's backend alone (storetest.WaitForQueuedBehind): the second write starts
+			// only once the first has queued behind the gate, whatever else queues there.
+			firstHandler, firstPID := oneConnectionHandler(t, deps)
+			secondHandler, secondPID := oneConnectionHandler(t, deps)
 			for round := range 8 {
 				first := create(fmt.Sprintf("First %d", round), nil)
 				second := create(fmt.Sprintf("Second %d", round), nil)
@@ -243,13 +248,17 @@ func TestIssueBlockedByConcurrentWritesDoNotDeadlock(t *testing.T) {
 				}
 				responses := make(chan *httptest.ResponseRecorder, 2)
 				go func() {
-					responses <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+firstKey, firstBody, "alice")
+					responses <- dispatchRequest(t, firstHandler, http.MethodPatch, "/api/v1/issues/"+firstKey, firstBody, "alice")
 				}()
-				waitForDatabaseLocks(t, gate, 1)
+				if response, early := storetest.WaitForQueuedBehind(t, gate, firstPID, responses); early {
+					t.Fatalf("round %d: the first write answered %d %s before it queued behind the gate", round, response.Code, response.Body.String())
+				}
 				go func() {
-					responses <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+secondKey, secondBody, "alice")
+					responses <- dispatchRequest(t, secondHandler, http.MethodPatch, "/api/v1/issues/"+secondKey, secondBody, "alice")
 				}()
-				waitForDatabaseLocks(t, gate, 2)
+				if response, early := storetest.WaitForQueuedBehind(t, gate, secondPID, responses); early {
+					t.Fatalf("round %d: the second write answered %d %s before it queued behind the gate", round, response.Code, response.Body.String())
+				}
 				if err := gate.Commit(context.Background()); err != nil {
 					t.Fatal(err)
 				}
@@ -376,7 +385,7 @@ func TestIssueBlockedByIgnoresIndirectRowActivity(t *testing.T) {
 }
 
 func TestStatusPatchRacingReparentUsesCommittedParent(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 3)
 	gate, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -391,11 +400,16 @@ func TestStatusPatchRacingReparentUsesCommittedParent(t *testing.T) {
 	if _, err := gate.Exec(context.Background(), `update issues set parent_key = $1 where key = $2`, keys[1], keys[2]); err != nil {
 		t.Fatal(err)
 	}
+	// The status write runs on a connection of its own, so the wait below watches its backend
+	// alone: the gate commits only once that write has queued for the issue's owner lock.
+	statusHandler, statusPID := oneConnectionHandler(t, deps)
 	responses := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		responses <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+keys[2], map[string]string{"status": "todo"}, "alice")
+		responses <- dispatchRequest(t, statusHandler, http.MethodPatch, "/api/v1/issues/"+keys[2], map[string]string{"status": "todo"}, "alice")
 	}()
-	waitForDatabaseLocks(t, gate, 1)
+	if response, early := storetest.WaitForQueuedBehind(t, gate, statusPID, responses); early {
+		t.Fatalf("the status write answered %d %s before it queued behind the reparent's owner lock", response.Code, response.Body.String())
+	}
 	if err := gate.Commit(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -443,7 +457,7 @@ func TestReparentIgnoresUnrelatedGrandchildRowActivity(t *testing.T) {
 // must not hold the shared parent while it waits for the new parent's lock: the status write would
 // hold that lock and wait for the shared parent, and Postgres would abort one of them.
 func TestReparentUnderSiblingDoesNotDeadlockWithItsStatusWrite(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 3)
 	parent, moving, sibling := keys[0], keys[1], keys[2]
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -459,15 +473,24 @@ func TestReparentUnderSiblingDoesNotDeadlockWithItsStatusWrite(t *testing.T) {
 	if err := store.LockOwner(context.Background(), gate, store.IssueOwner(parent)); err != nil {
 		t.Fatal(err)
 	}
+	// The reparent and the status write each run on a connection of their own, so each wait below
+	// watches that write's backend alone: the status write starts only once the reparent has
+	// queued behind the gate, whatever else queues there.
+	reparentHandler, reparentPID := oneConnectionHandler(t, deps)
+	statusHandler, statusPID := oneConnectionHandler(t, deps)
 	responses := make(chan *httptest.ResponseRecorder, 2)
 	go func() {
-		responses <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+moving, map[string]string{"parent": sibling}, "alice")
+		responses <- dispatchRequest(t, reparentHandler, http.MethodPatch, "/api/v1/issues/"+moving, map[string]string{"parent": sibling}, "alice")
 	}()
-	waitForDatabaseLocks(t, gate, 1)
+	if response, early := storetest.WaitForQueuedBehind(t, gate, reparentPID, responses); early {
+		t.Fatalf("the reparent answered %d %s before it queued behind the gated parent", response.Code, response.Body.String())
+	}
 	go func() {
-		responses <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+sibling, map[string]string{"status": "todo"}, "alice")
+		responses <- dispatchRequest(t, statusHandler, http.MethodPatch, "/api/v1/issues/"+sibling, map[string]string{"status": "todo"}, "alice")
 	}()
-	waitForDatabaseLocks(t, gate, 2)
+	if response, early := storetest.WaitForQueuedBehind(t, gate, statusPID, responses); early {
+		t.Fatalf("the status write answered %d %s before it queued behind the gated parent", response.Code, response.Body.String())
+	}
 	if err := gate.Commit(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -501,7 +524,7 @@ func TestReparentDoesNotDeadlockWithBoardMoveBetweenItsEnds(t *testing.T) {
 		{name: "board order reverses key order", moving: 2, parent: 0, child: 1, childFirst: true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
-			handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+			handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 			keys := createListedIssues(t, handler, "CORE", 3)
 			requireOwnerLockOrder(t, database, keys...)
 			moving, parent, child := keys[scenario.moving], keys[scenario.parent], keys[scenario.child]
@@ -524,17 +547,26 @@ func TestReparentDoesNotDeadlockWithBoardMoveBetweenItsEnds(t *testing.T) {
 			if err := store.LockOwner(context.Background(), gate, store.IssueOwner(before)); err != nil {
 				t.Fatal(err)
 			}
+			// The reparent and the move each run on a connection of their own, so each wait below
+			// watches that write's backend alone: the move starts only once the reparent has queued
+			// behind the gate, whatever else queues there.
+			reparentHandler, reparentPID := oneConnectionHandler(t, deps)
+			moveHandler, movePID := oneConnectionHandler(t, deps)
 			responses := make(chan *httptest.ResponseRecorder, 2)
 			go func() {
-				responses <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+child, map[string]string{"parent": parent}, "alice")
+				responses <- dispatchRequest(t, reparentHandler, http.MethodPatch, "/api/v1/issues/"+child, map[string]string{"parent": parent}, "alice")
 			}()
-			waitForDatabaseLocks(t, gate, 1)
+			if response, early := storetest.WaitForQueuedBehind(t, gate, reparentPID, responses); early {
+				t.Fatalf("the reparent answered %d %s before it queued behind the gated neighbour", response.Code, response.Body.String())
+			}
 			go func() {
-				responses <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+moving, map[string]any{
+				responses <- dispatchRequest(t, moveHandler, http.MethodPatch, "/api/v1/issues/"+moving, map[string]any{
 					"rank": map[string]string{"after": after, "before": before},
 				}, "alice")
 			}()
-			waitForDatabaseLocks(t, gate, 2)
+			if response, early := storetest.WaitForQueuedBehind(t, gate, movePID, responses); early {
+				t.Fatalf("the board move answered %d %s before it queued behind the gated neighbour", response.Code, response.Body.String())
+			}
 			if err := gate.Commit(context.Background()); err != nil {
 				t.Fatal(err)
 			}
@@ -645,7 +677,7 @@ func TestReparentDoesNotDeadlockWithABoardMoveOfTheSameIssue(t *testing.T) {
 // board, with an issue moved between the two while the child's status is written, therefore never
 // has the move holding the parent while the status write holds the child.
 func TestStatusWriteDoesNotDeadlockWithBoardMoveBetweenTheIssueAndItsParent(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 3)
 	parent, child, moving := keys[0], keys[1], keys[2]
 	requireOwnerLockOrder(t, database, parent, child, moving)
@@ -665,17 +697,26 @@ func TestStatusWriteDoesNotDeadlockWithBoardMoveBetweenTheIssueAndItsParent(t *t
 	if err := store.LockOwner(context.Background(), gate, store.IssueOwner(child)); err != nil {
 		t.Fatal(err)
 	}
+	// The status write and the move each run on a connection of their own, so each wait below
+	// watches that write's backend alone: the move starts only once the status write has queued
+	// behind the gate, whatever else queues there.
+	statusHandler, statusPID := oneConnectionHandler(t, deps)
+	moveHandler, movePID := oneConnectionHandler(t, deps)
 	responses := make(chan *httptest.ResponseRecorder, 2)
 	go func() {
-		responses <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+child, map[string]string{"status": "todo"}, "alice")
+		responses <- dispatchRequest(t, statusHandler, http.MethodPatch, "/api/v1/issues/"+child, map[string]string{"status": "todo"}, "alice")
 	}()
-	waitForDatabaseLocks(t, gate, 1)
+	if response, early := storetest.WaitForQueuedBehind(t, gate, statusPID, responses); early {
+		t.Fatalf("the status write answered %d %s before it queued behind the gated child", response.Code, response.Body.String())
+	}
 	go func() {
-		responses <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+moving, map[string]any{
+		responses <- dispatchRequest(t, moveHandler, http.MethodPatch, "/api/v1/issues/"+moving, map[string]any{
 			"rank": map[string]string{"after": child, "before": parent},
 		}, "alice")
 	}()
-	waitForDatabaseLocks(t, gate, 2)
+	if response, early := storetest.WaitForQueuedBehind(t, gate, movePID, responses); early {
+		t.Fatalf("the board move answered %d %s before it queued behind the gated child", response.Code, response.Body.String())
+	}
 	if err := gate.Commit(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -702,7 +743,7 @@ func TestStatusWriteDoesNotDeadlockWithBoardMoveBetweenTheIssueAndItsParent(t *t
 // therefore never has the reparent holding the grandparent while the status write holds the old
 // parent.
 func TestReparentToGrandparentDoesNotDeadlockWithAStatusWriteOnTheOldParent(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 3)
 	grandparent, parent, child := keys[0], keys[1], keys[2]
 	requireOwnerLockOrder(t, database, grandparent, parent, child)
@@ -719,15 +760,24 @@ func TestReparentToGrandparentDoesNotDeadlockWithAStatusWriteOnTheOldParent(t *t
 	if err := store.LockOwner(context.Background(), gate, store.IssueOwner(grandparent)); err != nil {
 		t.Fatal(err)
 	}
+	// The reparent and the status write each run on a connection of their own, so each wait below
+	// watches that write's backend alone: the status write starts only once the reparent has
+	// queued behind the gate, whatever else queues there.
+	reparentHandler, reparentPID := oneConnectionHandler(t, deps)
+	statusHandler, statusPID := oneConnectionHandler(t, deps)
 	responses := make(chan *httptest.ResponseRecorder, 2)
 	go func() {
-		responses <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+child, map[string]string{"parent": grandparent}, "alice")
+		responses <- dispatchRequest(t, reparentHandler, http.MethodPatch, "/api/v1/issues/"+child, map[string]string{"parent": grandparent}, "alice")
 	}()
-	waitForDatabaseLocks(t, gate, 1)
+	if response, early := storetest.WaitForQueuedBehind(t, gate, reparentPID, responses); early {
+		t.Fatalf("the reparent answered %d %s before it queued behind the gated grandparent", response.Code, response.Body.String())
+	}
 	go func() {
-		responses <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+parent, map[string]string{"status": "todo"}, "alice")
+		responses <- dispatchRequest(t, statusHandler, http.MethodPatch, "/api/v1/issues/"+parent, map[string]string{"status": "todo"}, "alice")
 	}()
-	waitForDatabaseLocks(t, gate, 2)
+	if response, early := storetest.WaitForQueuedBehind(t, gate, statusPID, responses); early {
+		t.Fatalf("the status write answered %d %s before it queued behind the gated grandparent", response.Code, response.Body.String())
+	}
 	if err := gate.Commit(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -749,7 +799,7 @@ func TestReparentToGrandparentDoesNotDeadlockWithAStatusWriteOnTheOldParent(t *t
 // moves at every attempt is refused with 409 PARENT_CONTENDED and nothing applied, never locked
 // out of owner lock order.
 func TestStatusWriteRefusesAParentThatMovesAtEveryAttempt(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 4)
 	first, second, third, child := keys[0], keys[1], keys[2], keys[3]
 	requireOwnerLockOrder(t, database, first, second, third, child)
@@ -765,11 +815,16 @@ func TestStatusWriteRefusesAParentThatMovesAtEveryAttempt(t *testing.T) {
 	if err := store.LockOwner(context.Background(), childGate, store.IssueOwner(child)); err != nil {
 		t.Fatal(err)
 	}
+	// The status write runs on a connection of its own, so each wait below watches its backend
+	// alone: a gate moves the parent only once that write's attempt has queued behind it.
+	statusHandler, statusPID := oneConnectionHandler(t, deps)
 	responses := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		responses <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+child, map[string]string{"status": "todo"}, "alice")
+		responses <- dispatchRequest(t, statusHandler, http.MethodPatch, "/api/v1/issues/"+child, map[string]string{"status": "todo"}, "alice")
 	}()
-	waitForDatabaseLocks(t, childGate, 1)
+	if response, early := storetest.WaitForQueuedBehind(t, childGate, statusPID, responses); early {
+		t.Fatalf("the status write answered %d %s before its first attempt queued behind the gated child", response.Code, response.Body.String())
+	}
 	// The second attempt will lock the second parent first, which this gate holds.
 	parentGate, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -785,7 +840,9 @@ func TestStatusWriteRefusesAParentThatMovesAtEveryAttempt(t *testing.T) {
 	if err := childGate.Commit(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	waitForDatabaseLocks(t, parentGate, 1)
+	if response, early := storetest.WaitForQueuedBehind(t, parentGate, statusPID, responses); early {
+		t.Fatalf("the status write answered %d %s before its second attempt queued behind the gated second parent", response.Code, response.Body.String())
+	}
 	if _, err := parentGate.Exec(context.Background(), `update issues set parent_key = $1 where key = $2`, third, child); err != nil {
 		t.Fatal(err)
 	}
@@ -890,7 +947,7 @@ func TestConcurrentThreeWayDependenciesDoNotCommitCycle(t *testing.T) {
 // neighbour, which sorts first. A status write on that neighbour waits for the move and finishes
 // once the gate opens; a dependency write naming the neighbour finishes while the move still waits.
 func TestBoardMoveStatusAndDependencyWriteDoNotDeadlock(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 6)
 	anchor, parent, moving, neighbor, dependent := keys[1], keys[2], keys[3], keys[4], keys[5]
 	requireOwnerLockOrder(t, database, neighbor, anchor)
@@ -907,18 +964,28 @@ func TestBoardMoveStatusAndDependencyWriteDoNotDeadlock(t *testing.T) {
 	if err := store.LockOwner(context.Background(), gate, store.IssueOwner(anchor)); err != nil {
 		t.Fatal(err)
 	}
+	// The move and the status write each run on a connection of their own, so each wait below
+	// watches that write's backend alone: the status write starts only once the move has queued
+	// behind the gate, and the dependency write only once the status write has queued behind the
+	// move, whatever else queues there.
+	moveHandler, movePID := oneConnectionHandler(t, deps)
+	statusHandler, statusPID := oneConnectionHandler(t, deps)
 	moves := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		moves <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+moving, map[string]any{
+		moves <- dispatchRequest(t, moveHandler, http.MethodPatch, "/api/v1/issues/"+moving, map[string]any{
 			"rank": map[string]string{"after": anchor, "before": neighbor}, "status": "todo",
 		}, "alice")
 	}()
-	waitForDatabaseLocks(t, gate, 1)
+	if response, early := storetest.WaitForQueuedBehind(t, gate, movePID, moves); early {
+		t.Fatalf("the board move answered %d %s before it queued behind the gated anchor", response.Code, response.Body.String())
+	}
 	statusWrites := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		statusWrites <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+neighbor, map[string]string{"status": "todo"}, "alice")
+		statusWrites <- dispatchRequest(t, statusHandler, http.MethodPatch, "/api/v1/issues/"+neighbor, map[string]string{"status": "todo"}, "alice")
 	}()
-	waitForDatabaseLocks(t, gate, 2)
+	if response, early := storetest.WaitForQueuedBehind(t, gate, statusPID, statusWrites); early {
+		t.Fatalf("the status write on the move's neighbour answered %d %s before it queued behind the waiting move", response.Code, response.Body.String())
+	}
 	dependencyWrites := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		dependencyWrites <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+dependent, map[string]any{"blocked_by": []string{neighbor}}, "alice")
@@ -938,7 +1005,7 @@ func TestBoardMoveStatusAndDependencyWriteDoNotDeadlock(t *testing.T) {
 }
 
 func TestDependencyWaitDoesNotHoldIssueRankOrNumberLocks(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 3)
 	other := createListedIssues(t, handler, "SIDE", 2)
 	gate, err := database.Pool.Begin(context.Background())
@@ -949,18 +1016,23 @@ func TestDependencyWaitDoesNotHoldIssueRankOrNumberLocks(t *testing.T) {
 	if err := lockProjectIssueDependencies(context.Background(), gate, "CORE"); err != nil {
 		t.Fatal(err)
 	}
+	// The dependency PATCH and the dependent create each run on a connection of their own, so the
+	// wait below watches those two backends alone: the unrelated writes run only once both wait
+	// for the dependency lock, whatever else queues there.
+	patchHandler, patchPID := oneConnectionHandler(t, deps)
+	createHandler, createPID := oneConnectionHandler(t, deps)
 	waiting := make(chan *httptest.ResponseRecorder, 2)
 	go func() {
-		waiting <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+keys[0], map[string]any{
+		waiting <- dispatchRequest(t, patchHandler, http.MethodPatch, "/api/v1/issues/"+keys[0], map[string]any{
 			"blocked_by": []string{keys[1]}, "rank": map[string]string{"after": keys[1]},
 		}, "alice")
 	}()
 	go func() {
-		waiting <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		waiting <- dispatchRequest(t, createHandler, http.MethodPost, "/api/v1/issues", map[string]any{
 			"project": "CORE", "title": "Waiting dependent", "blocked_by": []string{keys[1]}, "force": true,
 		}, "alice")
 	}()
-	waitForDatabaseLocks(t, gate, 2)
+	storetest.WaitForEachQueuedBehind(t, gate, patchPID, createPID)
 	for _, write := range []struct {
 		method string
 		path   string

@@ -30,11 +30,20 @@ func directConversation(t *testing.T) (http.Handler, model.Message, func(body st
 // identity source spells it.
 func directConversationFrom(t *testing.T, login string) (http.Handler, *store.Store, model.Message, func(body string) *httptest.ResponseRecorder, *[]map[string]any) {
 	t.Helper()
+	handler, database, _, root, reply, sent := directConversationServing(t, login)
+	return handler, database, root, reply, sent
+}
+
+// directConversationServing is directConversationFrom answering also the dependencies its server
+// runs on, so a test can serve a call from a connection of its own (oneConnectionHandler) and
+// watch that call's backend.
+func directConversationServing(t *testing.T, login string) (http.Handler, *store.Store, Deps, model.Message, func(body string) *httptest.ResponseRecorder, *[]map[string]any) {
+	t.Helper()
 	live := true
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
 	t.Cleanup(listener.Close)
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
 	created := postAgentMessage(t, handler, "s1", map[string]any{
 		"body": "Where is the dashboard?", "delivery": "aside",
 	}, login)
@@ -45,7 +54,7 @@ func directConversationFrom(t *testing.T, login string) (http.Handler, *store.St
 	reply := func(body string) *httptest.ResponseRecorder {
 		return replyTo(t, handler, root.ID, body)
 	}
-	return handler, database, root, reply, &sent
+	return handler, database, deps, root, reply, &sent
 }
 
 // replyTo is s1 answering the first delivery attempt of rootID the way `dispatch message` does,

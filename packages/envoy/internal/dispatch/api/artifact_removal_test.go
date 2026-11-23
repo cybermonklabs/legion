@@ -569,16 +569,16 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 			t.Fatalf("the append in flight stored %d rows, want the one row a browser's keystroke stores", appended.RowsAffected())
 		}
 
+		// The removal runs on a connection of its own, so the wait below watches its backend
+		// alone, whatever else queues behind the append.
+		removalHandler, removalPID := oneConnectionHandler(t, deps)
 		removals := make(chan *httptest.ResponseRecorder, 1)
-		go func() { removals <- removeDocument(t, handler, document.ID) }()
+		go func() { removals <- removeDocument(t, removalHandler, document.ID) }()
 		// The removal takes the issue's owner lock, reads the refusals the issue's row answers, and
 		// then waits for this room's lock.
-		waitForDatabaseLocks(t, appending, 1)
-		select {
-		case answered := <-removals:
+		if answered, early := storetest.WaitForQueuedBehind(t, appending, removalPID, removals); early {
 			t.Fatalf("the removal answered status=%d body=%s while an append of the document was in flight; it answers only once the append has committed or rolled back",
 				answered.Code, answered.Body.String())
-		default:
 		}
 
 		if err := appending.Commit(ctx); err != nil {
@@ -670,12 +670,25 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 
 	t.Run("a settlement queued behind the removal finds the document gone and says nothing", func(t *testing.T) {
 		// A server of its own, whose settlement runs only when the case starts it (SettleNow),
-		// so the one settlement queued below is the case's, and whose rooms Quiesce closes.
-		queueHandler, queueDatabase, queueDeps := newTestServer(t, testServerOptions{settle: time.Hour})
-		documents, ok := queueDeps.Docs.(*docs.Service)
-		if !ok {
-			t.Fatalf("the test server's document service is %T, which holds no rooms to settle", queueDeps.Docs)
-		}
+		// so the one settlement queued below is the case's, and whose rooms Quiesce closes. Its
+		// document service runs on a connection of its own (storetest.OneConnection), and the
+		// removal on another (oneConnectionHandler), so each wait below watches one of the two
+		// backends and no other session queued on the owner lock is taken for either.
+		var documents *docs.Service
+		var settlementPID uint32
+		queueHandler, queueDatabase, queueDeps := newInteractionDeps(t, func(database *store.Store) docs.API {
+			pool, pid := storetest.OneConnection(t, database.Pool)
+			settlementPID = pid
+			documents = docs.New(docs.Deps{Store: &store.Store{Pool: pool}, ServerURL: testServerURL, Settle: time.Hour})
+			// Registered after the pool's close and so run before it, which leaves the service its
+			// connection while it shuts down.
+			t.Cleanup(func() {
+				if err := documents.Shutdown(context.Background()); err != nil {
+					t.Errorf("shutdown the queue server's document service: %v", err)
+				}
+			})
+			return documents
+		})
 		issue := createInteractionIssue(t, queueHandler, "QUEUE", "A document settled as it goes", "# Spec\n")
 		document := emptyDocument(t, queueHandler, issue.Key, "Queued notes")
 		if text, err := documents.Text(ctx, document.ID); err != nil || text != "" {
@@ -684,10 +697,10 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 
 		// The issue's owner lock is held, so the two writers queue for it in this order: the
 		// removal first (beginArtifactWrite), then a settlement that has read the document's row
-		// and waits for its owner's lock (lockArtifactOwner). Both wait on the one statement that
-		// takes the lock (store.OwnerLockStatement), and each reads the issue's row plainly only in
-		// the statement after it. The settlement is under way before the removal deletes anything,
-		// and it reads on only after the removal has committed.
+		// and waits for its owner's lock (lockArtifactOwner). Each reads the issue's row plainly
+		// only in the statement after the one that takes the lock. The settlement is under way
+		// before the removal deletes anything, and it reads on only after the removal has
+		// committed.
 		holder, err := queueDatabase.Pool.Begin(ctx)
 		if err != nil {
 			t.Fatalf("begin the transaction holding the issue's owner lock: %v", err)
@@ -699,20 +712,20 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		// The log is taken from before the removal: the settlement reads on as soon as the
 		// removal commits, which can be before the removal's request has returned.
 		logs := captureLogs(t)
-		removal := startRequest(func() *httptest.ResponseRecorder { return removeDocument(t, queueHandler, document.ID) })
-		awaitLockWaits(t, ctx, queueDatabase, "the removal never queued for the issue's owner lock", func(waiting func(string) int) bool {
-			return waiting(store.OwnerLockStatement) == 1
-		})
+		removalHandler, removalPID := oneConnectionHandler(t, queueDeps)
+		removals := make(chan *httptest.ResponseRecorder, 1)
+		go func() { removals <- removeDocument(t, removalHandler, document.ID) }()
+		if answered, early := storetest.WaitForQueuedBehind(t, holder, removalPID, removals); early {
+			t.Fatalf("the removal answered status=%d body=%s before it queued for the issue's owner lock",
+				answered.Code, answered.Body.String())
+		}
 		documents.SettleNow(document.ID)
-		awaitLockWaits(t, ctx, queueDatabase, "the settlement never queued for the issue's owner lock behind the removal", func(waiting func(string) int) bool {
-			return waiting(store.OwnerLockStatement) == 2
-		})
+		storetest.WaitForEachQueuedBehind(t, holder, settlementPID)
 		if err := holder.Rollback(ctx); err != nil {
 			t.Fatalf("let the issue's owner lock go: %v", err)
 		}
-		<-removal.done
-		if removal.response.Code != http.StatusNoContent {
-			t.Fatalf("remove the document: %s, want 204 and no body", removal)
+		if response := awaitResponse(t, removals); response.Code != http.StatusNoContent {
+			t.Fatalf("remove the document: status=%d body=%s, want 204 and no body", response.Code, response.Body.String())
 		}
 		// Quiesce returns once every settlement under way has ended, so the log read below holds
 		// all that the queued one said.

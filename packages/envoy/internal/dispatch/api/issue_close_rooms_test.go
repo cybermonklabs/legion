@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -147,7 +149,7 @@ const slowWithdrawal = 4 * time.Second
 func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
 	wrapper := &peerInsertDocs{}
 	var documentService *docs.Service
-	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+	handler, database, deps := newInteractionDeps(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Identity: headerIdentity(database), Settle: 20 * time.Millisecond})
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 		wrapper.API = documentService
@@ -158,20 +160,28 @@ func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
 	awaitIndexedAskBlock(t, handler, issue.PrimaryArtifactID, "close-decision", "Ship it?")
 	awaitSettled(t, database, issue.PrimaryArtifactID)
 
-	// The browser's room is on another process, which hears the close from its commit.
-	second := storetest.SecondProcess(t, database)
+	// The browser's room is on another process, which hears the close from its commit. A room
+	// stores a browser's updates on a pool of its own (store.Pool.RoomAppends), opened from the
+	// process's pool configuration, so that process's pool carries a tracer that names the backend
+	// of each of its connections that takes a document's lock (roomLockBackends). The close runs
+	// on a connection of its own (oneConnectionHandler), and the wait for the keystroke's append
+	// watches those backends behind the close's (waitForAppendBehind): no other session waiting on
+	// the document's lock - a settlement of the first process - is taken for it.
+	appends := &roomLockBackends{}
+	second := &store.Store{Pool: storetest.Traced(t, database.Pool, appends, nil)}
 	other := docs.New(docs.Deps{Store: second, Identity: headerIdentity(second), Settle: time.Hour})
 	t.Cleanup(func() { _ = other.Shutdown(context.Background()) })
 	runDocumentRoomSync(t, second, other)
 	peer := connectBrowserPeer(t, other, issue.PrimaryArtifactID)
+	closeHandler, closePID := oneConnectionHandler(t, deps)
 	wrapper.insert = func() {
 		// The close's transaction began before its withdrawal wrote the block, so the keystroke
 		// is typed more than closeMargin after that start.
 		time.Sleep(slowWithdrawal)
 		peer.appendToFirstParagraph(t, " typed during the close")
-		waitForDocumentLockWaiter(t, database)
+		waitForAppendBehind(t, database, closePID, appends)
 	}
-	closed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice")
+	closed := dispatchRequest(t, closeHandler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice")
 	if closed.Code != http.StatusOK {
 		t.Fatalf("close: status=%d body=%s", closed.Code, closed.Body.String())
 	}
@@ -204,16 +214,75 @@ func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
 	}
 }
 
-// waitForDocumentLockWaiter returns once a session of database waits on a document's advisory lock
-// (a room's append, lockRoom). Its one bound is the test binary's deadline (testwait.UntilPolling).
-func waitForDocumentLockWaiter(t *testing.T, database *store.Store) {
+// roomLockBackends is a tracer (storetest.Traced) that records the backend of each connection
+// that sends a document room's lock, `select pg_advisory_lock(hashtext($1))`: a room's append
+// opens with it (docs' room_appends.go), in a batch, and a room's other writers send it alone
+// (docs' persistence.go). A pool opened from the traced configuration - a process's room-appends
+// pool among them - carries it, so it names the backends of that process's room writers, whose
+// pids no test can know before they connect.
+type roomLockBackends struct {
+	mu   sync.Mutex
+	pids []uint32
+}
+
+// roomLockStatement is the statement roomLockBackends watches for.
+const roomLockStatement = `select pg_advisory_lock(hashtext($1))`
+
+func (r *roomLockBackends) note(conn *pgx.Conn, sql string) {
+	if !strings.Contains(sql, roomLockStatement) {
+		return
+	}
+	pid := conn.PgConn().PID()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !slices.Contains(r.pids, pid) {
+		r.pids = append(r.pids, pid)
+	}
+}
+
+// backends is every backend recorded so far.
+func (r *roomLockBackends) backends() []uint32 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.pids)
+}
+
+func (r *roomLockBackends) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	r.note(conn, data.SQL)
+	return ctx
+}
+
+func (r *roomLockBackends) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+func (r *roomLockBackends) TraceBatchStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
+	for _, queued := range data.Batch.QueuedQueries {
+		r.note(conn, queued.SQL)
+	}
+	return ctx
+}
+
+func (r *roomLockBackends) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBatchQueryData) {}
+
+func (r *roomLockBackends) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
+
+// waitForAppendBehind returns once one of the backends appends recorded - a room's append, which
+// takes the document's advisory lock (lockRoom) - waits behind a lock the backend holderPID owns
+// (storetest.QueuedBehindBackend), as a close holds that lock while it writes the document. Its
+// one bound is the test binary's deadline (testwait.UntilPolling).
+func waitForAppendBehind(t *testing.T, database *store.Store, holderPID uint32, appends *roomLockBackends) {
 	t.Helper()
-	testwait.UntilPolling(t, 10*time.Millisecond, "an append to wait on the document's lock (the sessions waiting)", func() (int, bool) {
-		waiting, err := storetest.CountLockWaits(context.Background(), database, "%pg_advisory%lock(hashtext($1))%")
-		if err != nil {
-			t.Fatal(err)
+	testwait.UntilPolling(t, 10*time.Millisecond, fmt.Sprintf("a room writer of the other process to wait behind backend %d (the writers' backends)", holderPID), func() ([]uint32, bool) {
+		backends := appends.backends()
+		for _, pid := range backends {
+			queued, err := storetest.QueuedBehindBackend(context.Background(), database, holderPID, pid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if queued {
+				return backends, true
+			}
 		}
-		return waiting, waiting > 0
+		return backends, false
 	})
 }
 

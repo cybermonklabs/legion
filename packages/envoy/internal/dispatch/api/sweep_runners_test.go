@@ -101,8 +101,14 @@ func TestTwoSuggestionSweepRunnersNeverJudgeOnePageTwiceAndBothPass(t *testing.T
 	ctx := context.Background()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
-	firstPool, firstStatements := recordedPool(t, database)
-	secondPool, secondStatements := recordedPool(t, second)
+	firstRecorded, firstStatements := recordedPool(t, database)
+	secondRecorded, secondStatements := recordedPool(t, second)
+	// Each runner sweeps on a pool of one connection opened from its recorded pool's
+	// configuration (storetest.OneConnection), which keeps the recorder, so the wait below watches
+	// the two runners' backends alone (storetest.WaitForEachQueuedBehind), and no other session
+	// queued on the cursor is taken for a runner's pass.
+	firstPool, firstPID := storetest.OneConnection(t, firstRecorded)
+	secondPool, secondPID := storetest.OneConnection(t, secondRecorded)
 	recorded := func() []string {
 		return append(firstStatements.Statements(), secondStatements.Statements()...)
 	}
@@ -122,7 +128,7 @@ func TestTwoSuggestionSweepRunnersNeverJudgeOnePageTwiceAndBothPass(t *testing.T
 	runSweep(t, func(ctx context.Context) {
 		runSuggestionOutcomeSweep(ctx, secondPool, sweepHorizon(secondPool), nil, sweepRunnerSchedule)
 	})
-	storetest.WaitForLockWaiters(t, gate, 2)
+	storetest.WaitForEachQueuedBehind(t, gate, firstPID, secondPID)
 	if err := gate.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the cursor: %v", err)
 	}

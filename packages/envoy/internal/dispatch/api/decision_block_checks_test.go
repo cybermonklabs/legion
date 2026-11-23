@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -203,7 +204,7 @@ func TestDecisionBlockChecksPastFiveAreNotMade(t *testing.T) {
 // document completes while the first is still waiting on its decision block's check, here held
 // behind a lock on the term statistics every check reads.
 func TestDecisionBlockCheckDoesNotHoldTheConditionalEditGate(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{})
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "GATE")
 	spec := "# Spec\n\nPlanning notes.\n"
 	issue := createAdviceIssue(t, handler, "GATE", "Gated edits", &spec)
@@ -220,30 +221,36 @@ func TestDecisionBlockCheckDoesNotHoldTheConditionalEditGate(t *testing.T) {
 	const question = "Which zymurgy deployment window?"
 	first := insertAtEnd(":::ask{#window}\n" + question + "\n:::")
 	first["precondition"] = map[string]string{"document": readDocumentPrecondition(t, handler, issue.PrimaryArtifactID).Token}
+	// The first edit runs on a connection of its own, so the wait below watches its backend
+	// (storetest.QueuedBehind) rather than whatever else waits on the term statistics: the term
+	// statistics refresh the issue's own check started may wait there too.
+	firstHandler, firstPID := oneConnectionHandler(t, deps)
 	firstDone := make(chan *httptest.ResponseRecorder, 1)
-	go func() { firstDone <- editDocument(t, handler, issue.PrimaryArtifactID, first) }()
+	go func() { firstDone <- editDocument(t, firstHandler, issue.PrimaryArtifactID, first) }()
 
 	// The first edit has committed once the document holds its block, and its check is running
-	// once something waits on the lock. (Another waiter, the term statistics refresh the issue's
-	// own check started, may be the one seen: the commit is what the second edit needs.) The second
-	// edit is guarded by the paragraph it rewrites, which the first block's settlement leaves alone.
+	// once its backend waits on the lock. The second edit is guarded by the paragraph it rewrites,
+	// which the first block's settlement leaves alone.
 	var second map[string]any
-	testwait.UntilPolling(t, 10*time.Millisecond, "the first edit to commit with a check waiting on the term statistics (the lock's waiters)", func() (int, bool) {
-		var waiting int
-		if err := database.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_locks where relation = 'search_term_stats'::regclass and not granted
-		`).Scan(&waiting); err != nil {
-			t.Fatalf("read lock waits: %v", err)
+	testwait.UntilPolling(t, 10*time.Millisecond, "the first edit to commit with its check waiting on the term statistics (its backend queued behind the lock)", func() (bool, bool) {
+		select {
+		case response := <-firstDone:
+			t.Fatalf("the first edit answered %d %s before its check waited on the term statistics", response.Code, response.Body.String())
+		default:
 		}
-		if waiting > 0 && strings.Contains(readDocumentPrecondition(t, handler, issue.PrimaryArtifactID).Markdown, question) {
+		queued, err := storetest.QueuedBehind(context.Background(), lockTx, firstPID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if queued && strings.Contains(readDocumentPrecondition(t, handler, issue.PrimaryArtifactID).Markdown, question) {
 			paragraph := readDocumentPreconditionBlocks(t, handler, issue.PrimaryArtifactID)[1]
 			second = map[string]any{
 				"ops":          []map[string]string{{"op": "replace", "find": "Planning notes.", "with": "Planning notes, revised."}},
 				"precondition": map[string]any{"blocks": []map[string]string{{"id": paragraph.ID, "token": paragraph.Token}}},
 			}
-			return waiting, true
+			return queued, true
 		}
-		return waiting, false
+		return queued, false
 	})
 
 	secondResponse := editDocument(t, handler, issue.PrimaryArtifactID, second)

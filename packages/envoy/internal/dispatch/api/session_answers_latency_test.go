@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -30,6 +31,11 @@ func TestTheAnswersReadIsTimedAsTheAccessLogTimesIt(t *testing.T) {
 		return now
 	})
 	deps.AnswersLatency = latency
+	// The routes run on a connection of their own, so the held read's wait below watches that
+	// read's backend alone (storetest.WaitForQueuedBehind), and no other session queued on
+	// message_deliveries is taken for it.
+	readStore, readPID := oneConnectionStore(t, deps)
+	deps.Store = readStore
 	mux := http.NewServeMux()
 	served := register(mux, t.Context(), deps)
 	t.Cleanup(func() { waitBackgroundOf(t, served) })
@@ -81,7 +87,9 @@ func TestTheAnswersReadIsTimedAsTheAccessLogTimesIt(t *testing.T) {
 	responses := make(chan *httptest.ResponseRecorder, 1)
 	go func() { responses <- dispatchRequest(t, mux, http.MethodGet, answers, nil, "alice") }()
 	began = nextInstant(t, instants, "the held read's begin")
-	waitForDatabaseLocks(t, holder, 1)
+	if response, early := storetest.WaitForQueuedBehind(t, holder, readPID, responses); early {
+		t.Fatalf("the held read answered %d %s before it queued behind the lock on message_deliveries", response.Code, response.Body.String())
+	}
 	time.Sleep(time.Until(began.Add(900 * time.Millisecond)))
 	if !latency.Slow(pastKept(time.Now())) {
 		t.Error("a read that has run 900 ms and not ended is no slow read")

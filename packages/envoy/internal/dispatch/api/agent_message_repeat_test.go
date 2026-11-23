@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -259,7 +260,9 @@ func TestASendInFlightAtShutdownStillSettles(t *testing.T) {
 // once it has answered, given its answer. The session is handed the message once.
 func TestConcurrentSendsUnderOneKeyMakeOneMessage(t *testing.T) {
 	listener, sends := newBroadcastListener(t, agentSessions)
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// The server newTargetedMessageHandler builds, answering also its Deps, so each sender runs on
+	// a connection of its own (oneConnectionHandler).
+	_, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
 	ctx := context.Background()
 	holder, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -271,15 +274,20 @@ func TestConcurrentSendsUnderOneKeyMakeOneMessage(t *testing.T) {
 	}
 
 	const senders = 16
+	// Each sender runs on a connection of its own, so every one of them reaches the key's insert,
+	// and the wait below watches those backends alone, whatever else queues behind the holder.
+	handlers := make([]http.Handler, senders)
+	senderPIDs := make([]uint32, senders)
+	for index := range senders {
+		handlers[index], senderPIDs[index] = oneConnectionHandler(t, deps)
+	}
 	responses := make(chan *httptest.ResponseRecorder, senders)
-	for range senders {
+	for _, handler := range handlers {
 		go func() {
 			responses <- postAgentMessageKeyed(t, handler, "s1", map[string]any{"body": "Status?", "delivery": "btw"}, "alice", "race")
 		}()
 	}
-	// Sixteen connections, less the holder's: every request that got one waits at the insert, and
-	// the last waits for a connection.
-	waitForDatabaseLocks(t, holder, senders-1)
+	storetest.WaitForEachQueuedBehind(t, holder, senderPIDs...)
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("release the key table: %v", err)
 	}

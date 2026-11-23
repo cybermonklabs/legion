@@ -70,8 +70,19 @@ func newKeyedRig(t *testing.T, answer func(run int32, w http.ResponseWriter, r *
 // upload's larger body limit - can be driven too.
 func newKeyedRigAt(t *testing.T, pattern string, answer func(run int32, w http.ResponseWriter, r *http.Request)) *keyedRig {
 	t.Helper()
-	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
-	rig := &keyedRig{database: database, server: served}
+	_, _, deps, _ := newRegisteredTestServer(t, testServerOptions{})
+	return newKeyedRigOn(t, deps, pattern, answer)
+}
+
+// newKeyedRigOn is a keyedRig mounted at pattern on a server registered over deps, so a test can
+// give the keyed layer a store of its own - one connection whose backend it watches
+// (oneConnectionStore) - while the rest of deps is the test server's. The rig's database is
+// deps.Store, and the server's background work is waited out at the test's end.
+func newKeyedRigOn(t *testing.T, deps Deps, pattern string, answer func(run int32, w http.ResponseWriter, r *http.Request)) *keyedRig {
+	t.Helper()
+	served := register(http.NewServeMux(), t.Context(), deps)
+	t.Cleanup(func() { waitBackgroundOf(t, served) })
+	rig := &keyedRig{database: deps.Store, server: served}
 	mux := http.NewServeMux()
 	mux.HandleFunc(http.MethodPost+" "+pattern, trackTransactions(served.keyedWrites(
 		http.MethodPost, pattern,

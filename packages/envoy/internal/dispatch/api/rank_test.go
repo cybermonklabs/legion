@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 type rankedIssue struct {
@@ -143,7 +144,7 @@ func TestPatchIssueRankAllocatesDistinctRanksForSequentialMovesIntoSameGap(t *te
 }
 
 func TestPatchIssueRankSerializesConcurrentMovesIntoSameGap(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
 	}, "alice"); response.Code != http.StatusCreated {
@@ -174,18 +175,24 @@ func TestPatchIssueRankSerializesConcurrentMovesIntoSameGap(t *testing.T) {
 		t.Fatalf("lock project rank allocation: %v", err)
 	}
 
+	// Each move runs on a connection of its own, and the wait below watches those two backends
+	// (storetest.WaitForEachQueuedBehind), so the rank lock is released only once both moves have
+	// queued behind it, and no other session queued there is taken for one of them.
 	start := make(chan struct{})
 	responses := make(chan *httptest.ResponseRecorder, 2)
+	pids := make([]uint32, 0, 2)
 	for _, issue := range []rankedIssue{third, fourth} {
+		moveHandler, pid := oneConnectionHandler(t, deps)
+		pids = append(pids, pid)
 		go func(issue rankedIssue) {
 			<-start
-			responses <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{
+			responses <- dispatchRequest(t, moveHandler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{
 				"rank": map[string]string{"after": first.Key, "before": second.Key},
 			}, "alice")
 		}(issue)
 	}
 	close(start)
-	waitForDatabaseLocks(t, lock, 2)
+	storetest.WaitForEachQueuedBehind(t, lock, pids...)
 	if err := lock.Commit(ctx); err != nil {
 		t.Fatalf("release rank allocation lock: %v", err)
 	}
@@ -208,7 +215,7 @@ func TestPatchIssueRankSerializesConcurrentMovesIntoSameGap(t *testing.T) {
 }
 
 func TestCreateIssueWaitsForProjectRankAllocationLock(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
 	}, "alice"); response.Code != http.StatusCreated {
@@ -225,13 +232,19 @@ func TestCreateIssueWaitsForProjectRankAllocationLock(t *testing.T) {
 		t.Fatalf("lock project rank allocation: %v", err)
 	}
 
+	// The create runs on a connection of its own, and the wait watches its backend
+	// (storetest.WaitForQueuedBehind), so the lock is released only once the create has queued
+	// behind it, and no other session queued there is taken for it.
+	createHandler, createPID := oneConnectionHandler(t, deps)
 	responses := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		responses <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		responses <- dispatchRequest(t, createHandler, http.MethodPost, "/api/v1/issues", map[string]any{
 			"project": "TEST", "title": "Blocked issue", "force": true,
 		}, "alice")
 	}()
-	waitForDatabaseLocks(t, lock, 1)
+	if response, early := storetest.WaitForQueuedBehind(t, lock, createPID, responses); early {
+		t.Fatalf("the create answered %d %s before it queued behind the project's rank allocation lock", response.Code, response.Body.String())
+	}
 	if err := lock.Commit(ctx); err != nil {
 		t.Fatalf("release rank allocation lock: %v", err)
 	}

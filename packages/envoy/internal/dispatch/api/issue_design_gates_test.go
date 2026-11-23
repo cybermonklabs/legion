@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // publishDesignGatesResponse publishes on one issue the way the deployment's daemon does: over the
@@ -497,15 +498,19 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 			t.Fatalf("lock design_gates: %v", err)
 		}
 		// The edit runs on a goroutine of its own so the lock's holder can watch the gate read
-		// queue behind it while the write is still open.
+		// queue behind it while the write is still open, and on a connection of its own, so the
+		// wait watches the edit's backend alone, whatever else queues behind the lock.
+		editHandler, editPID := oneConnectionHandler(t, deps)
 		request := designGateEditRequest(t, issue.PrimaryArtifactID, "A sentence written while the gate read is locked out.")
 		answered := make(chan *httptest.ResponseRecorder, 1)
 		go func() {
 			response := httptest.NewRecorder()
-			handler.ServeHTTP(response, request)
+			editHandler.ServeHTTP(response, request)
 			answered <- response
 		}()
-		waitForDatabaseLocks(t, lockTx, 1)
+		if response, early := storetest.WaitForQueuedBehind(t, lockTx, editPID, answered); early {
+			t.Fatalf("the edit answered status=%d body=%s before its gate read queued behind the lock on design_gates", response.Code, response.Body.String())
+		}
 		response := <-answered
 
 		superseded := adviceFromResponse(t, response.Code, response.Body.String()).SupersededApproval

@@ -26,7 +26,7 @@ import (
 // the room free to take behind it.
 func TestProjectDocumentUploadTakesItsOwnerRowBeforeTheRoomLock(t *testing.T) {
 	ctx := uploadLockContext(t)
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "LOCK", "name": "Lock order",
 	}, "alice"); response.Code != http.StatusCreated {
@@ -44,14 +44,19 @@ func TestProjectDocumentUploadTakesItsOwnerRowBeforeTheRoomLock(t *testing.T) {
 		t.Fatalf("hold the document owner: %v", err)
 	}
 
+	// The upload runs on a connection of its own, and the wait watches its backend
+	// (storetest.WaitForQueuedBehind): the upload blocks on the owner lock this transaction holds,
+	// and no other session queued there is taken for it.
+	uploadHandler, uploadPID := oneConnectionHandler(t, deps)
 	uploaded := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		uploaded <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/LOCK/artifacts", map[string]any{
+		uploaded <- dispatchRequest(t, uploadHandler, http.MethodPost, "/api/v1/projects/LOCK/artifacts", map[string]any{
 			"name": "Notes", "content": "# Notes\n\nsecond\n", "precondition": base,
 		}, "alice")
 	}()
-	// The upload blocks on the owner lock this transaction holds, and on nothing else.
-	waitForDatabaseLocks(t, settling, 1)
+	if response, early := storetest.WaitForQueuedBehind(t, settling, uploadPID, uploaded); early {
+		t.Fatalf("the upload answered %d %s before it queued behind the document's owner lock", response.Code, response.Body.String())
+	}
 
 	if _, err := settling.Exec(ctx, `select pg_advisory_xact_lock(hashtext($1))`, document.ID); err != nil {
 		t.Fatalf("take the room lock behind the upload: %v", err)
@@ -80,7 +85,7 @@ func TestAnUploadOfACopyAndAnAnswerToItsSourceBothTakeTheCopysPendingRowBeforeTh
 	ctx := uploadLockContext(t)
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
-	handler, database, _ := newTestServer(t, testServerOptions{})
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "COPY", "name": "Copies",
 	}, "alice"); response.Code != http.StatusCreated {
@@ -137,34 +142,52 @@ func TestAnUploadOfACopyAndAnAnswerToItsSourceBothTakeTheCopysPendingRowBeforeTh
 	}
 	copyBase := uploadBase(t, handler, copied.ID)
 	uploadHold, answerHold := hold(holdUpload), hold(holdAnswer)
-	const markingCopy, writingAnswer = "%insert into doc_settlements_pending%", "%update asks set state%"
-
+	// The upload and the answer each run on a connection of their own, and each wait below watches
+	// those two backends (storetest.QueuedBehind), so no other session the holds stop - a document
+	// settlement writing a version of the copy, whose insert the same trigger holds - is taken for
+	// either.
+	uploadHandler, uploadPID := oneConnectionHandler(t, deps)
+	answerHandler, answerPID := oneConnectionHandler(t, deps)
+	queued := func(holder pgx.Tx, pid uint32) bool {
+		t.Helper()
+		waiting, err := storetest.QueuedBehind(ctx, holder, pid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return waiting
+	}
 	upload := startRequest(func() *httptest.ResponseRecorder {
-		return dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/COPY/artifacts", map[string]any{
+		return dispatchRequest(t, uploadHandler, http.MethodPost, "/api/v1/projects/COPY/artifacts", map[string]any{
 			"name": "Copy", "content": "Kept again\n\n" + block, "precondition": copyBase,
 		}, "alice")
 	})
-	awaitLockWaits(t, ctx, database, "the upload to wait between its document write and its event", func(waiting func(string) int) bool {
-		return upload.finished() || waiting("%insert into artifact_versions%") > 0
+	// Only the trigger on the copy's version insert waits on the upload's hold, so the upload
+	// queued behind it is between its document write and its event.
+	testwait.UntilPolling(t, 2*time.Millisecond, "the upload to wait between its document write and its event (queued behind its hold)", func() (bool, bool) {
+		held := upload.finished() || queued(uploadHold, uploadPID)
+		return held, held
 	})
 	if upload.finished() {
 		t.Fatalf("the upload finished before its event could be held: %s", upload)
 	}
 	answer := startRequest(func() *httptest.ResponseRecorder {
-		return dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+ask+"/answer", map[string]any{
+		return dispatchRequest(t, answerHandler, http.MethodPost, "/api/v1/asks/"+ask+"/answer", map[string]any{
 			"text": "eu-west-1",
 		}, "alice")
 	})
-	// The answer waits on the copy's pending row the upload holds; had the upload not taken it, the
-	// answer would mark it and wait before its own event instead.
-	awaitLockWaits(t, ctx, database, "the answer to reach the copy's pending row", func(waiting func(string) int) bool {
-		return answer.finished() || waiting(markingCopy)+waiting(writingAnswer) > 0
+	// The answer waits on the copy's pending row the upload holds, and so queues behind the
+	// upload's hold; had the upload not taken it, the answer would mark it and wait before its own
+	// event instead, behind its own hold.
+	testwait.UntilPolling(t, 2*time.Millisecond, "the answer to reach the copy's pending row (queued behind a hold)", func() (bool, bool) {
+		held := answer.finished() || queued(uploadHold, answerPID) || queued(answerHold, answerPID)
+		return held, held
 	})
 	release(uploadHold)
 	// The upload's event goes first: the upload commits, or it waits on the row the answer marked
-	// while the answer waits before its event.
-	awaitLockWaits(t, ctx, database, "the upload to finish or wait on the copy's pending row", func(waiting func(string) int) bool {
-		return upload.finished() || (waiting(markingCopy) > 0 && waiting(writingAnswer) > 0)
+	// while the answer waits before its event, both then queued behind the answer's hold.
+	testwait.UntilPolling(t, 2*time.Millisecond, "the upload to finish or wait on the copy's pending row (queued behind the answer's hold)", func() (bool, bool) {
+		held := upload.finished() || (queued(answerHold, uploadPID) && queued(answerHold, answerPID))
+		return held, held
 	})
 	release(answerHold)
 	for _, request := range []*pendingRequest{upload, answer} {
@@ -226,24 +249,6 @@ func uploadLockContext(t *testing.T) context.Context {
 	return ctx
 }
 
-// awaitLockWaits waits until reached holds, given how many sessions of the test's database wait on
-// a lock whose statement matches a LIKE pattern (storetest.CountLockWaits), asking every 2 ms;
-// what names the fact. Its one bound is the test binary's deadline (testwait.UntilPolling).
-func awaitLockWaits(t *testing.T, ctx context.Context, database *store.Store, what string, reached func(waiting func(like string) int) bool) {
-	t.Helper()
-	waiting := func(like string) int {
-		count, err := storetest.CountLockWaits(ctx, database, like)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return count
-	}
-	testwait.UntilPolling(t, 2*time.Millisecond, what, func() (bool, bool) {
-		held := reached(waiting)
-		return held, held
-	})
-}
-
 // awaitCopyShows waits for the latest version of copy to hold want, with no document owing a
 // settlement, reading both every 20 ms. Its one bound is the test binary's deadline
 // (testwait.UntilPolling).
@@ -268,7 +273,7 @@ func awaitCopyShows(t *testing.T, ctx context.Context, database *store.Store, co
 // conflicted and the two deadlocked. The owner's advisory lock takes no row lock at all.
 func TestProjectDocumentUploadOwnerLockLeavesTheForeignKeyFree(t *testing.T) {
 	ctx := uploadLockContext(t)
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "LEVEL", "name": "Lock level",
 	}, "alice"); response.Code != http.StatusCreated {
@@ -286,14 +291,19 @@ func TestProjectDocumentUploadOwnerLockLeavesTheForeignKeyFree(t *testing.T) {
 		t.Fatalf("hold the document room lock: %v", err)
 	}
 
+	// The upload runs on a connection of its own, and the wait watches its backend
+	// (storetest.WaitForQueuedBehind): the upload takes the owner lock, then waits here for the
+	// room, and no other session queued on the room is taken for it.
+	uploadHandler, uploadPID := oneConnectionHandler(t, deps)
 	uploaded := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		uploaded <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/LEVEL/artifacts", map[string]any{
+		uploaded <- dispatchRequest(t, uploadHandler, http.MethodPost, "/api/v1/projects/LEVEL/artifacts", map[string]any{
 			"name": "Notes", "content": "# Notes\n\nsecond\n", "precondition": base,
 		}, "alice")
 	}()
-	// The upload takes the owner lock, then waits here for the room.
-	waitForDatabaseLocks(t, appending, 1)
+	if response, early := storetest.WaitForQueuedBehind(t, appending, uploadPID, uploaded); early {
+		t.Fatalf("the upload answered %d %s before it queued behind the document's room lock", response.Code, response.Body.String())
+	}
 
 	if _, err := appending.Exec(ctx, `
 		insert into doc_updates (artifact_id, version, update, content_changed)

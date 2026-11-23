@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -483,7 +484,7 @@ func TestAcceptRefusesAMessageThatIsNotAPersonsDirectMessageToTheSession(t *test
 // A replayed frame can reach the session twice at once; both reads pass, both accept, and only
 // one may inject. The two race on the message's row lock and exactly one wins.
 func TestConcurrentAcceptsOfOneAttemptLetExactlyOneWin(t *testing.T) {
-	handler, database, root, _, _ := directConversationFrom(t, "alice")
+	_, database, deps, root, _, _ := directConversationServing(t, "alice")
 	ctx := context.Background()
 	holder, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -493,11 +494,17 @@ func TestConcurrentAcceptsOfOneAttemptLetExactlyOneWin(t *testing.T) {
 	if _, err := holder.Exec(ctx, `select 1 from messages where id = $1 for update`, root.ID); err != nil {
 		t.Fatalf("hold the message row: %v", err)
 	}
+	// Each accept runs on a connection of its own, and the wait below watches those two backends
+	// (storetest.WaitForEachQueuedBehind), so the row is released only once both accepts have
+	// queued on it, and no other session queued behind the holder is taken for one of them.
 	responses := make(chan *httptest.ResponseRecorder, 2)
+	pids := make([]uint32, 0, 2)
 	for range 2 {
-		go func() { responses <- acceptDelivery(t, handler, root.ID, 1, "s1") }()
+		acceptHandler, pid := oneConnectionHandler(t, deps)
+		pids = append(pids, pid)
+		go func() { responses <- acceptDelivery(t, acceptHandler, root.ID, 1, "s1") }()
 	}
-	waitForDatabaseLocks(t, holder, 2)
+	storetest.WaitForEachQueuedBehind(t, holder, pids...)
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("release the message row: %v", err)
 	}
@@ -533,7 +540,7 @@ func TestAcceptAClaimAndAReplyOfOneAttemptAllLand(t *testing.T) {
 		{first: "claim", second: "accept", want: map[string]string{"accept": "409 ACCEPT_SUPERSEDED", "claim": "201 ", "reply": "201 "}},
 	} {
 		t.Run("the "+test.first+" holds the message row", func(t *testing.T) {
-			handler, database, root, reply, _ := directConversationFrom(t, "alice")
+			_, database, deps, root, _, _ := directConversationServing(t, "alice")
 			ctx := context.Background()
 			// The send that carried attempt 1 is still out, so a claim locks the attempt too.
 			if _, err := database.Pool.Exec(ctx, `
@@ -556,16 +563,31 @@ func TestAcceptAClaimAndAReplyOfOneAttemptAllLand(t *testing.T) {
 				response *httptest.ResponseRecorder
 			}
 			outcomes := make(chan outcome, 3)
-			calls := map[string]func() *httptest.ResponseRecorder{
-				"reply":  func() *httptest.ResponseRecorder { return reply("On it.") },
-				"accept": func() *httptest.ResponseRecorder { return acceptDelivery(t, handler, root.ID, 1, "s1") },
-				"claim":  func() *httptest.ResponseRecorder { return retryDelivery(t, handler, root.ID, "steer", "alice") },
+			calls := map[string]func(http.Handler) *httptest.ResponseRecorder{
+				"reply": func(handler http.Handler) *httptest.ResponseRecorder { return replyTo(t, handler, root.ID, "On it.") },
+				"accept": func(handler http.Handler) *httptest.ResponseRecorder {
+					return acceptDelivery(t, handler, root.ID, 1, "s1")
+				},
+				"claim": func(handler http.Handler) *httptest.ResponseRecorder {
+					return retryDelivery(t, handler, root.ID, "steer", "alice")
+				},
 			}
 			// The reply queues on the attempt row first, so it takes that row before either other
-			// call does, and then needs the message row the first of them holds.
-			for queued, call := range []string{"reply", test.first, test.second} {
-				go func() { outcomes <- outcome{call: call, response: calls[call]()} }()
-				waitForDatabaseLocks(t, holder, queued+1)
+			// call does, and then needs the message row the first of them holds. Each call runs on
+			// a connection of its own, and each is sent only once the one before it has queued
+			// behind the holder (storetest.WaitForQueuedBehind), watched by its own backend, so no
+			// other session queued there orders the three.
+			for _, call := range []string{"reply", test.first, test.second} {
+				callHandler, pid := oneConnectionHandler(t, deps)
+				answered := make(chan *httptest.ResponseRecorder, 1)
+				go func() {
+					response := calls[call](callHandler)
+					answered <- response
+					outcomes <- outcome{call: call, response: response}
+				}()
+				if response, early := storetest.WaitForQueuedBehind(t, holder, pid, answered); early {
+					t.Fatalf("the %s answered %d %s before it queued behind the attempt row", call, response.Code, response.Body.String())
+				}
 			}
 			if err := holder.Rollback(ctx); err != nil {
 				t.Fatalf("release the attempt row: %v", err)

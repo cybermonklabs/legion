@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -936,31 +935,15 @@ func (f itemRowFixture) anchorBlockID(t *testing.T, commentID string) string {
 }
 
 // oneConnectionStore opens a store of one connection onto deps' database and answers it with the
-// backend it holds, so a call made on it is told from every other by its pid (QueuedBehind). A
-// writer that is not a route runs on it directly; a route runs on the handler built over it
-// (oneConnectionHandler, ask_turn_test.go), which is this store with deps' routes registered on
-// it.
+// backend it holds (storetest.OneConnection), so a call made on it is told from every other by its
+// pid (QueuedBehind). A writer that is not a route runs on it directly; a route runs on the
+// handler built over it (oneConnectionHandler, ask_turn_test.go), which is this store with deps'
+// routes registered on it. The pool's close is registered before anything the caller registers
+// over this store - a server's wait, a document service's shutdown - so those run first.
 func oneConnectionStore(t *testing.T, deps Deps) (*store.Store, uint32) {
 	t.Helper()
-	config := deps.Store.Pool.Config()
-	config.MaxConns = 1
-	config.MinConns = 0
-	config.MinIdleConns = 0
-	opened, err := pgxpool.NewWithConfig(context.Background(), config)
-	if err != nil {
-		t.Fatalf("open the call's one-connection pool: %v", err)
-	}
-	callStore := &store.Store{Pool: store.NewPool(opened)}
-	// Registered before anything the caller registers over this store - a server's wait, a
-	// document service's shutdown - so that those run first and the pool closes after them.
-	t.Cleanup(callStore.Pool.Close)
-	conn, err := callStore.Pool.Acquire(context.Background())
-	if err != nil {
-		t.Fatalf("acquire the call's connection: %v", err)
-	}
-	pid := conn.Conn().PgConn().PID()
-	conn.Release()
-	return callStore, pid
+	pool, pid := storetest.OneConnection(t, deps.Store.Pool)
+	return &store.Store{Pool: pool}, pid
 }
 
 // oneConnectionDocs is a document service on such a store, for a document command driven through

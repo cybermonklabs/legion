@@ -114,7 +114,7 @@ func (g *gatedMarkQuote) MarkQuote(
 func TestSettlementsBehindAnAnchoredWriteDoNotWedgeThePool(t *testing.T) {
 	const maxConns = 4
 	gate := &gatedMarkQuote{entered: make(chan struct{}), release: make(chan struct{})}
-	handler, service, database := pooledDocumentHandlerWith(t, maxConns, 10*time.Millisecond,
+	handler, service, database, _ := pooledDocumentHandlerWith(t, maxConns, 10*time.Millisecond,
 		func(service *docs.Service) docs.API {
 			gate.API = service
 			return gate

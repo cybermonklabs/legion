@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // crossProjectRaceRounds is how many times each concurrent scenario below is replayed. The
@@ -34,19 +35,23 @@ type dependencyEdge struct{ issue, target string }
 // and has nothing but that one lock to order it. A caller whose credential names one project is
 // still refused a target outside it.
 func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	alpha := createListedIssues(t, handler, "ALPHA", 8)
 	beta := createListedIssues(t, handler, "BETA", 8)
 	gamma := createListedIssues(t, handler, "GAMMA", 2)
 
-	patchBlockers := func(key string, targets []string) *httptest.ResponseRecorder {
+	patchBlockersThrough := func(through http.Handler, key string, targets []string) *httptest.ResponseRecorder {
 		t.Helper()
 		if targets == nil {
 			targets = []string{}
 		}
-		return dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{
+		return dispatchRequest(t, through, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{
 			"blocked_by": targets,
 		}, "alice")
+	}
+	patchBlockers := func(key string, targets []string) *httptest.ResponseRecorder {
+		t.Helper()
+		return patchBlockersThrough(handler, key, targets)
 	}
 	setBlockers := func(what, key string, targets []string) {
 		t.Helper()
@@ -207,11 +212,18 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 	// behind it — which is past every read either makes with no lock held — writes their edges,
 	// and commits, so the edges and the lock are released together. Each writer therefore walks a
 	// graph that gained the joining edges after it read anything outside a lock, which is the
-	// ordering a protocol deciding its lock from such a read would walk into. The edges are
+	// ordering a protocol deciding its lock from such a read would walk into. Each writer runs on a
+	// connection of its own, so the gate's wait watches those writers' backends alone
+	// (storetest.WaitForEachQueuedBehind), whatever else queues behind the gate. The edges are
 	// written as SQL rather than through the API because an API write of them would queue behind
 	// this very gate.
 	raceOverRingJoinedUnderTheLock := func(name string, ring, committed, writes []dependencyEdge) {
 		t.Helper()
+		writers := make([]http.Handler, len(writes))
+		writerPIDs := make([]uint32, len(writes))
+		for index := range writes {
+			writers[index], writerPIDs[index] = oneConnectionHandler(t, deps)
+		}
 		for round := range crossProjectRaceRounds {
 			for _, link := range ring {
 				setBlockers(name+": clear "+link.issue, link.issue, nil)
@@ -226,12 +238,12 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 					t.Fatal(err)
 				}
 				responses := make(chan *httptest.ResponseRecorder, len(writes))
-				for _, link := range writes {
+				for index, link := range writes {
 					go func() {
-						responses <- patchBlockers(link.issue, []string{link.target})
+						responses <- patchBlockersThrough(writers[index], link.issue, []string{link.target})
 					}()
 				}
-				waitForDatabaseLocks(t, gate, len(writes))
+				storetest.WaitForEachQueuedBehind(t, gate, writerPIDs...)
 				for _, link := range committed {
 					if _, err := gate.Exec(context.Background(), `
 						insert into issue_links (issue_key, kind, target_key) values ($1, 'blocked_by', $2)
@@ -484,7 +496,7 @@ func TestAnAcceptanceFieldGoesOnlyWithAnAcceptanceStatus(t *testing.T) {
 // deployment dependency lock that every parent write takes, so no child is filed between the two.
 // A status write without the field takes no dependency lock, as before.
 func TestAnAcceptanceWriteTakesTheDependencyLock(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	core := createListedIssues(t, handler, "CORE", 2)
 	gate, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -501,17 +513,17 @@ func TestAnAcceptanceWriteTakesTheDependencyLock(t *testing.T) {
 	if response := awaitResponse(t, plain); response.Code != http.StatusOK {
 		t.Fatalf("a status write with no field while the dependency lock is held: status=%d body=%s", response.Code, response.Body.String())
 	}
+	// The acceptance write runs on a connection of its own, so the wait below watches its backend
+	// alone, whatever else queues behind the gate.
+	acceptHandler, acceptPID := oneConnectionHandler(t, deps)
 	waiting := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		waiting <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+core[0], map[string]any{
+		waiting <- dispatchRequest(t, acceptHandler, http.MethodPatch, "/api/v1/issues/"+core[0], map[string]any{
 			"status": "retro", "refuse_open_foreign_children": true,
 		}, "alice")
 	}()
-	waitForDatabaseLocks(t, gate, 1)
-	select {
-	case response := <-waiting:
+	if response, early := storetest.WaitForQueuedBehind(t, gate, acceptPID, waiting); early {
 		t.Fatalf("the acceptance write was answered while the dependency lock was held: status=%d body=%s", response.Code, response.Body.String())
-	default:
 	}
 	if err := gate.Commit(context.Background()); err != nil {
 		t.Fatal(err)

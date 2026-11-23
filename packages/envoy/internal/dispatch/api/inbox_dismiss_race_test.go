@@ -459,12 +459,17 @@ func TestADismissHoldingTheAgentRootGivesTheThreadBackOnTheReply(t *testing.T) {
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- postInboxDismiss(t, handler, "alice", body) }()
 	storetest.WaitForStatementBehind(t, database, held.tx, inboxReadLockThreads)
+	// The reply runs on a connection of its own, so the wait watches its backend alone
+	// (storetest.WaitForQueuedBehind): the gate is released only once the reply has queued behind
+	// the root the dismiss holds, and no other session queued behind the gate is taken for it. A
+	// reply that never queues still fails the row, by this wait's name or by the dismiss's own
+	// statement_timeout (ten seconds at the gate), which answers 500.
+	replyHandler, replyPID := oneConnectionHandler(t, seed.deps)
 	replied := make(chan *httptest.ResponseRecorder, 1)
-	go func() { replied <- replyTo(t, handler, seed.agent, "And another thing.") }()
-	// The reply's queue is waited for until the binary's deadline. A reply that never queues still
-	// fails the row, by this wait's name or by the dismiss's own statement_timeout (ten seconds at
-	// the gate), which answers 500.
-	storetest.WaitForLockWaiters(t, held.tx, 2)
+	go func() { replied <- replyTo(t, replyHandler, seed.agent, "And another thing.") }()
+	if reply, early := storetest.WaitForQueuedBehind(t, held.tx, replyPID, replied); early {
+		t.Fatalf("the reply answered %d %s before it queued behind the agent thread's root the dismiss holds", reply.Code, reply.Body.String())
+	}
 	held.release()
 
 	response := <-answered
@@ -540,11 +545,16 @@ func TestADismissHoldingTheAgentRootGivesTheThreadBackOnAnOlderReply(t *testing.
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- postInboxDismiss(t, handler, "alice", body) }()
 	storetest.WaitForStatementBehind(t, database, held.tx, inboxReadLockThreads)
+	// The reply is written on the transaction this test holds, so the wait watches that
+	// transaction's backend alone (storetest.WaitForQueuedBehind): the gate is released only once
+	// the reply has queued behind the root the dismiss holds, and no other session queued behind
+	// the gate is taken for it. A reply that never queues still fails the row, by this wait's name
+	// or by the dismiss's own statement_timeout (ten seconds at the gate), which answers 500.
+	replyPID := replying.tx.Conn().PgConn().PID()
 	written := writeAgentReplyBehind(replying.tx, seed.agentReply, "session", "s1", stamp)
-	// The reply's queue is waited for until the binary's deadline. A reply that never queues still
-	// fails the row, by this wait's name or by the dismiss's own statement_timeout (ten seconds at
-	// the gate), which answers 500.
-	storetest.WaitForLockWaiters(t, held.tx, 2)
+	if err, early := storetest.WaitForQueuedBehind(t, held.tx, replyPID, written); early {
+		t.Fatalf("the reply this test held was written (error: %v) before it queued behind the agent thread's root the dismiss holds", err)
+	}
 	held.release()
 
 	response := <-answered

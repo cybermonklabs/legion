@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -559,7 +560,13 @@ func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T
 	// refresh them here, so the check below starts none and its pick is the one waiter on the lock.
 	awaitTermStatsRefresh(t, served, "GONE")
 	refreshTermStats(t, database, "GONE")
-	srv := directServer(deps)
+	// The check runs on a connection of its own, so the wait below watches its backend
+	// (storetest.WaitForQueuedBehind), and no other session waiting on the term statistics is taken
+	// for its pick.
+	checkStore, checkPID := oneConnectionStore(t, deps)
+	checkDeps := deps
+	checkDeps.Store = checkStore
+	srv := directServer(checkDeps)
 	srv.suggestionTimeout = time.Minute
 
 	lockTx, err := database.Pool.Begin(context.Background())
@@ -580,15 +587,9 @@ func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T
 			record: true,
 		})
 	}()
-	waitUntil(t, "the check's pick to wait on the term statistics", func() bool {
-		var waiting int
-		if err := database.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_locks where relation = 'search_term_stats'::regclass and not granted
-		`).Scan(&waiting); err != nil {
-			t.Fatalf("read lock waits: %v", err)
-		}
-		return waiting > 0
-	})
+	if suggestions, early := storetest.WaitForQueuedBehind(t, lockTx, checkPID, answered); early {
+		t.Fatalf("the check answered %+v before its pick waited on the term statistics", suggestions)
+	}
 	endRequest()
 	suggestions := testwait.Receive(t, "the check's answer once its request ended", answered)
 	if err := lockTx.Rollback(context.Background()); err != nil {

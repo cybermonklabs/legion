@@ -423,14 +423,6 @@ func writeSessionRecord(t *testing.T, w http.ResponseWriter, sessionsJSON, sessi
 	_, _ = w.Write([]byte(`{"error":"no live session ` + sessionID + `"}`))
 }
 
-// waitForDatabaseLocks waits until want backends queue behind a lock that holder's transaction
-// owns (storetest.WaitForLockWaiters), and fails the test when they have not by the test binary's
-// deadline less testwait's margin, the wait's one bound.
-func waitForDatabaseLocks(t *testing.T, holder pgx.Tx, want int) {
-	t.Helper()
-	storetest.WaitForLockWaiters(t, holder, want)
-}
-
 // awaitResponse is the next answer on responses, from a request the test started on a goroutine of
 // its own. Its one bound is the test binary's deadline less testwait's margin.
 func awaitResponse(t *testing.T, responses <-chan *httptest.ResponseRecorder) *httptest.ResponseRecorder {
@@ -1776,9 +1768,10 @@ func TestArtifactSlugsDisambiguateNormalizedNameCollisions(t *testing.T) {
 }
 
 func TestConcurrentStatusPatchesUseCommittedPreimage(t *testing.T) {
-	// The seeded specs' settlement would lock the child row this test holds; keep it
-	// out of the lock queue so only the two status patches are counted as waiters.
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	// The seeded specs' settlement takes the child's owner lock this test holds: the hour keeps its
+	// timer from firing during the race, and the row settles the child's documents itself before it
+	// takes the lock (below).
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
 	}, "alice"); response.Code != http.StatusCreated {
@@ -1800,6 +1793,16 @@ func TestConcurrentStatusPatchesUseCommittedPreimage(t *testing.T) {
 		t.Fatalf("create parent and child: parent=%d child=%d", parentResponse.Code, childResponse.Code)
 	}
 
+	// A close settles each document of its issue before it opens its transaction
+	// (settleIssueBeforeClose, issue_patch.go), through the server's document service, whose
+	// transaction takes the issue's owner lock on that service's own pool: with the child's
+	// documents still owing their settlement, the patch to done would queue behind this test's
+	// lock on the server's backend and never on its own. They are settled here, by the same call
+	// that close makes, so its settlement finds nothing owed and takes no lock, and the one wait the
+	// patch to done makes behind the lock is its own transaction's.
+	if err := deps.Docs.SettleIssueDocuments(context.Background(), child.Key); err != nil {
+		t.Fatalf("settle the child's documents before the patches: %v", err)
+	}
 	lock, err := database.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatalf("begin status lock: %v", err)
@@ -1808,19 +1811,29 @@ func TestConcurrentStatusPatchesUseCommittedPreimage(t *testing.T) {
 	if err := store.LockOwner(context.Background(), lock, store.IssueOwner(child.Key)); err != nil {
 		t.Fatalf("take the child's owner lock: %v", err)
 	}
+	// Each patch runs on a connection of its own, and each wait below watches that patch's backend
+	// (storetest.WaitForQueuedBehind): the second patch is sent only once the first has queued
+	// behind the child's owner lock, so the first takes it first and the second reads what the
+	// first committed, and no other session queued there is taken for either.
 	responses := make(chan *httptest.ResponseRecorder, 2)
+	firstHandler, firstPID := oneConnectionHandler(t, deps)
 	go func() {
-		responses <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+child.Key, map[string]string{
+		responses <- dispatchRequest(t, firstHandler, http.MethodPatch, "/api/v1/issues/"+child.Key, map[string]string{
 			"status": "in_progress",
 		}, "alice")
 	}()
-	waitForDatabaseLocks(t, lock, 1)
+	if response, early := storetest.WaitForQueuedBehind(t, lock, firstPID, responses); early {
+		t.Fatalf("the patch to in_progress answered %d %s before it queued behind the child's owner lock", response.Code, response.Body.String())
+	}
+	secondHandler, secondPID := oneConnectionHandler(t, deps)
 	go func() {
-		responses <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+child.Key, map[string]string{
+		responses <- dispatchRequest(t, secondHandler, http.MethodPatch, "/api/v1/issues/"+child.Key, map[string]string{
 			"status": "done",
 		}, "alice")
 	}()
-	waitForDatabaseLocks(t, lock, 2)
+	if response, early := storetest.WaitForQueuedBehind(t, lock, secondPID, responses); early {
+		t.Fatalf("the patch to done answered %d %s before it queued behind the child's owner lock", response.Code, response.Body.String())
+	}
 	if err := lock.Commit(context.Background()); err != nil {
 		t.Fatalf("release child lock: %v", err)
 	}
@@ -1861,7 +1874,7 @@ func TestConcurrentStatusPatchesUseCommittedPreimage(t *testing.T) {
 }
 
 func TestConcurrentPartialUserStateUpdatesPreserveFields(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
 	}, "alice"); response.Code != http.StatusCreated {
@@ -1894,19 +1907,28 @@ func TestConcurrentPartialUserStateUpdatesPreserveFields(t *testing.T) {
 	if err := store.LockOwner(context.Background(), lock, store.ProjectOwner("TEST")); err != nil {
 		t.Fatalf("hold the project's owner lock: %v", err)
 	}
+	// Each write runs on a connection of its own, and each wait below watches that write's backend
+	// (storetest.WaitForQueuedBehind), so the lock is released only once both writes have queued
+	// behind it, and no other session queued on the project's owner lock is taken for one.
 	responses := make(chan *httptest.ResponseRecorder, 2)
+	pinHandler, pinPID := oneConnectionHandler(t, deps)
 	go func() {
-		responses <- dispatchRequest(t, handler, http.MethodPut, "/api/v1/me/issues/"+issue.Key+"/state", map[string]any{
+		responses <- dispatchRequest(t, pinHandler, http.MethodPut, "/api/v1/me/issues/"+issue.Key+"/state", map[string]any{
 			"pinned": true,
 		}, "alice")
 	}()
-	waitForDatabaseLocks(t, lock, 1)
+	if response, early := storetest.WaitForQueuedBehind(t, lock, pinPID, responses); early {
+		t.Fatalf("the pin answered %d %s before it queued behind the project's owner lock", response.Code, response.Body.String())
+	}
+	readHandler, readPID := oneConnectionHandler(t, deps)
 	go func() {
-		responses <- dispatchRequest(t, handler, http.MethodPut, "/api/v1/me/issues/"+issue.Key+"/state", map[string]any{
+		responses <- dispatchRequest(t, readHandler, http.MethodPut, "/api/v1/me/issues/"+issue.Key+"/state", map[string]any{
 			"last_read_seq": 7,
 		}, "alice")
 	}()
-	waitForDatabaseLocks(t, lock, 2)
+	if response, early := storetest.WaitForQueuedBehind(t, lock, readPID, responses); early {
+		t.Fatalf("the read mark answered %d %s before it queued behind the project's owner lock", response.Code, response.Body.String())
+	}
 	if err := lock.Commit(context.Background()); err != nil {
 		t.Fatalf("release the project's owner lock: %v", err)
 	}

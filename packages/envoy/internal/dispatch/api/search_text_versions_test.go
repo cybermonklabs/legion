@@ -610,9 +610,14 @@ const (
 func keywordArmSlowRead(t *testing.T, server keywordServer, answers string) (*textversionstest.Fill, pgx.Tx, chan *httptest.ResponseRecorder, int) {
 	t.Helper()
 	leases := reserveKeywordFillLeases(t, server)
+	// The held answers read runs on a connection of its own, timed into the server's Latency as
+	// every answers read is (server.deps carries it), so each round's wait watches that read's
+	// backend alone (storetest.WaitForQueuedBehind), and no other session queued on
+	// message_deliveries is taken for it.
+	reads, readPID := oneConnectionHandler(t, server.deps)
 	var rejected []string
 	for round := 1; round <= keywordMaxArmRounds; round++ {
-		fill, holder, held, wrote, reason, ok := keywordSlowRound(t, server, leases, answers, round)
+		fill, holder, held, wrote, reason, ok := keywordSlowRound(t, server, leases, reads, readPID, answers, round)
 		if ok {
 			return fill, holder, held, wrote
 		}
@@ -630,13 +635,14 @@ func keywordArmSlowRead(t *testing.T, server keywordServer, answers string) (*te
 const keywordMaxArmRounds = 10
 
 // keywordSlowRound is one round of keywordArmSlowRead. It locks the fill's cursor, runs the fill
-// on leases, waits for a batch to wait on the cursor, holds an answers read on
-// message_deliveries until it is slow, and releases the cursor when the fill has logged only its
-// hold's take and that same batch alone still waits. It answers ok when the fill's next line is
-// that batch's and the one after it the paused line, and fails the test when the one after it is
-// a second batch's. Otherwise it lets the held read go, waits for its answer, stops the fill,
-// empties the keyword table and its cursor of what the round wrote, and answers why.
-func keywordSlowRound(t *testing.T, server keywordServer, leases *pgxpool.Pool, answers string, round int) (fill *textversionstest.Fill, holder pgx.Tx, held chan *httptest.ResponseRecorder, wrote int, reason string, ok bool) {
+// on leases, waits for a batch to wait on the cursor, holds an answers read sent through reads,
+// whose one backend is readPID, on message_deliveries until it is slow, and releases the cursor
+// when the fill has logged only its hold's take and that same batch alone still waits. It answers
+// ok when the fill's next line is that batch's and the one after it the paused line, and fails the
+// test when the one after it is a second batch's. Otherwise it lets the held read go, waits for
+// its answer, stops the fill, empties the keyword table and its cursor of what the round wrote,
+// and answers why.
+func keywordSlowRound(t *testing.T, server keywordServer, leases *pgxpool.Pool, reads http.Handler, readPID uint32, answers string, round int) (fill *textversionstest.Fill, holder pgx.Tx, held chan *httptest.ResponseRecorder, wrote int, reason string, ok bool) {
 	t.Helper()
 	// Each batch locks the cursor's row before it reads an event, which an exclusive lock of the
 	// cursor's table holds back; reads of the cursor go on.
@@ -657,14 +663,10 @@ func keywordSlowRound(t *testing.T, server keywordServer, leases *pgxpool.Pool, 
 		t.Fatalf("lock message_deliveries: %v", err)
 	}
 	held = make(chan *httptest.ResponseRecorder, 1)
-	go func() { held <- dispatchRequest(t, server.handler, http.MethodGet, answers, nil, "alice") }()
-	testwait.Until(t, "the answers read to wait on message_deliveries", func() (int, bool) {
-		queued, err := storetest.LockWaiters(t.Context(), holder)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return queued, queued >= 1
-	})
+	go func() { held <- dispatchRequest(t, reads, http.MethodGet, answers, nil, "alice") }()
+	if response, early := storetest.WaitForQueuedBehind(t, holder, readPID, held); early {
+		t.Fatalf("round %d: the held answers read answered %d %s before it queued behind the lock on message_deliveries", round, response.Code, response.Body.String())
+	}
 	testwait.Until(t, "the answers read held by the lock to turn slow", func() (bool, bool) {
 		return false, server.latency.Slow(time.Now())
 	})
@@ -736,8 +738,11 @@ func keywordLineAt(t *testing.T, fill *textversionstest.Fill, index int) string 
 
 // keywordCursorWaiters is the virtual transaction (pg_locks.virtualtransaction) of each backend
 // waiting on a lock holder's transaction owns, as a batch of the fill waits on the lock of its
-// cursor: a batch begun again after one gave up its wait has another. It reads pg_locks through
-// holder's own connection, as storetest.WaitForLockWaiters does and for the same reasons.
+// cursor: a batch begun again after one gave up its wait has another. Every backend waiting there
+// is a batch of a fill: only textversions' fill locks search_text_versions_fill (fill.go's cursor
+// statements), and every other read of it - the store's textVersionsCursorQuery, the fill's own
+// caughtUpQuery - is a plain select, which the exclusive lock admits. It reads pg_locks through
+// holder's own connection, as storetest.QueuedBehind does and for the same reasons.
 func keywordCursorWaiters(t *testing.T, holder pgx.Tx) []string {
 	t.Helper()
 	var waiting []string

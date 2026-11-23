@@ -23,7 +23,7 @@ import (
 // a wait inside the append is statement time, not a gap. Only holding the lock and asking what
 // the waiter holds does.
 func TestAThreadMarkWaitsForTheProjectLockHoldingNoTransactionID(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "TEST", "Mark behind the project", "A spec")
 	thread := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Waiting"}, "alice")
 	// A session's reply leaves Alice's row unread, so her mark moves it and takes the project's
@@ -40,15 +40,20 @@ func TestAThreadMarkWaitsForTheProjectLockHoldingNoTransactionID(t *testing.T) {
 		t.Fatalf("hold the project's lock: %v", err)
 	}
 
+	// The mark runs on a connection of its own, so the wait watches its backend alone
+	// (storetest.WaitForQueuedBehind) and the transaction id read is that backend's: no other
+	// backend queued on the project's lock, the server's own among them, is taken for the mark.
+	markHandler, markPID := oneConnectionHandler(t, deps)
 	mark := time.Now()
 	marks := make(chan *httptest.ResponseRecorder, 1)
-	go func() { marks <- markThreadRead(t, handler, "alice", thread.ID, mark) }()
-	response, early, holdingXid := storetest.AwaitOwnerLockWaiter(t, database, "the thread mark", marks)
-	if early {
+	go func() { marks <- markThreadRead(t, markHandler, "alice", thread.ID, mark) }()
+	if response, early := storetest.WaitForQueuedBehind(t, holder, markPID, marks); early {
 		t.Fatalf("the thread mark answered %d %s while this test held the project's lock: it moved the row "+
 			"without the lock its event's append takes", response.Code, response.Body.String())
 	}
-	if holdingXid > 0 {
+	if holdingXid, err := storetest.HoldsTransactionID(ctx, database, markPID); err != nil {
+		t.Fatal(err)
+	} else if holdingXid {
 		t.Fatal("the thread mark waits for the project's lock with a transaction id already open: it updated " +
 			"its row before it took that lock, so the wait holds back every snapshot's horizon. Take the " +
 			"project's lock (store.LockOwner, store.ProjectOwner) before the update.")
