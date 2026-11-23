@@ -64,9 +64,9 @@ const SESSION_STATES: readonly SessionState[] = ["live", "unresponsive"];
 /** How the listener answers a send to a session. `200` takes it. `404` is its "no live session"
  *  refusal: Dispatch then publishes a targeted message on the session's agent subject itself and
  *  records the attempt queued, while a mention's attempt fails. `503` is the listener behind its
- *  starting gate (`service starting`, packages/envoy/cmd/listener/main.go startingGate): Dispatch
- *  tries it again through its take-over window and then records the attempt failed, which is the
- *  failure a row stages to read a failed card and its Retry. */
+ *  starting gate (`service starting`, packages/envoy/cmd/listener/starting_gate.go startingGate):
+ *  Dispatch tries it again through its take-over window and then records the attempt failed, which
+ *  is the failure a row stages to read a failed card and its Retry. */
 type SendStatus = 200 | 404 | 503;
 
 const SEND_STATUSES: readonly SendStatus[] = [200, 404, 503];
