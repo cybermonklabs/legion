@@ -71,7 +71,7 @@ test.each(agents)("%s declares no blocking field", (file) => {
   expect(definition(file).fields, `${file}'s frontmatter`).not.toHaveProperty("blocking");
 });
 
-// The planner's and the architect's two checks and the architect's red team: each runs on the
+// The planner's and the architect's two checks and the reviewer's red team: each runs on the
 // deployment's model role for its job. They change no file: no edit or write tool. They carry
 // bash to check live state themselves, and Oh My Pi has no per-agent command limit, so each
 // prompt holds the agent to commands that read.
