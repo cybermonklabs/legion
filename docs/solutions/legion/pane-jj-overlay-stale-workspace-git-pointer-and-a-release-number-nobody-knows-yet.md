@@ -12,7 +12,7 @@ tags:
   - docs-solutions
   - conflicting
 date: 2026-09-14
-status: active
+status: superseded in part — Retro commits nothing and pushes nothing, and no role writes to docs/solutions/.
 module: legion
 related_issues:
   - "LEGION-109"

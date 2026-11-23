@@ -2,12 +2,14 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -41,6 +43,23 @@ func TestLingerHoursReachesTheEngineAsItsDuration(t *testing.T) {
 	}
 	if engine.ProductionCheckBound != 6*time.Minute {
 		t.Errorf("the engine's production check bound = %s, want 6m0s", engine.ProductionCheckBound)
+	}
+}
+
+// The engine runs the default steps of its own project (`projects.<KEY>.default_steps`, read
+// through config.Project.RunsByDefault): the steps an issue whose owner gives no plan stores at its
+// first step. A project that names none runs today's line up to the owner's acceptance.
+func TestTheProjectsDefaultStepsReachTheEngine(t *testing.T) {
+	t.Parallel()
+	todays := (config.Project{}).RunsByDefault()
+	steps := append(todays[1:2:2], todays[3]) // implementer reviewer
+	cfg := config.Config{Project: "DEMO", Projects: map[string]config.Project{"DEMO": {DefaultSteps: steps}, "ACME": {}}}
+	if got := engineConfig(cfg, "legion-reviewer[bot]", nil).DefaultSteps; !reflect.DeepEqual(got, steps) {
+		t.Fatalf("the engine's default steps = %+v, want DEMO's %+v", got, steps)
+	}
+	cfg.Project = "ACME"
+	if got, want := engineConfig(cfg, "legion-reviewer[bot]", nil).DefaultSteps, (config.Project{}).RunsByDefault(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the engine's default steps for ACME, which names none = %+v, want today's line %+v", got, want)
 	}
 }
 
@@ -120,6 +139,35 @@ func TestAppLoginsAtBootReturnsTheReviewAppLogin(t *testing.T) {
 	}
 	if login != "legion-reviewer[bot]" {
 		t.Fatalf("appLoginsAtBoot = %q, want the review App's login %q", login, "legion-reviewer[bot]")
+	}
+}
+
+// countedLogins answers each App's login with the bot login named for it and counts each App's
+// reads; the review App's first read fails as GitHub's own trouble, as a viewer read GitHub
+// answered 502 does.
+type countedLogins map[appauth.AppRole]int
+
+func (c countedLogins) AppLogin(_ context.Context, role appauth.AppRole) (string, error) {
+	c[role]++
+	if role == appauth.Review && c[role] == 1 {
+		return "", &appauth.TransientError{Err: errors.New("read the review App's bot login (GraphQL viewer) failed (502)")}
+	}
+	return "legion-" + string(role) + "[bot]", nil
+}
+
+// An attempt of the logins read after one that failed on the review App reads the review App
+// alone, as the key proof skips an App it proved: the implement App's login was read, and in
+// token mode each read of an App runs its token_command, whose grant may wait on a person's
+// approval.
+func TestTheLoginsReadReadsNoAppAgainOnceItReadItsLogin(t *testing.T) {
+	quickAppMints(t)
+	reads := countedLogins{}
+	login, err := appLoginsAtBoot(context.Background(), reads, newStartWaits(startRateLimits, time.Now), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if want := "legion-" + string(appauth.Review) + "[bot]"; err != nil || login != want {
+		t.Fatalf("appLoginsAtBoot = %q, %v; want %q, the review App's login, after one transient failure", login, err, want)
+	}
+	if reads[appauth.Implement] != 1 || reads[appauth.Review] != 2 {
+		t.Errorf("the logins read read the implement App %d times and the review App %d times, want 1 and 2: an attempt read an App whose login an attempt before it had read", reads[appauth.Implement], reads[appauth.Review])
 	}
 }
 

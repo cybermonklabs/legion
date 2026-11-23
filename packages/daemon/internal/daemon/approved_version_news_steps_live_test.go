@@ -303,7 +303,7 @@ func (r *sessionsRun) off() (sessionsOutcome, string) {
 
 // holderStart is the start task a holder of the a4 and off steps holds at the boot, at the entry the
 // daemon's start path raised for it, in place of that start's own task, the phase's resume task
-// (workflow.ResumePhaseTask: "Resume the existing phase work"). That task does not serve the step:
+// (workflow.Engine.ResumeTask: "Resume the existing phase work"). That task does not serve the step:
 // this proof runs no repository and no pull request, so a holder that resumed its phase would find
 // nothing to work on and spend its turns saying so. It waits instead, as a holder between turns
 // does, for what the step sends it.
@@ -315,7 +315,7 @@ func holderStart(issue string, p phase.Phase) string {
 
 // reviewerNote is the note a reviewer of the answers step holds at the boot in its start's own
 // task, the phase's resume task with the review round's two sentences that the daemon's start path
-// stores and sends (workflow.Engine.StartPromotedWorker, ResumePhaseTask), before those two
+// stores and sends (workflow.Engine.StartPromotedWorker, Engine.ResumeTask), before those two
 // sentences (sessionsRun.seedClaim). It says what the proof stands in for and what a review of the
 // pull request holds as fact: the proof runs no GitHub, so the pull request is the one this note
 // names; what that pull request changes, and that the review read it against version 1 of the

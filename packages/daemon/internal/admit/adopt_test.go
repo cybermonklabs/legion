@@ -69,10 +69,12 @@ const childStartedOwnership = ". Its own architect starts with it and owns it wh
 // The child waits for a slot where it used to start the moment it joined: the cap counts the
 // issues the daemon has started, so a child of a running tree takes a slot of its own for its
 // first phase and stands in the waiting line until one is free. Its tree's root frees none for
-// it by opening its gate alone: a root keeps the row it was started with until its work is past
-// its review, until it is done, or until Dispatch takes it out of the workflow, and gives it back
-// sooner only while it waits on another issue, such as an open child its first phase waits for
-// (releaseSlotsForWaits). That is why the pass below runs under a cap of 3, with a slot to spare
+// it by opening its gate alone: a root keeps the row it was started with while it stands in a
+// phase that keeps one (record.KeepsSlot), until it is done or until Dispatch takes it out of the
+// workflow, and gives it back sooner only while it waits on another issue, such as an open child
+// its first phase waits for (releaseSlotsForWaits). Accepting, retro and merging hold none (in
+// the default steps, the phases after the review), and a step after accepting whose phase keeps a
+// slot waits for one again. That is why the pass below runs under a cap of 3, with a slot to spare
 // whatever else the tree holds. The assertion is about where the child ends up, which is the tree
 // it joined and never a tree of its own.
 func assertJoinedAndPlanning(t *testing.T, pool *pgxpool.Pool, child, tree string, generation uint64) {

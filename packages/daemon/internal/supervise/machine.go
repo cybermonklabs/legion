@@ -491,8 +491,8 @@ type Claim struct {
 	UpdateTaskedAt    *time.Time
 	UpdateSignalledAt *time.Time
 	// UpdateHead is the commit the worker reported, when it signalled, as the head of its issue
-	// branch at origin, and "" when it reported none (a planner before its first push). It is the
-	// worker's word, which nothing verifies.
+	// branch at origin, and "" when it reported none (a planner step that runs before the branch's
+	// first push). It is the worker's word, which nothing verifies.
 	UpdateHead string
 	// UpdateToldAt is when this round was last reported to the operator's side, so one round is
 	// not reported again at every sweep that finds it open.
