@@ -627,7 +627,6 @@ func heartbeatAsThisBuild(ctx context.Context, t *testing.T, s *Store, instance 
 // TryLockOwners. A process of an earlier build whose heartbeat and mark are older than the window,
 // or a live process of this build, makes it take no row.
 func TestTheOwnerLockTakesTheOwnerRowWhileAnEarlierBuildIsInTheFleet(t *testing.T) {
-	t.Parallel()
 	s, owners := openFleetStore(t)
 	ctx := context.Background()
 	locks := []struct {
