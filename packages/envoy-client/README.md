@@ -36,10 +36,12 @@ once as `message`, and marks unknown sources or fields with `unrecognised`.
 
 A payload the TOON encoder cannot lay out is shown as the text its sender sent, under `message`
 (or `dispatch`): one nested deeper than the encoder's recursion reaches, and one whose layout
-passes `INBOUND_CARD_MAX_BYTES` (1 MiB, the hub's largest frame), as an array chain 1,400 levels
-deep does from a 3 KB frame. The result's `payloadShownAsText` says which. Each host logs that
-once, with the message id, and takes the frame: a throw out of the renderer would fail every
-delivery of it. A payload that is text already is never held to the bound; its frame bounds it.
+passes the card's bound, as an array chain 1,400 levels deep does from a 3 KB frame. The bound is
+`INBOUND_CARD_MAX_BYTES` (1 MiB, the hub's largest frame), or twice the text the card lays out
+(its frame and a body read whole) when that is more, so a comment Dispatch's API gives whole
+still lays out whole. The result's `payloadShownAsText` says which. Each host logs that once,
+with the message id, and takes the frame: a throw out of the renderer would fail every delivery
+of it. A payload that is text already is never held to the bound; its frame bounds it.
 
 Malformed input is safe: a non-JSON frame becomes a TOON block naming its topic and an
 `unrecognised` parse failure. The renderer never emits raw frame bytes. Dispatch envelopes

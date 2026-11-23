@@ -2512,4 +2512,39 @@ describe("a body an event carried only in part", () => {
     const decoded = decode(rendered.content) as { envoy: Record<string, unknown> };
     expect(decoded.envoy.body_note).toBeUndefined();
   });
+
+  // A host renders a cut comment again with the body Dispatch's API gave whole. That body comes
+  // from no frame: one near Dispatch's 1 MiB request limit brings the card past 1 MiB, and the
+  // card must still show it, not the part the frame carried.
+  test("a comment rendered again with a 1,048,300-byte body read whole shows that body", () => {
+    const end = "the last words of the whole body.";
+    const wholeBody = `${"word ".repeat(209_700).slice(0, 1_048_300 - end.length)}${end}`;
+    const rendered = renderInbound(
+      JSON.stringify(
+        envelope({
+          source: "dispatch",
+          payload: targetedCommentFrame({
+            ...targetedComment,
+            body: "The first paragraph.",
+            body_truncated: true,
+          }),
+        })
+      ),
+      reader,
+      undefined,
+      wholeBody
+    );
+
+    expect(Buffer.byteLength(wholeBody)).toBe(1_048_300);
+    expect({
+      cardBytes: Buffer.byteLength(rendered.content),
+      holdsTheWholeBody: rendered.content.includes(end),
+      payloadShownAsText: rendered.payloadShownAsText,
+    }).toEqual({
+      cardBytes: expect.any(Number),
+      holdsTheWholeBody: true,
+      payloadShownAsText: undefined,
+    });
+    expect(Buffer.byteLength(rendered.content)).toBeGreaterThan(INBOUND_CARD_MAX_BYTES);
+  });
 });

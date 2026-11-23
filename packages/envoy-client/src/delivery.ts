@@ -489,7 +489,8 @@ export type RenderInboundResult = {
   readonly cutItem?: CarriedItem;
   /** Why the card shows the payload as the text its sender sent rather than laid out: what the
    *  card's encoder threw on the parsed value (one nested past the depth its recursion reaches),
-   *  or that its layout passes `INBOUND_CARD_MAX_BYTES`. Absent when the card lays the payload
+   *  or that its layout passes the card's bound (`INBOUND_CARD_MAX_BYTES`, or twice the text it
+   *  lays out when that is more). Absent when the card lays the payload
    *  out. A host logs it once, with the message's id, for a frame it shows. */
   readonly payloadShownAsText?: string;
 };
@@ -1068,14 +1069,15 @@ function parseDispatchFrame(rawPayload: string, wholeBody?: string): DispatchFra
 }
 
 /**
- * The most bytes a card lays a payload out in: the hub's largest frame (nats-server's
- * `max_payload`, 1 MiB). A layout normally holds about as many bytes as the text it lays out,
- * since TOON drops JSON's quotes and braces and escapes no character JSON does not. Measured with
- * Bun 1.4.4: the largest card laid out in this package's tests is 7,007 bytes, of the 29 envelope
- * fixtures in `@legion/contracts` 2,632 bytes (from a 2,726-byte frame), a GitHub comment at
- * GitHub's 65,536-character limit 65,783 bytes, a 1 MiB frame of a table 478,316 bytes, and a
- * Dispatch comment of 1,000,000 bytes read whole (Dispatch takes no request over 1 MiB)
- * 1,000,437 bytes. So no content a session is sent needs more, and a layout past it is
+ * The fewest bytes a card may lay a payload out in: the hub's largest frame (nats-server's
+ * `max_payload`, 1 MiB). A card may hold more, up to twice the text it lays out (its frame and a
+ * body read whole), since a body Dispatch's API gives whole comes from no frame. A layout
+ * normally holds about as many bytes as the text it lays out, since TOON drops JSON's quotes and
+ * braces and escapes no character JSON does not. Measured with Bun 1.4.4: the largest card laid
+ * out in this package's tests is 7,007 bytes, of the 29 envelope fixtures in `@legion/contracts`
+ * 2,632 bytes (from a 2,726-byte frame), a GitHub comment at GitHub's 65,536-character limit
+ * 65,783 bytes, a 1 MiB frame of a table 478,316 bytes, and a Dispatch comment read whole near
+ * Dispatch's 1 MiB request limit about 480 bytes more than its body. A layout past the bound is
  * indentation: an array chain 1,400 levels deep, a 3 KB frame, lays out in about 2 MB.
  */
 export const INBOUND_CARD_MAX_BYTES = 1 << 20;
@@ -1458,19 +1460,26 @@ export function renderInbound(
   // bounded so already, and a throw the payload is not behind is thrown as before.
   const payloadKey = dispatchRendered ? "dispatch" : "message";
   const payloadValue = dispatchRendered ? dispatchEvent : message;
+  // A layout holds about as many bytes as the text it lays out, and a body Dispatch's API gave
+  // whole (`wholeBody`) is text the frame did not carry, so a card may hold twice that text when
+  // that is more than the hub's frame: a 1 MiB comment read whole still lays out whole.
+  const cardBound = Math.max(
+    INBOUND_CARD_MAX_BYTES,
+    2 * (Buffer.byteLength(raw) + (wholeBody === undefined ? 0 : Buffer.byteLength(wholeBody)))
+  );
   let card: string | undefined;
   let payloadShownAsText: string | undefined;
   try {
     card =
       typeof payloadValue === "object" && payloadValue !== null
-        ? encodeWithin({ envoy: rendered }, INBOUND_CARD_MAX_BYTES)
+        ? encodeWithin({ envoy: rendered }, cardBound)
         : encode({ envoy: rendered });
   } catch (error) {
     if (envelope.payload === undefined || payloadValue === undefined) throw error;
     payloadShownAsText = messageFor(error);
   }
   if (card === undefined) {
-    payloadShownAsText ??= `its layout is larger than the ${INBOUND_CARD_MAX_BYTES} bytes a card holds`;
+    payloadShownAsText ??= `its layout is larger than the ${cardBound} bytes a card holds`;
     card = encode({ envoy: { ...rendered, [payloadKey]: envelope.payload } });
   }
 
