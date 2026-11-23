@@ -133,7 +133,7 @@ publisher := ghrename.Publishing(client, renames, logger)
 openWebhooks(webhookGate, hooks, publisher, ciStore)
 // ... phase 6, once the interest and session cache warm-ups end (30 s each, fail open):
 openV1Routes(v1Gate, ready, &v1Deps, cfg.MachineID, logger, listeningAt)
-bind, err := bindListenerDurable(stopping, client, consumer, handler, logger, durableBindInterval, durableBindDeadline)
+bind, err := bindListenerDurable(stopping, client, consumer, jetStreamDeliveryHandler(deliveryConfig), logger, durableBindInterval, durableBindDeadline)
 // ... then deps.Store(ready)
 ```
 
