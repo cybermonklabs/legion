@@ -18,8 +18,11 @@ import (
 	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
+
+// ownerStepsDefault is the default steps of a project that names none, typed here rather than read
+// from the production list, so a change of that list fails the tests that read them.
+var ownerStepsDefault = []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}
 
 // readScriptPassed is whether out, the output of plan-ratings-read.sh for line's issue, holds its
 // PASS line naming the issue's plan and ratings as `dispatch plans` printed them, which is how the
@@ -29,9 +32,10 @@ func readScriptPassed(out string, line planLine) bool {
 }
 
 // defaultPlanPrinted is the default plan as `dispatch plans` prints it: its source, its one task
-// and that task's steps, workflow.DefaultSteps.
+// and that task's steps, the project's default steps of a project that names none
+// (ownerStepsDefault).
 func defaultPlanPrinted() string {
-	return fmt.Sprintf("default (1 tasks: %s)", strings.Join(workflow.DefaultSteps(), " "))
+	return fmt.Sprintf("default (1 tasks: %s)", strings.Join(ownerStepsDefault, " "))
 }
 
 // plansPrintedWith is what `dispatch plans --project SR1` prints of one finished issue whose

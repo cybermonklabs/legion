@@ -112,11 +112,12 @@ export type RepoControlFailure = {
  * and not a `<select>`, which cannot hold a value its options lack.
  *
  * The box shows the issue's own repository and nothing else, so the repository it resolves to -
- * its nearest ancestor's, else the project's default - is its placeholder, which is what an empty
- * box stands for; the description (`aria-describedby`, an `sr-only` span) says the same in words,
- * with `, inherited or the project's default` after it when it is not the issue's own, and
- * `No repository` when none resolves. A clear control inside the box, shown only while the issue
- * has a repository of its own, puts it back to inheriting; emptying the box does the same.
+ * its nearest ancestor's in its own project, else the project's default - is its placeholder,
+ * which is what an empty box stands for; the description (`aria-describedby`, an `sr-only` span)
+ * says the same in words, with `, inherited or the project's default` after it when it is not the
+ * issue's own, and `No repository` when none resolves. A clear control inside the box, shown only
+ * while the issue has a repository of its own, puts it back to inheriting; emptying the box does
+ * the same.
  *
  * What is typed is written when the box is left or Enter is pressed, never per keystroke, since
  * `owner/name` is only a repository once the whole of it is there; Escape restores what the issue

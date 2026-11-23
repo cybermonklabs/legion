@@ -1991,12 +1991,12 @@ either.
   same fields and three more. `resolved` is how many addresses the host resolved to. `failure`
   is `refused` (an address this proxy never dials, a private one or one inside
   `BROKER_AIRLOCK_CLUSTER_RANGES`, or an IPv6 address that carries such an IPv4 address in its
-  NAT64, 6to4, Teredo or IPv4-compatible form), `unresolved` (a host the resolver answered no
-  address or an error for), `unreachable` (every address was dialled and none answered), or
-  `cancelled` (the command closed its connection while the proxy looked its host up or dialled
-  it, and every attempt was given up for that, so its error says nothing about the service; a
-  dial one of whose addresses failed on its own before the command left keeps that failure's
-  class).
+  NAT64, 6to4, Teredo, IPv4-compatible, IPv4-translated or ISATAP form), `unresolved` (a host
+  the resolver answered no address or an error for), `unreachable` (every address was dialled
+  and none answered), or `cancelled` (the command closed its connection while the proxy looked
+  its host up or dialled it, and every attempt was given up for that, so its error says nothing
+  about the service; a dial one of whose addresses failed on its own before the command left
+  keeps that failure's class).
   `reason` is the broker's own words. The `address` is the one refused, as `ip:port`, for
   `refused`; empty for `unresolved` and for a lookup that was `cancelled`; and for `unreachable`
   and a dial that was `cancelled`, the addresses dialled, as `ip:port` each, separated by spaces,
@@ -2579,7 +2579,7 @@ What you do depends on how the database came to hold another file:
   written any other way, or that sits inside a quoted string or a function body, stops every start,
   naming the file and the line. A pull request that edits a migration main already holds without
   such lines, or whose lines do not begin with main's file's lines, in their order, then the one
-  naming main's file itself, fails CI's `envoy-go-checks` job before it merges.
+  naming main's file itself, fails CI's `envoy-go-build` job before it merges.
 
 An image cannot accept a text it has never seen, so it refuses a database whose migration a later
 image applied from an edited text: one that an image with the edit created from empty, and a

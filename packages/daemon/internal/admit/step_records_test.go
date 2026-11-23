@@ -45,10 +45,11 @@ func stepWrites(t *testing.T, pool *pgxpool.Pool, issue string) []record.StepRec
 }
 
 // stepRun is one write of a step record as these tests name it: a start (end "") or an end with
-// its result, of kind and step of the task default, in generation, under the count of starts its
-// run's id is computed from (workflow.StepID).
+// its result, of kind and step of its task, the task default unless of names another, in
+// generation, under the count of starts its run's id is computed from (workflow.StepID).
 type stepRun struct {
 	end        string
+	task       string
 	kind       string
 	step       int
 	generation uint64
@@ -56,11 +57,17 @@ type stepRun struct {
 }
 
 func start(kind string, step int, generation uint64, starts int64) stepRun {
-	return stepRun{kind: kind, step: step, generation: generation, starts: starts}
+	return stepRun{task: "default", kind: kind, step: step, generation: generation, starts: starts}
 }
 
 func end(result, kind string, step int, generation uint64, starts int64) stepRun {
-	return stepRun{end: result, kind: kind, step: step, generation: generation, starts: starts}
+	return stepRun{end: result, task: "default", kind: kind, step: step, generation: generation, starts: starts}
+}
+
+// of is r written in task, a task of an owner's plan.
+func (r stepRun) of(task string) stepRun {
+	r.task = task
+	return r
 }
 
 // assertStepWrites fails unless key's step record rows are exactly want, in order.
@@ -88,7 +95,7 @@ func assertStepWrites(t *testing.T, pool *pgxpool.Pool, key string, want ...step
 		if g.Result != nil {
 			result = *g.Result
 		}
-		if g.ID != workflow.StepID(key, w.generation, record.StepPlace{Task: "default", Kind: w.kind, Place: w.step}, w.starts) || g.Kind != w.kind || g.Step != w.step ||
+		if g.ID != workflow.StepID(key, w.generation, record.StepPlace{Task: w.task, Kind: w.kind, Place: w.step}, w.starts) || g.Task != w.task || g.Kind != w.kind || g.Step != w.step ||
 			g.Generation != w.generation || (g.EndedAt != nil) != (w.end != "") || result != w.end {
 			fail(fmt.Sprintf("row %d is not %+v", i, w))
 		}

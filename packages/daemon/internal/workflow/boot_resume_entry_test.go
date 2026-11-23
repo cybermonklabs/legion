@@ -26,14 +26,14 @@ func TestTheBootsResumeOfAWorkerBehindItsEntrySendsThatEntrysWork(t *testing.T) 
 		// given is the entry the suspended claim was last queued a task of
 		// (record.RoleClaim.GivenEntry).
 		given int64
-		// want is the task the boot's start must carry, and entry the entry that start must be
-		// of: the row's own for the work it names, and none for the resume, which hands the claim
-		// no work it was not already on.
+		// want is the task the boot's start must carry, "" for the phase's resume task
+		// (phaseResumeTask), and entry the entry that start must be of: the row's own for the work it
+		// names, and none for the resume, which hands the claim no work it was not already on.
 		want  string
 		entry int64
 	}{
 		{name: "behind the entry its row names", given: seededEntry - 1, want: seededEntryTask, entry: seededEntry},
-		{name: "level with the entry its row names", given: seededEntry, want: ResumePhaseTask(issue), entry: 0},
+		{name: "level with the entry its row names", given: seededEntry, entry: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -57,8 +57,8 @@ func TestTheBootsResumeOfAWorkerBehindItsEntrySendsThatEntrysWork(t *testing.T) 
 			}
 			seedGivenEntry(t, pool, token, tc.given)
 
-			if _, err := intake.ApplyFact(ctx, pool, "daemon", "boot:LEGION:1", intake.DaemonBooted{Boot: 1},
-				testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			if _, err := intake.ApplyFact(ctx, pool, "daemon", "boot:LEGION:1", intake.DaemonBooted{Boot: 1}, engine, admissionStub{}); err != nil {
 				t.Fatalf("apply the boot: %v", err)
 			}
 
@@ -66,10 +66,13 @@ func TestTheBootsResumeOfAWorkerBehindItsEntrySendsThatEntrysWork(t *testing.T) 
 			if len(starts) != 1 {
 				t.Fatalf("the boot queued %+v, want the one start it writes for the suspended claim", starts)
 			}
-			start := starts[0]
-			if start.Task != tc.want || start.Entry != tc.entry {
+			start, want := starts[0], tc.want
+			if want == "" {
+				want = phaseResumeTask(t, pool, engine, entryIssue)
+			}
+			if start.Task != want || start.Entry != tc.entry {
 				t.Fatalf("the boot's start of a claim given entry %d under a row at entry %d sent %q at entry %d; want %q at entry %d",
-					tc.given, seededEntry, start.Task, start.Entry, tc.want, tc.entry)
+					tc.given, seededEntry, start.Task, start.Entry, want, tc.entry)
 			}
 			assertEntryUntouched(t, pool, claim.RoleImplementer, "the boot")
 		})

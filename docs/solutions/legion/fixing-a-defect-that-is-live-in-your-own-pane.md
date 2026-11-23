@@ -10,7 +10,7 @@ tags:
   - fast-follow
   - conflict-rebase
 date: 2026-09-13
-status: active
+status: superseded in part — Retro commits nothing and pushes nothing, and no role writes to docs/solutions/. An approval moves the issue to its task's next step (accepting in the default steps), and retro starts once the task's last step passes. An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: legion
 related_issues:
   - "LEGION-44"
