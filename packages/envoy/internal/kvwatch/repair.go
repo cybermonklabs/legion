@@ -18,6 +18,10 @@ const (
 	timedOutCause    = "a timed-out scan"
 	recreatedCause   = "a recreated bucket"
 	unconfirmedCause = "a read whose stream could not be confirmed"
+	// unverifiedCause is a read whose settlement past its barrier failed (settleFailed): the
+	// barrier was not written, the consumer did not reach it in time, or the key list or a leader
+	// read after it failed.
+	unverifiedCause = "a read that could not read its bucket past a barrier"
 	// scheduledCause is the read a completed read arms (WithScheduledRead, armScheduledRead).
 	scheduledCause = "a scheduled read"
 )
@@ -43,6 +47,41 @@ func (w *Watcher) readAgainLater(generation uint64, cause string) {
 	}
 	w.reading = false
 	w.armReread(generation, rereadDelay, cause)
+}
+
+// unverifiedRetryMax is the longest wait between two reads of a run whose settlement past their
+// barrier failed (readAgainUnverified). A run's waits double from rereadDelay - 5, 10, 20
+// and 40 s - and then stay at this, so a bucket that takes no write, or a consumer that never
+// catches up, is read at most once a minute, while the first reads after a blip still come within
+// seconds.
+const unverifiedRetryMax = time.Minute
+
+// readAgainUnverified ends generation's read, which began waiting past its barrier at since,
+// without completing it because that wait failed with err (settleFailed), so the cache removes
+// nothing, and reads the bucket again after the run's next wait: rereadDelay doubled once for each
+// read of the run before this one, at most unverifiedRetryMax. The run, and the moment its first
+// read began waiting, are kept on the watcher across the re-reads' generations until a read
+// completes (completeRead), so ReadErr can report one that outlasts the stale bound.
+func (w *Watcher) readAgainUnverified(generation uint64, since time.Time, err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if generation != w.generation || w.stopped {
+		return
+	}
+	if w.unverifiedRuns == 0 {
+		w.unverifiedSince = since
+	}
+	w.unverifiedRuns++
+	w.unverifiedErr = err
+	delay := rereadDelay
+	for range w.unverifiedRuns - 1 {
+		if delay *= 2; delay >= unverifiedRetryMax {
+			delay = unverifiedRetryMax
+			break
+		}
+	}
+	w.reading = false
+	w.armReread(generation, delay, unverifiedCause)
 }
 
 // armReread arms the re-read of generation's bucket (reread) after delay, under mu, in place of
