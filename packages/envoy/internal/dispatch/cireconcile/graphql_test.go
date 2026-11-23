@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/redact/answertest"
 )
 
 // The GraphQL half of the GitHub stand-in: it answers the pass's one query (headsQuery, or
@@ -696,5 +697,41 @@ func TestAQueryGitHubAnsweredWithNoBodyEndsItsErrorAtTheStatus(t *testing.T) {
 				t.Fatalf("the query GitHub answered 502 gave %v, want %q", err, want)
 			}
 		})
+	}
+}
+
+// An errors entry's path, decoded as the pass decodes GitHub's answer (redact.Answer.Decode), is
+// each JSON string GitHub wrote as a field's name and each JSON number as an index, which is what
+// pullIndex finds the entry's pull request node and the field under it by. A path GitHub writes
+// null, or leaves out, holds no segment, and any other JSON value names no field and no index.
+func TestAnErrorPathReadsEachFieldNameAndEachIndexGitHubWrote(t *testing.T) {
+	body := `{"data":{"repository":null},"errors":[` +
+		`{"type":"FORBIDDEN","path":["repository","pullRequests","nodes",3,"commits","nodes",0,"commit","status"],"message":"m"},` +
+		`{"type":"FORBIDDEN","path":null,"message":"m"},` +
+		`{"type":"FORBIDDEN","message":"m"},` +
+		`{"type":"FORBIDDEN","path":["pullRequests","nodes",2,null,true,{"a":1},[4],"5"],"message":"m"}]}`
+	var answer graphQLAnswer
+	if err := answertest.Of(http.StatusOK, body).Decode(&answer); err != nil {
+		t.Fatalf("decode the answer: %v", err)
+	}
+	field := func(name string) pathSegment { return pathSegment{kind: segmentField, field: name} }
+	index := func(at float64) pathSegment { return pathSegment{kind: segmentIndex, index: at} }
+	want := [][]pathSegment{
+		{field("repository"), field("pullRequests"), field("nodes"), index(3), field("commits"), field("nodes"), index(0), field("commit"), field("status")},
+		nil,
+		nil,
+		{field("pullRequests"), field("nodes"), index(2), {}, {}, {}, {}, field("5")},
+	}
+	if len(answer.Errors) != len(want) {
+		t.Fatalf("the answer holds %d errors entries, want %d", len(answer.Errors), len(want))
+	}
+	for i, entry := range answer.Errors {
+		if !slices.Equal(entry.Path, want[i]) || (entry.Path == nil) != (want[i] == nil) {
+			t.Errorf("errors entry %d has the path %+v, want %+v", i, entry.Path, want[i])
+		}
+	}
+	node, under, ok := pullIndex(answer.Errors[0].Path)
+	if !ok || node != 3 || !underStatus(under) {
+		t.Fatalf("the path of node 3's status field reads as node %d, %v, under its status field %v", node, ok, underStatus(under))
 	}
 }

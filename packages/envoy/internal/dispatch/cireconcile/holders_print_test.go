@@ -12,9 +12,9 @@ import (
 func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 	words := redact.NewRemoteText(redacttest.Words)
 	type errorTwin = struct {
-		Type    string `json:"type"`
-		Path    []any  `json:"path"`
-		Message string `json:"message"`
+		Type    string        `json:"type"`
+		Path    []pathSegment `json:"path"`
+		Message string        `json:"message"`
 	}
 	type answerTwin = struct {
 		Data   struct{}    `json:"data"`

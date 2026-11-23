@@ -522,6 +522,7 @@ func TestARefusedStatusFieldIsToldFromTheRestOfAHead(t *testing.T) {
 		{name: "the check suites", path: `[` + commit + `,"checkSuites"]`, refused: true},
 		{name: "a check suite's status", path: `[` + commit + `,"checkSuites","nodes",0,"status"]`, refused: true},
 		{name: "no path", whole: true},
+		{name: "a null path", path: `null`, whole: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			text := `{"type":"FORBIDDEN","message":"Resource not accessible by integration"}`
