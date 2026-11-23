@@ -14,7 +14,7 @@ import (
 
 // verificationDoc is the root's Verification document in these tests: a document of the root's
 // issue that no gate is registered on, from which its change request reads its checks.
-const verificationDoc = "artifact-208-verification"
+const verificationDoc = "the-roots-verification"
 
 // checksRead is what Dispatch read of the root's change request at spec version spec, its checks
 // taken from version verification of the Verification document: whether the version proposes
@@ -52,7 +52,7 @@ func TestAVerificationVersionThatChangesAnApprovedCheckRevokesTheExemption(t *te
 	apply := applyFacts(t, pool, specGateEngine())
 	mergingExemptRoot(t, pool, head)
 
-	apply("verification-1", ofVerification(intake.DispatchArtifactVersion, 1, 21, checksRead(4, 1, true, false)))
+	apply("first-verification", ofVerification(intake.DispatchArtifactVersion, 1, 21, checksRead(4, 1, true, false)))
 	if gate := specGateOf(t, pool); !record.GateExempt(gate) || gate.VerificationVersion != 1 || gate.ChecksUnapproved {
 		t.Fatalf("the gate after a Verification version that changes nothing = %+v, want it exempt at 4, read at Verification version 1, holding nothing", gate)
 	}
@@ -63,7 +63,7 @@ func TestAVerificationVersionThatChangesAnApprovedCheckRevokesTheExemption(t *te
 		t.Fatalf("ending reads after a Verification version that changes nothing = %+v, want %+v", got, want)
 	}
 
-	apply("verification-2", ofVerification(intake.DispatchArtifactVersion, 2, 22, checksRead(4, 2, false, true)))
+	apply("second-verification", ofVerification(intake.DispatchArtifactVersion, 2, 22, checksRead(4, 2, false, true)))
 	gate := specGateOf(t, pool)
 	if record.GateOpen(gate) || gate.ExemptVersion != nil || gate.ApprovedVersion != nil || gate.VerificationVersion != 2 || !gate.ChecksUnapproved {
 		t.Fatalf("the gate after a Verification version that changes an approved check = %+v; want it closed, its exemption revoked, "+
@@ -82,13 +82,13 @@ func TestAVerificationVersionThatChangesAnApprovedCheckRevokesTheExemption(t *te
 	}
 
 	// A read made before the Verification version the gate holds changes nothing.
-	apply("verification-1-late", ofVerification(intake.DispatchArtifactApproved, 1, 23, checksRead(4, 1, true, false)))
+	apply("first-verification-late", ofVerification(intake.DispatchArtifactApproved, 1, 23, checksRead(4, 1, true, false)))
 	if late := specGateOf(t, pool); record.GateOpen(late) || late.VerificationVersion != 2 || !late.ChecksUnapproved {
 		t.Fatalf("the gate after a read older than its Verification version = %+v, want it as it stood: closed at Verification version 2", late)
 	}
 
 	// A spec version read at an older Verification version opens nothing.
-	apply("spec-5", intake.DispatchArtifact{Key: gatedRoot, ArtifactID: gateDoc, Kind: intake.DispatchArtifactVersion, Version: 5,
+	apply("fifth-spec", intake.DispatchArtifact{Key: gatedRoot, ArtifactID: gateDoc, Kind: intake.DispatchArtifactVersion, Version: 5,
 		Mark: record.EventMark{Seq: 24}, ChangeRequest: checksRead(5, 1, true, false)})
 	if stale := specGateOf(t, pool); record.GateOpen(stale) || stale.ExemptVersion != nil || stale.LatestVersion != 5 || stale.VerificationVersion != 2 {
 		t.Fatalf("the gate after a spec version read at an older Verification version = %+v, want it closed at 5, still at Verification version 2", stale)
@@ -99,7 +99,7 @@ func TestAVerificationVersionThatChangesAnApprovedCheckRevokesTheExemption(t *te
 
 	// A spec version read at the newest Verification version, which changes nothing, opens by
 	// exemption as a version always has.
-	apply("spec-6", intake.DispatchArtifact{Key: gatedRoot, ArtifactID: gateDoc, Kind: intake.DispatchArtifactVersion, Version: 6,
+	apply("sixth-spec", intake.DispatchArtifact{Key: gatedRoot, ArtifactID: gateDoc, Kind: intake.DispatchArtifactVersion, Version: 6,
 		Mark: record.EventMark{Seq: 26}, ChangeRequest: checksRead(6, 3, true, false)})
 	opened := specGateOf(t, pool)
 	if !record.GateExempt(opened) || opened.VerificationVersion != 3 || opened.ChecksUnapproved || opened.ApprovedVersion != nil {

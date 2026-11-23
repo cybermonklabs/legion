@@ -1457,6 +1457,8 @@ func TestAVerificationEditOfAnApprovedCheckClosesAPersonsApproval(t *testing.T) 
 	if gate, _ := r.gate(plainKey); gate.ApprovedVersion == nil || *gate.ApprovedVersion != gate.CurrentVersion || gate.Rule != "approval" {
 		t.Fatalf("the gate of %s is %+v, want it approved by the person under today's rule", plainKey, gate)
 	}
+	// The architect was told the gate closed once already, by the registration that wrote it closed
+	// before the person's approval; only what it is told after the edits counts.
 	architectTopic := notify.RoleTopicPrefix + string(r.tokenOf(plainKey, claim.RoleArchitect))
 	closedToArchitect := func() []string {
 		var closed []string
@@ -1467,14 +1469,17 @@ func TestAVerificationEditOfAnApprovedCheckClosesAPersonsApproval(t *testing.T) 
 		}
 		return closed
 	}
+	before := len(closedToArchitect())
 	r.editVerification(plainKey, deleteBlock(specGateCheck), insertAtEnd(specGateCheckBlock("1", "A second charge of one order fails within a day.")))
-	r.editSpec(plainKey, insertAtEnd("The runner names its log file.\n"))
+	later := r.editSpec(plainKey, insertAtEnd("The runner names its log file.\n"))
 	testwait.WithinPolling(t, stepRecordsWait, 100*time.Millisecond, "the architect of "+plainKey+" to be told the gate closed", func() bool {
-		return len(closedToArchitect()) > 0
+		return len(closedToArchitect()) > before
 	})
 	time.Sleep(liveSettle)
-	if closed := closedToArchitect(); len(closed) != 1 || strings.Contains(closed[0], "Verification document") || !strings.Contains(closed[0], "of its spec document") {
-		t.Fatalf("the architect of %s was told %q; want one closed gate, its spec's version's, and none of its Verification document", plainKey, closed)
+	if closed := closedToArchitect()[before:]; len(closed) != 1 || strings.Contains(closed[0], "Verification document") ||
+		!strings.Contains(closed[0], fmt.Sprintf("version %d of its spec document", later)) {
+		t.Fatalf("the architect of %s was told %q after the edits; want one closed gate, of the spec's version %d, and none of its Verification document",
+			plainKey, closed, later)
 	}
 	if gate, _ := r.gate(plainKey); gate.Rule != "approval" || gate.VerificationVersion != 0 || gate.ChecksUnapproved {
 		t.Fatalf("the design gate of %s is %+v, want today's gate, which reads no Verification document", plainKey, gate)
