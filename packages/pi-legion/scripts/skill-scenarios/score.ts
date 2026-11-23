@@ -838,13 +838,15 @@ const BATCH_DISPATCH_NOTE =
 // (turns.txt, state-<turn>.json), the captured issue (spec.md, spec-versions/, agent-asks.json,
 // agent-texts.json, documents/, plan.md) and the judges' answers (faults.json and the rest).
 
-/** The outline every spec must follow: its `##` headings, exactly and in this order. The checks
- * are not among them: they live in the issue's Verification document, as `check` blocks. */
+/** The outline every spec must follow: its `##` headings, exactly and in this order. The
+ * Verification part only points to the issue's Verification document, which holds the checks as
+ * `check` blocks. */
 export const OUTLINE = [
   "Summary",
   "Problem",
   "Goals and non-goals",
   "Requirements",
+  "Verification",
   "Design",
   "Decisions",
 ] as const;
@@ -1905,7 +1907,7 @@ function namedTasks(step: Step): { name: string; assignment: string }[] | undefi
   }
   return parts;
 }
-/** Whether a check's assignment is a spec-only check's: it holds the six outline headings as `##`
+/** Whether a check's assignment is a spec-only check's: it holds the outline's headings as `##`
  * lines and names no path under a checkout in `reach`. */
 function specOnly(assignment: string, reach: string[]): boolean {
   const outlined = OUTLINE.every((heading) =>
@@ -1987,16 +1989,16 @@ function specSlices(assignment: string): string[] {
 }
 /** The least share of a version the run's session wrote that a pasted spec covers, for the check
  * to be of this run's spec. An agent that splits out a sibling issue can send the sibling's spec
- * for review, alone or after its own spec in one assignment; that spec holds the six headings
- * too, but the report's findings on it are about another spec. Each spec of an assignment is
- * measured on its own (specWork's kindOf), and one that pastes both is `mixed`. The share is
- * recall over the written version (how much of the version's 5-word runs the pasted spec holds,
- * the best over the versions), not over the pasted text: text pasted after the spec, with no
- * heading to end its slice, cannot lower it, and a sibling spec that borrows a few of the parent's
- * sections covers little of the parent. On the 67 spec runs of the dispatch skills' acceptance
- * measurement, each of the 9 sibling specs sent for review (7 alone, 2 after the run's own)
- * covered at most 0.01 of any version, and each of the run's own specs at least 0.24, a draft the
- * agent rewrote in plain words after the check included. */
+ * for review, alone or after its own spec in one assignment; that spec holds the outline's
+ * headings too, but the report's findings on it are about another spec. Each spec of an
+ * assignment is measured on its own (specWork's kindOf), and one that pastes both is `mixed`.
+ * The share is recall over the written version (how much of the version's 5-word runs the
+ * pasted spec holds, the best over the versions), not over the pasted text: text pasted after
+ * the spec, with no heading to end its slice, cannot lower it, and a sibling spec that borrows
+ * a few of the parent's sections covers little of the parent. On the 67 spec runs of the
+ * dispatch skills' acceptance measurement, each of the 9 sibling specs sent for review (7 alone,
+ * 2 after the run's own) covered at most 0.01 of any version, and each of the run's own specs at
+ * least 0.24, a draft the agent rewrote in plain words after the check included. */
 const OWN_SPEC = 0.1;
 /** Each pasted spec's best share, over the versions the session wrote (each version's 5-word
  * runs), of a version's runs that the spec holds, in order. */
@@ -2014,8 +2016,8 @@ function ownSpecShares(assignment: string, versions: Set<string>[]): number[] {
 }
 /** The spec writes of the run's session (writesSpec, against the run's fixture.json) and the
  * spec-only checks before them: the one list of checks that both specRow's `checked` and the
- * findings judge (judgeInputs, judge.ts) read. A spec-only check's assignment holds the six
- * outline headings as `##` lines and names no path under a checkout in `reach` (specOnly). A check
+ * findings judge (judgeInputs, judge.ts) read. A spec-only check's assignment holds the outline's
+ * headings as `##` lines and names no path under a checkout in `reach` (specOnly). A check
  * is either of:
  * - a `task` call of the session's transcript. It counts for the first spec write after it when its
  *   tasks' reports came back before that write (checkOutcome); either way it counts for no later
@@ -2682,9 +2684,9 @@ const indented = (text: string, depth = 6) =>
  *   - asked and grew: the run held the conversation before it wrote the design
  *     (conversationOrder). `asked` is the session's first question to the person being older than
  *     its first spec version, so a run that writes a draft and asks after it fails however short
- *     that draft is; `grew` is no version stating a design (`## Requirements`, `## Design` or
- *     `## Acceptance`) before the person has answered a question of the run's own. A session that
- *     wrote no version fails both.
+ *     that draft is; `grew` is no version stating a design (`## Requirements` or `## Design`)
+ *     before the person has answered a question of the run's own. A session that wrote no
+ *     version fails both.
  *   - outline: outlineProblems finds nothing.
  *   - checked: the transcript holds at least one spec write (writesSpec: a write Dispatch made of
  *     the run's own primary spec, each `dispatch` command of a call apart), a spec-only check
@@ -2723,7 +2725,7 @@ const indented = (text: string, depth = 6) =>
  *     preamble.json's passages by kind; proposal.json's verdicts. Each row whose id is in
  *     seeded.json is left out. */
 /** The `##` headings whose sections hold a design, compared without case or inner spacing. */
-const DESIGN_HEADINGS = ["requirements", "design", "acceptance"];
+const DESIGN_HEADINGS = ["requirements", "design"];
 
 /** Whether this version of a spec states a design, which is what the conversation rule holds back
  *  until the person has answered.
@@ -2733,10 +2735,10 @@ const DESIGN_HEADINGS = ["requirements", "design", "acceptance"];
  *  `## Requirements`, and a `## Design` heading with nothing under it states none (both measured
  *  on this scorer by the review of 2026-11-05). So a version states a design when either holds:
  *
- *  - it carries a `**R<n>.**` requirement or `**A<n>.**` check paragraph, the outline's own design
- *    content, wherever in the document it sits - which also catches a design written out under
- *    `## Summary` before the conventional headings arrive;
- *  - a heading whose title is Requirements, Design or Acceptance has text of its own under it,
+ *  - it carries a `**R<n>.**` requirement paragraph, the outline's own design content, wherever
+ *    in the document it sits - which also catches a design written out under `## Summary` before
+ *    the conventional headings arrive;
+ *  - a heading whose title is Requirements or Design has text of its own under it,
  *    read with the heading pattern `outlineProblems` uses, so spacing and a trailing `#` change
  *    nothing.
  *
@@ -2744,7 +2746,7 @@ const DESIGN_HEADINGS = ["requirements", "design", "acceptance"];
  *  neither. */
 export function statesDesign(spec: string): boolean {
   const text = withoutFences(spec);
-  if (marked(text).some((paragraph) => /^[RA]\d/.test(paragraph.mark))) return true;
+  if (marked(text).some((paragraph) => /^R\d/.test(paragraph.mark))) return true;
   const headings = [...text.matchAll(/^(#{1,6})[ \t]+(.+?)[ \t#]*$/gm)];
   for (const [index, heading] of headings.entries()) {
     const title = (heading[2] ?? "").trim().toLowerCase().replace(/\s+/g, " ");

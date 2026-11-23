@@ -1057,6 +1057,10 @@ function outlined({ problem = "The CLI prints no greeting.", design = "", summar
     "**R1.** The CLI prints a greeting with the name. From: your answer on the greeting.",
     ":::",
     "",
+    "## Verification",
+    "",
+    "The checks are in this issue's verification.md.",
+    "",
     "## Design",
     "",
     "`greet <name>` prints `Hello, <name>.`",
@@ -1470,6 +1474,13 @@ specRun("spec-writing-older-1", { ownDispatch: false });
 specRun("spec-rewrite-older-1", { ownDispatch: false });
 // Not in the outline: a heading of C2 is gone.
 specRun("spec-writing-head-2", { spec: outlined().replace("## Goals and non-goals", "## Scope") });
+// Not in the outline: the Verification part is gone.
+specRun("spec-writing-head-141", {
+  spec: outlined().replace(
+    "## Verification\n\nThe checks are in this issue's verification.md.\n\n",
+    ""
+  ),
+});
 // No check before the first spec write.
 specRun("spec-writing-head-3", {
   transcript: conversation(
@@ -2131,8 +2142,9 @@ specRun("spec-writing-head-99", {
     NoReport: subagentTranscript(`Read this spec alone.\n\n${outlined()}`, 6.2, 6.8, ""),
   },
 });
-// A review of a sibling issue's spec: its assignment holds the six headings too, but no 8-word
-// run of it is in a version the session wrote, so it checks no write of this run.
+// A review of a sibling issue's spec: its assignment holds the outline's headings too, but no
+// 8-word run of it is in a version the session wrote, so it checks no write of this run. Its
+// Verification part points to the document of LWEVAL-8 in words that the run's spec does not hold.
 const siblingSpec = [
   "## Summary",
   "",
@@ -2148,6 +2160,9 @@ const siblingSpec = [
   ":::requirement{#r1}",
   "**R1.** The queue retries a stalled invoice within ten minutes of the stall. From: the ticket.",
   ":::",
+  "## Verification",
+  "",
+  "LWEVAL-8's verification.md holds the checks.",
   "## Design",
   "",
   "A watchdog process restarts the mail worker whenever its heartbeat stops for two minutes.",
@@ -2264,11 +2279,11 @@ specRun("spec-writing-head-129", {
   ),
 });
 // A review of the run's own draft, which the agent then rewrote: the written version keeps the
-// draft's Goals, Requirements, Decisions and Acceptance but rewrites its Summary, Problem and Design.
-// After the draft the assignment pastes about 4,500 words of unique notes with no heading, so the
-// spec's slice runs to the end. Measured over the pasted text, the share of it found in a written
-// version falls under the 0.1 floor; measured over the written version (recall), the draft still
-// covers most of it.
+// draft's Goals, Requirements, Verification and Decisions but rewrites its Summary, Problem and
+// Design. After the draft the assignment pastes about 4,500 words of unique notes with no heading,
+// so the spec's slice runs to the end. Measured over the pasted text, the share of it found in a
+// written version falls under the 0.1 floor; measured over the written version (recall), the
+// draft still covers most of it.
 const rewrittenSpec = outlined({
   summary: " It replaces the old banner, which most terminals cut off at the top of the window.",
   problem:
@@ -3617,6 +3632,9 @@ test("a spec-rewrite run is scored by the same rules", () => {
 test("outline: the spec's ## headings are exactly the outline's, in order", () => {
   expect(scoresOf("spec-writing-head-2")).toEqual({ ...allPass, outline: "false" });
   expect(rowOf("spec-writing-head-2")).toContain("## Scope");
+  // A spec with no Verification part leaves the outline too.
+  expect(scoresOf("spec-writing-head-141")).toEqual({ ...allPass, outline: "false" });
+  expect(rowOf("spec-writing-head-141")).toContain("outline: headings are");
 });
 
 test("checked: a spec-only check before every spec write, the first included, and no finding left", () => {
@@ -4017,11 +4035,12 @@ test("asked and grew: a run that writes the spec before it asks fails, however s
 });
 
 // The review of 2026-11-05 measured several ways past the first definition, which looked for
-// three literal heading strings in the version's text. Four of the six rows below are refused by
+// three literal heading strings in the version's text. Four of the eight rows below are refused by
 // that definition and held by `statesDesign`, which reads the text's own structure: the two
-// spaces, the design under `## Summary`, the empty sections and the fenced example. The other
-// two, the closing hash and the plain no-design spec, both definitions agree on, and they are
-// here as guards rather than as evidence.
+// spaces, the design under `## Summary`, the empty sections and the fenced example. Both
+// definitions agree on the other four: the closing hash, the plain no-design spec, the
+// Verification part and the plain Design section. They are here as guards rather than as
+// evidence.
 test("statesDesign: a design is found by what the version holds, not by three literal headings", () => {
   const design = "**R1.** The broker answers in 100 ms. From: dispatch://ACME-1/ask/1\n";
   // Spacing and a closing hash are the author's, not the test's: `##  Requirements` is a
@@ -4031,7 +4050,12 @@ test("statesDesign: a design is found by what the version holds, not by three li
   // A design written out before the conventional headings arrive is still a design.
   expect(statesDesign(`## Summary\n\n${design}`)).toBe(true);
   // An empty section states nothing: the old definition failed a run for writing the headings.
-  expect(statesDesign(`## Requirements\n\n## Design\n\n## Acceptance\n`)).toBe(false);
+  expect(statesDesign("## Requirements\n\n## Design\n")).toBe(false);
+  // The Verification part only points to the issue's Verification document: it states no design.
+  expect(statesDesign("## Verification\n\nThe checks are in this issue's verification.md.\n")).toBe(
+    false
+  );
+  expect(statesDesign("## Design\n\nOne table, keyed by run.\n")).toBe(true);
   expect(statesDesign(`## Summary\n\nNotices are lost today.\n\n## Problem\n\nThey are.\n`)).toBe(
     false
   );
