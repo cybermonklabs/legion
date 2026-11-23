@@ -685,16 +685,15 @@ func TestAppendsOnDifferentIssuesDoNotWaitForEachOther(t *testing.T) {
 	// What says the two writes wait for each other is PP-2's own backend queued behind a lock
 	// PP-1's open write holds, directly or behind an earlier waiter
 	// (storetest.WaitForQueuedBehind). A count of every backend of this database waiting on any
-	// lock answers a different question, and storetest.CountLockWaits' own callers pass a
-	// statement pattern for that reason: with the pattern "%" it also reports a waiter neither
-	// write made - an autovacuum worker, or any other backend of this cloned database - and
-	// fails on it, which is what took this test red on main at 4ca6415a8. That the counted
-	// waiter was not PP-2 waiting on PP-1 is certain rather than likely: the count was only
-	// read out after PP-2's write had committed, and PP-2 cannot commit while PP-1's write
-	// holds a lock it waits on. The watch samples every 2 ms, finer than the 10 ms ticker it
-	// replaces but not continuous, and runs until the write answers, so a write that queued and
-	// then got through before the deadline is caught; its own ceiling is above the write's, so
-	// the write's answer, not the watch, is what ends it.
+	// lock answers a different question: it also reports a waiter neither write made - an
+	// autovacuum worker, or any other backend of this cloned database - and fails on it, which is
+	// what took this test red on main at 4ca6415a8. That the counted waiter was not PP-2 waiting
+	// on PP-1 is certain rather than likely: the count was only read out after PP-2's write had
+	// committed, and PP-2 cannot commit while PP-1's write holds a lock it waits on. The watch
+	// samples every 2 ms, finer than the 10 ms ticker it replaces but not continuous, and runs
+	// until the write answers, so a write that queued and then got through before the deadline is
+	// caught; its own ceiling is above the write's, so the write's answer, not the watch, is what
+	// ends it.
 	pid := <-backends
 	answer, answered := storetest.WaitForQueuedBehind(t, open, pid, written)
 	if !answered {
@@ -752,10 +751,14 @@ func TestAppendsOnOneOwnerCommitInIDOrder(t *testing.T) {
 				t.Fatalf("first append: %v", err)
 			}
 
+			// The second write runs on a connection of its own, and the first commits only once
+			// that backend queues behind it (storetest.WaitForQueuedBehind): another backend
+			// queued on the owner would let the first commit before the second drew its id.
+			secondPool, secondPID := storetest.OneConnection(t, database.Pool)
 			written := make(chan error, 1)
 			var second model.Event
 			go func() {
-				tx, err := database.Pool.Begin(ctx)
+				tx, err := secondPool.Begin(ctx)
 				if err != nil {
 					written <- err
 					return
@@ -767,7 +770,9 @@ func TestAppendsOnOneOwnerCommitInIDOrder(t *testing.T) {
 				}
 				written <- tx.Commit(ctx)
 			}()
-			storetest.WaitForLockWaiters(t, open, 1)
+			if err, early := storetest.WaitForQueuedBehind(t, open, secondPID, written); early {
+				t.Fatalf("the second append answered (%v) before it queued behind the first write on its owner", err)
+			}
 			if err := open.Commit(ctx); err != nil {
 				t.Fatalf("commit the first write: %v", err)
 			}

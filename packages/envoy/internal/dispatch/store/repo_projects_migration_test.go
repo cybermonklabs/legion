@@ -146,32 +146,12 @@ func isSQLState(err error, code string) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == code
 }
 
-// awaitMigrationLockWait waits until a backend of store's database other than the pool's own
-// poll waits on a lock: the migration, queued behind a writer's open transaction.
-func awaitMigrationLockWait(t *testing.T, store *Store) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		var waiting int
-		if err := store.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock' and pid <> pg_backend_pid()
-		`).Scan(&waiting); err != nil {
-			t.Fatalf("read pg_stat_activity: %v", err)
-		}
-		if waiting > 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the migration never waited on the writer's lock")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-}
-
 // A legacy release's create that commits while 0113 waits for its tables is counted: the
 // migration takes its tables' locks before it counts, so a row committed while it waits is in the
-// count, and an issue 33 links down refuses the migration as it would have before it began.
+// count, and an issue 33 links down refuses the migration as it would have before it began. The
+// migration runs on a connection of its own and the writer commits only once that backend waits
+// on the writer's (awaitBlockedBy): another backend of the database waiting on a lock would let
+// the writer commit before the migration took its locks.
 func TestMigrationCountsAnOverDeepIssueCommittedWhileItWaits(t *testing.T) {
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
@@ -193,9 +173,12 @@ func TestMigrationCountsAnOverDeepIssueCommittedWhileItWaits(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("the writer's insert 33 links down: %v", err)
 	}
+	migrating, migrationPID := oneConnection(t, store)
 	applied := make(chan error, 1)
-	go func() { applied <- store.migrate(ctx, migrationsThrough(t, repoProjectsDefaultVersion)) }()
-	awaitMigrationLockWait(t, store)
+	go func() { applied <- migrating.migrate(ctx, migrationsThrough(t, repoProjectsDefaultVersion)) }()
+	if err, early := awaitBlockedBy(t, store, writer.Conn().PgConn().PID(), migrationPID, applied); early {
+		t.Fatalf("the migration answered (%v) before it waited on the writer's open transaction", err)
+	}
 	if err := writer.Commit(ctx); err != nil {
 		t.Fatalf("commit the writer: %v", err)
 	}

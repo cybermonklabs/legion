@@ -846,8 +846,11 @@ func TestAnAbandonedMentionIsSettledByTheOutboxOrLeftToTheClaimThatTookItFirst(t
 			}
 			publisher := &recordingPublisher{}
 			deps := Deps{Store: database, Publisher: publisher, Broker: events.NewBroker()}
-			publishing := func() error {
-				return publish(ctx, deps, event, "", routing{route: new("session:s1")}, map[string]struct{}{})
+			// publishing publishes event as the outbox does, on the store it is given.
+			publishing := func(through *store.Store) error {
+				on := deps
+				on.Store = through
+				return publish(ctx, on, event, "", routing{route: new("session:s1")}, map[string]struct{}{})
 			}
 
 			var err error
@@ -865,12 +868,19 @@ func TestAnAbandonedMentionIsSettledByTheOutboxOrLeftToTheClaimThatTookItFirst(t
 				`, commentID); err != nil {
 					t.Fatalf("claim the attempt: %v", err)
 				}
+				// The publish runs on a connection of its own, and the test reads that backend
+				// alone, for the wait (storetest.WaitForQueuedBehind) and for its transaction id
+				// (storetest.HoldsTransactionID): another backend waiting on the lock answers for
+				// neither.
+				publishPool, publishPID := storetest.OneConnection(t, database.Pool)
 				published := make(chan error, 1)
-				go func() { published <- publishing() }()
-				if early, answered, holdingXid := storetest.AwaitOwnerLockWaiter(t, database,
-					"the outbox settling the abandoned attempt", published); answered {
+				go func() { published <- publishing(&store.Store{Pool: publishPool}) }()
+				if early, answered := storetest.WaitForQueuedBehind(t, claim, publishPID, published); answered {
 					t.Fatalf("the publish answered %v while the claim held the comment's owner lock", early)
-				} else if holdingXid != 0 {
+				}
+				if holdingXid, err := storetest.HoldsTransactionID(context.Background(), database, publishPID); err != nil {
+					t.Fatal(err)
+				} else if holdingXid {
 					t.Fatalf("the outbox waits on the comment's owner lock with a transaction id already open: it " +
 						"settled the attempt before it took that lock")
 				}
@@ -879,7 +889,7 @@ func TestAnAbandonedMentionIsSettledByTheOutboxOrLeftToTheClaimThatTookItFirst(t
 				}
 				err = <-published
 			} else {
-				err = publishing()
+				err = publishing(database)
 			}
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("publish returned %v, want %v", err, tc.wantErr)

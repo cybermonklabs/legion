@@ -593,7 +593,10 @@ func TestPgPeopleStoreRecordsNoSubjectWhoseRevokeFailed(t *testing.T) {
 
 // Two first sign-ins to one address at once, each under its own Google account: the second waits
 // for the first to commit and then ends the first's sessions, as it would had the first committed
-// before it began. The first is held mid-transaction, its row written and not committed.
+// before it began. The first is held mid-transaction, its row written and not committed. The second
+// runs on a connection of its own and the test commits the first only once that backend waits on
+// the first's (awaitBlockedBy): another backend of the database waiting on any lock would let the
+// first commit before the second reached it.
 func TestPgPeopleStoreEndsTheSessionsOfAConcurrentFirstSignIn(t *testing.T) {
 	ctx := context.Background()
 	database := migratedEmptyStore(t)
@@ -608,26 +611,13 @@ func TestPgPeopleStoreEndsTheSessionsOfAConcurrentFirstSignIn(t *testing.T) {
 	if _, err := first.Exec(ctx, `insert into people (email, refresh_token, confirmed_at, sub) values ($1, 'v1:first', now(), 'subject-1')`, email); err != nil {
 		t.Fatal(err)
 	}
+	signingIn, secondPID := oneConnection(t, database)
 	second := make(chan error, 1)
-	go func() { second <- people.SignInSubject(ctx, email, "subject-2", "refresh-2") }()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		var waiting int
-		if err := database.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity where datname = current_database() and cardinality(pg_blocking_pids(pid)) > 0`).Scan(&waiting); err != nil {
-			t.Fatal(err)
-		}
-		if waiting > 0 {
-			break
-		}
-		select {
-		case err := <-second:
-			t.Fatalf("the second sign-in finished while the first was uncommitted: %v", err)
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the second sign-in never waited on the first")
-		}
-		time.Sleep(20 * time.Millisecond)
+	go func() {
+		second <- NewPgPeopleStore(signingIn.Pool, testSigningKey, nil).SignInSubject(ctx, email, "subject-2", "refresh-2")
+	}()
+	if err, early := awaitBlockedBy(t, database, first.Conn().PgConn().PID(), secondPID, second); early {
+		t.Fatalf("the second sign-in finished while the first was uncommitted: %v", err)
 	}
 	if err := first.Commit(ctx); err != nil {
 		t.Fatal(err)

@@ -231,9 +231,9 @@ const roomsApplicationName = "dispatch-rooms"
 // so every holder of a lock a batch can wait on finishes without one of these connections.
 const roomAppendsPoolSize = 8
 
-// roomAppendsApplicationName is how a connection of the room-appends pool (Pool.RoomAppends) names
-// itself in pg_stat_activity.
-const roomAppendsApplicationName = "dispatch-room-appends"
+// RoomAppendsApplicationName is how a connection of the room-appends pool (Pool.RoomAppends) names
+// itself in pg_stat_activity. A test of another process reads it to name that pool's backends.
+const RoomAppendsApplicationName = "dispatch-room-appends"
 
 // healthPoolSize bounds the connections the health probe uses. The probe answers one question -
 // is Postgres reachable, and at which schema - and asks it on a connection nothing else can take,
@@ -279,7 +279,7 @@ func (p *Pool) Rooms() (*pgxpool.Pool, error) {
 // the appends wait for no request and hold no connection a request could use, and a request
 // waits for none of them.
 func (p *Pool) RoomAppends() (*pgxpool.Pool, error) {
-	return p.separate(&p.roomAppends, roomAppendsPoolSize, "document room appends", roomAppendsApplicationName)
+	return p.separate(&p.roomAppends, roomAppendsPoolSize, "document room appends", RoomAppendsApplicationName)
 }
 
 // Healthy reports the highest schema migration Postgres has applied, read within

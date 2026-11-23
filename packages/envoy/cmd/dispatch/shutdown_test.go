@@ -111,7 +111,7 @@ func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing
 // read could let the timer's settlement commit first.
 func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *testing.T) {
 	database := storetest.Open(t)
-	process := startDispatchProcess(t, database.Pool.Config().ConnString())
+	process := startDispatchProcess(t, namedDatabaseURL(t, database.Pool.Config().ConnString(), shutdownApplication))
 	process.waitHealthy(t)
 	key, artifactID := process.createIssue(t)
 	process.editOwingSettlement(t, database, artifactID)
@@ -121,11 +121,14 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 		// Its answer is not this test's.
 		_, _ = process.renameIssue(key, "Renamed")
 	}()
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("Dispatch's output:\n%s", process.Output.String())
+		}
+	})
 	// The edit's settlement queues behind the same lock two seconds in, so a count of waiters
 	// could pass with the title change still on its way: watch the title change's own backend.
-	if pid := waitForRenameBehind(t, database, holder, 10*time.Second); pid == 0 {
-		t.Fatalf("the title change never queued behind the issue lock:\n%s", process.Output.String())
-	}
+	waitForRenameBehind(t, database, holder)
 
 	signalled := process.Terminate(t)
 	process.WaitForOutput(t, `msg="dispatch: settle documents with requests still in flight"`)
@@ -133,9 +136,11 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 	// A reading, not a wait for a fact: the lock is released once Shutdown's settlement queues
 	// behind it too (three waiters) or two seconds after the document service started, as the
 	// comment above says, and the count is only logged; the settled document below is the verdict.
+	// It counts the process's own backends alone (shutdownApplication), so no session of another
+	// pool queued on the issue releases the lock before Shutdown's settlement has read what is owed.
 	waiting := 0
 	testwait.Holds(2*time.Second, 10*time.Millisecond, func() bool {
-		count, err := storetest.LockWaiters(context.Background(), holder)
+		count, err := storetest.LockWaitersFrom(context.Background(), holder, shutdownApplication)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -146,7 +151,7 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 		t.Fatalf("release the issue lock: %v", err)
 	}
 	process.WaitExit(t, "SIGTERM")
-	t.Logf("released the issue lock with %d waiting on it; exited %v after SIGTERM", waiting, time.Since(signalled))
+	t.Logf("released the issue lock with %d of the process's backends waiting on it; exited %v after SIGTERM", waiting, time.Since(signalled))
 	process.checkSettledAtShutdown(t, database, artifactID)
 }
 
@@ -180,7 +185,9 @@ func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.
 			t.Logf("Dispatch's output:\n%s", process.Output.String())
 		}
 	})
-	storetest.WaitForLockWaiters(t, holder, 1)
+	// The title change's own backend, not a count of the issue's waiters: what the row holds to
+	// the signal is that write, and any other session queued on the issue would end a count first.
+	waitForRenameBehind(t, database, holder)
 
 	signalled := process.Terminate(t)
 	select {
@@ -907,20 +914,20 @@ func lockIssue(t *testing.T, database *store.Store, key string) pgx.Tx {
 	return holder
 }
 
-// waitForRenameBehind waits up to within for the title change's backend to queue behind holder's
-// lock on the issue, and returns its process id, or 0 if it did not. The title change runs in the
-// Dispatch process, so its backend is found by its statement, the owner-lock statement a PATCH
-// sends first (lockIssueOwners in internal/dispatch/api/issue_parent.go). A settlement sends the
-// same statement for the same lock, but only once it holds its document's lock, an advisory lock
-// of its own; the title change holds none of those while it waits. Both hold the owner lock's
-// gate, which every write of this build takes shared in that same statement before it waits on
-// the owner (store.OwnerLockGateNamespace, migration 20261115200014), so the gate is the one
-// advisory lock that tells the two apart by nothing and is left out of the exclusion.
-func waitForRenameBehind(t *testing.T, database *store.Store, holder pgx.Tx, within time.Duration) uint32 {
+// waitForRenameBehind waits for the title change's backend to queue behind holder's lock on the
+// issue. The title change runs in the Dispatch process, so its backend is found by its statement,
+// the owner-lock statement a PATCH sends first (lockIssueOwners in
+// internal/dispatch/api/issue_parent.go). A settlement sends the same statement for the same lock,
+// but only once it holds its document's lock, an advisory lock of its own; the title change holds
+// none of those while it waits. Both hold the owner lock's gate, which every write of this build
+// takes shared in that same statement before it waits on the owner (store.OwnerLockGateNamespace,
+// migration 20261115200014), so the gate is the one advisory lock that tells the two apart by
+// nothing and is left out of the exclusion. Its one bound is the test binary's deadline less
+// testwait's margin, where it fails naming the sessions it last found sending the statement.
+func waitForRenameBehind(t *testing.T, database *store.Store, holder pgx.Tx) {
 	t.Helper()
 	ctx := context.Background()
-	deadline := time.Now().Add(within)
-	for {
+	testwait.UntilPolling(t, 2*time.Millisecond, "the title change's backend to queue behind the issue lock (the sessions last found sending its statement, holding no document lock)", func() ([]uint32, bool) {
 		rows, err := database.Pool.Query(ctx, `
 			select pid from pg_stat_activity
 			where datname = current_database() and query = $1
@@ -942,14 +949,11 @@ func waitForRenameBehind(t *testing.T, database *store.Store, holder pgx.Tx, wit
 				t.Fatal(err)
 			}
 			if queued {
-				return pid
+				return pids, true
 			}
 		}
-		if time.Now().After(deadline) {
-			return 0
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+		return pids, false
+	})
 }
 
 // renameIssue changes the issue's title as the test's login and returns the status Dispatch
@@ -1015,7 +1019,7 @@ func TestSIGTERMWithAnEditorConnectedSettlesItsDocumentBeforeExit(t *testing.T) 
 func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
-	relay := startDatabaseRelay(t, database.Pool.Config().ConnString())
+	relay := startDatabaseRelay(t, namedDatabaseURL(t, database.Pool.Config().ConnString(), shutdownApplication))
 	process := startDispatchProcess(t, relay.url)
 	process.waitHealthy(t)
 	process.call(t, http.MethodPost, "/api/v1/projects", `{"key":"STOP","name":"Shutdown"}`, http.StatusCreated)
@@ -1038,7 +1042,10 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 			t.Logf("Dispatch's output:\n%s", process.Output.String())
 		}
 	})
-	storetest.WaitForLockWaiters(t, holder, 1)
+	// The wait counts the process's own backends alone (shutdownApplication, kept on the URL
+	// through the relay), so no session of another pool queued on the project's row ends it before
+	// the issue create, the one request the process has in flight, waits there.
+	storetest.WaitForLockWaitersFrom(t, holder, 1, shutdownApplication)
 
 	relay.freeze()
 	signalled := process.Terminate(t)
@@ -1456,6 +1463,27 @@ func startDispatchProcess(t *testing.T, databaseURL string) *dispatchProcess {
 
 func startDispatchProcessWithSettleDelay(t *testing.T, databaseURL string, settleDelay time.Duration) *dispatchProcess {
 	return startDispatchProcessWith(t, databaseURL, dispatchOptions{SettleDelay: settleDelay})
+}
+
+// shutdownApplication is the application_name of the connections of a process a shutdown row
+// starts on namedDatabaseURL.
+const shutdownApplication = "dispatch-shutdown-row"
+
+// namedDatabaseURL is databaseURL with application_name set to application. Every connection of a
+// process started on it carries that name in pg_stat_activity, but those of a pool that names its
+// own (store.Pool.Rooms, RoomAppends and Compaction), so a row counts that process's backends
+// queued behind a lock it holds (storetest.LockWaitersFrom) and no other backend of the database:
+// the process's pids are not the test's to know in advance.
+func namedDatabaseURL(t *testing.T, databaseURL, application string) string {
+	t.Helper()
+	named, err := url.Parse(databaseURL)
+	if err != nil {
+		t.Fatalf("parse the database URL to name its connections: %v", err)
+	}
+	query := named.Query()
+	query.Set("application_name", application)
+	named.RawQuery = query.Encode()
+	return named.String()
 }
 
 // startDispatchProcessWith starts Dispatch under options: a home of its own, nothing from the

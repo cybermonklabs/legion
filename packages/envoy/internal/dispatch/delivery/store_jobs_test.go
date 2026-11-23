@@ -244,7 +244,9 @@ func TestAnEmptyListingStillWritesTheRunRow(t *testing.T) {
 // lock is held while the jobs write starts and waits for it, then the run write starts and waits
 // behind it, and then the lock is let go: in the opposite order the jobs write would hold the
 // change log's lock while it waits for the row the run write holds, and Postgres refuses one of
-// them as a deadlock (40P01).
+// them as a deadlock (40P01). Each write runs on a connection of its own, and each wait watches
+// that write's backend (storetest.WaitForQueuedBehind), so no other backend queued behind the gate
+// ends either wait, and the run write starts only once the jobs write has queued.
 func TestAJobsWriteAndARunWriteOfOneRunNeverDeadlock(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -271,12 +273,18 @@ func TestAJobsWriteAndARunWriteOfOneRunNeverDeadlock(t *testing.T) {
 	if _, err := gate.Exec(ctx, `select pg_advisory_xact_lock(6900, 0)`); err != nil {
 		t.Fatalf("take the change log's lock: %v", err)
 	}
+	jobsPool, jobsPID := storetest.OneConnection(t, pool)
 	jobsDone := make(chan error, 1)
-	go func() { jobsDone <- UpsertRunJobs(ctx, pool, "acme/widgets", 803, jobs, true) }()
-	storetest.WaitForLockWaiters(t, gate, 1)
+	go func() { jobsDone <- UpsertRunJobs(ctx, jobsPool, "acme/widgets", 803, jobs, true) }()
+	if err, early := storetest.WaitForQueuedBehind(t, gate, jobsPID, jobsDone); early {
+		t.Fatalf("the jobs write answered (%v) before it queued behind the change log's lock this test holds", err)
+	}
+	runPool, runPID := storetest.OneConnection(t, pool)
 	runDone := make(chan error, 1)
-	go func() { runDone <- UpsertRun(ctx, pool, run) }()
-	storetest.WaitForLockWaiters(t, gate, 2)
+	go func() { runDone <- UpsertRun(ctx, runPool, run) }()
+	if err, early := storetest.WaitForQueuedBehind(t, gate, runPID, runDone); early {
+		t.Fatalf("the run write answered (%v) before it queued behind the waiting jobs write", err)
+	}
 	if err := gate.Commit(ctx); err != nil {
 		t.Fatalf("release the change log's lock: %v", err)
 	}

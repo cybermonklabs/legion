@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -131,13 +132,23 @@ func TestHoldTakesOverWithinASecondAfterTheLapse(t *testing.T) {
 // A holder whose renewals cannot land - its row locked by another transaction for longer than a
 // renewal waits - reports the loss before the row lapses on the database's clock: the loss
 // deadline is Margin ahead of the expiry the last confirmed renewal wrote.
+//
+// The hold runs on a pool of its own, named renewingApplication, and the wait counts that pool's
+// backends alone (storetest.WaitForLockWaitersFrom), so it ends on a renewal queued behind the
+// locked row and on no other backend. It names the pool rather than a pid: a renewal that waits
+// past Renew is cancelled, and pgx closes a connection whose statement a context cancels, so the
+// next renewal runs on a new backend.
 func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
+	const renewingApplication = "duty hold renewals"
+	renewing := storetest.Reopened(t, database, func(config *pgxpool.Config) {
+		config.ConnConfig.RuntimeParams["application_name"] = renewingApplication
+	})
 	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second}
 	ctx := context.Background()
 	holder := uuid.New()
-	hold := mustTakeHold(t, database.Pool, holder, opts)
+	hold := mustTakeHold(t, renewing.Pool, holder, opts)
 
 	locker, err := second.Pool.Begin(ctx)
 	if err != nil {
@@ -147,7 +158,7 @@ func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
 	if _, err := locker.Exec(ctx, `select 1 from duty_holds where name = $1 for update`, holdName); err != nil {
 		t.Fatalf("lock the hold's row: %v", err)
 	}
-	storetest.WaitForLockWaiters(t, locker, 1)
+	storetest.WaitForLockWaitersFrom(t, locker, 1, renewingApplication)
 
 	waitLost(t, hold, 2*opts.TTL)
 	var (

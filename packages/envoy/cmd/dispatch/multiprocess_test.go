@@ -100,6 +100,24 @@ func (p *dispatchPair) startSettling(t *testing.T, env map[string]string, settle
 	p.b.waitHealthy(t)
 }
 
+// The application_name of each process of a named pair (startNamed). A row counts one process's
+// backends queued behind a lock it holds (storetest.LockWaitersFrom), so no backend of the other
+// process, or of any other session of the database, stands in for that process's call.
+const (
+	pairApplicationA = "dispatch-pair-a"
+	pairApplicationB = "dispatch-pair-b"
+)
+
+// startNamed is startSettling with each process's connections named on its database URL
+// (namedDatabaseURL), A's pairApplicationA and B's pairApplicationB.
+func (p *dispatchPair) startNamed(t *testing.T, env map[string]string, settleA, settleB time.Duration) {
+	t.Helper()
+	p.a = p.startProcessOn(t, namedDatabaseURL(t, p.databaseURL(t), pairApplicationA), env, settleA)
+	p.b = p.startProcessOn(t, namedDatabaseURL(t, p.databaseURL(t), pairApplicationB), env, settleB)
+	p.a.waitHealthy(t)
+	p.b.waitHealthy(t)
+}
+
 // startEach is start with an environment of each process's own, A's first and then B's, both
 // started together as start starts them. A row whose two processes must be told apart by the
 // calls they make -- a GitHub of its own per process, whose answers record which process asked
@@ -134,8 +152,15 @@ func (p *dispatchPair) startProcess(t *testing.T, env map[string]string) *dispat
 // document. Zero keeps the server's default.
 func (p *dispatchPair) startProcessSettling(t *testing.T, env map[string]string, settle time.Duration) *dispatchProcess {
 	t.Helper()
+	return p.startProcessOn(t, p.databaseURL(t), env, settle)
+}
+
+// startProcessOn is startProcessSettling on databaseURL, a connection string of the pair's
+// database.
+func (p *dispatchPair) startProcessOn(t *testing.T, databaseURL string, env map[string]string, settle time.Duration) *dispatchProcess {
+	t.Helper()
 	proxy := testnats.StartProxy(t, p.nats)
-	process := startDispatchProcessWith(t, p.databaseURL(t),
+	process := startDispatchProcessWith(t, databaseURL,
 		dispatchOptions{NATSURL: proxy.URL(), SigningKey: multiprocessSigningKey, Env: env, SettleDelay: settle})
 	p.proxies[process] = proxy
 	return process
@@ -3815,38 +3840,33 @@ func TestSyncedEditorWaitsForItsOwnAppend(t *testing.T) {
 	}
 	opened := make(chan *docstest.Peer, 1)
 	go func() { opened <- pair.openMarkedEditor(t, pair.a, dispatchTestLogin, artifactID, "before\n") }()
-	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	// The append the setup waits for is a batch of A's room-appends pool, whose connections carry
+	// that pool's own name whatever the process's URL says, and only A holds a room of the
+	// document; so the wait counts that pool's backends alone, and an insert of any other session
+	// queued on the table lock never ends it before the editor's append is held.
+	testwait.UntilPolling(t, 10*time.Millisecond, "the editor's append to queue on the doc_updates lock (the room-appends backends last counted)", func() (int, bool) {
 		select {
 		case <-opened:
 			t.Fatal("editor setup returned while its append was held")
 		default:
 		}
-		waiting, err := storetest.CountLockWaits(context.Background(), pair.database, "%insert into doc_updates%")
+		waiting, err := storetest.LockWaitersFrom(context.Background(), gate, store.RoomAppendsApplicationName)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if waiting > 0 {
-			select {
-			case <-opened:
-				t.Fatal("editor setup returned before its held append committed")
-			case <-time.After(100 * time.Millisecond):
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("editor setup never sent an append")
-		}
+		return waiting, waiting > 0
+	})
+	select {
+	case <-opened:
+		t.Fatal("editor setup returned before its held append committed")
+	case <-time.After(100 * time.Millisecond):
 	}
 	if err := gate.Commit(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case editor := <-opened:
-		if got := markdown(editor); got != "before\n" {
-			t.Fatalf("sync marker changed the document to %q", got)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("editor setup did not finish after its append was released")
+	editor := testwait.Receive(t, "the editor's setup to finish once its append was released", opened)
+	if got := markdown(editor); got != "before\n" {
+		t.Fatalf("sync marker changed the document to %q", got)
 	}
 }
 
@@ -4218,7 +4238,7 @@ func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 func TestTheSuggestionOutcomeSweepSerialisesOnTheCursorAcrossBothProcesses(t *testing.T) {
 	pair := newPair(t)
 	gate := lockTables(t, pair.database, "exclusive", "suggestion_outcome_cursor")
-	pair.start(t, nil)
+	pair.startNamed(t, nil, 0, 0)
 
 	// The wait fails the row by name at the binary's deadline, and the cleanup prints both
 	// processes' output then, as this branch's failure did before the wait had a bound.
@@ -4227,7 +4247,11 @@ func TestTheSuggestionOutcomeSweepSerialisesOnTheCursorAcrossBothProcesses(t *te
 			t.Logf("A's output:\n%s\nB's output:\n%s", pair.a.Output.String(), pair.b.Output.String())
 		}
 	})
-	storetest.WaitForLockWaiters(t, gate, 2)
+	// One pass of each process, each named by its process's connections (startNamed): a backend of
+	// any other session queued on the cursor's table never ends the wait, and no backend of one
+	// process stands in for the other's pass.
+	storetest.WaitForLockWaitersFrom(t, gate, 1, pairApplicationA)
+	storetest.WaitForLockWaitersFrom(t, gate, 1, pairApplicationB)
 	if err := gate.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the cursor the passes are waiting on: %v", err)
 	}
@@ -6528,7 +6552,7 @@ func (p *dispatchPair) resumedBetween(t *testing.T, artifactID string, from, to 
 // resumption to find, and no settlement loads a room.
 func TestRebuildResumptionQueueAndColdWritesHoldAcrossProcesses(t *testing.T) {
 	pair := newPair(t)
-	pair.startSettling(t, nil, 10*time.Minute, 10*time.Minute)
+	pair.startNamed(t, nil, 10*time.Minute, 10*time.Minute)
 	project := uniqueProjectKey(t, "MAIN")
 	pair.a.createProject(t, project, "Maintenance across processes")
 
@@ -6558,7 +6582,11 @@ func TestRebuildResumptionQueueAndColdWritesHoldAcrossProcesses(t *testing.T) {
 				t.Logf("A's output:\n%s\nB's output:\n%s", pair.a.Output.String(), pair.b.Output.String())
 			}
 		})
-		storetest.WaitForLockWaiters(t, gate, 2)
+		// Each rebuild is named by its process's connections (startNamed), so no backend of any
+		// other session queued on the issue's row stands in for either, and neither is let go
+		// before both have loaded the corrupt history.
+		storetest.WaitForLockWaitersFrom(t, gate, 1, pairApplicationA)
+		storetest.WaitForLockWaitersFrom(t, gate, 1, pairApplicationB)
 		if err := gate.Rollback(context.Background()); err != nil {
 			t.Fatalf("release the issue's row: %v", err)
 		}
@@ -8686,8 +8714,8 @@ func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
 	// less 30 s for the row's cleanups, a day where the binary has none.
 	patience := func() time.Duration { return testwait.Bounded(t, 24*time.Hour, 30*time.Second) }
 
-	step := keywordFillStepper(t, database)
-	first := startDispatchProcessWith(t, url, dispatchOptions{SigningKey: multiprocessSigningKey})
+	step := keywordFillStepper(t, database, keywordFillFirstApplication)
+	first := startDispatchProcessWith(t, namedDatabaseURL(t, url, keywordFillFirstApplication), dispatchOptions{SigningKey: multiprocessSigningKey})
 	firstHolder := keywordFillHolder(t, first, patience())
 	// Four batches of 500 events, out of forty.
 	left := step.through(t, ids[1999])
@@ -8723,6 +8751,10 @@ func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
 	}
 	textversionstest.RequireOnlyRowsOf(t, database, textversionstest.OneEach(ids...))
 }
+
+// keywordFillFirstApplication is the application_name of the first process's connections in the
+// row that kills it mid-fill (namedDatabaseURL), whose batches the row lets through one at a time.
+const keywordFillFirstApplication = "dispatch-keyword-fill-first"
 
 // A holder frozen with its connections open - a long garbage collection pause, a host that stops
 // scheduling it - renews nothing, so its hold lapses on the database's clock and the standby takes
@@ -8869,16 +8901,19 @@ func requireKeywordFillWritersInTurn(t *testing.T, recorded []keywordFillWrite, 
 // keywordFillSteps lets the keyword fill's batches through one at a time. Each batch locks the
 // cursor row (textversions' lockCursorQuery) before it writes and holds that lock to its end, so
 // an exclusive lock of the cursor's table held here holds every batch back, while reads of the
-// cursor go on. held is the transaction holding it.
+// cursor go on. held is the transaction holding it, and application the application_name of the
+// process whose batches it lets through (namedDatabaseURL).
 type keywordFillSteps struct {
-	database *store.Store
-	held     pgx.Tx
+	database    *store.Store
+	held        pgx.Tx
+	application string
 }
 
-// keywordFillStepper takes the exclusive lock of the cursor's table before any fill runs.
-func keywordFillStepper(t *testing.T, database *store.Store) *keywordFillSteps {
+// keywordFillStepper takes the exclusive lock of the cursor's table before any fill runs, for the
+// batches of the process whose connections carry application.
+func keywordFillStepper(t *testing.T, database *store.Store, application string) *keywordFillSteps {
 	t.Helper()
-	return &keywordFillSteps{database: database, held: keywordFillLockCursorTable(t, database)}
+	return &keywordFillSteps{database: database, held: keywordFillLockCursorTable(t, database), application: application}
 }
 
 // keywordFillLockCursorTable begins a transaction and asks for the exclusive lock of the cursor's
@@ -8900,14 +8935,16 @@ func keywordFillLockCursorTable(t *testing.T, database *store.Store) pgx.Tx {
 // through lets batches through, one at a time, until the cursor has reached target, and answers
 // the cursor then, the lock held: the fill can write nothing more until release.
 //
-// Each step waits for a batch to wait on the lock, queues a second lock behind that batch
-// (QueuedBehind, through the holder's own connection), and ends the first: the batch runs, and the
-// second lock is granted once it has committed or rolled back, before any batch begun after it.
-// So the cursor read under the second lock is the one that batch left, and no batch runs while
-// this test reads it or waits, however long. A batch that gives its 5 s wait on the lock up before
-// the first lock ends, as when this test stalls that long inside a step, lets that step pass none,
-// and the next step tries again: only a stall at every step keeps the row from going on, and the
-// binary's deadline ends that.
+// Each step waits for a batch of the process to wait on the lock, queues a second lock behind that
+// batch (QueuedBehind, through the holder's own connection), and ends the first: the batch runs,
+// and the second lock is granted once it has committed or rolled back, before any batch begun
+// after it. So the cursor read under the second lock is the one that batch left, and no batch runs
+// while this test reads it or waits, however long. The wait counts the process's backends alone
+// (application), so no other session queued on the lock is taken for a batch, which would put the
+// second lock ahead of the batch and pass none. A batch that gives its 5 s wait on the lock up
+// before the first lock ends, as when this test stalls that long inside a step, lets that step
+// pass none, and the next step tries again: only a stall at every step keeps the row from going
+// on, and the binary's deadline ends that.
 func (s *keywordFillSteps) through(t *testing.T, target int64) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -8920,8 +8957,8 @@ func (s *keywordFillSteps) through(t *testing.T, target int64) int64 {
 		if cursor >= target {
 			return cursor
 		}
-		testwait.Until(t, "a batch of the keyword fill to wait on its cursor", func() (int, bool) {
-			waiting, err := storetest.LockWaiters(ctx, s.held)
+		testwait.Until(t, "a batch of the keyword fill to wait on its cursor (the process's backends last counted)", func() (int, bool) {
+			waiting, err := storetest.LockWaitersFrom(ctx, s.held, s.application)
 			if err != nil {
 				t.Fatal(err)
 			}

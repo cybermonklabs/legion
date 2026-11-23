@@ -260,7 +260,9 @@ func TestOnePassOffersBoundedlyManyRowsARaisedRuleBroughtBack(t *testing.T) {
 // round. The test is that other writer: it holds the issue whose lock sorts first, and once the
 // move waits, takes the other. A move that took the issue it left first, as its own appends reach
 // it, would hold that lock while it waited for the one the test holds, and Postgres would break
-// the cycle as a deadlock.
+// the cycle as a deadlock. The move runs on a connection of its own and the wait watches that
+// backend (storetest.WaitForQueuedBehind), so no other backend queued on the lock lets the test
+// take the second lock before the move waits.
 func TestAnAttributionMoveTakesBothIssuesLocksInLockKeyOrder(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	first, second := seedHeadIssue(t, ctx, pool, 72), seedHeadIssue(t, ctx, pool, 73)
@@ -286,10 +288,11 @@ func TestAnAttributionMoveTakesBothIssuesLocksInLockKeyOrder(t *testing.T) {
 	if err := store.LockOwner(ctx, holder, store.IssueOwner(low)); err != nil {
 		t.Fatalf("hold %s's owner lock: %v", low, err)
 	}
+	movePool, movePID := storetest.OneConnection(t, pool)
 	moved := make(chan error, 1)
 	go func() {
 		moved <- func() error {
-			tx, err := pool.Begin(ctx)
+			tx, err := movePool.Begin(ctx)
 			if err != nil {
 				return err
 			}
@@ -300,7 +303,7 @@ func TestAnAttributionMoveTakesBothIssuesLocksInLockKeyOrder(t *testing.T) {
 			return tx.Commit(ctx)
 		}()
 	}()
-	if early, answered, _ := storetest.AwaitOwnerLockWaiter(t, &store.Store{Pool: pool}, "the attribution move", moved); answered {
+	if early, answered := storetest.WaitForQueuedBehind(t, holder, movePID, moved); answered {
 		t.Fatalf("the move answered (%v) while this test held %s's owner lock", early, low)
 	}
 	if err := store.LockOwner(ctx, holder, store.IssueOwner(high)); err != nil {
