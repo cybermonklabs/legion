@@ -179,13 +179,17 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 		t.Fatal(err)
 	}
 	g.cancel = func() { _ = stdin.Close() }
-	go func() { g.result <- command.Wait() }()
+	go func() {
+		g.result <- command.Wait()
+		close(g.result)
+	}()
 	t.Cleanup(func() {
 		g.cancel()
 		// No bound of the case's own on the launcher's end (reentry): one that does not stop after
 		// its context ended is ended by its own -test.timeout, with its alarm's goroutine dump in
-		// its output, and its namespace with it.
-		if err := <-g.result; err != nil {
+		// its output, and its namespace with it. A case that took the launcher's return itself
+		// leaves the channel closed (rig.result), with nothing left to read here.
+		if err, ok := <-g.result; ok && err != nil {
 			t.Errorf("PID 1 launcher exited: %v (one that did not stop after its context ended ends at its own deadline, its panic below)\n%s", err, output.String())
 		}
 	})
@@ -275,8 +279,10 @@ while :; do /bin/sleep 600 & wait; done
 			published(t, ready)
 			g.cancel()
 			select {
-			case err := <-g.result:
-				g.result <- err
+			case err, ok := <-g.result:
+				if !ok {
+					t.Fatal("the launcher's result was taken before this test read it")
+				}
 				if err != nil {
 					t.Fatalf("launcher exit: %v", err)
 				}

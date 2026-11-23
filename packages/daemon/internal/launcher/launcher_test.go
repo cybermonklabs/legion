@@ -70,7 +70,10 @@ type rig struct {
 	listener net.Listener
 	private  string
 	cancel   context.CancelFunc
-	result   chan error
+	// result carries the launcher's one return, and the rig closes it after that value: a test
+	// may take the value, and the rig's cleanup then finds the channel closed and takes the rig as
+	// joined. processRig's rig sends nothing on it.
+	result chan error
 	// roleConn is the daemon end of the role's current connection, which accept replaces.
 	*roleConn
 	// stderr is what the launcher and its children wrote to Config.Stderr.
@@ -126,6 +129,7 @@ func newSessionRig(t *testing.T, cfg Config) *rig {
 	cfg.Role, cfg.PodUID, cfg.PrivateDir, cfg.Stderr = "tester", "pod-1", g.private, g.stderr
 	go func() {
 		g.result <- Run(ctx, cfg)
+		close(g.result)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -150,6 +154,30 @@ func newSessionRig(t *testing.T, cfg Config) *rig {
 	})
 	g.accept()
 	return g
+}
+
+// A test may join its rig itself, taking the launcher's one return, and the rig's own cleanup
+// must then find nothing left to wait for, rather than wait out its bound for a second value.
+func TestARigJoinedByItsTestLeavesItsCleanupNothingToWaitFor(t *testing.T) {
+	var joinedAt, cleanedAt time.Time
+	passed := t.Run("joined", func(t *testing.T) {
+		// Registered before the rig's own cleanups, so it runs after them (cleanups run last first).
+		t.Cleanup(func() { cleanedAt = time.Now() })
+		g := newRig(t)
+		g.cancel()
+		select { // the explicit join, as a test that stops its launcher before another starts joins it
+		case <-g.result:
+		case <-time.After(beforeDeadline(t)):
+			t.Fatalf("the launcher did not stop after its context ended, to 30 s before the test binary's deadline: %s", g.stderr.String())
+		}
+		joinedAt = time.Now()
+	})
+	if !passed {
+		t.Fatal("the subtest that joined its rig failed: its registered cleanup waited for a second value")
+	}
+	if waited := cleanedAt.Sub(joinedAt); waited >= time.Second {
+		t.Fatalf("the rig's cleanups took %s after the join, want well under a second: a cleanup with nothing left to wait for finds the channel closed and returns", waited)
+	}
 }
 
 // killGroupLedBy sends SIGKILL to the process group pid leads, for a case whose launcher left a
@@ -1900,7 +1928,6 @@ func TestOnTheContainersShutdownASessionDatabaseEndsOnceItsWedgedChildIsKilled(t
 		}
 		select {
 		case err := <-g.result:
-			g.result <- err
 			t.Fatalf("Run returned %v while the generation's child still lived", err)
 		default:
 		}
@@ -1909,9 +1936,10 @@ func TestOnTheContainersShutdownASessionDatabaseEndsOnceItsWedgedChildIsKilled(t
 			t.Fatal(err)
 		}
 		select {
-		case err := <-g.result:
-			// The rig's cleanup reads the result too.
-			g.result <- err
+		case err, ok := <-g.result:
+			if !ok {
+				t.Fatal("the launcher's result was taken before this test read it")
+			}
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("Run = %v, want the container's shutdown", err)
 			}
@@ -1954,9 +1982,10 @@ func TestOnTheContainersShutdownASessionDatabaseEndsOnceItsWedgedChildIsKilled(t
 		stopped := time.Now()
 		g.cancel()
 		select {
-		case err := <-g.result:
-			// The rig's cleanup reads the result too.
-			g.result <- err
+		case err, ok := <-g.result:
+			if !ok {
+				t.Fatal("the launcher's result was taken before this test read it")
+			}
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("Run = %v, want the container's shutdown", err)
 			}
@@ -2099,9 +2128,10 @@ func TestASocketHolderOutsideTheGenerationCannotHoldItOpenOnTheContainersShutdow
 
 	g.cancel()
 	select {
-	case err := <-g.result:
-		// The rig's cleanup reads the result too.
-		g.result <- err
+	case err, ok := <-g.result:
+		if !ok {
+			t.Fatal("the launcher's result was taken before this test read it")
+		}
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("Run = %v, want the container's shutdown", err)
 		}

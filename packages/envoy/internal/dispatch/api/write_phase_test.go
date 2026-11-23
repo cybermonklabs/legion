@@ -428,7 +428,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 	t.Run("a refused guard", func(t *testing.T) {
 		var service *docs.Service
 		var gate *firstReplaceGate
-		handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+		handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
 			service = docs.New(docs.Deps{Store: database, Settle: time.Hour})
 			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 			gate = &firstReplaceGate{
@@ -441,6 +441,9 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		release := func() { released.Do(func() { close(gate.releaseFirst) }) }
 		defer release()
 		_, artifactID, commentID := suggest(t, handler)
+		// The issue's create starts the term-statistics refresh; it has committed before the
+		// accept starts, so the fingerprint below holds none of its writes.
+		awaitBackgroundWrites(t, served)
 
 		responses := make(chan *httptest.ResponseRecorder, 1)
 		go func() {
@@ -478,7 +481,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 	// written in the transaction.
 	t.Run("a unique violation", func(t *testing.T) {
 		var service *docs.Service
-		handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+		handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
 			service = docs.New(docs.Deps{Store: database, Settle: time.Hour})
 			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 			return service
@@ -492,6 +495,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		`, issueKey); err != nil {
 			t.Fatalf("take the issue's next sequence number: %v", err)
 		}
+		awaitBackgroundWrites(t, served)
 		before := databaseFingerprint(t, database)
 
 		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")

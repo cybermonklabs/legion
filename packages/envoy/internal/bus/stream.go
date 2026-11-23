@@ -63,8 +63,10 @@ const (
 	// the proof's 'jti' and target URI, so a captured proof presented a second time inside its
 	// acceptance window is refused by whichever listener of a deployment receives it
 	// (cmd/listener/brokerauth.go). Its records are the only ones Envoy keeps on a bucket TTL
-	// alone: nothing reads a record back, and a key that has outlived the window its proof could
-	// be presented in says nothing, so each key expires rather than being deleted.
+	// alone: nothing but a create of the same key reads a record back, and a key that has outlived
+	// the window its proof could be presented in says nothing, so each key expires rather than being
+	// deleted, except the record an edge listener deletes to give a proof back after a 503 it
+	// answered before serving anything (proofSpend.release in cmd/listener).
 	DPoPProofBucket = "envoy_dpop_proofs"
 	// WebhookRedeliveryBucket holds the cursor and records of Dispatch's sweep of the GitHub App
 	// webhook's failed deliveries (internal/dispatch/redeliver).

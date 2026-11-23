@@ -164,10 +164,12 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //  20. the ask's block state, read for its parts' plan (refs.PlanAskParts, through
 //     refs.ReadItemIndex);
 //  21. a batch of 15: the whole write phase, sent back to back - the ask row, its block state
-//     and the part rows of its question and options, the author's follow, the references and
+//     and the part rows of its question and options, the references and
 //     the row the ask owes the grammar's re-index queue, deleted with them
 //     (refs.Replacement.Queue, INFRA-869), the ask.opened event with its payload and the
-//     issue's last_seq, the reference stamps, and the approval as the request leaves it;
+//     issue's last_seq, the reference stamps, the author's follow and the session node it
+//     records, caused by that ask.opened, in one statement (asks.QueueFollowAuthor), and the
+//     approval as the request leaves it;
 //  22. commit;
 //  23. the display trees of the texts the ask.opened event carries - its question and both option
 //     labels - stored in one statement by the publish path (storeEventDisplayTrees);

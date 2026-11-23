@@ -65,7 +65,7 @@ func readBootAdmission(t *testing.T, pool *store.Pool) bootAdmission {
 	t.Helper()
 	ctx := context.Background()
 	var got bootAdmission
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		var err error
 		if got.slots, err = records.Slots(ctx, tx); err != nil {
@@ -125,7 +125,7 @@ func TestASecondBootOnTheSameStoreLeavesEverySlotStartAndPlaceAsItWas(t *testing
 		t.Fatal(err)
 	}
 	root, child := bootProject+"-1", bootProject+"-2"
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, bootIssue(root, root, "in_progress", phase.Admitted)); err != nil {
 			return err
 		}
@@ -261,7 +261,7 @@ func applyMigrationsByHand(t *testing.T, st *store.Store, set []migrations.Migra
 	ctx := context.Background()
 	widened := false
 	for _, migration := range set {
-		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			if _, err := tx.Exec(ctx, migration.SQL); err != nil {
 				return err
 			}
@@ -306,7 +306,7 @@ func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
 	building, testing := bootProject+"-3", bootProject+"-4"
 	heldReady, merging, lingerChild := bootProject+"-5", bootProject+"-6", bootProject+"-8"
 	lingers := time.Now().UTC().Add(time.Hour)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		// A root whose architect is writing its spec, a running tree whose own root waits in
 		// accepting while its children work, and a tree that lingers after its close. Each
 		// root holds the one slot its tree held before the release, and no child holds any.
@@ -426,7 +426,7 @@ func slotHolders(t *testing.T, pool *store.Pool) []string {
 func finish(t *testing.T, pool *store.Pool, records record.Store, key string) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := records.Issue(ctx, tx, key)
 		if err != nil {
 			return err

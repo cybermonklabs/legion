@@ -410,7 +410,7 @@ func TestARecordedDefaultBranchIsHeldOnlyForTheRepositoryTheRecordNames(t *testi
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := projectRecords{Store: record.NewStore(), project: "LEGION"}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutIssue(ctx, tx, doneOn("LEGION-1", "LEGION", "Old/Widgets", "main"))
 	}); err != nil {
 		t.Fatal(err)
@@ -475,7 +475,7 @@ func TestABootsBackfillLeavesARecordGitHubDoesNotAnswerForAndTheRefresherFillsIt
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			pool := isolatedOutboxPool(t)
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				for _, key := range []string{"LEGION-7", "LEGION-9"} {
 					if _, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
 						values ($1, $1, 'LEGION', $1, 'planning', 1, 'in_progress', 'A', 1)`, key); err != nil {
@@ -504,9 +504,12 @@ func TestABootsBackfillLeavesARecordGitHubDoesNotAnswerForAndTheRefresherFillsIt
 					published = append(published, repos)
 					return nil
 				}}
-			filled, left, err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, "LEGION", w.stateDir, w.defaultBranches, ghrepo.Renames{}, w.log)
-			if err != nil || !slices.Equal(repositoryNames(filled), []string{"acme/widgets"}) || !left {
-				t.Fatalf("backfill = filled %v, left %v, %v; want LEGION-9 filled on acme/widgets, LEGION-7 left and the boot going on", filled, left, err)
+			left, err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, "LEGION", w.stateDir, w.defaultBranches, ghrepo.Renames{}, w.log)
+			if err != nil || !left {
+				t.Fatalf("backfill = left %v, %v; want LEGION-7 left and the boot going on", left, err)
+			}
+			if filled := recordedIssue(t, w, "LEGION-9"); filled == nil || filled.GitHubRepo != "acme/widgets" {
+				t.Fatalf("LEGION-9's record = %+v, want it filled on acme/widgets", filled)
 			}
 			if unfilled := unfilledKeys(t, w); !slices.Equal(unfilled, []string{"LEGION-7"}) {
 				t.Fatalf("unfilled after the boot's backfill = %v, want LEGION-7 alone", unfilled)
@@ -553,7 +556,7 @@ func TestTheFirstJobReadsTheRecordsRepositoriesRepositoryReadsAtATime(t *testing
 	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: projectRecords{Store: record.NewStore(), project: "LEGION"}, dispatch: &repositoryDispatch{},
 		dispatchProject: "LEGION", installs: &installations{}, repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger()}
 	var repos []string
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		for index := range repositoryReads + 4 {
 			repo := "acme/r" + strconv.Itoa(index)
 			named[repo], repos = repo+"@main", append(repos, repo)
@@ -628,7 +631,7 @@ func recordBeforeBoot(t *testing.T, cfg config.Config, issues ...record.Issue) {
 	if _, err := st.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, issue := range issues {
 			if err := record.NewStore().PutIssue(ctx, tx, issue); err != nil {
 				return err

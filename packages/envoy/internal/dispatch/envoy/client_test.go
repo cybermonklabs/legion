@@ -502,9 +502,10 @@ func TestARoleRefusedForAnUnresponsiveHolderResolvesToThatHolder(t *testing.T) {
 }
 
 // A listener that is starting answers every /v1 route 503 with a JSON reason ("service starting",
-// cmd/listener/main.go's startingGate), and a gateway in front of one that is gone answers 502 or
-// 504, so on a role lookup and on a send alike those are ErrUnavailable - a caller's "ask again" -
-// whatever body they carry, and the error keeps the listener's reason because a person reads it.
+// cmd/listener/starting_gate.go's startingGate), and a gateway in front of one that is gone answers
+// 502 or 504, so on a role lookup and on a send alike those are ErrUnavailable - a caller's "ask
+// again" - whatever body they carry, and the error keeps the listener's reason because a person
+// reads it.
 // A 4xx is the listener's answer, never unavailable: that is the discriminating control.
 func TestRoleAndSendReportAStartingListenerAsUnavailable(t *testing.T) {
 	calls := map[string]func(*Client) error{

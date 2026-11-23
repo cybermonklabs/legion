@@ -6,6 +6,7 @@ package daemon
 // (`k1: …`), failing when a count it reads is 0.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -885,7 +886,7 @@ func turnStartedLine() string { return "supervise: a turn started" }
 // pullRequest records issue's open pull request number, its head at head.
 func (r *pauseDaemonRig) pullRequest(issue string, number int, head string) {
 	r.t.Helper()
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutPullRequest(r.ctx, tx, record.PullRequest{Issue: issue, Repo: liveRepo, Number: number,
 			Branch: "legion/" + issue, HeadSHA: head, HeadUpdatedAt: r.clock.Now().Add(-time.Hour).UTC(), State: record.PullRequestOpen})
 	}); err != nil {
@@ -926,7 +927,7 @@ func (r *pauseDaemonRig) noPrompt(sh *shim, why string) {
 // clock, which the engine stamps its rows with, and the wall clock, which the outbox reads.
 func (r *pauseDaemonRig) noneDue(held []api.PauseHeldView) {
 	r.t.Helper()
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		due, err := r.records.DueRows(r.ctx, tx, r.cfg.Project, "", nil, r.later())
 		if err != nil {
 			return err
@@ -946,7 +947,7 @@ func (r *pauseDaemonRig) noneDue(held []api.PauseHeldView) {
 // claimed by it on the same database, as before any pause.
 func (r *pauseDaemonRig) claimsRowOf(project string, id int64) {
 	r.t.Helper()
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		now := r.later()
 		due, err := r.records.DueRows(r.ctx, tx, project, "", nil, now)
 		if err != nil {

@@ -1910,12 +1910,12 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // The ask names the pull request, the head, the base and the phase the issue stays in, gives why
 // the daemon acted, and tells the role asked (the implementer, or in merging the merger) to merge
 // the base forward in the issue workspace, the one workspace every role of the issue shares, as
-// the worker skill's conflicts reference says, after the working-copy check of its foreign-path
-// reference, and to push the issue branch, with no handoff and no completion for the merge. In
-// implementing it also says that the implementer's own assignment and its completion stand: the
-// act starts no phase entry there. To the merger it also says that the merge is its own to
-// resolve and that the reviewer is asked to approve the head it pushes (cybermonklabs/legion#4979);
-// the landed, which comes when that matters, is what holds its merge to that approval.
+// the worker skill's conflicts reference says, and to push the issue branch, with no handoff and
+// no completion for the merge. In implementing it also says that the implementer's own
+// assignment and its completion stand: the act starts no phase entry there. To the merger it also
+// says that the merge is its own to resolve and that the reviewer is asked to approve the head it
+// pushes (cybermonklabs/legion#4979); the landed, which comes when that matters, is what holds its
+// merge to that approval.
 //
 // The hold gives why the daemon acted, and tells the worker that the implementer is asked to merge
 // the head forward in the workspace they share and that the issue stays in its phase, to stop
@@ -1952,8 +1952,7 @@ func (p MergeForwardMessage) Message(issue, repo string) string {
 		return fmt.Sprintf("%s: %s at head %s conflicts with its base branch %s, and a second read of GitHub confirmed it."+
 			" The issue stays in %s. %s"+
 			" Merge %s forward in the issue workspace, $LEGION_WORKSPACE. Every role of the issue shares that one workspace."+
-			" First do the working-copy check of skill://legion-worker/references/foreign-path.md."+
-			" Then merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch."+
+			" Merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch."+
 			" Write no handoff and make no completion for this forward merge.%s",
 			issue, pull, p.Head, p.Base, p.Phase, mergeForwardReason(p.Why, p.Base), p.Base, own)
 	case MergeForwardHold:

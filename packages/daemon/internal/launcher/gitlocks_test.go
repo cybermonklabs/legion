@@ -280,16 +280,16 @@ func newGatedProc(t *testing.T, pids ...int) *gatedProc {
 // `worker-shim`) hands its agent the deadline its plan carries (peerPlan.End), and mainHelpers,
 // the controller guard's shim, agent and eval kernel, which TestMain runs with no testing.T, live
 // until their parent's pipe ends (untilStdinEnds), with two minutes as a cap on what a failed run
-// leaves behind, never a wait a case reads.
+// leaves behind, never a wait a case reads. The role stage and its agents wait to the Deadline
+// their plan carries (stagePlan): the case's beforeDeadline, read once in the case, which ends
+// before the stage's own.
 //
 // Not hang guards, so not bounded by it: a span that is part of a case's claim, or an answer a
 // re-entered process prints and then goes on from. These are the race cases' two-minute search
 // budget (raceSwaps); the racer's 30 s (raceTheSwap's deadline), which also sets how long the racer
-// keeps swapping; the role-drain bounds handed to role-init (roleDrainStaysBound); the role's
-// minute for a detached process, to report its trap to the agent and to be gone for the stage
-// (detachedGoneWithin), whose answers must leave the stage its time for the generations after it;
-// and the gated live measurement's bounds (memoryguard_live_test.go's controllerLive…Bound), each a
-// part of that measurement's verdict, run only where a person or a measurement Job asks for it.
+// keeps swapping; the role-drain bounds handed to role-init (roleDrainStaysBound); and the gated
+// live measurement's bounds (memoryguard_live_test.go's controllerLive…Bound), each a part of that
+// measurement's verdict, run only where a person or a measurement Job asks for it.
 // removeWhileFilling's writer is no span at all: it runs until the removal answers, and only the
 // wait for that answer is bounded, by beforeDeadline.
 func beforeDeadline(t *testing.T) time.Duration {
@@ -676,7 +676,7 @@ func TestTheFirstPassRunsBeforeTheBundleRestore(t *testing.T) {
 
 		t.Chdir(ws)
 		useSweepingLauncher(t)
-		fleet := newFleet(t, 5*time.Second, "tester")
+		fleet := newFleetOf(t, Config{StopGrace: 5 * time.Second, Workspace: ws}, "tester")
 		for _, path := range planted {
 			if !swept(path) {
 				t.Fatalf("the launcher's first pass left %s where it was; its log:\n%s", path, fleet.stderr.String())
