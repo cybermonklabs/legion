@@ -3076,6 +3076,27 @@ test("a pass at one open head and nothing at the other reads Failed where Dispat
   expect(stateOfOneCheck(TWO_OPEN_HEADS, results)).toBe("failed");
 });
 
+// Dispatch answers yes, as main's server does for any pass at a basis, and the page takes that
+// answer: the check reads Passed, though the newest result at its basis is a fail over an older
+// pass there. The page reads no verdict of its own over Dispatch's yes. The check stands on the
+// newest result at its basis, which is the fail.
+test("a fail at the basis over an older pass there reads Passed where Dispatch answers yes", () => {
+  const results = [
+    recorded("result-failed", "Fix the fault and it passes.", {
+      created_at: "2026-11-06T00:00:00Z",
+      failed: 1,
+      verdict: "fail",
+    }),
+    recorded("result-passed", "Break it and it fails.", { created_at: "2026-11-05T00:00:00Z" }),
+  ];
+
+  expect(checkStanding({ pass_stands: { answer: "yes" }, results })).toMatchObject({
+    stands: { id: "result-failed" },
+    state: "passed",
+  });
+  expect(stateOfOneCheck({ pass_stands: { answer: "yes" } }, results)).toBe("passed");
+});
+
 // The deployed server sends no `pass_stands` at all, and Dispatch rolls out with two builds
 // behind one load balancer, so a page meets a payload without it. Reading it unguarded threw
 // inside `buildIssueTree`, which is every preset of the issue page and not the checks alone.
