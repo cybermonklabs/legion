@@ -1,7 +1,8 @@
 -- 20261122104755_spec_gate_exemption.up.sql — the rule each design gate started under, the version
 -- that opened a gate with no person, the version of the Verification document a gate's change
--- request was read at, the daemon's last reading of each issue's ending condition, and the outbox
--- kind that reads that condition again (R23, R24, R25, R26).
+-- request was read at and whether that read found a changed check no person approved, the daemon's
+-- last reading of each issue's ending condition, and the outbox kind that reads that condition
+-- again (R23, R24, R25, R26).
 --
 -- design_gates.rule is record.DesignGate.Rule: `approval`, the rule of a person's approval, which
 -- every row the table already holds takes, since no release before this one opened a gate any other
@@ -18,9 +19,14 @@
 -- design_gates.verification_version is record.DesignGate.VerificationVersion: the newest version of
 -- the issue's Verification document a read of the gate's change request saw, 0 where no read saw
 -- one, which is every row the table already holds. Under the rule of a change request the request
--- reads its checks from that document, so a version of it that changes an approved check closes a
--- gate open by exemption (the workflow's verificationVersion), and a read older than it opens
--- nothing (the workflow's exemptAt).
+-- reads its checks from that document, so a version of it that changes an approved check closes the
+-- gate (the workflow's readChanges), and a read older than it opens nothing.
+--
+-- design_gates.checks_unapproved is record.DesignGate.ChecksUnapproved: whether the read at
+-- verification_version found a check of The Spec that the Verification document changes and that
+-- the approved spec does not hold as written, so no person approved it (R25). Under the rule of a
+-- change request it closes the gate whatever approval or exemption stands (record.GateApproved,
+-- record.GateExempt). It is false in every row the table already holds.
 --
 -- spec_endings is record.SpecEnding: one row per issue in merging whose tree's spec gate is open by
 -- exemption, holding the pull request head the ending condition was last read at, the state
@@ -71,9 +77,9 @@
 -- release's own again. All are owed to the roll-forward. With the columns and the table dropped and
 -- the row deleted, store.apply finds no row of this version and runs this file again, which adds
 -- the columns at their defaults and the table empty. What the drops cost is every rule, every
--- exemption, every Verification version and every reading recorded: after the roll-forward every
--- gate is under the rule of a person's approval, and a root's next registration of its spec step
--- under a generation the rollback did not clear keeps that rule.
+-- exemption, every Verification version, every changed check held and every reading recorded:
+-- after the roll-forward every gate is under the rule of a person's approval, and a root's next
+-- registration of its spec step under a generation the rollback did not clear keeps that rule.
 --
 -- begin;
 -- delete from outbox where kind = 'spec_ending_read';
@@ -81,13 +87,14 @@
 -- alter table outbox drop constraint if exists outbox_kind_check;
 -- alter table outbox add constraint outbox_kind_check check (kind in ('dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed', 'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake', 'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release', 'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask', 'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record', 'conflict_confirm', 'merge_forward'));
 -- drop table if exists spec_endings;
--- alter table design_gates drop column if exists rule, drop column if exists exempt_version, drop column if exists verification_version;
+-- alter table design_gates drop column if exists rule, drop column if exists exempt_version, drop column if exists verification_version, drop column if exists checks_unapproved;
 -- delete from schema_version where version = 20261122104755;
 -- commit;
 alter table design_gates
   add column rule text not null default 'approval' check (rule in ('approval', 'change_request')),
   add column exempt_version integer check (exempt_version > 0),
-  add column verification_version integer not null default 0 check (verification_version >= 0);
+  add column verification_version integer not null default 0 check (verification_version >= 0),
+  add column checks_unapproved boolean not null default false;
 
 create table spec_endings (
   issue text primary key references issues (key) on delete cascade,

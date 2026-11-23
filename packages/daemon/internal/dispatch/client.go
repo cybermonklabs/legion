@@ -764,14 +764,15 @@ func (r handoffResponse) handoff() Handoff {
 // proposals, the changed checks, the problems and the conclusion are the person's to read on
 // Dispatch, so they are left undecoded.
 type changeRequestResponse struct {
-	Issue               string `json:"issue"`
-	Version             int    `json:"version"`
-	SpecSource          bool   `json:"spec_source"`
-	Repo                string `json:"repo"`
-	VerificationVersion int    `json:"verification_version"`
-	Proposes            bool   `json:"proposes"`
-	ChangesChecks       bool   `json:"changes_checks"`
-	Judgment            string `json:"judgment"`
+	Issue                   string `json:"issue"`
+	Version                 int    `json:"version"`
+	SpecSource              bool   `json:"spec_source"`
+	Repo                    string `json:"repo"`
+	VerificationVersion     int    `json:"verification_version"`
+	Proposes                bool   `json:"proposes"`
+	ChangesChecks           bool   `json:"changes_checks"`
+	ChangesChecksUnapproved bool   `json:"changes_checks_unapproved"`
+	Judgment                string `json:"judgment"`
 }
 
 // specEndingResponse is the part of Dispatch's ending answer the daemon reads.

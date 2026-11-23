@@ -1127,19 +1127,22 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // ChangeRequestRead is what the daemon read of an issue's change request at one version of its
 // spec (dispatch.ChangeRequest), carried by the fact that applies that version, since the workflow
 // performs no I/O: the version read, the version of the issue's Verification document the read
-// took its checks from (0 for none), whether the issue's repository is a spec source, and whether
-// that version proposes no statement, component or interface and changes no approved check.
+// took its checks from (0 for none), whether the issue's repository is a spec source, whether that
+// version proposes no statement, component or interface and changes no approved check, and whether
+// a check it changes is one the approved spec does not hold as written, so no person approved it
+// (ChecksUnapproved, R25).
 type ChangeRequestRead struct {
 	Version             int
 	VerificationVersion int
 	SpecSource          bool
 	ProposesNothing     bool
+	ChecksUnapproved    bool
 }
 
 // ChangeRequestReadOf is read as a fact carries it.
 func ChangeRequestReadOf(read dispatch.ChangeRequest) *ChangeRequestRead {
 	return &ChangeRequestRead{Version: read.Version, VerificationVersion: read.VerificationVersion, SpecSource: read.SpecSource,
-		ProposesNothing: read.ProposesNothing()}
+		ProposesNothing: read.ProposesNothing(), ChecksUnapproved: read.ChangesChecksUnapproved}
 }
 
 // ExemptsVersion says whether the read opens version with no person: it is of that very version,

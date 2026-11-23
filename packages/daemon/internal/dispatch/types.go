@@ -355,19 +355,23 @@ func (a Approval) LatestReviewer() Actor {
 // spec (GET /api/v1/issues/{key}/change-request): the version it read, whether the issue's
 // repository is an enabled spec source of its project (SpecSource), the repository and the
 // version of the Verification document whose checks it compared, whether the version proposes a
-// statement, component or interface (Proposes, a problem of such a block included) and whether it
-// changes an approved check (ChangesChecks), and the judgment of its conclusion. The daemon's design
-// gate decides from SpecSource and ProposesNothing alone (R23); the proposals themselves are the
+// statement, component or interface (Proposes, a problem of such a block included), whether it
+// changes an approved check (ChangesChecks), whether a check it changes is one the approved spec
+// does not hold as written, so no person's approval wrote it (ChangesChecksUnapproved, R25), and
+// the judgment of its conclusion. The daemon's design gate decides from SpecSource and
+// ProposesNothing whether a version opens with no person (R23), and from ChangesChecksUnapproved
+// whether the checks hold the gate whatever stands open (R25); the proposals themselves are the
 // person's to read on Dispatch, so this type does not carry them.
 type ChangeRequest struct {
-	Issue               string
-	Version             int
-	SpecSource          bool
-	Repo                string
-	VerificationVersion int
-	Proposes            bool
-	ChangesChecks       bool
-	Judgment            string
+	Issue                   string
+	Version                 int
+	SpecSource              bool
+	Repo                    string
+	VerificationVersion     int
+	Proposes                bool
+	ChangesChecks           bool
+	ChangesChecksUnapproved bool
+	Judgment                string
 }
 
 // ProposesNothing says whether the version proposes no statement, component or interface and

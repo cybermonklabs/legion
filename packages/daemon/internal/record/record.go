@@ -1522,11 +1522,18 @@ type DesignGate struct {
 	// VerificationVersion is the newest version of the issue's Verification document a read of its
 	// change request saw (0 while no read saw one): under the rule of a change request the request
 	// reads its checks from that document, so it is the other half of what the gate stands open on
-	// beside LatestVersion. Every write that moves it decides ExemptVersion again from the same
-	// read, so an exemption that stands at LatestVersion was read at VerificationVersion, and a
-	// read made before a later version of that document the gate already applied exempts nothing
-	// (the workflow's exemptAt).
+	// beside LatestVersion. Every write that moves it decides ExemptVersion and ChecksUnapproved
+	// again from the same read, so an exemption that stands at LatestVersion was read at
+	// VerificationVersion, and a read made before a later version of that document the gate already
+	// applied exempts nothing and holds nothing (the workflow's readChanges).
 	VerificationVersion int
+	// ChecksUnapproved is whether the read at VerificationVersion found a check of The Spec that the
+	// Verification document changes and that no person approved: the approved spec does not hold it
+	// as the document writes it (R25: a changed approved check waits for the person). Under the rule
+	// of a change request it closes the gate whatever approval or exemption stands
+	// (GateApproved, GateExempt), until a later read finds the change held by the approved spec, which
+	// only a person's approval of a request that covers it writes.
+	ChecksUnapproved bool
 }
 
 // GateRule is the rule a design gate opens under: GateRuleApproval, a person approves the current
