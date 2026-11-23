@@ -110,12 +110,30 @@ const allAgentsSelected: LayoutState = {
  *  marks with these names. */
 const ISSUE_GROUPS = ["labels", "components", "pull-requests"];
 
+/** A short page's floor: four fifths of what its own region drew at its narrowest width on the
+ *  stress seed, so a page that drew a heading and nothing else still fails. */
+function shortPage(measured: number): NonNullable<LayoutRoute["minElements"]> {
+  return {
+    count: Math.max(3, Math.floor(measured * 0.8)),
+    reason: `a short page: ${measured} elements in its own region at its narrowest, on the stress seed`,
+  };
+}
+
 /** What a reviewed route adds here: its states, the groups it must mark and its floor. */
 const additions: Readonly<
   Record<string, Pick<LayoutRoute, "minElements" | "requiredGroups" | "states">>
 > = {
   agents: { requiredGroups: ["roles"], states: [peekDrawer, allAgentsSelected] },
+  answers: { minElements: shortPage(32) },
+  broadcast: { minElements: shortPage(48) },
+  broadcasts: { minElements: shortPage(14) },
+  "credentials-machine": { minElements: shortPage(24) },
   "issue-children": { requiredGroups: [...ISSUE_GROUPS, "child-links"] },
+  machine: { minElements: shortPage(46) },
+  machines: { minElements: shortPage(15) },
+  "not-found": { minElements: shortPage(4) },
+  "project-document": { minElements: shortPage(49) },
+  "project-documents": { minElements: shortPage(40) },
   "project-issues": { states: [twoRowsSelected] },
 };
 
@@ -192,6 +210,7 @@ export const layoutRoutes: readonly LayoutRoute[] = [
     ],
   },
   {
+    minElements: shortPage(45),
     name: "agent-live",
     // Excluded from the review table because its frames land over a live socket and the view
     // scrolls as they do, so no two shots match; a layout reading taken once the replayed turns
@@ -203,6 +222,7 @@ export const layoutRoutes: readonly LayoutRoute[] = [
     ],
   },
   {
+    minElements: shortPage(41),
     name: "agent-artifact",
     // Excluded from the review table because its chrome is the issue-artifact page's; the
     // layout rule reads that chrome around a picture, which no other route draws.
