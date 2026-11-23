@@ -736,3 +736,31 @@ func TestTheWalkTakesItsTaskByTheStoresOneRule(t *testing.T) {
 		t.Fatalf("the walk of a plan of two tasks = %v, want the error %q", err, want)
 	}
 }
+
+// A testing step that starts again names no step to return to. The tester's completion of an
+// earlier testing step named step 1 (returnTo), and the work went back. The move into testing again
+// clears that completion's whole handoff, its returnTo with its commit (clearHandoff), so no later
+// fail of the step takes its task back to a step an earlier completion named. The cleared commit
+// shows the clear ran; returnTo is the field this test exists for.
+func TestATestingStepStartedAgainNamesNoStepAnEarlierCompletionNamed(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester", "reviewer")
+	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
+	seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleTester, Claim: "test-claim", HandoffCommit: headOne,
+		HandoffRecord: "test-1", HandoffVersion: 1, StatesSerial: 3, ReturnTo: 1, Summary: "the widget does not render"})
+
+	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+
+	assertWalksAt(t, pool, engine, root.Key, phase.Testing, record.TaskPlace{Kind: record.PlaceStep, Position: 2})
+	tester := roleRowOf(t, pool, engine, root.Key, claim.RoleTester)
+	if tester.HandoffCommit != "" || tester.HandoffRecord != "" || tester.Summary != "" {
+		t.Fatalf("the tester's row after the move into testing = %+v, want the earlier completion's handoff cleared", tester)
+	}
+	if tester.ReturnTo != 0 {
+		t.Fatalf("the tester's row after the move into testing names returnTo %d, want none: the step the earlier completion named stayed",
+			tester.ReturnTo)
+	}
+}
