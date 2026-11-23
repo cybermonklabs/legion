@@ -565,6 +565,12 @@ composes with the `TestMain` a package already has
 (`testpg.Main(prefix, func() int { return testnats.Main(m) })`).
 `packages/envoy/internal/dispatch/store/storetest`'s `Open` is the same fixture for Dispatch's
 schema.
+Dispatch's store package cannot import `storetest`, which imports it, and its migration tests each
+need the schema as it stood at some earlier version, so its own tests take
+`openMigratedTestStore(t, version)` (`store_test.go`): a clone of a template migrated through
+that version, built once per version from the nearest template below it, and dropped by the
+package's `TestMain`. A test moving such a database further forward applies only the migrations
+past its version (`migrateAbove`), not the whole history again.
 `testdb.Database` is still there for a test that wants an empty database: `internal/record`'s own tests
 apply part of the migration set by hand and assert what `Migrate` then returns, which a migrated
 clone would not let them do.

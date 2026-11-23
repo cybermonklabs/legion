@@ -2183,10 +2183,16 @@ check run carries its `name:` expression's own text and not `pr-title`
 
 ## What the pr-title job's scopes are for
 
-What the two scripts this job runs, find-pr-payload.sh and check-pr-text.sh, read through gh, and nothing else: the pull request's commits
-from the compare route (`contents: read`), the pull request itself, its reviews and its
-review comments (`pull-requests: read`, which find-pr-payload.sh's read of the pull request
-a queue branch names needs too), and its issue comments (`issues: read`). No
+What the two scripts this job runs, find-pr-payload.sh and check-pr-text.sh, read through gh, and nothing else, through
+GitHub's GraphQL API, whose budget is apart from the REST one the rest of CI spends: the
+pull request's commits, from GitHub's comparison of its base branch with its head, and the
+commits of its base branch that touch .github/issue-key-cutoff (`contents: read`; the REST
+compare route reads the commits instead when that comparison is short, as it is past 1000
+commits), the pull request itself, its reviews and its review comments (`pull-requests: read`,
+which find-pr-payload.sh's read of the pull request a queue branch names needs too), and its
+issue comments (`issues: read`). The issue-key rule's releases and diffs are REST reads, made
+only once that rule is active (`contents: read`, and `pull-requests: read` for the pull request's
+files). No
 `checks: write`, since this job posts no check run, and no `actions: read`, since it carries
 no ci-ok-report step: CI_OK_EXEMPT holds it outside ci-ok's accounting (this file's env says
 why).

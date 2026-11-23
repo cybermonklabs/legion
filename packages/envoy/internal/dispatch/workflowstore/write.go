@@ -129,8 +129,12 @@ type nodeWrite struct {
 	// check judges the write against the attributes the node holds before it ({} for the node
 	// this write makes); a refusal is answered as it is. Nil takes every write.
 	check func(held map[string]json.RawMessage) error
+	// replaces judges the write against the attributes the node holds before it and answers the
+	// attributes of its own it sets whether the node holds them or not, one fact the write
+	// replaces whole; an error is answered as it is. Nil, or an answer of none, replaces nothing.
+	replaces func(held map[string]json.RawMessage) ([]string, error)
 	// sets says whether the write sets the attribute called name, which the node does not hold
-	// yet, given the attributes the node holds before it. Nil sets each.
+	// yet or the write replaces, given the attributes the node holds before it. Nil sets each.
 	sets func(held map[string]json.RawMessage, name string) bool
 	// relations are the relation tuples the write states beside its attributes and its
 	// `part_of`, from the attributes it sets: each one's text, as its value tuple holds it, by its
@@ -150,10 +154,11 @@ func (other *nodeOfAnotherIssue) Error() string { return "the node is part of " 
 
 // putNode is the one write of a node, a run's or a plan's, inside the caller's transaction, and
 // answers the node's attributes as they stand after it. It sets each attribute the write states
-// that the node does not hold yet and the write sets (sets), appending one value tuple for each,
-// and leaves each the node holds, appending nothing for it; the write that makes the node states
-// its `part_of` relation to the issue. A refusal comes before anything is moved, but the node a
-// refused write made is the caller's to roll back with its transaction.
+// that the node does not hold yet or that the write replaces (nodeWrite.replaces), where the write
+// sets it (nodeWrite.sets), appending one value tuple for each, and leaves every other the node
+// holds, appending nothing for it; the write that makes the node states its `part_of` relation to
+// the issue. A refusal comes before anything is moved, but the node a refused write made is the
+// caller's to roll back with its transaction.
 //
 // Two writes of one id at one time take turns: the insert that makes the node comes before the
 // read of what it holds, and that read locks the row (for update), so the second write waits for
@@ -208,12 +213,18 @@ func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, error) {
 			return nil, err
 		}
 	}
+	var replaced []string
+	if write.replaces != nil {
+		if replaced, err = write.replaces(held); err != nil {
+			return nil, err
+		}
+	}
 
 	setting := map[string]any{}
 	texts := map[string]string{}
 	var tuples []tuple
 	for _, attribute := range write.stated {
-		if _, holds := held[attribute.name]; holds {
+		if _, holds := held[attribute.name]; holds && !slices.Contains(replaced, attribute.name) {
 			continue
 		}
 		if write.sets != nil && !write.sets(held, attribute.name) {

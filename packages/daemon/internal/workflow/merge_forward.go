@@ -34,9 +34,10 @@ import (
 // role first asked of a head keeps that merge until it lands and two roles are never sent to merge
 // one base forward. The one exception is an ask made in implementing, which covers implementing
 // only: an implementer that completes at that head without the merge leaves the issue's next phase
-// to ask again, with its hold and its notice. An ask of the implementer that has not landed when
-// the issue reaches merging stays the implementer's, and the merger is held instead
-// (mergeForwardOnEntry).
+// to ask again, with its hold and its notice, where that phase comes before the review, and the
+// move into merging to ask the merger where it does not. An ask of the implementer made after
+// implementing that has not landed when the issue reaches merging stays the implementer's, and the
+// merger is held instead (mergeForwardOnEntry).
 //
 // The ask replaces the one the record holds, and keeps what that one kept of the merge forwards
 // that landed before it in the same stretch of work (record.MergeForward.Earlier), with that ask
@@ -120,10 +121,14 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 //     an ask of that head, made of another role in a phase before merging and not landed, that
 //     role keeps the merge, since it may already be at work on it, and the merger is held until it
 //     lands (holdMerger) rather than asked.
-//   - At such a head, a move out of implementing into a later phase asks again what was asked in
-//     implementing, for the reason it was asked for (record.MergeForward.Why): an ask made there
-//     covers implementing alone, so an implementer that completes at that head without the merge
-//     leaves the next phase to ask, with its hold and its notice.
+//   - At such a head, a move out of implementing into a later phase before the review (testing or
+//     reviewing) asks again what was asked in implementing, for the reason it was asked for
+//     (record.MergeForward.Why): an ask made there covers implementing alone, so an implementer
+//     that completes at that head without the merge leaves the next phase to ask, with its hold
+//     and its notice. A plan with no tester and no reviewer step moves out of implementing into
+//     accepting or retro, past the review (record.PastReview): that move asks nothing, as any move
+//     into those phases at a conflicting head does, the ask of implementing stays on the record,
+//     and the move into merging asks the merger.
 //
 // mergeForward asks once for each head, so a move into merging at a head the merger was already
 // asked of asks nothing more.
@@ -142,7 +147,7 @@ func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue recor
 			return e.holdMerger(ctx, tx, issue, pr)
 		}
 		return e.mergeForward(ctx, tx, issue, pr, record.ConflictMergeNext)
-	case from == phase.Implementing && !phase.MovesBack(from, issue.Phase) &&
+	case from == phase.Implementing && !phase.MovesBack(from, issue.Phase) && !record.PastReview(issue) &&
 		asked != nil && asked.Head == pr.HeadSHA && asked.Phase == phase.Implementing:
 		return e.mergeForward(ctx, tx, issue, pr, asked.Why)
 	}
@@ -200,12 +205,18 @@ func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string)
 // to read what the merge changed before it goes on (record.MergeForwardLanded). An issue past its
 // review (record.PastReview) stands on a review of the old head, so the reviewer is asked to read
 // the merge and approve the new head or request changes (record.MergeForwardReview), and the
-// record keeps that the review was asked for (ReviewAsked), which the merger's task reads (task).
+// record keeps that the review was asked for (ReviewAsked), which the merger's task (task) and
+// the landed the merger is told in merging (record.MergeForwardMessage.Message) read. That holds
+// only where the issue's task has a reviewer step (the walk's line holds reviewing): a task whose
+// plan has none stands on no review of the old head, no reviewer step runs for it, and a merger
+// told to wait for a reviewer's approval would wait for good, so nothing is asked and the merger
+// goes on at the new head.
 // The daemon records no decision outside reviewing, so that review is the roles' to hold to the
 // head they merge. The architect and the role asked are told nothing more: the architect's
 // checks-red notice already said the merge was asked for, and the role asked pushed it; in merging
 // that role is the merger, which the landed reaches as the worker of merging, since it tells it to
-// merge the new head only once the reviewer's approval of it is on the pull request. A tree that
+// merge the new head only once the reviewer's approval of it is on the pull request, where the
+// task has a reviewer step, and to go on at the new head where it has none. A tree that
 // lingers (record.TreeLingers, where every role is suspended) records and tells nothing.
 func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) error {
 	asked := pr.MergeForward
@@ -216,7 +227,11 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 		return err
 	}
 	at := record.StandsAt(issue)
-	review := record.PastReview(issue)
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	review := record.PastReview(issue) && slices.Contains(w.Line, phase.Reviewing)
 	var recipients []roleRecipient
 	if worker := RoleFor(at); record.MergeForwardReaches(record.MergeForwardLanded, worker) {
 		recipients = append(recipients, roleRecipient{issue: issue.Key, role: worker, row: issue.Key})
@@ -319,7 +334,8 @@ func leftMergeForwardAt(issue record.Issue, lingers bool, pr *record.PullRequest
 
 // mergeForwardReviewOwed says whether the review a landed merge forward asked of the reviewer
 // stands for pr's head (mergeForwardLanded): it was asked, and the head is still the one the merge
-// left. The merger's task reads it (task).
+// left. The merger's task reads it (task); the landed message reads ReviewAsked alone, since it
+// names the head the merge left (record.MergeForwardMessage.Message).
 func mergeForwardReviewOwed(pr record.PullRequest) bool {
 	asked := pr.MergeForward
 	return asked != nil && asked.ReviewAsked && asked.Landed == pr.HeadSHA

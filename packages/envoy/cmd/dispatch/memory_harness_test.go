@@ -279,12 +279,11 @@ func (h *memoryHarness) start(t *testing.T) *memoryServer {
 		time.Sleep(50 * time.Millisecond)
 	}
 	// The idle is read after a collection that gives the heap's free memory back to the system.
-	// Every boot compiles the pg_query WebAssembly module its migrations parse with
-	// (pgmigrate.Load, wazero), which holds about 220 MiB of the heap until it is done, and whether
-	// a collection frees that before /healthz answers is the luck of where the boot's collections
-	// fall: read at once, the idle was about 90 MiB on one server and about 330 MiB on the next,
-	// and a request then reused the dead pages, so its peak above idle read up to about 240 MiB
-	// low, and below zero (INFRA-3904).
+	// Whether a collection had freed what a boot left dead before /healthz answered was the luck of
+	// where the boot's collections fell: read at once, the idle was about 90 MiB on one server and
+	// about 330 MiB on the next, and a request then reused the dead pages, so its peak above idle
+	// read up to about 240 MiB low, and below zero (INFRA-3904). Most of that dead heap was the
+	// migrations' libpg_query parse, which a start no longer runs (pgmigrate.LoadBuilt).
 	server.collect(t)
 	server.idle = server.resident(t, "VmRSS")
 	return server

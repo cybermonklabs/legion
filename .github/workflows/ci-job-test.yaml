@@ -256,6 +256,10 @@ on:
           scripts/priorities-seed-check.test.sh and what it tests.
         type: string
         required: true
+      architecture_check_test:
+        description: "ci.yaml's needs.changes.outputs.architecture_check_test: check.test.sh and what it tests."
+        type: string
+        required: true
       check_ci_filters_test:
         description: "ci.yaml's needs.changes.outputs.check_ci_filters_test: check-ci-filters.test.sh and what it tests."
         type: string
@@ -566,6 +570,10 @@ jobs:
       - name: Test the priorities seed check (a stand-in Dispatch)
         if: inputs.changes-result != 'success' || inputs.priorities_seed_check_test == 'true'
         run: bash scripts/priorities-seed-check.test.sh
+
+      - name: Test the architecture-check action's go-path mode
+        if: inputs.changes-result != 'success' || inputs.architecture_check_test == 'true'
+        run: .github/actions/architecture-check/check.test.sh
 
       - name: Lint the Dispatch census script
         run: bunx biome check --error-on-warnings scripts/dispatch

@@ -144,6 +144,17 @@ shard and alone jobs run them in a container of this repository's own image, and
 binary with a PT_INTERP has a glibc there to disagree with. They are written under
 $RUNNER_TEMP, so the checkout stays clean.
 
+`-ldflags='-s -w'` leaves out the symbol table and the DWARF debug information, which no
+leg reads: a panic's stack trace still names each function, file and line (Go keeps its own
+line table for that), and `go version -m` still reads the build information. Without them the
+artifact every shard and alone leg downloads was 107,567,572 bytes zipped and 248,108,722
+unzipped (run 45062410823); stripped, about half that (the binaries job's upload step logs
+each run's size). The download is where a leg's run has failed
+on the network: on 2026-11-22 five leg downloads of about 4,330 stalled for the step's
+whole 2 minutes, and three legs failed when the second attempt stalled too (shard 4 of
+merge group 45062410823 among them). Half the bytes is half the time a slow connection
+has to be slow in.
+
 ## Why the binaries artifact's name holds no run attempt
 
 One name for the whole run, with no `github.run_attempt` in it: a re-run of a run's
@@ -376,8 +387,8 @@ run-broker.sh serves from.
 ## What the shard job places, and what its budget leaves for it
 
 The census the job's budget is read from counts this step, at its maximum of 1 s (the
-shard job's measured steps above); it copies one 106 MB artifact on the runner's disk (141 ms
-for those bytes on a pod).
+shard job's measured steps above); it copies the four binaries on the runner's disk (141 ms
+for the 106 MB artifact of the unstripped build on a pod).
 
 ## Why the shard job makes the downloaded binaries executable
 

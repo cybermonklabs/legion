@@ -102,7 +102,8 @@ func (s *Store) IssueSuspension(ctx context.Context, project string, close Issue
 // It answers false with no error for a reserved cleanup, which deletes the Sandbox the caller
 // would and so finishes the caller without acting, and a wait error for each of the other two,
 // which the caller is retried on. A close and a release order against each other here: both read
-// the same `suspend`, `issue_close` and `release` ops, so each waits on the other's role stops.
+// the same `suspend`, `step_stop`, `issue_close` and `release` ops, so each waits on the other's
+// role stops, and on the stop of a stopped task's step (workflow's stopTask).
 func issueStopFences(ctx context.Context, tx pgx.Tx, project, issue, tree, what string, row int64, generation uint64) (bool, error) {
 	var reserved bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from tree_lifecycles
@@ -115,7 +116,7 @@ func issueStopFences(ctx context.Context, tx pgx.Tx, project, issue, tree, what 
 	var stopping bool
 	if err := tx.QueryRow(ctx, `select exists (
 		select 1 from outbox where issue = $1 and id < $2 and kind = 'supervise'
-		and payload->>'op' in ('suspend', 'issue_close', 'release') and (payload->>'generation')::bigint = $3)`,
+		and payload->>'op' in ('suspend', 'step_stop', 'issue_close', 'release') and (payload->>'generation')::bigint = $3)`,
 		issue, row, generation).Scan(&stopping); err != nil {
 		return false, err
 	}

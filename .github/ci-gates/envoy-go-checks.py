@@ -97,11 +97,11 @@ GATE = gate("envoy_go_checks", "envoy-go-checks", runs=[
      f"{at('envoy-go-checks', './.github/actions/architecture-check')} runs the action it defines"),
     (".github/actions/architecture-check/check.sh",
      f"{at('envoy-go-checks', './.github/actions/architecture-check')}: "
-     ".github/actions/architecture-check/action.yml:95 and :121 run it"),
+     ".github/actions/architecture-check/action.yml:68, :133 and :159 run it"),
     (".dispatch/architecture/**",
      f"{at('envoy-go-checks', './.github/actions/architecture-check')} judges the action's default path "
-     "(.github/actions/architecture-check/action.yml:16), which check.sh:68 resolves against GITHUB_WORKSPACE "
-     "and the command it runs at check.sh:78 reads"),
+     "(.github/actions/architecture-check/action.yml:23), which check.sh:73 resolves against GITHUB_WORKSPACE "
+     "and the command it runs at check.sh:85 reads"),
     (".github/actions/spec-check/action.yml",
      f"{at('envoy-go-checks', './.github/actions/spec-check')} runs the action it defines"),
     (".github/actions/spec-check/check.sh",
@@ -110,7 +110,7 @@ GATE = gate("envoy_go_checks", "envoy-go-checks", runs=[
     (".github/scripts/build-envoy-command.sh",
      f"{at('envoy-go-checks', './.github/actions/architecture-check')} and "
      f"{at('envoy-go-checks', './.github/actions/spec-check')}: "
-     ".github/actions/architecture-check/check.sh:60 and .github/actions/spec-check/check.sh:62 run it"),
+     ".github/actions/architecture-check/check.sh:67 and .github/actions/spec-check/check.sh:62 run it"),
     (EDITED_MIGRATIONS_BASE, f"{at('envoy-go-checks', EDITED_MIGRATIONS_STEP)} runs it for the base it compares with"),
     # The step judges the action's default path, .dispatch/spec, which holds no file on main;
     # the read names .dispatch whole because a read that matches no file is refused, and the

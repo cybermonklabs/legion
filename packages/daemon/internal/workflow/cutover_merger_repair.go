@@ -76,7 +76,7 @@ const cutoverMergerTold = "The cutover from a Legion build with the phase `await
 // merger's phases row and builds the start with the builder of booted's resume by rule
 // (startSuspendedOwner), from the entry that row names: a merger behind that entry (OwedEntry) is
 // sent the work of that entry at that entry (sendOwedEntry), and a merger level with it is sent
-// the merging resume task (ResumePhaseTask) at entry 0. It builds the start that way, and not as
+// the merging resume task (ResumeTask) at entry 0. It builds the start that way, and not as
 // one fixed request, for the reason booted gives: the resume task tells a claim to carry on work
 // it already holds, so a merger behind its entry would spend its first turn on the wrong prompt,
 // and the completion it answered with would be refused as behind that entry. Neither start raises
