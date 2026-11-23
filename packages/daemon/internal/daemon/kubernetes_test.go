@@ -203,11 +203,14 @@ func TestAKubernetesDaemonRefusesALegacyPerClaimSandboxBeforeItOpensItsStore(t *
 
 // The store opens outside the start budget the cluster check spends, and the steps after the open
 // get a budget of their own (c-boot-db-retry case 7). Here the real cluster check uses 22 s of the
-// 30 s budget, and the database accepts the first connection and never answers it: the first
-// attempt ends at its own limit, the second opens the store, and the fresh database is migrated
-// to the binary's newest migration more than 30 s into the start. That is the start LINUX's
-// daemon could not make on 2026-10-26, which opened its store on what the cluster check had left
-// of the budget and exited with `context deadline exceeded`.
+// 30 s budget, and the database accepts the first two connections and never answers them: each of
+// the first two attempts ends at the dial's bound (connect_timeout, which store.PoolConfig holds
+// at a claim write's 5 s, under the attempt's own limit, storeOpenAttempt), the third opens the
+// store, and the fresh database is migrated to the binary's newest migration more than 30 s into
+// the start. One silent connection is not enough since the dial got its bound: 22 s, one 5 s dial
+// and the 1 s wait before the next attempt leave the open inside the 30 s. That is the start
+// LINUX's daemon could not make on 2026-10-26, which opened its store on what the cluster check
+// had left of the budget and exited with `context deadline exceeded`.
 func TestAKubernetesDaemonOpensItsStoreAfterAClusterCheckThatUsedMostOfItsBudget(t *testing.T) {
 	t.Parallel()
 	const censusTakes = 22 * time.Second
@@ -242,7 +245,7 @@ func TestAKubernetesDaemonOpensItsStoreAfterAClusterCheckThatUsedMostOfItsBudget
 	defer apiServer.Close()
 	cfg := kubernetesConfig(t, apiServer.URL)
 	database := testdb.Database(t, "legion_daemon_late_open")
-	cfg.PostgresDSN = pgProxy(t, database, silentConnection)
+	cfg.PostgresDSN = pgProxy(t, database, silentConnection, silentConnection)
 	all, err := migrations.All()
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
