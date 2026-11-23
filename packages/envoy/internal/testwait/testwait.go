@@ -24,6 +24,7 @@
 package testwait
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -164,6 +165,22 @@ func expiry(t *testing.T) (<-chan time.Time, func() bool) {
 	}
 	timer := time.NewTimer(time.Until(end))
 	return timer.C, timer.Stop
+}
+
+// Context is t.Context() ending at the moment Until and Receive give up in t: the test binary's
+// deadline less margin, and never under -timeout 0. It is for a call under test that waits on
+// something - a lock, a reply - and takes a context: the call ends on its fact however slowly a
+// loaded machine runs it, and one that never gets it is cancelled before go test's alarm, so its
+// own error names it, rather than at a span of the test's choosing. It is cancelled when t ends.
+func Context(t *testing.T) context.Context {
+	t.Helper()
+	end, bounded := giveUpAt(t)
+	if !bounded {
+		return t.Context()
+	}
+	ctx, cancel := context.WithDeadline(t.Context(), end)
+	t.Cleanup(cancel)
+	return ctx
 }
 
 // giveUpAt is the moment Until and Receive give up in t: the test binary's deadline less margin,
